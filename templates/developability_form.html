@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Binder Developability Scout — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Binder Developability Scout</h1>
+    <p class="subtitle">
+      Flag chemical stability and biophysical liabilities in antibody or
+      nanobody variable regions before you order them. Five dimensions:
+      humanness, sequence liabilities, net charge and pI, hydrophobic
+      patches, aggregation propensity.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Score a sequence</span>
+      <span class="panel-badge">Live</span>
+    </div>
+    <div class="panel-body">
+
+      {% if error %}
+        <div class="error-box">{{ error }}</div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('developability_score') }}" class="dev-form">
+        <div class="field">
+          <label for="sequence">Variable region sequence</label>
+          <textarea
+            id="sequence"
+            name="sequence"
+            class="dev-textarea"
+            rows="8"
+            placeholder="Paste a single-chain amino acid sequence. FASTA header is optional and will be stripped."
+            spellcheck="false"
+            autocomplete="off"
+            required
+          >{{ sequence or '' }}</textarea>
+          <p class="field-hint">
+            One-letter code, 10 to 2000 residues. Only the 20 standard amino
+            acids are accepted. Whitespace and FASTA headers are ignored.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="chain_type">Chain type</label>
+          <select id="chain_type" name="chain_type" class="dev-select">
+            <option value="VH" {% if chain_type == 'VH' %}selected{% endif %}>VH (heavy chain variable)</option>
+            <option value="VL" {% if chain_type == 'VL' %}selected{% endif %}>Vlambda (lambda light chain variable)</option>
+            <option value="VK" {% if chain_type == 'VK' %}selected{% endif %}>Vkappa (kappa light chain variable)</option>
+            <option value="scFv" {% if chain_type == 'SCFV' %}selected{% endif %}>scFv (single-chain variable fragment)</option>
+            <option value="VHH" {% if chain_type == 'VHH' %}selected{% endif %}>VHH (nanobody)</option>
+            <option value="other" {% if chain_type == 'OTHER' %}selected{% endif %}>Other</option>
+          </select>
+          <p class="field-hint">
+            Chain type affects the germline pool used for humanness and the
+            CDR position heuristic used to weight oxidation and deamidation
+            liabilities.
+          </p>
+        </div>
+
+        <div class="dev-form-actions">
+          <button type="submit" class="btn-primary">Score sequence</button>
+          <button type="button" class="btn-secondary" data-fill-example>Try trastuzumab VH</button>
+        </div>
+
+        <details class="dev-help">
+          <summary>What you get back</summary>
+          <p>
+            A composite 0 to 1 score plus five per-dimension breakdowns. Each
+            flagged motif is returned with its 1-based position, severity, and
+            whether it falls in an approximated CDR. The sequence is rendered
+            with liability positions highlighted.
+          </p>
+          <p>
+            This is a prototype scorer. CDR boundaries are estimated from
+            length; production annotation via ANARCI with IMGT numbering is on
+            the roadmap. Humanness uses a small germline panel; we are
+            migrating to the full IMGT repertoire and OASis-style k-mer
+            scoring.
+          </p>
+        </details>
+      </form>
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var trigger = document.querySelector('[data-fill-example]');
+      var textarea = document.getElementById('sequence');
+      var chainSelect = document.getElementById('chain_type');
+      if (!trigger || !textarea) return;
+      var example = 'EVQLVESGGGLVQPGGSLRLSCAASGFNIKDTYIHWVRQAPGKGLEWVARIYPTNGYTRYADSVKGRFTISADTSKNTAYLQMNSLRAEDTAVYYCSRWGGDGFYAMDYWGQGTLVTVSS';
+      trigger.addEventListener('click', function () {
+        textarea.value = example;
+        if (chainSelect) chainSelect.value = 'VH';
+        textarea.focus();
+      });
+    })();
+  </script>
+
+{% endblock %}

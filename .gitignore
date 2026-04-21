@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+venv/
+.venv/
+*.egg-info/
+tmp/
+.DS_Store
+.pytest_cache/
+graphify-out/
+.graphify_cached.json
+.graphify_uncached.txt
+.graphifyignore

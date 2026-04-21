@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}{{ tool_name }} — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>{{ tool_name }}</h1>
+    <p class="subtitle">{{ tool_tagline }}</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Status</span>
+      <span class="panel-badge">Coming soon</span>
+    </div>
+    <div class="panel-body">
+      <p class="coming-soon-body">
+        We are finalising this tool. If you want a preview or early access
+        for your campaign, get in touch at
+        <a href="mailto:hello@ranomics.com">hello@ranomics.com</a>.
+      </p>
+
+      <div class="coming-soon-actions">
+        <a href="{{ url_for('index') }}" class="btn-secondary">Back to tools</a>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}

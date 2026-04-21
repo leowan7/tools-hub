@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+
+{% block title %}Library Plan — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  {% set inputs = plan.inputs %}
+  {% set library = plan.library %}
+  {% set codon = plan.codon_analysis %}
+  {% set ngs = plan.ngs_depth %}
+  {% set rounds = plan.sort_strategy %}
+  {% set flags = plan.feasibility %}
+
+  {% set errors = flags | selectattr('severity', 'equalto', 'error') | list %}
+  {% set warnings = flags | selectattr('severity', 'equalto', 'warning') | list %}
+
+  {# Material warnings (escalate to amber); informational-only warnings stay green. #}
+  {% set informational_codes = ['functional_library_above_transformation_ceiling'] %}
+  {% set material_warnings = warnings | rejectattr('code', 'in', informational_codes) | list %}
+
+  {% if errors %}
+    {% set tier_class = 'dev-tier-red' %}
+    {% set tier_label = 'Infeasible as specified' %}
+  {% elif material_warnings %}
+    {% set tier_class = 'dev-tier-amber' %}
+    {% set tier_label = 'Feasible with caveats' %}
+  {% else %}
+    {% set tier_class = 'dev-tier-green' %}
+    {% set tier_label = 'Feasible on yeast' %}
+  {% endif %}
+
+  <div class="hero dev-hero">
+    <h1>Library plan</h1>
+    <p class="subtitle">
+      {{ inputs.scaffold }}, {{ inputs.diversification_positions }}
+      {{ inputs.diversification_scheme }} positions, target
+      {{ inputs.target_kd_nm }} nM, from {{ inputs.starting_material | replace('_', ' ') }}.
+    </p>
+
+    <div class="dev-composite {{ tier_class }}">
+      <div class="dev-composite-score">{{ "%.2e" | format(library.theoretical_size) }}</div>
+      <div class="dev-composite-meta">
+        <div class="dev-composite-label">Theoretical diversity (DNA variants)</div>
+        <div class="dev-composite-tier">{{ tier_label }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Plan summary</span>
+    </div>
+    <div class="panel-body">
+      <p>{{ plan.summary }}</p>
+    </div>
+  </div>
+
+  <div class="dev-dim-grid">
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Library complexity</span>
+        <span class="dev-dim-score">
+          {% if library.feasible_on_yeast %}Feasible{% else %}Infeasible{% endif %}
+        </span>
+      </div>
+      <p class="dev-dim-interp">
+        Theoretical DNA variants, stop-free functional variants, and amino
+        acid space at the requested diversification. "Feasible" means the
+        library fits within ~100x the yeast transformation ceiling.
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>Theoretical</dt>
+        <dd>{{ "{:,}".format(library.theoretical_size) }} &nbsp;({{ "%.2e" | format(library.theoretical_size) }})</dd>
+        <dt>Functional (stop-free)</dt>
+        <dd>{{ "{:,}".format(library.functional_size) }} &nbsp;({{ "%.2e" | format(library.functional_size) }})</dd>
+        <dt>Amino acid space</dt>
+        <dd>{{ "{:,}".format(library.amino_acid_space) }} &nbsp;({{ "%.2e" | format(library.amino_acid_space) }})</dd>
+        <dt>Yeast transformation ceiling</dt>
+        <dd>{{ "{:,}".format(library.yeast_transformation_ceiling) }}</dd>
+      </dl>
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Codon scheme</span>
+        <span class="dev-dim-score">{{ codon.scheme_recommendation.scheme }}</span>
+      </div>
+      <p class="dev-dim-interp">
+        {{ codon.scheme_recommendation.rationale }}
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>You selected</dt>
+        <dd>{{ inputs.diversification_scheme }}</dd>
+        <dt>Rare codons flagged</dt>
+        <dd>{{ codon.warnings | length }}</dd>
+      </dl>
+      {% if codon.warnings %}
+        <div class="dev-lia-list">
+          {% for w in codon.warnings[:12] %}
+            <span class="dev-lia-pill dev-lia-sev-low">
+              {{ w.codon }} ({{ w.amino_acid }}) · {{ w.frequency_per_1000 }}/1000
+            </span>
+          {% endfor %}
+          {% if codon.warnings | length > 12 %}
+            <span class="dev-lia-pill dev-lia-more">+{{ codon.warnings | length - 12 }} more</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">NGS depth</span>
+        <span class="dev-dim-score">{{ "%.2e" | format(ngs.recommended) }}</span>
+      </div>
+      <p class="dev-dim-interp">
+        Reads required to sample the (sortable) library at the requested
+        coverage. Poisson model: reads = −L × ln(1 − coverage).
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>50% coverage</dt>
+        <dd>{{ "{:,}".format(ngs.reads_for_50pct) }} &nbsp;({{ "%.2e" | format(ngs.reads_for_50pct) }})</dd>
+        <dt>95% coverage</dt>
+        <dd>{{ "{:,}".format(ngs.reads_for_95pct) }} &nbsp;({{ "%.2e" | format(ngs.reads_for_95pct) }})</dd>
+        <dt>99% coverage</dt>
+        <dd>{{ "{:,}".format(ngs.reads_for_99pct) }} &nbsp;({{ "%.2e" | format(ngs.reads_for_99pct) }})</dd>
+        <dt>Recommended</dt>
+        <dd>{{ "{:,}".format(ngs.recommended) }} &nbsp;({{ "%.2e" | format(ngs.recommended) }})</dd>
+      </dl>
+      {% if ngs.per_round %}
+        <div class="dev-lia-list">
+          {% for pr in ngs.per_round %}
+            <span class="dev-lia-pill dev-apr-pill">
+              R{{ pr.round }}: {{ "{:,}".format(pr.pool_size) }} pool → {{ "{:,}".format(pr.recommended_reads) }} reads
+            </span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Sort strategy</span>
+        <span class="dev-dim-score">{{ rounds | length }} rounds</span>
+      </div>
+      <p class="dev-dim-interp">
+        MACS and FACS rounds with KD-decreasing label concentration.
+        Enrichment is estimated from gate width and starting material.
+      </p>
+      <dl class="dev-dim-stats">
+        {% for r in rounds %}
+          <dt>Round {{ r.round }} · {{ r.method }}</dt>
+          <dd>
+            {{ r.label_concentration_nm }} nM label, gate
+            {{ r.gate_percent }}%, enrichment {{ r.expected_enrichment }}
+          </dd>
+        {% endfor %}
+      </dl>
+      <div class="dev-lia-list">
+        {% for r in rounds %}
+          <span class="dev-lia-pill dev-apr-pill" title="{{ r.notes }}">
+            R{{ r.round }} {{ r.method }}
+          </span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Feasibility flags</span>
+        <span class="dev-dim-score">
+          {{ errors | length }} err / {{ warnings | length }} warn
+        </span>
+      </div>
+      <p class="dev-dim-interp">
+        Severity-tagged issues raised by the planner. Errors make the plan
+        impossible at this scale; warnings mean the plan works with
+        tradeoffs.
+      </p>
+      {% if flags %}
+        <div class="dev-lia-list">
+          {% for f in flags %}
+            <span class="dev-lia-pill dev-lia-sev-{% if f.severity == 'error' %}high{% else %}medium{% endif %}"
+                  title="{{ f.message }}">
+              {{ f.severity }}: {{ f.code }}
+            </span>
+          {% endfor %}
+        </div>
+        <dl class="dev-dim-stats">
+          {% for f in flags %}
+            <dt>{{ f.severity | capitalize }} · {{ f.code }}</dt>
+            <dd>{{ f.message }}</dd>
+          {% endfor %}
+        </dl>
+      {% else %}
+        <p class="dev-dim-interp"><em>No issues flagged at this scale.</em></p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Round-by-round sort details</span>
+    </div>
+    <div class="panel-body">
+      <dl class="dev-dim-stats">
+        {% for r in rounds %}
+          <dt>Round {{ r.round }} &mdash; {{ r.method }} at {{ r.label_concentration_nm }} nM</dt>
+          <dd>
+            Gate {{ r.gate_percent }}%, expected enrichment
+            {{ r.expected_enrichment }}. {{ r.notes }}
+          </dd>
+        {% endfor %}
+      </dl>
+    </div>
+  </div>
+
+  <div class="panel dev-cta-panel">
+    <div class="panel-body">
+      <h2 class="dev-cta-title">Need this library built and screened?</h2>
+      <p class="dev-cta-body">
+        Ranomics runs yeast display campaigns end to end: library synthesis,
+        transformation at scale, MACS and FACS sorting, NGS readout, and hit
+        characterization. The plan above is a starting point; we calibrate
+        against campaign-specific constraints before synthesis.
+      </p>
+      <div class="dev-cta-actions">
+        <a href="https://ranomics.com/ranomics-contact?service=yeast-display&source=library-planner"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="btn-primary">Start a yeast display project</a>
+        <a href="https://ranomics.com/services/yeast-display"
+           target="_blank"
+           rel="noopener noreferrer"
+           class="btn-secondary">Talk to yeast display team</a>
+        <a href="{{ url_for('library_planner') }}" class="btn-secondary">Plan another library</a>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}

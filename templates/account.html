@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Account — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Account</h1>
+    <p class="subtitle">Signed in to the Ranomics tools hub. One account works across every tool linked from here.</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Profile</span>
+    </div>
+    <div class="panel-body">
+      <dl class="account-dl">
+        <dt>Email</dt>
+        <dd>{{ user_email }}</dd>
+      </dl>
+
+      <form method="POST" action="{{ url_for('logout') }}" class="account-actions">
+        <button type="submit" class="btn-primary">Sign out</button>
+      </form>
+    </div>
+  </div>
+
+{% endblock %}

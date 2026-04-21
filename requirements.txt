@@ -1,0 +1,7 @@
+flask>=3.0
+gunicorn>=22.0,<25.0
+werkzeug>=3.0
+supabase>=2.0
+requests>=2.31
+biopython>=1.81
+numpy>=1.24

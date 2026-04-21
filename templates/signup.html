@@ -1,0 +1,6 @@
+{% extends "login.html" %}
+{# The login template handles both sign-in and sign-up via tabs, so this
+   file just re-renders it with the sign-up panel active. The route
+   /signup already passes mode="signup", so no override is needed here —
+   this file exists so url_for('signup') static redirects work if future
+   code bypasses the blueprint. #}

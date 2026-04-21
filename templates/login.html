@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Ranomics Tools</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="auth-page">
+
+  <div class="login-card">
+    <div class="login-header">
+      <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">
+        <img src="{{ url_for('static', filename='logo-ranomics.png') }}" alt="Ranomics" class="login-logo">
+      </a>
+      <p class="login-title">Tools</p>
+    </div>
+
+    {% if mode != 'reset' %}
+      <div class="tab-row">
+        <button type="button" class="tab-btn {% if mode != 'signup' %}active{% endif %}" onclick="switchTab('signin')">Sign in</button>
+        <button type="button" class="tab-btn {% if mode == 'signup' %}active{% endif %}" onclick="switchTab('signup')">Create account</button>
+      </div>
+    {% endif %}
+
+    <div class="login-body">
+
+      <!-- Sign-in panel -->
+      <div id="panel-signin" class="form-panel {% if mode != 'signup' and mode != 'reset' %}active{% endif %}">
+        {% if success_msg %}
+          <div class="success-box">{{ success_msg }}</div>
+        {% endif %}
+        {% if error and mode != 'signup' and mode != 'reset' %}
+          <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('login') }}">
+          {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+
+          <div class="field">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" autocomplete="email" autofocus required value="{{ email or '' }}">
+          </div>
+
+          <div class="field">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password" autocomplete="current-password" required>
+          </div>
+
+          <button type="submit" class="btn-submit">Sign in</button>
+        </form>
+        <p class="auth-footer-link">
+          <a href="{{ url_for('forgot_password') }}">Forgot password?</a>
+        </p>
+      </div>
+
+      <!-- Sign-up panel -->
+      <div id="panel-signup" class="form-panel {% if mode == 'signup' %}active{% endif %}">
+        {% if error and mode == 'signup' %}
+          <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('signup') }}">
+          <div class="field">
+            <label for="signup-email">Email</label>
+            <input type="email" id="signup-email" name="email" autocomplete="email" required value="{{ signup_email or '' }}">
+          </div>
+
+          <div class="field">
+            <label for="signup-password">Password</label>
+            <input type="password" id="signup-password" name="password" autocomplete="new-password" required minlength="8">
+            <span class="field-hint">Minimum 8 characters.</span>
+          </div>
+
+          <div class="field">
+            <label for="signup-password2">Confirm password</label>
+            <input type="password" id="signup-password2" name="password2" autocomplete="new-password" required>
+          </div>
+
+          <button type="submit" class="btn-submit">Create account</button>
+        </form>
+      </div>
+
+      <!-- Reset password panel -->
+      <div id="panel-reset" class="form-panel {% if mode == 'reset' %}active{% endif %}">
+        {% if reset_success %}
+          <div class="success-box">{{ reset_success }}</div>
+        {% endif %}
+        {% if error and mode == 'reset' %}
+          <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <p class="auth-helper-text">
+          Enter your email address and we will send you a link to reset your password.
+        </p>
+
+        <form method="POST" action="{{ url_for('forgot_password') }}">
+          <div class="field">
+            <label for="reset-email">Email</label>
+            <input type="email" id="reset-email" name="email" autocomplete="email" required value="{{ email or '' }}">
+          </div>
+
+          <button type="submit" class="btn-submit">Send reset link</button>
+        </form>
+        <p class="auth-footer-link">
+          <a href="{{ url_for('login') }}">Back to sign in</a>
+        </p>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    function switchTab(tab) {
+      var signin = document.getElementById('panel-signin');
+      var signup = document.getElementById('panel-signup');
+      if (signin) signin.classList.toggle('active', tab === 'signin');
+      if (signup) signup.classList.toggle('active', tab === 'signup');
+      document.querySelectorAll('.tab-btn').forEach(function(btn, i) {
+        btn.classList.toggle('active', (i === 0 && tab === 'signin') || (i === 1 && tab === 'signup'));
+      });
+    }
+  </script>
+
+</body>
+</html>

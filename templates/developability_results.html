@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}Developability Results — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  {% set composite = result.composite_score %}
+  {% if composite >= 0.8 %}
+    {% set tier_class = "dev-tier-green" %}
+    {% set tier_label = "Low risk" %}
+  {% elif composite >= 0.6 %}
+    {% set tier_class = "dev-tier-amber" %}
+    {% set tier_label = "Moderate risk" %}
+  {% else %}
+    {% set tier_class = "dev-tier-red" %}
+    {% set tier_label = "High risk" %}
+  {% endif %}
+
+  <div class="hero dev-hero">
+    <h1>Developability report</h1>
+    <p class="subtitle">
+      {{ result.chain_type }} variable region, {{ result.length }} residues.
+      Composite score aggregates five scientific dimensions at equal weight.
+    </p>
+
+    <div class="dev-composite {{ tier_class }}">
+      <div class="dev-composite-score">{{ (composite * 100) | round(0, 'floor') | int }}<span class="dev-composite-unit">%</span></div>
+      <div class="dev-composite-meta">
+        <div class="dev-composite-label">Composite developability</div>
+        <div class="dev-composite-tier">{{ tier_label }}</div>
+      </div>
+    </div>
+  </div>
+
+  {% set humanness = result.dimensions.humanness %}
+  {% set liabilities = result.dimensions.liabilities %}
+  {% set charge = result.dimensions.charge %}
+  {% set hydro = result.dimensions.hydrophobicity %}
+  {% set agg = result.dimensions.aggregation %}
+
+  <div class="dev-dim-grid">
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Humanness</span>
+        <span class="dev-dim-score">{{ (humanness.score * 100) | round(0, 'floor') | int }}%</span>
+      </div>
+      <p class="dev-dim-interp">
+        Fraction of input 7-mers that also occur in the human germline
+        reference pool, rescaled. Higher is more human-like.
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>Top matching germline</dt>
+        <dd>{{ humanness.top_germline or 'none' }}</dd>
+        <dt>Germline overlap</dt>
+        <dd>{{ (humanness.top_germline_overlap * 100) | round(1) }}%</dd>
+        <dt>Matched k-mers</dt>
+        <dd>{{ humanness.matched_kmers }} / {{ humanness.total_kmers }}</dd>
+      </dl>
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Sequence liabilities</span>
+        <span class="dev-dim-score">{{ (liabilities.score * 100) | round(0, 'floor') | int }}%</span>
+      </div>
+      <p class="dev-dim-interp">
+        Canonical chemical-stability motifs: deamidation, isomerization,
+        N-linked glycosylation, oxidation, fragmentation, free cysteines,
+        integrin binding.
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>Total findings</dt>
+        <dd>{{ liabilities.count }}</dd>
+        <dt>Weighted count</dt>
+        <dd>{{ liabilities.weighted_count }}</dd>
+      </dl>
+      {% if liabilities.liabilities %}
+        <div class="dev-lia-list">
+          {% for lia in liabilities.liabilities[:12] %}
+            <span class="dev-lia-pill dev-lia-{{ lia.type }} dev-lia-sev-{{ lia.severity }}">
+              {{ lia.motif }}@{{ lia.position }}
+              {% if lia.in_cdr %}<em>CDR</em>{% endif %}
+            </span>
+          {% endfor %}
+          {% if liabilities.liabilities | length > 12 %}
+            <span class="dev-lia-pill dev-lia-more">+{{ liabilities.liabilities | length - 12 }} more</span>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Charge</span>
+        <span class="dev-dim-score">{{ (charge.score * 100) | round(0, 'floor') | int }}%</span>
+      </div>
+      <p class="dev-dim-interp">
+        Isoelectric point and net charge at pH 7.4, scored against clinical
+        Mab tolerance ranges (Jain 2017).
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>Theoretical pI</dt>
+        <dd>{{ charge.pI }}</dd>
+        <dt>Net charge at pH 7.4</dt>
+        <dd>{{ charge.net_charge_7_4 }}</dd>
+        <dt>pI subscore</dt>
+        <dd>{{ (charge.pI_score * 100) | round(0, 'floor') | int }}%</dd>
+        <dt>Charge subscore</dt>
+        <dd>{{ (charge.charge_score * 100) | round(0, 'floor') | int }}%</dd>
+      </dl>
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Hydrophobic patches</span>
+        <span class="dev-dim-score">{{ (hydro.score * 100) | round(0, 'floor') | int }}%</span>
+      </div>
+      <p class="dev-dim-interp">
+        Kyte-Doolittle sliding-window hydropathy. Patches are contiguous
+        windows with mean hydropathy above +1.5.
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>Patch count</dt>
+        <dd>{{ hydro.patch_count }}</dd>
+      </dl>
+    </div>
+
+    <div class="dev-dim-card">
+      <div class="dev-dim-header">
+        <span class="dev-dim-name">Aggregation propensity</span>
+        <span class="dev-dim-score">{{ (agg.score * 100) | round(0, 'floor') | int }}%</span>
+      </div>
+      <p class="dev-dim-interp">
+        Aggrescan-style a3v per-residue scale. Aggregation-prone regions
+        (APRs) are runs of five or more residues with positive smoothed a3v.
+      </p>
+      <dl class="dev-dim-stats">
+        <dt>APR count</dt>
+        <dd>{{ agg.apr_count }}</dd>
+      </dl>
+      {% if agg.apr_regions %}
+        <div class="dev-lia-list">
+          {% for region in agg.apr_regions %}
+            <span class="dev-lia-pill dev-apr-pill">
+              {{ region.start }}-{{ region.end }}
+              (a3v {{ region.mean_a3v }})
+            </span>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Annotated sequence</span>
+      <span class="panel-badge">{{ result.length }} aa</span>
+    </div>
+    <div class="panel-body">
+      <p class="dev-seq-legend">
+        Highlighted residues carry one or more liability annotations. Hover
+        for the motif, type, severity, and CDR assignment.
+      </p>
+      <div class="dev-seq-view">
+        {% for flag in result.per_residue_flags %}
+          {% if flag.liabilities %}
+            {% set first = flag.liabilities[0] %}
+            {% set tooltip = flag.liabilities | map(attribute='type') | join(', ') %}
+            <span
+              class="dev-seq-res dev-lia-{{ first.type }} dev-lia-sev-{{ first.severity }}"
+              title="Pos {{ flag.position }} ({{ flag.residue }}): {{ tooltip }} [{{ first.severity }}]{% if first.in_cdr %} · in CDR{% endif %}"
+            >{{ flag.residue }}</span>
+          {% else %}
+            <span class="dev-seq-res">{{ flag.residue }}</span>
+          {% endif %}
+          {% if loop.index is divisibleby(10) and not loop.last %}<span class="dev-seq-gap"></span>{% endif %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="panel dev-cta-panel">
+    <div class="panel-body">
+      <h2 class="dev-cta-title">Need this run on real sequences at scale?</h2>
+      <p class="dev-cta-body">
+        Our yeast display and AI design teams run full developability
+        campaigns on binder panels, not just one sequence at a time. We
+        combine this scoring logic with ANARCI numbering, HIC and DSF
+        measurements, and downstream expression in the same sprint.
+      </p>
+      <div class="dev-cta-actions">
+        <a href="https://ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer" class="btn-primary">Start an AI Binder Sprint</a>
+        <a href="https://ranomics.com/ranomics-contact?service=ai-binder-sprint&source=developability-scout" target="_blank" rel="noopener noreferrer" class="btn-secondary">Talk to protein engineering team</a>
+        <a href="{{ url_for('developability') }}" class="btn-secondary">Score another sequence</a>
+      </div>
+    </div>
+  </div>
+
+{% endblock %}

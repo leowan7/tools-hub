@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block title %}Yeast Display Library Planner — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Yeast Display Library Planner</h1>
+    <p class="subtitle">
+      Scope a yeast surface display campaign before you commit to synthesis.
+      Given scaffold, diversified positions, codon scheme, target KD, and
+      starting material, this tool returns library complexity, codon bias
+      warnings, NGS read depth, a MACS and FACS sort strategy, and
+      feasibility flags.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Plan a library</span>
+      <span class="panel-badge">Live</span>
+    </div>
+    <div class="panel-body">
+
+      {% if error %}
+        <div class="error-box">{{ error }}</div>
+      {% endif %}
+
+      {% set fv = form_values or {} %}
+
+      <form method="POST" action="{{ url_for('library_planner_plan') }}" class="dev-form">
+
+        <div class="field">
+          <label for="scaffold">Scaffold</label>
+          <select id="scaffold" name="scaffold" class="dev-select" required>
+            <option value="VHH" {% if fv.get('scaffold', 'VHH') == 'VHH' %}selected{% endif %}>VHH (nanobody)</option>
+            <option value="scFv" {% if fv.get('scaffold') == 'scFv' %}selected{% endif %}>scFv</option>
+            <option value="Fab" {% if fv.get('scaffold') == 'Fab' %}selected{% endif %}>Fab</option>
+            <option value="DARPin" {% if fv.get('scaffold') == 'DARPin' %}selected{% endif %}>DARPin</option>
+            <option value="custom" {% if fv.get('scaffold') == 'custom' %}selected{% endif %}>Custom</option>
+          </select>
+          <p class="field-hint">
+            Scaffold drives the scheme recommendation and the downstream
+            sort-stringency heuristics. VHH libraries display with the highest
+            surface density on yeast; scFv and Fab are standard; DARPin is
+            supported for non-immunoglobulin campaigns.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="positions">Diversified positions</label>
+          <input
+            type="number"
+            id="positions"
+            name="positions"
+            class="dev-input"
+            min="1"
+            max="40"
+            step="1"
+            value="{{ fv.get('positions', '6') }}"
+            required
+          >
+          <p class="field-hint">
+            Number of residues you plan to randomize. Theoretical diversity
+            is (codons per position)^(positions). A 6-position NNK library is
+            ~10^9 and fits on yeast; 20 positions is ~10^30 and is
+            impossible to fully sample at any practical scale.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="scheme">Codon scheme</label>
+          <select id="scheme" name="scheme" class="dev-select" required>
+            <option value="NNK" {% if fv.get('scheme', 'NNK') == 'NNK' %}selected{% endif %}>NNK (32 codons, 1 stop)</option>
+            <option value="NNS" {% if fv.get('scheme') == 'NNS' %}selected{% endif %}>NNS (32 codons, 1 stop)</option>
+            <option value="NNN" {% if fv.get('scheme') == 'NNN' %}selected{% endif %}>NNN (64 codons, 3 stops)</option>
+            <option value="trimer" {% if fv.get('scheme') == 'trimer' %}selected{% endif %}>Trimer (20 codons, no stops)</option>
+          </select>
+          <p class="field-hint">
+            NNK and NNS are the standard cost-effective choices. NNN includes
+            stop-dilution. Trimer synthesis removes stop codons and rare
+            codons but costs more and is practical up to ~12 positions.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="kd_nm">Target KD (nM)</label>
+          <input
+            type="number"
+            id="kd_nm"
+            name="kd_nm"
+            class="dev-input"
+            min="0.001"
+            step="any"
+            value="{{ fv.get('kd_nm', '10') }}"
+            required
+          >
+          <p class="field-hint">
+            Desired final affinity in nanomolar. Sort stringency ladders
+            log-linearly from 10x above this goal down to 0.1x across 3 to 4
+            rounds. KD below 0.01 nM is below the yeast display detection
+            floor.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="starting_material">Starting material</label>
+          <select id="starting_material" name="starting_material" class="dev-select" required>
+            <option value="naive" {% if fv.get('starting_material', 'naive') == 'naive' %}selected{% endif %}>Naive library</option>
+            <option value="immunized" {% if fv.get('starting_material') == 'immunized' %}selected{% endif %}>Immunized repertoire</option>
+            <option value="computational_pool" {% if fv.get('starting_material') == 'computational_pool' %}selected{% endif %}>Computational design pool</option>
+          </select>
+          <p class="field-hint">
+            Naive libraries need more rounds to enrich a hit; immunized
+            repertoires start enriched for the antigen; computational design
+            pools start pre-filtered and usually need fewer rounds.
+          </p>
+        </div>
+
+        <div class="field">
+          <label for="coverage_pct">Target NGS coverage (%)</label>
+          <input
+            type="number"
+            id="coverage_pct"
+            name="coverage_pct"
+            class="dev-input"
+            min="50"
+            max="99"
+            step="1"
+            value="{{ fv.get('coverage_pct', '90') }}"
+          >
+          <p class="field-hint">
+            Fraction of the library you want to sample in sequencing (Poisson
+            model). 90% is the common default; 95% adds ~50% more reads, 99%
+            adds ~3x.
+          </p>
+        </div>
+
+        <div class="dev-form-actions">
+          <button type="submit" class="btn-primary">Plan library</button>
+          <button type="button" class="btn-secondary" data-fill-example>Try VHH 6 NNK 10 nM</button>
+        </div>
+
+        <details class="dev-help">
+          <summary>What you get back</summary>
+          <p>
+            A structured plan with five sections: (1) library complexity
+            including theoretical size, functional size after stop-codon
+            dilution, and feasibility on yeast; (2) S. cerevisiae codon bias
+            warnings and a scheme recommendation; (3) NGS read depth for
+            50%, 95%, and 99% Poisson coverage; (4) three to four sort
+            rounds (MACS and FACS) with KD titration and gate widths;
+            (5) severity-tagged feasibility flags.
+          </p>
+          <p>
+            This prototype uses published rules of thumb (Benatuil et al.
+            2010 transformation ceiling, Kazusa codon tables, Poisson
+            coverage model). For campaign-specific calibration against
+            Ranomics internal data, reach out for a scoping call.
+          </p>
+        </details>
+      </form>
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var trigger = document.querySelector('[data-fill-example]');
+      if (!trigger) return;
+      trigger.addEventListener('click', function () {
+        document.getElementById('scaffold').value = 'VHH';
+        document.getElementById('positions').value = '6';
+        document.getElementById('scheme').value = 'NNK';
+        document.getElementById('kd_nm').value = '10';
+        document.getElementById('starting_material').value = 'naive';
+        document.getElementById('coverage_pct').value = '90';
+      });
+    })();
+  </script>
+
+{% endblock %}

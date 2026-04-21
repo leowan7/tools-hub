@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Ranomics Tools</h1>
+    <p class="subtitle">Free scientific tools for protein engineers, paired with the wet-lab and AI design pipelines we run at Ranomics. Use them as-is, or reach out when you need a campaign run end to end.</p>
+  </div>
+
+  <div class="tool-grid">
+    {% for tool in tools %}
+      {% if tool.external %}
+        <a class="tool-card" href="{{ tool.href }}" target="_blank" rel="noopener noreferrer">
+      {% else %}
+        <a class="tool-card" href="{{ tool.href }}">
+      {% endif %}
+        <div class="tool-card-header">
+          <span class="tool-card-name">{{ tool.name }}</span>
+          {% if tool.status == 'live' %}
+            <span class="tool-card-status tool-card-status-live">Live</span>
+          {% else %}
+            <span class="tool-card-status tool-card-status-soon">Coming soon</span>
+          {% endif %}
+        </div>
+        <p class="tool-card-tagline">{{ tool.tagline }}</p>
+        <span class="tool-card-cta">
+          {% if tool.status == 'live' %}Open tool{% else %}Preview{% endif %}
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+      </a>
+    {% endfor %}
+  </div>
+
+{% endblock %}
