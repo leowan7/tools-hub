@@ -808,11 +808,15 @@ body.auth-page {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .dev-dim-stats dd {
   color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 0.82rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .dev-lia-list {
