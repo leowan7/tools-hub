@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+graphify-out/
+.graphify_cached.json
+.graphify_uncached.txt
+.graphifyignore

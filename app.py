@@ -26,6 +26,14 @@ or:
 import logging
 import os
 
+# Load .env for local dev. In production (Railway) env vars come from the
+# platform, so load_dotenv is a silent no-op when no .env file is present.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from flask import (
     Flask,
     jsonify,
@@ -35,6 +43,14 @@ from flask import (
     session,
     url_for,
 )
+
+from gpu.modal_client import ModalClient
+from shared.credits import (
+    load_user_context,
+    recent_ledger,
+    requires_credits,
+)
+from webhooks.stripe import register_stripe_webhook
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +69,30 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"] = os.environ.get(
         "SESSION_SECRET_KEY", os.urandom(32)
     )
+
+    # Inject the current user's tier + credit balance into every template
+    # so the shared header can render the tier badge / credits pill without
+    # every view recomputing them. Cheap on Wave-0 volume; move to a
+    # per-request cache once call counts climb.
+    @flask_app.context_processor
+    def inject_ranomics_context():
+        if not session.get("user_email"):
+            return {"ranomics_tier": None, "ranomics_credits": None}
+        ctx = load_user_context()
+        if ctx is None:
+            return {"ranomics_tier": None, "ranomics_credits": None}
+        return {
+            "ranomics_tier": ctx.tier,
+            "ranomics_credits": ctx.balance,
+            "ranomics_user_id": ctx.user_id,
+        }
+
+    # Stripe webhook — mounted at /webhooks/stripe. Signature verification
+    # + event_id idempotency live inside webhooks/stripe.py.
+    register_stripe_webhook(flask_app)
+
+    # Single Modal client shared across stub tool routes.
+    modal_client = ModalClient()
 
     # ------------------------------------------------------------------
     # Auth routes
@@ -255,16 +295,65 @@ def create_app() -> Flask:
                 "href": url_for("library_planner"),
                 "external": False,
             },
+            {
+                "id": "example-gpu",
+                "name": "Example GPU tool (Wave-0 stub)",
+                "tagline": (
+                    "Internal plumbing fixture. Proves the credits "
+                    "middleware and Modal client contract end-to-end."
+                ),
+                "status": "soon",
+                "href": url_for("example_gpu"),
+                "external": False,
+            },
         ]
         return render_template("index.html", tools=tools)
 
     @flask_app.route("/account", methods=["GET"])
     @login_required
     def account():
-        """Simple account dashboard showing the logged-in user's email."""
+        """Account dashboard: tier, credits, and last 20 ledger entries."""
+        ctx = load_user_context()
+        ledger = recent_ledger(ctx.user_id, limit=20) if ctx else []
         return render_template(
             "account.html",
             user_email=session.get("user_email", ""),
+            ledger=ledger,
+        )
+
+    # ------------------------------------------------------------------
+    # Stub tool route — proves credits middleware + Modal client contract
+    # work end-to-end without a real GPU call. Stream C/D tools follow
+    # the same pattern: @login_required, @requires_credits, render a
+    # response, let the decorator debit on success.
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/tools/example-gpu", methods=["GET"])
+    @login_required
+    def example_gpu():
+        """Render the example-gpu form."""
+        return render_template("example_gpu.html", submission=None)
+
+    @flask_app.route("/tools/example-gpu/submit", methods=["POST"])
+    @login_required
+    @requires_credits(
+        1, tool="example-gpu", reason="example-gpu smoke submission"
+    )
+    def example_gpu_submit():
+        """Submit the stub job via ModalClient.
+
+        Returns the fake FunctionCall id from the Wave-0 stub so we can
+        verify the credits decorator debits the user on success.
+        """
+        preset = request.form.get("preset", "smoke")
+        submission = modal_client.submit(
+            tool="example-gpu",
+            preset=preset,
+            inputs={"_wave0_stub": True},
+        )
+        submission["preset"] = preset
+        return render_template(
+            "example_gpu.html", submission=submission
         )
 
     @flask_app.route("/developability", methods=["GET"])

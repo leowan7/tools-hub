@@ -113,6 +113,48 @@ a:hover { color: var(--warm-white); }
 }
 .nav-link:hover { color: var(--warm-white); }
 
+/* Tier badge + credits pill sit between the email and the logout button. */
+.nav-tier-badge {
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(138, 148, 168, 0.08);
+  color: var(--text-tertiary);
+}
+.nav-tier-scout_pro,
+.nav-tier-lab,
+.nav-tier-lab_plus {
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  border-color: rgba(43, 158, 126, 0.25);
+}
+
+.nav-credits {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.nav-credits-value {
+  font-size: 0.78rem;
+  color: var(--warm-white);
+  font-weight: 500;
+}
+.nav-credits-label {
+  font-size: 0.6rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 .btn-logout {
   background: transparent;
   color: var(--text-tertiary);
@@ -403,6 +445,89 @@ main {
   border-top: 1px solid var(--border-subtle);
   padding-top: 1rem;
   margin: 0;
+}
+
+/* Credits ledger table on the account page. Reuses the existing
+   dark-editorial data-table aesthetic — 1px border, elevated header row,
+   accent-text on numeric deltas, no drop shadows. */
+.ledger-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.ledger-table thead th {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.ledger-table tbody td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+.ledger-table tbody tr:last-child td { border-bottom: none; }
+.ledger-table .ledger-delta {
+  font-family: var(--font-mono);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ledger-table .ledger-delta-positive { color: var(--accent-text); }
+.ledger-table .ledger-delta-negative { color: var(--warm-cream); }
+.ledger-kind {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+.ledger-empty {
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  padding: 0.75rem 0;
+}
+
+/* Credits summary block at the top of the account panel. */
+.credits-summary {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 0 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 1rem;
+}
+.credits-summary-item { display: flex; flex-direction: column; gap: 0.2rem; }
+.credits-summary-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.credits-summary-value {
+  font-family: var(--font-mono);
+  font-size: 1.15rem;
+  color: var(--warm-white);
+}
+.insufficient-credits-alert {
+  border-left: 3px solid var(--warning);
+  background: rgba(196, 154, 58, 0.08);
+  color: var(--warm-cream);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  border-radius: var(--radius-sm);
 }
 
 /* --------------------------------------------------------------------------

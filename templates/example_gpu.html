@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Example GPU tool — Ranomics Tools{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Example GPU tool</h1>
+    <p class="subtitle">Wave-0 plumbing fixture. Submitting this form proves the credits middleware + Modal client contract round-trip end to end. Costs 1 credit per run; no real GPU compute happens yet.</p>
+  </div>
+
+  {% if submission %}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Submission accepted</span>
+        <span class="panel-badge">Stub</span>
+      </div>
+      <div class="panel-body">
+        <dl class="account-dl">
+          <dt>FunctionCall id</dt>
+          <dd>{{ submission.function_call_id }}</dd>
+          <dt>GPU seconds cap</dt>
+          <dd>{{ submission.gpu_seconds_cap }}</dd>
+          <dt>Preset</dt>
+          <dd>{{ submission.preset }}</dd>
+        </dl>
+        <p style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch;">
+          One credit was debited from your balance. Stream E will land the real Modal poller; for now the FunctionCall id is a stub token.
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Submit</span>
+    </div>
+    <div class="panel-body">
+      <form method="POST" action="{{ url_for('example_gpu_submit') }}">
+        <label for="preset" class="label" style="display:block; margin-bottom: 0.4rem;">Preset</label>
+        <select name="preset" id="preset" required
+                style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          <option value="smoke">smoke (1 credit)</option>
+        </select>
+        <div>
+          <button type="submit" class="btn-primary">Submit (1 credit)</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+{% endblock %}

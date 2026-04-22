@@ -9,19 +9,86 @@
     <p class="subtitle">Signed in to the Ranomics tools hub. One account works across every tool linked from here.</p>
   </div>
 
+  {% if request.args.get('insufficient_credits') %}
+    <div class="insufficient-credits-alert">
+      Not enough credits to run that tool. Top up below or upgrade your tier.
+    </div>
+  {% endif %}
+
   <div class="panel">
     <div class="panel-header">
       <span class="panel-title">Profile</span>
+      {% if ranomics_tier %}
+        <span class="nav-tier-badge nav-tier-{{ ranomics_tier }}">
+          {% if ranomics_tier == 'scout_pro' %}Scout Pro
+          {% elif ranomics_tier == 'lab' %}Lab
+          {% elif ranomics_tier == 'lab_plus' %}Lab+
+          {% else %}Free{% endif %}
+        </span>
+      {% endif %}
     </div>
     <div class="panel-body">
-      <dl class="account-dl">
-        <dt>Email</dt>
-        <dd>{{ user_email }}</dd>
-      </dl>
+      <div class="credits-summary">
+        <div class="credits-summary-item">
+          <span class="credits-summary-label">Email</span>
+          <span class="credits-summary-value" style="font-family: var(--font-body); font-size: 0.9rem;">{{ user_email }}</span>
+        </div>
+        <div class="credits-summary-item">
+          <span class="credits-summary-label">Tier</span>
+          <span class="credits-summary-value" style="font-family: var(--font-body); font-size: 0.9rem;">
+            {% if ranomics_tier == 'scout_pro' %}Scout Pro
+            {% elif ranomics_tier == 'lab' %}Lab
+            {% elif ranomics_tier == 'lab_plus' %}Lab+
+            {% else %}Free{% endif %}
+          </span>
+        </div>
+        <div class="credits-summary-item">
+          <span class="credits-summary-label">Credits</span>
+          <span class="credits-summary-value">{{ ranomics_credits if ranomics_credits is not none else 0 }}</span>
+        </div>
+      </div>
 
       <form method="POST" action="{{ url_for('logout') }}" class="account-actions">
         <button type="submit" class="btn-primary">Sign out</button>
+        <a href="#" class="nav-link" style="margin-left: 1rem;" aria-disabled="true" title="Stripe Billing Portal — wired in Wave 1">Manage billing (coming soon)</a>
       </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Credits ledger</span>
+      <span class="nav-link">Last 20 entries</span>
+    </div>
+    <div class="panel-body">
+      {% if ledger %}
+        <table class="ledger-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Kind</th>
+              <th>Reason</th>
+              <th>Tool</th>
+              <th class="ledger-delta">Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in ledger %}
+              <tr>
+                <td class="mono">{{ entry.created_at[:19].replace('T', ' ') }}</td>
+                <td><span class="ledger-kind">{{ entry.kind }}</span></td>
+                <td>{{ entry.reason }}</td>
+                <td>{{ entry.tool or '—' }}</td>
+                <td class="ledger-delta {% if entry.delta >= 0 %}ledger-delta-positive{% else %}ledger-delta-negative{% endif %}">
+                  {% if entry.delta >= 0 %}+{% endif %}{{ entry.delta }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="ledger-empty">No credit activity yet. Subscribe or run a tool to see entries here.</p>
+      {% endif %}
     </div>
   </div>
 

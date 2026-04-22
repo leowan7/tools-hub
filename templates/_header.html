@@ -1,0 +1,44 @@
+{# Shared top navigation for the Ranomics tools hub.
+   Extracted from base.html so Stream F (marketing) and Stream B/C/D
+   tool pages can drop the exact same shell. Consumes:
+
+     session.user_email            - set by Flask login flow
+     ranomics_tier (optional)      - 'free' / 'scout_pro' / 'lab' / 'lab_plus'
+     ranomics_credits (optional)   - current credit balance (int)
+
+   Both ranomics_tier and ranomics_credits are injected by app.py via
+   a context processor so every authenticated page gets them free.
+#}
+<header class="navbar">
+  <div class="navbar-inner">
+    <div class="brand">
+      <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer" class="brand-logo-link">
+        <img src="{{ url_for('static', filename='logo-ranomics.png') }}" alt="Ranomics" class="brand-logo-img">
+      </a>
+      <span class="brand-divider"></span>
+      <a href="{{ url_for('index') }}" class="brand-tool-link">Tools</a>
+    </div>
+    <div class="navbar-right">
+      {% if session.get('user_email') %}
+        {% if ranomics_tier %}
+          <span class="nav-tier-badge nav-tier-{{ ranomics_tier }}">
+            {% if ranomics_tier == 'scout_pro' %}Scout Pro
+            {% elif ranomics_tier == 'lab' %}Lab
+            {% elif ranomics_tier == 'lab_plus' %}Lab+
+            {% else %}Free{% endif %}
+          </span>
+        {% endif %}
+        {% if ranomics_credits is not none %}
+          <span class="nav-credits" title="GPU credits available">
+            <span class="nav-credits-value mono">{{ ranomics_credits }}</span>
+            <span class="nav-credits-label">credits</span>
+          </span>
+        {% endif %}
+        <a href="{{ url_for('account') }}" class="nav-link">{{ session.get('user_email') }}</a>
+        <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
+          <button type="submit" class="btn-logout">Sign out</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+</header>
