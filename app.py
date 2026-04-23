@@ -323,17 +323,6 @@ def create_app() -> Flask:
                 "href": url_for("library_planner"),
                 "external": False,
             },
-            {
-                "id": "example-gpu",
-                "name": "Example GPU tool (Wave-0 stub)",
-                "tagline": (
-                    "Internal plumbing fixture. Proves the credits "
-                    "middleware and Modal client contract end-to-end."
-                ),
-                "status": "soon",
-                "href": url_for("example_gpu"),
-                "external": False,
-            },
         ]
         # Append every flag-enabled GPU tool adapter so the hub page
         # stays in sync with what actually ships. Flags default off so
