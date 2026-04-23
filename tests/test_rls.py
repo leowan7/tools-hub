@@ -71,9 +71,34 @@ def test_anon_cannot_read_user_scoped_view(anon_client, view):
 
     Regression test for the SECURITY DEFINER default — without
     security_invoker = true the view would return every row to any
-    caller with the anon key.
+    caller with the anon key. Two shapes of success are acceptable:
+
+      1. Empty list — RLS on the underlying table filtered every row.
+      2. PermissionError (42501) — anon lacks SELECT on a referenced
+         table (e.g. auth.users under credits_balance). Stronger signal
+         since the anon client is blocked at the Postgres permission
+         layer, not just RLS-filtered.
+
+    Any other outcome (a row returned, or a different error) means the
+    view is leaking.
     """
-    response = anon_client.table(view).select("*").limit(1).execute()
+    try:
+        from postgrest.exceptions import APIError  # noqa: PLC0415
+    except ImportError:  # pragma: no cover
+        APIError = Exception  # type: ignore[assignment,misc]
+
+    try:
+        response = anon_client.table(view).select("*").limit(1).execute()
+    except APIError as exc:
+        code = getattr(exc, "code", None) or (
+            exc.args[0].get("code") if exc.args and isinstance(exc.args[0], dict) else None
+        )
+        assert code == "42501", (
+            f"anon hit view public.{view} and got an unexpected error "
+            f"({code}): {exc!r}"
+        )
+        return
+
     rows = getattr(response, "data", []) or []
     assert rows == [], (
         f"anon read {len(rows)} row(s) from view public.{view}; "
