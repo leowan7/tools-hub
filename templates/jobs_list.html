@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}My jobs — Ranomics Tools{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>My jobs</h1>
+    <p class="subtitle">GPU tool submissions ordered newest-first.</p>
+  </div>
+
+  <div class="panel">
+    <div class="panel-body">
+      {% if jobs %}
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+              <th style="padding: 0.5rem 0.4rem;">Job</th>
+              <th style="padding: 0.5rem 0.4rem;">Tool</th>
+              <th style="padding: 0.5rem 0.4rem;">Preset</th>
+              <th style="padding: 0.5rem 0.4rem;">Status</th>
+              <th style="padding: 0.5rem 0.4rem;">Credits</th>
+              <th style="padding: 0.5rem 0.4rem;">Submitted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in jobs %}
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 0.55rem 0.4rem;">
+                  <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
+                </td>
+                <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
+                <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
+                <td style="padding: 0.55rem 0.4rem;"><span class="panel-badge">{{ job.status }}</span></td>
+                <td style="padding: 0.55rem 0.4rem;">{{ job.credits_cost }}</td>
+                <td style="padding: 0.55rem 0.4rem; color: var(--text-secondary);">{{ job.created_at[:19] if job.created_at else '—' }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="subtitle">No jobs yet. Submit a run from any tool page.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

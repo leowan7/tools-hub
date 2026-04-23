@@ -47,11 +47,27 @@ from flask import (
 from gpu.modal_client import ModalClient
 from shared.credits import (
     load_user_context,
+    record_spend,
     recent_ledger,
     requires_credits,
 )
+from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
+from shared.jobs import (
+    create_job,
+    get_job,
+    list_jobs_for_user,
+    mark_failed,
+    mark_running,
+    mark_succeeded,
+    mark_timeout,
+    set_modal_call,
+)
 from shared.metrics import register_metrics
+from shared.storage import StorageError, presigned_input_url, upload_input
+from tools import base as tool_base
+import tools.rfantibody  # noqa: F401 — import to register adapter
+from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
 
 logger = logging.getLogger(__name__)
@@ -96,6 +112,9 @@ def create_app() -> Flask:
     # Prometheus /metrics (IP-allowlisted) + /healthz readiness probe.
     # The existing /health liveness probe below stays as a dumb 200.
     register_metrics(flask_app)
+
+    # Modal pipeline callbacks — /webhooks/modal/<job_id>/<token> + /webhooks/heartbeat.
+    register_modal_webhooks(flask_app)
 
     # Single Modal client shared across stub tool routes.
     modal_client = ModalClient()
@@ -528,6 +547,237 @@ def create_app() -> Flask:
         return render_template(
             "library_planner_results.html",
             plan=plan,
+        )
+
+    # ------------------------------------------------------------------
+    # GPU tool routes — one form/submit pair per registered adapter,
+    # plus shared jobs routes. FLAG_TOOL_<NAME>=off hides a tool at the
+    # route level so the UI can ship in one commit and the operator
+    # flips the flag after verifying an end-to-end production run.
+    # ------------------------------------------------------------------
+
+    def _require_tool(tool_slug: str):
+        """Return (adapter, error_response). ``error_response`` is non-None on fail."""
+        adapter = tool_base.get(tool_slug)
+        if adapter is None:
+            return None, (render_template("coming_soon.html"), 404)
+        if not tool_enabled(tool_slug):
+            return None, (render_template("coming_soon.html"), 404)
+        return adapter, None
+
+    @flask_app.route("/tools/<tool>", methods=["GET"])
+    @login_required
+    def tool_form(tool: str):
+        """Render a GPU tool's submission form."""
+        adapter, err = _require_tool(tool)
+        if err:
+            return err
+        return render_template(
+            adapter.form_template,
+            adapter=adapter,
+            error=None,
+        )
+
+    @flask_app.route("/tools/<tool>/submit", methods=["POST"])
+    @login_required
+    @idempotent()
+    def tool_submit(tool: str):
+        """Validate, debit credits, upload PDB, spawn Modal, redirect to job detail."""
+        adapter, err = _require_tool(tool)
+        if err:
+            return err
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        inputs, error_msg = adapter.validate(request.form, request.files)
+        if inputs is None:
+            return render_template(
+                adapter.form_template, adapter=adapter, error=error_msg
+            )
+
+        preset = adapter.preset_for(inputs["preset"])
+        if preset is None:
+            return render_template(
+                adapter.form_template,
+                adapter=adapter,
+                error="Unknown preset.",
+            )
+
+        if ctx.balance < preset.credits_cost:
+            return redirect(url_for("account", insufficient_credits=1))
+
+        # Create the tool_jobs row FIRST so we have job_id + job_token for
+        # the Modal payload and a persistent handle even if Modal submit
+        # raises. Credits debit happens only on successful Modal submit.
+        job = create_job(
+            user_id=ctx.user_id,
+            tool=adapter.slug,
+            preset=preset.slug,
+            inputs=inputs,
+            credits_cost=preset.credits_cost,
+        )
+        if job is None:
+            return render_template(
+                adapter.form_template,
+                adapter=adapter,
+                error=(
+                    "Could not create job record — Supabase is unreachable. "
+                    "Try again in a moment."
+                ),
+            )
+
+        presigned_url = ""
+        if adapter.requires_pdb:
+            uploaded = request.files.get("target_pdb")
+            if uploaded is None or not uploaded.filename:
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error="Upload a target PDB file.",
+                )
+            try:
+                object_path = upload_input(
+                    user_id=ctx.user_id,
+                    job_id=job.id,
+                    filename=uploaded.filename,
+                    data=uploaded.read(),
+                    content_type=uploaded.mimetype or "chemical/x-pdb",
+                )
+                presigned_url = presigned_input_url(
+                    object_path, expires_seconds=7200
+                )
+            except StorageError as exc:
+                mark_failed(
+                    job.id,
+                    error={"bucket": "storage", "detail": str(exc)},
+                )
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error=f"Upload failed: {exc}",
+                )
+
+        job_spec = adapter.build_payload(inputs, presigned_url)
+        webhook_url = url_for(
+            "modal_result",
+            job_id=job.id,
+            job_token=job.job_token,
+            _external=True,
+        )
+
+        try:
+            submit_result = modal_client.submit(
+                adapter.slug,
+                preset.slug,
+                inputs={
+                    **job_spec,
+                    "_input_pdb_url": presigned_url,
+                    "_input_presigned_url": presigned_url,
+                },
+                job_id=job.id,
+                job_token=job.job_token,
+                webhook_url=webhook_url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Modal submit failed for job %s", job.id)
+            mark_failed(
+                job.id,
+                error={"bucket": "modal-submit", "detail": str(exc)},
+            )
+            return render_template(
+                adapter.form_template,
+                adapter=adapter,
+                error=(
+                    "Could not submit to the GPU pool. No credits were "
+                    "charged. Try again or contact support."
+                ),
+            )
+
+        set_modal_call(job.id, submit_result["function_call_id"])
+        record_spend(
+            ctx.user_id,
+            preset.credits_cost,
+            tool=adapter.slug,
+            reason=f"{adapter.slug} {preset.slug}",
+            job_id=job.id,
+        )
+
+        return redirect(url_for("job_detail", job_id=job.id))
+
+    @flask_app.route("/jobs", methods=["GET"])
+    @login_required
+    def jobs_list():
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        jobs = list_jobs_for_user(ctx.user_id, limit=50)
+        return render_template("jobs_list.html", jobs=jobs)
+
+    @flask_app.route("/jobs/<job_id>", methods=["GET"])
+    @login_required
+    def job_detail(job_id: str):
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return render_template("coming_soon.html"), 404
+        adapter = tool_base.get(job.tool)
+        return render_template(
+            "job_detail.html",
+            job=job,
+            tool_label=adapter.label if adapter else job.tool,
+            tool_results_partial=(
+                adapter.results_partial
+                if adapter and adapter.results_partial
+                else "tools/_default_results.html"
+            ),
+        )
+
+    @flask_app.route("/jobs/<job_id>/status.json", methods=["GET"])
+    @login_required
+    def job_status(job_id: str):
+        ctx = load_user_context()
+        if ctx is None:
+            return jsonify({"error": "unauthenticated"}), 401
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return jsonify({"error": "not_found"}), 404
+
+        # If the job still thinks it is pending/running, poll Modal once
+        # so terminal transitions are detected even when the webhook
+        # callback has not fired (e.g. inline smoke-tier returns).
+        if job.status in ("pending", "running") and job.modal_function_call_id:
+            poll = modal_client.poll(job.modal_function_call_id)
+            if poll["status"] == "succeeded":
+                mark_succeeded(
+                    job.id,
+                    result=poll["result"] or {},
+                    gpu_seconds_used=poll.get("gpu_seconds_used"),
+                )
+                job = get_job(job_id, user_id=ctx.user_id)
+            elif poll["status"] == "failed":
+                mark_failed(
+                    job.id,
+                    error={"bucket": "pipeline", "detail": poll.get("error") or ""},
+                    gpu_seconds_used=poll.get("gpu_seconds_used"),
+                )
+                job = get_job(job_id, user_id=ctx.user_id)
+            elif poll["status"] == "running" and job.status == "pending":
+                mark_running(job.id)
+                job = get_job(job_id, user_id=ctx.user_id)
+
+        return jsonify(
+            {
+                "id": job.id,
+                "status": job.status,
+                "tool": job.tool,
+                "preset": job.preset,
+                "progress": (job.inputs or {}).get("_progress") or {},
+                "gpu_seconds_used": job.gpu_seconds_used,
+            }
         )
 
     return flask_app

@@ -1,0 +1,8 @@
+{# Fallback results partial — used when a tool adapter has no custom results template. #}
+
+<div class="panel" style="margin-top: 1rem;">
+  <div class="panel-body">
+    <p class="subtitle">Job completed. Raw Kendrew result payload:</p>
+    <pre style="white-space: pre-wrap; font-size: 0.8rem; background: var(--bg-elevated); padding: 0.85rem; border-radius: var(--radius-md); max-height: 420px; overflow: auto;">{{ job.result | tojson(indent=2) }}</pre>
+  </div>
+</div>

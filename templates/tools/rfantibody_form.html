@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Design inputs</span>
+    </div>
+    <div class="panel-body">
+      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}">
+        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
+          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
+          {% for preset in adapter.presets %}
+            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
+              <input type="radio" name="preset" value="{{ preset.slug }}" {% if loop.first %}checked{% endif %} required>
+              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
+            </label>
+          {% endfor %}
+        </fieldset>
+
+        <label for="framework" class="label" style="display:block; margin-bottom: 0.4rem;">Framework</label>
+        <select name="framework" id="framework" required
+                style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          <option value="VHH">VHH (nanobody)</option>
+          <option value="scFv">scFv</option>
+        </select>
+
+        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+          Target at smoke / preview tier is our reference PD-L1 IgV
+          (residues 18–132, chain A). For design against your own target,
+          contact Ranomics — the pilot tier ships in Wave 2.
+        </div>
+
+        <button type="submit" class="btn-primary">Submit run</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}
