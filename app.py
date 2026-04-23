@@ -50,6 +50,7 @@ from shared.credits import (
     recent_ledger,
     requires_credits,
 )
+from shared.idempotency import idempotent
 from webhooks.stripe import register_stripe_webhook
 
 logger = logging.getLogger(__name__)
@@ -336,6 +337,7 @@ def create_app() -> Flask:
 
     @flask_app.route("/tools/example-gpu/submit", methods=["POST"])
     @login_required
+    @idempotent()
     @requires_credits(
         1, tool="example-gpu", reason="example-gpu smoke submission"
     )
@@ -369,6 +371,7 @@ def create_app() -> Flask:
 
     @flask_app.route("/developability/score", methods=["POST"])
     @login_required
+    @idempotent()
     def developability_score():
         """Validate input and render the developability results page."""
         from tools.developability import score_developability  # noqa: PLC0415
@@ -447,6 +450,7 @@ def create_app() -> Flask:
 
     @flask_app.route("/library-planner/plan", methods=["POST"])
     @login_required
+    @idempotent()
     def library_planner_plan():
         """Validate inputs and render the library planner results page."""
         from tools.library_planner import plan_library  # noqa: PLC0415
