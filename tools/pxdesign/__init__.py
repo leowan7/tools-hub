@@ -3,7 +3,7 @@
 Kendrew Modal app: ``kendrew-pxdesign-prod``. GPU: A100-80GB.
 PXDesign generates binders and validates them with JAX AF2 Initial
 Guess (AF2-IG) — real ipTM / pLDDT / pAE scores from the AF2 monomer
-model run in initial-guess mode against the baked target.
+model run in initial-guess mode against the target.
 
 Known-good on commit ``5f22eec`` (the cuDNN 9 upgrade). Historical
 smoke runs land around 17 min; mini_pilot (preview tier, post-filter
@@ -11,8 +11,9 @@ enabled) lands around 30–40 min.
 
 Smoke / mini_pilot tiers use the baked ``/opt/smoke_target.pdb``
 (PD-L1 IgV) and ignore caller-supplied PDBs — the form presents this
-as a "reference-target demo" and has no PDB upload. Real-target design
-ships in a later wave once the pilot tier UI lands.
+as a "reference-target demo" and has no PDB upload. The pilot tier
+accepts a caller-supplied target PDB with hotspot residues and runs
+real-target binder design (~30–60 min on A100-80GB).
 """
 
 from __future__ import annotations
@@ -29,12 +30,51 @@ def validate(
 
     The Kendrew PXDesign pipeline rejects ``preset="basic"`` — only
     ``preview`` is a valid ``parameters.preset`` value. We translate
-    our UI tiers (smoke / mini_pilot) into ``preview`` on the payload
-    side and use ``post_filter`` as the real smoke-vs-mini-pilot knob.
+    our UI tiers (smoke / mini_pilot / pilot) into ``preview`` on the
+    payload side and use ``post_filter`` as the smoke-vs-mini-pilot
+    knob for the reference-target tiers.
     """
     preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "mini_pilot"}:
+    if preset not in {"smoke", "mini_pilot", "pilot"}:
         return None, "Pick a preset."
+
+    if preset in {"smoke", "mini_pilot"}:
+        raw_length = (form.get("binder_length") or "80").strip()
+        try:
+            binder_length = int(raw_length)
+        except (TypeError, ValueError):
+            return None, "Binder length must be an integer."
+        if binder_length < 40 or binder_length > 150:
+            return None, "Binder length must be between 40 and 150 residues."
+
+        return (
+            {
+                "preset": preset,
+                "binder_length": binder_length,
+                # Pass-through metadata for the results page.
+                "target": "PD-L1 IgV (residues 18-132, chain A)",
+            },
+            None,
+        )
+
+    # pilot tier — real user target + hotspots.
+    target_chain = (form.get("target_chain") or "A").strip()
+    if not target_chain:
+        return None, "Target chain is required."
+    if len(target_chain) > 4:
+        return None, "Target chain must be at most 4 characters."
+
+    raw_hotspots = (form.get("hotspot_residues") or "").strip()
+    if not raw_hotspots:
+        return None, "At least one hotspot residue is required."
+    try:
+        hotspot_residues = [
+            int(tok.strip()) for tok in raw_hotspots.split(",") if tok.strip()
+        ]
+    except ValueError:
+        return None, "Hotspot residues must be comma-separated integers (e.g. 54,56,115)."
+    if not hotspot_residues:
+        return None, "At least one hotspot residue is required."
 
     raw_length = (form.get("binder_length") or "80").strip()
     try:
@@ -44,12 +84,21 @@ def validate(
     if binder_length < 40 or binder_length > 150:
         return None, "Binder length must be between 40 and 150 residues."
 
+    raw_num_designs = (form.get("num_designs") or "2").strip()
+    try:
+        num_designs = int(raw_num_designs)
+    except (TypeError, ValueError):
+        return None, "Number of designs must be an integer."
+    if num_designs < 1 or num_designs > 5:
+        return None, "Number of designs must be between 1 and 5."
+
     return (
         {
             "preset": preset,
+            "target_chain": target_chain,
+            "hotspot_residues": hotspot_residues,
             "binder_length": binder_length,
-            # Pass-through metadata for the results page.
-            "target": "PD-L1 IgV (residues 18-132, chain A)",
+            "num_designs": num_designs,
         },
         None,
     )
@@ -59,18 +108,35 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec that PXDesign's run_pipeline.py expects.
 
     ``parameters.preset`` MUST be ``"preview"`` — the pipeline rejects
-    ``"basic"``. ``post_filter`` is what actually differentiates smoke
-    from mini_pilot at the pipeline level (smoke skips, mini_pilot
-    adds the post-design filtering pass).
+    ``"basic"``. For smoke / mini_pilot, ``post_filter`` is what
+    differentiates them at the pipeline level (smoke skips,
+    mini_pilot adds the post-design filtering pass). The pilot tier
+    runs against a caller-supplied target — the presigned URL is
+    forwarded separately by the generic submit route.
     """
+    preset = inputs["preset"]
+
+    if preset in {"smoke", "mini_pilot"}:
+        return {
+            "target_chain": "A",
+            "hotspot_residues": [],
+            "parameters": {
+                "num_designs": 1,
+                "preset": "preview",
+                "binder_length": inputs["binder_length"],
+                "post_filter": preset == "mini_pilot",
+            },
+        }
+
+    # pilot
     return {
-        "target_chain": "A",
-        "hotspot_residues": [],
+        "target_chain": inputs["target_chain"],
+        "hotspot_residues": inputs["hotspot_residues"],
         "parameters": {
-            "num_designs": 1,
+            "num_designs": inputs["num_designs"],
             "preset": "preview",
             "binder_length": inputs["binder_length"],
-            "post_filter": inputs["preset"] == "mini_pilot",
+            "post_filter": True,
         },
     }
 
@@ -83,7 +149,7 @@ adapter = ToolAdapter(
         "ipTM / pLDDT / pAE from the AF2 monomer model run in "
         "initial-guess mode against the target. GPU: A100-80GB. "
         "Known-good on commit 5f22eec (cuDNN 9 upgrade). Historical "
-        "smoke runs ~17 min; mini_pilot ~30–40 min."
+        "smoke runs ~17 min; mini_pilot ~30–40 min; pilot ~30–60 min."
     ),
     presets=(
         Preset(
@@ -103,6 +169,18 @@ adapter = ToolAdapter(
                 "~35 min, 1 candidate with post-filter against PD-L1 "
                 "reference, pilot-quality scoring."
             ),
+        ),
+        Preset(
+            slug="pilot",
+            label="Pilot — your target, ~45 min",
+            credits_cost=15,
+            description=(
+                "Real PXDesign run against your uploaded target with "
+                "AF2-IG validation. 1-2 candidates with real ipTM/pLDDT/pAE "
+                "scores; results emailed when complete (~30-60 min on A100-80GB)."
+            ),
+            requires_pdb=True,
+            long_running=True,
         ),
     ),
     validate=validate,

@@ -61,10 +61,9 @@ from flask import Flask, Response, jsonify, request
 from shared.credits import get_service_client
 from shared.jobs import (
     ToolJob,
+    complete_job,
     get_job,
-    mark_failed,
     mark_running,
-    mark_succeeded,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,16 +149,16 @@ def _apply_terminal(
     result: Any,
     error: Any,
 ) -> None:
-    """Move a job to its terminal state and emit the metrics counter."""
-    if terminal_status == "succeeded":
-        mark_succeeded(job.id, result=result or {})
-        _observe_terminal(job.tool, "succeeded")
-    else:
-        mark_failed(
-            job.id,
-            error=error if isinstance(error, dict) else {"detail": str(error)},
-        )
-        _observe_terminal(job.tool, "failed")
+    """Move a job to its terminal state, refund unused credits, send email."""
+    complete_job(
+        job.id,
+        terminal_status=terminal_status,
+        result=result if isinstance(result, dict) else None,
+        error=error if isinstance(error, dict) else (
+            {"detail": str(error)} if error else None
+        ),
+    )
+    _observe_terminal(job.tool, terminal_status)
 
 
 # ---------------------------------------------------------------------------

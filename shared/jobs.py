@@ -208,6 +208,160 @@ def mark_timeout(job_id: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Terminal-state orchestration: prorated refund + email notification
+# ---------------------------------------------------------------------------
+
+
+def complete_job(
+    job_id: str,
+    *,
+    terminal_status: str,
+    result: Optional[dict] = None,
+    error: Optional[dict] = None,
+    gpu_seconds_used: Optional[int] = None,
+) -> Optional["ToolJob"]:
+    """Move a job to its terminal state and run the post-completion side
+    effects: prorated credit refund (if the actual GPU time came in
+    under the preset cap) and the job-complete email.
+
+    Idempotent — calling this on a job that's already terminal is a
+    no-op (returns the existing row). Webhook + AJAX-poll callers can
+    both fire without worrying about race conditions.
+    """
+    if terminal_status not in {"succeeded", "failed", "timeout"}:
+        raise ValueError(f"complete_job got non-terminal status {terminal_status!r}")
+
+    job = get_job(job_id)
+    if job is None:
+        return None
+    if job.status in {"succeeded", "failed", "timeout"}:
+        # Already terminal — refund + email already happened (or were
+        # explicitly skipped). Don't double up.
+        return job
+
+    # Pull gpu_seconds out of the inline result payload if not given.
+    if gpu_seconds_used is None and isinstance(result, dict):
+        for key in ("gpu_seconds", "runtime_seconds"):
+            v = result.get(key)
+            if isinstance(v, (int, float)) and v > 0:
+                gpu_seconds_used = int(v)
+                break
+
+    if terminal_status == "succeeded":
+        mark_succeeded(job_id, result=result or {}, gpu_seconds_used=gpu_seconds_used)
+    elif terminal_status == "failed":
+        mark_failed(
+            job_id,
+            error=error or {"detail": "unspecified failure"},
+            gpu_seconds_used=gpu_seconds_used,
+        )
+    else:
+        mark_timeout(job_id)
+
+    # Re-fetch the now-terminal row to seed refund + email payload.
+    fresh = get_job(job_id)
+    if fresh is None:
+        return None
+
+    _refund_unused_credits(fresh)
+    _send_completion_email(fresh)
+    return fresh
+
+
+def _refund_unused_credits(job: "ToolJob") -> None:
+    """Refund credits proportional to unused GPU seconds.
+
+    Pre-authorisation: ``credits_cost`` was debited on submit. If the
+    job actually used less GPU time than the preset's cap, the user
+    keeps the difference. Failed and timed-out runs get no refund —
+    we still spent the GPU time.
+    """
+    if job.status != "succeeded":
+        return
+    if not job.gpu_seconds_used or job.gpu_seconds_used <= 0:
+        return
+    if job.credits_cost <= 0:
+        return
+
+    from gpu.modal_client import preset_gpu_seconds  # noqa: PLC0415
+    cap_seconds = preset_gpu_seconds(job.tool, job.preset)
+    if cap_seconds <= 0:
+        return
+
+    used_fraction = min(1.0, job.gpu_seconds_used / cap_seconds)
+    used_credits = max(1, int(round(job.credits_cost * used_fraction)))
+    refund_credits = job.credits_cost - used_credits
+    if refund_credits <= 0:
+        return
+
+    try:
+        from shared.credits import record_refund  # noqa: PLC0415
+        record_refund(
+            job.user_id,
+            refund_credits,
+            tool=job.tool,
+            reason=(
+                f"{job.tool} {job.preset} prorated refund: "
+                f"{job.gpu_seconds_used}s of {cap_seconds}s"
+            ),
+            job_id=job.id,
+            metadata={
+                "preset_cap_seconds": cap_seconds,
+                "used_seconds": job.gpu_seconds_used,
+            },
+        )
+        logger.info(
+            "Refunded %d credit(s) for job %s (used %ds / %ds cap)",
+            refund_credits,
+            job.id,
+            job.gpu_seconds_used,
+            cap_seconds,
+        )
+    except Exception:
+        logger.warning(
+            "Prorated refund failed for job %s", job.id, exc_info=True
+        )
+
+
+def _send_completion_email(job: "ToolJob") -> None:
+    """Send the job-done email if we can resolve the user's email address."""
+    if job.status not in {"succeeded", "failed"}:
+        return
+    user_email = _resolve_email_for_user(job.user_id)
+    if not user_email:
+        return
+    try:
+        from shared.email import send_job_complete_email  # noqa: PLC0415
+        send_job_complete_email(user_email=user_email, job=job)
+    except Exception:
+        logger.warning(
+            "Email notification failed for job %s", job.id, exc_info=True
+        )
+
+
+def _resolve_email_for_user(user_id: str) -> Optional[str]:
+    """Look up the auth.users email for the given user id via service-role client."""
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        page = client.auth.admin.list_users()
+        users = getattr(page, "users", None) or page
+        for u in users:
+            uid = getattr(u, "id", None) or (
+                u.get("id") if isinstance(u, dict) else None
+            )
+            if uid == user_id:
+                email = getattr(u, "email", None) or (
+                    u.get("email") if isinstance(u, dict) else None
+                )
+                return email
+    except Exception:
+        logger.warning("Could not resolve email for user %s", user_id, exc_info=True)
+    return None
+
+
 def list_jobs_for_user(user_id: str, *, limit: int = 20) -> list[ToolJob]:
     client = get_service_client()
     if client is None:

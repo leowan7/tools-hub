@@ -54,13 +54,12 @@ from shared.credits import (
 from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
 from shared.jobs import (
+    complete_job,
     create_job,
     get_job,
     list_jobs_for_user,
     mark_failed,
     mark_running,
-    mark_succeeded,
-    mark_timeout,
     set_modal_call,
 )
 from shared.metrics import register_metrics
@@ -637,7 +636,11 @@ def create_app() -> Flask:
             )
 
         presigned_url = ""
-        if adapter.requires_pdb:
+        # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
+        # smoke / preview do not. Falls back to the adapter-level flag for
+        # legacy single-tier tools (e.g. BindCraft pilot-only).
+        needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
+        if needs_pdb:
             uploaded = request.files.get("target_pdb")
             if uploaded is None or not uploaded.filename:
                 return render_template(
@@ -733,6 +736,7 @@ def create_app() -> Flask:
         if job is None:
             return render_template("coming_soon.html"), 404
         adapter = tool_base.get(job.tool)
+        preset_obj = adapter.preset_for(job.preset) if adapter else None
         return render_template(
             "job_detail.html",
             job=job,
@@ -742,6 +746,8 @@ def create_app() -> Flask:
                 if adapter and adapter.results_partial
                 else "tools/_default_results.html"
             ),
+            is_long_running=bool(preset_obj and preset_obj.long_running),
+            user_email=session.get("user_email") or "",
         )
 
     @flask_app.route("/jobs/<job_id>/status.json", methods=["GET"])
@@ -760,15 +766,17 @@ def create_app() -> Flask:
         if job.status in ("pending", "running") and job.modal_function_call_id:
             poll = modal_client.poll(job.modal_function_call_id)
             if poll["status"] == "succeeded":
-                mark_succeeded(
+                complete_job(
                     job.id,
+                    terminal_status="succeeded",
                     result=poll["result"] or {},
                     gpu_seconds_used=poll.get("gpu_seconds_used"),
                 )
                 job = get_job(job_id, user_id=ctx.user_id)
             elif poll["status"] == "failed":
-                mark_failed(
+                complete_job(
                     job.id,
+                    terminal_status="failed",
                     error={"bucket": "pipeline", "detail": poll.get("error") or ""},
                     gpu_seconds_used=poll.get("gpu_seconds_used"),
                 )

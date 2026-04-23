@@ -42,6 +42,8 @@ class Preset:
     label: str                   # e.g. "Smoke (2 credits, ~3 min)"
     credits_cost: int
     description: str             # subtitle shown under the option
+    requires_pdb: bool = False   # if True, this preset needs a PDB upload + hotspots
+    long_running: bool = False   # if True, render "we'll email you" UX (>5 min jobs)
 
 
 ValidateFn = Callable[

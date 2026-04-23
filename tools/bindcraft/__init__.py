@@ -106,6 +106,8 @@ adapter = ToolAdapter(
             description=(
                 "~45 min, 2 final designs, results emailed on completion."
             ),
+            requires_pdb=True,
+            long_running=True,
         ),
     ),
     validate=validate,

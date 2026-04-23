@@ -17,7 +17,7 @@
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
       <strong>Heads-up — long-running job.</strong>
-      PXDesign runs ~17 min (smoke) or ~35 min (preview) on A100-80GB.
+      PXDesign runs ~17 min (smoke), ~35 min (preview), or ~30–60 min (pilot) on A100-80GB.
       Stay on this page or return via <a href="{{ url_for('jobs_list') }}">/jobs</a>
       to check status; results auto-refresh when done.
     </div>
@@ -28,7 +28,7 @@
       <span class="panel-title">Design inputs</span>
     </div>
     <div class="panel-body">
-      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}">
+      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
         <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
           <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
           {% for preset in adapter.presets %}
@@ -42,7 +42,9 @@
             Smoke runs the pipeline without the post-design filter —
             fastest path to a scored candidate. Preview (mini_pilot)
             adds the post-filter pass, so scores reflect what the pilot
-            tier would return.
+            tier would return. Pilot tier runs against your own target —
+            upload PDB, pick hotspots, set binder length. Results
+            emailed (~30–60 min on A100-80GB).
           </div>
         </fieldset>
 
@@ -51,14 +53,54 @@
                value="80" min="40" max="150" required
                style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
 
+        <div id="pilot-fields" style="display: none;">
+          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Upload the target structure as .pdb, .cif, or .mmcif.
+          </div>
+
+          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+          <input type="text" name="target_chain" id="target_chain" value="A" maxlength="4"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115"
+                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+          </div>
+
+          <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+          <input type="number" name="num_designs" id="num_designs" value="2" min="1" max="5"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+        </div>
+
         <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-          Smoke / preview tiers use PD-L1 IgV as the reference target.
-          For design against your own target, contact Ranomics —
-          pilot tier ships in Wave 2.
+          Pilot tier runs against your own target — upload PDB, pick hotspots, set binder length. Results emailed (~30–60 min on A100-80GB).
         </div>
 
         <button type="submit" class="btn-primary">Submit run</button>
       </form>
     </div>
   </div>
+
+  <script>
+    (function () {
+      var pilotFields = document.getElementById('pilot-fields');
+      var radios = document.querySelectorAll('input[type="radio"][name="preset"]');
+
+      function togglePilotFields() {
+        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
+        if (!pilotFields || !selected) return;
+        pilotFields.style.display = selected.value === 'pilot' ? 'block' : 'none';
+      }
+
+      for (var i = 0; i < radios.length; i++) {
+        radios[i].addEventListener('change', togglePilotFields);
+      }
+      togglePilotFields();
+    })();
+  </script>
 {% endblock %}
