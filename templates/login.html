@@ -1,22 +1,20 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sign in — Ranomics Tools</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body class="auth-page">
+{% extends "base.html" %}
 
+{% block title %}{% if mode == 'signup' %}Create your Ranomics Tools account — Ranomics protein engineering utilities{% elif mode == 'reset' %}Reset your Ranomics Tools password — Ranomics{% else %}Sign in to Ranomics Tools — Protein engineering & binder design utilities{% endif %}{% endblock %}
+
+{% block description %}{% if mode == 'signup' %}Create a free Ranomics Tools account to access the unified dashboard for binder developability, epitope identification, and AI binder design utilities.{% elif mode == 'reset' %}Reset the password for your Ranomics Tools account.{% else %}Sign in to your Ranomics Tools account to access the unified protein engineering and AI binder design utilities dashboard.{% endif %}{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block body_attr %} class="auth-page"{% endblock %}
+
+{% block body %}
   <div class="login-card">
     <div class="login-header">
       <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">
-        <img src="{{ url_for('static', filename='logo-ranomics.png') }}" alt="Ranomics" class="login-logo">
+        <img src="{{ url_for('static', filename='logo-dark.webp') }}" alt="Ranomics" class="login-logo">
       </a>
-      <p class="login-title">Tools</p>
+      <h1 class="login-title">{% if mode == 'signup' %}Create your Ranomics Tools account{% elif mode == 'reset' %}Reset your password{% else %}Sign in to Ranomics Tools{% endif %}</h1>
     </div>
 
     {% if mode != 'reset' %}
@@ -124,6 +122,4 @@
       });
     }
   </script>
-
-</body>
-</html>
+{% endblock %}

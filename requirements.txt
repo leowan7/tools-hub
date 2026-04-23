@@ -1,4 +1,5 @@
 flask>=3.0
+flask-compress>=1.14
 gunicorn>=22.0,<25.0
 werkzeug>=3.0
 supabase>=2.0

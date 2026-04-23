@@ -3,24 +3,34 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Ranomics Tools{% endblock %}</title>
+  <title>{% block title %}Ranomics Tools — Protein Engineering & Binder Design Utilities{% endblock %}</title>
+  <meta name="description" content="{% block description %}Free scientific tools for protein engineers — binder developability, epitope identification, library planning, and AI binder design pipelines from Ranomics.{% endblock %}">
+  <meta name="robots" content="{% block robots %}index,follow{% endblock %}">
+  {% block canonical %}{% endblock %}
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Ranomics Tools">
+  <meta property="og:title" content="{% block og_title %}{{ self.title() }}{% endblock %}">
+  <meta property="og:description" content="{% block og_description %}{{ self.description() }}{% endblock %}">
+
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='favicon.png') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Geist+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   {% block head_extra %}{% endblock %}
 </head>
-<body>
+<body{% block body_attr %}{% endblock %}>
+  {% block body %}
+    {% include "_header.html" %}
 
-  {% include "_header.html" %}
+    <main>
+      <div class="app-container">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
 
-  <main>
-    <div class="app-container">
-      {% block content %}{% endblock %}
-    </div>
-  </main>
-
-  {% include "_footer.html" %}
-
+    {% include "_footer.html" %}
+  {% endblock %}
 </body>
 </html>

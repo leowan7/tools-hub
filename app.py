@@ -43,6 +43,7 @@ from flask import (
     session,
     url_for,
 )
+from flask_compress import Compress
 
 from gpu.modal_client import ModalClient
 from shared.credits import (
@@ -89,6 +90,10 @@ def create_app() -> Flask:
         Flask: Configured Flask application instance.
     """
     flask_app = Flask(__name__)
+
+    # Enable gzip/brotli compression on text responses (HTML, CSS, JS, JSON).
+    # Reduces transfer size 70-90% on repeat-heavy pages and speeds up first paint.
+    Compress(flask_app)
 
     # Secret key for signing Flask session cookies. Set SESSION_SECRET_KEY
     # in the deployment environment. Random fallback means sessions do not
