@@ -34,6 +34,15 @@ Never edit past entries. If a decision is reversed, append a new entry referenci
 - **Rationale:** Spec has been stable since the Wave-0 commit (`4e9eaa1`). Every element downstream agents need is present: Dockerfile Layer-1 checks, ≤60s `preflight()`, smoke preset, stub-score rejection, Modal wrapper tier contract, webhook roundtrip, `FLAG_TOOL_<NAME>` feature flag. D1 (ProteinMPNN, pattern setter) has full input/output schema, GPU SKU (A10G-24GB), timeout, smoke preset, pricing, and marketing angle. Waiting longer adds no information.
 - **Follow-up:** Stream D1 scaffold starts on the Kendrew side (`docker/mpnn/`, `infrastructure/modal/mpnn_app.py`, `backend/pipelines/mpnn.py`). D2..D9 clone D1's shape.
 
+### 2026-04-23 — Wave 2 vision: iterative binder design platform (revenue-ready)
+
+- **Requested by:** orchestrator (Leo) — direct product call after Wave-1 demo tier shipped
+- **Affects:** stream C (extends scope), `docs/PRODUCT-PLAN.md`, `tools-hub/tools/{rfantibody,pxdesign,boltzgen,bindcraft}/__init__.py`, `tools-hub/templates/tools/*`, new `tools-hub/shared/email.py`, `tools-hub/shared/jobs.py` (prorated refund), `tools-hub/app.py` (per-preset PDB requirement)
+- **Question:** What does "fully production-ready, revenue-generating" look like for the GPU tools surface?
+- **Decision:** **`tools.ranomics.com` is an iterative binder design platform, not a demo suite.** Every one of the 4 GPU tools (RFantibody, BindCraft, PXDesign, BoltzGen) gets a **pilot tier** that takes user-uploaded PDB + user-selected hotspots + user parameters and runs against the user's actual target via the webhook flow. Demo tiers (smoke / preview, baked PD-L1 target) stay as the free-tier funnel and the schema-preview UX, but pilot tiers are where revenue lives. Per-job pricing is a pre-authorisation; actual debit prorates against `gpu_seconds_used`.
+- **Rationale:** A demo suite cannot generate the recurring revenue Ranomics needs. Users on Scout Pro / Lab tiers come for "design binders against my target", not "watch a tool run on PD-L1". The infrastructure shipped today (Storage upload → presigned URL → Modal spawn → webhook callback → job-detail polling) already supports the real-target flow; we just need pilot-tier adapters + email notifications + prorated billing to expose it.
+- **Follow-up:** Wave 2 (this session) ships pilot tiers + email + prorated refund. Wave 3 ships Epitope Scout handoff + clone-job + cross-run comparison. Wave 4 ships 3D hotspot picker + atomic primitives. Spec recorded in PRODUCT-PLAN.md "The product — iterative binder design platform" and "Wave structure (revised)".
+
 ### 2026-04-23 — Stream C scope expanded: launch 4 existing Kendrew pipelines
 
 - **Requested by:** orchestrator (Leo)

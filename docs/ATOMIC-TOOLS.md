@@ -1,5 +1,13 @@
 # Atomic Tools — Build Spec
 
+> **Note (2026-04-23):** This spec was written for D1..D9 atomic primitives.
+> Wave-2 also exposes **pilot tiers** on the four composite Kendrew
+> pipelines (BindCraft, RFantibody, BoltzGen, PXDesign). Those pilot
+> tiers reuse the existing Kendrew Modal apps + the
+> `tools-hub/tools/<name>/` adapter pattern; they are NOT atomic tools
+> in the D-series sense. See `PRODUCT-PLAN.md` "Iterative binder design
+> platform" for how the pilot tiers fit the iterative workflow.
+
 Per-primitive build recipe for standalone Modal apps (ProteinMPNN, AF2, ColabFold, ESMFold, AF2-IG, LigandMPNN, Boltz-2, RF2-standalone, RFdiff-standalone).
 
 Each atomic tool gets its **own** Dockerfile.modal, its own `run_pipeline.py`, its own Modal app, and its own validation log entry. No shared images across primitives — see "Why each needs its own app" in [PRODUCT-PLAN.md](PRODUCT-PLAN.md).

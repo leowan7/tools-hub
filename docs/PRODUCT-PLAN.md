@@ -23,6 +23,81 @@ Supplement Ranomics CRO income with self-serve computational tools — Tamarind 
 
 ---
 
+## The product — iterative binder design platform
+
+**Updated 2026-04-23. This is the north star.**
+
+`tools.ranomics.com` is an **iterative binder design workspace**, not a demo
+suite. A scientist signs in, uploads their target structure, picks
+hotspots (typed today, 3D-clicked later, imported from Epitope Scout
+soon), picks a generative tool, picks how many binders + parameters,
+submits. They get a job-detail page that polls to completion, an email
+when the run finishes, ranked candidates with real scores + downloadable
+PDBs. They iterate — clone a job, tweak parameters, run it through a
+second tool to validate, compare results across runs, repeat until they
+have a binder set worth ordering peptide-synthesis or sending to the
+Ranomics wet lab.
+
+### Tool roles in the loop
+
+| Tool | Role | Tier exposed |
+|---|---|---|
+| **RFantibody** | Generate VHH / scFv against target (RoseTTAFold-2 validated) | smoke (PD-L1 demo, 2cr) · preview (PD-L1 demo, 8cr) · **pilot (real target, ~15cr)** |
+| **BindCraft** | De novo binder design, structure-based, AF2 multimer + ColabDesign | **pilot (real target, 22cr, ~45min)** |
+| **PXDesign** | Generate + AF2-IG validate. Best for targets where AF2 confidence matters. | smoke (PD-L1 demo, 8cr) · mini_pilot (PD-L1 demo, 16cr) · **pilot (real target, ~15cr)** |
+| **BoltzGen** | Boltz-2 backbone gen + refold-RMSD scoring | smoke (PD-L1 demo, 3cr) · mini_pilot (PD-L1 demo, 10cr) · **pilot (real target, ~10cr)** |
+
+**Demo tiers stay** because they let a user see the output schema +
+score quality + UX before committing to a 45-min real-target run. They
+also serve the free-tier funnel.
+
+**Pilot tiers are where revenue lives.** Real-target runs are user-PDB
++ user-hotspots + user-parameters and pay accordingly. Per-job pricing
+is a pre-authorisation; actual credit burn is prorated against
+``smoke_result.gpu_seconds`` so a pipeline that finishes early returns
+unused credits.
+
+### What "fully production-ready" means
+
+1. ✅ Tool form for each of the 4 tools accepting (a) PDB upload, (b)
+   chain selector, (c) hotspot text input, (d) numeric parameters
+   (binder length range, num designs, framework where applicable),
+   (e) preset selector covering both demo and pilot tiers.
+2. ✅ Submission validates inputs, debits a pre-authorisation against
+   the user's credit balance, uploads PDB to `tool-inputs` Storage,
+   spawns the Modal function with a presigned URL + signed webhook URL.
+3. ✅ Job detail page polls `/jobs/<id>/status.json` until terminal,
+   renders a tool-specific results partial showing per-candidate scores
+   + downloadable PDBs.
+4. ✅ For long-running pilots (> 5 min) the user can close the tab —
+   they receive a `tools-hub job complete` email when the run lands
+   (subject: "Your <tool> run is ready" — link to /jobs/<id>).
+5. ✅ Modal callback webhook updates the job row idempotently, refunds
+   unused GPU-seconds back to the credit ledger, sends the email.
+6. ✅ Epitope Scout has a "Design binders from this scout run" button
+   that deep-links into the tools-hub form with target PDB +
+   pre-selected hotspots already filled in.
+7. ✅ User can clone any past job from the `/jobs` list, edit one
+   parameter, re-submit. Iteration UX.
+8. ✅ Cross-run results comparison: pick N past jobs, see a stacked
+   table of top candidates ranked by composite score.
+
+Items 1–5 are **Phase 1 — shipping in this session**.
+Items 6–8 are **Phase 2 — next session**.
+
+### Wave structure (revised)
+
+| Wave | Scope | Status |
+|---|---|---|
+| Wave 0 | Hub foundation + paywall plumbing | ✅ shipped |
+| Wave 1 | Scout paywall + Developability + Library Planner | ✅ shipped |
+| Wave 1.5 | Modal client + jobs + webhook + Storage + 4 demo-tier tool adapters | ✅ shipped |
+| **Wave 2** (**this session**) | Pilot tiers on all 4 tools + email + prorated billing | 🔴 in progress |
+| Wave 3 | Epitope Scout handoff + clone-job + cross-run compare | planned |
+| Wave 4 | 3D hotspot picker + atomic primitives D1..D9 | planned |
+
+---
+
 ## Competitive snapshot
 
 | Company | Funding | Catalog | Pricing | Moat |
