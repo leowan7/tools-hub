@@ -1,0 +1,105 @@
+{# Partial — included inside templates/job_detail.html when a PXDesign
+   job reaches status=succeeded. The `job` and `job.result` vars are the
+   tool_jobs row; result is the Kendrew smoke_result["output"] payload.
+   PXDesign shape: candidates[] with rank, pdb_key, pdb_content_b64, and
+   scores = {ipTM, pLDDT (0-100), pAE (Å), filter_status}. #}
+
+{% set output = job.result or {} %}
+{% set candidates = output.get('candidates', []) %}
+
+<div class="panel" style="margin-top: 1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Candidates ({{ candidates|length }})</span>
+    {% if output.get('tier') %}
+      <span class="panel-badge">{{ output.tier }}</span>
+    {% endif %}
+  </div>
+  <div class="panel-body">
+    {% if candidates %}
+      <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+        <thead>
+          <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+            <th style="padding: 0.5rem 0.4rem;">Rank</th>
+            <th style="padding: 0.5rem 0.4rem;">ipTM</th>
+            <th style="padding: 0.5rem 0.4rem;">pLDDT</th>
+            <th style="padding: 0.5rem 0.4rem;">pAE (Å)</th>
+            <th style="padding: 0.5rem 0.4rem;">Filter</th>
+            <th style="padding: 0.5rem 0.4rem;">Download PDB</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cand in candidates %}
+            {% set scores = cand.get('scores', {}) %}
+            {% set filter_status = scores.get('filter_status', '') %}
+            {% set is_stub = filter_status is string and (filter_status == 'stub (smoke)' or filter_status.startswith('stub')) %}
+            <tr style="border-bottom: 1px solid var(--border);{% if is_stub %} background: rgba(248, 113, 113, 0.08);{% endif %}">
+              <td style="padding: 0.55rem 0.4rem;">{{ cand.get('rank', loop.index) }}</td>
+              <td style="padding: 0.55rem 0.4rem;">{{ '%.3f'|format(scores.get('ipTM', 0.0)) }}</td>
+              <td style="padding: 0.55rem 0.4rem;">{{ '%.1f'|format(scores.get('pLDDT', 0.0)) }}</td>
+              <td style="padding: 0.55rem 0.4rem;">{{ '%.2f'|format(scores.get('pAE', 0.0)) }}</td>
+              <td style="padding: 0.55rem 0.4rem;">
+                {% if is_stub %}
+                  <span class="panel-badge" style="background: rgba(248, 113, 113, 0.18); color: #fca5a5; border-color: rgba(248, 113, 113, 0.4);">
+                    {{ filter_status }} — stub fallback
+                  </span>
+                {% else %}
+                  {{ filter_status or '—' }}
+                {% endif %}
+              </td>
+              <td style="padding: 0.55rem 0.4rem;">
+                {% if cand.get('pdb_content_b64') %}
+                  <a href="data:chemical/x-pdb;base64,{{ cand.pdb_content_b64 }}"
+                     download="{{ cand.get('pdb_key', 'design_' ~ loop.index ~ '.pdb') }}"
+                     class="btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">
+                    Download
+                  </a>
+                {% else %}
+                  <span style="color: var(--text-secondary);">—</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% if is_stub %}
+              <tr>
+                <td colspan="6" style="padding: 0.5rem 0.4rem; color: #fca5a5; font-size: 0.82rem;">
+                  <strong>Warning:</strong> <code>filter_status</code> is a
+                  <code>stub</code> value. This indicates the silent-fallback
+                  regression returned — the pipeline did not execute the real
+                  AF2-IG scoring path. Do not trust these numbers; escalate to
+                  engineering before sharing the result.
+                </td>
+              </tr>
+            {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div style="background: rgba(250, 204, 21, 0.08); border: 1px solid rgba(250, 204, 21, 0.3); border-radius: var(--radius-md); padding: 0.9rem 1rem;">
+        <p class="subtitle" style="margin: 0;">
+          <strong>Zero candidates returned.</strong>
+          PXDesign can legitimately return zero candidates when every
+          generated backbone fails the post-filter or the AF2-IG
+          validator — that's the pipeline's way of saying "nothing
+          crossed the bar," not a failure. Try the smoke preset (no
+          post-filter), adjust binder length, or escalate to pilot
+          tier for deeper sampling.
+        </p>
+      </div>
+    {% endif %}
+
+    {% if output.get('gpu_seconds') %}
+      <p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 1rem;">
+        GPU time: {{ output.gpu_seconds }} seconds.
+      </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel" style="margin-top: 1rem;">
+  <div class="panel-body">
+    <p class="subtitle">
+      Want to design against your own target? Email
+      <a href="mailto:leo@ranomics.com">leo@ranomics.com</a> for the Binder
+      Pilot CRO handoff — our lab validates PXDesign designs at scale.
+    </p>
+  </div>
+</div>

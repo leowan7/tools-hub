@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
+    <div class="panel-body">
+      <strong>BindCraft pilot runs ~45 min on A100-80GB.</strong>
+      Results are emailed on completion; you can close this tab.
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Design inputs</span>
+    </div>
+    <div class="panel-body">
+      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
+          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
+          {% for preset in adapter.presets %}
+            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
+              <input type="radio" name="preset" value="{{ preset.slug }}" {% if loop.first %}checked{% endif %} required>
+              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
+            </label>
+          {% endfor %}
+        </fieldset>
+
+        <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+        <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif" required
+               style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+          Upload the target structure as .pdb, .cif, or .mmcif.
+        </div>
+
+        <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+        <input type="text" name="target_chain" id="target_chain" required value="A" maxlength="4"
+               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+        <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+        <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115"
+               style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+          Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+        </div>
+
+        <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (min)</label>
+        <input type="number" name="binder_length_min" id="binder_length_min" required value="50" min="50" max="150"
+               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1rem;">
+
+        <label for="binder_length_max" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (max)</label>
+        <input type="number" name="binder_length_max" id="binder_length_max" required value="100" min="50" max="150"
+               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+        <button type="submit" class="btn-primary">Submit run (20 credits)</button>
+      </form>
+    </div>
+  </div>
+{% endblock %}

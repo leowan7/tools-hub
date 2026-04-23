@@ -66,6 +66,9 @@ from shared.jobs import (
 from shared.metrics import register_metrics
 from shared.storage import StorageError, presigned_input_url, upload_input
 from tools import base as tool_base
+import tools.bindcraft   # noqa: F401 — import to register adapter
+import tools.boltzgen    # noqa: F401 — import to register adapter
+import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
 from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
@@ -332,6 +335,22 @@ def create_app() -> Flask:
                 "external": False,
             },
         ]
+        # Append every flag-enabled GPU tool adapter so the hub page
+        # stays in sync with what actually ships. Flags default off so
+        # the card disappears until the operator flips production on.
+        for adapter in tool_base.all_adapters():
+            if not tool_enabled(adapter.slug):
+                continue
+            tools.append(
+                {
+                    "id": adapter.slug,
+                    "name": adapter.label,
+                    "tagline": adapter.blurb,
+                    "status": "live",
+                    "href": url_for("tool_form", tool=adapter.slug),
+                    "external": False,
+                }
+            )
         return render_template("index.html", tools=tools)
 
     @flask_app.route("/account", methods=["GET"])
