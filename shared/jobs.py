@@ -1,0 +1,248 @@
+"""Tool-job CRUD helpers backed by ``public.tool_jobs``.
+
+Stream C (Wave-2 launch prep). A single tool_jobs row is the source of
+truth for one GPU submission: status, Modal FunctionCall id, inputs,
+result, error. The Flask routes, the job-status AJAX endpoint, and the
+Modal callback webhook all read and write through this module.
+
+Status transitions
+------------------
+    pending   -> running | succeeded | failed | timeout
+    running   -> succeeded | failed | timeout
+
+``pending`` means the row is inserted but Modal has not been polled yet.
+``running`` is set on the first poll that returns "not ready".
+
+Service-role writes bypass RLS (matches shared.credits). Anon reads go
+through the self-read policy from migration 0005.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from shared.credits import get_service_client
+
+logger = logging.getLogger(__name__)
+
+_TABLE = "tool_jobs"
+
+VALID_STATUSES = frozenset(
+    {"pending", "running", "succeeded", "failed", "timeout"}
+)
+
+
+@dataclass(frozen=True)
+class ToolJob:
+    """Immutable view of a tool_jobs row. Use ``to_dict()`` for templates."""
+
+    id: str
+    user_id: str
+    tool: str
+    preset: str
+    status: str
+    inputs: dict
+    result: Optional[dict]
+    error: Optional[dict]
+    credits_cost: int
+    modal_function_call_id: Optional[str]
+    job_token: str
+    gpu_seconds_used: Optional[int]
+    created_at: Optional[str]
+    started_at: Optional[str]
+    completed_at: Optional[str]
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ToolJob":
+        return cls(
+            id=str(row["id"]),
+            user_id=str(row["user_id"]),
+            tool=row["tool"],
+            preset=row["preset"],
+            status=row["status"],
+            inputs=row.get("inputs") or {},
+            result=row.get("result"),
+            error=row.get("error"),
+            credits_cost=int(row.get("credits_cost") or 0),
+            modal_function_call_id=row.get("modal_function_call_id"),
+            job_token=row["job_token"],
+            gpu_seconds_used=row.get("gpu_seconds_used"),
+            created_at=row.get("created_at"),
+            started_at=row.get("started_at"),
+            completed_at=row.get("completed_at"),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "tool": self.tool,
+            "preset": self.preset,
+            "status": self.status,
+            "credits_cost": self.credits_cost,
+            "result": self.result,
+            "error": self.error,
+            "gpu_seconds_used": self.gpu_seconds_used,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+        }
+
+
+def generate_job_token() -> str:
+    """Return a 64-char hex token used to authenticate the Modal callback."""
+    return secrets.token_hex(32)
+
+
+def create_job(
+    *,
+    user_id: str,
+    tool: str,
+    preset: str,
+    inputs: dict,
+    credits_cost: int,
+) -> Optional[ToolJob]:
+    """Insert a new tool_jobs row in pending status. Returns None on failure."""
+    client = get_service_client()
+    if client is None:
+        logger.error("Cannot create job: Supabase service client unavailable.")
+        return None
+    row = {
+        "user_id": user_id,
+        "tool": tool,
+        "preset": preset,
+        "status": "pending",
+        "inputs": inputs,
+        "credits_cost": credits_cost,
+        "job_token": generate_job_token(),
+    }
+    try:
+        response = client.table(_TABLE).insert(row).execute()
+        rows = list(getattr(response, "data", None) or [])
+        if not rows:
+            return None
+        return ToolJob.from_row(rows[0])
+    except Exception:
+        logger.error("Failed to insert tool_jobs row.", exc_info=True)
+        return None
+
+
+def get_job(job_id: str, *, user_id: Optional[str] = None) -> Optional[ToolJob]:
+    """Fetch a job by id. Pass ``user_id`` to enforce owner scope."""
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        query = client.table(_TABLE).select("*").eq("id", job_id)
+        if user_id is not None:
+            query = query.eq("user_id", user_id)
+        response = query.single().execute()
+    except Exception:
+        # single() raises when zero rows — treat as "not found"
+        return None
+    data = getattr(response, "data", None)
+    if not data:
+        return None
+    return ToolJob.from_row(data)
+
+
+def set_modal_call(job_id: str, function_call_id: str) -> bool:
+    """Attach the Modal FunctionCall id to the job and move to pending->pending."""
+    return _update(job_id, {"modal_function_call_id": function_call_id})
+
+
+def mark_running(job_id: str) -> bool:
+    return _update(
+        job_id,
+        {
+            "status": "running",
+            "started_at": _now_iso(),
+        },
+    )
+
+
+def mark_succeeded(
+    job_id: str,
+    *,
+    result: dict,
+    gpu_seconds_used: Optional[int] = None,
+) -> bool:
+    return _update(
+        job_id,
+        {
+            "status": "succeeded",
+            "result": result,
+            "gpu_seconds_used": gpu_seconds_used,
+            "completed_at": _now_iso(),
+        },
+    )
+
+
+def mark_failed(
+    job_id: str,
+    *,
+    error: dict,
+    gpu_seconds_used: Optional[int] = None,
+) -> bool:
+    return _update(
+        job_id,
+        {
+            "status": "failed",
+            "error": error,
+            "gpu_seconds_used": gpu_seconds_used,
+            "completed_at": _now_iso(),
+        },
+    )
+
+
+def mark_timeout(job_id: str) -> bool:
+    return _update(
+        job_id,
+        {
+            "status": "timeout",
+            "completed_at": _now_iso(),
+        },
+    )
+
+
+def list_jobs_for_user(user_id: str, *, limit: int = 20) -> list[ToolJob]:
+    client = get_service_client()
+    if client is None:
+        return []
+    try:
+        response = (
+            client.table(_TABLE)
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [
+            ToolJob.from_row(r)
+            for r in (getattr(response, "data", None) or [])
+        ]
+    except Exception:
+        logger.warning("Failed to list jobs for user %s", user_id, exc_info=True)
+        return []
+
+
+def _update(job_id: str, payload: dict) -> bool:
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        client.table(_TABLE).update(payload).eq("id", job_id).execute()
+        return True
+    except Exception:
+        logger.error(
+            "Failed to update tool_jobs row %s", job_id, exc_info=True
+        )
+        return False
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

@@ -1,31 +1,48 @@
-"""Modal client contract — the interface every tool stream depends on.
+"""Modal client — submit + poll Kendrew GPU pipeline functions.
 
-The concrete implementation calls Modal's ``Function.spawn`` against the
-per-tool apps (``kendrew-bindcraft-prod`` etc.). For Wave-0 we ship a stub
-that returns a deterministic fake FunctionCall id and raises
-``NotImplementedError`` from ``.poll()`` — enough for streams B/C/D to
-wire their forms, templates, and webhook plumbing without depending on
-Modal being reachable.
+The contract is the interface every tool package depends on. Wave-0 was
+a stub; this is the real implementation for Wave-2 launch (Stream C).
 
-Contract (frozen for downstream streams):
+Contract (frozen; bump CONTRACT_VERSION for breaking changes and log it
+in ORCH-LOG.md):
 
-    ModalClient.submit(
-        tool: str,
-        preset: str,
-        inputs: dict,
-    ) -> dict with keys:
-        - function_call_id : str    Modal FunctionCall id
-        - gpu_seconds_cap  : int    upper bound on billable GPU seconds
+    ModalClient.submit(tool, preset, inputs, *, job_id, job_token, webhook_url)
+        -> dict:
+            function_call_id : str    Modal FunctionCall id
+            gpu_seconds_cap  : int    upper bound on billable GPU seconds
 
-    ModalClient.poll(function_call_id: str) -> dict with keys (real impl):
-        - status           : Literal["pending", "running", "success", "error", "timeout"]
-        - result           : dict | None
-        - gpu_seconds_used : int | None
-        - error            : str | None
+    ModalClient.poll(function_call_id) -> dict:
+        status           : Literal["pending", "running", "succeeded",
+                                   "failed", "timeout", "error"]
+        result           : dict | None    inline Kendrew smoke_result payload
+        gpu_seconds_used : int | None
+        error            : str | None
 
-The GPU-seconds cap comes from the preset registry so the credits layer
-can reserve the correct amount up-front. Do NOT change these keys without
-bumping the contract version and coordinating via ORCH-LOG.md.
+Behaviour
+---------
+Submit calls ``modal.Function.from_name("kendrew-<tool>-prod",
+"run_tool").spawn(payload)`` with the Kendrew webhook-roundtrip payload
+shape. For smoke and mini_pilot tiers the Modal function returns results
+inline via a ``smoke_result`` key, so tools-hub can poll the FunctionCall
+rather than wait for the webhook. For pilot and full tiers the Modal
+function POSTs to ``webhook_url`` — poll() still reports "running" but
+the webhook handler updates tool_jobs independently.
+
+Poll uses a non-blocking ``FunctionCall.get(timeout=0)``. TimeoutError
+means "still running"; anything else propagates as an error dict.
+
+Offline degradation
+-------------------
+When the ``modal`` package is not importable (local dev without the
+Kendrew environment), submit returns a stub FunctionCall id and poll
+returns a deterministic "running" forever. This matches the Wave-0
+behaviour so unit tests and contributors without Modal access still
+work.
+
+Environment
+-----------
+    GPU_ENVIRONMENT (optional) — Modal environment name. Defaults to
+        "main" in production. Set to "staging" for a staging pool.
 """
 
 from __future__ import annotations
@@ -34,21 +51,21 @@ import logging
 import os
 import secrets
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "2.0.0"
 
 
 # ---------------------------------------------------------------------------
 # Preset registry
 # ---------------------------------------------------------------------------
-#
-# GPU seconds caps per (tool, preset). Values are *upper bounds* used for
+# GPU-seconds caps per (tool, preset). Values are upper bounds used for
 # credit pre-authorisation; the actual billed seconds come from Modal and
-# drive any prorated refund. Numbers derive from PRODUCT-PLAN.md §Pricing.
+# drive any prorated refund. Numbers derived from
+# docs/VALIDATION-LOG.md real observations + docs/PRODUCT-PLAN.md pricing.
 
 PRESET_CAPS: Dict[tuple[str, str], int] = {
     # Atomic primitives.
@@ -57,18 +74,26 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("af2", "standard"):           720,
     ("esmfold", "fast"):           360,
     ("af2_ig", "standard"):        720,
-    # Composite pipelines.
-    ("rfdiffusion", "pilot"):      1800,
-    ("rfdiffusion", "full"):       3600,
-    ("rfantibody", "pilot"):       1800,
-    ("rfantibody", "full"):        3600,
-    ("boltzgen", "pilot"):         3600,
-    ("boltzgen", "full"):          7200,
-    ("bindcraft", "pilot"):        7200,
-    ("bindcraft", "full"):         14400,
-    ("pxdesign", "pilot"):         3600,
+    # Composite pipelines — smoke tier (inline return, small preset).
+    ("bindcraft", "smoke"):         600,    # ~5-10 min on A100-80GB
+    ("bindcraft", "mini_pilot"):    1800,
+    ("bindcraft", "pilot"):         7200,
+    ("bindcraft", "full"):          14400,
+    ("rfantibody", "smoke"):        600,
+    ("rfantibody", "mini_pilot"):   900,
+    ("rfantibody", "pilot"):        1800,
+    ("rfantibody", "full"):         3600,
+    ("boltzgen", "smoke"):          900,
+    ("boltzgen", "mini_pilot"):     1200,
+    ("boltzgen", "pilot"):          3600,
+    ("boltzgen", "full"):           7200,
+    ("pxdesign", "smoke"):          1800,
+    ("pxdesign", "mini_pilot"):     1800,
+    ("pxdesign", "pilot"):          3600,
+    ("rfdiffusion", "pilot"):       1800,   # blocked pending validation
+    ("rfdiffusion", "full"):        3600,
     # Wave-0 plumbing fixture.
-    ("example-gpu", "smoke"):      60,
+    ("example-gpu", "smoke"):       60,
 }
 
 
@@ -77,18 +102,9 @@ def preset_gpu_seconds(tool: str, preset: str) -> int:
     return PRESET_CAPS.get((tool, preset), 0)
 
 
-# ---------------------------------------------------------------------------
-# Contract types
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class SubmitResult:
-    """Return shape of ``ModalClient.submit``.
-
-    Downstream code should treat this as a read-only record. Callers that
-    want a plain dict can use ``dataclasses.asdict`` or ``to_dict()``.
-    """
+    """Return shape of ``ModalClient.submit``."""
 
     function_call_id: str
     gpu_seconds_cap: int
@@ -108,64 +124,265 @@ class SubmitResult:
 class ModalClient:
     """Thin abstraction over Modal ``Function.spawn`` + ``FunctionCall.get``.
 
-    Wave-0 implementation is a stub — it fabricates a FunctionCall id and
-    leaves ``.poll()`` unimplemented. Stream E / Orchestrator will replace
-    the body of ``submit`` and ``poll`` once the Modal staging environment
-    is reachable from Railway.
+    Degrades to a deterministic stub when the ``modal`` package is not
+    importable, so local contributors and unit tests run offline.
     """
 
-    def __init__(self, environment: str | None = None) -> None:
-        """Create a client bound to a Modal environment ('staging'/'main')."""
+    def __init__(self, environment: Optional[str] = None) -> None:
         self.environment = environment or os.environ.get(
-            "GPU_ENVIRONMENT", "staging"
+            "GPU_ENVIRONMENT", "main"
         )
+
+    # -- submit -----------------------------------------------------------
 
     def submit(
         self,
         tool: str,
         preset: str,
-        inputs: dict[str, Any],
+        inputs: Dict[str, Any],
+        *,
+        job_id: str,
+        job_token: str,
+        webhook_url: str = "",
     ) -> Dict[str, Any]:
-        """Submit a job to the Modal app for ``tool`` with ``preset``.
+        """Submit a GPU job to the Kendrew Modal app for ``tool``.
 
-        Returns a dict (not the dataclass) so downstream consumers don't
-        need to import from ``gpu.modal_client``.
+        ``inputs`` is the tool-specific payload (e.g. target_chain,
+        parameters) that maps onto the Kendrew ``job_spec`` shape. The
+        caller is responsible for pre-uploading any large input files
+        (PDB, FASTA, etc.) and passing a reachable URL — this client
+        does not stage file uploads.
 
         Raises:
-            ValueError: if the (tool, preset) pair is not in the registry.
+            ValueError: unknown (tool, preset) pair.
+            RuntimeError: Modal call failed at submit time.
         """
         cap = preset_gpu_seconds(tool, preset)
         if cap == 0:
             raise ValueError(
-                f"Unknown (tool, preset) = ({tool!r}, {preset!r}). "
-                "Add an entry to PRESET_CAPS before submitting."
+                f"Unknown (tool, preset)=({tool!r}, {preset!r}). Add an "
+                "entry to PRESET_CAPS before submitting."
             )
 
-        # Wave-0 stub: fake FunctionCall id. Real implementation will call
-        # ``modal.Function.lookup(f'kendrew-{tool}-{env}', ...).spawn(...)``.
-        fake_id = f"fc-stub-{tool}-{preset}-{secrets.token_hex(6)}"
+        payload = self._build_payload(
+            tool=tool,
+            preset=preset,
+            inputs=inputs,
+            job_id=job_id,
+            job_token=job_token,
+            webhook_url=webhook_url,
+        )
+
+        modal = _import_modal()
+        if modal is None:
+            # Offline stub — predictable FunctionCall id so poll() behaves.
+            fake_id = f"fc-stub-{tool}-{preset}-{secrets.token_hex(6)}"
+            logger.info(
+                "ModalClient.submit offline stub: tool=%s preset=%s id=%s",
+                tool,
+                preset,
+                fake_id,
+            )
+            return SubmitResult(
+                function_call_id=fake_id, gpu_seconds_cap=cap
+            ).to_dict()
+
+        try:
+            fn = modal.Function.from_name(
+                f"kendrew-{tool}-prod",
+                "run_tool",
+                environment_name=self.environment,
+            )
+            function_call = fn.spawn(payload)
+            fc_id = getattr(function_call, "object_id", None) or str(function_call)
+        except Exception as exc:  # pragma: no cover — exercised live only
+            logger.exception("Modal submit failed for tool=%s", tool)
+            raise RuntimeError(f"Modal submit failed: {exc}") from exc
+
         logger.info(
-            "ModalClient.submit stub: tool=%s preset=%s env=%s id=%s "
-            "inputs_keys=%s",
+            "ModalClient.submit: tool=%s preset=%s env=%s fc_id=%s",
             tool,
             preset,
             self.environment,
-            fake_id,
-            sorted(inputs.keys()),
+            fc_id,
         )
         return SubmitResult(
-            function_call_id=fake_id, gpu_seconds_cap=cap
+            function_call_id=fc_id, gpu_seconds_cap=cap
         ).to_dict()
 
-    def poll(self, function_call_id: str) -> Dict[str, Any]:
-        """Poll a FunctionCall for status + result.
+    # -- poll -------------------------------------------------------------
 
-        Stream E will land the concrete implementation. Keeping this as
-        ``NotImplementedError`` keeps downstream streams honest — they
-        must not ship a tool that depends on polling until the real
-        client lands.
+    def poll(self, function_call_id: str) -> Dict[str, Any]:
+        """Poll a FunctionCall non-blockingly.
+
+        Returns:
+            dict with ``status`` in
+            ``{"running","succeeded","failed","error"}``, plus ``result``
+            (the inline Kendrew return dict when succeeded) and
+            ``error`` (string on error).
         """
-        raise NotImplementedError(
-            "ModalClient.poll is not implemented yet. This is the Wave-0 "
-            "stub. Stream E owns the concrete implementation."
-        )
+        if function_call_id.startswith("fc-stub-"):
+            # Offline stub path — never advances.
+            return {
+                "status": "running",
+                "result": None,
+                "gpu_seconds_used": None,
+                "error": None,
+            }
+
+        modal = _import_modal()
+        if modal is None:
+            return {
+                "status": "error",
+                "result": None,
+                "gpu_seconds_used": None,
+                "error": "modal package not available",
+            }
+
+        try:
+            fc = modal.FunctionCall.from_id(function_call_id)
+            try:
+                # Non-blocking poll. timeout=0 raises TimeoutError when
+                # the function has not yet returned.
+                raw_result = fc.get(timeout=0)
+            except TimeoutError:
+                return {
+                    "status": "running",
+                    "result": None,
+                    "gpu_seconds_used": None,
+                    "error": None,
+                }
+        except Exception as exc:  # pragma: no cover — exercised live only
+            logger.warning(
+                "Modal poll failed for fc=%s", function_call_id, exc_info=True
+            )
+            return {
+                "status": "error",
+                "result": None,
+                "gpu_seconds_used": None,
+                "error": str(exc),
+            }
+
+        # Kendrew apps return a dict with "smoke_result" (inline payload on
+        # smoke/mini_pilot tiers) + "exit_code" + "provider_job_id".
+        return _interpret_kendrew_return(raw_result)
+
+    # -- internals --------------------------------------------------------
+
+    def _build_payload(
+        self,
+        *,
+        tool: str,
+        preset: str,
+        inputs: Dict[str, Any],
+        job_id: str,
+        job_token: str,
+        webhook_url: str,
+    ) -> Dict[str, Any]:
+        """Assemble the dict passed to ``run_tool.spawn``.
+
+        Mirrors the webhook-roundtrip shape Kendrew's run_pipeline.py
+        expects. Keys not used by a given tier are simply ignored on the
+        Kendrew side, so one shape fits all presets.
+        """
+        return {
+            "job_id": job_id,
+            "job_token": job_token,
+            "job_tier": preset,
+            "tier": preset,
+            "job_spec": inputs,
+            "webhook_url": webhook_url,
+            "input_presigned_url": inputs.get("_input_presigned_url", ""),
+            "input_pdb_url": inputs.get("_input_pdb_url", ""),
+            "upload_urls_endpoint": inputs.get("_upload_urls_endpoint", ""),
+            "total_budget_hours": inputs.get("_total_budget_hours", 4),
+        }
+
+
+def _import_modal():
+    """Import the ``modal`` package lazily; return None if unavailable."""
+    try:
+        import modal  # noqa: PLC0415
+        return modal
+    except Exception:
+        return None
+
+
+def _interpret_kendrew_return(raw_result: Any) -> Dict[str, Any]:
+    """Translate a Kendrew Modal function return into poll() shape.
+
+    Kendrew apps return::
+        {
+            "exit_code": int,
+            "smoke_result": dict | None,
+            "provider_job_id": str,
+            ...
+        }
+
+    When ``smoke_result`` is present and carries ``status=="COMPLETED"``
+    we succeed; when it carries ``status=="FAILED"`` we fail with the
+    ``error`` bucket. When ``smoke_result`` is None we treat exit_code
+    == 0 as succeeded with an empty result payload (pipeline used the
+    webhook path; the actual result lands via the Modal callback
+    webhook on tools-hub).
+    """
+    if not isinstance(raw_result, dict):
+        return {
+            "status": "error",
+            "result": None,
+            "gpu_seconds_used": None,
+            "error": f"unexpected Modal return type: {type(raw_result).__name__}",
+        }
+
+    exit_code = int(raw_result.get("exit_code") or 0)
+    smoke = raw_result.get("smoke_result")
+
+    if isinstance(smoke, dict):
+        status_raw = str(smoke.get("status") or "").upper()
+        if status_raw == "COMPLETED":
+            return {
+                "status": "succeeded",
+                "result": smoke,
+                "gpu_seconds_used": smoke.get("runtime_seconds"),
+                "error": None,
+            }
+        if status_raw == "FAILED":
+            return {
+                "status": "failed",
+                "result": None,
+                "gpu_seconds_used": smoke.get("runtime_seconds"),
+                "error": _stringify_error(smoke.get("error")),
+            }
+        # Unknown status string — treat as error so we do not silently
+        # succeed on a malformed result.
+        return {
+            "status": "error",
+            "result": smoke,
+            "gpu_seconds_used": None,
+            "error": f"unexpected smoke_result.status: {status_raw!r}",
+        }
+
+    # smoke_result missing: pipeline must be using the webhook path.
+    if exit_code == 0:
+        return {
+            "status": "running",
+            "result": None,
+            "gpu_seconds_used": None,
+            "error": None,
+        }
+    return {
+        "status": "failed",
+        "result": None,
+        "gpu_seconds_used": None,
+        "error": f"run_pipeline exited {exit_code} with no smoke_result",
+    }
+
+
+def _stringify_error(err: Any) -> str:
+    """Best-effort flattening of the Kendrew error dict into a string."""
+    if isinstance(err, dict):
+        bucket = err.get("bucket", "unknown")
+        check = err.get("check", "")
+        detail = err.get("detail", "")
+        return f"{bucket}:{check} — {detail}" if check else f"{bucket} — {detail}"
+    return str(err) if err else ""
