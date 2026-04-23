@@ -7,3 +7,4 @@ biopython>=1.81
 numpy>=1.24
 stripe>=9.0,<13.0
 python-dotenv>=1.0
+prometheus-client>=0.20

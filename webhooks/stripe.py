@@ -364,14 +364,17 @@ def register_stripe_webhook(flask_app: Flask) -> None:
         # Idempotency gate. A duplicate event id returns 200 so Stripe does
         # not keep retrying.
         if not _insert_event_once(event):
+            _observe(event_type, "duplicate")
             return jsonify(
                 {"status": "already_processed", "event_id": event_id}
             )
 
         result: dict = {"status": "ignored", "event_type": event_type}
+        outcome = "ignored"
         if event_type in HANDLED_EVENT_TYPES:
             try:
                 result = _apply_subscription_event(event)
+                outcome = str(result.get("status") or "ok")
             except Exception:
                 logger.exception(
                     "Error applying Stripe event %s", event_id
@@ -380,7 +383,18 @@ def register_stripe_webhook(flask_app: Flask) -> None:
                 # If you want retry-on-error semantics later, downgrade to
                 # returning 500 here and let Stripe retry.
                 result = {"status": "error"}
+                outcome = "error"
 
         _mark_processed(event_id)
+        _observe(event_type, outcome)
         result["event_id"] = event_id
         return jsonify(result)
+
+
+def _observe(event_type: str, outcome: str) -> None:
+    """Lazy-imported metrics hook. Never raises."""
+    try:
+        from shared.metrics import observe_stripe_event  # noqa: PLC0415
+        observe_stripe_event(event_type, outcome)
+    except Exception:  # pragma: no cover
+        pass

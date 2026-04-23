@@ -230,6 +230,7 @@ def idempotent(
             key = _compute_key(ctx.user_id, route, body)
 
             state, row = _claim_key(key, ctx.user_id, route, ttl_seconds)
+            _observe(state)
             if state == "replay" and row is not None:
                 return _replay_response(row)
             if state == "in_flight":
@@ -271,3 +272,12 @@ def _as_flask_response(returned: Any) -> Response:
             return body
         return Response(response=body, status=status)
     return Response(response=returned)
+
+
+def _observe(outcome: str) -> None:
+    """Lazy-imported metrics hook. Never raises."""
+    try:
+        from shared.metrics import observe_idempotency_outcome  # noqa: PLC0415
+        observe_idempotency_outcome(outcome)
+    except Exception:  # pragma: no cover
+        pass

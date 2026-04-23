@@ -51,6 +51,7 @@ from shared.credits import (
     requires_credits,
 )
 from shared.idempotency import idempotent
+from shared.metrics import register_metrics
 from webhooks.stripe import register_stripe_webhook
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,10 @@ def create_app() -> Flask:
     # Stripe webhook — mounted at /webhooks/stripe. Signature verification
     # + event_id idempotency live inside webhooks/stripe.py.
     register_stripe_webhook(flask_app)
+
+    # Prometheus /metrics (IP-allowlisted) + /healthz readiness probe.
+    # The existing /health liveness probe below stays as a dumb 200.
+    register_metrics(flask_app)
 
     # Single Modal client shared across stub tool routes.
     modal_client = ModalClient()

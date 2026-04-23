@@ -229,6 +229,7 @@ def record_spend(
     }
     try:
         client.table("credits_ledger").insert(row).execute()
+        _metric_credits_spent(tool, amount)
         return True
     except Exception:
         logger.error(
@@ -261,6 +262,7 @@ def record_grant(
     }
     try:
         client.table("credits_ledger").insert(row).execute()
+        _metric_credits_granted(get_tier(user_id), reason, amount)
         return True
     except Exception:
         logger.error(
@@ -381,3 +383,25 @@ def requires_credits(
         return wrapped
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# Metrics helpers — lazy-imported to avoid a shared.metrics → shared.credits
+# circular import at module load. Safe to call from any ledger writer.
+# ---------------------------------------------------------------------------
+
+
+def _metric_credits_spent(tool: str, amount: int) -> None:
+    try:
+        from shared.metrics import observe_credits_spent  # noqa: PLC0415
+        observe_credits_spent(tool, amount)
+    except Exception:  # pragma: no cover — metrics must never break a write
+        pass
+
+
+def _metric_credits_granted(tier: str, event: str, amount: int) -> None:
+    try:
+        from shared.metrics import observe_credits_granted  # noqa: PLC0415
+        observe_credits_granted(tier, event, amount)
+    except Exception:  # pragma: no cover
+        pass
