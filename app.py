@@ -53,6 +53,7 @@ from shared.credits import (
 )
 from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
+from shared.handoffs import get_handoff, mark_consumed
 from shared.jobs import (
     complete_job,
     create_job,
@@ -61,9 +62,15 @@ from shared.jobs import (
     mark_failed,
     mark_running,
     set_modal_call,
+    update_inputs,
 )
 from shared.metrics import register_metrics
-from shared.storage import StorageError, presigned_input_url, upload_input
+from shared.storage import (
+    StorageError,
+    copy_input,
+    presigned_input_url,
+    upload_input,
+)
 from tools import base as tool_base
 import tools.bindcraft   # noqa: F401 — import to register adapter
 import tools.boltzgen    # noqa: F401 — import to register adapter
@@ -575,14 +582,67 @@ def create_app() -> Flask:
     @flask_app.route("/tools/<tool>", methods=["GET"])
     @login_required
     def tool_form(tool: str):
-        """Render a GPU tool's submission form."""
+        """Render a GPU tool's submission form.
+
+        Wave 3 pre-fill sources (query params, owner-scoped):
+          * ``clone_from=<job_id>`` — reuse all inputs of an earlier job
+          * ``handoff=<handoff_id>`` — target PDB + chain + hotspots from
+            Epitope Scout via ``public.scout_handoffs``
+        """
         adapter, err = _require_tool(tool)
         if err:
             return err
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        pre_fill: dict = {}
+        pdb_source = None  # dict describing a reusable PDB, or None
+
+        clone_from = request.args.get("clone_from", "").strip()
+        if clone_from:
+            prior = get_job(clone_from, user_id=ctx.user_id)
+            if prior is not None and prior.tool == adapter.slug:
+                pre_fill = {
+                    k: v for k, v in (prior.inputs or {}).items()
+                    if not k.startswith("_")
+                }
+                # Normalize list-typed inputs back to form-friendly strings.
+                hs = pre_fill.get("hotspot_residues")
+                if isinstance(hs, list):
+                    pre_fill["hotspot_residues"] = ",".join(str(x) for x in hs)
+                stored_path = (prior.inputs or {}).get("_pdb_storage_path")
+                stored_name = (prior.inputs or {}).get("_pdb_filename")
+                if stored_path and stored_name:
+                    pdb_source = {
+                        "label": f"PDB from job {prior.id[:8]} ({stored_name})",
+                        "filename": stored_name,
+                        "token": f"job:{prior.id}",
+                    }
+
+        handoff_id = request.args.get("handoff", "").strip()
+        if handoff_id:
+            ho = get_handoff(handoff_id, user_id=ctx.user_id)
+            if ho is not None:
+                pre_fill.setdefault("target_chain", ho.target_chain)
+                pre_fill.setdefault(
+                    "hotspot_residues",
+                    ",".join(str(r) for r in ho.hotspot_residues),
+                )
+                pre_fill["preset"] = "pilot"
+                pdb_source = {
+                    "label": f"Target PDB from Epitope Scout ({ho.pdb_filename})",
+                    "filename": ho.pdb_filename,
+                    "token": f"handoff:{ho.id}",
+                }
+
         return render_template(
             adapter.form_template,
             adapter=adapter,
             error=None,
+            pre_fill=pre_fill,
+            pdb_source=pdb_source,
         )
 
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
@@ -601,7 +661,11 @@ def create_app() -> Flask:
         inputs, error_msg = adapter.validate(request.form, request.files)
         if inputs is None:
             return render_template(
-                adapter.form_template, adapter=adapter, error=error_msg
+                adapter.form_template,
+                adapter=adapter,
+                error=error_msg,
+                pre_fill=dict(request.form.items()),
+                pdb_source=None,
             )
 
         preset = adapter.preset_for(inputs["preset"])
@@ -610,6 +674,8 @@ def create_app() -> Flask:
                 adapter.form_template,
                 adapter=adapter,
                 error="Unknown preset.",
+                pre_fill=inputs,
+                pdb_source=None,
             )
 
         if ctx.balance < preset.credits_cost:
@@ -633,31 +699,84 @@ def create_app() -> Flask:
                     "Could not create job record — Supabase is unreachable. "
                     "Try again in a moment."
                 ),
+                pre_fill=inputs,
+                pdb_source=None,
             )
 
         presigned_url = ""
+        staged_path = ""
+        staged_filename = ""
         # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
         # smoke / preview do not. Falls back to the adapter-level flag for
         # legacy single-tier tools (e.g. BindCraft pilot-only).
         needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
         if needs_pdb:
             uploaded = request.files.get("target_pdb")
-            if uploaded is None or not uploaded.filename:
-                return render_template(
-                    adapter.form_template,
-                    adapter=adapter,
-                    error="Upload a target PDB file.",
-                )
+            reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
             try:
-                object_path = upload_input(
-                    user_id=ctx.user_id,
-                    job_id=job.id,
-                    filename=uploaded.filename,
-                    data=uploaded.read(),
-                    content_type=uploaded.mimetype or "chemical/x-pdb",
-                )
+                if uploaded is not None and uploaded.filename:
+                    staged_filename = uploaded.filename
+                    staged_path = upload_input(
+                        user_id=ctx.user_id,
+                        job_id=job.id,
+                        filename=uploaded.filename,
+                        data=uploaded.read(),
+                        content_type=uploaded.mimetype or "chemical/x-pdb",
+                    )
+                elif reuse_token.startswith("job:"):
+                    # Wave 3A clone: copy PDB from the original job's prefix.
+                    prior_job_id = reuse_token.split(":", 1)[1]
+                    prior = get_job(prior_job_id, user_id=ctx.user_id)
+                    if prior is None:
+                        raise StorageError("source job not found")
+                    src_path = (prior.inputs or {}).get("_pdb_storage_path")
+                    src_name = (prior.inputs or {}).get("_pdb_filename")
+                    if not src_path or not src_name:
+                        raise StorageError("source job has no stored PDB")
+                    staged_filename = src_name
+                    staged_path = copy_input(
+                        source_path=src_path,
+                        dest_user_id=ctx.user_id,
+                        dest_job_id=job.id,
+                        filename=src_name,
+                    )
+                elif reuse_token.startswith("handoff:"):
+                    # Wave 3C Scout handoff: copy PDB staged by Scout.
+                    ho_id = reuse_token.split(":", 1)[1]
+                    ho = get_handoff(ho_id, user_id=ctx.user_id)
+                    if ho is None:
+                        raise StorageError(
+                            "handoff not found or already consumed"
+                        )
+                    staged_filename = ho.pdb_filename
+                    staged_path = copy_input(
+                        source_path=ho.pdb_storage_path,
+                        dest_user_id=ctx.user_id,
+                        dest_job_id=job.id,
+                        filename=ho.pdb_filename,
+                    )
+                    mark_consumed(ho.id)
+                else:
+                    return render_template(
+                        adapter.form_template,
+                        adapter=adapter,
+                        error="Upload a target PDB file.",
+                        pre_fill=inputs,
+                        pdb_source=None,
+                    )
+
                 presigned_url = presigned_input_url(
-                    object_path, expires_seconds=7200
+                    staged_path, expires_seconds=7200
+                )
+                # Persist the storage path + filename on the job row so a
+                # future clone can re-use the file without re-uploading.
+                update_inputs(
+                    job.id,
+                    {
+                        **inputs,
+                        "_pdb_storage_path": staged_path,
+                        "_pdb_filename": staged_filename,
+                    },
                 )
             except StorageError as exc:
                 mark_failed(
@@ -668,6 +787,8 @@ def create_app() -> Flask:
                     adapter.form_template,
                     adapter=adapter,
                     error=f"Upload failed: {exc}",
+                    pre_fill=inputs,
+                    pdb_source=None,
                 )
 
         job_spec = adapter.build_payload(inputs, presigned_url)
@@ -704,6 +825,8 @@ def create_app() -> Flask:
                     "Could not submit to the GPU pool. No credits were "
                     "charged. Try again or contact support."
                 ),
+                pre_fill=inputs,
+                pdb_source=None,
             )
 
         set_modal_call(job.id, submit_result["function_call_id"])
@@ -725,6 +848,33 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         jobs = list_jobs_for_user(ctx.user_id, limit=50)
         return render_template("jobs_list.html", jobs=jobs)
+
+    @flask_app.route("/jobs/compare", methods=["GET"])
+    @login_required
+    def jobs_compare():
+        """Wave 3B cross-run compare: render selected jobs side-by-side.
+
+        Accepts ``ids=a,b,c`` or repeated ``ids=a&ids=b``. Owner-scoped.
+        """
+        from shared.jobs import list_jobs_by_ids  # local import avoids cycle
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        raw = request.args.getlist("ids")
+        if len(raw) == 1 and "," in raw[0]:
+            raw = [x.strip() for x in raw[0].split(",") if x.strip()]
+        raw = [x for x in raw if x]
+        if len(raw) < 2:
+            return redirect(url_for("jobs_list"))
+        jobs = list_jobs_by_ids(ctx.user_id, raw[:6])
+        columns = []
+        for j in jobs:
+            adapter = tool_base.get(j.tool)
+            columns.append({
+                "job": j,
+                "tool_label": adapter.label if adapter else j.tool,
+            })
+        return render_template("jobs_compare.html", columns=columns)
 
     @flask_app.route("/jobs/<job_id>", methods=["GET"])
     @login_required

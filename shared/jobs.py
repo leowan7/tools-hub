@@ -362,6 +362,38 @@ def _resolve_email_for_user(user_id: str) -> Optional[str]:
     return None
 
 
+def update_inputs(job_id: str, inputs: dict) -> bool:
+    """Overwrite the inputs jsonb for a job. Wave 3 uses this to record
+    the staged PDB's filename + storage path after upload/copy so a
+    future clone can reuse the same file without re-uploading."""
+    return _update(job_id, {"inputs": inputs})
+
+
+def list_jobs_by_ids(user_id: str, job_ids: list[str]) -> list[ToolJob]:
+    """Fetch multiple jobs by id, scoped to ``user_id``. Used by the
+    Wave 3B cross-run compare route. Returns rows in the same order as
+    the ids list; missing/foreign ids are skipped."""
+    client = get_service_client()
+    if client is None or not job_ids:
+        return []
+    try:
+        response = (
+            client.table(_TABLE)
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("id", job_ids)
+            .execute()
+        )
+        rows = {
+            str(r["id"]): ToolJob.from_row(r)
+            for r in (getattr(response, "data", None) or [])
+        }
+        return [rows[j] for j in job_ids if j in rows]
+    except Exception:
+        logger.warning("Failed to fetch jobs by ids for %s", user_id, exc_info=True)
+        return []
+
+
 def list_jobs_for_user(user_id: str, *, limit: int = 20) -> list[ToolJob]:
     client = get_service_client()
     if client is None:

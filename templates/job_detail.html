@@ -77,6 +77,7 @@
   <div style="margin-top: 1.5rem;">
     <a href="{{ url_for('jobs_list') }}" class="btn-secondary">All jobs</a>
     <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary" style="margin-left: 0.5rem;">Run again</a>
+    <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary" style="margin-left: 0.5rem;">Clone to new run</a>
   </div>
 
   {% if job.status in ('pending', 'running') %}

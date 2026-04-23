@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -24,7 +25,7 @@
           <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
           {% for preset in adapter.presets %}
             <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
-              <input type="radio" name="preset" value="{{ preset.slug }}" {% if loop.first %}checked{% endif %} required>
+              <input type="radio" name="preset" value="{{ preset.slug }}" {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
               <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
               <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
             </label>
@@ -39,6 +40,7 @@
         </select>
 
         <div id="pilot-fields" style="display: none;">
+          {{ pdb_source_banner(pdb_source) }}
           <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
           <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
                  style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
@@ -47,11 +49,11 @@
           </div>
 
           <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" value="A" maxlength="4"
+          <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
 
           <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
-          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115"
+          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
             Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
@@ -95,4 +97,5 @@
       sync();
     })();
   </script>
+  {{ prefill_script(pre_fill) }}
 {% endblock %}

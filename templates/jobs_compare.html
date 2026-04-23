@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Compare jobs — Ranomics Tools{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>Compare runs</h1>
+    <p class="subtitle">{{ columns|length }} jobs side-by-side. Top candidate per job shown first; click the job ID for the full results page.</p>
+  </div>
+
+  {% if columns|length < 2 %}
+    <div class="panel">
+      <div class="panel-body">
+        <p class="subtitle">Pick at least two jobs from <a href="{{ url_for('jobs_list') }}">/jobs</a> to compare.</p>
+      </div>
+    </div>
+  {% else %}
+    <div style="display: grid; grid-template-columns: repeat({{ columns|length }}, minmax(0, 1fr)); gap: 1rem; overflow-x: auto;">
+      {% for col in columns %}
+        {% set job = col.job %}
+        {% set result = job.result or {} %}
+        {% set candidates = result.get('candidates', []) %}
+        <div class="panel" style="min-width: 240px;">
+          <div class="panel-header">
+            <span class="panel-title" style="font-size: 0.9rem;">
+              <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
+            </span>
+            <span class="panel-badge">{{ job.status }}</span>
+          </div>
+          <div class="panel-body" style="font-size: 0.88rem;">
+            <div style="margin-bottom: 0.75rem;">
+              <div style="color: var(--text-secondary);">Tool</div>
+              <div><strong>{{ col.tool_label }}</strong></div>
+            </div>
+            <div style="margin-bottom: 0.75rem;">
+              <div style="color: var(--text-secondary);">Preset</div>
+              <div>{{ job.preset }}</div>
+            </div>
+            {% if job.inputs %}
+              <div style="margin-bottom: 0.75rem;">
+                <div style="color: var(--text-secondary);">Target chain / hotspots</div>
+                <div>
+                  {{ job.inputs.get('target_chain', '—') }}
+                  {% set hs = job.inputs.get('hotspot_residues') %}
+                  {% if hs is iterable and hs is not string %}
+                    / {{ hs|join(',') }}
+                  {% elif hs %}
+                    / {{ hs }}
+                  {% endif %}
+                </div>
+              </div>
+            {% endif %}
+            <div style="margin-bottom: 0.5rem;">
+              <div style="color: var(--text-secondary);">GPU seconds</div>
+              <div>{{ job.gpu_seconds_used or '—' }}</div>
+            </div>
+            <hr style="border: none; border-top: 1px solid var(--border); margin: 0.85rem 0;">
+            <div style="color: var(--text-secondary); margin-bottom: 0.4rem;">Top candidates ({{ candidates|length }} total)</div>
+            {% if candidates %}
+              <table style="width: 100%; font-size: 0.85rem; border-collapse: collapse;">
+                <thead>
+                  <tr style="color: var(--text-secondary); text-align: left;">
+                    <th style="padding: 0.25rem 0.3rem;">#</th>
+                    <th style="padding: 0.25rem 0.3rem;">ipTM</th>
+                    <th style="padding: 0.25rem 0.3rem;">pLDDT</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for cand in candidates[:3] %}
+                    {% set scores = cand.get('scores', {}) %}
+                    <tr style="border-top: 1px solid var(--border);">
+                      <td style="padding: 0.25rem 0.3rem;">{{ cand.get('rank', loop.index) }}</td>
+                      <td style="padding: 0.25rem 0.3rem;">
+                        {% set iptm = scores.get('ipTM') or scores.get('iptm') %}
+                        {% if iptm is number %}{{ '%.2f'|format(iptm) }}{% else %}—{% endif %}
+                      </td>
+                      <td style="padding: 0.25rem 0.3rem;">
+                        {% set plddt = scores.get('pLDDT') or scores.get('plddt') %}
+                        {% if plddt is number %}{{ '%.1f'|format(plddt) }}{% else %}—{% endif %}
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <div style="color: var(--text-secondary);">No candidates returned.</div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div style="margin-top: 1.5rem;">
+    <a href="{{ url_for('jobs_list') }}" class="btn-secondary">Back to jobs</a>
+  </div>
+{% endblock %}

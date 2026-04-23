@@ -5,7 +5,13 @@
 {% block content %}
   <div class="hero">
     <h1>My jobs</h1>
-    <p class="subtitle">GPU tool submissions ordered newest-first.</p>
+    <p class="subtitle">GPU tool submissions ordered newest-first. Check two or more succeeded jobs to compare them side-by-side.</p>
+  </div>
+
+  <div id="compare-bar" style="display: none; margin-bottom: 1rem; padding: 0.75rem 1rem; background: var(--bg-elevated); border-radius: var(--radius-md); border: 1px solid var(--border);">
+    <span id="compare-count" style="color: var(--text-secondary); margin-right: 1rem;"></span>
+    <button type="button" id="compare-btn" class="btn-primary">Compare selected</button>
+    <button type="button" id="compare-clear" class="btn-secondary" style="margin-left: 0.5rem;">Clear</button>
   </div>
 
   <div class="panel">
@@ -14,6 +20,7 @@
         <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
           <thead>
             <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+              <th style="padding: 0.5rem 0.4rem; width: 2rem;"></th>
               <th style="padding: 0.5rem 0.4rem;">Job</th>
               <th style="padding: 0.5rem 0.4rem;">Tool</th>
               <th style="padding: 0.5rem 0.4rem;">Preset</th>
@@ -25,6 +32,11 @@
           <tbody>
             {% for job in jobs %}
               <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 0.55rem 0.4rem;">
+                  {% if job.status == 'succeeded' %}
+                    <input type="checkbox" class="compare-chk" value="{{ job.id }}" aria-label="Select for compare">
+                  {% endif %}
+                </td>
                 <td style="padding: 0.55rem 0.4rem;">
                   <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
                 </td>
@@ -42,4 +54,53 @@
       {% endif %}
     </div>
   </div>
+
+  <script>
+    (function () {
+      var bar = document.getElementById('compare-bar');
+      var counter = document.getElementById('compare-count');
+      var btn = document.getElementById('compare-btn');
+      var clear = document.getElementById('compare-clear');
+      var checks = document.querySelectorAll('.compare-chk');
+      if (!bar || !btn) return;
+
+      function selected() {
+        var out = [];
+        for (var i = 0; i < checks.length; i++) {
+          if (checks[i].checked) out.push(checks[i].value);
+        }
+        return out;
+      }
+
+      function refresh() {
+        var sel = selected();
+        if (sel.length >= 2) {
+          bar.style.display = 'block';
+          counter.textContent = sel.length + ' jobs selected';
+          btn.disabled = false;
+        } else if (sel.length === 1) {
+          bar.style.display = 'block';
+          counter.textContent = 'Pick at least one more';
+          btn.disabled = true;
+        } else {
+          bar.style.display = 'none';
+        }
+      }
+
+      for (var i = 0; i < checks.length; i++) {
+        checks[i].addEventListener('change', refresh);
+      }
+      btn.addEventListener('click', function () {
+        var sel = selected();
+        if (sel.length >= 2) {
+          window.location.href = '/jobs/compare?ids=' + sel.join(',');
+        }
+      });
+      clear.addEventListener('click', function () {
+        for (var i = 0; i < checks.length; i++) checks[i].checked = false;
+        refresh();
+      });
+      refresh();
+    })();
+  </script>
 {% endblock %}

@@ -126,6 +126,51 @@ def presigned_input_url(object_path: str, *, expires_seconds: int = 7200) -> str
     raise StorageError(f"unexpected signed URL response: {result!r}")
 
 
+def download_input(object_path: str) -> bytes:
+    """Download the object at ``object_path`` via the service client.
+
+    Used by Wave 3 clone + Scout-handoff flows to stage a PDB that was
+    already uploaded (by the original job or by Scout) into a new job's
+    storage prefix without making the user re-upload.
+    """
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(BUCKET)
+        data = bucket.download(object_path)
+    except Exception as exc:
+        logger.error("Storage download failed for %s", object_path, exc_info=True)
+        raise StorageError(f"download failed: {exc}") from exc
+    if not data:
+        raise StorageError(f"empty object at {object_path}")
+    return data
+
+
+def copy_input(
+    *,
+    source_path: str,
+    dest_user_id: str,
+    dest_job_id: str,
+    filename: str,
+    content_type: str = "chemical/x-pdb",
+) -> str:
+    """Copy an existing object to ``{dest_user_id}/{dest_job_id}/{filename}``.
+
+    Download-then-upload since supabase-py has no server-side copy op.
+    Used by clone + Scout handoff to reuse a previously staged PDB
+    under the new job's path so the RLS owner-prefix still holds.
+    """
+    data = download_input(source_path)
+    return upload_input(
+        user_id=dest_user_id,
+        job_id=dest_job_id,
+        filename=filename,
+        data=data,
+        content_type=content_type,
+    )
+
+
 def delete_input(object_path: str) -> bool:
     """Remove a previously uploaded object. Used for cleanup on failure."""
     client = get_service_client()

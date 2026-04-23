@@ -1,0 +1,55 @@
+{# Wave 3 shared pre-fill helpers for tool forms.
+
+Usage in a form template:
+    {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
+
+  - {{ pre_value(pre_fill, "target_chain", "A") }} — renders value attr
+    with the pre-filled string or a default.
+  - {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} — for
+    the preset radio: honors a pre-filled preset if present, otherwise
+    falls back to "check the first option" behavior.
+  - {{ pdb_source_banner(pdb_source) }} — banner above the target_pdb
+    file input explaining the reusable PDB + hidden reuse_pdb_token.
+  - {{ prefill_script(pre_fill) }} — one-shot JS that toggles the
+    pilot-fields section to visible when the pilot preset is pre-
+    selected (existing toggle code on change only fires on user input).
+#}
+
+{% macro pre_value(pre_fill, key, default="") -%}
+value="{{ (pre_fill.get(key) if pre_fill else None) or default }}"
+{%- endmacro %}
+
+{% macro pre_checked(pre_fill, key, value, is_first) -%}
+  {% set current = (pre_fill.get(key) if pre_fill else None) %}
+  {% if current %}
+    {% if current == value %}checked{% endif %}
+  {% elif is_first %}
+    checked
+  {% endif %}
+{%- endmacro %}
+
+{% macro pdb_source_banner(pdb_source) -%}
+  {% if pdb_source %}
+    <div style="margin-bottom: 1rem; padding: 0.85rem 1rem; background: rgba(74, 222, 128, 0.08); border-left: 3px solid #4ade80; border-radius: var(--radius-sm); max-width: 560px;">
+      <strong style="color: var(--text-primary);">Using: {{ pdb_source.label }}</strong>
+      <div style="color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.35rem;">
+        Leave the file input empty to reuse this PDB, or upload a new one below to override.
+      </div>
+      <input type="hidden" name="reuse_pdb_token" value="{{ pdb_source.token }}">
+    </div>
+  {% endif %}
+{%- endmacro %}
+
+{% macro prefill_script(pre_fill) -%}
+  {% if pre_fill and pre_fill.get("preset") %}
+    <script>
+      (function () {
+        var pilotFields = document.getElementById('pilot-fields');
+        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
+        if (pilotFields && selected && selected.value === 'pilot') {
+          pilotFields.style.display = 'block';
+        }
+      })();
+    </script>
+  {% endif %}
+{%- endmacro %}
