@@ -38,6 +38,7 @@ HANDLED_EVENT_TYPES = {
     "checkout.session.completed",
     "customer.subscription.updated",
     "customer.subscription.created",
+    "invoice.paid",
 }
 
 
@@ -299,22 +300,35 @@ def _apply_subscription_event(event: dict) -> dict:
         )
         return {"status": "error", "reason": "user_tier_upsert_failed"}
 
-    # Grant monthly credits ONLY on the initial-signup event. Stripe also
-    # fires customer.subscription.created (and sometimes customer.subscription.updated)
-    # in the same flow — if we granted on all of them we'd double-credit users.
-    # Renewal credits for subsequent billing periods should be handled by a
-    # separate invoice.paid event (TODO: add to HANDLED_EVENT_TYPES and route
-    # here once Stream A graduates from Wave-0 plumbing to real billing).
+    # Grant monthly credits on initial signup OR renewal, never on both for
+    # the same billing period. Stripe fires several events per signup flow
+    # (checkout.session.completed, customer.subscription.created, and an
+    # invoice.paid with billing_reason="subscription_create"); granting on
+    # all of them would multi-credit the user. Strategy:
+    #   - initial signup: checkout.session.completed -> grant
+    #   - renewal:        invoice.paid with billing_reason="subscription_cycle" -> grant
+    #   - everything else (subscription.created/updated, first invoice.paid): tier upsert only
     granted = 0
     event_type = event.get("type", "")
     is_initial_signup = event_type == "checkout.session.completed"
-    if is_initial_signup and plan.monthly_credits > 0:
+    billing_reason = obj.get("billing_reason") if event_type == "invoice.paid" else None
+    is_renewal = event_type == "invoice.paid" and billing_reason == "subscription_cycle"
+    if (is_initial_signup or is_renewal) and plan.monthly_credits > 0:
+        grant_reason = (
+            f"{plan.tier} initial grant"
+            if is_initial_signup
+            else f"{plan.tier} renewal grant"
+        )
         record_grant(
             user_id,
             plan.monthly_credits,
-            reason=f"{plan.tier} initial grant",
+            reason=grant_reason,
             stripe_event_id=event.get("id"),
-            metadata={"price_id": price_id, "event_type": event_type},
+            metadata={
+                "price_id": price_id,
+                "event_type": event_type,
+                "billing_reason": billing_reason,
+            },
         )
         granted = plan.monthly_credits
 
