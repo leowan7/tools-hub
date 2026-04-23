@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}Job {{ job.id[:8] }} — Ranomics Tools{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
+    <p class="subtitle">
+      Preset <strong>{{ job.preset }}</strong> · {{ job.credits_cost }} credits ·
+      submitted {{ job.created_at[:19] if job.created_at else '—' }}
+    </p>
+  </div>
+
+  <div class="panel" id="job-status-panel" data-job-id="{{ job.id }}">
+    <div class="panel-header">
+      <span class="panel-title">Status</span>
+      <span class="panel-badge" id="status-badge">{{ job.status }}</span>
+    </div>
+    <div class="panel-body">
+      <div id="status-progress" style="margin-bottom: 1rem;">
+        {% if job.status in ('pending', 'running') %}
+          <p class="subtitle">
+            <span id="stage-text">Waiting for pipeline to start...</span>
+            <span id="progress-text" style="margin-left: 1rem;"></span>
+          </p>
+          <div style="background: var(--bg-elevated); border-radius: var(--radius-sm); height: 6px; overflow: hidden; max-width: 420px;">
+            <div id="progress-bar" style="background: var(--accent); height: 100%; width: 0%; transition: width 0.5s ease;"></div>
+          </div>
+        {% elif job.status == 'succeeded' %}
+          <p class="subtitle" style="color: var(--success, #4ade80);">
+            Completed in {{ job.gpu_seconds_used or '—' }} GPU-seconds.
+          </p>
+        {% elif job.status == 'failed' %}
+          <p class="subtitle" style="color: var(--danger, #f87171);">
+            Job failed. See details below.
+          </p>
+        {% elif job.status == 'timeout' %}
+          <p class="subtitle" style="color: var(--warning, #fbbf24);">
+            Job timed out before producing a result.
+          </p>
+        {% endif %}
+      </div>
+
+      <div id="results-container">
+        {% if job.status == 'succeeded' and job.result %}
+          {% include tool_results_partial %}
+        {% elif job.status == 'failed' and job.error %}
+          <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-top: 1rem;">
+            <div class="panel-body">
+              <strong>Error:</strong>
+              {% if job.error.bucket %}
+                <div>Category: {{ job.error.bucket }}{% if job.error.check %} / {{ job.error.check }}{% endif %}</div>
+              {% endif %}
+              {% if job.error.category %}
+                <div>{{ job.error.category }}</div>
+              {% endif %}
+              {% if job.error.detail or job.error.message %}
+                <pre style="white-space: pre-wrap; font-size: 0.85rem; margin-top: 0.75rem; color: var(--text-secondary);">{{ job.error.detail or job.error.message }}</pre>
+              {% endif %}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div style="margin-top: 1.5rem;">
+    <a href="{{ url_for('jobs_list') }}" class="btn-secondary">All jobs</a>
+    <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary" style="margin-left: 0.5rem;">Run again</a>
+  </div>
+
+  {% if job.status in ('pending', 'running') %}
+    <script>
+      (function () {
+        var jobId = document.getElementById('job-status-panel').dataset.jobId;
+        var statusBadge = document.getElementById('status-badge');
+        var stageText = document.getElementById('stage-text');
+        var progressText = document.getElementById('progress-text');
+        var progressBar = document.getElementById('progress-bar');
+        var pollIntervalMs = 5000;
+        var stopped = false;
+
+        function renderProgress(data) {
+          statusBadge.textContent = data.status;
+          if (data.progress) {
+            stageText.textContent = data.progress.stage || 'Running';
+            if (data.progress.designs_total > 0) {
+              progressText.textContent = '(' + data.progress.designs_completed + '/' + data.progress.designs_total + ')';
+              progressBar.style.width = Math.min(100, (data.progress.designs_completed / data.progress.designs_total) * 100) + '%';
+            }
+          }
+        }
+
+        function poll() {
+          if (stopped) return;
+          fetch('/jobs/' + jobId + '/status.json', { credentials: 'same-origin' })
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+              renderProgress(data);
+              if (data.status === 'succeeded' || data.status === 'failed' || data.status === 'timeout') {
+                stopped = true;
+                window.location.reload();
+                return;
+              }
+              setTimeout(poll, pollIntervalMs);
+            })
+            .catch(function () {
+              // network blip — back off once and retry
+              setTimeout(poll, pollIntervalMs * 2);
+            });
+        }
+
+        setTimeout(poll, pollIntervalMs);
+      })();
+    </script>
+  {% endif %}
+{% endblock %}
