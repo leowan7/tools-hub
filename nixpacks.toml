@@ -1,9 +1,9 @@
-# nixpacks.toml — Railway/Render build configuration for the Ranomics
+# nixpacks.toml — Railway build configuration for the Ranomics
 # tools hub.
 #
 # The hub itself has only pure-Python dependencies, but pinning the
-# Python version and install command here guarantees identical builds
-# across Render and Railway. Individual tools under tools/<name>/ may
+# Python version and install command here guarantees reproducible builds
+# on Railway. Individual tools under tools/<name>/ may
 # add native dependencies later; extend nixPkgs as needed when that
 # happens.
 #

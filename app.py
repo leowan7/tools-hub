@@ -248,7 +248,7 @@ def create_app() -> Flask:
 
     @flask_app.route("/health", methods=["GET"])
     def health():
-        """Unauthenticated health check for Render/Railway port scanners."""
+        """Unauthenticated health check for Railway port scanner."""
         return jsonify({"status": "ok"}), 200
 
     # ------------------------------------------------------------------

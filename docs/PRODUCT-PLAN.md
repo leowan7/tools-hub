@@ -58,7 +58,7 @@ Also in space: Chai Discovery, 310.ai, Profluent, BioLM, Ginkgo Model API, NVIDI
 
 | Asset | State | Validation | Revenue role |
 |---|---|---|---|
-| [`epitope-scout/`](../../epitope-scout/) | Live on Render at scout.ranomics.com, CPU, free | 🟢 in production | **v1 subscription tool** |
+| [`epitope-scout/`](../../epitope-scout/) | Live on Railway at scout.ranomics.com, CPU, free | 🟢 in production | **v1 subscription tool** |
 | [`tools-hub/`](../) | Flask + Supabase on Railway, shared auth with Scout | 🟢 hub live, tools stubbed | **v1 hub shell** |
 | [`tools-hub-prototype/`](../../tools-hub-prototype/) Developability Scout | 70% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |
 | [`tools-hub-prototype/`](../../tools-hub-prototype/) Library Planner | 60% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |

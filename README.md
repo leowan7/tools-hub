@@ -54,9 +54,9 @@ venv\Scripts\python.exe app.py
 
 ## Deployment
 
-Designed for Render or Railway via Nixpacks. The build spec is in
+Designed for Railway via Nixpacks. The build spec is in
 `nixpacks.toml`; the start command is in `Procfile` (also duplicated in
-`nixpacks.toml` because Render sometimes ignores Procfile).
+`nixpacks.toml`).
 
 Health check: `/health` returns `{"status": "ok"}` unauthenticated, so
 the port scanner can verify the app without credentials.
@@ -96,7 +96,7 @@ tools-hub/
   requirements.txt       Pinned deps
   Procfile               Gunicorn start command
   gunicorn.conf.py       Gunicorn config (preload, logging)
-  nixpacks.toml          Render/Railway build config
+  nixpacks.toml          Railway build config
   runtime.txt            Python version pin
   .env.example           Documented env vars
   .gitignore
