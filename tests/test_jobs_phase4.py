@@ -109,15 +109,35 @@ def patched_service_client(store):
         class _UpdateQuery:
             def __init__(self, payload):
                 self._payload = payload
+                self._job_id = None
+                self._allowed_statuses: list | None = None
 
             def eq(self, col, val):
-                # Only id-based updates are used by jobs.py.
-                if col == "id" and val in store.rows:
-                    store.update(val, self._payload)
+                if col == "id":
+                    self._job_id = val
+                return self
+
+            def in_(self, col, values):
+                # CAS guard: only the row matching ``id`` AND whose
+                # current status is in ``values`` is updated. Mirrors
+                # PostgREST ``UPDATE ... WHERE status IN (...)``.
+                if col == "status":
+                    self._allowed_statuses = list(values)
                 return self
 
             def execute(self):
-                return MagicMock(data=None)
+                if self._job_id is None or self._job_id not in store.rows:
+                    return MagicMock(data=[])
+                current = store.rows[self._job_id].get("status")
+                if (
+                    self._allowed_statuses is not None
+                    and current not in self._allowed_statuses
+                ):
+                    # CAS lost — do not mutate, return empty row list so
+                    # ``_cas_update`` reports False.
+                    return MagicMock(data=[])
+                store.update(self._job_id, self._payload)
+                return MagicMock(data=[dict(store.rows[self._job_id])])
 
         table.select = lambda *_, **__: _SelectQuery()
         table.update = lambda payload: _UpdateQuery(payload)

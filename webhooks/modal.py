@@ -35,12 +35,19 @@ No token verification — the worst case is a spoofed heartbeat writes
 a fake stage string, which has no security consequence. If we ever
 need stronger guarantees, add the token to the heartbeat URL too.
 
-Idempotency
------------
+Idempotency & race safety
+-------------------------
 A replay of the same COMPLETED/FAILED POST is a no-op — we refuse to
-move a terminal-state job back to a different terminal state. The
-PostgREST update is constrained by a check on ``status IN
-('pending','running')`` inside ``_apply_terminal``.
+move a terminal-state job back to a different terminal state. Both
+layers enforce this:
+
+  * The preflight ``if job.status in terminal`` short-circuits obvious
+    replays without touching Supabase.
+  * The underlying ``complete_job`` → ``mark_*`` helpers use a CAS-style
+    ``UPDATE ... WHERE id = :job_id AND status IN ('pending','running')``
+    so a user cancel that lands between our SELECT and our UPDATE still
+    wins. When the CAS UPDATE matches zero rows we skip the refund and
+    email side effects and return ``already_terminal`` to the caller.
 
 Registering
 -----------
@@ -115,12 +122,19 @@ def _handle_result(job_id: str, job_token: str) -> Any:
         return jsonify({"status": "already_terminal", "current": job.status})
 
     if status_raw == "COMPLETED":
-        _apply_terminal(
+        fresh = _apply_terminal(
             job,
             terminal_status="succeeded",
             result=payload.get("output") or {},
             error=None,
         )
+        # CAS race: a user cancel (or inline-poll writer) landed between
+        # our SELECT and _apply_terminal's UPDATE. complete_job is a
+        # no-op in that case and returns the existing terminal row.
+        if fresh is not None and fresh.status != "succeeded":
+            return jsonify({
+                "status": "already_terminal", "current": fresh.status,
+            })
         return jsonify({"status": "recorded", "terminal": "succeeded"})
 
     if status_raw == "FAILED":
@@ -128,12 +142,16 @@ def _handle_result(job_id: str, job_token: str) -> Any:
             "category": "unknown",
             "message": "Pipeline reported FAILED with no error detail.",
         }
-        _apply_terminal(
+        fresh = _apply_terminal(
             job,
             terminal_status="failed",
             result=None,
             error=err,
         )
+        if fresh is not None and fresh.status != "failed":
+            return jsonify({
+                "status": "already_terminal", "current": fresh.status,
+            })
         return jsonify({"status": "recorded", "terminal": "failed"})
 
     # Anything else — refuse to update state on an ambiguous status.
@@ -149,9 +167,16 @@ def _apply_terminal(
     terminal_status: str,
     result: Any,
     error: Any,
-) -> None:
-    """Move a job to its terminal state, refund unused credits, send email."""
-    complete_job(
+) -> ToolJob | None:
+    """Move a job to its terminal state, refund unused credits, send email.
+
+    Returns the post-transition ToolJob row. complete_job is CAS-guarded,
+    so if a concurrent writer (user cancel, inline poll) terminalised the
+    row between our SELECT and its UPDATE the returned row's ``status``
+    will NOT match ``terminal_status`` — the caller should respond with
+    ``already_terminal`` in that case.
+    """
+    fresh = complete_job(
         job.id,
         terminal_status=terminal_status,
         result=result if isinstance(result, dict) else None,
@@ -160,6 +185,7 @@ def _apply_terminal(
         ),
     )
     _observe_terminal(job.tool, terminal_status)
+    return fresh
 
 
 # ---------------------------------------------------------------------------
