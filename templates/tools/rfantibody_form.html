@@ -86,6 +86,83 @@
       background: var(--accent-glow);
       border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
     }
+
+    /* Hotspot picker — dark editorial, matches RFantibody panel aesthetic. */
+    .hotspot-picker {
+      margin-bottom: 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      overflow: hidden;
+    }
+    .hotspot-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .hotspot-picker-header .label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0;
+    }
+    .hotspot-picker-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+    }
+    .hotspot-picker-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-dim);
+    }
+    .hotspot-viewer {
+      width: 100%;
+      height: 320px;
+      background: var(--bg-deep);
+      position: relative;
+      display: none;
+    }
+    .hotspot-viewer-empty {
+      padding: 1.75rem 1rem;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 0.82rem;
+      font-family: var(--font-body);
+    }
+    .hotspot-viewer-empty code {
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .hotspot-viewer-error {
+      padding: 1rem;
+      color: #f87171;
+      font-size: 0.85rem;
+    }
   </style>
 
   <div class="hero">
@@ -153,8 +230,29 @@
             <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
             <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                    style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
               Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+              Click residues in the 3D viewer below to toggle them in and out of this list.
+            </div>
+
+            {# 3D hotspot picker — mirrors BoltzGen form. Renders only after
+               the user uploads a PDB; typed entry stays authoritative, the
+               picker only mutates the input. #}
+            <div class="hotspot-picker" data-hotspot-picker>
+              <div class="hotspot-picker-header">
+                <span class="label">3D residue picker</span>
+                <div class="hotspot-picker-controls">
+                  <label>
+                    <input type="checkbox" id="hotspot-surface-toggle"> Surface
+                  </label>
+                  <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+                </div>
+              </div>
+              <div id="hotspot-empty" class="hotspot-viewer-empty">
+                Upload a target PDB above to enable click-to-pick. Typed
+                entry in the <code>Hotspot residues</code> field above also works.
+              </div>
+              <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
             </div>
 
             <label for="cdr_lengths" class="label" style="display:block; margin-bottom: 0.4rem;">CDR lengths</label>
@@ -285,6 +383,26 @@
       presetSelect.addEventListener('change', sync);
       sync();
     })();
+  </script>
+
+  {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
+     production. The picker JS degrades gracefully if NGL fails to load —
+     the typed hotspot field keeps working either way. #}
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (typeof window.initHotspotPicker !== 'function') return;
+      window.initHotspotPicker({
+        pdbInputId: 'target_pdb',
+        hotspotInputId: 'hotspot_residues',
+        chainInputId: 'target_chain',
+        viewerId: 'hotspot-viewer',
+        emptyMessageId: 'hotspot-empty',
+        surfaceToggleId: 'hotspot-surface-toggle',
+        clearBtnId: 'hotspot-clear-btn',
+      });
+    });
   </script>
   {{ prefill_script(pre_fill) }}
 {% endblock %}
