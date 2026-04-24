@@ -43,7 +43,12 @@ RUN git clone --depth 1 https://github.com/dauparas/ProteinMPNN.git $PROTEINMPNN
 RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 
 # ---------- Python utilities ----------
-RUN python3 -m pip install --no-cache-dir requests biopython numpy
+# Pin numpy<2 because torch==2.2.2+cu118 wheels are compiled against the
+# NumPy 1.x C ABI. NumPy 2.x is ABI-incompatible: ``torch.from_numpy(...)``
+# raises ``RuntimeError: Numpy is not available`` at runtime even though
+# both modules import cleanly. Remove the pin once torch >=2.3 (which
+# ships NumPy-2-compatible bindings) lands in this image.
+RUN python3 -m pip install --no-cache-dir requests biopython "numpy<2"
 
 # ---------- Bake a small smoke fixture ----------
 # 1HEW (~130 residues, single chain) ships in tools-hub/static/example/.
@@ -56,6 +61,7 @@ COPY static/example/1HEW.pdb /opt/smoke_target.pdb
 # ``modal deploy`` before a GPU seat is ever spent.
 RUN python3 -c "import torch; assert torch.__version__.startswith('2.2'), torch.__version__" && \
     python3 -c "import Bio.PDB, numpy, requests" && \
+    python3 -c "import numpy, torch; t = torch.from_numpy(numpy.zeros(1)); assert t.shape == (1,)" && \
     test -f $PROTEINMPNN_WEIGHTS/v_48_020.pt && \
     test -f $PROTEINMPNN_DIR/protein_mpnn_run.py && \
     test -f $PROTEINMPNN_DIR/helper_scripts/parse_multiple_chains.py && \
