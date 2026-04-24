@@ -139,6 +139,14 @@ GPU: A100-40GB. App: `ranomics-colabfold-prod`. Pipeline file: `tools-hub/tools/
 |---|---|---|---|---|---|---|---|---|
 | 2026-04-24 | colabfold | code-complete | — | `feat/colabfold-standalone` HEAD | 0 | **CODE-COMPLETE** | agent | D3 ships Dockerfile.modal (Layer-1 checks wired), run_pipeline.py (preflight + main + AF2 stub rejection), modal_app.py (ranomics-colabfold-prod, A100-40GB, 600 s), tools/colabfold adapter with smoke (0 cr, baked ubiquitin) + standalone (2 cr, inline FASTA) presets, form + results templates, 45-test offline test suite. Awaiting Modal deploy + 2× consecutive staging smoke on `ranomics-colabfold-prod` before flipping `FLAG_TOOL_COLABFOLD=on`. See ATOMIC-TOOLS.md "D3 Status" for the user-action commands. |
 
-### ESMFold, AF2-IG, Boltz-2, LigandMPNN, RF2-standalone, RFdiff-standalone
+### ESMFold (D4)
+
+GPU: A100-40GB. App: `ranomics-esmfold-prod`. Pipeline file: `tools-hub/tools/esmfold/run_pipeline.py` (self-contained under tools-hub, same rationale as D1 MPNN / D3 ColabFold). Modal wrapper: `tools-hub/tools/esmfold/modal_app.py`. Dockerfile: `tools-hub/tools/esmfold/Dockerfile.modal` (fresh image — no Kendrew image carried ESMFold; PyTorch + HuggingFace transformers + openfold helpers + baked `facebook/esmfold_v1` weights).
+
+| When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 2026-04-24 | esmfold | code-complete | — | `feat/esmfold-standalone` HEAD | 0 | **CODE-COMPLETE** | agent | D4 ships Dockerfile.modal (Layer-1 checks wired, bakes ~15 GB `esmfold_v1` weights), run_pipeline.py (preflight + main + ESMFold stub rejection, handles ptm/pae=None cleanly), modal_app.py (ranomics-esmfold-prod, A100-40GB, 600 s), tools/esmfold adapter with smoke (0 cr, baked ubiquitin) + standalone (1 cr, inline FASTA) presets — monomer-only validation rejects multi-record FASTA AND `:` chain separator. Form + results templates render with `ptm=None` tolerance. 49-test offline test suite; full tools-hub suite 233 passed, 6 skipped. External `codex review` blocked by usage-limit rate-limit through 2026-05-01; one self-review finding filed + fixed in commit `536e73b` (defensive `atom37_atom_exists` attribute lookup + `.eval().cuda()` order). Awaiting Modal deploy + 2× consecutive staging smoke on `ranomics-esmfold-prod` before flipping `FLAG_TOOL_ESMFOLD=on`. See ATOMIC-TOOLS.md "D4 Status" for the user-action commands. |
+
+### AF2-IG, Boltz-2, LigandMPNN, RF2-standalone, RFdiff-standalone
 
 Sections added when each D* stream starts.
