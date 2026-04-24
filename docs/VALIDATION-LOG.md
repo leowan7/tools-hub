@@ -131,6 +131,14 @@ GPU: A100-80GB. App: `ranomics-af2-prod`. Pipeline file: (to be created) `llm-pr
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
 
-### ColabFold, ESMFold, AF2-IG, Boltz-2, LigandMPNN, RF2-standalone, RFdiff-standalone
+### ColabFold (D3)
+
+GPU: A100-40GB. App: `ranomics-colabfold-prod`. Pipeline file: `tools-hub/tools/colabfold/run_pipeline.py` (self-contained under tools-hub, same rationale as D1 MPNN). Modal wrapper: `tools-hub/tools/colabfold/modal_app.py`. Dockerfile: `tools-hub/tools/colabfold/Dockerfile.modal` (derived from `llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal` ColabFold install recipe, RFdiffusion / SE3Transformer / DGL / MPNN stripped).
+
+| When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 2026-04-24 | colabfold | code-complete | — | `feat/colabfold-standalone` HEAD | 0 | **CODE-COMPLETE** | agent | D3 ships Dockerfile.modal (Layer-1 checks wired), run_pipeline.py (preflight + main + AF2 stub rejection), modal_app.py (ranomics-colabfold-prod, A100-40GB, 600 s), tools/colabfold adapter with smoke (0 cr, baked ubiquitin) + standalone (2 cr, inline FASTA) presets, form + results templates, 45-test offline test suite. Awaiting Modal deploy + 2× consecutive staging smoke on `ranomics-colabfold-prod` before flipping `FLAG_TOOL_COLABFOLD=on`. See ATOMIC-TOOLS.md "D3 Status" for the user-action commands. |
+
+### ESMFold, AF2-IG, Boltz-2, LigandMPNN, RF2-standalone, RFdiff-standalone
 
 Sections added when each D* stream starts.

@@ -82,8 +82,14 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # timeout.
     ("af2", "smoke"):              180,
     ("af2", "standalone"):         1200,
-    ("colabfold", "fast"):         720,
     ("af2", "standard"):           720,   # legacy alias — pre-D2 planning
+    # D3 ColabFold: slug "colabfold" → ``ranomics-colabfold-prod``.
+    # Smoke fits in ~120 s post-JIT (first run includes ~3 min JAX
+    # compile on a cold container). Standalone budgets 420 s — no-MSA
+    # ColabFold on <=600 aa completes in 1-2 min once cached.
+    ("colabfold", "smoke"):        120,
+    ("colabfold", "standalone"):   420,
+    ("colabfold", "fast"):         720,  # legacy alias — pre-D3 planning
     ("esmfold", "fast"):           360,
     ("af2_ig", "standard"):        720,
     # Composite pipelines — smoke tier (inline return, small preset).
@@ -124,8 +130,9 @@ def preset_gpu_seconds(tool: str, preset: str) -> int:
 # standalone. Keep this table tiny — one row per atomic tool.
 
 APP_NAME_OVERRIDES: Dict[str, str] = {
-    "mpnn": "ranomics-mpnn-prod",
-    "af2": "ranomics-af2-prod",
+    "mpnn":      "ranomics-mpnn-prod",
+    "af2":       "ranomics-af2-prod",
+    "colabfold": "ranomics-colabfold-prod",
 }
 
 

@@ -1,0 +1,65 @@
+# Modal container for D3 — ColabFold standalone (no-MSA fast fold).
+#
+# Atomic primitive. Image carries ColabFold + AF2 multimer weights +
+# JAX/cuDNN wheels. Runs on A100-40GB per ATOMIC-TOOLS.md D3 section.
+#
+# Install recipe lifted from llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal
+# where ColabFold is already installed to serve the RFdiffusion -> MPNN
+# -> AF2 validation step. Everything else (RFdiffusion, SE3Transformer,
+# DGL, ProteinMPNN) is stripped because D3 is fold-only.
+#
+# Layer-1 build-time validation at the bottom of the file fails
+# ``modal deploy`` cheaply (no GPU time spent) if ColabFold, the AF2
+# weights, or the smoke fixture are missing. See ATOMIC-TOOLS.md
+# "Required elements" #1.
+FROM runpod/base:0.6.2-cuda11.8.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    COLABFOLD_CACHE_DIR=/opt/colabfold_weights \
+    COLABFOLD_CACHE=/opt/colabfold_weights
+
+# ---------- System deps ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git python3-pip python3-dev build-essential && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- JAX / cuDNN / ColabFold ----------
+# Pin nvidia-cudnn-cu11<9.0 so JAX 0.4.23 finds libcudnn.so.8 — the
+# same pin the RFdiffusion composite image uses. ColabFold 1.5.5
+# bundles its own AlphaFold2 fork.
+RUN python3 -m pip install --no-cache-dir \
+    "nvidia-cudnn-cu11<9.0" \
+    "colabfold[alphafold]==1.5.5" \
+    "jax[cuda11_pip]==0.4.23" \
+    -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
+    python3 -c "from colabfold.download import download_alphafold_params; download_alphafold_params('alphafold2_multimer_v3')" && \
+    python3 -c "from colabfold.download import download_alphafold_params; download_alphafold_params('AlphaFold2-ptm')"
+RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
+
+# ---------- Python utilities ----------
+# biopython: FASTA parsing + sequence validation.
+# requests: download user-uploaded FASTA from presigned URL on standalone tier.
+RUN python3 -m pip install --no-cache-dir requests biopython
+
+# ---------- Bake a small smoke fixture ----------
+# Human ubiquitin (76 aa monomer, UniProt P0CG47). Tiny, well-folded,
+# ideal for a sub-minute no-MSA ColabFold smoke run.
+COPY static/example/ubiquitin.fasta /opt/smoke_target.fasta
+
+# ---------- Layer 1: build-time fail-fast validation ----------
+# See ATOMIC-TOOLS.md "Required elements" #1. Any failure here fails
+# ``modal deploy`` before a GPU seat is ever spent.
+RUN python3 -c "import jax; import colabfold" && \
+    python3 -c "import Bio.SeqIO, requests" && \
+    which colabfold_batch && \
+    test -f /opt/smoke_target.fasta && \
+    test -d $COLABFOLD_CACHE_DIR && \
+    ls $COLABFOLD_CACHE_DIR/params/ | head -1 && \
+    which python3 && \
+    echo "layer1 ok"
+
+# NOTE: no COPY run_pipeline.py or CMD — Modal invokes @app.function bodies.
+# The Modal wrapper in tools/colabfold/modal_app.py copies run_pipeline.py
+# in as a local file add.
