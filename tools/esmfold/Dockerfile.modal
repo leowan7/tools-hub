@@ -1,0 +1,94 @@
+# Modal container for D4 - ESMFold standalone (single-sequence fold).
+#
+# Atomic primitive. Image carries PyTorch + HuggingFace transformers +
+# the ``facebook/esmfold_v1`` model checkpoint (ESM-2 3B folding head,
+# ~15 GB of weights). Runs on A100-40GB per ATOMIC-TOOLS.md D4.
+#
+# Fresh build - no Kendrew image to lift from (ESMFold isn't installed in
+# any composite pipeline image). The install recipe is minimal: PyTorch
+# 2.1 CUDA 11.8 wheels + ``transformers`` + ``accelerate`` + openfold
+# (for EsmForProteinFolding's ProteinTensor <-> atom37 helpers).
+#
+# The esmfold_v1 weights are baked at image-build time via a one-shot
+# ``from_pretrained`` call. This keeps cold-start within the 10-min
+# smoke budget - downloading 15 GB every cold pod would blow the cap.
+#
+# Layer-1 build-time validation at the bottom of the file fails
+# ``modal deploy`` cheaply (no GPU time spent) if transformers, the
+# ESMFold weights, or the smoke fixture are missing. See ATOMIC-TOOLS.md
+# "Required elements" #1.
+FROM runpod/base:0.6.2-cuda11.8.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/opt/hf_cache \
+    TRANSFORMERS_CACHE=/opt/hf_cache
+
+# ---------- System deps ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git python3-pip python3-dev build-essential && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- PyTorch + HuggingFace + ESMFold deps ----------
+# torch 2.1.0 + CUDA 11.8 matches the RunPod base's cuDNN 8 runtime.
+# transformers 4.35+ has the ``EsmForProteinFolding`` class.
+# openfold (dllogger optional) provides the structure-module helpers
+# transformers' ESMFold implementation imports lazily. We install a
+# pinned commit to avoid API drift.
+# numpy<2 because transformers' numpy bridge still assumes the 1.x ABI
+# (same pin as the D1 MPNN Codex P1 fix).
+RUN python3 -m pip install --no-cache-dir \
+    "numpy<2" \
+    "torch==2.1.0+cu118" \
+    "torchaudio==2.1.0+cu118" \
+    "torchvision==0.16.0+cu118" \
+    --extra-index-url https://download.pytorch.org/whl/cu118
+
+RUN python3 -m pip install --no-cache-dir \
+    "transformers==4.35.2" \
+    "accelerate==0.24.1" \
+    "biopython" \
+    "requests"
+
+# ESMFold in transformers lazily imports openfold.np.residue_constants
+# + openfold.utils.rigid_utils for its structure module. Install the
+# headless openfold build (without the full training stack).
+RUN python3 -m pip install --no-cache-dir \
+    "git+https://github.com/aqlaboratory/openfold.git@4b41059694619831a7db195b7e0988fc4ff3a307"
+
+# ---------- Bake ESMFold v1 weights ----------
+# Download + cache the ~15 GB ``facebook/esmfold_v1`` checkpoint so
+# cold-start pods don't pay the download cost. Uses the same
+# ``EsmForProteinFolding.from_pretrained`` call ``run_pipeline.py``
+# uses at runtime, so an outright weight/API mismatch fails at build.
+RUN python3 -c "import os; os.environ['HF_HOME']='/opt/hf_cache'; \
+from transformers import EsmForProteinFolding, AutoTokenizer; \
+tok = AutoTokenizer.from_pretrained('facebook/esmfold_v1'); \
+mdl = EsmForProteinFolding.from_pretrained('facebook/esmfold_v1'); \
+print('esmfold_v1 baked into', os.environ['HF_HOME']); \
+del mdl; del tok"
+
+RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
+
+# ---------- Bake a small smoke fixture ----------
+# Human ubiquitin (76 aa monomer, UniProt P0CG47). Tiny, well-folded,
+# ideal for a sub-minute ESMFold smoke run.
+COPY static/example/ubiquitin.fasta /opt/smoke_target.fasta
+
+# ---------- Layer 1: build-time fail-fast validation ----------
+# See ATOMIC-TOOLS.md "Required elements" #1. Any failure here fails
+# ``modal deploy`` before a GPU seat is ever spent.
+RUN python3 -c "import torch; import transformers; import Bio.SeqIO, requests; \
+from transformers import EsmForProteinFolding, AutoTokenizer; \
+print('torch', torch.__version__, 'transformers', transformers.__version__)" && \
+    python3 -c "import numpy as np, torch; torch.from_numpy(np.zeros(1))" && \
+    test -f /opt/smoke_target.fasta && \
+    test -d $HF_HOME && \
+    ls $HF_HOME/hub/ | head -1 && \
+    which python3 && \
+    echo "layer1 ok"
+
+# NOTE: no COPY run_pipeline.py or CMD - Modal invokes @app.function bodies.
+# The Modal wrapper in tools/esmfold/modal_app.py copies run_pipeline.py
+# in as a local file add.

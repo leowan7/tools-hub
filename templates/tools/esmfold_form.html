@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, prefill_script %}
+
+{% block title %}{{ adapter.label }} - Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# D4 - ESMFold standalone (single-sequence fold, monomer-only).
+     Two-panel layout parallel to the D3 ColabFold form: form on the
+     left, "About ESMFold" on the right. The ``standalone`` preset
+     reveals the FASTA textarea via the shared #pilot-fields div
+     (reused so ``prefill_script()`` from _prefill.html keeps working
+     on clone/handoff). #}
+  <style>
+    .esmfold-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .esmfold-layout { grid-template-columns: 1fr; }
+    }
+    .esmfold-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .esmfold-about h3:first-child { margin-top: 0; }
+    .esmfold-about p,
+    .esmfold-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .esmfold-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .esmfold-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .esmfold-about ul li:last-child { border-bottom: none; }
+    .esmfold-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .esmfold-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .esmfold-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .esmfold-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .esmfold-runtime-table tr:last-child td { border-bottom: none; }
+    .esmfold-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: -0.75rem 0 1.25rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .esmfold-fasta {
+      width: 100%;
+      max-width: 560px;
+      min-height: 160px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.45;
+      resize: vertical;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  {# Preset runtime map mirrors tools/esmfold/meta.py::PRESET_RUNTIME. #}
+  {% set preset_minutes = {
+    'smoke': '0.5-1',
+    'standalone': '0.5-1',
+  } %}
+
+  {# Handoff remap: shared ``from_job``/``handoff`` route sets
+     ``pre_fill["preset"] = "pilot"``. ESMFold has no ``pilot``
+     option - fall through to ``standalone`` so the incoming sequence
+     is actually used instead of silently loading the baked ubiquitin
+     fixture. Copied from the MPNN/ColabFold form's Codex P1 fix. #}
+  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
+  {% if _incoming_preset == 'pilot' %}
+    {% set _incoming_preset = 'standalone' %}
+  {% endif %}
+
+  <div class="esmfold-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Fold inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
+          <select name="preset" id="preset" required
+                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
+            {% for preset in adapter.presets %}
+              <option value="{{ preset.slug }}"
+                      data-credits="{{ preset.credits_cost }}"
+                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                      {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
+                {{ preset.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <div id="preset-cost-preview" class="esmfold-cost-preview" aria-live="polite"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+
+          {# Re-using #pilot-fields id so ``prefill_script()`` from
+             _prefill.html toggles visibility when a clone/handoff lands
+             the user here with preset=standalone preselected. #}
+          <div id="pilot-fields" style="display: none;">
+            <label for="fasta_text" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA (single chain)</label>
+            <textarea name="fasta_text" id="fasta_text" class="esmfold-fasta"
+                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."
+                      spellcheck="false">{{ (pre_fill.get('fasta_text') if pre_fill else '') or '' }}</textarea>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
+              Paste one monomer sequence in FASTA format (single chain only, 10-400 aa).
+              Canonical 20 amino acids + <code>X</code> for unknown.
+              ESMFold v1 is <strong>monomer-only</strong> - for multimers use
+              ColabFold (D3) or AF2 standalone (D2). No MSA is computed;
+              the fold comes straight from the ESM-2 language model.
+            </div>
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Smoke tier runs against our baked 76 aa ubiquitin fixture;
+            no FASTA input needed.
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Standalone tier runs on your FASTA - single-chain monomer
+            up to 400 aa. ~30 s on A100-40GB once the 3B model is warm.
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
+    </div>
+
+    <aside class="panel esmfold-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About ESMFold</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it is</h3>
+        <p>
+          ESMFold (<a href="https://www.science.org/doi/10.1126/science.ade2574">Lin et al., Science 2023</a>).
+          A single-sequence structure predictor built on Meta's ESM-2 3B
+          protein language model. No MSA, no templates - the fold comes
+          directly from the language model's internal representation.
+          Much faster than AF2 (30 s vs 5-10 min) at a modest accuracy
+          cost on well-studied families; competitive to better on
+          orphans and novel sequences.
+          Repo: <a href="https://github.com/facebookresearch/esm">facebookresearch/esm</a>.
+        </p>
+
+        <h3>When to use</h3>
+        <p>
+          Pick ESMFold when you need the fastest possible fold for a
+          monomer - screening designs, a quick sanity-check, or a fold
+          for a sequence AF2 struggles with (few homologs). For
+          multimers use ColabFold (D3) or AF2 (D2). For full-accuracy
+          work on well-studied families use AF2 standalone with MSA.
+        </p>
+
+        <h3>Inputs</h3>
+        <ul>
+          <li><strong>FASTA</strong> - single chain only, 10-400 aa.</li>
+        </ul>
+
+        <h3>Outputs</h3>
+        <ul>
+          <li>Predicted structure (PDB)</li>
+          <li>Per-residue pLDDT (0-100)</li>
+          <li>pTM (when the checkpoint exposes it)</li>
+        </ul>
+
+        <h3>Runtime &amp; cost</h3>
+        <table class="esmfold-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          Unused GPU seconds are refunded in credits when a run finishes
+          faster than its budget.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.querySelector('form');
+      var presetSelect = document.getElementById('preset');
+      var pilotFields = document.getElementById('pilot-fields');
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!form || !presetSelect) return;
+
+      var descriptions = {
+        {% for preset in adapter.presets %}
+          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      };
+
+      function sync() {
+        var value = presetSelect.value;
+        if (pilotFields) {
+          pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
+        }
+        if (costPreview) {
+          var opt = presetSelect.options[presetSelect.selectedIndex];
+          if (opt) {
+            var credits = opt.getAttribute('data-credits');
+            var minutes = opt.getAttribute('data-minutes');
+            costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+          }
+        }
+        if (descEl) {
+          descEl.textContent = descriptions[value] || '';
+        }
+      }
+
+      presetSelect.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+{% endblock %}
