@@ -377,10 +377,10 @@ def run_esmfold(sequence: str) -> dict[str, Any]:
     model = EsmForProteinFolding.from_pretrained(
         ESMFOLD_MODEL_ID, low_cpu_mem_usage=True
     )
-    # ``.cuda()`` after .eval() so batchnorm / dropout state matches.
-    model = model.cuda().eval()
-    # ESMFold's structure module benefits from fp16 chunk size for longer
-    # sequences. Leave default chunk size (None) for <= 400 aa.
+    # ``.eval()`` first to switch off dropout etc., then move to GPU.
+    model = model.eval().cuda()
+    # ESMFold's structure module benefits from fp16 on the ESM-2 trunk
+    # for longer sequences. Leave default chunk size (None) for <= 400 aa.
     logger.info("ESMFold loaded; running forward on %d aa", len(sequence))
 
     tokenized = tokenizer(
@@ -393,17 +393,29 @@ def run_esmfold(sequence: str) -> dict[str, Any]:
     with torch.no_grad():
         output = model(input_ids)
 
-    # pLDDT: shape (batch, seq_len, 37) in transformers 4.35.x - per-atom
-    # pLDDT on 37 atom positions. Collapse to per-residue by taking the
-    # mean over the atom axis. The ESMFold paper reports the CA pLDDT,
-    # but the atom37 mean matches HuggingFace's ``infer_pdb`` behaviour
-    # and is numerically close.
-    plddt_tensor = output.plddt  # (B, L, 37) or (B, L)
+    # pLDDT extraction. HuggingFace ``EsmForProteinFolding`` returns
+    # ``output.plddt`` on a 0-100 scale. Shape varies by transformers
+    # minor version: 4.35.x returns ``(batch, seq_len, 37)`` per-atom
+    # confidence; older branches returned ``(batch, seq_len)``. Collapse
+    # to per-residue by atom-masked mean when the atom axis is present.
+    plddt_tensor = output.plddt
     if plddt_tensor.dim() == 3:
-        # average over atom37 axis, ignoring zeros (unused atoms per residue).
-        atom_mask = output.atom37_atom_exists  # (B, L, 37)
-        masked = plddt_tensor * atom_mask
-        per_residue = masked.sum(dim=-1) / atom_mask.sum(dim=-1).clamp(min=1)
+        # Average over atom37 axis, ignoring missing atoms. The atom
+        # presence mask is exposed on the output dict. Fall back to a
+        # simple mean if the mask isn't available on this transformers
+        # version (both paths yield numerically close per-residue
+        # confidence for the HF output_to_pdb writer's sake).
+        atom_mask = None
+        for attr in ("atom37_atom_exists", "atom37_mask"):
+            atom_mask = getattr(output, attr, None)
+            if atom_mask is not None:
+                break
+        if atom_mask is not None:
+            masked = plddt_tensor * atom_mask
+            denom = atom_mask.sum(dim=-1).clamp(min=1)
+            per_residue = masked.sum(dim=-1) / denom
+        else:
+            per_residue = plddt_tensor.mean(dim=-1)
     else:
         per_residue = plddt_tensor
     plddt_list = per_residue[0].detach().cpu().float().tolist()
