@@ -610,3 +610,46 @@ class TestRunPipelineParser:
         ]
         with pytest.raises(SystemExit):
             rp.reject_stub(sequences)
+
+    def test_stub_rejection_near_clone_hamming(self):
+        """Degenerate mode: sequences differ by <=2 residues over >=3
+        samples with diverse-looking float scores. Previous guards missed
+        this because score/recovery aren't bit-exact; Codex P2 fix adds a
+        pairwise Hamming check."""
+        from tools.mpnn import run_pipeline as rp
+
+        # Differ by 1-2 residues only — MPNN collapsed mode.
+        sequences = [
+            {"seq": "MKWVAHNDQLGHT", "score": 1.21, "recovery": 0.71},
+            {"seq": "MKWVAHNDQLGHS", "score": 1.22, "recovery": 0.70},
+            {"seq": "MKWVAHNDQLGKT", "score": 1.20, "recovery": 0.72},
+        ]
+        with pytest.raises(SystemExit):
+            rp.reject_stub(sequences)
+
+    def test_stub_rejection_near_clone_tight_score_recovery_cluster(self):
+        """Degenerate mode: diverse-looking residues but score+recovery
+        spreads < 0.01 — the probability landscape collapsed. Codex P2."""
+        from tools.mpnn import run_pipeline as rp
+
+        sequences = [
+            {"seq": "MKWVAHNDQLGHT", "score": 1.2100, "recovery": 0.7100},
+            {"seq": "PQRSTUVWXYZQA", "score": 1.2105, "recovery": 0.7102},
+            {"seq": "DEFGHIKLMNPQV", "score": 1.2099, "recovery": 0.7098},
+        ]
+        with pytest.raises(SystemExit):
+            rp.reject_stub(sequences)
+
+    def test_stub_rejection_accepts_healthy_diverse_output(self):
+        """Happy path for the new guards: real MPNN output typically has
+        score spread ~0.1+ and recovery spread ~0.05+ across samples,
+        with pairwise Hamming on the order of sequence length. Must not
+        raise."""
+        from tools.mpnn import run_pipeline as rp
+
+        sequences = [
+            {"seq": "MKWVAHNDQLGHT", "score": 1.05, "recovery": 0.65},
+            {"seq": "PQRSTUVWXYZQA", "score": 1.31, "recovery": 0.72},
+            {"seq": "DEFGHIKLMNPQV", "score": 0.92, "recovery": 0.58},
+        ]
+        rp.reject_stub(sequences)  # Must not raise.

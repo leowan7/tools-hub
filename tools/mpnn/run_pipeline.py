@@ -377,9 +377,16 @@ def _extract_metadata(header: str, key: str) -> str | None:
 def reject_stub(sequences: list[dict[str, Any]]) -> None:
     """Stub-rejection guard. Per ATOMIC-TOOLS.md D1 section.
 
-    MPNN's silent-stub failure mode is "every returned sequence is
-    identical" — usually a sign that the model never ran (or the wrong
-    weights loaded). Reject any hit.
+    MPNN's silent-stub failure modes seen in practice:
+
+    1. Every returned sequence is identical (model never ran / wrong
+       weights loaded). Hard fail.
+    2. Every sequence shares identical score + recovery floats to the
+       bit (same random seed, no sampling). Hard fail.
+    3. "Degenerate mode" — sequences differ by only 1-2 residues and
+       score/recovery spreads are tiny (< 0.01). The model technically
+       ran but collapsed; results are not usable. Hard fail so we don't
+       bill a user for useless output.
     """
     seqs = [s.get("seq") or "" for s in sequences]
     if len(seqs) >= 2 and len(set(seqs)) == 1:
@@ -393,8 +400,8 @@ def reject_stub(sequences: list[dict[str, Any]]) -> None:
             ),
         )
 
-    # Defence-in-depth: absurdly low score range (MPNN typically ~0.5-1.5)
-    # combined with all-identical recovery values also smells like a stub.
+    # Defence-in-depth: exact equality of score + recovery across the
+    # set. Catches the naive replay-the-same-tensor stub.
     recoveries = [s.get("recovery") for s in sequences if s.get("recovery") is not None]
     scores = [s.get("score") for s in sequences if s.get("score") is not None]
     if (
@@ -411,6 +418,48 @@ def reject_stub(sequences: list[dict[str, Any]]) -> None:
                 f"(score={scores[0]}, recovery={recoveries[0]}) — stub suspect."
             ),
         )
+
+    # Near-clone detection: pairwise Hamming distance. If every pair of
+    # sequences differs by <= 2 residues, the model has collapsed. Codex
+    # P2 — the previous guards only tripped on bit-exact matches, which
+    # missed this real ProteinMPNN degenerate mode.
+    if len(seqs) >= 3 and all(len(s) == len(seqs[0]) and s for s in seqs):
+        max_pairwise_hamming = 0
+        for i, s1 in enumerate(seqs):
+            for s2 in seqs[i + 1:]:
+                d = sum(1 for a, b in zip(s1, s2) if a != b)
+                if d > max_pairwise_hamming:
+                    max_pairwise_hamming = d
+        if max_pairwise_hamming <= 2:
+            _fail(
+                "parser",
+                "stub",
+                (
+                    "returned sequences are near-clones (max pairwise "
+                    f"Hamming={max_pairwise_hamming} over n={len(seqs)} "
+                    f"samples of length {len(seqs[0])}) — ProteinMPNN "
+                    "degenerate mode."
+                ),
+            )
+
+    # Near-clone detection on score/recovery: tight cluster (spread <
+    # 0.01) on both score AND recovery across >=3 samples. Covers the
+    # failure mode where sampling injects residue diversity but the
+    # probability landscape is collapsed.
+    if len(seqs) >= 3 and len(scores) >= 3 and len(recoveries) >= 3:
+        score_spread = max(scores) - min(scores)
+        recovery_spread = max(recoveries) - min(recoveries)
+        if score_spread < 0.01 and recovery_spread < 0.01:
+            _fail(
+                "parser",
+                "stub",
+                (
+                    "score+recovery cluster is suspiciously tight "
+                    f"(score spread={score_spread:.4f}, "
+                    f"recovery spread={recovery_spread:.4f} over n={len(seqs)}) — "
+                    "ProteinMPNN degenerate mode."
+                ),
+            )
 
 
 # ===========================================================================
