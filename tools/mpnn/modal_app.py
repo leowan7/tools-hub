@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from typing import Any
 
 import modal
 
@@ -80,12 +81,20 @@ app = modal.App("ranomics-mpnn-prod")
 
 
 @app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S)
-def run_tool(payload: dict) -> dict:
+def run_tool(payload: Any) -> dict:
     """Run one MPNN session (smoke or standalone).
 
     Subprocess stdout/stderr stream live to Modal's function logs so
     failures are visible via ``modal app logs ranomics-mpnn-prod``
     without fetching the FunctionCall return.
+
+    ``payload`` is annotated ``Any`` rather than ``dict`` because the
+    Modal CLI refuses to introspect bare ``dict`` / parameterised
+    ``dict[str, ...]`` annotations (``unparseable annotation: dict``)
+    when invoking via ``modal run tools/mpnn/modal_app.py::run_tool
+    --payload '{...}'``. The webhook caller in
+    ``gpu.modal_client.ModalClient.submit(...).spawn(payload)`` passes
+    a dict either way; ``Any`` keeps both call paths alive.
     """
     import sys
 
