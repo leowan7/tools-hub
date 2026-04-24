@@ -131,14 +131,15 @@
       </table>
     </div>
 
-    {% if send_target_tools %}
-      <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
-        <span style="color: var(--text-secondary);">Send this structure to:</span>
-        {% for ho in send_target_tools %}
-          <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
-        {% endfor %}
-      </div>
-    {% endif %}
+    {# No "Send this structure to" block: AF2 outputs the predicted PDB
+       as ``pdb_b64`` inside ``job.result``, but the shared cross-tool
+       handoff in ``job_detail()`` only emits ``send_target_tools`` when
+       ``job.inputs._pdb_storage_path`` is set — the handoff reads the
+       *input* PDB, not the output. Wiring the AF2 output into the
+       handoff flow is a separate change (stage the predicted structure
+       as a reusable input first). Until then this block would never
+       render for AF2 jobs, so we omit it entirely to avoid dead UI
+       (Codex P2). #}
 
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
