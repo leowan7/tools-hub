@@ -1,0 +1,319 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, prefill_script %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# D2 — AF2 standalone. Two-panel layout parallel to D1 MPNN: form on
+     the left, "About AF2" panel on the right. Styles are scoped (.af2-)
+     so they do not leak into other tools. The ``standalone`` preset
+     shows an additional block (FASTA input, recycles, templates) via
+     the shared pilot-fields toggle — we reuse #pilot-fields for parity
+     with the existing pre-fill script. #}
+  <style>
+    .af2-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .af2-layout { grid-template-columns: 1fr; }
+    }
+    .af2-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .af2-about h3:first-child { margin-top: 0; }
+    .af2-about p,
+    .af2-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .af2-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .af2-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .af2-about ul li:last-child { border-bottom: none; }
+    .af2-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .af2-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .af2-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .af2-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .af2-runtime-table tr:last-child td { border-bottom: none; }
+    .af2-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: -0.75rem 0 1.25rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .af2-fasta-textarea {
+      width: 100%;
+      max-width: 620px;
+      min-height: 140px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.4;
+      margin-bottom: 0.35rem;
+      resize: vertical;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  {# Preset runtime map mirrors tools/af2/meta.py::PRESET_RUNTIME. Kept
+     in the template so the <option> data-attrs can be read without
+     round-tripping through app.py. Update both files together. #}
+  {% set preset_minutes = {
+    'smoke': '2',
+    'standalone': '5-10',
+  } %}
+
+  {# Cross-tool ``from_job``/``handoff`` routes set
+     pre_fill["preset"]="pilot" for every tool. AF2 has no ``pilot``
+     preset; remap to the equivalent real-target tier so a handoff
+     does not silently fall through to the smoke fixture. Mirrors the
+     D1 MPNN fix (Codex P1 there). #}
+  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
+  {% if _incoming_preset == 'pilot' %}
+    {% set _incoming_preset = 'standalone' %}
+  {% endif %}
+
+  <div class="af2-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Prediction inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
+          <select name="preset" id="preset" required
+                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
+            {% for preset in adapter.presets %}
+              <option value="{{ preset.slug }}"
+                      data-credits="{{ preset.credits_cost }}"
+                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                      {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
+                {{ preset.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <div id="preset-cost-preview" class="af2-cost-preview" aria-live="polite"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+
+          {# Re-using #pilot-fields id so ``prefill_script()`` from
+             _prefill.html toggles visibility when a clone/handoff lands
+             the user here with preset=standalone preselected. #}
+          <div id="pilot-fields" style="display: none;">
+            <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA</label>
+            <textarea name="fasta" id="fasta" class="af2-fasta-textarea"
+                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRF...">{{ (pre_fill.get('fasta') if pre_fill else '') or '' }}</textarea>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              Paste single-chain or multimer FASTA. For multimer, use one
+              <code>&gt;header</code> line per chain. Up to 1500 AA total
+              across chains on the atomic tier.
+            </div>
+            <div style="color: var(--text-tertiary); font-size: 0.78rem; max-width: 58ch; margin-bottom: 1.0rem;">
+              Or upload a .fasta file:
+              <input type="file" name="fasta_file" id="fasta_file" accept=".fasta,.fa,.faa,.txt"
+                     style="display: inline-block; margin-left: 0.4rem; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.25rem 0.4rem; font-family: var(--font-body); font-size: 0.78rem;">
+            </div>
+
+            <label for="num_recycles" class="label" style="display:block; margin-bottom: 0.4rem;">Number of recycles</label>
+            <input type="number" name="num_recycles" id="num_recycles" {{ pre_value(pre_fill, "num_recycles", "3") }} min="1" max="5"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              How many AF2 recycles to run (1-5). More recycles cost more
+              GPU-seconds but converge marginal cases. Default 3 matches
+              the AF2 paper and is a good balance.
+            </div>
+
+            <label class="label" style="display:block; margin-bottom: 0.4rem;">
+              <input type="checkbox" name="use_templates" id="use_templates" value="on"
+                     {% if pre_fill and pre_fill.get('use_templates') in (True, 'on', '1', 'true') %}checked
+                     {% elif not pre_fill %}checked
+                     {% endif %}
+                     style="margin-right: 0.4rem; vertical-align: middle;">
+              Use PDB templates
+            </label>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Fetch homologous structures from PDB as templates for the
+              prediction. Turn off for orphan sequences or when you want
+              a pure sequence-only fold.
+            </div>
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Smoke tier runs against our baked BPTI (58 aa) monomer with 1
+            recycle and no MSA; no FASTA upload needed.
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Standalone tier runs on your FASTA with ColabFold MMseqs2 MSA.
+            ~5-10 min on A100-80GB.
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
+    </div>
+
+    <aside class="panel af2-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About AlphaFold2</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it is</h3>
+        <p>
+          AlphaFold2 (<a href="https://www.nature.com/articles/s41586-021-03819-2">Jumper et al., Nature 2021</a>).
+          The gold-standard sequence-to-structure model. Inputs: amino
+          acid sequence(s). Outputs: predicted structure, per-residue
+          pLDDT confidence, PAE matrix, pTM (monomer) / ipTM (multimer).
+          We ship through ColabFold (<a href="https://www.nature.com/articles/s41592-022-01488-1">Mirdita et al., Nature Methods 2022</a>) —
+          the standard packaging with MMseqs2 MSA + AF2 weights.
+          Repo: <a href="https://github.com/sokrypton/ColabFold">sokrypton/ColabFold</a>.
+        </p>
+
+        <h3>When to use</h3>
+        <p>
+          Pick AF2 when you need the best-calibrated structure prediction
+          with pLDDT + PAE. For sub-second folds on monomers use ESMFold;
+          for affinity-aware complexes use Boltz-2; for antibody-specific
+          folding use RF2 (all coming in later Waves).
+        </p>
+
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>FASTA sequence (single chain or multimer)</li>
+          <li>No PDB required — AF2 predicts from sequence alone</li>
+          <li>Internet access to the MMseqs2 public server (automatic)</li>
+        </ul>
+
+        <h3>Input glossary</h3>
+        <ul>
+          <li><strong>Number of recycles</strong> — how many times AF2 iterates internally. 1 is fast; 3 is the default; 5 helps marginal cases.</li>
+          <li><strong>Use templates</strong> — fetch homologous PDB structures to seed the prediction. Off = purely sequence-driven.</li>
+          <li><strong>Monomer vs multimer</strong> — inferred from your FASTA. 1 header = monomer; multiple headers = multimer.</li>
+        </ul>
+
+        <h3>Runtime &amp; cost</h3>
+        <table class="af2-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          MSA fetch dominates for short sequences; fold scales with
+          length. Unused GPU seconds are refunded when a run finishes
+          faster than its budget.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.querySelector('form');
+      var presetSelect = document.getElementById('preset');
+      var pilotFields = document.getElementById('pilot-fields');
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!form || !presetSelect) return;
+
+      var descriptions = {
+        {% for preset in adapter.presets %}
+          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      };
+
+      function sync() {
+        var value = presetSelect.value;
+        if (pilotFields) {
+          pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
+        }
+        if (costPreview) {
+          var opt = presetSelect.options[presetSelect.selectedIndex];
+          if (opt) {
+            var credits = opt.getAttribute('data-credits');
+            var minutes = opt.getAttribute('data-minutes');
+            costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+          }
+        }
+        if (descEl) {
+          descEl.textContent = descriptions[value] || '';
+        }
+      }
+
+      presetSelect.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+{% endblock %}

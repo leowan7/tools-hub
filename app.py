@@ -77,6 +77,7 @@ from shared.storage import (
 )
 from shared import metric_glossary as _metric_glossary
 from tools import base as tool_base
+import tools.af2         # noqa: F401 — import to register adapter (D2 atomic)
 import tools.bindcraft   # noqa: F401 — import to register adapter
 import tools.boltzgen    # noqa: F401 — import to register adapter
 import tools.mpnn        # noqa: F401 — import to register adapter (D1 atomic)
@@ -1303,6 +1304,91 @@ def create_app() -> Flask:
             "\n".join(lines) + "\n",
             mimetype="text/plain",
             headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
+        )
+
+    @flask_app.route("/jobs/<job_id>/af2.pdb", methods=["GET"])
+    @login_required
+    def af2_download_pdb(job_id: str):
+        """Stream the AF2 predicted structure as a .pdb download.
+
+        D2 atomic tool. Result payload carries ``pdb_b64`` (base64-encoded
+        PDB text); decode and return as text/plain for browser-friendly
+        Save As. Owner-scoped via the get_job RLS wrapper.
+        """
+        import base64  # noqa: PLC0415
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None or job.tool != "af2":
+            return render_template("coming_soon.html"), 404
+        pdb_b64 = (job.result or {}).get("pdb_b64") or ""
+        if not pdb_b64:
+            return Response(
+                "# No PDB in this job's result.\n",
+                mimetype="text/plain",
+                status=404,
+            )
+        try:
+            pdb_bytes = base64.b64decode(pdb_b64, validate=True)
+        except Exception:
+            return Response(
+                "# Malformed PDB payload.\n",
+                mimetype="text/plain",
+                status=500,
+            )
+        return Response(
+            pdb_bytes,
+            mimetype="chemical/x-pdb",
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=af2_{job_id[:8]}.pdb"
+                )
+            },
+        )
+
+    @flask_app.route("/jobs/<job_id>/af2_pae.npy", methods=["GET"])
+    @login_required
+    def af2_download_pae(job_id: str):
+        """Stream the AF2 PAE matrix as a .npy download.
+
+        D2 atomic tool. Result payload carries ``pae_matrix_b64`` which
+        is a base64-encoded numpy .npy file (written by run_pipeline.py
+        via ``numpy.save``). We hand it back as-is — the client can
+        ``numpy.load`` it directly.
+        """
+        import base64  # noqa: PLC0415
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None or job.tool != "af2":
+            return render_template("coming_soon.html"), 404
+        pae_b64 = (job.result or {}).get("pae_matrix_b64") or ""
+        if not pae_b64:
+            return Response(
+                "# No PAE matrix in this job's result.\n",
+                mimetype="text/plain",
+                status=404,
+            )
+        try:
+            pae_bytes = base64.b64decode(pae_b64, validate=True)
+        except Exception:
+            return Response(
+                "# Malformed PAE payload.\n",
+                mimetype="text/plain",
+                status=500,
+            )
+        return Response(
+            pae_bytes,
+            mimetype="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename=af2_{job_id[:8]}_pae.npy"
+                )
+            },
         )
 
     @flask_app.route("/jobs/<job_id>/export.zip", methods=["GET"])
