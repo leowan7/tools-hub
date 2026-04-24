@@ -160,9 +160,25 @@
              _prefill.html toggles visibility when a clone/handoff lands
              the user here with preset=standalone preselected. #}
           <div id="pilot-fields" style="display: none;">
+            {# Reconstruct the textarea value from whichever pre_fill
+               shape is available. Fresh POST with a validation error
+               resubmits the raw ``fasta`` string; a ``clone_from``
+               clone loads the stored ``inputs`` which carry structured
+               ``fasta_records`` (our persisted form). Without this
+               fallback the clone link on the results page produces an
+               empty textarea — Codex P2. #}
+            {% set _prefill_fasta = (pre_fill.get('fasta') if pre_fill else '') or '' %}
+            {% if not _prefill_fasta and pre_fill and pre_fill.get('fasta_records') %}
+              {% set _lines = [] %}
+              {% for _rec in pre_fill.get('fasta_records') %}
+                {% set _ = _lines.append('>' ~ (_rec.get('header') or ('chain' ~ loop.index))) %}
+                {% set _ = _lines.append(_rec.get('sequence') or '') %}
+              {% endfor %}
+              {% set _prefill_fasta = _lines | join('\n') %}
+            {% endif %}
             <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA</label>
             <textarea name="fasta" id="fasta" class="af2-fasta-textarea"
-                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRF...">{{ (pre_fill.get('fasta') if pre_fill else '') or '' }}</textarea>
+                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRF...">{{ _prefill_fasta }}</textarea>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
               Paste single-chain or multimer FASTA. For multimer, use one
               <code>&gt;header</code> line per chain. Up to 1500 AA total

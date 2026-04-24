@@ -350,6 +350,56 @@ def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
     )
 
 
+def test_clone_reconstructs_fasta_textarea_from_fasta_records(
+    app_with_af2_flag, monkeypatch
+):
+    """``validate()`` persists structured ``fasta_records`` on the job
+    row; the clone flow loads ``inputs`` into ``pre_fill``. The form
+    must reconstruct a human-readable textarea value from
+    ``fasta_records`` when ``fasta`` is absent from pre_fill —
+    otherwise the "Run again with different parameters" link opens an
+    empty textarea (Codex P2)."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.load_user_context",
+        lambda: SimpleNamespace(
+            user_id="u1", tier="free", balance=10, email="user@example.com"
+        ),
+    )
+    mock_prior = SimpleNamespace(
+        id="prior-af2",
+        tool="af2",
+        preset="standalone",
+        status="succeeded",
+        inputs={
+            "preset": "standalone",
+            "fasta_records": [
+                {"header": "chainA", "sequence": "MKWVTFISLL"},
+                {"header": "chainB", "sequence": "FFLFSSAYSR"},
+            ],
+            "num_recycles": 3,
+            "use_templates": True,
+            "model_preset": "multimer",
+        },
+    )
+    monkeypatch.setattr(
+        "app.get_job",
+        lambda job_id, user_id: mock_prior if job_id == "prior-af2" else None,
+    )
+    client = app_with_af2_flag.test_client()
+    _login_session(client)
+    resp = client.get("/tools/af2?clone_from=prior-af2")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    # The textarea should contain the reconstructed FASTA. Jinja
+    # auto-escapes the ``>`` header prefix inside the textarea.
+    assert "&gt;chainA" in body or ">chainA" in body
+    assert "MKWVTFISLL" in body
+    assert ("&gt;chainB" in body or ">chainB" in body)
+    assert "FFLFSSAYSR" in body
+
+
 def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
     """/jobs/<id>/af2.pdb returns the base64-decoded PDB bytes."""
     from types import SimpleNamespace
