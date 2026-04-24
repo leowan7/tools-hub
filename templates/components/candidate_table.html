@@ -1,0 +1,367 @@
+{#
+  Shared candidate table macro.
+
+  Usage:
+    {% from "components/candidate_table.html" import candidate_table %}
+    {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url) }}
+
+  Parameters
+  ----------
+  candidates : list[dict]   — job.result["candidates"]
+  columns    : list[str]    — metric keys to display, e.g. ['ipTM','pLDDT','RMSD']
+  job_id     : str          — tool_jobs.id (UUID string)
+  tool_slug  : str          — e.g. 'bindcraft'
+  clone_url  : str          — URL for "Run again" button (optional)
+
+  Requires in Jinja globals:
+    metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
+#}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='') %}
+{% set table_id = 'cand-table-' ~ job_id %}
+
+<style>
+/* ── Candidate table ─────────────────────────────────────────── */
+.cand-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .9rem;
+}
+.cand-export-btns { display: flex; flex-wrap: wrap; gap: .45rem; }
+.cand-shortlist-bar { display: flex; align-items: center; gap: .65rem; }
+.cand-shortlist-bar span { font-size: .9rem; color: var(--text-secondary); white-space: nowrap; }
+
+.cand-table-scroll { overflow-x: auto; }
+.cand-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .875rem;
+}
+.cand-table thead th {
+  padding: .45rem .5rem;
+  text-align: left;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  user-select: none;
+}
+.cand-table th.sortable-col:hover { color: var(--accent); }
+.cand-table th.sort-asc::after  { content: ' ▲'; font-size: .7rem; }
+.cand-table th.sort-desc::after { content: ' ▼'; font-size: .7rem; }
+.cand-table tbody td {
+  padding: .5rem .5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.cand-table .cand-row:hover { background: rgba(255,255,255,.03); }
+
+/* Metric tooltip */
+.mtt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: .65rem;
+  cursor: help;
+  margin-left: .25rem;
+  position: relative;
+  vertical-align: middle;
+}
+.mtt::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2a3a;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: .5rem .65rem;
+  font-size: .78rem;
+  color: var(--text-primary);
+  white-space: normal;
+  width: 240px;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+  line-height: 1.4;
+}
+.mtt:hover::after { opacity: 1; }
+
+/* Star button */
+.star-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1.1rem;
+  color: var(--text-secondary);
+  padding: 0 .15rem;
+  line-height: 1;
+  transition: color .1s, transform .1s;
+}
+.star-btn:hover  { color: #f59e0b; transform: scale(1.15); }
+.star-btn.starred { color: #f59e0b; }
+
+/* 3D viewer row */
+.viewer-row td { padding: 0; background: var(--bg-deep); }
+.mol-viewer-container { height: 400px; width: 100%; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+.modal-box {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .85rem;
+}
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+  line-height: 1;
+  padding: 0 .2rem;
+}
+.modal-close:hover { color: var(--text-primary); }
+.radio-group { display: flex; flex-direction: column; gap: .4rem; margin-top: .3rem; }
+.radio-label { display: flex; align-items: center; gap: .4rem; font-size: .9rem; cursor: pointer; }
+.form-row { display: flex; gap: 1rem; }
+.form-row .form-field { flex: 1; min-width: 0; }
+.opt-label { color: var(--text-secondary); font-size: .8rem; font-weight: 400; }
+.shortlist-review { margin: .35rem 0 0 1.2rem; padding: 0; font-size: .88rem; color: var(--text-secondary); }
+</style>
+
+{# ── Action bar ────────────────────────────────────────────────── #}
+<div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}">
+  <div class="cand-export-btns">
+    <a href="/jobs/{{ job_id }}/export.csv"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export CSV</a>
+    <a href="/jobs/{{ job_id }}/export.fasta" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export FASTA</a>
+    <a href="/jobs/{{ job_id }}/export.zip"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download PDBs (ZIP)</a>
+  </div>
+  <div class="cand-shortlist-bar">
+    <span><span id="shortlist-count-{{ job_id }}">0</span> starred</span>
+    <button id="send-to-lab-btn-{{ job_id }}"
+            class="btn-primary"
+            style="font-size:.82rem;padding:.3rem .75rem;"
+            disabled
+            onclick="openCampaignModal('{{ job_id }}')">
+      Send shortlist to Ranomics lab
+    </button>
+  </div>
+</div>
+
+{# ── Table ─────────────────────────────────────────────────────── #}
+<div class="cand-table-scroll">
+  <table id="{{ table_id }}" class="cand-table">
+    <thead>
+      <tr>
+        <th style="width:2.5rem;">#</th>
+        <th style="width:2rem;" title="Click to shortlist for lab submission">★</th>
+        {% for col in columns %}
+          {% set g = metric_glossary.get(col, {}) %}
+          <th data-col="{{ col }}" class="sortable-col">
+            {{ g.get('label', col) -}}
+            {% if g.get('definition') %}
+              <span class="mtt"
+                    data-tooltip="{{ g.definition }} Range: {{ g.good_range }}{% if g.citation %} — {{ g.citation }}{% endif %}">?</span>
+            {% endif %}
+          </th>
+        {% endfor %}
+        <th style="width:4.5rem;">3D</th>
+        <th style="width:4.5rem;">PDB</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cand in candidates %}
+        {% set scores  = cand.get('scores', {}) %}
+        {% set idx     = loop.index0 %}
+        {% set pdb_key = cand.get('pdb_key', 'design_' ~ (idx + 1) ~ '.pdb') %}
+        {% set has_pdb = cand.get('pdb_content_b64') %}
+
+        <tr class="cand-row" data-idx="{{ idx }}">
+          <td>{{ cand.get('rank', loop.index) }}</td>
+          <td class="star-cell">
+            <button class="star-btn" data-idx="{{ idx }}" data-job="{{ job_id }}" title="Shortlist">&#9734;</button>
+          </td>
+
+          {% for col in columns %}
+            {% set raw = scores.get(col) %}
+            {% if raw is none %}
+              <td data-col="{{ col }}" data-val="">—</td>
+            {% elif col == 'filter_status' %}
+              {% set is_stub = (raw is string) and ('stub' in raw) %}
+              <td data-col="{{ col }}" data-val="{{ raw }}">
+                {% if is_stub %}
+                  <span class="panel-badge" style="background:rgba(248,113,113,.18);color:#fca5a5;border-color:rgba(248,113,113,.4);">{{ raw }}</span>
+                {% else %}
+                  {{ raw or '—' }}
+                {% endif %}
+              </td>
+            {% else %}
+              {% set fval = raw | float %}
+              {% if col in ('ipTM', 'pTM', 'shape_complementarity') %}
+                {% set disp = '%.3f' | format(fval) %}
+              {% elif col == 'pLDDT' %}
+                {% set disp = '%.1f' | format(fval) %}
+              {% else %}
+                {% set disp = '%.2f' | format(fval) %}
+              {% endif %}
+              <td data-col="{{ col }}" data-val="{{ fval }}">{{ disp }}</td>
+            {% endif %}
+          {% endfor %}
+
+          <td>
+            {% if has_pdb %}
+              <button class="view3d-btn btn-secondary"
+                      style="padding:.2rem .5rem;font-size:.8rem;"
+                      data-idx="{{ idx }}"
+                      data-pdb64="{{ cand.pdb_content_b64 }}">View 3D</button>
+            {% else %}
+              <span style="color:var(--text-secondary);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if has_pdb %}
+              <a href="data:chemical/x-pdb;base64,{{ cand.pdb_content_b64 }}"
+                 download="{{ pdb_key }}"
+                 class="btn-secondary"
+                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+            {% else %}
+              <span style="color:var(--text-secondary);">—</span>
+            {% endif %}
+          </td>
+        </tr>
+
+        <tr class="viewer-row" id="viewer-row-{{ idx }}" style="display:none;">
+          <td colspan="{{ columns | length + 4 }}" style="padding:0;background:var(--bg-deep);">
+            <div id="mol-viewer-{{ idx }}" class="mol-viewer-container"></div>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{# ── CTA bar ───────────────────────────────────────────────────── #}
+{% if clone_url %}
+<div style="margin-top:1rem;">
+  <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+</div>
+{% endif %}
+
+{# ── Campaign submit modal ─────────────────────────────────────── #}
+<div id="campaign-modal-{{ job_id }}"
+     class="modal-overlay"
+     style="display:none;"
+     onclick="if(event.target===this)closeCampaignModal('{{ job_id }}')">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:1.1rem;">Submit shortlist to Ranomics lab</h3>
+      <button class="modal-close" onclick="closeCampaignModal('{{ job_id }}')">&times;</button>
+    </div>
+    <p class="subtitle" style="margin:.25rem 0 1.1rem;font-size:.875rem;">
+      Ranomics reviews your candidates, runs feasibility against current lab capacity,
+      and scopes a yeast display campaign. No commitment — this is a scoping request.
+    </p>
+
+    <form action="/campaigns/submit" method="POST">
+      <input type="hidden" name="source_job_id"       value="{{ job_id }}">
+      <input type="hidden" name="candidate_indices"   value="[]">
+
+      <div style="margin-bottom:.9rem;padding:.6rem .75rem;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border);">
+        <strong style="font-size:.875rem;">Shortlisted candidates:</strong>
+        <ul class="shortlist-review"></ul>
+      </div>
+
+      <div class="form-field" style="margin-bottom:.85rem;">
+        <label for="cm-tname-{{ job_id }}" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+          Target protein name <span style="color:var(--danger,#f87171);">*</span>
+        </label>
+        <input type="text" id="cm-tname-{{ job_id }}" name="target_name"
+               class="form-control" required
+               placeholder="e.g. PD-L1, EGFR, PCSK9">
+      </div>
+
+      <div class="form-field" style="margin-bottom:.85rem;">
+        <label for="cm-ctx-{{ job_id }}" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+          Target context <span class="opt-label">(optional)</span>
+        </label>
+        <textarea id="cm-ctx-{{ job_id }}" name="target_context"
+                  class="form-control" rows="3"
+                  placeholder="Indication, known binders, prior screens, epitope of interest…"></textarea>
+      </div>
+
+      <div class="form-field" style="margin-bottom:.85rem;">
+        <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Assay type</label>
+        <div class="radio-group">
+          <label class="radio-label"><input type="radio" name="assay_type" value="yeast_display" checked> Yeast display</label>
+          <label class="radio-label"><input type="radio" name="assay_type" value="mammalian_display"> Mammalian display</label>
+          <label class="radio-label"><input type="radio" name="assay_type" value="dms"> Deep mutational scanning</label>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-bottom:.85rem;">
+        <div class="form-field">
+          <label for="cm-kd-{{ job_id }}" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+            Affinity goal KD (nM) <span class="opt-label">(optional)</span>
+          </label>
+          <input type="number" id="cm-kd-{{ job_id }}" name="affinity_goal_kd_nm"
+                 class="form-control" min="0" step="0.1" placeholder="e.g. 10">
+        </div>
+        <div class="form-field">
+          <label for="cm-weeks-{{ job_id }}" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+            Timeline (weeks) <span class="opt-label">(optional)</span>
+          </label>
+          <input type="number" id="cm-weeks-{{ job_id }}" name="timeline_weeks"
+                 class="form-control" min="1" max="52" placeholder="e.g. 8">
+        </div>
+      </div>
+
+      <div class="form-field" style="margin-bottom:1.25rem;">
+        <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Budget band</label>
+        <div class="radio-group">
+          <label class="radio-label"><input type="radio" name="budget_band" value="pilot" checked> Pilot — initial screen, 4–6 weeks</label>
+          <label class="radio-label"><input type="radio" name="budget_band" value="sprint"> Sprint — accelerated validation, 6–10 weeks</label>
+          <label class="radio-label"><input type="radio" name="budget_band" value="custom"> Custom — discuss scope with the team</label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:.65rem;justify-content:flex-end;">
+        <button type="button" class="btn-secondary" onclick="closeCampaignModal('{{ job_id }}')">Cancel</button>
+        <button type="submit" class="btn-primary">Submit scoping request</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/candidate_table.js') }}"></script>
+{% endmacro %}

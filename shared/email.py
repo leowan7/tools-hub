@@ -176,6 +176,162 @@ def _render_text(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
     )
 
 
+def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
+    """Send user confirmation + internal staff notification on campaign submit.
+
+    Best-effort: failures are logged but not raised to the caller.
+    """
+    from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+
+    base_url  = os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+    api_key   = os.environ.get("RESEND_API_KEY", "").strip()
+
+    campaign_url = f"{base_url}/campaigns/{campaign.id}"
+
+    # User confirmation
+    user_subject = f"Scoping request received — {campaign.target_name}"
+    user_html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin-top:0;">Scoping request received</h2>
+      <p>We've received your yeast display scoping request for
+         <strong>{campaign.target_name}</strong> ({len(campaign.candidate_indices)}
+         candidate{'s' if len(campaign.candidate_indices) != 1 else ''}).</p>
+      <p>The Ranomics team will review feasibility against current lab capacity
+         and follow up within <strong>2 business days</strong>.</p>
+      <p style="margin:24px 0;">
+        <a href="{campaign_url}"
+           style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
+          View campaign
+        </a>
+      </p>
+      <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+      <p style="font-size:12px;color:#999;">
+        Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">tools.ranomics.com</a>
+      </p>
+    </div>
+    """.strip()
+    user_text = (
+        f"Scoping request received for {campaign.target_name}.\n\n"
+        "The Ranomics team will review and follow up within 2 business days.\n\n"
+        f"View campaign: {campaign_url}\n\n"
+        "Ranomics Tools — tools.ranomics.com"
+    )
+
+    # Staff notification
+    staff_subject = f"New campaign: {campaign.target_name} from {user_email}"
+    admin_url = f"{base_url}/admin/campaigns/{campaign.id}"
+    staff_html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin-top:0;">New scoping request</h2>
+      <table style="font-size:14px;border-collapse:collapse;width:100%;">
+        <tr><td style="color:#666;padding:4px 12px 4px 0;">Target</td>
+            <td><strong>{campaign.target_name}</strong></td></tr>
+        <tr><td style="color:#666;padding:4px 12px 4px 0;">From</td>
+            <td>{user_email}</td></tr>
+        <tr><td style="color:#666;padding:4px 12px 4px 0;">Assay</td>
+            <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
+        <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
+            <td>{len(campaign.candidate_indices)}</td></tr>
+        <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
+            <td>{campaign.budget_band.title()}</td></tr>
+      </table>
+      <p style="margin:24px 0;">
+        <a href="{admin_url}"
+           style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
+          Review in admin
+        </a>
+      </p>
+    </div>
+    """.strip()
+
+    if not api_key:
+        logger.info(
+            "EMAIL (no key) campaign_submitted: user=%s target=%s id=%s",
+            user_email, campaign.target_name, campaign.id,
+        )
+        return
+
+    for to_addr, subject, html_body, text_body in [
+        (user_email, user_subject, user_html, user_text),
+        (list(STAFF_EMAILS), staff_subject, staff_html, staff_html),
+    ]:
+        try:
+            to_list = to_addr if isinstance(to_addr, list) else [to_addr]
+            requests.post(
+                RESEND_ENDPOINT,
+                json={"from": from_addr, "to": to_list, "subject": subject,
+                      "html": html_body, "text": text_body},
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                timeout=10,
+            )
+        except Exception:
+            logger.warning("send_campaign_submitted_emails failed", exc_info=True)
+
+
+def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -> None:
+    """Notify the submitter that their campaign status changed.
+
+    Best-effort: failures are logged but not raised.
+    """
+    base_url  = os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+    api_key   = os.environ.get("RESEND_API_KEY", "").strip()
+
+    campaign_url = f"{base_url}/campaigns/{campaign.id}"
+    status_label = campaign.status.replace("_", " ").title()
+    subject      = f"Your campaign has been {status_label.lower()} — {campaign.target_name}"
+
+    note_block = ""
+    if campaign.notes_internal:
+        note_block = f"<p><strong>Note from Ranomics:</strong> {campaign.notes_internal}</p>"
+
+    html_body = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin-top:0;">Campaign update: {status_label}</h2>
+      <p>Your scoping request for <strong>{campaign.target_name}</strong>
+         has moved to <strong>{status_label}</strong>.</p>
+      {note_block}
+      <p style="margin:24px 0;">
+        <a href="{campaign_url}"
+           style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
+          View campaign
+        </a>
+      </p>
+      <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+      <p style="font-size:12px;color:#999;">
+        Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">tools.ranomics.com</a>
+      </p>
+    </div>
+    """.strip()
+
+    if not api_key:
+        logger.info(
+            "EMAIL (no key) campaign_status: user=%s status=%s id=%s",
+            user_email, campaign.status, campaign.id,
+        )
+        return
+
+    try:
+        requests.post(
+            RESEND_ENDPOINT,
+            json={"from": from_addr, "to": [user_email], "subject": subject,
+                  "html": html_body, "text": html_body},
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception:
+        logger.warning("send_campaign_status_email failed", exc_info=True)
+
+
 def _result_summary(job, success: bool) -> str:  # noqa: ANN001
     if not success:
         err = job.error or {}

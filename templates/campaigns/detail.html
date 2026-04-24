@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Campaign {{ campaign.id[:8] }} — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>{{ campaign.target_name }}</h1>
+  <p class="subtitle">
+    Campaign {{ campaign.id[:8] }} &middot;
+    submitted {{ campaign.created_at[:10] if campaign.created_at else '—' }}
+  </p>
+</div>
+
+{% if submitted_flash %}
+  <div style="background:rgba(43,158,126,.12);border:1px solid rgba(43,158,126,.4);border-radius:var(--radius-md);padding:.85rem 1rem;margin-bottom:1.25rem;">
+    <strong style="color:#2B9E7E;">Scoping request submitted.</strong>
+    <span style="color:var(--text-secondary);"> You'll hear from the Ranomics team within 2 business days.</span>
+  </div>
+{% endif %}
+
+<div class="panel" style="margin-bottom:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Status</span>
+    {% set sc = campaign.status %}
+    {% if sc == 'submitted' %}
+      <span class="panel-badge" style="background:rgba(43,158,126,.15);color:#2B9E7E;border-color:rgba(43,158,126,.4);">Submitted</span>
+    {% elif sc == 'reviewed' %}
+      <span class="panel-badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.4);">Under review</span>
+    {% elif sc == 'scoped' %}
+      <span class="panel-badge" style="background:rgba(96,165,250,.15);color:#60a5fa;border-color:rgba(96,165,250,.4);">Scoped</span>
+    {% elif sc == 'accepted' %}
+      <span class="panel-badge" style="background:rgba(74,222,128,.15);color:#4ade80;border-color:rgba(74,222,128,.4);">Accepted</span>
+    {% elif sc == 'declined' %}
+      <span class="panel-badge" style="background:rgba(248,113,113,.15);color:#f87171;border-color:rgba(248,113,113,.4);">Declined</span>
+    {% else %}
+      <span class="panel-badge">{{ sc }}</span>
+    {% endif %}
+  </div>
+  <div class="panel-body">
+    {% if campaign.ranomics_contact %}
+      <p style="color:var(--text-secondary);font-size:.875rem;">
+        Ranomics contact: <strong>{{ campaign.ranomics_contact }}</strong>
+      </p>
+    {% endif %}
+    {% if campaign.reviewed_at %}
+      <p style="color:var(--text-secondary);font-size:.875rem;">
+        Reviewed: {{ campaign.reviewed_at[:10] }}
+      </p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:1rem;">
+  <div class="panel-header"><span class="panel-title">Campaign details</span></div>
+  <div class="panel-body">
+    <dl style="display:grid;grid-template-columns:max-content 1fr;gap:.4rem 1rem;font-size:.9rem;">
+      <dt style="color:var(--text-secondary);">Assay</dt>
+      <dd style="margin:0;">{{ campaign.assay_type | replace('_', ' ') | title }}</dd>
+
+      <dt style="color:var(--text-secondary);">Candidates</dt>
+      <dd style="margin:0;">{{ campaign.candidate_indices | length }} shortlisted</dd>
+
+      <dt style="color:var(--text-secondary);">Budget band</dt>
+      <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
+
+      {% if campaign.affinity_goal_kd_nm is not none %}
+        <dt style="color:var(--text-secondary);">Affinity goal</dt>
+        <dd style="margin:0;">{{ campaign.affinity_goal_kd_nm }} nM KD</dd>
+      {% endif %}
+
+      {% if campaign.timeline_weeks %}
+        <dt style="color:var(--text-secondary);">Timeline</dt>
+        <dd style="margin:0;">{{ campaign.timeline_weeks }} weeks</dd>
+      {% endif %}
+
+      <dt style="color:var(--text-secondary);">Source job</dt>
+      <dd style="margin:0;">
+        <a href="/jobs/{{ campaign.source_job_id }}" style="color:var(--accent);">
+          {{ campaign.source_job_id[:8] }}
+        </a>
+      </dd>
+    </dl>
+
+    {% if campaign.target_context %}
+      <div style="margin-top:1rem;padding:.7rem .85rem;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border);">
+        <p style="font-size:.875rem;color:var(--text-secondary);margin:0 0 .3rem;">Context provided:</p>
+        <p style="font-size:.9rem;white-space:pre-wrap;margin:0;">{{ campaign.target_context }}</p>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<div style="display:flex;gap:.65rem;flex-wrap:wrap;">
+  <a href="/campaigns" class="btn-secondary">All campaigns</a>
+  <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">View source job</a>
+</div>
+{% endblock %}

@@ -1,0 +1,653 @@
+{% extends "base.html" %}
+
+{% block title %}Binder Feasibility Scorer — Assess de novo binder design difficulty | Ranomics{% endblock %}
+{% block description %}Assess the difficulty of designing a de novo binder against a target epitope. Get a feasibility score, difficulty tier, and recommendations for design approach, scaffold type, and campaign scale.{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block head_extra %}
+  <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+      <!-- Hero -->
+      <div class="hero">
+        <h1>Binder Feasibility Scorer</h1>
+        <p class="subtitle">Assess how difficult it will be to design a de novo binder against your target epitope. Get a feasibility score, difficulty tier, and specific recommendations for design approach, scaffold type, and campaign scale.</p>
+      </div>
+
+      <!-- Input panel -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <svg class="panel-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            Input
+          </span>
+          <a href="/scout/" class="btn-secondary" style="font-size:0.72rem;padding:0.3rem 0.7rem;text-decoration:none;">
+            Back to Epitope Scout
+          </a>
+        </div>
+        <div class="panel-body">
+          <div class="controls-grid">
+
+            <!-- Upload or PDB ID -->
+            <div class="control-group" id="upload-section">
+              <span class="control-label">Structure file</span>
+              <div class="upload-zone" id="upload-zone">
+                <input type="file" id="pdb-file" accept=".pdb,.cif">
+                <label for="pdb-file" class="upload-label">
+                  <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+                  </svg>
+                  <span class="upload-text">
+                    <span class="upload-primary">Browse or drop file</span>
+                    <span class="upload-secondary">PDB or mmCIF, max 20 MB</span>
+                  </span>
+                </label>
+              </div>
+              <div class="pdb-id-row">
+                <span class="or-divider">or</span>
+                <input type="text" id="pdb-id-input" class="pdb-id-input" placeholder="Enter PDB ID (e.g. 4HFE)" maxlength="4" spellcheck="false" autocomplete="off">
+                <button type="button" id="fetch-pdb-btn" class="btn-secondary" onclick="fetchPdb()">Fetch</button>
+              </div>
+              <div id="spinner" class="status-row" hidden>
+                <span class="spinner-ring"></span>
+                <span>Parsing&hellip;</span>
+              </div>
+              <div id="file-summary" class="file-summary" hidden></div>
+              <div id="error-message" class="error-message" hidden></div>
+            </div>
+
+            <!-- Chain select -->
+            <div class="control-group" id="chain-section" hidden>
+              <span class="control-label">Target chain</span>
+              <select id="chain-select" class="chain-select"></select>
+              <input type="hidden" id="job-id" name="job_id">
+            </div>
+
+            <!-- Epitope input -->
+            <div class="control-group" id="epitope-section" hidden>
+              <span class="control-label">Epitope residues</span>
+              <textarea id="epitope-input" class="epitope-input" placeholder="Enter residue numbers separated by commas (e.g. 23,24,25,26,27,28) or use an Epitope Scout result" rows="2"></textarea>
+              <p class="control-hint">Comma-separated residue numbers from your target chain</p>
+            </div>
+
+            <!-- Analyze -->
+            <div class="control-group" id="analyze-section" hidden style="justify-content:flex-end;">
+              <div class="btn-row">
+                <button type="button" id="analyze-btn" class="btn-primary" onclick="runFeasibility()">
+                  Assess feasibility
+                </button>
+                <button type="button" class="btn-reset" onclick="resetAll()">Reset</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Progress bar -->
+          <div id="progress-container" hidden>
+            <div class="progress-track">
+              <div id="progress-bar" class="progress-fill"></div>
+            </div>
+            <p id="progress-label" class="progress-label">Running feasibility analysis&hellip;</p>
+          </div>
+          <p id="analyze-error" class="error-message" style="display:none;" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <!-- Results section (hidden until analysis complete) -->
+      <div id="results-section" hidden>
+
+        <!-- Feasibility report card -->
+        <div class="panel feasibility-report">
+          <div class="panel-header">
+            <span class="panel-title">Feasibility assessment</span>
+            <div class="tier-badge" id="tier-badge"></div>
+          </div>
+          <div class="panel-body">
+
+            <div class="feasibility-grid">
+              <!-- Score + tier -->
+              <div class="feasibility-score-card">
+                <div class="score-display">
+                  <span class="score-number" id="composite-score">0.00</span>
+                  <span class="score-label">Composite score</span>
+                </div>
+                <div class="score-tier" id="score-tier"></div>
+              </div>
+
+              <!-- Dimension bars -->
+              <div class="dimensions-panel">
+                <div id="dimensions-bars"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recommendations panel -->
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Recommendations</span>
+          </div>
+          <div class="panel-body">
+            <div class="recommendations-grid">
+              <div class="rec-card">
+                <span class="rec-label">Recommended approach</span>
+                <p class="rec-value" id="rec-approach"></p>
+              </div>
+              <div class="rec-card">
+                <span class="rec-label">Scaffold type</span>
+                <p class="rec-value" id="rec-scaffold"></p>
+              </div>
+              <div class="rec-card">
+                <span class="rec-label">Design scale</span>
+                <p class="rec-value" id="rec-scale"></p>
+              </div>
+              <div class="rec-card">
+                <span class="rec-label">Expected hit rate</span>
+                <p class="rec-value" id="rec-hitrate"></p>
+                <p class="rec-citation" id="rec-citation"></p>
+              </div>
+            </div>
+
+            <!-- Risk factors -->
+            <div id="risk-factors-section" hidden>
+              <h3 class="risk-title">Risk factors</h3>
+              <ul id="risk-factors-list" class="risk-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Design binder handoff to tools.ranomics.com -->
+        <div class="panel" id="design-handoff-panel">
+          <div class="panel-header">
+            <span class="panel-title">Design a binder against this epitope</span>
+          </div>
+          <div class="panel-body">
+            <p style="color: var(--text-secondary); max-width: 62ch; margin: 0 0 1rem 0;">
+              Send this target + epitope to Ranomics Tools to run real GPU
+              binder design (RFantibody, BindCraft, PXDesign, BoltzGen).
+              Uses your Tools GPU credits.
+            </p>
+            <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
+              <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
+              <input type="hidden" name="scout_epitope_id" id="handoff-epitope-id" value="">
+              <input type="hidden" name="target_chain" id="handoff-chain" value="">
+              <input type="hidden" name="hotspot_residues" id="handoff-hotspots" value="">
+              <div style="flex: 1; min-width: 220px;">
+                <label for="handoff-tool" class="control-label" style="display:block; margin-bottom: 0.35rem;">Design tool</label>
+                <select name="tool" id="handoff-tool" required class="pdb-id-input" style="width: 100%;">
+                  <option value="rfantibody">RFantibody — VHH / scFv (15 credits)</option>
+                  <option value="bindcraft">BindCraft — de novo binder (20 credits)</option>
+                  <option value="pxdesign">PXDesign — AF2-IG validated (15 credits)</option>
+                  <option value="boltzgen">BoltzGen — Boltz-2 backbone (10 credits)</option>
+                </select>
+              </div>
+              <button type="submit" class="btn-primary" id="handoff-submit">
+                Design binder in Tools
+              </button>
+            </form>
+            <p style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.75rem;">
+              Target PDB and hotspots flow over automatically. You can
+              tweak preset and parameters in Tools before submitting.
+            </p>
+          </div>
+        </div>
+
+        <!-- 3D viewer -->
+        <div class="viewer-wrapper">
+          <div id="viewer-container" class="viewer-container"></div>
+          <div class="viewer-bar">
+            <div id="viewer-legend" class="viewer-legend"></div>
+            <div class="viewer-downloads">
+              <a id="download-link" class="viewer-dl-btn" style="display:none;" download="feasibility_report.csv">Download CSV</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Known binder overlaps -->
+        <div class="panel" id="binder-overlaps-section" hidden>
+          <div class="panel-header">
+            <span class="panel-title">Known binders overlapping this epitope</span>
+            <span id="binder-overlap-count" class="panel-badge"></span>
+          </div>
+          <div class="panel-body" style="padding-top:0.5rem;">
+            <div id="binder-overlap-table-wrap" style="overflow-x:auto;">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>PDB</th>
+                    <th>Type</th>
+                    <th>Species</th>
+                    <th>Resolution</th>
+                    <th>Affinity</th>
+                    <th>Overlap</th>
+                  </tr>
+                </thead>
+                <tbody id="binder-overlap-body"></tbody>
+              </table>
+            </div>
+            <p class="feasibility-note-text" style="margin-top:0.5rem;font-size:0.7rem;color:var(--text-tertiary);">Known binders from SAbDab/RCSB whose contact residues overlap with the selected epitope. This confirms the epitope is bindable but does not affect the feasibility score, which is based on biophysics only.</p>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <div class="panel cta-panel">
+          <div class="panel-body" style="text-align:center;padding:2rem;">
+            <h2 class="cta-title">Ready to start a binder design campaign?</h2>
+            <p class="cta-text">Discuss this feasibility assessment with our team. We will review your target, confirm the recommended approach, and propose a project scope.</p>
+            <a href="https://ranomics.com/ranomics-contact" target="_blank" rel="noopener noreferrer" class="btn-primary" style="display:inline-block;text-decoration:none;margin-top:1rem;">
+              Talk to our team
+            </a>
+          </div>
+        </div>
+
+      </div>
+
+<script>
+/* ========================================================================
+   Feasibility Scorer — client-side logic
+   ======================================================================== */
+
+var currentJobId = '{{ job_id }}' || '';
+var currentEpitopeId = '{{ epitope_id }}' || '';
+var currentChain = new URLSearchParams(window.location.search).get('chain') || 'A';
+
+/* ------------------------------------------------------------------
+   Upload / Fetch PDB (reused from Epitope Scout)
+   ------------------------------------------------------------------ */
+
+document.getElementById('pdb-file').addEventListener('change', function() {
+  var file = this.files[0];
+  if (!file) return;
+  uploadFile(file);
+});
+
+// Drag and drop
+var uploadZone = document.getElementById('upload-zone');
+uploadZone.addEventListener('dragover', function(e) { e.preventDefault(); this.classList.add('drag-over'); });
+uploadZone.addEventListener('dragleave', function() { this.classList.remove('drag-over'); });
+uploadZone.addEventListener('drop', function(e) {
+  e.preventDefault();
+  this.classList.remove('drag-over');
+  if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+});
+
+function uploadFile(file) {
+  var formData = new FormData();
+  formData.append('file', file);
+  document.getElementById('spinner').hidden = false;
+  document.getElementById('error-message').hidden = true;
+
+  fetch('/scout/upload', { method: 'POST', body: formData })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('spinner').hidden = true;
+      if (data.error) { showError(data.error); return; }
+      onStructureLoaded(data);
+    })
+    .catch(function(err) {
+      document.getElementById('spinner').hidden = true;
+      showError('Upload failed: ' + err.message);
+    });
+}
+
+function fetchPdb() {
+  var pdbId = document.getElementById('pdb-id-input').value.trim();
+  if (!pdbId || pdbId.length !== 4) { showError('Enter a 4-character PDB ID.'); return; }
+  document.getElementById('spinner').hidden = false;
+  document.getElementById('error-message').hidden = true;
+
+  fetch('/scout/fetch-pdb', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pdb_id: pdbId }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('spinner').hidden = true;
+      if (data.error) { showError(data.error); return; }
+      onStructureLoaded(data);
+    })
+    .catch(function(err) {
+      document.getElementById('spinner').hidden = true;
+      showError('Fetch failed: ' + err.message);
+    });
+}
+
+function onStructureLoaded(data) {
+  currentJobId = data.job_id;
+  document.getElementById('job-id').value = data.job_id;
+
+  var chainSelect = document.getElementById('chain-select');
+  chainSelect.innerHTML = '';
+  data.chains.forEach(function(c) {
+    var opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.id + ' (' + c.residue_count + ' residues)';
+    chainSelect.appendChild(opt);
+  });
+
+  document.getElementById('file-summary').textContent = data.filename || 'Structure loaded';
+  document.getElementById('file-summary').hidden = false;
+  document.getElementById('chain-section').hidden = false;
+  document.getElementById('epitope-section').hidden = false;
+  document.getElementById('analyze-section').hidden = false;
+}
+
+function showError(msg) {
+  var el = document.getElementById('error-message');
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+function showAnalyzeError(msg) {
+  var el = document.getElementById('analyze-error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function resetAll() {
+  currentJobId = '';
+  document.getElementById('file-summary').hidden = true;
+  document.getElementById('chain-section').hidden = true;
+  document.getElementById('epitope-section').hidden = true;
+  document.getElementById('analyze-section').hidden = true;
+  document.getElementById('results-section').hidden = true;
+  document.getElementById('progress-container').hidden = true;
+  document.getElementById('error-message').hidden = true;
+  document.getElementById('analyze-error').style.display = 'none';
+  document.getElementById('epitope-input').value = '';
+  document.getElementById('pdb-file').value = '';
+  document.getElementById('pdb-id-input').value = '';
+}
+
+/* ------------------------------------------------------------------
+   Run feasibility analysis
+   ------------------------------------------------------------------ */
+
+function runFeasibility() {
+  var jobId = currentJobId;
+  var chain = document.getElementById('chain-select').value;
+  var epitopeStr = document.getElementById('epitope-input').value.trim();
+
+  if (!jobId || !chain) { showAnalyzeError('Upload a structure and select a chain first.'); return; }
+  if (!epitopeStr && !currentEpitopeId) { showAnalyzeError('Enter epitope residue numbers.'); return; }
+
+  // Parse epitope residues
+  var epitopeResidues = [];
+  if (epitopeStr) {
+    epitopeStr.split(',').forEach(function(s) {
+      var n = parseInt(s.trim(), 10);
+      if (!isNaN(n)) epitopeResidues.push(n);
+    });
+  }
+
+  document.getElementById('analyze-error').style.display = 'none';
+  document.getElementById('results-section').hidden = true;
+  document.getElementById('progress-container').hidden = false;
+  document.getElementById('progress-bar').style.width = '0%';
+  document.getElementById('progress-label').textContent = 'Starting feasibility analysis\u2026';
+
+  // Build SSE URL
+  var params = new URLSearchParams({ job_id: jobId, chain: chain });
+  if (epitopeResidues.length) {
+    params.set('epitope_residues', epitopeResidues.join(','));
+  } else if (currentEpitopeId) {
+    params.set('epitope_id', currentEpitopeId);
+  }
+
+  var source = new EventSource('/feasibility/progress?' + params.toString());
+  source.onmessage = function(evt) {
+    var data = JSON.parse(evt.data);
+    if (data.stage === 'done') {
+      source.close();
+      document.getElementById('progress-container').hidden = true;
+      fetchFeasibilityResults(jobId, chain, epitopeResidues);
+    } else if (data.stage === 'error') {
+      source.close();
+      document.getElementById('progress-container').hidden = true;
+      showAnalyzeError(data.msg);
+    } else {
+      document.getElementById('progress-bar').style.width = (data.pct || 0) + '%';
+      document.getElementById('progress-label').textContent = data.msg || data.stage;
+    }
+  };
+  source.onerror = function() {
+    source.close();
+    document.getElementById('progress-container').hidden = true;
+    showAnalyzeError('Connection lost. Please try again.');
+  };
+}
+
+function fetchFeasibilityResults(jobId, chain, epitopeResidues) {
+  var body = { job_id: jobId, chain: chain };
+  if (epitopeResidues && epitopeResidues.length) {
+    body.epitope_residues = epitopeResidues;
+  } else if (currentEpitopeId) {
+    body.epitope_id = parseInt(currentEpitopeId, 10);
+  }
+
+  fetch('/scout/feasibility/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { showAnalyzeError(data.error); return; }
+      renderFeasibilityResults(data);
+      populateHandoffForm(jobId, chain, epitopeResidues, data);
+    })
+    .catch(function(err) { showAnalyzeError('Failed to fetch results: ' + err.message); });
+}
+
+function populateHandoffForm(jobId, chain, epitopeResidues, data) {
+  var jobField = document.getElementById('handoff-job-id');
+  var epField = document.getElementById('handoff-epitope-id');
+  var chainField = document.getElementById('handoff-chain');
+  var hsField = document.getElementById('handoff-hotspots');
+  if (!jobField) return;
+  jobField.value = jobId || '';
+  epField.value = currentEpitopeId || '';
+  chainField.value = chain || 'A';
+  var residues = (epitopeResidues && epitopeResidues.length)
+    ? epitopeResidues
+    : (data && data.epitope_residues ? data.epitope_residues : []);
+  hsField.value = residues.join(',');
+}
+
+/* ------------------------------------------------------------------
+   Render results
+   ------------------------------------------------------------------ */
+
+var DIMENSION_LABELS = {
+  surface_topology: 'Surface topology',
+  epitope_rigidity: 'Epitope rigidity',
+  geometric_access: 'Geometric accessibility',
+  glycan_risk: 'Glycan risk',
+  interface_competition: 'Natural PPI competition',
+};
+
+function renderFeasibilityResults(data) {
+  // Tier badge
+  var badge = document.getElementById('tier-badge');
+  badge.textContent = data.tier;
+  badge.style.backgroundColor = data.tier_color;
+  badge.style.color = '#fff';
+
+  // Composite score
+  document.getElementById('composite-score').textContent = data.composite_feasibility.toFixed(2);
+  var tierEl = document.getElementById('score-tier');
+  tierEl.textContent = data.tier;
+  tierEl.style.color = data.tier_color;
+
+  // Dimension bars
+  var barsHtml = '';
+  var dims = data.dimensions;
+  var descs = data.dimension_descriptions || {};
+  for (var dim in DIMENSION_LABELS) {
+    var score = dims[dim] || 0;
+    var pct = Math.round(score * 100);
+    var color = score >= 0.65 ? '#2B9E7E' : score >= 0.35 ? '#D4A843' : '#D44343';
+    var desc = descs[dim] || '';
+    barsHtml += '<div class="dim-row">'
+      + '<div class="dim-header"><span class="dim-label">' + DIMENSION_LABELS[dim] + '</span><span class="dim-score">' + score.toFixed(2) + '</span></div>'
+      + '<div class="dim-track"><div class="dim-fill" style="width:' + pct + '%;background:' + color + ';"></div></div>'
+      + '<p class="dim-desc">' + desc + '</p>'
+      + '</div>';
+  }
+  document.getElementById('dimensions-bars').innerHTML = barsHtml;
+
+  // Recommendations
+  document.getElementById('rec-approach').textContent = data.recommended_approach;
+  document.getElementById('rec-scaffold').textContent = data.recommended_scaffold;
+  document.getElementById('rec-scale').textContent = data.design_scale_min.toLocaleString() + ' \u2013 ' + data.design_scale_max.toLocaleString() + ' designs';
+  document.getElementById('rec-hitrate').textContent = data.expected_hit_rate;
+  document.getElementById('rec-citation').textContent = data.hit_rate_citation || '';
+
+  // Risk factors
+  var risks = data.risk_factors || [];
+  if (risks.length > 0) {
+    document.getElementById('risk-factors-section').hidden = false;
+    var listHtml = '';
+    risks.forEach(function(r) { listHtml += '<li>' + r + '</li>'; });
+    document.getElementById('risk-factors-list').innerHTML = listHtml;
+  } else {
+    document.getElementById('risk-factors-section').hidden = true;
+  }
+
+  // Download link
+  var dlLink = document.getElementById('download-link');
+  dlLink.href = data.download_url;
+  dlLink.style.display = 'inline-block';
+
+  // Known binder overlaps
+  var overlaps = data.known_binder_overlaps || [];
+  if (overlaps.length > 0) {
+    document.getElementById('binder-overlaps-section').hidden = false;
+    document.getElementById('binder-overlap-count').textContent = overlaps.length + ' found';
+    var tbody = document.getElementById('binder-overlap-body');
+    tbody.innerHTML = '';
+    overlaps.forEach(function(b) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td><a href="https://www.rcsb.org/structure/' + b.pdb_id + '" target="_blank" rel="noopener" style="color:var(--accent);">' + b.pdb_id + '</a></td>' +
+        '<td>' + (b.binder_type || '') + '</td>' +
+        '<td>' + (b.species || '') + '</td>' +
+        '<td>' + (b.resolution ? b.resolution.toFixed(1) + ' \u00c5' : '') + '</td>' +
+        '<td>' + (b.affinity || '') + '</td>' +
+        '<td>' + b.overlap_count + ' residues</td>';
+      tbody.appendChild(tr);
+    });
+  } else {
+    document.getElementById('binder-overlaps-section').hidden = true;
+  }
+
+  // 3D viewer
+  if (data.pdb_url) {
+    render3DViewer(data);
+  }
+
+  document.getElementById('results-section').hidden = false;
+}
+
+/* ------------------------------------------------------------------
+   3D viewer
+   ------------------------------------------------------------------ */
+
+function render3DViewer(data) {
+  var container = document.getElementById('viewer-container');
+  container.innerHTML = '';
+  container.style.height = '400px';
+
+  fetch(data.pdb_url)
+    .then(function(r) { return r.text(); })
+    .then(function(pdbData) {
+      var viewer = $3Dmol.createViewer(container, { backgroundColor: '#0b1628' });
+      viewer.addModel(pdbData, data.pdb_format || 'pdb');
+
+      // Hide HETATM ligands and small molecules
+      viewer.setStyle({ hetflag: true }, { stick: { hidden: true } });
+      viewer.setStyle({ resn: 'HOH' }, {});
+
+      // Gray cartoon for full chain
+      viewer.setStyle({ chain: data.chain }, {
+        cartoon: { color: '#3a4a5c', opacity: 0.7, thickness: 0.3, width: 1.4 }
+      });
+
+      // Highlight epitope residues in green
+      var residues = data.residues || '';
+      var resNums = [];
+      residues.split(',').forEach(function(token) {
+        var num = parseInt(token.replace(/[^0-9\-]/g, ''), 10);
+        if (!isNaN(num)) resNums.push(num);
+      });
+
+      if (resNums.length) {
+        viewer.setStyle({ chain: data.chain, resi: resNums }, {
+          cartoon: { color: '#2B9E7E', opacity: 1.0, thickness: 0.5, width: 1.8 }
+        });
+        viewer.addSurface($3Dmol.SurfaceType.SAS, {
+          color: '#2B9E7E', opacity: 0.6,
+        }, { resi: resNums, chain: data.chain });
+      }
+
+      viewer.zoomTo({ chain: data.chain, resi: resNums });
+      viewer.zoom(1.3);
+      viewer.render();
+
+      // Legend
+      document.getElementById('viewer-legend').innerHTML =
+        '<span style="color:#2B9E7E;font-weight:600;">Epitope</span>'
+        + ' <span style="color:#3a4a5c;">Target chain</span>';
+    });
+}
+
+/* ------------------------------------------------------------------
+   Auto-load from Epitope Scout (if job_id + epitope_id are in URL)
+   ------------------------------------------------------------------ */
+
+(function() {
+  if (!currentJobId || !currentEpitopeId) return;
+
+  // Hide the entire input panel when auto-loading from Epitope Scout
+  var inputPanel = document.querySelector('.panel:has(#upload-section)') || document.getElementById('upload-section').closest('.panel');
+  if (inputPanel) inputPanel.hidden = true;
+
+  // Show progress
+  document.getElementById('progress-container').hidden = false;
+  document.getElementById('progress-container').style.marginTop = '1rem';
+  document.getElementById('progress-bar').style.width = '0%';
+  document.getElementById('progress-label').textContent = 'Running feasibility analysis\u2026';
+
+  var params = new URLSearchParams({
+    job_id: currentJobId,
+    chain: currentChain,
+    epitope_id: currentEpitopeId,
+  });
+
+  var source = new EventSource('/feasibility/progress?' + params.toString());
+  source.onmessage = function(evt) {
+    var data = JSON.parse(evt.data);
+    if (data.stage === 'done') {
+      source.close();
+      document.getElementById('progress-container').hidden = true;
+      fetchFeasibilityResults(currentJobId, currentChain, []);
+    } else if (data.stage === 'error') {
+      source.close();
+      document.getElementById('progress-container').hidden = true;
+      if (inputPanel) inputPanel.hidden = false;
+      showAnalyzeError('Could not auto-load: ' + data.msg + '. Please upload the structure manually.');
+    } else {
+      document.getElementById('progress-bar').style.width = (data.pct || 0) + '%';
+      document.getElementById('progress-label').textContent = data.msg || data.stage;
+    }
+  };
+  source.onerror = function() {
+    source.close();
+    document.getElementById('progress-container').hidden = true;
+    if (inputPanel) inputPanel.hidden = false;
+  };
+})();
+</script>
+{% endblock %}

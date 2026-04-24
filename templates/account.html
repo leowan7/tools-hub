@@ -11,9 +11,25 @@
     <p class="subtitle">Signed in to the Ranomics tools hub. One account works across every tool linked from here.</p>
   </div>
 
+  {% if request.args.get('success') %}
+    <div class="success-box" style="margin-bottom: 1rem;">
+      Payment received. Your monthly credits are on the ledger below.
+    </div>
+  {% endif %}
+
+  {% if request.args.get('portal_error') %}
+    <div class="error-box" style="margin-bottom: 1rem;">
+      Could not open the Stripe Billing Portal. Upgrade a plan first, or contact leo@ranomics.com.
+    </div>
+  {% endif %}
+
   {% if request.args.get('insufficient_credits') %}
-    <div class="insufficient-credits-alert">
-      Not enough credits to run that tool. Top up below or upgrade your tier.
+    <div class="insufficient-credits-cta">
+      <div class="insufficient-credits-cta-text">
+        <strong style="color: var(--warm-white);">Not enough credits.</strong>
+        That tool needs more credits than you have. Upgrade or top up to keep going.
+      </div>
+      <a href="{{ url_for('pricing') }}" class="btn-primary">See pricing</a>
     </div>
   {% endif %}
 
@@ -50,10 +66,17 @@
         </div>
       </div>
 
-      <form method="POST" action="{{ url_for('logout') }}" class="account-actions">
-        <button type="submit" class="btn-primary">Sign out</button>
-        <a href="#" class="nav-link" style="margin-left: 1rem;" aria-disabled="true" title="Stripe Billing Portal — wired in Wave 1">Manage billing (coming soon)</a>
-      </form>
+      <div class="account-actions" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+        {% if not ranomics_tier or ranomics_tier == 'free' %}
+          <a href="{{ url_for('pricing') }}" class="btn-primary">Upgrade plan</a>
+        {% else %}
+          <a href="{{ url_for('billing_portal') }}" class="btn-primary">Manage billing</a>
+          <a href="{{ url_for('pricing') }}" class="btn-secondary">Change plan</a>
+        {% endif %}
+        <form method="POST" action="{{ url_for('logout') }}" style="margin: 0;">
+          <button type="submit" class="btn-secondary">Sign out</button>
+        </form>
+      </div>
     </div>
   </div>
 
@@ -89,7 +112,7 @@
           </tbody>
         </table>
       {% else %}
-        <p class="ledger-empty">No credit activity yet. Subscribe or run a tool to see entries here.</p>
+        <p class="ledger-empty">No credit activity yet. Upgrade a plan or run a tool to see entries here.</p>
       {% endif %}
     </div>
   </div>

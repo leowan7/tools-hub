@@ -6,6 +6,88 @@
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
+  {# RFantibody form uses a two-panel layout: form on the left, static
+     "About RFantibody" reference panel on the right. Scoped styles live
+     here (prefixed .rfantibody-) so we don't touch the shared stylesheet.
+     Copy is kept in sync with tools/rfantibody/meta.py by hand. #}
+  <style>
+    .rfantibody-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .rfantibody-layout { grid-template-columns: 1fr; }
+    }
+    .rfantibody-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .rfantibody-about h3:first-child { margin-top: 0; }
+    .rfantibody-about p,
+    .rfantibody-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .rfantibody-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .rfantibody-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .rfantibody-about ul li:last-child { border-bottom: none; }
+    .rfantibody-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .rfantibody-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .rfantibody-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .rfantibody-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .rfantibody-runtime-table tr:last-child td { border-bottom: none; }
+    .rfantibody-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: -0.75rem 0 1.25rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+  </style>
+
   <div class="hero">
     <h1>{{ adapter.label }}</h1>
     <p class="subtitle">{{ adapter.blurb }}</p>
@@ -17,85 +99,190 @@
     </div>
   {% endif %}
 
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Design inputs</span>
+  {# Preset runtime map mirrors tools/rfantibody/meta.py::PRESET_RUNTIME.
+     Kept in the template so the <option> data-attrs can be read without
+     round-tripping through app.py. Update both files together. #}
+  {% set preset_minutes = {
+    'smoke': '3',
+    'mini_pilot': '7',
+    'pilot': '15-60',
+  } %}
+
+  <div class="rfantibody-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
+          <select name="preset" id="preset" required
+                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
+            {% for preset in adapter.presets %}
+              <option value="{{ preset.slug }}"
+                      data-credits="{{ preset.credits_cost }}"
+                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                      {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
+                {{ preset.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <div id="preset-cost-preview" class="rfantibody-cost-preview" aria-live="polite"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+
+          <label for="framework" class="label" style="display:block; margin-bottom: 0.4rem;">Framework</label>
+          <select name="framework" id="framework" required
+                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+            <option value="VHH">VHH (nanobody)</option>
+            <option value="scFv">scFv</option>
+          </select>
+
+          <div id="pilot-fields" style="display: none;">
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the target structure as .pdb, .cif, or .mmcif.
+            </div>
+
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+            </div>
+
+            <label for="cdr_lengths" class="label" style="display:block; margin-bottom: 0.4rem;">CDR lengths</label>
+            <input type="text" name="cdr_lengths" id="cdr_lengths" placeholder="H1:8,H2:7,H3:10-16" value="H1:8,H2:7,H3:10-16"
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              CDR length spec (e.g. <code>H1:8,H2:7,H3:10-16</code>). Ranges allowed on H3.
+            </div>
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Smoke / preview tier uses our reference PD-L1 IgV
+            (residues 18–132, chain A); no PDB upload needed.
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Pilot tier runs against your own target — upload PDB, pick hotspots,
+            choose framework. Results emailed (~15-60 min on A100-40GB).
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
     </div>
-    <div class="panel-body">
-      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
-        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
-          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
-          {% for preset in adapter.presets %}
-            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
-              <input type="radio" name="preset" value="{{ preset.slug }}" {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
-              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
-              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
-            </label>
-          {% endfor %}
-        </fieldset>
 
-        <label for="framework" class="label" style="display:block; margin-bottom: 0.4rem;">Framework</label>
-        <select name="framework" id="framework" required
-                style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-          <option value="VHH">VHH (nanobody)</option>
-          <option value="scFv">scFv</option>
-        </select>
+    <aside class="panel rfantibody-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About RFantibody</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it wraps</h3>
+        <p>
+          RFantibody (<a href="https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2">Bennett et al., bioRxiv 2024</a>).
+          RFdiffusion fine-tuned for antibody scaffolds, paired with
+          ProteinMPNN sequence design and RF2 filtering. Supports VHH
+          (single-domain / nanobody) and scFv design.
+          Repo: <a href="https://github.com/RosettaCommons/RFantibody">RosettaCommons/RFantibody</a>.
+        </p>
 
-        <div id="pilot-fields" style="display: none;">
-          {{ pdb_source_banner(pdb_source) }}
-          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
-          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
-                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Upload the target structure as .pdb, .cif, or .mmcif.
-          </div>
+        <h3>When to use</h3>
+        <p>
+          Pick RFantibody when you need an antibody scaffold (VHH or scFv)
+          against a target PDB. For de novo non-antibody binders, use
+          BindCraft. For designs involving modified residues or glycans,
+          use BoltzGen.
+        </p>
 
-          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>PDB of the target antigen</li>
+          <li>Chain ID of the antigen within that PDB</li>
+          <li>Hotspot residues covering the intended epitope</li>
+          <li>Scaffold type — VHH or scFv</li>
+        </ul>
 
-          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
-          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
-                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
-          </div>
+        <h3>Input glossary</h3>
+        <ul>
+          <li><strong>VHH</strong> — single-domain heavy-chain-only antibody (nanobody); one engineered CDR3 carries most of the paratope.</li>
+          <li><strong>scFv</strong> — single-chain Fv; VH and VL joined by a flexible linker, six CDRs total.</li>
+          <li><strong>Hotspot residues</strong> — target-chain residue indices the binder should contact. These define the epitope the diffusion model biases toward.</li>
+          <li><strong>CDR lengths</strong> — per-loop length spec, e.g. <code>H1:8,H2:7,H3:10-16</code>. H3 accepts a range; H1/H2 are fixed.</li>
+          <li><strong>Num designs</strong> — how many candidates to sample. Each is independently scored by RF2 (ipTM, pLDDT, pAE, pTM).</li>
+        </ul>
 
-          <label for="cdr_lengths" class="label" style="display:block; margin-bottom: 0.4rem;">CDR lengths</label>
-          <input type="text" name="cdr_lengths" id="cdr_lengths" placeholder="H1:8,H2:7,H3:10-16" value="H1:8,H2:7,H3:10-16"
-                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            CDR length spec (e.g. <code>H1:8,H2:7,H3:10-16</code>). Ranges allowed on H3.
-          </div>
-        </div>
-
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-          Smoke / preview tier uses our reference PD-L1 IgV
-          (residues 18–132, chain A); no PDB upload needed.
-        </div>
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-          Pilot tier runs against your own target — upload PDB, pick hotspots,
-          choose framework. Results emailed (~15-60 min on A100-40GB).
-        </div>
-
-        <button type="submit" class="btn-primary">Submit run</button>
-      </form>
-    </div>
+        <h3>Runtime &amp; cost</h3>
+        <table class="rfantibody-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          Pilot runs email you when complete. Unused GPU seconds are
+          refunded in credits when a run finishes faster than its budget.
+        </p>
+      </div>
+    </aside>
   </div>
 
   <script>
     (function () {
       var form = document.querySelector('form');
+      var presetSelect = document.getElementById('preset');
       var pilotFields = document.getElementById('pilot-fields');
-      if (!form || !pilotFields) return;
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!form || !presetSelect) return;
+
+      // Map preset slug -> description text, sourced from adapter.presets
+      // so the selector UI can swap the helper copy as the user flips
+      // presets (original radio-card UI showed all three descriptions
+      // at once; the dropdown hides them, so we surface the active one).
+      var descriptions = {
+        {% for preset in adapter.presets %}
+          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      };
+
       function sync() {
-        var checked = form.querySelector('input[name="preset"]:checked');
-        var value = checked ? checked.value : '';
-        pilotFields.style.display = (value === 'pilot') ? 'block' : 'none';
+        var value = presetSelect.value;
+        if (pilotFields) {
+          pilotFields.style.display = (value === 'pilot') ? 'block' : 'none';
+        }
+        if (costPreview) {
+          var opt = presetSelect.options[presetSelect.selectedIndex];
+          if (opt) {
+            var credits = opt.getAttribute('data-credits');
+            var minutes = opt.getAttribute('data-minutes');
+            costPreview.textContent = credits + ' credits · ~' + minutes + ' min · refunded if shorter';
+          }
+        }
+        if (descEl) {
+          descEl.textContent = descriptions[value] || '';
+        }
       }
-      form.addEventListener('change', function (e) {
-        if (e.target && e.target.name === 'preset') sync();
-      });
+
+      presetSelect.addEventListener('change', sync);
       sync();
     })();
   </script>

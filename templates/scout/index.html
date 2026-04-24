@@ -1,0 +1,1033 @@
+{% extends "base.html" %}
+
+{% block title %}Epitope Scout — Surface Epitope Identification for Binder Design | Ranomics{% endblock %}
+{% block description %}Upload a protein structure or UniProt accession and identify surface-exposed, solvent-accessible epitopes ranked by binder design feasibility — accessibility, hydrophobic exposure, rigidity, and hot-spot density.{% endblock %}
+
+{% block head_extra %}
+  <style>
+    /* Scout paywall quota pill — inline so we do not need to touch
+       static/style.css (outside of this stream's ALLOW). */
+    .scout-quota-pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin: 0.75rem 0 1.25rem;
+      padding: 0.55rem 0.9rem;
+      border: 1px solid rgba(120, 130, 160, 0.25);
+      border-radius: 8px;
+      background: rgba(120, 130, 160, 0.06);
+      font-size: 0.85rem;
+      color: inherit;
+    }
+    .scout-quota-pill--warn {
+      border-color: rgba(204, 130, 40, 0.45);
+      background: rgba(204, 130, 40, 0.08);
+    }
+    .scout-quota-upgrade {
+      text-decoration: none;
+      font-weight: 600;
+      padding: 0.3rem 0.7rem;
+      border-radius: 6px;
+      border: 1px solid currentColor;
+      font-size: 0.8rem;
+    }
+  </style>
+  <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+      <!-- Hero -->
+      <div class="hero">
+        <h1>Epitope Scout</h1>
+        <p class="subtitle">Identify candidate surface epitopes for binder design. Upload a structure, select a chain, and get ranked patches scored by accessibility, hydrophobic exposure, rigidity, and hot-spot density.</p>
+      </div>
+
+      <!-- Quota pill — populated live from /quota via fetch(). Hidden for
+           Pro-tier users, shown for free-tier users with runs remaining,
+           styled as a soft amber notice when the user is at or near the
+           cap. Graceful no-op if Supabase is unreachable. -->
+      <div id="scout-quota-pill" class="scout-quota-pill" hidden>
+        <span id="scout-quota-text"></span>
+        <a href="/pricing" id="scout-quota-upgrade" class="scout-quota-upgrade" hidden>Upgrade</a>
+      </div>
+      <script>
+        (function () {
+          fetch('/scout/quota', { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (q) {
+              if (!q) return;
+              var pill = document.getElementById('scout-quota-pill');
+              var text = document.getElementById('scout-quota-text');
+              var up = document.getElementById('scout-quota-upgrade');
+              if (!pill || !text) return;
+              if (q.unlimited) return;  // Pro tier, no pill
+              if (q.tier === 'anon') return;  // not signed in, no pill
+              var used = q.runs_used || 0;
+              var cap = q.runs_cap || 3;
+              var remaining = Math.max(0, cap - used);
+              text.textContent = 'Free tier: ' + used + ' of ' + cap + ' runs used in the last 30 days.';
+              if (remaining <= 1) {
+                pill.classList.add('scout-quota-pill--warn');
+                up.hidden = false;
+              }
+              pill.hidden = false;
+            })
+            .catch(function () { /* silent fail — quota is a nice-to-have */ });
+        })();
+      </script>
+
+      <!-- Input panel — upload, chain select, analyze -->
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">
+            <svg class="panel-title-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            Input
+          </span>
+          <button type="button" id="example-btn" class="btn-secondary" onclick="runExample()" style="font-size:0.72rem;padding:0.3rem 0.7rem;">
+            Load example (1HEW)
+          </button>
+        </div>
+        <div class="panel-body">
+          <div class="controls-grid">
+            <!-- Upload or PDB ID -->
+            <div class="control-group">
+              <span class="control-label">Structure file</span>
+              <div class="upload-zone" id="upload-zone">
+                <input type="file" id="pdb-file" accept=".pdb,.cif">
+                <label for="pdb-file" class="upload-label">
+                  <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+                  </svg>
+                  <span class="upload-text">
+                    <span class="upload-primary">Browse or drop file</span>
+                    <span class="upload-secondary">PDB or mmCIF, max 20 MB</span>
+                  </span>
+                </label>
+              </div>
+              <div class="pdb-id-row">
+                <span class="or-divider">or</span>
+                <input type="text" id="pdb-id-input" class="pdb-id-input" placeholder="Enter PDB ID (e.g. 4HFE)" maxlength="4" spellcheck="false" autocomplete="off">
+                <button type="button" id="fetch-pdb-btn" class="btn-secondary" onclick="fetchPdb()">Fetch</button>
+              </div>
+              <div id="spinner" class="status-row" hidden>
+                <span class="spinner-ring"></span>
+                <span>Parsing&hellip;</span>
+              </div>
+              <div id="file-summary" class="file-summary" hidden></div>
+              <div id="structure-title" class="structure-title" hidden></div>
+              <div id="error-message" class="error-message" hidden></div>
+            </div>
+
+            <!-- Chain select -->
+            <div class="control-group" id="chain-section" hidden>
+              <span class="control-label">Target chain</span>
+              <select id="chain-select" class="chain-select"></select>
+              <input type="hidden" id="job-id" name="job_id">
+            </div>
+
+            <!-- Analyze -->
+            <div class="control-group" id="analyze-section" hidden style="justify-content:flex-end;">
+              <div class="btn-row">
+                <button type="button" id="analyze-btn" class="btn-primary" onclick="runAnalysis()">
+                  Analyze epitopes
+                </button>
+                <button type="button" class="btn-reset" onclick="resetAll()">Reset</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Progress bar -->
+          <div id="progress-container" hidden>
+            <div class="progress-track">
+              <div id="progress-bar" class="progress-fill"></div>
+            </div>
+            <p id="progress-label" class="progress-label">Running analysis&hellip;</p>
+          </div>
+          <p id="analyze-error" class="error-message" style="display:none;" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <!-- Results section (hidden until analysis complete) -->
+      <div id="results-section" hidden>
+
+        <!-- UniProt info bar -->
+        <div id="uniprot-bar" class="uniprot-bar" hidden>
+          <span class="uniprot-label">UniProt</span>
+          <span id="uniprot-info"></span>
+        </div>
+
+        <!-- 3D viewer panel -->
+        <div class="viewer-wrapper">
+          <div id="viewer-container" class="viewer-container"></div>
+          <div class="viewer-bar">
+            <div id="epitope-legend" class="viewer-legend"></div>
+            <div class="viewer-downloads">
+              <a id="download-link" class="viewer-dl-btn" style="display:none;" download="top3_epitopes.csv">Top 3 CSV</a>
+              <a id="download-link-full" class="viewer-dl-btn" style="display:none;" download="all_patches.csv">All patches CSV</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- Data panels grid -->
+        <div class="results-grid">
+
+          <!-- Epitope candidates table -->
+          <div class="panel results-full">
+            <div class="panel-header">
+              <span class="panel-title">Predicted epitopes</span>
+            </div>
+            <div class="panel-body" style="padding-top:0.5rem;">
+              <div id="epitope-table-wrap" style="overflow-x:auto;">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Score</th>
+                      <th>SS</th>
+                      <th>Res (RSA)</th>
+                      <th>Residues</th>
+                      <th>Flags</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="epitope-table-body"></tbody>
+                </table>
+              </div>
+              <!-- Flag reference — explains what each flag means for design -->
+              <div id="flag-reference" class="flag-reference" hidden>
+                <div class="flag-ref-title">Flag guide</div>
+                <div class="flag-ref-grid" id="flag-ref-grid"></div>
+              </div>
+              <!-- Feasibility note -->
+              <div id="feasibility-note" class="feasibility-note-prominent" hidden>
+                <strong>Epitope score vs. design feasibility:</strong> Epitope score ranks binding potential based on surface chemistry, hot spots, and accessibility. Design feasibility assesses how difficult it will be to computationally design a binder, based on surface geometry, steric access, and glycan proximity. A high-scoring epitope can still be a challenging design target.
+              </div>
+            </div>
+          </div>
+
+          <!-- PPI interfaces panel -->
+          <div class="panel" id="ppi-section" hidden>
+            <div class="panel-header">
+              <span class="panel-title">Interaction interfaces</span>
+              <span id="ppi-count" class="panel-badge"></span>
+            </div>
+            <div class="panel-body" style="padding-top:0.5rem;">
+              <div style="overflow-x:auto;">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Partner</th>
+                      <th>Chain</th>
+                      <th>Contacts</th>
+                      <th>Size</th>
+                      <th>Epitope overlap</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ppi-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Known binders (SAbDab) -->
+          <div class="panel results-full" id="known-binders-section" hidden>
+            <div class="panel-header">
+              <span class="panel-title">Known binders (PDB / SAbDab)</span>
+              <span id="known-binders-count" class="panel-badge"></span>
+            </div>
+            <div class="panel-body" style="padding-top:0.5rem;">
+              <div id="seq-warning-box" class="seq-warning" hidden></div>
+              <div style="overflow-x:auto;">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>PDB</th>
+                      <th>Type</th>
+                      <th>Organism</th>
+                      <th>Resolution</th>
+                      <th>Affinity</th>
+                      <th>Contact residues</th>
+                      <th>Epitope overlap</th>
+                    </tr>
+                  </thead>
+                  <tbody id="known-binders-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /results-grid -->
+
+        <!-- Score methodology -->
+        <details class="score-explainer">
+          <summary>How epitopes are scored</summary>
+          <div class="score-explainer-body">
+            <p>Each surface patch is ranked by a composite score (0&ndash;1) combining five structural determinants:</p>
+            <dl class="score-terms">
+              <dt><span class="score-weight">30%</span> Hydrophobic exposure</dt>
+              <dd>Hydrophobicity &times; mean RSA. Accessible hydrophobic surface drives desolvation &Delta;G.
+                <span class="score-ref">Chothia (1974); Vajda et al. (2018)</span></dd>
+              <dt><span class="score-weight">20%</span> Structural order</dt>
+              <dd>Independent secondary structure score. &beta;-strands (1.0) and &alpha;-helices (0.8) are strongly preferred &mdash; they are rigid, geometrically regular, and dominate natural PPI interfaces. Loops score 0.2: flexible regions may rearrange in solution, causing binder design failure.
+                <span class="score-ref">Lo Conte et al. (1999); Fleishman et al. (2011)</span></dd>
+              <dt><span class="score-weight">20%</span> Rigidity</dt>
+              <dd>Inverted Z-scored backbone B-factor. Rigid, well-ordered epitopes incur lower entropic penalty upon binding.
+                <span class="score-ref">Carugo &amp; Argos (1997)</span></dd>
+              <dt><span class="score-weight">15%</span> Surface accessibility</dt>
+              <dd>Inverted burial depth. Flat, moderately curved surfaces score high &mdash; the optimal topology for shape complementarity. Deep pockets and narrow crevices are penalized.
+                <span class="score-ref">Lo Conte et al. (1999); Lawrence &amp; Colman (1993)</span></dd>
+              <dt><span class="score-weight">15%</span> Hot spot density</dt>
+              <dd>Fraction of Trp, Tyr, Arg, Phe, Lys, Asp, Glu. Core hot spots contribute &gt;2 kcal/mol each; charged residues form salt bridges and H-bond networks.
+                <span class="score-ref">Bogan &amp; Thorn (1998); Moreira et al. (2007)</span></dd>
+            </dl>
+            <p class="score-note">Top 3 epitopes above quality threshold (score &ge; 0.40, &ge; 5 residues) are reported. Full data in CSV.</p>
+          </div>
+        </details>
+
+      </div><!-- /results-section -->
+
+  <script>
+    const PATCH_COLORS = [
+      '#ef4444', '#3b82f6', '#22c55e', '#f97316',
+      '#a855f7', '#14b8a6', '#eab308', '#ec4899',
+    ];
+    const PPI_COLORS = [
+      '#facc15', '#f472b6', '#38bdf8', '#a3e635',
+    ];
+
+    const STAGES = {
+      parsing: { pct: 10, label: 'Parsing structure\u2026' },
+      sasa:    { pct: 30, label: 'Computing solvent accessibility\u2026' },
+      patches: { pct: 55, label: 'Clustering surface patches\u2026' },
+      scoring: { pct: 80, label: 'Scoring epitope geometry\u2026' },
+      ranking: { pct: 95, label: 'Finalising results\u2026' },
+    };
+
+    let _activeSource = null;
+    let _currentPpiInterfaces = [];
+
+    // -----------------------------------------------------------------------
+    // SSE progress stream
+    // -----------------------------------------------------------------------
+    function openProgressStream(jobId, chain) {
+      if (_activeSource) { _activeSource.close(); _activeSource = null; }
+
+      const bar = document.getElementById('progress-bar');
+      const label = document.getElementById('progress-label');
+      document.getElementById('progress-container').hidden = false;
+      bar.style.width = '5%';
+      label.textContent = 'Starting analysis\u2026';
+
+      const params = new URLSearchParams({ job_id: jobId, chain: chain });
+      const source = new EventSource('/progress?' + params.toString());
+      _activeSource = source;
+
+      source.onmessage = function(evt) {
+        var data = JSON.parse(evt.data);
+        if (data.stage === 'done') {
+          source.close();
+          _activeSource = null;
+          _finalizeAnalysis(jobId, chain);
+        } else if (data.stage === 'error') {
+          source.close();
+          _activeSource = null;
+          resetProgress();
+          showAnalyzeError(data.msg || 'Analysis failed.');
+        } else {
+          var info = STAGES[data.stage] || {};
+          bar.style.width = (info.pct || data.pct || 0) + '%';
+          label.textContent = info.label || data.msg || data.stage;
+        }
+      };
+
+      source.onerror = function() {
+        if (source.readyState !== EventSource.CLOSED) {
+          source.close();
+          _activeSource = null;
+          resetProgress();
+          showAnalyzeError('Connection lost. Please try again.');
+        }
+      };
+    }
+
+    function completeProgress() {
+      const bar = document.getElementById('progress-bar');
+      bar.style.transition = 'width 0.3s ease';
+      bar.style.width = '100%';
+      document.getElementById('progress-label').textContent = 'Complete';
+      setTimeout(function() {
+        document.getElementById('progress-container').hidden = true;
+        bar.style.width = '0%';
+      }, 600);
+    }
+
+    function resetProgress() {
+      if (_activeSource) { _activeSource.close(); _activeSource = null; }
+      document.getElementById('progress-container').hidden = true;
+      document.getElementById('progress-bar').style.width = '0%';
+    }
+
+    // -----------------------------------------------------------------------
+    // Finalize analysis — POST /analyze
+    // -----------------------------------------------------------------------
+    async function _finalizeAnalysis(jobId, chain) {
+      var analyzeBtn = document.getElementById('analyze-btn');
+      var bar = document.getElementById('progress-bar');
+      var label = document.getElementById('progress-label');
+      document.getElementById('progress-container').hidden = false;
+      bar.style.width = '97%';
+      label.textContent = 'Resolving UniProt and detecting interfaces\u2026';
+      try {
+        var resp = await fetch('/scout/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: jobId, chain: chain }),
+        });
+        // Free-tier quota exceeded — paywall kicked in. Redirect instead
+        // of rendering a dead error message.
+        if (resp.status === 402) {
+          resetProgress();
+          window.location.href = '/pricing';
+          return;
+        }
+        var data = await resp.json();
+        if (!resp.ok) {
+          resetProgress();
+          showAnalyzeError(data.error || 'Analysis failed.');
+          return;
+        }
+        completeProgress();
+        _handleAnalysisResult(data);
+      } catch (_) {
+        resetProgress();
+        showAnalyzeError('Network error. Please try again.');
+      } finally {
+        if (analyzeBtn) {
+          analyzeBtn.disabled = false;
+          analyzeBtn.textContent = 'Analyze epitopes';
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Handle analysis result
+    // -----------------------------------------------------------------------
+    function _handleAnalysisResult(data) {
+      // Show results section
+      document.getElementById('results-section').hidden = false;
+
+      // Download links
+      var dl = document.getElementById('download-link');
+      var dlFull = document.getElementById('download-link-full');
+      dl.href = data.download_url;
+      dl.style.display = 'inline-flex';
+      if (data.download_url_full) {
+        dlFull.href = data.download_url_full;
+        dlFull.style.display = 'inline-flex';
+      }
+
+      // UniProt bar
+      if (data.uniprot_id) {
+        var info = '<a href="https://www.uniprot.org/uniprot/' + data.uniprot_id + '" target="_blank" rel="noopener" class="pdb-link">' + data.uniprot_id + '</a>';
+        if (data.uniprot_name) info += ' \u2014 ' + data.uniprot_name;
+        if (data.sequence_identity_pct && data.sequence_identity_pct !== 'unknown') {
+          info += ' (identity: ' + data.sequence_identity_pct + ')';
+        }
+        document.getElementById('uniprot-info').innerHTML = info;
+        document.getElementById('uniprot-bar').hidden = false;
+      }
+
+      // Render 3D viewer with epitopes
+      var epitopes = data.epitopes || [];
+
+      if (epitopes.length > 0) {
+        renderViewer(data.pdb_url, data.pdb_format || 'pdb', data.chain, epitopes);
+      }
+
+      // Known binders
+      var knownBinders = data.known_binders || [];
+      if (knownBinders.length > 0) {
+        renderKnownBinders(knownBinders, epitopes);
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 3D viewer — large, with PPI overlays
+    // -----------------------------------------------------------------------
+    async function renderViewer(pdbUrl, pdbFormat, chain, epitopes) {
+      const container = document.getElementById('viewer-container');
+      container.innerHTML = '';
+
+      let pdbData;
+      try {
+        const resp = await fetch(pdbUrl);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        pdbData = await resp.text();
+      } catch (_) {
+        container.textContent = 'Could not load structure for visualization.';
+        return;
+      }
+
+      // Distinct per-chain colors for clear visual separation.
+      const CHAIN_COLORS = [
+        '#7cb5ec', '#90ed7d', '#f7a35c', '#e084c1',
+        '#8085e9', '#f15c80', '#91e8e1', '#d4c45c',
+      ];
+
+      const viewer = $3Dmol.createViewer(container, { backgroundColor: '#0b1628' });
+      viewer.addModel(pdbData, pdbFormat);
+
+      // Hide HETATM ligands and small molecules (waters, ions, crystallographic additives)
+      viewer.setStyle({ hetflag: true }, { stick: { hidden: true } });
+      viewer.setStyle({ resn: 'HOH' }, {});
+
+      // Assign distinct colors per chain.
+      var model = viewer.getModel();
+      var atoms = model.selectedAtoms({});
+      var chainIds = [];
+      atoms.forEach(function(a) {
+        if (chainIds.indexOf(a.chain) === -1) chainIds.push(a.chain);
+      });
+      // Build chain name map from ALL chain select options (not just selected)
+      var chainNameMap = {};
+      var selEl = document.getElementById('chain-select');
+      if (selEl) {
+        Array.from(selEl.options).forEach(function(opt) {
+          var nameMatch = opt.textContent.match(/Chain\s+(\S+)\s+\u2014\s*(.+?)\s*\(/);
+          if (nameMatch) chainNameMap[nameMatch[1]] = nameMatch[2];
+        });
+      }
+
+      _viewerChainInfo = [];
+      chainIds.forEach(function(cid, idx) {
+        var color = CHAIN_COLORS[idx % CHAIN_COLORS.length];
+        // Thicker ribbons: thickness 0.4 (default ~0.2), width 1.6 for PyMOL-like appearance
+        viewer.setStyle({ chain: cid }, { cartoon: { color: color, opacity: 0.9, thickness: 0.4, width: 1.6 } });
+        _viewerChainInfo.push({ id: cid, color: color, name: chainNameMap[cid] || '' });
+      });
+
+      // Zoom: zoomTo fits all atoms, then zoom(1.5) enlarges to fill ~75%.
+      viewer.zoomTo();
+      viewer.zoom(1.5);
+      viewer.render();
+
+      // Epitope surface overlays (solid, on target chain only)
+      try {
+        const promises = epitopes.map(function(ep, i) {
+          return viewer.addSurface($3Dmol.SurfaceType.SAS, {
+            color: PATCH_COLORS[i % PATCH_COLORS.length],
+            opacity: 0.80,
+          }, {
+            resi: ep.residue_numbers,
+            chain: chain,
+          });
+        });
+
+        Promise.all(promises).then(function() { viewer.render(); });
+      } catch (_) { /* surface overlay failed — ribbon already rendered */ }
+
+      renderLegend(epitopes, _viewerChainInfo);
+      renderEpitopeTable(epitopes);
+    }
+
+    // Store chain info from viewer for legend
+    var _viewerChainInfo = [];
+
+    function renderLegend(epitopes, chainInfo) {
+      const legend = document.getElementById('epitope-legend');
+      legend.innerHTML = '';
+
+      epitopes.forEach(function(ep, i) {
+        const color = PATCH_COLORS[i % PATCH_COLORS.length];
+        const ss = ep.secondary_structure || '';
+        const ssLabel = ss === 'strand' ? '\u03b2' : ss === 'helix' ? '\u03b1' : 'L';
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML =
+          '<span class="legend-swatch" style="background:' + color + '"></span>' +
+          '<span class="legend-label">Epitope ' + (i+1) + '</span>' +
+          '<span class="legend-meta">' + ep.residue_count + 'res \u00b7 ' + ssLabel + ' \u00b7 ' + ep.composite_score.toFixed(2) + '</span>';
+        legend.appendChild(item);
+      });
+
+      // Chain color legend on a separate line
+      if (chainInfo && chainInfo.length > 1) {
+        var lineBreak = document.createElement('div');
+        lineBreak.className = 'legend-break';
+        legend.appendChild(lineBreak);
+        chainInfo.forEach(function(ci) {
+          var item = document.createElement('div');
+          item.className = 'legend-item legend-chain';
+          var nameStr = ci.name ? ' ' + ci.name : '';
+          item.innerHTML =
+            '<span class="legend-swatch" style="background:' + ci.color + '"></span>' +
+            '<span class="legend-label">Chain ' + ci.id + '</span>' +
+            '<span class="legend-meta">' + nameStr + '</span>';
+          legend.appendChild(item);
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Epitope detail table
+    // -----------------------------------------------------------------------
+    const FLAG_BADGE_CLASS = {
+      'loop-only anchor':            'badge-orange',
+      'all-polar patch':             'badge-red',
+      'fully convex surface':        'badge-yellow',
+      'known functional site':       'badge-blue',
+      'high-flexibility region':     'badge-red',
+      'B-factor unreliable (pLDDT)': 'badge-yellow',
+      'terminal patch':              'badge-orange',
+      'electrostatic asymmetry':     'badge-yellow',
+      'glycan proximity':            'badge-red',
+    };
+
+    // Flag explanations for binder design context.
+    const FLAG_DESCRIPTIONS = {
+      'loop-only anchor': {
+        meaning: 'All residues in this patch are in loop regions (no helix or strand).',
+        implication: 'Loops are flexible and may adopt different conformations in solution vs. crystal. Binders designed against loop epitopes can fail if the loop rearranges. Consider whether the loop is constrained by neighboring structure or disulfide bonds. If B-factor is also high, this is a significant risk.',
+      },
+      'all-polar patch': {
+        meaning: 'Patch hydrophobicity is below 20% \u2014 almost entirely polar/charged residues.',
+        implication: 'Hydrophobic contacts are the primary driver of binding free energy at protein interfaces. All-polar patches lack the desolvation driving force and typically produce weaker binders. Design may require engineering complementary polar networks (salt bridges, H-bonds) which are harder to optimize computationally.',
+      },
+      'fully convex surface': {
+        meaning: 'Very low burial count \u2014 the patch sits on a highly exposed, convex protrusion.',
+        implication: 'While accessible, extremely convex surfaces offer limited shape complementarity for a binder to grip. The binder must create its own concavity to wrap around the protrusion. This can work but requires larger scaffolds and is harder to design than a moderately curved surface.',
+      },
+      'known functional site': {
+        meaning: 'This patch overlaps a known functional or literature-annotated binding region.',
+        implication: 'Positive indicator. Targeting functional sites increases the chance that a binder will have a biological effect (blocking, modulating). Pre-validated by natural or engineered interactions.',
+      },
+      'high-flexibility region': {
+        meaning: 'B-factor score is below 0.35 \u2014 backbone atoms are highly mobile in the crystal.',
+        implication: 'Flexible regions incur a large entropic penalty upon binding (the epitope must freeze into one conformation). Binders targeting flexible epitopes often have weaker affinity than predicted by static modeling. MD simulations are recommended before committing to design.',
+      },
+      'B-factor unreliable (pLDDT)': {
+        meaning: 'This structure was identified as an AlphaFold prediction. The B-factor column contains pLDDT confidence scores, not crystallographic displacement.',
+        implication: 'Rigidity scores are derived from pLDDT (high = confident/rigid) rather than experimental B-factors. pLDDT reflects prediction confidence, which correlates with but is not identical to backbone flexibility. Consider validating with experimental structures if available.',
+      },
+      'terminal patch': {
+        meaning: 'More than half of this patch\u2019s residues are within 5 positions of the protein\u2019s N- or C-terminus.',
+        implication: 'Terminal regions are often disordered in solution even when resolved in crystal structures. Binders designed against terminal epitopes may fail if the terminus is flexible or processed (cleaved) in vivo.',
+      },
+      'electrostatic asymmetry': {
+        meaning: 'This patch has a large imbalance between positively charged (Arg, Lys, His) and negatively charged (Asp, Glu) residues.',
+        implication: 'Highly charged patches require precise electrostatic complementarity in the binder, which is harder to design computationally. The binder must present matching opposite charges without introducing unfavorable like-charge contacts.',
+      },
+      'glycan proximity': {
+        meaning: 'This patch contains an Asn residue in a potential N-linked glycosylation sequon (N-x-S/T).',
+        implication: 'Glycans can block binder access in vivo even when absent from crystal structures. If the target is expressed in mammalian cells, verify glycosylation status. Glycan-free expression systems (E. coli) may be needed for validation.',
+      },
+    };
+
+    function renderEpitopeTable(epitopes) {
+      const tbody = document.getElementById('epitope-table-body');
+      tbody.innerHTML = '';
+
+      var allFlags = new Set();
+
+      epitopes.forEach(function(ep, i) {
+        const color = PATCH_COLORS[i % PATCH_COLORS.length];
+        const ss = ep.secondary_structure || 'loop';
+        const ssLabel = ss === 'strand' ? '\u03b2-strand' : ss === 'helix' ? '\u03b1-helix' : 'loop';
+        const residues = ep.residues || '';
+        const truncated = residues.length > 50 ? residues.substring(0, 50) + '\u2026' : residues;
+
+        // Quality flags
+        var flagsHtml = '';
+        var flags = (ep.quality_flags || '').split('|').filter(Boolean);
+        if (flags.length > 0) {
+          flags.forEach(function(f) { allFlags.add(f.trim()); });
+          flagsHtml = flags.map(function(f) {
+            var cls = FLAG_BADGE_CLASS[f.trim()] || 'badge-neutral';
+            return '<span class="badge ' + cls + '">' + f.trim() + '</span>';
+          }).join(' ');
+        } else {
+          flagsHtml = '<span class="no-flags">\u2014</span>';
+        }
+
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';margin-right:0.4rem;vertical-align:middle;"></span>' + (i+1) + '</td>' +
+          '<td style="font-weight:600;">' + ep.composite_score.toFixed(2) + '</td>' +
+          '<td>' + ssLabel + '</td>' +
+          '<td>' + ep.residue_count + ' (' + ep.mean_rsa.toFixed(2) + ')</td>' +
+          '<td class="mono-cell">' + truncated + '</td>' +
+          '<td class="flags-cell">' + flagsHtml + '</td>' +
+          '<td><a href="/scout/feasibility?job_id=' + document.getElementById('job-id').value + '&epitope_id=' + ep.epitope_id + '&chain=' + document.getElementById('chain-select').value + '" class="feasibility-link">Assess feasibility</a></td>';
+        tbody.appendChild(tr);
+      });
+
+      // Render flag reference for flags that actually appear.
+      renderFlagReference(allFlags);
+
+      // Show the feasibility note
+      document.getElementById('feasibility-note').hidden = false;
+    }
+
+    function renderFlagReference(flagSet) {
+      var refSection = document.getElementById('flag-reference');
+      var grid = document.getElementById('flag-ref-grid');
+      grid.innerHTML = '';
+
+      if (flagSet.size === 0) {
+        refSection.hidden = true;
+        return;
+      }
+
+      flagSet.forEach(function(flag) {
+        var info = FLAG_DESCRIPTIONS[flag];
+        if (!info) return;
+        var cls = FLAG_BADGE_CLASS[flag] || 'badge-neutral';
+        var item = document.createElement('div');
+        item.className = 'flag-ref-item';
+        item.innerHTML =
+          '<div class="flag-ref-header"><span class="badge ' + cls + '">' + flag + '</span></div>' +
+          '<div class="flag-ref-meaning">' + info.meaning + '</div>' +
+          '<div class="flag-ref-implication"><strong>Design implication:</strong> ' + info.implication + '</div>';
+        grid.appendChild(item);
+      });
+
+      refSection.hidden = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // PPI interfaces table
+    // -----------------------------------------------------------------------
+    function renderPpiInterfaces(interfaces, epitopes) {
+      var section = document.getElementById('ppi-section');
+      var tbody = document.getElementById('ppi-table-body');
+      var countEl = document.getElementById('ppi-count');
+      tbody.innerHTML = '';
+      countEl.textContent = interfaces.length + ' interface' + (interfaces.length !== 1 ? 's' : '');
+
+      interfaces.forEach(function(iface, idx) {
+        var tr = document.createElement('tr');
+        var color = PPI_COLORS[idx % PPI_COLORS.length];
+
+        // Name
+        var name = iface.partner_name || 'Unknown';
+
+        // Overlap with predicted epitopes
+        var overlapLabels = [];
+        var ifaceResSet = new Set(iface.contact_residues || []);
+        epitopes.forEach(function(ep, i) {
+          var epResidues = new Set(ep.residue_numbers || []);
+          var overlap = [];
+          ifaceResSet.forEach(function(r) { if (epResidues.has(r)) overlap.push(r); });
+          if (overlap.length >= 2) {
+            var epColor = PATCH_COLORS[i % PATCH_COLORS.length];
+            overlapLabels.push(
+              '<span class="overlap-badge" style="border-color:' + epColor + ';color:' + epColor + '">Epitope ' + (i+1) + ' (' + overlap.length + ')</span>'
+            );
+          }
+        });
+        var overlapDisplay = overlapLabels.length > 0 ? overlapLabels.join(' ') : '<span style="color:var(--muted)">\u2014</span>';
+
+        tr.innerHTML =
+          '<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + color + ';opacity:0.7;margin-right:0.4rem;vertical-align:middle;"></span>' + name + '</td>' +
+          '<td style="font-family:var(--font-mono);font-size:0.75rem;">' + iface.partner_chain + '</td>' +
+          '<td style="font-weight:600;">' + iface.contact_count + ' res</td>' +
+          '<td><span class="interface-badge ' + iface.interface_area + '">' + iface.interface_area + '</span></td>' +
+          '<td>' + overlapDisplay + '</td>';
+        tbody.appendChild(tr);
+      });
+
+      section.hidden = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Known binders table
+    // -----------------------------------------------------------------------
+    function renderKnownBinders(binders, epitopes) {
+      var section = document.getElementById('known-binders-section');
+      var tbody = document.getElementById('known-binders-body');
+      var countEl = document.getElementById('known-binders-count');
+      tbody.innerHTML = '';
+      countEl.textContent = binders.length + ' structure' + (binders.length !== 1 ? 's' : '');
+
+      binders.forEach(function(b) {
+        var tr = document.createElement('tr');
+        var pdbLink = '<a href="https://www.rcsb.org/structure/' + b.pdb_id + '" target="_blank" rel="noopener" class="pdb-link">' + b.pdb_id + '</a>';
+        var res = b.resolution != null ? b.resolution.toFixed(1) + ' \u00c5' : 'N/A';
+        var contacts = (b.contact_residues || []);
+        var contactDisplay = contacts.length > 0
+          ? contacts.slice(0, 10).join(', ') + (contacts.length > 10 ? '\u2026 (+' + (contacts.length - 10) + ')' : '')
+          : '<span style="color:var(--muted)">pending</span>';
+
+        var overlapLabels = [];
+        if (contacts.length > 0) {
+          epitopes.forEach(function(ep, i) {
+            var epResidues = new Set(ep.residue_numbers || []);
+            var overlap = contacts.filter(function(r) { return epResidues.has(r); });
+            if (overlap.length >= 2) {
+              var color = PATCH_COLORS[i % PATCH_COLORS.length];
+              overlapLabels.push('<span class="overlap-badge" style="border-color:' + color + ';color:' + color + '">Epitope ' + (i+1) + ' (' + overlap.length + ')</span>');
+            }
+          });
+        }
+        var overlapDisplay = overlapLabels.length > 0 ? overlapLabels.join(' ') : '<span style="color:var(--muted)">\u2014</span>';
+
+        tr.innerHTML =
+          '<td>' + pdbLink + '</td>' +
+          '<td><span class="binder-type-badge">' + (b.binder_type || 'Unknown') + '</span></td>' +
+          '<td style="color:var(--muted);font-size:0.73rem;">' + (b.species || '\u2014') + '</td>' +
+          '<td>' + res + '</td>' +
+          '<td style="color:var(--muted);font-size:0.73rem;">' + (b.affinity || '\u2014') + '</td>' +
+          '<td class="mono-cell">' + contactDisplay + '</td>' +
+          '<td>' + overlapDisplay + '</td>';
+        tbody.appendChild(tr);
+      });
+
+      section.hidden = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // UI helpers
+    // -----------------------------------------------------------------------
+    function showSpinner(visible) { document.getElementById('spinner').hidden = !visible; }
+    function showError(msg) { var el = document.getElementById('error-message'); el.textContent = msg; el.hidden = false; }
+    function hideError() { document.getElementById('error-message').hidden = true; }
+
+    function showAnalyzeError(msg) {
+      var el = document.getElementById('analyze-error');
+      el.textContent = msg;
+      el.style.display = 'block';
+    }
+
+    function resetAll() {
+      if (_activeSource) { _activeSource.close(); _activeSource = null; }
+      document.getElementById('pdb-file').value = '';
+      document.getElementById('job-id').value = '';
+      document.getElementById('chain-section').hidden = true;
+      document.getElementById('analyze-section').hidden = true;
+      document.getElementById('results-section').hidden = true;
+      document.getElementById('chain-select').innerHTML = '';
+      document.getElementById('file-summary').hidden = true;
+      document.getElementById('structure-title').hidden = true;
+      document.getElementById('upload-zone').classList.remove('has-file');
+      document.getElementById('download-link').style.display = 'none';
+      document.getElementById('download-link-full').style.display = 'none';
+      document.getElementById('error-message').hidden = true;
+      document.getElementById('analyze-error').style.display = 'none';
+      document.getElementById('progress-container').hidden = true;
+      document.getElementById('progress-bar').style.width = '0%';
+      document.getElementById('epitope-table-body').innerHTML = '';
+      document.getElementById('known-binders-body').innerHTML = '';
+      document.getElementById('known-binders-section').hidden = true;
+      document.getElementById('ppi-section').hidden = true;
+      document.getElementById('ppi-table-body').innerHTML = '';
+      document.getElementById('uniprot-bar').hidden = true;
+      document.getElementById('viewer-container').innerHTML = '';
+      document.getElementById('epitope-legend').innerHTML = '';
+      var btn = document.getElementById('analyze-btn');
+      if (btn) { btn.disabled = false; btn.textContent = 'Analyze epitopes'; }
+      _currentPpiInterfaces = [];
+    }
+
+    // -----------------------------------------------------------------------
+    // File upload
+    // -----------------------------------------------------------------------
+    document.getElementById('pdb-id-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); fetchPdb(); }
+    });
+
+    document.getElementById('pdb-file').addEventListener('change', async function() {
+      const file = this.files[0];
+      if (!file) return;
+
+      showSpinner(true);
+      hideError();
+      document.getElementById('chain-section').hidden = true;
+      document.getElementById('analyze-section').hidden = true;
+      document.getElementById('results-section').hidden = true;
+      document.getElementById('file-summary').hidden = true;
+      document.getElementById('structure-title').hidden = true;
+      document.getElementById('upload-zone').classList.remove('has-file');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const response = await fetch('/scout/upload', { method: 'POST', body: formData });
+        const data = await response.json();
+
+        if (response.ok) {
+          const chainSelect = document.getElementById('chain-select');
+          chainSelect.innerHTML = '';
+          data.chains.forEach(function(chain) {
+            const option = document.createElement('option');
+            option.value = chain.id;
+            const nameLabel = chain.name ? ' \u2014 ' + chain.name : '';
+            option.textContent = 'Chain ' + chain.id + nameLabel + ' (' + chain.residue_count + ' res)';
+            chainSelect.appendChild(option);
+          });
+
+          document.getElementById('job-id').value = data.job_id;
+
+          const titleEl = document.getElementById('structure-title');
+          if (data.structure_title) {
+            titleEl.textContent = data.structure_title;
+            titleEl.hidden = false;
+          }
+
+          const summaryEl = document.getElementById('file-summary');
+          summaryEl.textContent = data.filename + ' \u2014 ' + data.chains.length + ' chain' + (data.chains.length !== 1 ? 's' : '');
+          summaryEl.hidden = false;
+          document.getElementById('upload-zone').classList.add('has-file');
+          document.getElementById('chain-section').hidden = false;
+          document.getElementById('analyze-section').hidden = false;
+        } else {
+          showError(data.error || 'Upload failed.');
+        }
+      } catch (_) {
+        showError('Network error.');
+      } finally {
+        showSpinner(false);
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // Analyze
+    // -----------------------------------------------------------------------
+    function runAnalysis() {
+      var btn = document.getElementById('analyze-btn');
+      var jobId = document.getElementById('job-id').value;
+      var chain = document.getElementById('chain-select').value;
+
+      if (!jobId || !chain) {
+        showAnalyzeError('Upload a structure file first.');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Analyzing\u2026';
+      document.getElementById('analyze-error').style.display = 'none';
+      document.getElementById('results-section').hidden = true;
+
+      // Pre-flight quota check. EventSource cannot read HTTP 402 cleanly,
+      // so we query /quota first and redirect free-tier users who are at
+      // or over cap before the SSE stream opens. Fail open if /quota
+      // errors out — the /analyze handler enforces the real paywall.
+      fetch('/scout/quota', { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (q) {
+          if (q && !q.unlimited && q.tier !== 'anon' && q.runs_remaining <= 0) {
+            window.location.href = '/pricing';
+            return;
+          }
+          openProgressStream(jobId, chain);
+        })
+        .catch(function () {
+          openProgressStream(jobId, chain);
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // Run example
+    // -----------------------------------------------------------------------
+    async function fetchPdb() {
+      var pdbId = document.getElementById('pdb-id-input').value.trim().toUpperCase();
+      if (!pdbId || pdbId.length !== 4) {
+        showError('Please enter a valid 4-character PDB ID.');
+        return;
+      }
+
+      showSpinner(true);
+      hideError();
+      document.getElementById('file-summary').hidden = true;
+      document.getElementById('structure-title').hidden = true;
+      document.getElementById('chain-section').hidden = true;
+      document.getElementById('analyze-section').hidden = true;
+      document.getElementById('results-section').hidden = true;
+
+      var btn = document.getElementById('fetch-pdb-btn');
+      btn.disabled = true;
+      btn.textContent = 'Fetching\u2026';
+
+      try {
+        var response = await fetch('/scout/fetch-pdb', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pdb_id: pdbId })
+        });
+        var data = await response.json();
+
+        if (response.ok) {
+          var chainSelect = document.getElementById('chain-select');
+          chainSelect.innerHTML = '';
+          data.chains.forEach(function(chain) {
+            var option = document.createElement('option');
+            option.value = chain.id;
+            var nameLabel = chain.name ? ' \u2014 ' + chain.name : '';
+            option.textContent = 'Chain ' + chain.id + nameLabel + ' (' + chain.residue_count + ' res)';
+            chainSelect.appendChild(option);
+          });
+
+          document.getElementById('job-id').value = data.job_id;
+
+          var titleEl = document.getElementById('structure-title');
+          if (data.structure_title) {
+            titleEl.textContent = data.structure_title;
+            titleEl.hidden = false;
+          }
+
+          var summaryEl = document.getElementById('file-summary');
+          summaryEl.textContent = pdbId + ' \u2014 ' + data.chains.length + ' chain' + (data.chains.length !== 1 ? 's' : '') + ' (fetched from RCSB)';
+          summaryEl.hidden = false;
+          document.getElementById('upload-zone').classList.add('has-file');
+          document.getElementById('chain-section').hidden = false;
+          document.getElementById('analyze-section').hidden = false;
+        } else {
+          showError(data.error || 'Failed to fetch PDB.');
+        }
+      } catch (_) {
+        showError('Network error. Could not reach RCSB.');
+      } finally {
+        showSpinner(false);
+        btn.disabled = false;
+        btn.textContent = 'Fetch';
+      }
+    }
+
+    async function runExample() {
+      document.getElementById('results-section').hidden = true;
+      document.getElementById('analyze-error').style.display = 'none';
+
+      var btn = document.getElementById('example-btn');
+      btn.disabled = true;
+      btn.textContent = 'Loading\u2026';
+
+      try {
+        var resp = await fetch('/scout/example');
+        var data = await resp.json();
+        if (!resp.ok) { alert(data.error || 'Failed to load example.'); return; }
+
+        document.getElementById('job-id').value = data.job_id;
+        var chainSelect = document.getElementById('chain-select');
+        chainSelect.innerHTML = '';
+        data.chains.forEach(function(chain) {
+          var opt = document.createElement('option');
+          opt.value = chain.id;
+          var nameStr = chain.name ? ' \u2014 ' + chain.name : '';
+          opt.textContent = 'Chain ' + chain.id + nameStr + ' (' + chain.residue_count + ' res)';
+          chainSelect.appendChild(opt);
+        });
+        chainSelect.value = data.chains[0].id;
+        document.getElementById('chain-section').hidden = false;
+        document.getElementById('analyze-section').hidden = false;
+        runAnalysis();
+      } catch (_) {
+        alert('Failed to load example.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Load example (1HEW)';
+      }
+    }
+  </script>
+{% endblock %}

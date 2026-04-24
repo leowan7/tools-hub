@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}All tools compared — Ranomics Tools{% endblock %}
+
+{% block description %}Compare Ranomics' GPU protein-design tools — BindCraft, RFantibody, BoltzGen, and PXDesign — on runtime, credit cost, and underlying method.{% endblock %}
+
+{% block head_extra %}
+  <style>
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      margin-top: 1.5rem;
+    }
+    .comparison-table thead tr {
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      color: var(--text-secondary);
+      text-align: left;
+    }
+    .comparison-table th {
+      padding: 0.75rem 0.85rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .comparison-table td {
+      padding: 0.75rem 0.85rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .comparison-table tbody tr:last-child td { border-bottom: none; }
+    .comparison-tool-name {
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .comparison-tool-slug {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      margin-top: 0.2rem;
+      font-family: var(--font-mono, monospace);
+    }
+    .comparison-one-liner {
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    .comparison-cost-line {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+    }
+    .comparison-cost-line strong {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+    .comparison-links a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .comparison-links a:hover { text-decoration: underline; }
+    .comparison-links .comparison-link-row {
+      display: block;
+      margin-top: 0.25rem;
+      font-size: 0.85rem;
+    }
+    .comparison-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .comparison-footer {
+      margin-top: 2rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    .comparison-footer a { color: var(--accent); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  <div class="hero">
+    <p class="label-accent">TOOLS</p>
+    <h1>All four GPU pipelines at a glance.</h1>
+    <p class="subtitle">Pick the one that matches your design intent. Every tool runs on the same credit ledger, with prorated billing and published audit logs.</p>
+  </div>
+
+  <div class="comparison-wrap">
+    <table class="comparison-table">
+      <thead>
+        <tr>
+          <th>Tool</th>
+          <th>Best for</th>
+          <th>Typical runtime</th>
+          <th>Credit cost (smoke / pilot)</th>
+          <th>Paper / Repo</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in tools %}
+          <tr>
+            <td>
+              <span class="comparison-tool-name">{{ row.name }}</span>
+              <span class="comparison-tool-slug">{{ row.slug }}</span>
+            </td>
+            <td class="comparison-one-liner">{{ row.comparison_one_liner }}</td>
+            <td>
+              <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_runtime }}</strong></div>
+              <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_runtime }}</strong></div>
+            </td>
+            <td>
+              <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_credits }}</strong>{% if row.smoke_credits != '—' %} credits{% endif %}</div>
+              <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_credits }}</strong>{% if row.pilot_credits != '—' %} credits{% endif %}</div>
+            </td>
+            <td class="comparison-links">
+              {% if row.paper_url %}
+                <a href="{{ row.paper_url }}" target="_blank" rel="noopener">{{ row.paper_citation }}</a>
+              {% else %}
+                {{ row.paper_citation }}
+              {% endif %}
+              {% if row.github_url %}
+                <span class="comparison-link-row">
+                  <a href="{{ row.github_url }}" target="_blank" rel="noopener">Source repo</a>
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="comparison-footer">
+    <p>Every tool's results page hands off directly into a Ranomics yeast display campaign.</p>
+    <p><a href="{{ url_for('pricing') }}">See pricing</a></p>
+  </div>
+{% endblock %}

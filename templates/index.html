@@ -1,38 +1,170 @@
 {% extends "base.html" %}
 
-{% block title %}Ranomics Tools — Free Protein Engineering & AI Binder Design Utilities{% endblock %}
+{% block title %}Ranomics Tools — GPU protein design with wet-lab validation{% endblock %}
 
-{% block description %}Free scientific tools for protein engineers from Ranomics: binder developability scoring, yeast display library planning, and AI binder design pipelines (RFantibody, BindCraft, PXDesign, BoltzGen) with GPU credits.{% endblock %}
+{% block description %}Design binders on dedicated Modal A100s. No shared batch queues. Prorated billing. Validate designs in Ranomics' yeast display lab. BindCraft, RFantibody, BoltzGen, PXDesign, Epitope Scout.{% endblock %}
 
 {% block content %}
 
-  <div class="hero">
-    <h1>Ranomics Tools</h1>
-    <p class="subtitle">Free scientific tools for protein engineers, paired with the wet-lab and AI design pipelines we run at Ranomics. Use them as-is, or reach out when you need a campaign run end to end.</p>
-  </div>
+  {# ─── Cinematic hero ──────────────────────────────────────────────── #}
+  <section class="landing-hero">
+    <div class="landing-hero-inner">
+      <span class="landing-eyebrow">AI protein design · wet-lab validated</span>
+      <h1>Design binders on our GPUs. Validate in our lab.</h1>
+      <p class="landing-hero-lede">
+        Run BindCraft, RFantibody, BoltzGen, and PXDesign on dedicated
+        Modal A100s, not a shared batch queue. Every tool hands off
+        cleanly into Ranomics' yeast display campaigns when you're ready
+        to put designs on cells.
+      </p>
+      <div class="landing-hero-cta">
+        {% if session.get('user_email') %}
+          <a href="#tools" class="btn-primary-lg">Open tools</a>
+          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See pricing</a>
+        {% else %}
+          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free — 10 credits</a>
+          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See pricing</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
 
-  <div class="tool-grid">
-    {% for tool in tools %}
-      {% if tool.external %}
-        <a class="tool-card" href="{{ tool.href }}" target="_blank" rel="noopener noreferrer">
-      {% else %}
-        <a class="tool-card" href="{{ tool.href }}">
-      {% endif %}
-        <div class="tool-card-header">
-          <span class="tool-card-name">{{ tool.name }}</span>
-          {% if tool.status == 'live' %}
-            <span class="tool-card-status tool-card-status-live">Live</span>
-          {% else %}
-            <span class="tool-card-status tool-card-status-soon">Coming soon</span>
-          {% endif %}
-        </div>
-        <p class="tool-card-tagline">{{ tool.tagline }}</p>
-        <span class="tool-card-cta">
-          {% if tool.status == 'live' %}Open tool{% else %}Preview{% endif %}
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  {# ─── Why Ranomics (differentiation strip) ────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Why Ranomics</span>
+      <h2 class="section-title">Built by a CRO, not an API wrapper.</h2>
+      <p class="section-lede">
+        We run yeast display, mammalian display, DMS, and BLI in-house.
+        The tools here reflect real binder campaigns, not demos. When a
+        computational run looks promising, it hands off into the same
+        lab that designed it.
+      </p>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <span class="why-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4zM4 10h10v10H4zM16 10h4v10h-4z"/></svg>
         </span>
-      </a>
-    {% endfor %}
-  </div>
+        <h3 class="why-card-title">No shared batch queues</h3>
+        <p class="why-card-body">
+          Dedicated Modal A100/A100-80GB per job. Predictable runtime,
+          no "your job is #47 in line." Pilots finish in 15 to 45 minutes
+          with real scores, not stubs.
+        </p>
+      </article>
+      <article class="why-card">
+        <span class="why-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
+        </span>
+        <h3 class="why-card-title">Prorated billing</h3>
+        <p class="why-card-body">
+          Credits are a pre-authorization against a GPU-seconds cap.
+          Jobs that finish early refund the unused time automatically.
+          You pay for compute consumed, not compute reserved.
+        </p>
+      </article>
+      <article class="why-card">
+        <span class="why-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        </span>
+        <h3 class="why-card-title">Validated pipelines, public audit log</h3>
+        <p class="why-card-body">
+          Every tool ships only after two consecutive real-score passes
+          on Modal staging. We publish the commit SHAs, run dates, and
+          failure modes, not just marketing claims.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── How it works (3-step workflow) ──────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">How it works</span>
+      <h2 class="section-title">From target selection to wet-lab in one loop.</h2>
+    </div>
+    <div class="steps-grid">
+      <article class="step-card">
+        <span class="step-num">STEP 01</span>
+        <h3 class="step-title">Score the target</h3>
+        <p class="step-body">
+          Use <a href="https://scout.ranomics.com" target="_blank" rel="noopener noreferrer">Epitope Scout</a>
+          (free) to score your target's surface on six feasibility
+          dimensions: topology, rigidity, accessibility, glycan risk,
+          interface competition, before burning GPU-hours on a hard
+          epitope.
+        </p>
+      </article>
+      <article class="step-card">
+        <span class="step-num">STEP 02</span>
+        <h3 class="step-title">Design binders</h3>
+        <p class="step-body">
+          Pick a generative tool, upload the target PDB, mark hotspots,
+          submit. Ranked candidates with ipTM, pLDDT, shape
+          complementarity, and downloadable PDBs land on your job page.
+          Clone, tweak, re-run until you have a shortlist worth pursuing.
+        </p>
+      </article>
+      <article class="step-card">
+        <span class="step-num">STEP 03</span>
+        <h3 class="step-title">Validate in the lab</h3>
+        <p class="step-body">
+          Send your shortlist directly into a Ranomics yeast display
+          campaign. Same team, same data loop. Computational designs
+          and wet-lab validation share one pipeline, not a handoff email.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── Tool grid (signed-in only) ──────────────────────────────────── #}
+  {% if tools %}
+    <section class="section" id="tools">
+      <div class="section-head">
+        <span class="section-eyebrow">Your tools</span>
+        <h2 class="section-title">Pick a tool to run.</h2>
+      </div>
+      <div class="tool-grid">
+        {% for tool in tools %}
+          {% if tool.external %}
+            <a class="tool-card" href="{{ tool.href }}" target="_blank" rel="noopener noreferrer">
+          {% else %}
+            <a class="tool-card" href="{{ tool.href }}">
+          {% endif %}
+            <div class="tool-card-header">
+              <span class="tool-card-name">{{ tool.name }}</span>
+              {% if tool.status == 'live' %}
+                <span class="tool-card-status tool-card-status-live">Live</span>
+              {% else %}
+                <span class="tool-card-status tool-card-status-soon">Coming soon</span>
+              {% endif %}
+            </div>
+            <p class="tool-card-tagline">{{ tool.tagline }}</p>
+            <span class="tool-card-cta">
+              {% if tool.status == 'live' %}Open tool{% else %}Preview{% endif %}
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {# ─── Pricing teaser → /pricing ──────────────────────────────────── #}
+  <section class="section">
+    <div class="pricing-teaser">
+      <div class="pricing-teaser-text">
+        <span class="section-eyebrow">Pricing</span>
+        <span class="pricing-teaser-title">Start free. Scale when you're ready.</span>
+        <span class="pricing-teaser-body">
+          10 free credits on signup, enough to run an RFantibody preview
+          and a BoltzGen smoke. Monthly plans for scientists running
+          real targets. Custom pricing for labs and teams.
+        </span>
+      </div>
+      <a href="{{ url_for('pricing') }}" class="btn-primary-lg">See pricing</a>
+    </div>
+  </section>
 
 {% endblock %}

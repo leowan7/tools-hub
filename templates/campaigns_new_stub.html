@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Send to Ranomics lab — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+{% block content %}
+  <div class="hero">
+    <h1>Campaign intake is coming soon.</h1>
+    <p class="subtitle">We're building a structured form to submit your shortlist directly into a Ranomics yeast display campaign. For now, email <a href="mailto:leo@ranomics.com" style="color: var(--accent);">leo@ranomics.com</a> with your job id and shortlist and we'll scope a wet-lab run.</p>
+  </div>
+  {% if from_job %}
+    <div class="panel">
+      <div class="panel-body">
+        <div class="label">From job</div>
+        <div><code>{{ from_job }}</code></div>
+      </div>
+    </div>
+  {% endif %}
+  <div style="margin-top: 1.5rem;">
+    <a href="{{ url_for('index') }}" class="btn-secondary">Back to tools</a>
+  </div>
+{% endblock %}

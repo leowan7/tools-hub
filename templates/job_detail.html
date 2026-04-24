@@ -4,6 +4,52 @@
 
 {% block robots %}noindex,follow{% endblock %}
 
+{% block head_extra %}
+  <style>
+    .jobdetail-skel-wrap {
+      margin-top: 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem;
+      background: var(--bg-elevated);
+    }
+    .jobdetail-skel-caption {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.6rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .jobdetail-skel-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+    .jobdetail-skel-row:last-child { margin-bottom: 0; }
+    .jobdetail-skel-cell {
+      height: 14px;
+      border-radius: 3px;
+      background: linear-gradient(
+        90deg,
+        var(--bg-elevated) 0%,
+        var(--border) 50%,
+        var(--bg-elevated) 100%
+      );
+      background-size: 200% 100%;
+      animation: jobdetail-skel-shimmer 1.4s ease-in-out infinite;
+      opacity: 0.7;
+    }
+    @keyframes jobdetail-skel-shimmer {
+      0%   { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .jobdetail-skel-cell { animation: none; }
+    }
+  </style>
+{% endblock %}
+
 {% block content %}
   <div class="hero">
     <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
@@ -38,6 +84,28 @@
               </div>
             </div>
           {% endif %}
+
+          <div class="jobdetail-skel-wrap" aria-hidden="true">
+            <div class="jobdetail-skel-caption">Scores loading</div>
+            <div class="jobdetail-skel-row">
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+            </div>
+            <div class="jobdetail-skel-row">
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+            </div>
+            <div class="jobdetail-skel-row">
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+              <div class="jobdetail-skel-cell"></div>
+            </div>
+          </div>
         {% elif job.status == 'succeeded' %}
           <p class="subtitle" style="color: var(--success, #4ade80);">
             Completed in {{ job.gpu_seconds_used or '—' }} GPU-seconds.

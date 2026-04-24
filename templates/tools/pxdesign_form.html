@@ -6,6 +6,89 @@
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
+  {# Per-preset UX constants. Source of truth: tools/pxdesign/meta.py
+     (preset_runtime_rows). Mirrored here as Jinja literals because the
+     generic tool_form route in app.py is out of scope for this phase
+     and does not inject per-tool meta into the template context. Keep
+     the two in sync when either changes. #}
+  {% set preset_minutes = {"smoke": 17, "mini_pilot": 35, "pilot": 45} %}
+  {% set preset_runtime_rows = [
+    {"slug": "smoke",      "credits": "8",  "runtime": "~17 min",  "target": "PD-L1 IgV reference (baked)"},
+    {"slug": "mini_pilot", "credits": "16", "runtime": "~35 min",  "target": "PD-L1 IgV reference (baked)"},
+    {"slug": "pilot",      "credits": "15", "runtime": "30\u201360 min", "target": "Your uploaded target"}
+  ] %}
+
+  <style>
+    .pxdesign-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .pxdesign-layout { grid-template-columns: 1fr; }
+    }
+    .pxdesign-about-section { margin-top: 1.1rem; }
+    .pxdesign-about-section:first-child { margin-top: 0; }
+    .pxdesign-about-section h3 {
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0 0 0.45rem 0;
+      font-weight: 500;
+    }
+    .pxdesign-about-section p,
+    .pxdesign-about-section ul {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      line-height: 1.55;
+      margin: 0;
+    }
+    .pxdesign-about-section ul {
+      padding-left: 1.1rem;
+      margin: 0;
+    }
+    .pxdesign-about-section li { margin-bottom: 0.25rem; }
+    .pxdesign-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .pxdesign-runtime-table th,
+    .pxdesign-runtime-table td {
+      padding: 0.4rem 0.45rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .pxdesign-runtime-table th {
+      color: var(--text-tertiary);
+      font-weight: 500;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .pxdesign-runtime-table td { color: var(--text-secondary); }
+    .pxdesign-runtime-table td.pxdesign-runtime-slug {
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+    }
+    .pxdesign-cost-preview {
+      display: block;
+      margin: 0.35rem 0 1.25rem 0;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+    .pxdesign-cost-preview[data-empty="true"] { color: var(--text-tertiary); }
+  </style>
+
   <div class="hero">
     <h1>{{ adapter.label }}</h1>
     <p class="subtitle">{{ adapter.blurb }}</p>
@@ -26,85 +109,198 @@
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Design inputs</span>
+  <div class="pxdesign-layout">
+    {# ---------- LEFT: existing form (unchanged semantics) ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <fieldset style="border: none; padding: 0; margin: 0 0 0.5rem 0;">
+            <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
+            {% for preset in adapter.presets %}
+              <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
+                <input type="radio" name="preset" value="{{ preset.slug }}"
+                       data-credits="{{ preset.credits_cost }}"
+                       data-minutes="{{ preset_minutes.get(preset.slug, '') }}"
+                       {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
+                <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
+                <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
+              </label>
+            {% endfor %}
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-top: 0.5rem;">
+              Smoke runs the pipeline without the post-design filter —
+              fastest path to a scored candidate. Preview (mini_pilot)
+              adds the post-filter pass, so scores reflect what the pilot
+              tier would return. Pilot tier runs against your own target —
+              upload PDB, pick hotspots, set binder length. Results
+              emailed (~30–60 min on A100-80GB).
+            </div>
+          </fieldset>
+
+          {# Cost preview — updates on preset change via vanilla JS. #}
+          <div id="pxdesign-cost-preview" class="pxdesign-cost-preview" data-empty="true">
+            Select a preset to see cost and runtime.
+          </div>
+
+          <label for="binder_length" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+          <input type="number" name="binder_length" id="binder_length"
+                 {{ pre_value(pre_fill, "binder_length", "80") }} min="40" max="150" required
+                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+          <div id="pilot-fields" style="display: none;">
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the target structure as .pdb, .cif, or .mmcif.
+            </div>
+
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+            </div>
+
+            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+            <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "2") }} min="1" max="5"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Pilot tier runs against your own target — upload PDB, pick hotspots, set binder length. Results emailed (~30–60 min on A100-80GB).
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
     </div>
-    <div class="panel-body">
-      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
-        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
-          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
-          {% for preset in adapter.presets %}
-            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
-              <input type="radio" name="preset" value="{{ preset.slug }}" {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
-              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
-              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
-            </label>
-          {% endfor %}
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-top: 0.5rem;">
-            Smoke runs the pipeline without the post-design filter —
-            fastest path to a scored candidate. Preview (mini_pilot)
-            adds the post-filter pass, so scores reflect what the pilot
-            tier would return. Pilot tier runs against your own target —
-            upload PDB, pick hotspots, set binder length. Results
-            emailed (~30–60 min on A100-80GB).
-          </div>
-        </fieldset>
 
-        <label for="binder_length" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
-        <input type="number" name="binder_length" id="binder_length"
-               {{ pre_value(pre_fill, "binder_length", "80") }} min="40" max="150" required
-               style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-
-        <div id="pilot-fields" style="display: none;">
-          {{ pdb_source_banner(pdb_source) }}
-          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
-          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
-                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Upload the target structure as .pdb, .cif, or .mmcif.
-          </div>
-
-          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-
-          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
-          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
-                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
-          </div>
-
-          <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-          <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "2") }} min="1" max="5"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+    {# ---------- RIGHT: About PXDesign panel ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">About PXDesign</span>
+      </div>
+      <div class="panel-body">
+        <div class="pxdesign-about-section">
+          <h3>What it wraps</h3>
+          <p>
+            Ranomics in-house binder-design pipeline. An RFdiffusion-style
+            backbone generator proposes binders against the target, and
+            every candidate is re-scored with JAX AlphaFold2 run in
+            Initial Guess mode (AF2-IG). Reported ipTM, pLDDT, and pAE
+            come from the AF2 monomer model, not from the generator.
+          </p>
+          <p style="margin-top: 0.45rem;">
+            Scoring stage: Bennett et al., <em>Nat. Commun.</em> 14, 2625
+            (2023). <a href="https://www.nature.com/articles/s41467-023-38328-5" rel="noopener">Paper</a>.
+            Pipeline source is private (Kendrew).
+          </p>
         </div>
 
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-          Pilot tier runs against your own target — upload PDB, pick hotspots, set binder length. Results emailed (~30–60 min on A100-80GB).
+        <div class="pxdesign-about-section">
+          <h3>When to pick PXDesign</h3>
+          <p>
+            Pick PXDesign when AF2 confidence against a defined target
+            matters and you want real ipTM, pLDDT, and pAE on every
+            candidate. For hallucination-driven binder design without
+            AF2 filtering use BindCraft, for antibody and nanobody CDRs
+            use RFantibody, and for target structure generation without
+            binder design use BoltzGen.
+          </p>
         </div>
 
-        <button type="submit" class="btn-primary">Submit run</button>
-      </form>
+        <div class="pxdesign-about-section">
+          <h3>Prerequisites</h3>
+          <ul>
+            <li>An account tier with the credit balance listed below.</li>
+            <li>For the pilot tier: a target structure in <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code> format, the target chain ID, and at least one hotspot residue index on that chain.</li>
+            <li>For smoke and preview tiers: nothing — both run against the baked PD-L1 IgV reference target.</li>
+          </ul>
+        </div>
+
+        <div class="pxdesign-about-section">
+          <h3>What the inputs mean</h3>
+          <ul>
+            <li><strong>Preset</strong>: smoke skips the post-design filter, preview adds it against the PD-L1 reference, pilot runs the full post-filtered pipeline against your uploaded target.</li>
+            <li><strong>Binder length</strong>: residue count of the generated binder chain (40–150).</li>
+            <li><strong>Target chain</strong>: chain ID in the uploaded structure the binder should engage.</li>
+            <li><strong>Hotspot residues</strong>: comma-separated residue indices on the target chain used as contact bias for the generator.</li>
+            <li><strong>Number of designs</strong>: how many independent backbones to generate and score (1–5).</li>
+          </ul>
+        </div>
+
+        <div class="pxdesign-about-section">
+          <h3>Runtime and cost</h3>
+          <table class="pxdesign-runtime-table">
+            <thead>
+              <tr>
+                <th>Preset</th>
+                <th>Credits</th>
+                <th>Runtime</th>
+                <th>Target</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in preset_runtime_rows %}
+                <tr>
+                  <td class="pxdesign-runtime-slug">{{ row.slug }}</td>
+                  <td>{{ row.credits }}</td>
+                  <td>{{ row.runtime }}</td>
+                  <td>{{ row.target }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p style="margin-top: 0.55rem; font-size: 0.8rem; color: var(--text-tertiary);">
+            Credits are refunded prorated when a run finishes faster than the preset budget.
+          </p>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
     (function () {
       var pilotFields = document.getElementById('pilot-fields');
+      var costPreview = document.getElementById('pxdesign-cost-preview');
       var radios = document.querySelectorAll('input[type="radio"][name="preset"]');
 
-      function togglePilotFields() {
-        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
+      function togglePilotFields(selected) {
         if (!pilotFields || !selected) return;
         pilotFields.style.display = selected.value === 'pilot' ? 'block' : 'none';
       }
 
-      for (var i = 0; i < radios.length; i++) {
-        radios[i].addEventListener('change', togglePilotFields);
+      function updateCostPreview(selected) {
+        if (!costPreview) return;
+        if (!selected) {
+          costPreview.textContent = 'Select a preset to see cost and runtime.';
+          costPreview.setAttribute('data-empty', 'true');
+          return;
+        }
+        var credits = selected.getAttribute('data-credits') || '?';
+        var minutes = selected.getAttribute('data-minutes') || '?';
+        costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+        costPreview.setAttribute('data-empty', 'false');
       }
-      togglePilotFields();
+
+      function onChange() {
+        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
+        togglePilotFields(selected);
+        updateCostPreview(selected);
+      }
+
+      for (var i = 0; i < radios.length; i++) {
+        radios[i].addEventListener('change', onChange);
+      }
+      onChange();
     })();
   </script>
   {{ prefill_script(pre_fill) }}

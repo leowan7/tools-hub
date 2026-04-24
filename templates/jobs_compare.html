@@ -91,6 +91,99 @@
         </div>
       {% endfor %}
     </div>
+
+    {# ------------------------------------------------------------------
+       Shared metrics table: intersection of top-candidate score keys
+       across all selected jobs, restricted to the priority list and
+       normalized for lowercase variants.
+       ------------------------------------------------------------------ #}
+    {% set priority_keys = ['ipTM', 'pLDDT', 'pAE', 'pTM', 'refolding_rmsd', 'sc_score', 'sap_score'] %}
+    {% set lowercase_aliases = {'ipTM': 'iptm', 'pLDDT': 'plddt', 'pAE': 'pae', 'pTM': 'ptm'} %}
+    {% set visible_columns = columns[:4] %}
+
+    {# Build per-column top-candidate scores dict, tolerating missing shapes. #}
+    {% set ns = namespace(per_col_scores=[], tools=[]) %}
+    {% for col in visible_columns %}
+      {% set result = col.job.result or {} %}
+      {% set cands = result.get('candidates', []) %}
+      {% set top = cands[0] if cands else {} %}
+      {% set _ = ns.per_col_scores.append(top.get('scores', {}) if top else {}) %}
+      {% set _ = ns.tools.append(col.job.tool) %}
+    {% endfor %}
+
+    {# A metric is "shared" if every column has a numeric value for it
+       (under either its canonical key or its lowercase alias). #}
+    {% set shared_ns = namespace(keys=[]) %}
+    {% for key in priority_keys %}
+      {% set alias = lowercase_aliases.get(key) %}
+      {% set present_ns = namespace(all=true) %}
+      {% for scores in ns.per_col_scores %}
+        {% set val = scores.get(key) %}
+        {% if val is none and alias %}{% set val = scores.get(alias) %}{% endif %}
+        {% if val is not number %}{% set present_ns.all = false %}{% endif %}
+      {% endfor %}
+      {% if present_ns.all and visible_columns|length > 0 %}
+        {% set _ = shared_ns.keys.append(key) %}
+      {% endif %}
+    {% endfor %}
+
+    {% set unique_tools = ns.tools|unique|list %}
+    {% set all_same_tool = unique_tools|length == 1 %}
+
+    <div class="panel" style="margin-top: 1.5rem;">
+      <div class="panel-header">
+        <span class="panel-title">Shared metrics</span>
+      </div>
+      <div class="panel-body">
+        {% if columns|length > 4 %}
+          <p class="subtitle" style="margin-top: 0; margin-bottom: 0.75rem;">
+            Showing first 4 of {{ columns|length }}. Trim your selection on <a href="{{ url_for('jobs_list') }}" style="color: var(--accent);">/jobs</a>.
+          </p>
+        {% endif %}
+
+        {% if all_same_tool %}
+          <p class="subtitle" style="margin-top: 0; margin-bottom: 0.75rem;">
+            All {{ columns|length }} jobs ran {{ columns[0].tool_label }}.
+          </p>
+        {% else %}
+          <p class="subtitle" style="margin-top: 0; margin-bottom: 0.75rem;">
+            Cross-tool comparison shown on shared metrics only.
+          </p>
+        {% endif %}
+
+        {% if shared_ns.keys %}
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+                <th style="padding: 0.5rem 0.4rem;">Metric</th>
+                {% for col in visible_columns %}
+                  <th style="padding: 0.5rem 0.4rem;">
+                    <a href="{{ url_for('job_detail', job_id=col.job.id) }}" style="color: var(--accent);">{{ col.job.id[:8] }}</a>
+                  </th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for key in shared_ns.keys %}
+                {% set alias = lowercase_aliases.get(key) %}
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.4rem;"><strong>{{ key }}</strong></td>
+                  {% for scores in ns.per_col_scores %}
+                    {% set val = scores.get(key) %}
+                    {% if val is none and alias %}{% set val = scores.get(alias) %}{% endif %}
+                    <td style="padding: 0.5rem 0.4rem;">
+                      {% if val is number %}{{ '%.3f'|format(val) }}{% else %}—{% endif %}
+                    </td>
+                  {% endfor %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="subtitle">No shared metrics to compare (jobs use different scoring schemas).</p>
+        {% endif %}
+      </div>
+    </div>
   {% endif %}
 
   <div style="margin-top: 1.5rem;">

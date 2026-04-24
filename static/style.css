@@ -10,20 +10,22 @@
    Design tokens
    -------------------------------------------------------------------------- */
 :root {
+  /* Tokens aligned with ranomics-website-2026/src/styles/globals.css.
+     Source of truth: ranomics-website-2026/DESIGN.md. */
   --bg-deep:        #08101B;
   --bg-surface:     #0D1520;
   --bg-elevated:    #131E2E;
   --bg-hover:       #182841;
-  --border:         #2A3B52;
-  --border-subtle:  #1E2D42;
-  --text-primary:   #F5F1E8;
-  --text-secondary: #B0B8C8;
-  --text-tertiary:  #8A94A8;
+  --border:         #1E2D42;
+  --border-subtle:  #151F2E;
+  --text-primary:   #E8E6E1;
+  --text-secondary: #8A95A6;
+  --text-tertiary:  #4F5B6B;
   --accent:         #2B9E7E;
   --accent-dim:     #1B6B5A;
   --accent-glow:    rgba(43, 158, 126, 0.12);
   --accent-text:    #3DC9A0;
-  --warm-white:     #F5F1E8;
+  --warm-white:     #F0EEE8;
   --warm-cream:     #D4D0C8;
   --success:        #2B9E7E;
   --warning:        #C49A3A;
@@ -33,10 +35,36 @@
   --radius-sm:      4px;
   --radius-md:      8px;
   --radius-lg:      12px;
+  --radius-full:    9999px;
   --font-display:   'Source Serif 4', Georgia, serif;
   --font-body:      'DM Sans', system-ui, sans-serif;
   --font-mono:      'Geist Mono', 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
 }
+
+/* Global editorial typography — mirrors ranomics.com. `.hero h1` below
+   intentionally overrides this with a compact product-surface scale for
+   logged-in pages. `.landing-hero h1` keeps the full Cinematic scale. */
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  color: var(--warm-white);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+h1 { font-size: clamp(3rem, 7vw, 5.5rem); line-height: 1.02; }
+h2 { font-size: clamp(2rem, 4vw, 3.25rem); }
+h3 { font-size: clamp(1.5rem, 2.5vw, 2rem); line-height: 1.2; }
+h4 { font-size: 1.375rem; line-height: 1.2; }
+
+.label {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
+}
+.label-accent { color: var(--accent-text); }
 
 ::selection {
   background: var(--accent-dim);
@@ -1083,6 +1111,407 @@ footer a { color: var(--text-secondary); }
 footer a:hover { color: var(--accent-text); }
 
 /* --------------------------------------------------------------------------
+   Cinematic Full-Bleed landing (/ when public)
+   Mirrors DESIGN.md Template 2. Only used on the hub landing page; the
+   product-surface `.hero` above stays compact for logged-in pages.
+   -------------------------------------------------------------------------- */
+.landing-hero {
+  position: relative;
+  padding: clamp(56px, 10vh, 120px) 1.5rem clamp(40px, 8vh, 80px);
+  text-align: center;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  margin-bottom: 2rem;
+}
+
+.landing-hero::before {
+  content: '';
+  position: absolute;
+  inset: -30% 15% auto 15%;
+  height: 140%;
+  background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 65%);
+  pointer-events: none;
+}
+
+.landing-hero-inner {
+  position: relative;
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  align-items: center;
+}
+
+.landing-eyebrow {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent-text);
+}
+
+.landing-hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(2.4rem, 6vw, 4.2rem);
+  font-weight: 400;
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  color: var(--warm-white);
+  max-width: 16ch;
+}
+
+.landing-hero-lede {
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: clamp(1rem, 1.4vw, 1.15rem);
+  line-height: 1.6;
+  max-width: 52ch;
+}
+
+.landing-hero-cta {
+  display: inline-flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.btn-primary-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--accent);
+  color: var(--bg-deep);
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 700;
+  padding: 0.85rem 1.6rem;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+.btn-primary-lg:hover { background: var(--accent-text); transform: translateY(-1px); color: var(--bg-deep); }
+
+.btn-ghost-lg {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 0.85rem 1.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  transition: border-color 0.2s, color 0.2s;
+  text-decoration: none;
+}
+.btn-ghost-lg:hover { border-color: var(--accent-dim); color: var(--accent-text); }
+
+/* --------------------------------------------------------------------------
+   Section scaffolding — landing / pricing
+   -------------------------------------------------------------------------- */
+.section { margin-bottom: 2.5rem; }
+
+.section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 1.5rem;
+  max-width: 720px;
+}
+.section-eyebrow {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent-text);
+}
+.section-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 2.8vw, 2.1rem);
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--warm-white);
+}
+.section-lede {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  max-width: 58ch;
+}
+
+/* --------------------------------------------------------------------------
+   "Why Ranomics" differentiator strip — three cards
+   -------------------------------------------------------------------------- */
+.why-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.why-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem 1.5rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  transition: border-color 0.2s, background 0.2s;
+}
+.why-card:hover { border-color: var(--accent-dim); background: var(--bg-elevated); }
+
+.why-card-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  margin-bottom: 0.25rem;
+}
+.why-card-icon svg { width: 18px; height: 18px; }
+
+.why-card-title {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  letter-spacing: -0.01em;
+}
+.why-card-body {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------------------
+   "How it works" — 3-step strip
+   -------------------------------------------------------------------------- */
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.step-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem 1.5rem 1.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  position: relative;
+}
+.step-num {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  letter-spacing: 0.14em;
+}
+.step-title {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  letter-spacing: -0.01em;
+}
+.step-body {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------------------
+   Pricing — public /pricing page + landing teaser
+   -------------------------------------------------------------------------- */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.price-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.75rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  transition: border-color 0.2s, transform 0.15s;
+}
+.price-card:hover { border-color: var(--accent-dim); transform: translateY(-2px); }
+
+.price-card-featured {
+  border-color: rgba(43, 158, 126, 0.4);
+  background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(43, 158, 126, 0.04) 100%);
+}
+
+.price-tier-name {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  letter-spacing: -0.01em;
+}
+
+.price-tier-badge {
+  display: inline-block;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.55rem;
+  border-radius: var(--radius-full);
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  border: 1px solid rgba(43, 158, 126, 0.25);
+  align-self: flex-start;
+  margin-bottom: -0.5rem;
+}
+
+.price-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  font-family: var(--font-display);
+}
+.price-amount-value {
+  font-size: 2.25rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.price-amount-unit {
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.price-lede {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  min-height: 2.8rem;
+}
+
+.price-features {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1;
+}
+.price-features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.price-features li::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  margin-top: 0.55rem;
+  flex-shrink: 0;
+}
+
+.price-cta { margin-top: auto; }
+
+.price-footnote {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  margin-top: 0.5rem;
+}
+
+.pricing-teaser {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.75rem 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+.pricing-teaser-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 44ch;
+}
+.pricing-teaser-title {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  letter-spacing: -0.01em;
+}
+.pricing-teaser-body {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+/* --------------------------------------------------------------------------
+   Nav extensions — public Pricing link + signed-in account area
+   -------------------------------------------------------------------------- */
+.nav-link-public {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  padding: 0.2rem 0.55rem;
+}
+.nav-link-public:hover { color: var(--warm-white); }
+
+/* --------------------------------------------------------------------------
+   Insufficient-credits CTA styling (turns the alert into a prompt to
+   /pricing rather than a flat warning bar)
+   -------------------------------------------------------------------------- */
+.insufficient-credits-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  border: 1px solid rgba(196, 154, 58, 0.35);
+  border-left: 3px solid var(--warning);
+  background: rgba(196, 154, 58, 0.06);
+  color: var(--warm-cream);
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  border-radius: var(--radius-md);
+}
+.insufficient-credits-cta-text { max-width: 44ch; line-height: 1.5; }
+
+/* --------------------------------------------------------------------------
    Responsive
    -------------------------------------------------------------------------- */
 @media (max-width: 640px) {
@@ -1092,4 +1521,41 @@ footer a:hover { color: var(--accent-text); }
   .login-header { padding: 1.75rem 1.5rem 1.25rem; }
   .account-dl { grid-template-columns: 1fr; gap: 0.25rem 0; }
   .account-dl dt { margin-top: 0.5rem; }
+}
+
+/* --------------------------------------------------------------------------
+   Generic form controls — used by campaign submit modal and admin forms
+   -------------------------------------------------------------------------- */
+.form-control {
+  display: block;
+  width: 100%;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.5rem 0.7rem;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+.form-control:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.form-control::placeholder { color: var(--text-tertiary); }
+textarea.form-control { resize: vertical; }
+select.form-control { cursor: pointer; }
+
+.form-field { margin-bottom: 0.85rem; }
+.form-field label { display: block; margin-bottom: 0.3rem; font-size: 0.875rem; font-weight: 500; }
+
+.form-row { display: flex; gap: 1rem; }
+.form-row .form-field { flex: 1; min-width: 0; }
+
+.radio-group { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.3rem; }
+.radio-label  { display: flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; cursor: pointer; }
+
+@media (max-width: 640px) {
+  .form-row { flex-direction: column; gap: 0; }
 }

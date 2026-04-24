@@ -70,13 +70,16 @@ from shared.storage import (
     StorageError,
     copy_input,
     presigned_input_url,
+    stage_campaign_candidates,
     upload_input,
 )
+from shared import metric_glossary as _metric_glossary
 from tools import base as tool_base
 import tools.bindcraft   # noqa: F401 — import to register adapter
 import tools.boltzgen    # noqa: F401 — import to register adapter
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
+from scout import scout_bp
 from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
 
@@ -101,6 +104,9 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"] = os.environ.get(
         "SESSION_SECRET_KEY", os.urandom(32)
     )
+
+    # Metric glossary available in all templates (candidate_table macro reads it).
+    flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
 
     # Inject the current user's tier + credit balance into every template
     # so the shared header can render the tier badge / credits pill without
@@ -129,6 +135,12 @@ def create_app() -> Flask:
 
     # Modal pipeline callbacks — /webhooks/modal/<job_id>/<token> + /webhooks/heartbeat.
     register_modal_webhooks(flask_app)
+
+    # Scout (free tier) blueprint — everything under /scout.
+    from pathlib import Path as _Path  # noqa: PLC0415
+    _Path("tmp").mkdir(exist_ok=True)
+    flask_app.config.setdefault("MAX_CONTENT_LENGTH", 20 * 1024 * 1024)
+    flask_app.register_blueprint(scout_bp)
 
     # Single Modal client shared across stub tool routes.
     modal_client = ModalClient()
@@ -217,8 +229,25 @@ def create_app() -> Flask:
                 next="/",
             )
 
-        success, error_msg = register_user(email, password)
+        success, error_msg, user_id = register_user(email, password)
         if success:
+            # Grant 10 signup-bonus credits immediately. The row lands
+            # even if Supabase requires email confirmation before sign-in;
+            # the balance is waiting when the user first logs in.
+            if user_id:
+                from shared.credits import record_grant  # noqa: PLC0415
+                try:
+                    record_grant(
+                        user_id,
+                        10,
+                        reason="signup bonus",
+                        metadata={"source": "signup"},
+                    )
+                except Exception:
+                    logger.warning(
+                        "Signup-bonus grant failed for %s", email,
+                        exc_info=True,
+                    )
             return render_template(
                 "login.html",
                 mode="signin",
@@ -226,8 +255,9 @@ def create_app() -> Flask:
                 email=email,
                 next="/",
                 success_msg=(
-                    "Account created. Check your email and click the "
-                    "confirmation link before signing in."
+                    "Account created with 10 free credits. Check your "
+                    "email and click the confirmation link before "
+                    "signing in."
                 ),
             )
 
@@ -297,61 +327,114 @@ def create_app() -> Flask:
     from shared.auth import login_required  # noqa: PLC0415
 
     @flask_app.route("/", methods=["GET"])
-    @login_required
     def index():
-        """Hub index — shows the three tool cards."""
-        tools = [
-            {
-                "id": "epitope-scout",
-                "name": "Epitope Scout",
-                "tagline": (
-                    "Identify candidate surface epitopes for binder "
-                    "design campaigns."
-                ),
-                "status": "live",
-                "href": "https://scout.ranomics.com",
-                "external": True,
-            },
-            {
-                "id": "developability",
-                "name": "Binder Developability Scout",
-                "tagline": (
-                    "Flag developability liabilities in antibody and "
-                    "nanobody sequences before you order them."
-                ),
-                "status": "live",
-                "href": url_for("developability"),
-                "external": False,
-            },
-            {
-                "id": "library-planner",
-                "name": "Yeast Display Library Planner",
-                "tagline": (
-                    "Plan yeast display libraries with realistic "
-                    "diversity and screen-size estimates."
-                ),
-                "status": "live",
-                "href": url_for("library_planner"),
-                "external": False,
-            },
-        ]
-        # Append every flag-enabled GPU tool adapter so the hub page
-        # stays in sync with what actually ships. Flags default off so
-        # the card disappears until the operator flips production on.
-        for adapter in tool_base.all_adapters():
-            if not tool_enabled(adapter.slug):
-                continue
-            tools.append(
+        """Landing page — public to logged-out visitors, tool grid for
+        signed-in users. The template shows the tool grid only when
+        ``session.user_email`` is set.
+        """
+        tools = []
+        if session.get("user_email"):
+            tools = [
                 {
-                    "id": adapter.slug,
-                    "name": adapter.label,
-                    "tagline": adapter.blurb,
+                    "id": "epitope-scout",
+                    "name": "Epitope Scout",
+                    "tagline": (
+                        "Identify candidate surface epitopes for binder "
+                        "design campaigns."
+                    ),
                     "status": "live",
-                    "href": url_for("tool_form", tool=adapter.slug),
+                    "href": "https://scout.ranomics.com",
+                    "external": True,
+                },
+                {
+                    "id": "developability",
+                    "name": "Binder Developability Scout",
+                    "tagline": (
+                        "Flag developability liabilities in antibody and "
+                        "nanobody sequences before you order them."
+                    ),
+                    "status": "live",
+                    "href": url_for("developability"),
                     "external": False,
-                }
-            )
+                },
+                {
+                    "id": "library-planner",
+                    "name": "Yeast Display Library Planner",
+                    "tagline": (
+                        "Plan yeast display libraries with realistic "
+                        "diversity and screen-size estimates."
+                    ),
+                    "status": "live",
+                    "href": url_for("library_planner"),
+                    "external": False,
+                },
+            ]
+            # Append every flag-enabled GPU tool adapter so the hub page
+            # stays in sync with what actually ships. Flags default off so
+            # the card disappears until the operator flips production on.
+            for adapter in tool_base.all_adapters():
+                if not tool_enabled(adapter.slug):
+                    continue
+                tools.append(
+                    {
+                        "id": adapter.slug,
+                        "name": adapter.label,
+                        "tagline": adapter.blurb,
+                        "status": "live",
+                        "href": url_for("tool_form", tool=adapter.slug),
+                        "external": False,
+                    }
+                )
         return render_template("index.html", tools=tools)
+
+    @flask_app.route("/pricing", methods=["GET"])
+    def pricing():
+        """Public pricing page — logged-out visitors can reach it."""
+        return render_template("pricing.html")
+
+    @flask_app.route("/billing/checkout", methods=["GET"])
+    @login_required
+    def billing_checkout():
+        """Create a Stripe Checkout Session and redirect the user to it.
+
+        Accepts ``?plan=scout_pro|lab|lab_plus``. Unknown plans 404.
+        """
+        from billing.checkout import create_checkout_session  # noqa: PLC0415
+
+        plan = request.args.get("plan", "").strip()
+        if plan not in ("scout_pro", "lab", "lab_plus"):
+            return redirect(url_for("pricing"))
+
+        base = request.url_root.rstrip("/")
+        success_url = (
+            base + url_for("account") + "?success=1"
+        )
+        cancel_url = base + url_for("pricing") + "?cancelled=1"
+
+        url, error = create_checkout_session(
+            plan,
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+        if error or not url:
+            logger.warning("Checkout creation failed: %s", error)
+            return redirect(url_for("pricing") + "?checkout_error=1")
+        return redirect(url, code=303)
+
+    @flask_app.route("/billing/portal", methods=["GET"])
+    @login_required
+    def billing_portal():
+        """Redirect the user to their Stripe Billing Portal session."""
+        from billing.checkout import create_portal_session  # noqa: PLC0415
+
+        base = request.url_root.rstrip("/")
+        return_url = base + url_for("account")
+
+        url, error = create_portal_session(return_url=return_url)
+        if error or not url:
+            logger.warning("Portal creation failed: %s", error)
+            return redirect(url_for("account") + "?portal_error=1")
+        return redirect(url, code=303)
 
     @flask_app.route("/account", methods=["GET"])
     @login_required
@@ -950,6 +1033,400 @@ def create_app() -> Flask:
                 "gpu_seconds_used": job.gpu_seconds_used,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Public tool comparison matrix + campaign intake stub
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/tools", methods=["GET"])
+    def tools_comparison():
+        """Public tool comparison matrix for BindCraft / RFantibody /
+        BoltzGen / PXDesign. Pulls comparison_one_liner / paper_url /
+        github_url from each tool's ``meta`` module and runtime /
+        credit cost from the adapter's ``presets`` tuple.
+        """
+        import importlib  # noqa: PLC0415
+
+        rows = []
+        for adapter in tool_base.all_adapters():
+            meta = None
+            try:
+                meta = importlib.import_module(f"tools.{adapter.slug}.meta")
+            except ImportError:
+                pass
+
+            # Resolve typical runtime for smoke and pilot presets. Most
+            # tools expose ``PRESET_RUNTIME``; pxdesign ships
+            # ``preset_runtime_rows`` with a slightly different shape.
+            smoke_runtime = "—"
+            pilot_runtime = "—"
+            if meta is not None:
+                runtime_map = getattr(meta, "PRESET_RUNTIME", None)
+                if runtime_map:
+                    smoke_entry = runtime_map.get("smoke") or {}
+                    pilot_entry = runtime_map.get("pilot") or {}
+                    if smoke_entry.get("typical_minutes"):
+                        smoke_runtime = f"{smoke_entry['typical_minutes']} min"
+                    if pilot_entry.get("typical_minutes"):
+                        pilot_runtime = f"{pilot_entry['typical_minutes']} min"
+                else:
+                    legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
+                    for legacy in legacy_rows:
+                        if legacy.get("slug") == "smoke" and legacy.get("runtime"):
+                            smoke_runtime = legacy["runtime"]
+                        if legacy.get("slug") == "pilot" and legacy.get("runtime"):
+                            pilot_runtime = legacy["runtime"]
+
+            smoke_preset = adapter.preset_for("smoke")
+            pilot_preset = adapter.preset_for("pilot")
+            smoke_credits = str(smoke_preset.credits_cost) if smoke_preset else "—"
+            pilot_credits = str(pilot_preset.credits_cost) if pilot_preset else "—"
+
+            # Display name: strip any "Tool — tagline" suffix the adapter
+            # label carries for the form page.
+            display_name = adapter.label.split("—")[0].strip() or adapter.label
+
+            rows.append(
+                {
+                    "slug": adapter.slug,
+                    "name": display_name,
+                    "comparison_one_liner": getattr(
+                        meta, "comparison_one_liner", "—"
+                    ) if meta is not None else "—",
+                    "paper_citation": getattr(
+                        meta, "paper_citation", "—"
+                    ) if meta is not None else "—",
+                    "paper_url": getattr(meta, "paper_url", "") if meta is not None else "",
+                    "github_url": getattr(meta, "github_url", "") if meta is not None else "",
+                    "smoke_runtime": smoke_runtime,
+                    "pilot_runtime": pilot_runtime,
+                    "smoke_credits": smoke_credits,
+                    "pilot_credits": pilot_credits,
+                }
+            )
+
+        return render_template("tools/comparison.html", tools=rows)
+
+    # ------------------------------------------------------------------
+    # Export routes — /jobs/<id>/export.{csv,fasta,zip}
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/jobs/<job_id>/export.csv", methods=["GET"])
+    @login_required
+    def export_csv(job_id: str):
+        import csv  # noqa: PLC0415
+        import io   # noqa: PLC0415
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return render_template("coming_soon.html"), 404
+        candidates = (job.result or {}).get("candidates", [])
+        buf = io.StringIO()
+        all_score_keys: list[str] = []
+        for cand in candidates:
+            for k in (cand.get("scores") or {}):
+                if k not in all_score_keys:
+                    all_score_keys.append(k)
+        writer = csv.DictWriter(buf, fieldnames=["rank", "pdb_key"] + all_score_keys,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for i, cand in enumerate(candidates):
+            scores = cand.get("scores") or {}
+            row = {"rank": cand.get("rank", i + 1), "pdb_key": cand.get("pdb_key", "")}
+            row.update(scores)
+            writer.writerow(row)
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_scores.csv"},
+        )
+
+    @flask_app.route("/jobs/<job_id>/export.fasta", methods=["GET"])
+    @login_required
+    def export_fasta(job_id: str):
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return render_template("coming_soon.html"), 404
+        candidates = (job.result or {}).get("candidates", [])
+        lines: list[str] = []
+        for i, cand in enumerate(candidates):
+            seq = cand.get("sequence") or cand.get("binder_sequence") or ""
+            if not seq:
+                continue
+            pdb_key = cand.get("pdb_key", f"candidate_{i + 1}")
+            rank = cand.get("rank", i + 1)
+            lines.append(f">rank{rank}_{pdb_key}")
+            # wrap at 80 chars
+            for start in range(0, len(seq), 80):
+                lines.append(seq[start:start + 80])
+        if not lines:
+            return Response(
+                "# No sequences found in this job's output.\n",
+                mimetype="text/plain",
+                headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
+            )
+        return Response(
+            "\n".join(lines) + "\n",
+            mimetype="text/plain",
+            headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
+        )
+
+    @flask_app.route("/jobs/<job_id>/export.zip", methods=["GET"])
+    @login_required
+    def export_zip(job_id: str):
+        import base64   # noqa: PLC0415
+        import io       # noqa: PLC0415
+        import zipfile  # noqa: PLC0415
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return render_template("coming_soon.html"), 404
+        candidates = (job.result or {}).get("candidates", [])
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, cand in enumerate(candidates):
+                encoded = cand.get("pdb_content_b64")
+                if not encoded:
+                    continue
+                try:
+                    data = base64.b64decode(encoded)
+                except Exception:
+                    continue
+                filename = cand.get("pdb_key") or f"candidate_{i + 1}.pdb"
+                zf.writestr(filename, data)
+        buf.seek(0)
+        return Response(
+            buf.read(),
+            mimetype="application/zip",
+            headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_pdbs.zip"},
+        )
+
+    # ------------------------------------------------------------------
+    # Campaign routes — /campaigns/*
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/campaigns/submit", methods=["POST"])
+    @login_required
+    def campaigns_submit():
+        import json  # noqa: PLC0415
+        from shared.campaigns import create_campaign  # noqa: PLC0415
+        from shared.email import send_campaign_submitted_emails  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        source_job_id = request.form.get("source_job_id", "").strip()
+        target_name   = request.form.get("target_name", "").strip()
+        assay_type    = request.form.get("assay_type", "yeast_display").strip()
+        budget_band   = request.form.get("budget_band", "pilot").strip()
+        target_context = request.form.get("target_context", "").strip()
+
+        raw_kd = request.form.get("affinity_goal_kd_nm", "").strip()
+        affinity_goal_kd_nm = float(raw_kd) if raw_kd else None
+
+        raw_weeks = request.form.get("timeline_weeks", "").strip()
+        timeline_weeks = int(raw_weeks) if raw_weeks else None
+
+        raw_indices = request.form.get("candidate_indices", "[]").strip()
+        try:
+            candidate_indices = [int(i) for i in json.loads(raw_indices)]
+        except Exception:
+            candidate_indices = []
+
+        if not source_job_id or not target_name or not candidate_indices:
+            return redirect(url_for("jobs_list"))
+
+        job = get_job(source_job_id, user_id=ctx.user_id)
+        if job is None:
+            return redirect(url_for("jobs_list"))
+
+        try:
+            campaign = create_campaign(
+                user_id=ctx.user_id,
+                source_job_id=source_job_id,
+                candidate_indices=candidate_indices,
+                target_name=target_name,
+                target_context=target_context,
+                assay_type=assay_type,
+                budget_band=budget_band,
+                affinity_goal_kd_nm=affinity_goal_kd_nm,
+                timeline_weeks=timeline_weeks,
+            )
+        except ValueError:
+            return redirect(url_for("jobs_list"))
+
+        if campaign is None:
+            return redirect(url_for("jobs_list"))
+
+        # Copy candidate PDBs into durable campaign bucket.
+        candidates = (job.result or {}).get("candidates", [])
+        try:
+            stage_campaign_candidates(
+                campaign_id=campaign.id,
+                candidates=candidates,
+                indices=candidate_indices,
+            )
+        except StorageError:
+            logger.warning("stage_campaign_candidates failed for %s", campaign.id)
+
+        # Emails — best-effort.
+        try:
+            send_campaign_submitted_emails(
+                campaign=campaign,
+                user_email=session.get("user_email", ""),
+            )
+        except Exception:
+            logger.warning("campaign submit emails failed", exc_info=True)
+
+        return redirect(url_for("campaign_detail", campaign_id=campaign.id) + "?submitted=1")
+
+    @flask_app.route("/campaigns", methods=["GET"])
+    @login_required
+    def campaigns_dashboard():
+        from shared.campaigns import list_user_campaigns  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        campaigns = list_user_campaigns(ctx.user_id)
+        return render_template("campaigns/dashboard.html", campaigns=campaigns)
+
+    @flask_app.route("/campaigns/<campaign_id>", methods=["GET"])
+    @login_required
+    def campaign_detail(campaign_id: str):
+        from shared.campaigns import get_campaign  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        campaign = get_campaign(campaign_id, user_id=ctx.user_id)
+        if campaign is None:
+            return render_template("coming_soon.html"), 404
+        submitted_flash = request.args.get("submitted") == "1"
+        return render_template(
+            "campaigns/detail.html",
+            campaign=campaign,
+            submitted_flash=submitted_flash,
+        )
+
+    # Legacy stub redirect — old results pages linked here.
+    @flask_app.route("/campaigns/new", methods=["GET"])
+    @login_required
+    def campaigns_new_stub():
+        from_job = request.args.get("from_job", "")
+        if from_job:
+            return redirect(url_for("job_detail", job_id=from_job))
+        return redirect(url_for("campaigns_dashboard"))
+
+    # ------------------------------------------------------------------
+    # Admin routes — /admin/campaigns/*
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/admin/campaigns", methods=["GET"])
+    def admin_campaigns_list():
+        from shared.auth import require_staff, STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import list_all_campaigns, STATUSES  # noqa: PLC0415
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login", next=request.path))
+        if email not in STAFF_EMAILS:
+            return render_template("coming_soon.html"), 403
+        status_filter = request.args.get("status") or None
+        campaigns = list_all_campaigns(status=status_filter)
+        return render_template(
+            "admin/campaigns_list.html",
+            campaigns=campaigns,
+            statuses=list(STATUSES),
+            current_status=status_filter,
+        )
+
+    @flask_app.route("/admin/campaigns/<campaign_id>", methods=["GET"])
+    def admin_campaign_detail(campaign_id: str):
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import get_campaign, STATUSES  # noqa: PLC0415
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login", next=request.path))
+        if email not in STAFF_EMAILS:
+            return render_template("coming_soon.html"), 403
+        campaign = get_campaign(campaign_id)
+        if campaign is None:
+            return render_template("coming_soon.html"), 404
+        flash_msg = request.args.get("updated") == "1" and "Status updated."
+        return render_template(
+            "admin/campaign_detail.html",
+            campaign=campaign,
+            statuses=list(STATUSES),
+            flash_msg=flash_msg or None,
+        )
+
+    @flask_app.route("/admin/campaigns/<campaign_id>/status", methods=["POST"])
+    def admin_campaign_update_status(campaign_id: str):
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import get_campaign, update_status  # noqa: PLC0415
+        from shared.email import send_campaign_status_email  # noqa: PLC0415
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login"))
+        if email not in STAFF_EMAILS:
+            return render_template("coming_soon.html"), 403
+
+        campaign = get_campaign(campaign_id)
+        if campaign is None:
+            return render_template("coming_soon.html"), 404
+
+        prev_status     = campaign.status
+        new_status      = request.form.get("status", "").strip()
+        contact         = request.form.get("ranomics_contact", "").strip() or None
+        notes_internal  = request.form.get("notes_internal", "").strip() or None
+
+        try:
+            updated = update_status(
+                campaign_id,
+                status=new_status,
+                ranomics_contact=contact,
+                notes_internal=notes_internal,
+            )
+        except ValueError:
+            return redirect(url_for("admin_campaign_detail", campaign_id=campaign_id))
+
+        if updated and updated.status != prev_status:
+            # Look up submitter email via service client.
+            from shared.credits import get_service_client  # noqa: PLC0415
+            client = get_service_client()
+            user_email_for_notify = None
+            if client:
+                try:
+                    resp = client.auth.admin.get_user_by_id(updated.user_id)
+                    user_email_for_notify = getattr(resp.user, "email", None)
+                except Exception:
+                    pass
+            if user_email_for_notify:
+                try:
+                    send_campaign_status_email(
+                        campaign=updated,
+                        user_email=user_email_for_notify,
+                        prev_status=prev_status,
+                    )
+                except Exception:
+                    logger.warning("campaign status email failed", exc_info=True)
+
+        return redirect(
+            url_for("admin_campaign_detail", campaign_id=campaign_id) + "?updated=1"
+        )
+
+    @flask_app.errorhandler(404)
+    def not_found(_):
+        """Render the branded 404 page for unknown routes."""
+        return render_template("404.html"), 404
 
     return flask_app
 

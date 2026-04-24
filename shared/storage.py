@@ -184,6 +184,62 @@ def delete_input(object_path: str) -> bool:
         return False
 
 
+CAMPAIGN_BUCKET = "lab-campaigns"
+
+
+def stage_campaign_candidates(
+    *,
+    campaign_id: str,
+    candidates: list[dict],
+    indices: list[int],
+) -> list[str]:
+    """Copy the shortlisted candidates' PDB payloads into the
+    ``lab-campaigns/{campaign_id}/`` folder so Ranomics staff can read
+    them independently of the source job's payload.
+
+    ``candidates`` is ``job.result["candidates"]``; each entry carries
+    a base64-encoded ``pdb_content_b64`` blob (see any *_results.html).
+    ``indices`` is the 0-based shortlist selected on the results page.
+
+    Returns the list of storage object paths written. Silently skips
+    candidates without a ``pdb_content_b64`` field (shouldn't happen on
+    a completed job, but we don't want one bad row to fail the submit).
+    """
+    import base64  # noqa: PLC0415
+
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    bucket = client.storage.from_(CAMPAIGN_BUCKET)
+    written: list[str] = []
+    for idx in indices:
+        if idx < 0 or idx >= len(candidates):
+            continue
+        cand = candidates[idx] or {}
+        encoded = cand.get("pdb_content_b64")
+        if not encoded:
+            continue
+        try:
+            data = base64.b64decode(encoded)
+        except Exception:
+            logger.warning("Candidate %s has un-decodable pdb_content_b64.", idx)
+            continue
+        raw_key = cand.get("pdb_key") or f"candidate_{idx}.pdb"
+        filename = _safe_filename(raw_key)
+        path = f"{campaign_id}/{filename}"
+        try:
+            bucket.upload(
+                path=path,
+                file=data,
+                file_options={"content-type": "chemical/x-pdb", "upsert": "true"},
+            )
+        except Exception as exc:
+            logger.error("Campaign PDB upload failed for %s", path, exc_info=True)
+            raise StorageError(f"campaign upload failed: {exc}") from exc
+        written.append(path)
+    return written
+
+
 def _safe_filename(name: str) -> str:
     """Strip path components and dangerous characters from a filename.
 

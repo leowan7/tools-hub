@@ -20,9 +20,12 @@ Requires these environment variables:
 import logging
 from functools import wraps
 
-from flask import redirect, request, session, url_for
+from flask import redirect, render_template, request, session, url_for
 
 from shared.supabase_client import get_supabase_client
+
+# Emails that bypass the public-user gate on /admin/* routes.
+STAFF_EMAILS: frozenset[str] = frozenset({"leo@ranomics.com"})
 
 logger = logging.getLogger(__name__)
 
@@ -72,24 +75,29 @@ def register_user(email: str, password: str) -> tuple:
         password: Plaintext password (Supabase enforces min length server-side).
 
     Returns:
-        Tuple (success: bool, error_message: str). On success, error_message
-        is an empty string. Supabase may require email confirmation depending
-        on project settings.
+        Tuple ``(success: bool, error_message: str, user_id: str | None)``.
+        On success, error_message is an empty string and user_id is the
+        Supabase auth uid. The caller may use this to grant signup-bonus
+        credits immediately (see app.py signup route). On failure, user_id
+        is None.
     """
     if not email or not password:
-        return False, "Email and password are required."
+        return False, "Email and password are required.", None
 
     client = get_supabase_client()
     if client is None:
-        return False, "Authentication service is not configured."
+        return False, "Authentication service is not configured.", None
 
     try:
         response = client.auth.sign_up(
             {"email": email.strip(), "password": password}
         )
         if response.user:
-            return True, ""
-        return False, "Registration failed. Please try again."
+            user_id = getattr(response.user, "id", None)
+            if user_id is None and isinstance(response.user, dict):
+                user_id = response.user.get("id")
+            return True, "", user_id
+        return False, "Registration failed. Please try again.", None
     except Exception as exc:
         msg = str(exc)
         if (
@@ -97,11 +105,11 @@ def register_user(email: str, password: str) -> tuple:
             or "already exists" in msg.lower()
             or "duplicate" in msg.lower()
         ):
-            return False, "An account with this email already exists."
+            return False, "An account with this email already exists.", None
         if "password" in msg.lower() and "weak" in msg.lower():
-            return False, "Password is too weak. Use at least 8 characters."
+            return False, "Password is too weak. Use at least 8 characters.", None
         logger.warning("Supabase sign-up error: %s", exc)
-        return False, f"Registration failed: {msg}"
+        return False, f"Registration failed: {msg}", None
 
 
 def reset_password(email: str) -> tuple:
@@ -141,5 +149,22 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if not session.get("user_email"):
             return redirect(url_for("login", next=request.path))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def require_staff(f):
+    """Flask route decorator that restricts a route to Ranomics staff.
+
+    Staff membership is determined by ``STAFF_EMAILS``. Returns 403 for
+    authenticated non-staff users; redirects to /login for unauthenticated.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        email = session.get("user_email")
+        if not email:
+            return redirect(url_for("login", next=request.path))
+        if email not in STAFF_EMAILS:
+            return render_template("coming_soon.html"), 403
         return f(*args, **kwargs)
     return decorated_function

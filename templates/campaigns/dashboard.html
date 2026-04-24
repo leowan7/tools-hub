@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}My Campaigns — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Lab campaigns</h1>
+  <p class="subtitle">Scoping requests you have submitted to the Ranomics CRO team.</p>
+</div>
+
+{% if campaigns %}
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;font-size:.9rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);text-align:left;">
+            <th style="padding:.5rem .75rem;">Target</th>
+            <th style="padding:.5rem .75rem;">Assay</th>
+            <th style="padding:.5rem .75rem;">Candidates</th>
+            <th style="padding:.5rem .75rem;">Status</th>
+            <th style="padding:.5rem .75rem;">Submitted</th>
+            <th style="padding:.5rem .75rem;">Source job</th>
+            <th style="padding:.5rem .75rem;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in campaigns %}
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:.55rem .75rem;font-weight:500;">{{ c.target_name }}</td>
+              <td style="padding:.55rem .75rem;">{{ c.assay_type | replace('_', ' ') | title }}</td>
+              <td style="padding:.55rem .75rem;">{{ c.candidate_indices | length }}</td>
+              <td style="padding:.55rem .75rem;">
+                {% set sc = c.status %}
+                {% if sc == 'submitted' %}
+                  <span class="panel-badge" style="background:rgba(43,158,126,.15);color:#2B9E7E;border-color:rgba(43,158,126,.4);">Submitted</span>
+                {% elif sc == 'reviewed' %}
+                  <span class="panel-badge" style="background:rgba(251,191,36,.15);color:#fbbf24;border-color:rgba(251,191,36,.4);">Under review</span>
+                {% elif sc == 'scoped' %}
+                  <span class="panel-badge" style="background:rgba(96,165,250,.15);color:#60a5fa;border-color:rgba(96,165,250,.4);">Scoped</span>
+                {% elif sc == 'accepted' %}
+                  <span class="panel-badge" style="background:rgba(74,222,128,.15);color:#4ade80;border-color:rgba(74,222,128,.4);">Accepted</span>
+                {% elif sc == 'declined' %}
+                  <span class="panel-badge" style="background:rgba(248,113,113,.15);color:#f87171;border-color:rgba(248,113,113,.4);">Declined</span>
+                {% else %}
+                  <span class="panel-badge">{{ sc }}</span>
+                {% endif %}
+              </td>
+              <td style="padding:.55rem .75rem;color:var(--text-secondary);font-size:.85rem;">
+                {{ c.created_at[:10] if c.created_at else '—' }}
+              </td>
+              <td style="padding:.55rem .75rem;">
+                <a href="/jobs/{{ c.source_job_id }}" style="color:var(--accent);font-size:.85rem;">
+                  {{ c.source_job_id[:8] }}
+                </a>
+              </td>
+              <td style="padding:.55rem .75rem;">
+                <a href="/campaigns/{{ c.id }}" class="btn-secondary" style="padding:.2rem .55rem;font-size:.8rem;">
+                  Details
+                </a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% else %}
+  <div class="panel">
+    <div class="panel-body" style="text-align:center;padding:2.5rem 1rem;">
+      <p class="subtitle">No campaigns submitted yet.</p>
+      <p style="color:var(--text-secondary);font-size:.9rem;margin-top:.5rem;">
+        After running a GPU tool, star the candidates you want validated and click
+        <strong>Send shortlist to Ranomics lab</strong> on the results page.
+      </p>
+      <div style="margin-top:1.25rem;">
+        <a href="/" class="btn-primary">Browse tools</a>
+      </div>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

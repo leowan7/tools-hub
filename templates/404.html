@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Not found — Ranomics Tools{% endblock %}
+{% block content %}
+  <div class="hero">
+    <h1>Not found.</h1>
+    <p class="subtitle">The page you're looking for doesn't exist or was moved. Try the tool grid or pricing.</p>
+  </div>
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+    <a href="{{ url_for('index') }}" class="btn-primary">See tools</a>
+    <a href="{{ url_for('pricing') }}" class="btn-secondary">See pricing</a>
+  </div>
+{% endblock %}

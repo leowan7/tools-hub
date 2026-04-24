@@ -1,72 +1,29 @@
-{# Partial — included inside templates/job_detail.html when a RFantibody
-   job reaches status=succeeded. The `job` and `job.result` vars are the
-   tool_jobs row; result is the Kendrew smoke_result["output"] payload. #}
+{# RFantibody results partial — included by job_detail.html on status=succeeded #}
+{% from "components/candidate_table.html" import candidate_table %}
 
-{% set output = job.result or {} %}
+{% set output     = job.result or {} %}
 {% set candidates = output.get('candidates', []) %}
+{% set columns    = ['ipTM', 'pLDDT', 'pAE', 'pTM'] %}
+{% set clone_url  = url_for('tool_form', tool='rfantibody', clone_from=job.id) %}
 
-<div class="panel" style="margin-top: 1rem;">
+<div class="panel" style="margin-top:1rem;">
   <div class="panel-header">
-    <span class="panel-title">Candidates ({{ candidates|length }})</span>
-    {% if output.get('tier') %}
-      <span class="panel-badge">{{ output.tier }}</span>
-    {% endif %}
+    <span class="panel-title">Candidates ({{ candidates | length }})</span>
+    {% if output.get('tier') %}<span class="panel-badge">{{ output.tier }}</span>{% endif %}
   </div>
   <div class="panel-body">
     {% if candidates %}
-      <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-        <thead>
-          <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
-            <th style="padding: 0.5rem 0.4rem;">Rank</th>
-            <th style="padding: 0.5rem 0.4rem;">ipTM</th>
-            <th style="padding: 0.5rem 0.4rem;">pLDDT</th>
-            <th style="padding: 0.5rem 0.4rem;">pAE</th>
-            <th style="padding: 0.5rem 0.4rem;">pTM</th>
-            <th style="padding: 0.5rem 0.4rem;">PDB</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for cand in candidates %}
-            {% set scores = cand.get('scores', {}) %}
-            <tr style="border-bottom: 1px solid var(--border);">
-              <td style="padding: 0.55rem 0.4rem;">{{ cand.get('rank', loop.index) }}</td>
-              <td style="padding: 0.55rem 0.4rem;">{{ '%.3f'|format(scores.get('ipTM', 0.0)) }}</td>
-              <td style="padding: 0.55rem 0.4rem;">{{ '%.1f'|format(scores.get('pLDDT', 0.0)) }}</td>
-              <td style="padding: 0.55rem 0.4rem;">{{ '%.2f'|format(scores.get('pAE', 0.0)) }}</td>
-              <td style="padding: 0.55rem 0.4rem;">{{ '%.3f'|format(scores.get('pTM', 0.0)) }}</td>
-              <td style="padding: 0.55rem 0.4rem;">
-                {% if cand.get('pdb_content_b64') %}
-                  <a href="data:chemical/x-pdb;base64,{{ cand.pdb_content_b64 }}"
-                     download="{{ cand.get('pdb_key', 'design_' ~ loop.index ~ '.pdb') }}"
-                     class="btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">
-                    Download
-                  </a>
-                {% else %}
-                  <span style="color: var(--text-secondary);">—</span>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      {{ candidate_table(candidates, columns, job.id, 'rfantibody', clone_url) }}
     {% else %}
-      <p class="subtitle">No candidates returned. This can happen when the scoring filter rejects every design; try a longer preset.</p>
+      <p class="subtitle">No candidates returned. This can happen when the scoring filter rejects every design — try a longer preset.</p>
+      <div style="margin-top:1rem;">
+        <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+      </div>
     {% endif %}
-
     {% if output.get('gpu_seconds') %}
-      <p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 1rem;">
+      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
         GPU time: {{ output.gpu_seconds }} seconds.
       </p>
     {% endif %}
-  </div>
-</div>
-
-<div class="panel" style="margin-top: 1rem;">
-  <div class="panel-body">
-    <p class="subtitle">
-      Want to design against your own target? Email
-      <a href="mailto:leo@ranomics.com">leo@ranomics.com</a> for the Binder
-      Pilot CRO handoff — our lab validates RFantibody designs at scale.
-    </p>
   </div>
 </div>

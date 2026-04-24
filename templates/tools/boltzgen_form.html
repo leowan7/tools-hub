@@ -6,6 +6,88 @@
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
+  {# BoltzGen form uses a two-panel layout: form on the left, static
+     "About BoltzGen" reference panel on the right. Scoped styles live
+     here (prefixed .boltzgen-) so we don't touch the shared stylesheet.
+     Copy is kept in sync with tools/boltzgen/meta.py by hand. #}
+  <style>
+    .boltzgen-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .boltzgen-layout { grid-template-columns: 1fr; }
+    }
+    .boltzgen-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .boltzgen-about h3:first-child { margin-top: 0; }
+    .boltzgen-about p,
+    .boltzgen-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .boltzgen-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .boltzgen-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .boltzgen-about ul li:last-child { border-bottom: none; }
+    .boltzgen-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .boltzgen-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .boltzgen-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .boltzgen-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .boltzgen-runtime-table tr:last-child td { border-bottom: none; }
+    .boltzgen-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: 0.25rem 0 1rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+  </style>
+
   <div class="hero">
     <h1>{{ adapter.label }}</h1>
     <p class="subtitle">{{ adapter.blurb }}</p>
@@ -17,105 +99,193 @@
     </div>
   {% endif %}
 
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Design inputs</span>
+  {# Preset runtime map mirrors tools/boltzgen/meta.py::PRESET_RUNTIME.
+     Kept in the template so the radio data-attrs can be read without
+     round-tripping through app.py. Update both files together. #}
+  {% set preset_minutes = {
+    'smoke': '5',
+    'mini_pilot': '10',
+    'pilot': '15-60',
+  } %}
+
+  <div class="boltzgen-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
+            <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
+            {% for preset in adapter.presets %}
+              <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
+                <input type="radio" name="preset" value="{{ preset.slug }}"
+                       data-credits="{{ preset.credits_cost }}"
+                       data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                       {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
+                <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
+                <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
+              </label>
+            {% endfor %}
+          </fieldset>
+
+          <div id="preset-cost-preview" class="boltzgen-cost-preview" aria-live="polite"></div>
+
+          <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
+            <div style="flex: 1; min-width: 150px;">
+              <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length min</label>
+              <input type="number" name="binder_length_min" id="binder_length_min" {{ pre_value(pre_fill, "binder_length_min", "50") }} min="1"
+                     style="width: 100%; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem;">
+            </div>
+            <div style="flex: 1; min-width: 150px;">
+              <label for="binder_length_max" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length max</label>
+              <input type="number" name="binder_length_max" id="binder_length_max" {{ pre_value(pre_fill, "binder_length_max", "70") }} min="1"
+                     style="width: 100%; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem;">
+            </div>
+          </div>
+
+          <label for="protocol" class="label" style="display:block; margin-bottom: 0.4rem;">Protocol</label>
+          <select name="protocol" id="protocol"
+                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+            <option value="protein-anything">protein-anything</option>
+          </select>
+
+          <div id="pilot-fields" style="display: none;">
+            <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
+              <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 62ch; margin: 0 0 1rem 0;">
+                Pilot tier runs against your own target — upload PDB,
+                optionally pick hotspots, set binder length. Results
+                emailed (~15-60 min on A100-40GB).
+              </p>
+            </div>
+
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the target structure as .pdb, .cif, or .mmcif.
+            </div>
+
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Optional — leave blank for unconstrained. Comma-separated
+              residue indices the binder should contact (e.g. <code>54,56,115</code>).
+            </div>
+
+            <label for="budget" class="label" style="display:block; margin-bottom: 0.4rem;">Budget (final candidates)</label>
+            <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "5") }} min="1" max="20"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Smoke / preview tiers use PD-L1 IgV as the reference target
+            (residues 18–132, chain A). Pilot tier uses your uploaded
+            target.
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run ({{ adapter.presets[0].credits_cost }}–{{ adapter.presets[-1].credits_cost }} credits)</button>
+        </form>
+      </div>
     </div>
-    <div class="panel-body">
-      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
-        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
-          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
-          {% for preset in adapter.presets %}
-            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
-              <input type="radio" name="preset" value="{{ preset.slug }}" {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
-              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
-              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
-            </label>
-          {% endfor %}
-        </fieldset>
 
-        <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
-          <div style="flex: 1; min-width: 150px;">
-            <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length min</label>
-            <input type="number" name="binder_length_min" id="binder_length_min" {{ pre_value(pre_fill, "binder_length_min", "50") }} min="1"
-                   style="width: 100%; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem;">
-          </div>
-          <div style="flex: 1; min-width: 150px;">
-            <label for="binder_length_max" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length max</label>
-            <input type="number" name="binder_length_max" id="binder_length_max" {{ pre_value(pre_fill, "binder_length_max", "70") }} min="1"
-                   style="width: 100%; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem;">
-          </div>
-        </div>
+    <aside class="panel boltzgen-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About BoltzGen</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it wraps</h3>
+        <p>
+          Boltz-1 / Boltz-2 (<a href="https://github.com/jwohlwend/boltz">Wohlwend et al., MIT 2024</a>).
+          Joint structure + sequence generation in an OpenFold-style
+          architecture with native support for modified residues,
+          glycans, and non-canonical amino acids.
+          Repo: <a href="https://github.com/jwohlwend/boltz">jwohlwend/boltz</a>.
+        </p>
 
-        <label for="protocol" class="label" style="display:block; margin-bottom: 0.4rem;">Protocol</label>
-        <select name="protocol" id="protocol"
-                style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-          <option value="protein-anything">protein-anything</option>
-        </select>
+        <h3>When to use</h3>
+        <p>
+          Pick BoltzGen when your target involves glycans,
+          post-translational modifications, or non-canonical residues
+          that AlphaFold-based tools cannot represent. For standard
+          protein-only targets, BindCraft or RFantibody are faster and
+          cheaper.
+        </p>
 
-        <div id="pilot-fields" style="display: none;">
-          <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
-            <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 62ch; margin: 0 0 1rem 0;">
-              Pilot tier runs against your own target — upload PDB,
-              optionally pick hotspots, set binder length. Results
-              emailed (~15-60 min on A100-40GB).
-            </p>
-          </div>
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>Target structure as .pdb, .cif, or .mmcif</li>
+          <li>Chain ID of the target within that structure</li>
+          <li>Optional hotspot residues (comma-separated indices)</li>
+          <li>Optional modification annotations (glycan sites, PTMs)</li>
+        </ul>
 
-          {{ pdb_source_banner(pdb_source) }}
-          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
-          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
-                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Upload the target structure as .pdb, .cif, or .mmcif.
-          </div>
+        <h3>Input glossary</h3>
+        <ul>
+          <li><strong>Modified residues</strong> — residues carrying a covalent modification (phosphorylation, methylation, glycan attachment). Boltz represents these natively; AlphaFold2 substitutes the nearest canonical amino acid.</li>
+          <li><strong>Glycan attachment</strong> — N-linked or O-linked glycan chains on target residues. Many receptor and membrane-protein epitopes are glycan-shielded; designs that ignore glycans often fail in binding assays.</li>
+          <li><strong>Hotspot residues</strong> — target-chain indices the binder should contact. Optional for BoltzGen; leave blank for unconstrained sampling.</li>
+          <li><strong>Binder length</strong> — min and max residue count for generated binders. Boltz samples lengths uniformly in this window.</li>
+          <li><strong>Budget</strong> — number of final candidates returned after scoring and filtering.</li>
+        </ul>
 
-          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-
-          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
-          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
-                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Optional — leave blank for unconstrained. Comma-separated
-            residue indices the binder should contact (e.g. <code>54,56,115</code>).
-          </div>
-
-          <label for="budget" class="label" style="display:block; margin-bottom: 0.4rem;">Budget (final candidates)</label>
-          <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "5") }} min="1" max="20"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-        </div>
-
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-          Smoke / preview tiers use PD-L1 IgV as the reference target
-          (residues 18–132, chain A). Pilot tier uses your uploaded
-          target.
-        </div>
-
-        <button type="submit" class="btn-primary">Submit run ({{ adapter.presets[0].credits_cost }}–{{ adapter.presets[-1].credits_cost }} credits)</button>
-      </form>
-    </div>
+        <h3>Runtime &amp; cost</h3>
+        <table class="boltzgen-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          Pilot runs email you when complete. Unused GPU seconds are
+          refunded in credits when a run finishes faster than its budget.
+        </p>
+      </div>
+    </aside>
   </div>
 
   <script>
     (function () {
       var pilotFields = document.getElementById('pilot-fields');
       var presetRadios = document.querySelectorAll('input[name="preset"]');
+      var costPreview = document.getElementById('preset-cost-preview');
 
-      function togglePilotFields() {
+      function sync() {
         var selected = document.querySelector('input[name="preset"]:checked');
-        if (selected && selected.value === 'pilot') {
-          pilotFields.style.display = 'block';
-        } else {
-          pilotFields.style.display = 'none';
+        if (pilotFields) {
+          pilotFields.style.display = (selected && selected.value === 'pilot') ? 'block' : 'none';
+        }
+        if (costPreview && selected) {
+          var credits = selected.getAttribute('data-credits');
+          var minutes = selected.getAttribute('data-minutes');
+          if (credits && minutes) {
+            costPreview.textContent = credits + ' credits · ~' + minutes + ' min · refunded if shorter';
+          }
         }
       }
 
       for (var i = 0; i < presetRadios.length; i++) {
-        presetRadios[i].addEventListener('change', togglePilotFields);
+        presetRadios[i].addEventListener('change', sync);
       }
-      togglePilotFields();
+      sync();
     })();
   </script>
   {{ prefill_script(pre_fill) }}

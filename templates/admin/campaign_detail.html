@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Admin — Campaign {{ campaign.id[:8] }} — Ranomics Tools{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>{{ campaign.target_name }}</h1>
+  <p class="subtitle">Campaign {{ campaign.id[:8] }} &middot; submitted {{ campaign.created_at[:10] if campaign.created_at else '—' }}</p>
+</div>
+
+{% if flash_msg %}
+  <div style="background:rgba(43,158,126,.12);border:1px solid rgba(43,158,126,.4);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;">
+    {{ flash_msg }}
+  </div>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:1fr 340px;gap:1.25rem;align-items:start;">
+
+  {# Left — read-only details #}
+  <div>
+    <div class="panel" style="margin-bottom:1rem;">
+      <div class="panel-header"><span class="panel-title">Submission details</span></div>
+      <div class="panel-body">
+        <dl style="display:grid;grid-template-columns:max-content 1fr;gap:.4rem 1rem;font-size:.9rem;">
+          <dt style="color:var(--text-secondary);">User ID</dt>
+          <dd style="margin:0;font-family:'Geist Mono',monospace;font-size:.82rem;">{{ campaign.user_id }}</dd>
+
+          <dt style="color:var(--text-secondary);">Source job</dt>
+          <dd style="margin:0;">
+            <a href="/jobs/{{ campaign.source_job_id }}" style="color:var(--accent);">{{ campaign.source_job_id[:8] }}</a>
+          </dd>
+
+          <dt style="color:var(--text-secondary);">Candidates</dt>
+          <dd style="margin:0;">{{ campaign.candidate_indices | join(', ') }} (indices, 0-based)</dd>
+
+          <dt style="color:var(--text-secondary);">Assay</dt>
+          <dd style="margin:0;">{{ campaign.assay_type | replace('_',' ') | title }}</dd>
+
+          <dt style="color:var(--text-secondary);">Budget</dt>
+          <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
+
+          {% if campaign.affinity_goal_kd_nm is not none %}
+            <dt style="color:var(--text-secondary);">KD goal</dt>
+            <dd style="margin:0;">{{ campaign.affinity_goal_kd_nm }} nM</dd>
+          {% endif %}
+
+          {% if campaign.timeline_weeks %}
+            <dt style="color:var(--text-secondary);">Timeline</dt>
+            <dd style="margin:0;">{{ campaign.timeline_weeks }} weeks</dd>
+          {% endif %}
+
+          <dt style="color:var(--text-secondary);">Status</dt>
+          <dd style="margin:0;"><span class="panel-badge">{{ campaign.status }}</span></dd>
+
+          {% if campaign.reviewed_at %}
+            <dt style="color:var(--text-secondary);">Reviewed</dt>
+            <dd style="margin:0;">{{ campaign.reviewed_at[:10] }}</dd>
+          {% endif %}
+        </dl>
+
+        {% if campaign.target_context %}
+          <div style="margin-top:1rem;padding:.7rem .85rem;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border);">
+            <p style="font-size:.82rem;color:var(--text-secondary);margin:0 0 .3rem;">Context:</p>
+            <p style="font-size:.875rem;white-space:pre-wrap;margin:0;">{{ campaign.target_context }}</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div style="display:flex;gap:.65rem;flex-wrap:wrap;">
+      <a href="/admin/campaigns" class="btn-secondary">All campaigns</a>
+      <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">Source job</a>
+      <a href="/jobs/{{ campaign.source_job_id }}/export.csv" class="btn-secondary">Export CSV</a>
+      <a href="/jobs/{{ campaign.source_job_id }}/export.zip" class="btn-secondary">Download PDBs</a>
+    </div>
+  </div>
+
+  {# Right — status update form #}
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Update status</span></div>
+    <div class="panel-body">
+      <form action="/admin/campaigns/{{ campaign.id }}/status" method="POST">
+        <div class="form-field" style="margin-bottom:.85rem;">
+          <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">New status</label>
+          <select name="status" class="form-control">
+            {% for s in statuses %}
+              <option value="{{ s }}" {% if s == campaign.status %}selected{% endif %}>{{ s | title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="form-field" style="margin-bottom:.85rem;">
+          <label for="contact" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+            Ranomics contact <span style="color:var(--text-secondary);font-weight:400;">(optional)</span>
+          </label>
+          <input type="text" id="contact" name="ranomics_contact"
+                 class="form-control"
+                 value="{{ campaign.ranomics_contact or '' }}"
+                 placeholder="e.g. leo@ranomics.com">
+        </div>
+
+        <div class="form-field" style="margin-bottom:1.1rem;">
+          <label for="notes" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+            Internal notes <span style="color:var(--text-secondary);font-weight:400;">(optional)</span>
+          </label>
+          <textarea id="notes" name="notes_internal"
+                    class="form-control" rows="4"
+                    placeholder="Feasibility assessment, capacity notes, scope decisions…">{{ campaign.notes_internal or '' }}</textarea>
+        </div>
+
+        <button type="submit" class="btn-primary" style="width:100%;">Update &amp; notify user</button>
+      </form>
+    </div>
+  </div>
+
+</div>
+{% endblock %}

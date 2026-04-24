@@ -19,6 +19,8 @@
       <a href="{{ url_for('index') }}" class="brand-tool-link">Tools</a>
     </div>
     <div class="navbar-right">
+      <a href="{{ url_for('scout.index') }}" class="nav-link-public">Scout</a>
+      <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
       {% if session.get('user_email') %}
         {% if ranomics_tier %}
           <span class="nav-tier-badge nav-tier-{{ ranomics_tier }}">
@@ -34,10 +36,14 @@
             <span class="nav-credits-label">credits</span>
           </span>
         {% endif %}
+        <a href="{{ url_for('campaigns_dashboard') }}" class="nav-link-public">Campaigns</a>
         <a href="{{ url_for('account') }}" class="nav-link">{{ session.get('user_email') }}</a>
         <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
+      {% else %}
+        <a href="{{ url_for('login') }}" class="nav-link-public">Sign in</a>
+        <a href="{{ url_for('signup') }}" class="btn-primary" style="padding: 0.35rem 0.9rem; font-size: 0.78rem;">Get started</a>
       {% endif %}
     </div>
   </div>

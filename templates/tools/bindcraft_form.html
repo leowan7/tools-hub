@@ -6,6 +6,87 @@
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
+  {# BindCraft form uses a two-panel layout: existing form on the left,
+     static "About BindCraft" reference panel on the right. Scoped styles
+     live here (prefixed .bindcraft-) so we don't touch the shared
+     stylesheet. Copy is kept in sync with tools/bindcraft/meta.py by
+     hand. #}
+  {% set preset_minutes = {"pilot": "45"} %}
+  {% set preset_runtime_rows = [
+    {"slug": "pilot", "credits": "20", "runtime": "~45 min", "target": "Your uploaded target"}
+  ] %}
+
+  <style>
+    .bindcraft-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .bindcraft-layout { grid-template-columns: 1fr; }
+    }
+    .bindcraft-about-section { margin-top: 1.1rem; }
+    .bindcraft-about-section:first-child { margin-top: 0; }
+    .bindcraft-about-section h3 {
+      font-family: var(--font-body);
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0 0 0.45rem 0;
+      font-weight: 500;
+    }
+    .bindcraft-about-section p,
+    .bindcraft-about-section ul {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      line-height: 1.55;
+      margin: 0;
+    }
+    .bindcraft-about-section ul {
+      padding-left: 1.1rem;
+      margin: 0;
+    }
+    .bindcraft-about-section li { margin-bottom: 0.25rem; }
+    .bindcraft-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .bindcraft-runtime-table th,
+    .bindcraft-runtime-table td {
+      padding: 0.4rem 0.45rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .bindcraft-runtime-table th {
+      color: var(--text-tertiary);
+      font-weight: 500;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .bindcraft-runtime-table td { color: var(--text-secondary); }
+    .bindcraft-runtime-table td.bindcraft-runtime-slug {
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+    }
+    .bindcraft-cost-preview {
+      display: block;
+      margin: 0.35rem 0 1.25rem 0;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+    .bindcraft-cost-preview[data-empty="true"] { color: var(--text-tertiary); }
+  </style>
+
   <div class="hero">
     <h1>{{ adapter.label }}</h1>
     <p class="subtitle">{{ adapter.blurb }}</p>
@@ -24,53 +105,169 @@
     </div>
   </div>
 
-  <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Design inputs</span>
+  <div class="bindcraft-layout">
+    {# ---------- LEFT: existing form (unchanged semantics) ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <fieldset style="border: none; padding: 0; margin: 0 0 0.5rem 0;">
+            <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
+            {% for preset in adapter.presets %}
+              <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
+                <input type="radio" name="preset" value="{{ preset.slug }}"
+                       data-credits="{{ preset.credits_cost }}"
+                       data-minutes="{{ preset_minutes.get(preset.slug, '') }}"
+                       {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
+                <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
+                <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
+              </label>
+            {% endfor %}
+          </fieldset>
+
+          {# Cost preview — updates on preset change via vanilla JS. #}
+          <div id="bindcraft-cost-preview" class="bindcraft-cost-preview" data-empty="true">
+            Select a preset to see cost and runtime.
+          </div>
+
+          {{ pdb_source_banner(pdb_source) }}
+          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Upload the target structure as .pdb, .cif, or .mmcif.
+          </div>
+
+          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+          <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+          </div>
+
+          <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (min)</label>
+          <input type="number" name="binder_length_min" id="binder_length_min" required {{ pre_value(pre_fill, "binder_length_min", "50") }} min="50" max="150"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1rem;">
+
+          <label for="binder_length_max" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (max)</label>
+          <input type="number" name="binder_length_max" id="binder_length_max" required {{ pre_value(pre_fill, "binder_length_max", "100") }} min="50" max="150"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+          <button type="submit" class="btn-primary">Submit run (20 credits)</button>
+        </form>
+      </div>
     </div>
-    <div class="panel-body">
-      <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
-        <fieldset style="border: none; padding: 0; margin: 0 0 1.25rem 0;">
-          <legend class="label" style="padding: 0 0 0.5rem 0;">Preset</legend>
-          {% for preset in adapter.presets %}
-            <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
-              <input type="radio" name="preset" value="{{ preset.slug }}" {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
-              <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
-              <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
-            </label>
-          {% endfor %}
-        </fieldset>
 
-        {{ pdb_source_banner(pdb_source) }}
-        <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
-        <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
-               style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-          Upload the target structure as .pdb, .cif, or .mmcif.
+    {# ---------- RIGHT: About BindCraft panel ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">About BindCraft</span>
+      </div>
+      <div class="panel-body">
+        <div class="bindcraft-about-section">
+          <h3>What it wraps</h3>
+          <p>
+            BindCraft (<a href="https://www.biorxiv.org/content/10.1101/2024.09.30.615802v1" rel="noopener">Pacesa et al., bioRxiv 2024.09.30.615802</a>).
+            AlphaFold2-Multimer backbone design with hotspot-focused
+            backpropagation, followed by ProteinMPNN sequence design and
+            AF2 re-prediction filtering.
+            Repo: <a href="https://github.com/martinpacesa/BindCraft" rel="noopener">martinpacesa/BindCraft</a>.
+          </p>
         </div>
 
-        <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-        <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
-
-        <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
-        <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
-               style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-        <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-          Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+        <div class="bindcraft-about-section">
+          <h3>When to pick BindCraft</h3>
+          <p>
+            Pick BindCraft when you have a target PDB plus known hotspot
+            residues and want de novo 60-150 aa protein binders. For
+            VHH/scFv antibody scaffolds, use RFantibody. For targets with
+            glycans or non-canonical residues, use BoltzGen.
+          </p>
         </div>
 
-        <label for="binder_length_min" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (min)</label>
-        <input type="number" name="binder_length_min" id="binder_length_min" required {{ pre_value(pre_fill, "binder_length_min", "50") }} min="50" max="150"
-               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1rem;">
+        <div class="bindcraft-about-section">
+          <h3>Prerequisites</h3>
+          <ul>
+            <li>Target structure in <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code> format.</li>
+            <li>Chain ID of the target within that structure.</li>
+            <li>At least one hotspot residue index on the target chain.</li>
+          </ul>
+        </div>
 
-        <label for="binder_length_max" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (max)</label>
-        <input type="number" name="binder_length_max" id="binder_length_max" required {{ pre_value(pre_fill, "binder_length_max", "100") }} min="50" max="150"
-               style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+        <div class="bindcraft-about-section">
+          <h3>What the inputs mean</h3>
+          <ul>
+            <li><strong>Hotspot residues</strong>: comma-separated target-chain residue indices the binder should contact. These bias the AF2 backpropagation toward the intended epitope.</li>
+            <li><strong>Binder length (min/max)</strong>: residue-count window for the generated binder chain (50-150).</li>
+            <li><strong>Num designs</strong>: how many final filtered designs are returned. Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds.</li>
+            <li><strong>Seed</strong>: RNG seed for reproducible sampling; set automatically per run.</li>
+          </ul>
+        </div>
 
-        <button type="submit" class="btn-primary">Submit run (20 credits)</button>
-      </form>
+        <div class="bindcraft-about-section">
+          <h3>Runtime and cost</h3>
+          <table class="bindcraft-runtime-table">
+            <thead>
+              <tr>
+                <th>Preset</th>
+                <th>Credits</th>
+                <th>Runtime</th>
+                <th>Target</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in preset_runtime_rows %}
+                <tr>
+                  <td class="bindcraft-runtime-slug">{{ row.slug }}</td>
+                  <td>{{ row.credits }}</td>
+                  <td>{{ row.runtime }}</td>
+                  <td>{{ row.target }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p style="margin-top: 0.55rem; font-size: 0.8rem; color: var(--text-tertiary);">
+            Credits are refunded prorated when a run finishes faster than the preset budget.
+          </p>
+        </div>
+      </div>
     </div>
   </div>
+
+  <script>
+    (function () {
+      var costPreview = document.getElementById('bindcraft-cost-preview');
+      var radios = document.querySelectorAll('input[type="radio"][name="preset"]');
+
+      function updateCostPreview(selected) {
+        if (!costPreview) return;
+        if (!selected) {
+          costPreview.textContent = 'Select a preset to see cost and runtime.';
+          costPreview.setAttribute('data-empty', 'true');
+          return;
+        }
+        var credits = selected.getAttribute('data-credits') || '?';
+        var minutes = selected.getAttribute('data-minutes') || '?';
+        costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+        costPreview.setAttribute('data-empty', 'false');
+      }
+
+      function onChange() {
+        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
+        updateCostPreview(selected);
+      }
+
+      for (var i = 0; i < radios.length; i++) {
+        radios[i].addEventListener('change', onChange);
+      }
+      onChange();
+    })();
+  </script>
   {{ prefill_script(pre_fill) }}
 {% endblock %}

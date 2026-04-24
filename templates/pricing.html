@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+
+{% block title %}Pricing — Ranomics Tools{% endblock %}
+
+{% block description %}Pricing for tools.ranomics.com — Free tier with 10 signup credits, Scout Pro $49/mo, Lab $299/mo, Lab+ $999/mo. Credits are prorated: unused GPU time refunds automatically.{% endblock %}
+
+{% block content %}
+
+  <section class="section-head" style="margin-top: 1.5rem; margin-bottom: 2rem;">
+    <span class="section-eyebrow">Pricing</span>
+    <h1 style="font-size: clamp(2rem, 4vw, 2.75rem); line-height: 1.1;">
+      Credits, not compute contracts.
+    </h1>
+    <p class="section-lede">
+      Every job reserves a GPU-seconds cap up front, then refunds the
+      unused portion when it finishes early. No shared batch queue, no
+      hidden minimums, no "contact sales" barrier. Upgrade or cancel in
+      the Stripe Billing Portal whenever you want.
+    </p>
+  </section>
+
+  <section class="section">
+    <div class="pricing-grid">
+
+      {# ─── Free ─────────────────────────────────────────────────────── #}
+      <article class="price-card">
+        <div>
+          <span class="price-tier-name">Free</span>
+        </div>
+        <div class="price-amount">
+          <span class="price-amount-value">$0</span>
+          <span class="price-amount-unit">forever</span>
+        </div>
+        <p class="price-lede">
+          Try the workflow end-to-end before committing.
+        </p>
+        <ul class="price-features">
+          <li>10 GPU credits on signup (one-time)</li>
+          <li>Unlimited Epitope Scout, Developability Scout, Library Planner</li>
+          <li>All generative tool smoke runs on the PD-L1 demo target</li>
+          <li>Job history, download all PDBs</li>
+        </ul>
+        <div class="price-cta">
+          {% if session.get('user_email') %}
+            <a href="{{ url_for('index') }}" class="btn-secondary" style="width: 100%; justify-content: center;">You're signed in</a>
+          {% else %}
+            <a href="{{ url_for('signup') }}" class="btn-primary" style="width: 100%; justify-content: center;">Sign up free</a>
+          {% endif %}
+        </div>
+      </article>
+
+      {# ─── Scout Pro ────────────────────────────────────────────────── #}
+      <article class="price-card price-card-featured">
+        <span class="price-tier-badge">Most popular</span>
+        <div>
+          <span class="price-tier-name">Scout Pro</span>
+        </div>
+        <div class="price-amount">
+          <span class="price-amount-value">$49</span>
+          <span class="price-amount-unit">/ month</span>
+        </div>
+        <p class="price-lede">
+          For the indie scientist running their own targets.
+        </p>
+        <ul class="price-features">
+          <li>10 GPU credits per month</li>
+          <li>≈ 1 BindCraft pilot or 5 RFantibody previews / month</li>
+          <li>Priority Modal dispatch over free tier</li>
+          <li>Email support — reply from Leo, not a ticket bot</li>
+          <li>Everything in Free</li>
+        </ul>
+        <div class="price-cta">
+          <a href="{{ url_for('billing_checkout') }}?plan=scout_pro" class="btn-primary-lg" style="width: 100%; justify-content: center;">Get Scout Pro</a>
+        </div>
+      </article>
+
+      {# ─── Lab ──────────────────────────────────────────────────────── #}
+      <article class="price-card">
+        <div>
+          <span class="price-tier-name">Lab</span>
+        </div>
+        <div class="price-amount">
+          <span class="price-amount-value">$299</span>
+          <span class="price-amount-unit">/ month</span>
+        </div>
+        <p class="price-lede">
+          For small biotechs running several campaigns in parallel.
+        </p>
+        <ul class="price-features">
+          <li>150 GPU credits per month</li>
+          <li>≈ 6 BindCraft pilots or 14 RFantibody pilots / month</li>
+          <li>20 GB result storage</li>
+          <li>Cross-tool handoffs (pass candidates between tools)</li>
+          <li>Everything in Scout Pro</li>
+        </ul>
+        <div class="price-cta">
+          <a href="{{ url_for('billing_checkout') }}?plan=lab" class="btn-primary" style="width: 100%; justify-content: center;">Get Lab</a>
+        </div>
+      </article>
+
+      {# ─── Lab+ ─────────────────────────────────────────────────────── #}
+      <article class="price-card">
+        <div>
+          <span class="price-tier-name">Lab+</span>
+        </div>
+        <div class="price-amount">
+          <span class="price-amount-value">$999</span>
+          <span class="price-amount-unit">/ month</span>
+        </div>
+        <p class="price-lede">
+          For teams running programs across multiple targets.
+        </p>
+        <ul class="price-features">
+          <li>600 GPU credits per month</li>
+          <li>≈ 25 BindCraft pilots / month</li>
+          <li>Batch API access</li>
+          <li>Shared Slack channel with the Ranomics team</li>
+          <li>Discounted wet-lab validation (Binder Pilot program)</li>
+          <li>Everything in Lab</li>
+        </ul>
+        <div class="price-cta">
+          <a href="{{ url_for('billing_checkout') }}?plan=lab_plus" class="btn-primary" style="width: 100%; justify-content: center;">Get Lab+</a>
+        </div>
+      </article>
+
+    </div>
+
+    <p class="price-footnote" style="margin-top: 1.5rem; text-align: center;">
+      All plans are month-to-month. Cancel anytime from the Stripe
+      Billing Portal. Credits roll over within a billing period;
+      unused credits expire at the end of each cycle.
+    </p>
+  </section>
+
+  {# ─── Wet-lab handoff reminder ─────────────────────────────────── #}
+  <section class="section">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Ready to put designs on cells?</span>
+      </div>
+      <div class="panel-body">
+        <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch;">
+          Every tool's results page hands off directly into a Ranomics
+          yeast display campaign. We review your shortlist, scope the
+          screen, and put binders on the surface of live cells. Pricing
+          for wet-lab is separate and depends on the target, library
+          size, and timeline.
+        </p>
+        <div style="margin-top: 1rem;">
+          <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary">
+            See the Binder Pilot program
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ─── FAQ-lite ────────────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Questions</span>
+      <h2 class="section-title">What a credit covers.</h2>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <h3 class="why-card-title">What's a credit worth?</h3>
+        <p class="why-card-body">
+          A credit is one GPU-minute on an A100 baseline. A BindCraft
+          pilot reserves 22 credits (≈ 45 min on A100-80GB); if it
+          finishes in 30 min, 7 credits refund to your ledger. Smoke
+          runs are 2 to 8 credits.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">What happens if a job fails?</h3>
+        <p class="why-card-body">
+          Pre-flight input validation runs before GPU time is consumed.
+          If the preflight rejects, zero credits are charged. If the GPU
+          job itself fails mid-run, any unused cap refunds — you pay
+          only for compute actually used.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Can I run on my own GPUs?</h3>
+        <p class="why-card-body">
+          Not today. Every tool runs on Modal infrastructure we manage
+          and validate — that's the tradeoff for published audit logs
+          and predictable runtimes. For self-hosted workflows, the
+          underlying models (RFdiffusion, RFantibody, BoltzGen) are
+          open source.
+        </p>
+      </article>
+    </div>
+  </section>
+
+{% endblock %}

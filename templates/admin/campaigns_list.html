@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Admin — Campaigns — Ranomics Tools{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Campaigns (admin)</h1>
+  <p class="subtitle">All inbound scoping requests. Filter by status.</p>
+</div>
+
+{# Status filter chips #}
+<div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.25rem;">
+  <a href="/admin/campaigns"
+     class="panel-badge {% if not current_status %}active-chip{% endif %}"
+     style="text-decoration:none;padding:.3rem .7rem;cursor:pointer;">All</a>
+  {% for s in statuses %}
+    <a href="/admin/campaigns?status={{ s }}"
+       class="panel-badge {% if current_status == s %}active-chip{% endif %}"
+       style="text-decoration:none;padding:.3rem .7rem;cursor:pointer;">{{ s | title }}</a>
+  {% endfor %}
+</div>
+
+<style>
+  .active-chip { background:var(--accent);color:#fff;border-color:var(--accent); }
+</style>
+
+{% if campaigns %}
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);text-align:left;">
+            <th style="padding:.5rem .75rem;">Target</th>
+            <th style="padding:.5rem .75rem;">User</th>
+            <th style="padding:.5rem .75rem;">Assay</th>
+            <th style="padding:.5rem .75rem;">Cands</th>
+            <th style="padding:.5rem .75rem;">Budget</th>
+            <th style="padding:.5rem .75rem;">Status</th>
+            <th style="padding:.5rem .75rem;">Submitted</th>
+            <th style="padding:.5rem .75rem;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in campaigns %}
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:.5rem .75rem;font-weight:500;">{{ c.target_name }}</td>
+              <td style="padding:.5rem .75rem;font-size:.82rem;color:var(--text-secondary);">
+                {{ c.user_id[:8] }}
+              </td>
+              <td style="padding:.5rem .75rem;">{{ c.assay_type | replace('_', ' ') | title }}</td>
+              <td style="padding:.5rem .75rem;">{{ c.candidate_indices | length }}</td>
+              <td style="padding:.5rem .75rem;">{{ c.budget_band | title }}</td>
+              <td style="padding:.5rem .75rem;">
+                <span class="panel-badge">{{ c.status }}</span>
+              </td>
+              <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">
+                {{ c.created_at[:10] if c.created_at else '—' }}
+              </td>
+              <td style="padding:.5rem .75rem;">
+                <a href="/admin/campaigns/{{ c.id }}"
+                   class="btn-secondary" style="padding:.2rem .55rem;font-size:.8rem;">
+                  Review
+                </a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% else %}
+  <div class="panel">
+    <div class="panel-body" style="text-align:center;padding:2rem;">
+      <p class="subtitle">No campaigns{% if current_status %} with status "{{ current_status }}"{% endif %}.</p>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

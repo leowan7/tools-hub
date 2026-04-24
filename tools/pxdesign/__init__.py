@@ -21,6 +21,15 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional
 
 from tools.base import Preset, ToolAdapter, register
+from tools.pxdesign import meta as _meta  # noqa: F401 — re-export for templates
+
+# Re-export so callers can do ``from tools.pxdesign import paper_citation``.
+paper_citation = _meta.paper_citation
+paper_url = _meta.paper_url
+github_url = _meta.github_url
+comparison_one_liner = _meta.comparison_one_liner
+example_output_id = _meta.example_output_id
+preset_runtime_rows = _meta.preset_runtime_rows
 
 
 def validate(
