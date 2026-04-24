@@ -31,6 +31,16 @@ VENDOR_JS = REPO_ROOT / "static" / "vendor" / "ngl.min.js"
 PICKER_JS = REPO_ROOT / "static" / "js" / "hotspot_picker.js"
 FORM_TEMPLATE = REPO_ROOT / "templates" / "tools" / "boltzgen_form.html"
 
+# All four binder-design tool forms that should ship the 3D hotspot picker.
+# Each takes a target PDB + hotspot residues, so the same picker pattern
+# applies verbatim.
+PICKER_FORM_TEMPLATES = [
+    REPO_ROOT / "templates" / "tools" / "boltzgen_form.html",
+    REPO_ROOT / "templates" / "tools" / "rfantibody_form.html",
+    REPO_ROOT / "templates" / "tools" / "bindcraft_form.html",
+    REPO_ROOT / "templates" / "tools" / "pxdesign_form.html",
+]
+
 
 # ---------------------------------------------------------------------------
 # Static asset + template presence (cheap, no Flask test client required)
@@ -68,6 +78,46 @@ def test_boltzgen_form_loads_picker_assets():
     assert 'id="target_pdb"' in html
     assert 'id="target_chain"' in html
     # Init call references every required option.
+    assert "initHotspotPicker" in html
+
+
+@pytest.mark.parametrize(
+    "template_path",
+    PICKER_FORM_TEMPLATES,
+    ids=lambda p: p.stem,
+)
+def test_all_binder_forms_ship_picker(template_path):
+    """Every binder-design form (boltzgen, rfantibody, bindcraft, pxdesign)
+    must ship the 3D hotspot picker block, vendored NGL, and the picker
+    JS so the pattern is consistent across tools. Regressions on any one
+    form should trip this test.
+    """
+    assert template_path.exists(), f"Missing template: {template_path}"
+    html = template_path.read_text(encoding="utf-8")
+
+    # Vendored scripts — no CDN in production.
+    assert "vendor/ngl.min.js" in html, (
+        f"{template_path.name} missing vendored NGL script tag"
+    )
+    assert "js/hotspot_picker.js" in html, (
+        f"{template_path.name} missing hotspot_picker.js script tag"
+    )
+
+    # Picker block + mount points the JS binds to.
+    assert "hotspot-picker" in html, (
+        f"{template_path.name} missing .hotspot-picker container"
+    )
+    assert 'id="hotspot-viewer"' in html
+    assert 'id="hotspot-empty"' in html
+    assert 'id="hotspot-surface-toggle"' in html
+    assert 'id="hotspot-clear-btn"' in html
+
+    # Form fields the picker wires up.
+    assert 'id="hotspot_residues"' in html
+    assert 'id="target_pdb"' in html
+    assert 'id="target_chain"' in html
+
+    # Init call wires the picker to the form's input IDs.
     assert "initHotspotPicker" in html
 
 
