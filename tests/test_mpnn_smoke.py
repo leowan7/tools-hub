@@ -279,6 +279,57 @@ def test_submit_rejects_unknown_preset(app_with_mpnn_flag, monkeypatch):
     assert "Pick a preset" in body or "preset" in body.lower()
 
 
+def test_export_fasta_serializes_mpnn_sequence_schema(
+    app_with_mpnn_flag, monkeypatch
+):
+    """The shared /export.fasta route must serialize MPNN's ``sequences``
+    schema ({seq, score, recovery}) alongside the binder-design tools'
+    ``candidates`` schema. Before the Codex P2 fix the route only looked
+    at ``candidates``, so every MPNN FASTA download returned the empty
+    placeholder."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.load_user_context",
+        lambda: SimpleNamespace(
+            user_id="u1", tier="free", balance=10, email="user@example.com"
+        ),
+    )
+    mpnn_job = SimpleNamespace(
+        id="mpnn-job-1",
+        tool="mpnn",
+        status="succeeded",
+        inputs={},
+        result={
+            "tier": "standalone",
+            "chains_designed": "A",
+            "sampling_temp": 0.1,
+            "sequences": [
+                {"seq": "MVLSPADKTNVK", "score": 1.23, "recovery": 0.71, "sample": 1},
+                {"seq": "MVLSPADKTNVR", "score": 1.19, "recovery": 0.69, "sample": 2},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "app.get_job",
+        lambda job_id, user_id: mpnn_job if job_id == "mpnn-job-1" else None,
+    )
+    client = app_with_mpnn_flag.test_client()
+    _login_session(client)
+    resp = client.get("/jobs/mpnn-job-1/export.fasta")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "# No sequences found" not in body, (
+        "FASTA export fell through to empty placeholder on MPNN-shaped result"
+    )
+    assert ">mpnn_rank1" in body
+    assert ">mpnn_rank2" in body
+    assert "MVLSPADKTNVK" in body
+    assert "MVLSPADKTNVR" in body
+    assert "score=1.23" in body
+    assert "recovery=0.71" in body
+
+
 def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
     app_with_mpnn_flag, monkeypatch
 ):

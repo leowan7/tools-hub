@@ -1261,8 +1261,14 @@ def create_app() -> Flask:
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
             return render_template("coming_soon.html"), 404
-        candidates = (job.result or {}).get("candidates", [])
+        result = job.result or {}
+        candidates = result.get("candidates", [])
+        mpnn_sequences = result.get("sequences", [])
         lines: list[str] = []
+        # Binder-design tools (rfantibody/bindcraft/boltzgen/pxdesign)
+        # return ``candidates`` (PDB + docked pose + scores). MPNN is a
+        # sequence-design primitive and returns ``sequences`` (seq +
+        # score + recovery), so the header+body shape has to differ.
         for i, cand in enumerate(candidates):
             seq = cand.get("sequence") or cand.get("binder_sequence") or ""
             if not seq:
@@ -1271,6 +1277,20 @@ def create_app() -> Flask:
             rank = cand.get("rank", i + 1)
             lines.append(f">rank{rank}_{pdb_key}")
             # wrap at 80 chars
+            for start in range(0, len(seq), 80):
+                lines.append(seq[start:start + 80])
+        for i, seq_obj in enumerate(mpnn_sequences):
+            seq = seq_obj.get("seq") or ""
+            if not seq:
+                continue
+            header_parts = [f">mpnn_rank{i + 1}"]
+            score = seq_obj.get("score")
+            recovery = seq_obj.get("recovery")
+            if score is not None:
+                header_parts.append(f"score={score}")
+            if recovery is not None:
+                header_parts.append(f"recovery={recovery}")
+            lines.append(" ".join(header_parts))
             for start in range(0, len(seq), 80):
                 lines.append(seq[start:start + 80])
         if not lines:
