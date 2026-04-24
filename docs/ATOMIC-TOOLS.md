@@ -269,6 +269,46 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Pricing:** 1 credit.
 
+#### D4 Status (as of 2026-04-24)
+
+**CODE-COMPLETE on `feat/esmfold-standalone`.** Mirrors the D3 ColabFold pattern, with monomer-only validation and a ``ptm=None`` tolerant results template. Awaits `modal deploy` + 2x consecutive staging smoke on `ranomics-esmfold-prod` before the operator flips `FLAG_TOOL_ESMFOLD=on`.
+
+Shipped this commit:
+- `tools-hub/tools/esmfold/Dockerfile.modal` — fresh image (no Kendrew image to reuse): PyTorch 2.1 CUDA 11.8 + HF transformers 4.35 + openfold helpers. Bakes ~15 GB ``facebook/esmfold_v1`` weights + the same 76 aa ubiquitin smoke fixture D3 uses. Layer-1 build-time validation fails `modal deploy` if transformers, the baked weights, or the smoke fixture are missing.
+- `tools-hub/tools/esmfold/run_pipeline.py` — `preflight()` (GPU + HF cache + /tmp writable + ESMFold snapshot present) + `main()` that loads `EsmForProteinFolding` from HF, runs one forward pass, extracts per-residue pLDDT (handles both `(B, L, 37)` and `(B, L)` output shapes across transformers versions), generates PDB via `model.output_to_pdb`, and handles `ptm`/`pae` being `None` cleanly. Stub rejection catches uniform pLDDT, NaN pLDDT, implausible mean pLDDT, empty/degenerate PDB, and all-zero coordinates — but does NOT reject `ptm==0.0` because ESMFold v1 legitimately omits the pTM head on some checkpoints.
+- `tools-hub/tools/esmfold/modal_app.py` — Modal wrapper (`ranomics-esmfold-prod`, A100-40GB, 600 s timeout). Self-contained per the Kendrew portability pattern. Stale `smoke_results.json` cleanup lifted from the D3 Codex P1 fix. `run_tool` payload annotated `Any` so `modal run --payload` works.
+- `tools-hub/tools/esmfold/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked ubiquitin fixture) and `standalone` (1 credit, inline FASTA text). Validates the canonical 20 aa + X alphabet, 10-400 aa per sequence. **ESMFold v1 is monomer-only**, so the validator rejects (a) multi-record FASTA and (b) any `:` chain-separator in the sequence — both paths surface a pointed error suggesting ColabFold (D3) or AF2 (D2) for multimer work.
+- `tools-hub/tools/esmfold/meta.py` — citation (Lin et al., Science 2023), repo link, runtime table.
+- `tools-hub/templates/tools/esmfold_form.html` — dark-design-system form, preset picker, monomer-only FASTA textarea, About panel. Includes the `pilot->standalone` handoff remap from the MPNN/ColabFold Codex P1 fix.
+- `tools-hub/templates/tools/esmfold_results.html` — mean pLDDT + length summary, pTM tile only rendered when `ptm is not none` (ATOMIC-TOOLS.md D4 gotcha), collapsible per-residue pLDDT spark, PDB + (optional) PAE download links as data-URIs.
+- `tools-hub/gpu/modal_client.py` — `PRESET_CAPS` entries `("esmfold","smoke")=90` and `("esmfold","standalone")=360`, plus `APP_NAME_OVERRIDES["esmfold"]="ranomics-esmfold-prod"`. Legacy `("esmfold","fast")=360` retained for pre-D4 planning code paths.
+- `tools-hub/app.py` — `import tools.esmfold` added to the adapter-registration block.
+- `tools-hub/tests/test_esmfold_smoke.py` — 49 offline tests covering adapter registration, validate (including monomer-only enforcement for both multi-record FASTA + `:` separator), build_payload shape, form render (flag on -> 200, flag off -> 404), Modal payload shape, webhook roundtrip, `pilot->standalone` handoff remap, FASTA parser, ESMFold output shaping, stub rejection (uniform / NaN / implausible-mean / empty-PDB / all-zero coords), and the results template's `ptm=None` omit-the-tile behaviour.
+
+**Codex review status:** external `codex review` blocked by usage-limit rate-limit on the workspace through 2026-05-01. One self-review finding filed + fixed in commit `536e73b` (`fix(esmfold): harden pLDDT extraction across transformers versions` — covers the `atom37_atom_exists` attribute drift across transformers minor versions plus a `.eval().cuda()` ordering tweak). No other self-review findings above P3.
+
+**Open / gated on user action:**
+- Modal deployment: `modal deploy tools/esmfold/modal_app.py` has not been run. Image build time is ~20-25 min on first deploy (PyTorch CUDA wheels + transformers + openfold + 15 GB esmfold_v1 weight download + Layer-1 check); thereafter Modal caches the image layers.
+- Staging smoke validation: two consecutive green smoke runs on `ranomics-esmfold-prod` are the gate to flipping `FLAG_TOOL_ESMFOLD=on` per the atomic Definition of Done.
+
+**User action to validate D4 on Modal:**
+
+```bash
+# From tools-hub repo root
+modal deploy tools/esmfold/modal_app.py
+
+# Smoke-tier run (baked 76 aa ubiquitin, expect <=90 s warm / ~3-4 min cold
+# on first run while ESMFold-3B pages off the baked layer):
+modal run tools/esmfold/modal_app.py::run_tool --payload '{
+  "tier": "smoke",
+  "job_tier": "smoke",
+  "job_id": "smoke-'$(date +%s)'",
+  "job_spec": {"parameters": {}}
+}'
+```
+
+Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_residue` length == 76 with real non-uniform floats on a 0-100 scale, `smoke_result.mean_plddt` in [70, 95] for ubiquitin, `smoke_result.pdb_b64` decodes to >=200 bytes of PDB text with real ATOM coordinates, stub rejection does not trip. `smoke_result.ptm` may be `None` — that is valid for ESMFold v1 and the result template handles it. Log two consecutive green runs in VALIDATION-LOG.md before flipping `FLAG_TOOL_ESMFOLD=on` in the tools-hub Railway env.
+
 ---
 
 ### D5 — AF2 Initial Guess (AF2-IG, Wave 4)

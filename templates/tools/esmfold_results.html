@@ -1,0 +1,137 @@
+{# ESMFold (D4) results partial - included by job_detail.html on status=succeeded.
+
+   Output schema (from run_pipeline.py main()):
+     pdb_b64, plddt_per_residue, pae_matrix_b64, ptm, mean_plddt,
+     sequence, chain_count, total_length, runtime_seconds.
+
+   ESMFold v1 specifics vs D3 ColabFold:
+     - No iptm (monomer-only).
+     - ptm may legitimately be None if the checkpoint doesn't expose it;
+       template must not render a broken "pTM" tile when that happens
+       (ATOMIC-TOOLS.md gotcha).
+     - pae_matrix_b64 is often empty (most ESMFold runs don't return pAE).
+
+   The shared results_panel macro + candidate_table expect the composite
+   pipeline's ``candidates`` shape, so we render an inline summary panel
+   here (parallel to the D3 ColabFold results template). #}
+
+{% set output         = job.result or {} %}
+{% set plddt          = output.get('plddt_per_residue', []) %}
+{% set mean_plddt     = output.get('mean_plddt') %}
+{% set ptm            = output.get('ptm') %}
+{% set chain_count    = output.get('chain_count', 1) %}
+{% set total_length   = output.get('total_length', (plddt | length)) %}
+{% set runtime        = output.get('runtime_seconds') %}
+{% set tier           = output.get('tier') %}
+{% set pdb_b64        = output.get('pdb_b64') %}
+{% set pae_b64        = output.get('pae_matrix_b64') %}
+{% set clone_url      = url_for('tool_form', tool='esmfold', clone_from=job.id) %}
+
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Fold result</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    {% if plddt %}
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:0.75rem; margin-bottom:1.25rem;">
+        <div>
+          <div style="color:var(--text-tertiary); font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;">mean pLDDT</div>
+          <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem; margin-top:0.25rem;">
+            {% if mean_plddt is not none %}{{ '%.2f' % mean_plddt }}{% else %}-{% endif %}
+          </div>
+        </div>
+        {# ptm may legitimately be None for ESMFold v1 checkpoints without the
+           PAE head - skip the tile entirely rather than render "-" or crash. #}
+        {% if ptm is not none %}
+          <div>
+            <div style="color:var(--text-tertiary); font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;">pTM</div>
+            <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem; margin-top:0.25rem;">
+              {{ '%.3f' % ptm }}
+            </div>
+          </div>
+        {% endif %}
+        <div>
+          <div style="color:var(--text-tertiary); font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;">length</div>
+          <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem; margin-top:0.25rem;">
+            {{ total_length }} aa
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.75rem;">
+        Model: <code>facebook/esmfold_v1</code> &middot;
+        MSA: <code>none</code> &middot;
+        Chains: <code>{{ chain_count }}</code> (monomer-only)
+      </div>
+
+      {# Per-residue pLDDT spark: inline CSS bars. Keeps the template
+         dependency-free (no JS chart library) while giving the user a
+         quick confidence readout. #}
+      {% if plddt | length <= 400 %}
+        <details style="margin: 0.75rem 0 1rem;">
+          <summary style="cursor:pointer; color:var(--text-secondary); font-size:0.85rem;">
+            Per-residue pLDDT ({{ plddt | length }} residues)
+          </summary>
+          <div style="display:flex; flex-wrap:wrap; gap:1px; margin-top:0.6rem; max-width:640px;">
+            {% for value in plddt %}
+              {% set pct = (value if value <= 1 else value / 100) %}
+              {% set bar_color = ('#60a5fa' if pct >= 0.9 else '#34d399' if pct >= 0.7 else '#fbbf24' if pct >= 0.5 else '#f87171') %}
+              <span title="residue {{ loop.index }}: pLDDT={{ '%.1f' % value }}"
+                    style="display:inline-block; width:3px; height:28px; background:{{ bar_color }};"></span>
+            {% endfor %}
+          </div>
+          <div style="margin-top:0.4rem; font-size:0.72rem; color:var(--text-tertiary);">
+            blue &gt; 90 &middot; green &gt; 70 &middot; amber &gt; 50 &middot; red &le; 50
+          </div>
+        </details>
+      {% endif %}
+
+      <div style="margin-top:1rem;">
+        <a href="{{ clone_url }}" class="btn-secondary">Run again with different sequence</a>
+        {# pdb_b64 / pae_matrix_b64 come straight from run_pipeline.py;
+           render as data-URI downloads so the user can pull the
+           structure without us adding a server-side export route.
+           The PDB is text (base64-decoded PDB ATOM records); the PAE
+           is a compressed npz. Per ATOMIC-TOOLS.md D4 gotcha,
+           pae_matrix_b64 is often empty for ESMFold - only render the
+           PAE link when it actually has content. #}
+        {% if pdb_b64 %}
+          <a href="data:chemical/x-pdb;base64,{{ pdb_b64 }}"
+             download="esmfold_{{ job.id }}.pdb"
+             class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
+        {% endif %}
+        {% if pae_b64 %}
+          <a href="data:application/octet-stream;base64,{{ pae_b64 }}"
+             download="esmfold_{{ job.id }}_pae.npz"
+             class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
+        {% endif %}
+      </div>
+
+      {% if send_target_tools %}
+        <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
+          <span style="color: var(--text-secondary);">Reuse this structure in:</span>
+          {% for ho in send_target_tools %}
+            <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      <p class="subtitle">
+        No pLDDT returned. If this persists, check the input FASTA is
+        a single-chain monomer between 10 and 400 aa with only
+        canonical residues.
+      </p>
+
+      <div style="margin-top:1rem;">
+        <a href="{{ clone_url }}" class="btn-secondary">Run again</a>
+      </div>
+    {% endif %}
+
+    {% if runtime %}
+      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
+        GPU time: {{ runtime }} seconds.
+      </p>
+    {% endif %}
+  </div>
+</div>

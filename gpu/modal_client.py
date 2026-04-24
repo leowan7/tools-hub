@@ -90,7 +90,13 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("colabfold", "smoke"):        120,
     ("colabfold", "standalone"):   420,
     ("colabfold", "fast"):         720,  # legacy alias — pre-D3 planning
-    ("esmfold", "fast"):           360,
+    # D4 ESMFold: slug "esmfold" → ``ranomics-esmfold-prod``. Smoke
+    # folds the baked 76 aa ubiquitin fixture on ESMFold-3B in ~30 s
+    # once warm (~60-90 s cold including model load). Standalone caps
+    # at 360 s for monomers up to 400 aa.
+    ("esmfold", "smoke"):          90,
+    ("esmfold", "standalone"):     360,
+    ("esmfold", "fast"):           360,   # legacy alias — pre-D4 planning
     ("af2_ig", "standard"):        720,
     # Composite pipelines — smoke tier (inline return, small preset).
     ("bindcraft", "smoke"):         600,    # ~5-10 min on A100-80GB
@@ -133,6 +139,7 @@ APP_NAME_OVERRIDES: Dict[str, str] = {
     "mpnn":      "ranomics-mpnn-prod",
     "af2":       "ranomics-af2-prod",
     "colabfold": "ranomics-colabfold-prod",
+    "esmfold":   "ranomics-esmfold-prod",
 }
 
 

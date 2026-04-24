@@ -81,6 +81,7 @@ import tools.af2         # noqa: F401 — import to register adapter (D2 atomic)
 import tools.bindcraft   # noqa: F401 — import to register adapter
 import tools.boltzgen    # noqa: F401 — import to register adapter
 import tools.colabfold   # noqa: F401 — import to register adapter (D3 atomic)
+import tools.esmfold     # noqa: F401 — import to register adapter (D4 atomic)
 import tools.mpnn        # noqa: F401 — import to register adapter (D1 atomic)
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
