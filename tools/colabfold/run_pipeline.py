@@ -598,13 +598,22 @@ def reject_stub(parsed: dict[str, Any]) -> None:
         )
 
     # If iptm is reported (multimer) and is exactly 0.0, that's the
-    # multimer-head bypass stub.
+    # multimer-head bypass stub. ptm==0.0 is the monomer equivalent —
+    # Codex P2 found the original guard only checked iptm, so monomer
+    # stubs with ptm==0.0 silently succeeded. Both paths now fail.
     iptm = parsed.get("iptm")
     if iptm is not None and iptm == 0.0:
         _fail(
             "parser",
             "stub",
             "iptm is exactly 0.0 — multimer-head bypass stub signature",
+        )
+    ptm = parsed.get("ptm")
+    if ptm is not None and ptm == 0.0:
+        _fail(
+            "parser",
+            "stub",
+            "ptm is exactly 0.0 — AF2 head bypass stub signature",
         )
 
 

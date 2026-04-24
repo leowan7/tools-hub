@@ -644,6 +644,21 @@ class TestRunPipelineParser:
         with pytest.raises(SystemExit):
             rp.reject_stub(parsed)
 
+    def test_stub_rejection_on_zero_ptm_monomer(self):
+        """Silent-stub: ptm exactly 0.0 on a monomer (no iptm reported) —
+        Codex P2: original guard only checked iptm so monomer stubs
+        silently succeeded."""
+        from tools.colabfold import run_pipeline as rp
+
+        parsed = {
+            "plddt_per_residue": [85.0, 82.0, 90.0, 88.0, 91.0],
+            "mean_plddt": 87.2,
+            "iptm": None,
+            "ptm": 0.0,
+        }
+        with pytest.raises(SystemExit):
+            rp.reject_stub(parsed)
+
     def test_stub_rejection_on_implausible_mean_plddt(self):
         """Silent-stub: mean pLDDT outside [0, 100] means units scrambled."""
         from tools.colabfold import run_pipeline as rp
