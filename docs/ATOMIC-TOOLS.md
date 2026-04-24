@@ -111,7 +111,9 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 #### D1 Status (as of 2026-04-24)
 
-**Code-complete on branch `feat/mpnn-standalone`.** Awaiting GPU validation.
+**Validated on `ranomics-mpnn-prod` with 2× consecutive smoke PASS (commit `cdc9e3a`).** Gated only on the operator flipping `FLAG_TOOL_MPNN=on` in the tools-hub Railway env. See [VALIDATION-LOG.md](VALIDATION-LOG.md) for the two PASS rows (`smoke-1777047396` cold 25.4 s, `smoke-1777047431` warm 5.3 s).
+
+Post-validation Codex-review fixes also landed (commits `80270d9` `54f0cc7` `aa6c4f5` `072f679` `cdc9e3a`): `numpy<2` pin + Layer-1 `torch.from_numpy(numpy.zeros(1))` bridge check; handoff `pilot` preset remap so cross-tool handoffs don't silently run the baked 1HEW fixture; `/jobs/<id>/export.fasta` serializes the MPNN `sequences` schema; stub-rejection strengthened with near-clone Hamming and tight-cluster guards; `run_tool` signature annotated `Any` so `modal run --payload` works.
 
 Shipped this commit:
 - `tools-hub/tools/mpnn/Dockerfile.modal` — image derived from `docker/rfdiffusion/Dockerfile.modal` with everything but PyTorch + MPNN + weights stripped. Bakes `static/example/1HEW.pdb` as the smoke fixture. Layer-1 build-time validation in the final `RUN` block fails `modal deploy` if the MPNN repo, weights, or helper scripts are missing.
@@ -135,7 +137,7 @@ Shipped this commit:
 - [x] `run_pipeline.py` — `preflight()` + `main()` + stub rejection.
 - [x] `backend/pipelines/mpnn.py` — **NOT shipped**; D1 is self-contained under `tools-hub/tools/mpnn/` rather than mirroring the Kendrew `docker/ + infrastructure/ + backend/pipelines/` three-directory split. The spec in ATOMIC-TOOLS.md "Common shape" was written for tools that live in the Kendrew repo; D1 lives in tools-hub because it is its own Modal app, not a Kendrew composite. The fields `backend/pipelines/*.py` exposes (`smoke_preset`, `standalone_preset`, `gpu_sku`, `execution_timeout_ms`) are instead expressed in `tools/mpnn/__init__.py` (presets) + `tools/mpnn/modal_app.py` (gpu_sku=A10G, timeout=600 s).
 - [x] `infrastructure/modal/<name>_app.py` → `tools-hub/tools/mpnn/modal_app.py` (see deviation above). Registers `ranomics-mpnn-prod` with GPU A10G.
-- [ ] Two consecutive staging smoke passes — **user action**.
+- [x] Two consecutive staging smoke passes — `smoke-1777047396` (cold, 25.4 s) + `smoke-1777047431` (warm, 5.3 s) on commit `cdc9e3a`. Both PASS. See VALIDATION-LOG.md.
 - [x] `tools-hub/tools/mpnn/` form + results template behind `FLAG_TOOL_MPNN=off`.
 - [x] Pricing row in the "Credit rates" table of PRODUCT-PLAN.md (1 credit).
 - [ ] Marketing MDX page drafted — **deferred to stream F** per the 1-day scope.
