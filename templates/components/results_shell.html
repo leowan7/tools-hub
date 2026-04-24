@@ -1,0 +1,47 @@
+{# Shared results-panel shell. See tools/bindcraft_results.html for a
+   real-world caller. The macro accepts candidates, columns, tool_slug,
+   job_id, clone_url, tier, gpu_seconds, and an optional
+   send_target_tools list (Phase 4 cross-tool handoff buttons). The
+   caller block renders only when candidates is empty. #}
+{% from "components/candidate_table.html" import candidate_table %}
+
+{% macro results_panel(candidates, columns, tool_slug, job_id,
+                       clone_url="", tier="", gpu_seconds=None,
+                       send_target_tools=None) %}
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Candidates ({{ candidates | length }})</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    {% if candidates %}
+      {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url) }}
+      {% if send_target_tools %}
+        <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
+          <span style="color: var(--text-secondary);">Reuse this target in:</span>
+          {% for ho in send_target_tools %}
+            <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      {% set empty = caller() %}
+      {% if empty and empty.strip() %}
+        {{ empty|safe }}
+      {% else %}
+        <p class="subtitle">No candidates returned. Try a longer preset or adjust parameters.</p>
+      {% endif %}
+      {% if clone_url %}
+        <div style="margin-top:1rem;">
+          <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+        </div>
+      {% endif %}
+    {% endif %}
+    {% if gpu_seconds %}
+      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
+        GPU time: {{ gpu_seconds }} seconds.
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% endmacro %}

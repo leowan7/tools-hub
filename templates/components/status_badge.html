@@ -1,0 +1,29 @@
+{#
+  Shared status badge macro.
+
+  Usage:
+    {% from "components/status_badge.html" import status_badge %}
+    {{ status_badge(job.status) }}
+    {{ status_badge(job.status, id="status-badge") }}
+
+  Maps tool_jobs.status values to tinted pills so a scientist can scan
+  the list / detail page without reading the word. Matches the existing
+  .panel-badge look for unrecognised statuses (forward-compat).
+#}
+{% macro status_badge(status, id="") -%}
+  {% set s = (status or '')|lower %}
+  {% set tint = {
+    'pending':   ('rgba(148, 163, 184, 0.14)', '#cbd5e1'),
+    'running':   ('rgba(59, 130, 246, 0.14)',  '#60a5fa'),
+    'succeeded': ('rgba(74, 222, 128, 0.14)',  '#4ade80'),
+    'failed':    ('rgba(248, 113, 113, 0.14)', '#f87171'),
+    'timeout':   ('rgba(251, 191, 36, 0.14)',  '#fbbf24'),
+    'cancelled': ('rgba(148, 163, 184, 0.14)', '#94a3b8'),
+  }.get(s) %}
+  {% if tint %}
+    <span class="panel-badge"{% if id %} id="{{ id }}"{% endif %}
+      style="background: {{ tint[0] }}; color: {{ tint[1] }};">{{ s }}</span>
+  {% else %}
+    <span class="panel-badge"{% if id %} id="{{ id }}"{% endif %}>{{ status }}</span>
+  {% endif %}
+{%- endmacro %}

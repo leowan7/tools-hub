@@ -267,6 +267,33 @@ class ModalClient:
         # smoke/mini_pilot tiers) + "exit_code" + "provider_job_id".
         return _interpret_kendrew_return(raw_result)
 
+    # -- cancel -----------------------------------------------------------
+
+    def cancel(self, function_call_id: str) -> Dict[str, Any]:
+        """Best-effort cancel of a running FunctionCall.
+
+        Returns a dict with ``ok`` (bool) and ``error`` (str | None).
+        Offline stubs and missing-modal environments return ``ok=True``
+        so tests and local dev do not block the tools-hub cancel flow;
+        the authoritative state lives in the tool_jobs row regardless.
+        """
+        if function_call_id.startswith("fc-stub-"):
+            return {"ok": True, "error": None}
+
+        modal = _import_modal()
+        if modal is None:
+            return {"ok": True, "error": "modal package not available"}
+
+        try:
+            fc = modal.FunctionCall.from_id(function_call_id)
+            fc.cancel()
+        except Exception as exc:  # pragma: no cover — exercised live only
+            logger.warning(
+                "Modal cancel failed for fc=%s", function_call_id, exc_info=True
+            )
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "error": None}
+
     # -- internals --------------------------------------------------------
 
     def _build_payload(

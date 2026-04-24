@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/status_badge.html" import status_badge %}
 
 {% block title %}My jobs — Ranomics Tools{% endblock %}
 
@@ -44,13 +45,34 @@
                 </td>
                 <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
                 <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
-                <td style="padding: 0.55rem 0.4rem;"><span class="panel-badge">{{ job.status }}</span></td>
+                <td style="padding: 0.55rem 0.4rem;">{{ status_badge(job.status) }}</td>
                 <td style="padding: 0.55rem 0.4rem;">{{ job.credits_cost }}</td>
                 <td style="padding: 0.55rem 0.4rem; color: var(--text-secondary);">{{ job.created_at[:19] if job.created_at else '—' }}</td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
+
+        {% if total_pages and total_pages > 1 %}
+          <nav class="pager" aria-label="Jobs pagination"
+               style="margin-top: 1rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; color: var(--text-secondary); font-size: 0.88rem;">
+            <div>
+              Page {{ page }} of {{ total_pages }} · {{ total }} job{{ 's' if total != 1 else '' }} total
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              {% if page > 1 %}
+                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page-1) }}">Previous</a>
+              {% else %}
+                <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Previous</span>
+              {% endif %}
+              {% if page < total_pages %}
+                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page+1) }}">Next</a>
+              {% else %}
+                <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Next</span>
+              {% endif %}
+            </div>
+          </nav>
+        {% endif %}
       {% else %}
         <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 2.5rem 1rem;">
           <svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="margin-bottom: 1.25rem;">

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/status_badge.html" import status_badge %}
 
 {% block title %}Job {{ job.id[:8] }} — Ranomics Tools{% endblock %}
 
@@ -62,7 +63,7 @@
   <div class="panel" id="job-status-panel" data-job-id="{{ job.id }}">
     <div class="panel-header">
       <span class="panel-title">Status</span>
-      <span class="panel-badge" id="status-badge">{{ job.status }}</span>
+      {{ status_badge(job.status, id="status-badge") }}
     </div>
     <div class="panel-body">
       <div id="status-progress" style="margin-bottom: 1rem;">
@@ -118,6 +119,10 @@
           <p class="subtitle" style="color: var(--warning, #fbbf24);">
             Job timed out before producing a result.
           </p>
+        {% elif job.status == 'cancelled' %}
+          <p class="subtitle" style="color: var(--text-secondary);">
+            Cancelled. {{ job.credits_cost }} credit{{ 's' if job.credits_cost != 1 else '' }} refunded to your ledger.
+          </p>
         {% endif %}
       </div>
 
@@ -144,11 +149,51 @@
     </div>
   </div>
 
-  <div style="margin-top: 1.5rem;">
+  <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
     <a href="{{ url_for('jobs_list') }}" class="btn-secondary">All jobs</a>
-    <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary" style="margin-left: 0.5rem;">Run again</a>
-    <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary" style="margin-left: 0.5rem;">Clone to new run</a>
+    <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
+    <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
+    {% if job.status in ('pending', 'running') %}
+      <button type="button" id="cancel-job-btn" class="btn-secondary"
+              style="color: #f87171; border-color: rgba(248,113,113,0.35);"
+              data-job-id="{{ job.id }}">Cancel run</button>
+      <span id="cancel-status" style="color: var(--text-secondary); font-size: 0.85rem;"></span>
+    {% endif %}
   </div>
+
+  {% if job.status in ('pending', 'running') %}
+    <script>
+      (function () {
+        var btn = document.getElementById('cancel-job-btn');
+        if (!btn) return;
+        var statusNote = document.getElementById('cancel-status');
+        btn.addEventListener('click', function () {
+          if (!window.confirm('Cancel this run? Credits will be refunded in full.')) return;
+          btn.disabled = true;
+          statusNote.textContent = 'Cancelling...';
+          fetch('/jobs/' + btn.dataset.jobId + '/cancel', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+          })
+            .then(function (r) { return r.json().then(function (b) { return [r.ok, b]; }); })
+            .then(function (pair) {
+              if (pair[0]) {
+                statusNote.textContent = 'Cancelled. Refunded ' + pair[1].credits_refunded + ' credit(s). Reloading...';
+                setTimeout(function () { window.location.reload(); }, 800);
+              } else {
+                statusNote.textContent = 'Could not cancel: ' + (pair[1].error || 'unknown');
+                btn.disabled = false;
+              }
+            })
+            .catch(function () {
+              statusNote.textContent = 'Network error. Retry in a moment.';
+              btn.disabled = false;
+            });
+        });
+      })();
+    </script>
+  {% endif %}
 
   {% if job.status in ('pending', 'running') %}
     <script>
@@ -178,7 +223,7 @@
             .then(function (r) { return r.json(); })
             .then(function (data) {
               renderProgress(data);
-              if (data.status === 'succeeded' || data.status === 'failed' || data.status === 'timeout') {
+              if (data.status === 'succeeded' || data.status === 'failed' || data.status === 'timeout' || data.status === 'cancelled') {
                 stopped = true;
                 window.location.reload();
                 return;

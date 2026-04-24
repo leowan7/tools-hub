@@ -32,7 +32,11 @@ logger = logging.getLogger(__name__)
 _TABLE = "tool_jobs"
 
 VALID_STATUSES = frozenset(
-    {"pending", "running", "succeeded", "failed", "timeout"}
+    {"pending", "running", "succeeded", "failed", "timeout", "cancelled"}
+)
+
+TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "timeout", "cancelled"}
 )
 
 
@@ -208,6 +212,78 @@ def mark_timeout(job_id: str) -> bool:
     )
 
 
+def mark_cancelled(job_id: str, *, reason: str = "user_cancelled") -> bool:
+    return _update(
+        job_id,
+        {
+            "status": "cancelled",
+            "error": {"bucket": "cancelled", "detail": reason},
+            "completed_at": _now_iso(),
+        },
+    )
+
+
+def cancel_job(
+    job_id: str,
+    *,
+    user_id: str,
+    modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
+) -> tuple[Optional["ToolJob"], Optional[str]]:
+    """Cancel a pending/running job. Owner-scoped, full credit refund.
+
+    Flow:
+      1. Owner-scope fetch; reject if missing or already terminal.
+      2. Best-effort Modal FunctionCall cancel (non-fatal if Modal flakes —
+         the tool_jobs row is the authoritative state and a stray Modal
+         run terminates harmlessly once the tools-hub side is terminal).
+      3. Mark the job 'cancelled' with an error bucket of the same name.
+      4. Refund the full ``credits_cost`` to the user's ledger.
+
+    Returns ``(job, None)`` on success, ``(None, error_message)`` on
+    refusal. Safe to call repeatedly — once the row is terminal, the
+    second call returns the row unchanged with a descriptive error.
+    """
+    job = get_job(job_id, user_id=user_id)
+    if job is None:
+        return None, "not_found"
+    if job.status in TERMINAL_STATUSES:
+        return None, f"already_{job.status}"
+
+    if job.modal_function_call_id:
+        try:
+            modal_client.cancel(job.modal_function_call_id)
+        except Exception:
+            logger.warning(
+                "Modal cancel raised for job %s; proceeding with local cancel.",
+                job_id,
+                exc_info=True,
+            )
+
+    mark_cancelled(job_id)
+
+    if job.credits_cost > 0:
+        try:
+            from shared.credits import record_refund  # noqa: PLC0415
+            record_refund(
+                job.user_id,
+                job.credits_cost,
+                tool=job.tool,
+                reason=f"{job.tool} {job.preset} cancelled by user",
+                job_id=job.id,
+                metadata={"cancelled_from_status": job.status},
+            )
+        except Exception:
+            logger.warning(
+                "Cancel refund failed for job %s (credits=%d)",
+                job.id,
+                job.credits_cost,
+                exc_info=True,
+            )
+
+    fresh = get_job(job_id, user_id=user_id)
+    return fresh, None
+
+
 # ---------------------------------------------------------------------------
 # Terminal-state orchestration: prorated refund + email notification
 # ---------------------------------------------------------------------------
@@ -235,7 +311,7 @@ def complete_job(
     job = get_job(job_id)
     if job is None:
         return None
-    if job.status in {"succeeded", "failed", "timeout"}:
+    if job.status in TERMINAL_STATUSES:
         # Already terminal — refund + email already happened (or were
         # explicitly skipped). Don't double up.
         return job
@@ -414,6 +490,50 @@ def list_jobs_for_user(user_id: str, *, limit: int = 20) -> list[ToolJob]:
     except Exception:
         logger.warning("Failed to list jobs for user %s", user_id, exc_info=True)
         return []
+
+
+def list_jobs_paginated(
+    user_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 25,
+) -> tuple[list[ToolJob], int]:
+    """Paginated owner-scoped job list. Returns (rows, total_count).
+
+    Uses PostgREST ``range()`` for offset/limit and ``count="exact"`` on
+    the select so the template can render page controls without a
+    separate count round-trip.
+    """
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    client = get_service_client()
+    if client is None:
+        return [], 0
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+    try:
+        response = (
+            client.table(_TABLE)
+            .select("*", count="exact")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .range(start, end)
+            .execute()
+        )
+        rows = [
+            ToolJob.from_row(r)
+            for r in (getattr(response, "data", None) or [])
+        ]
+        total = int(getattr(response, "count", None) or 0)
+        return rows, total
+    except Exception:
+        logger.warning(
+            "Failed to paginate jobs for user %s (page=%d)",
+            user_id,
+            page,
+            exc_info=True,
+        )
+        return [], 0
 
 
 def _update(job_id: str, payload: dict) -> bool:

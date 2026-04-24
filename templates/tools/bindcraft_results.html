@@ -1,33 +1,23 @@
 {# BindCraft results partial — included by job_detail.html on status=succeeded #}
-{% from "components/candidate_table.html" import candidate_table %}
+{% from "components/results_shell.html" import results_panel %}
 
 {% set output     = job.result or {} %}
 {% set candidates = output.get('candidates', []) %}
 {% set columns    = ['ipTM', 'pLDDT', 'RMSD', 'shape_complementarity', 'SAP'] %}
 {% set clone_url  = url_for('tool_form', tool='bindcraft', clone_from=job.id) %}
 
-<div class="panel" style="margin-top:1rem;">
-  <div class="panel-header">
-    <span class="panel-title">Candidates ({{ candidates | length }})</span>
-    {% if output.get('tier') %}<span class="panel-badge">{{ output.tier }}</span>{% endif %}
-  </div>
-  <div class="panel-body">
-    {% if candidates %}
-      {{ candidate_table(candidates, columns, job.id, 'bindcraft', clone_url) }}
-    {% else %}
-      <p class="subtitle">
-        BindCraft's filters rejected all designs in this run. This is a known
-        outcome for difficult targets — try expanding the binder_length range
-        or adjusting hotspots.
-      </p>
-      <div style="margin-top:1rem;">
-        <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
-      </div>
-    {% endif %}
-    {% if output.get('gpu_seconds') %}
-      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
-        GPU time: {{ output.gpu_seconds }} seconds.
-      </p>
-    {% endif %}
-  </div>
-</div>
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='bindcraft',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=output.get('tier'),
+    gpu_seconds=output.get('gpu_seconds'),
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    BindCraft's filters rejected all designs in this run. This is a known
+    outcome for difficult targets — try expanding the binder_length range
+    or adjusting hotspots.
+  </p>
+{% endcall %}

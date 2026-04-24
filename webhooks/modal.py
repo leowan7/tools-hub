@@ -104,8 +104,9 @@ def _handle_result(job_id: str, job_token: str) -> Any:
         )
         return Response("forbidden", status=403)
 
-    if job.status in ("succeeded", "failed", "timeout"):
-        # Terminal state already reached — replay is a no-op.
+    if job.status in ("succeeded", "failed", "timeout", "cancelled"):
+        # Terminal state already reached — replay (or a late pipeline
+        # POST after a user cancel) is a no-op.
         logger.info(
             "Modal webhook: ignoring replay on terminal job %s (current=%s)",
             job_id,

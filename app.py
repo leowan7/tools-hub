@@ -56,10 +56,12 @@ from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
 from shared.handoffs import get_handoff, mark_consumed
 from shared.jobs import (
+    cancel_job,
     complete_job,
     create_job,
     get_job,
     list_jobs_for_user,
+    list_jobs_paginated,
     mark_failed,
     mark_running,
     set_modal_call,
@@ -672,10 +674,16 @@ def create_app() -> Flask:
     def tool_form(tool: str):
         """Render a GPU tool's submission form.
 
-        Wave 3 pre-fill sources (query params, owner-scoped):
-          * ``clone_from=<job_id>`` — reuse all inputs of an earlier job
+        Pre-fill sources (query params, owner-scoped):
+          * ``clone_from=<job_id>`` — reuse all inputs of an earlier job.
+            Same-tool only (exact parameter fidelity).
+          * ``from_job=<job_id>`` — Phase 4 cross-tool handoff. Copies
+            only the target fields (target PDB reuse token, target_chain,
+            hotspot_residues) and defaults preset='pilot'. Works across
+            tools so a user can refine RFantibody output with BindCraft,
+            validate BoltzGen output with PXDesign, etc.
           * ``handoff=<handoff_id>`` — target PDB + chain + hotspots from
-            Epitope Scout via ``public.scout_handoffs``
+            Epitope Scout via ``public.scout_handoffs``.
         """
         adapter, err = _require_tool(tool)
         if err:
@@ -707,6 +715,36 @@ def create_app() -> Flask:
                         "label": f"PDB from job {prior.id[:8]} ({stored_name})",
                         "filename": stored_name,
                         "token": f"job:{prior.id}",
+                    }
+
+        from_job = request.args.get("from_job", "").strip()
+        if from_job and not pre_fill:
+            # Cross-tool handoff: copy only target fields, default to pilot.
+            # Unlike clone_from this works across tools — the binder /
+            # parameter shape differs, but target_pdb + target_chain +
+            # hotspots are shared across BindCraft / RFantibody /
+            # BoltzGen / PXDesign.
+            src = get_job(from_job, user_id=ctx.user_id)
+            if src is not None:
+                src_inputs = src.inputs or {}
+                for key in ("target_chain", "hotspot_residues"):
+                    val = src_inputs.get(key)
+                    if val is None:
+                        continue
+                    if isinstance(val, list):
+                        val = ",".join(str(x) for x in val)
+                    pre_fill[key] = val
+                pre_fill["preset"] = "pilot"
+                stored_path = src_inputs.get("_pdb_storage_path")
+                stored_name = src_inputs.get("_pdb_filename")
+                if stored_path and stored_name:
+                    pdb_source = {
+                        "label": (
+                            f"Target PDB from {src.tool} job {src.id[:8]} "
+                            f"({stored_name})"
+                        ),
+                        "filename": stored_name,
+                        "token": f"job:{src.id}",
                     }
 
         handoff_id = request.args.get("handoff", "").strip()
@@ -934,8 +972,25 @@ def create_app() -> Flask:
         ctx = load_user_context()
         if ctx is None:
             return redirect(url_for("login"))
-        jobs = list_jobs_for_user(ctx.user_id, limit=50)
-        return render_template("jobs_list.html", jobs=jobs)
+        try:
+            page = int(request.args.get("page", "1"))
+        except ValueError:
+            page = 1
+        page_size = 25
+        jobs, total = list_jobs_paginated(
+            ctx.user_id, page=page, page_size=page_size
+        )
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page > total_pages:
+            return redirect(url_for("jobs_list", page=total_pages))
+        return render_template(
+            "jobs_list.html",
+            jobs=jobs,
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=total_pages,
+        )
 
     @flask_app.route("/jobs/compare", methods=["GET"])
     @login_required
@@ -975,6 +1030,29 @@ def create_app() -> Flask:
             return render_template("coming_soon.html"), 404
         adapter = tool_base.get(job.tool)
         preset_obj = adapter.preset_for(job.preset) if adapter else None
+
+        # Phase 4 cross-tool handoff: only offer the buttons when the
+        # source job staged a reusable PDB (has _pdb_storage_path) and
+        # finished successfully. Skip the current tool — "send to self"
+        # is what Clone is for.
+        send_target_tools: list[dict] = []
+        if (
+            job.status == "succeeded"
+            and (job.inputs or {}).get("_pdb_storage_path")
+        ):
+            for other in tool_base.all_adapters():
+                if other.slug == job.tool:
+                    continue
+                if not tool_enabled(other.slug):
+                    continue
+                send_target_tools.append({
+                    "slug": other.slug,
+                    "label": other.label,
+                    "url": url_for(
+                        "tool_form", tool=other.slug, from_job=job.id
+                    ),
+                })
+
         return render_template(
             "job_detail.html",
             job=job,
@@ -986,6 +1064,7 @@ def create_app() -> Flask:
             ),
             is_long_running=bool(preset_obj and preset_obj.long_running),
             user_email=session.get("user_email") or "",
+            send_target_tools=send_target_tools,
         )
 
     @flask_app.route("/jobs/<job_id>/status.json", methods=["GET"])
@@ -1031,6 +1110,33 @@ def create_app() -> Flask:
                 "preset": job.preset,
                 "progress": (job.inputs or {}).get("_progress") or {},
                 "gpu_seconds_used": job.gpu_seconds_used,
+            }
+        )
+
+    @flask_app.route("/jobs/<job_id>/cancel", methods=["POST"])
+    @login_required
+    @idempotent()
+    def job_cancel(job_id: str):
+        """User-initiated cancel of a pending/running job.
+
+        Best-effort Modal cancel, full credit refund, row transitions
+        to status='cancelled'. Safe to call repeatedly — terminal jobs
+        return an error_code without mutating state.
+        """
+        ctx = load_user_context()
+        if ctx is None:
+            return jsonify({"error": "unauthenticated"}), 401
+        job, err = cancel_job(
+            job_id, user_id=ctx.user_id, modal_client=modal_client
+        )
+        if job is None:
+            code = 404 if err == "not_found" else 409
+            return jsonify({"error": err or "cancel_failed"}), code
+        return jsonify(
+            {
+                "id": job.id,
+                "status": job.status,
+                "credits_refunded": job.credits_cost,
             }
         )
 
