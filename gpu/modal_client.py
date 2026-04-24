@@ -69,7 +69,11 @@ CONTRACT_VERSION = "2.0.0"
 
 PRESET_CAPS: Dict[tuple[str, str], int] = {
     # Atomic primitives.
-    ("proteinmpnn", "standalone"): 360,
+    # D1 MPNN: slug "mpnn" matches the tools-hub adapter; the Modal app
+    # lives at ``ranomics-mpnn-prod`` (see ``APP_NAME_OVERRIDES`` below).
+    ("mpnn", "smoke"):             120,
+    ("mpnn", "standalone"):        360,
+    ("proteinmpnn", "standalone"): 360,  # legacy alias — pre-D1 planning
     ("colabfold", "fast"):         720,
     ("af2", "standard"):           720,
     ("esmfold", "fast"):           360,
@@ -100,6 +104,25 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
 def preset_gpu_seconds(tool: str, preset: str) -> int:
     """Return the GPU-seconds cap for a (tool, preset) pair, or 0 if unknown."""
     return PRESET_CAPS.get((tool, preset), 0)
+
+
+# ---------------------------------------------------------------------------
+# Modal app-name overrides
+# ---------------------------------------------------------------------------
+# Default is ``kendrew-<tool>-prod`` (composite pipelines — BindCraft,
+# BoltzGen, RFantibody, PXDesign) because those apps live in the Kendrew
+# Modal project. Atomic primitives (D1..D9 per ATOMIC-TOOLS.md) deploy
+# under the ``ranomics-<tool>-prod`` namespace because they are
+# standalone. Keep this table tiny — one row per atomic tool.
+
+APP_NAME_OVERRIDES: Dict[str, str] = {
+    "mpnn": "ranomics-mpnn-prod",
+}
+
+
+def modal_app_name(tool: str) -> str:
+    """Return the Modal app name to resolve for a given tool slug."""
+    return APP_NAME_OVERRIDES.get(tool, f"kendrew-{tool}-prod")
 
 
 @dataclass(frozen=True)
@@ -189,7 +212,7 @@ class ModalClient:
 
         try:
             fn = modal.Function.from_name(
-                f"kendrew-{tool}-prod",
+                modal_app_name(tool),
                 "run_tool",
                 environment_name=self.environment,
             )

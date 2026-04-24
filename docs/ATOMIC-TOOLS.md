@@ -109,6 +109,55 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 **Why this is the pattern setter:** cheapest to build (1 day), smallest image, smallest GPU, highest demand per the competitor research. D2..Dn agents clone this shape and swap in their primitive.
 
+#### D1 Status (as of 2026-04-24)
+
+**Code-complete on branch `feat/mpnn-standalone`.** Awaiting GPU validation.
+
+Shipped this commit:
+- `tools-hub/tools/mpnn/Dockerfile.modal` — image derived from `docker/rfdiffusion/Dockerfile.modal` with everything but PyTorch + MPNN + weights stripped. Bakes `static/example/1HEW.pdb` as the smoke fixture. Layer-1 build-time validation in the final `RUN` block fails `modal deploy` if the MPNN repo, weights, or helper scripts are missing.
+- `tools-hub/tools/mpnn/run_pipeline.py` — `preflight()` (GPU + MPNN + weights + /tmp writable) + `main()` that invokes `protein_mpnn_run.py`, parses the FASTA output into the atomic-tool sequence schema, and writes `/tmp/smoke_results.json`. Stub rejection rejects all-identical sequences and the MPNN equivalent of the PXDesign silent-stub (identical score+recovery across >= 3 samples).
+- `tools-hub/tools/mpnn/modal_app.py` — Modal wrapper (`ranomics-mpnn-prod`, `A10G`, 10-min timeout). Self-contained per the Kendrew portability pattern.
+- `tools-hub/tools/mpnn/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked 1HEW target) and `standalone` (1 credit, caller-uploaded PDB). Per-preset `requires_pdb` flag.
+- `tools-hub/tools/mpnn/meta.py` — citation, repo link, runtime table.
+- `tools-hub/templates/tools/mpnn_form.html` — dark-design-system form, preset picker, chain/num_seq/temp fields, About panel. Matches the RFantibody two-panel layout.
+- `tools-hub/templates/tools/mpnn_results.html` — sequence table (no composite `candidates` shape because MPNN returns sequences directly). FASTA export link reuses `/jobs/<id>/export.fasta`.
+- `tools-hub/gpu/modal_client.py` — `PRESET_CAPS` entries for `("mpnn","smoke")=120` and `("mpnn","standalone")=360`, plus a new `APP_NAME_OVERRIDES` map and `modal_app_name(tool)` helper that routes `"mpnn"` → `ranomics-mpnn-prod` while leaving every composite tool pointing at `kendrew-<tool>-prod`.
+- `tools-hub/app.py` — `import tools.mpnn` added to the adapter-registration block.
+- `tools-hub/tests/test_mpnn_smoke.py` — 32 offline tests covering adapter registration, validate/build_payload shape, form render (flag on → 200, flag off → 404), Modal payload shape (via offline-stub path), webhook roundtrip (accept COMPLETED + reject unknown-job / bad-token / replay), FASTA parser, stub rejection.
+
+**Open / gated on user action:**
+- Modal deployment: `modal deploy tools/mpnn/modal_app.py` has not been run. Image build time is ~8-12 min on first deploy (MPNN repo clone + weights download + PyTorch install); thereafter Modal caches.
+- Staging smoke validation: two consecutive green smoke runs on `ranomics-mpnn-prod` are the gate to flipping `FLAG_TOOL_MPNN=on` per the atomic Definition of Done.
+- The `modal_app.py` file imports the `modal` package at module top. When the `modal` CLI is not on PATH the import fails at app boot. This is intentional (the existing composite apps follow the same pattern) — see `llm-proteinDesigner/infrastructure/modal/bindcraft_app.py`.
+
+**Definition-of-Done checklist (from top of this doc):**
+- [x] `Dockerfile.modal` — Layer-1 checks wired.
+- [x] `run_pipeline.py` — `preflight()` + `main()` + stub rejection.
+- [x] `backend/pipelines/mpnn.py` — **NOT shipped**; D1 is self-contained under `tools-hub/tools/mpnn/` rather than mirroring the Kendrew `docker/ + infrastructure/ + backend/pipelines/` three-directory split. The spec in ATOMIC-TOOLS.md "Common shape" was written for tools that live in the Kendrew repo; D1 lives in tools-hub because it is its own Modal app, not a Kendrew composite. The fields `backend/pipelines/*.py` exposes (`smoke_preset`, `standalone_preset`, `gpu_sku`, `execution_timeout_ms`) are instead expressed in `tools/mpnn/__init__.py` (presets) + `tools/mpnn/modal_app.py` (gpu_sku=A10G, timeout=600 s).
+- [x] `infrastructure/modal/<name>_app.py` → `tools-hub/tools/mpnn/modal_app.py` (see deviation above). Registers `ranomics-mpnn-prod` with GPU A10G.
+- [ ] Two consecutive staging smoke passes — **user action**.
+- [x] `tools-hub/tools/mpnn/` form + results template behind `FLAG_TOOL_MPNN=off`.
+- [x] Pricing row in the "Credit rates" table of PRODUCT-PLAN.md (1 credit).
+- [ ] Marketing MDX page drafted — **deferred to stream F** per the 1-day scope.
+- [ ] Orchestrator flips `FLAG_TOOL_MPNN=on` — **user action** after validation.
+
+**User action to validate D1 on Modal:**
+
+```bash
+# From tools-hub repo root
+modal deploy tools/mpnn/modal_app.py
+
+# Smoke-tier run (baked 1HEW target, should complete in <60 s):
+modal run tools/mpnn/modal_app.py::run_tool --payload '{
+  "tier": "smoke",
+  "job_tier": "smoke",
+  "job_id": "smoke-'$(date +%s)'",
+  "job_spec": {"target_chain": "A", "parameters": {"num_seq_per_target": 2, "sampling_temp": 0.1}}
+}'
+```
+
+Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` length == 2, each with distinct seq / score / recovery floats. Log two consecutive green runs in VALIDATION-LOG.md before flipping `FLAG_TOOL_MPNN=on` in the tools-hub Railway env.
+
 ---
 
 ### D2 — AF2 standalone (ColabFold-style, Wave 3)

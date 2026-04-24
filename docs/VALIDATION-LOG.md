@@ -116,10 +116,11 @@ Entries start appearing in Wave 2 when D1 (ProteinMPNN standalone) ships. Each a
 
 ### ProteinMPNN standalone
 
-GPU: A10G-24GB. App: `ranomics-mpnn-prod`. Pipeline file: (to be created) `llm-proteinDesigner/backend/pipelines/mpnn.py`.
+GPU: A10G-24GB. App: `ranomics-mpnn-prod`. Pipeline file: `tools-hub/tools/mpnn/run_pipeline.py` (self-contained under tools-hub — did not grow a Kendrew `backend/pipelines/mpnn.py` because D1 is not a Kendrew composite). Modal wrapper: `tools-hub/tools/mpnn/modal_app.py`. Dockerfile: `tools-hub/tools/mpnn/Dockerfile.modal` (derived from `llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal` MPNN install recipe, everything else stripped).
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-24 | mpnn | code-complete | — | `feat/mpnn-standalone` HEAD | 0 | **CODE-COMPLETE** | agent-ab9b4529 | D1 ships Dockerfile.modal (Layer-1 checks wired), run_pipeline.py (preflight + main + stub rejection), modal_app.py (ranomics-mpnn-prod, A10G, 600 s), tools/mpnn adapter with smoke (0 cr) + standalone (1 cr) presets, form + results templates, 32-test offline test suite. Awaiting Modal deploy + 2× consecutive staging smoke on `ranomics-mpnn-prod` before flipping `FLAG_TOOL_MPNN=on`. See ATOMIC-TOOLS.md "D1 Status" for the user-action commands. |
 
 ### AF2 standalone
 

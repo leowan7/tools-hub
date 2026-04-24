@@ -1,0 +1,69 @@
+# Modal container for D1 — ProteinMPNN standalone.
+#
+# Atomic primitive. Small image: PyTorch CPU-compatible, ProteinMPNN repo,
+# weights. Runs on A10G-24GB per ATOMIC-TOOLS.md D1 section.
+#
+# Install recipe lifted from llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal
+# where ProteinMPNN is already deployed to serve the RFdiffusion -> MPNN
+# pipeline step. Everything else (RFdiffusion, ColabFold, AF2) is stripped
+# because D1 is sequence-design-only.
+#
+# Layer-1 build-time validation at the bottom of the file fails
+# ``modal deploy`` cheaply (no GPU time spent) if the MPNN repo, weights,
+# or the helper scripts are missing. See ATOMIC-TOOLS.md "Required
+# elements" #1.
+FROM runpod/base:0.6.2-cuda11.8.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/opt/ProteinMPNN" \
+    PROTEINMPNN_DIR=/opt/ProteinMPNN \
+    PROTEINMPNN_WEIGHTS=/opt/ProteinMPNN/vanilla_model_weights
+
+# ---------- System deps ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git python3-pip python3-dev build-essential && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- PyTorch ----------
+# MPNN runs happily on cu118 PyTorch; no need for the full DGL / JAX /
+# AF2 stack the composite pipelines pull in.
+RUN python3 -m pip install --no-cache-dir \
+    torch==2.2.2 torchvision==0.17.2 \
+    --index-url https://download.pytorch.org/whl/cu118
+RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
+
+# ---------- ProteinMPNN + weights ----------
+RUN git clone --depth 1 https://github.com/dauparas/ProteinMPNN.git $PROTEINMPNN_DIR && \
+    mkdir -p $PROTEINMPNN_WEIGHTS && \
+    curl -fsSL --retry 5 --retry-delay 10 \
+        https://github.com/dauparas/ProteinMPNN/raw/main/vanilla_model_weights/v_48_020.pt \
+        -o $PROTEINMPNN_WEIGHTS/v_48_020.pt
+RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
+
+# ---------- Python utilities ----------
+RUN python3 -m pip install --no-cache-dir requests biopython numpy
+
+# ---------- Bake a small smoke fixture ----------
+# 1HEW (~130 residues, single chain) ships in tools-hub/static/example/.
+# Smoke preset runs against this so we can ship without needing PD-L1 or
+# another pipeline's baked target.
+COPY static/example/1HEW.pdb /opt/smoke_target.pdb
+
+# ---------- Layer 1: build-time fail-fast validation ----------
+# See ATOMIC-TOOLS.md "Required elements" #1. Any failure here fails
+# ``modal deploy`` before a GPU seat is ever spent.
+RUN python3 -c "import torch; assert torch.__version__.startswith('2.2'), torch.__version__" && \
+    python3 -c "import Bio.PDB, numpy, requests" && \
+    test -f $PROTEINMPNN_WEIGHTS/v_48_020.pt && \
+    test -f $PROTEINMPNN_DIR/protein_mpnn_run.py && \
+    test -f $PROTEINMPNN_DIR/helper_scripts/parse_multiple_chains.py && \
+    test -f $PROTEINMPNN_DIR/helper_scripts/assign_fixed_chains.py && \
+    test -f /opt/smoke_target.pdb && \
+    which python3 && \
+    echo "layer1 ok"
+
+# NOTE: no COPY run_pipeline.py or CMD — Modal invokes @app.function bodies.
+# The Modal wrapper in tools/mpnn/modal_app.py copies run_pipeline.py in
+# as a local file add.
