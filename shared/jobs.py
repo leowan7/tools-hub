@@ -158,13 +158,22 @@ def set_modal_call(job_id: str, function_call_id: str) -> bool:
     return _update(job_id, {"modal_function_call_id": function_call_id})
 
 
+# Default set of statuses from which a terminal transition is legal. Used
+# as the compare-and-swap guard on every ``mark_*`` terminal helper so
+# concurrent writers (user cancel vs. Modal webhook vs. inline poll)
+# cannot clobber each other's terminal state or double-refund.
+_NON_TERMINAL: tuple[str, ...] = ("pending", "running")
+
+
 def mark_running(job_id: str) -> bool:
-    return _update(
+    """Transition pending -> running. No-op if already past pending."""
+    return _cas_update(
         job_id,
         {
             "status": "running",
             "started_at": _now_iso(),
         },
+        allowed_current=("pending",),
     )
 
 
@@ -173,8 +182,10 @@ def mark_succeeded(
     *,
     result: dict,
     gpu_seconds_used: Optional[int] = None,
+    allowed_current: tuple[str, ...] = _NON_TERMINAL,
 ) -> bool:
-    return _update(
+    """CAS-style success transition. Returns True iff the row actually moved."""
+    return _cas_update(
         job_id,
         {
             "status": "succeeded",
@@ -182,6 +193,7 @@ def mark_succeeded(
             "gpu_seconds_used": gpu_seconds_used,
             "completed_at": _now_iso(),
         },
+        allowed_current=allowed_current,
     )
 
 
@@ -190,8 +202,10 @@ def mark_failed(
     *,
     error: dict,
     gpu_seconds_used: Optional[int] = None,
+    allowed_current: tuple[str, ...] = _NON_TERMINAL,
 ) -> bool:
-    return _update(
+    """CAS-style failed transition. Returns True iff the row actually moved."""
+    return _cas_update(
         job_id,
         {
             "status": "failed",
@@ -199,27 +213,46 @@ def mark_failed(
             "gpu_seconds_used": gpu_seconds_used,
             "completed_at": _now_iso(),
         },
+        allowed_current=allowed_current,
     )
 
 
-def mark_timeout(job_id: str) -> bool:
-    return _update(
+def mark_timeout(
+    job_id: str,
+    *,
+    allowed_current: tuple[str, ...] = _NON_TERMINAL,
+) -> bool:
+    """CAS-style timeout transition. Returns True iff the row actually moved."""
+    return _cas_update(
         job_id,
         {
             "status": "timeout",
             "completed_at": _now_iso(),
         },
+        allowed_current=allowed_current,
     )
 
 
-def mark_cancelled(job_id: str, *, reason: str = "user_cancelled") -> bool:
-    return _update(
+def mark_cancelled(
+    job_id: str,
+    *,
+    reason: str = "user_cancelled",
+    allowed_current: tuple[str, ...] = _NON_TERMINAL,
+) -> bool:
+    """CAS-style cancel transition.
+
+    Returns True iff this caller actually flipped the row to 'cancelled'.
+    When False, another writer (Modal webhook, inline poll) already wrote
+    a terminal status; the caller MUST NOT issue a refund.
+    """
+    return _cas_update(
         job_id,
         {
             "status": "cancelled",
             "error": {"bucket": "cancelled", "detail": reason},
             "completed_at": _now_iso(),
         },
+        allowed_current=allowed_current,
     )
 
 
@@ -259,7 +292,22 @@ def cancel_job(
                 exc_info=True,
             )
 
-    mark_cancelled(job_id)
+    # Compare-and-swap the terminal transition. If this returns False the
+    # Modal webhook (or an inline-poll writer) wrote a terminal status
+    # between our SELECT and this UPDATE. Skip the refund — it is the
+    # winner's responsibility (for cancel, this caller is always the one
+    # issuing a refund; for succeeded/failed/timeout the prorated refund
+    # path inside complete_job has already run or is about to).
+    transitioned = mark_cancelled(job_id, allowed_current=_NON_TERMINAL)
+    if not transitioned:
+        fresh = get_job(job_id, user_id=user_id)
+        current = fresh.status if fresh else "unknown"
+        logger.info(
+            "cancel_job: CAS lost for job %s; already %s, skipping refund.",
+            job_id,
+            current,
+        )
+        return None, f"already_{current}"
 
     if job.credits_cost > 0:
         try:
@@ -324,21 +372,44 @@ def complete_job(
                 gpu_seconds_used = int(v)
                 break
 
+    # CAS transition — the update is constrained to rows where status is
+    # still non-terminal. If it returns False, a concurrent writer (user
+    # cancel, inline poll, heartbeat-driven state machine) beat us to
+    # the row and already scheduled its own refund/email side effects.
+    # We return the now-terminal row without re-running refund or email.
     if terminal_status == "succeeded":
-        mark_succeeded(job_id, result=result or {}, gpu_seconds_used=gpu_seconds_used)
+        transitioned = mark_succeeded(
+            job_id,
+            result=result or {},
+            gpu_seconds_used=gpu_seconds_used,
+            allowed_current=_NON_TERMINAL,
+        )
     elif terminal_status == "failed":
-        mark_failed(
+        transitioned = mark_failed(
             job_id,
             error=error or {"detail": "unspecified failure"},
             gpu_seconds_used=gpu_seconds_used,
+            allowed_current=_NON_TERMINAL,
         )
     else:
-        mark_timeout(job_id)
+        transitioned = mark_timeout(job_id, allowed_current=_NON_TERMINAL)
 
     # Re-fetch the now-terminal row to seed refund + email payload.
     fresh = get_job(job_id)
     if fresh is None:
         return None
+
+    if not transitioned:
+        # Lost the CAS race — another writer terminalised this row. Do
+        # not double-refund or re-email.
+        logger.info(
+            "complete_job: CAS lost for job %s (target=%s actual=%s); "
+            "skipping refund and email.",
+            job_id,
+            terminal_status,
+            fresh.status,
+        )
+        return fresh
 
     _refund_unused_credits(fresh)
     _send_completion_email(fresh)
@@ -537,6 +608,9 @@ def list_jobs_paginated(
 
 
 def _update(job_id: str, payload: dict) -> bool:
+    """Unconditional update — used only for metadata (modal_function_call_id,
+    inputs) where the write is never part of a status race. Terminal
+    status transitions MUST go through ``_cas_update`` instead."""
     client = get_service_client()
     if client is None:
         return False
@@ -548,6 +622,52 @@ def _update(job_id: str, payload: dict) -> bool:
             "Failed to update tool_jobs row %s", job_id, exc_info=True
         )
         return False
+
+
+def _cas_update(
+    job_id: str,
+    payload: dict,
+    *,
+    allowed_current: tuple[str, ...],
+) -> bool:
+    """Compare-and-swap update constrained by current status.
+
+    Emits ``UPDATE ... WHERE id = :job_id AND status IN :allowed_current``
+    and returns True iff the row was actually updated. PostgREST returns
+    the updated rows in ``response.data`` (when the default Prefer:
+    return=representation is in effect), which we use as the rowcount.
+
+    This is the only safe way to do terminal transitions when more than
+    one code path can terminalise the same row — user cancel, Modal
+    webhook, inline poll. Whoever loses the race gets ``False`` back
+    and MUST NOT issue side effects (refund, email) that the winner
+    already owns.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    if not allowed_current:
+        # Unconstrained CAS is a bug — refuse to emit a status write
+        # without a guard. Use ``_update`` for metadata-only writes.
+        raise ValueError("_cas_update requires a non-empty allowed_current")
+    try:
+        response = (
+            client.table(_TABLE)
+            .update(payload)
+            .eq("id", job_id)
+            .in_("status", list(allowed_current))
+            .execute()
+        )
+    except Exception:
+        logger.error(
+            "CAS update failed for tool_jobs row %s (target payload=%s)",
+            job_id,
+            {k: payload.get(k) for k in ("status",)},
+            exc_info=True,
+        )
+        return False
+    rows = getattr(response, "data", None) or []
+    return len(rows) > 0
 
 
 def _now_iso() -> str:
