@@ -20,6 +20,8 @@
 {% set num_recycles   = output.get('num_recycles') %}
 {% set use_templates  = output.get('use_templates') %}
 {% set tier           = output.get('tier') %}
+{% set pdb_b64        = output.get('pdb_b64') %}
+{% set pae_b64        = output.get('pae_matrix_b64') %}
 {% set clone_url      = url_for('tool_form', tool='colabfold', clone_from=job.id) %}
 
 <div class="panel" style="margin-top:1rem;">
@@ -93,6 +95,21 @@
 
       <div style="margin-top:1rem;">
         <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+        {# pdb_b64 / pae_matrix_b64 come straight from run_pipeline.py;
+           render as data-URI downloads so the user can pull the
+           structure without us adding a server-side export route.
+           The PDB is text (base64-decoded PDB ATOM records); the PAE
+           is a compressed npz. #}
+        {% if pdb_b64 %}
+          <a href="data:chemical/x-pdb;base64,{{ pdb_b64 }}"
+             download="colabfold_{{ job.id }}.pdb"
+             class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
+        {% endif %}
+        {% if pae_b64 %}
+          <a href="data:application/octet-stream;base64,{{ pae_b64 }}"
+             download="colabfold_{{ job.id }}_pae.npz"
+             class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
+        {% endif %}
       </div>
 
       {% if send_target_tools %}

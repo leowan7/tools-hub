@@ -725,3 +725,60 @@ class TestFastaParser:
         records, err = cf_mod._parse_fasta_text("")
         assert err
         assert records == []
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — Results template exposes PDB + PAE artifacts (Codex P1 regression)
+# ---------------------------------------------------------------------------
+
+
+def test_results_template_renders_pdb_and_pae_download_links(
+    app_with_colabfold_flag,
+):
+    """Codex P1: the original results template only showed summary
+    metrics + clone link. The pipeline returns the actual predicted
+    structure as ``pdb_b64`` and PAE as ``pae_matrix_b64``, but neither
+    was exposed anywhere in the UI, so every successful run hid its
+    primary artifact from the user. This regression test renders the
+    partial directly and asserts both data-URI download links are in
+    the HTML."""
+    from types import SimpleNamespace
+
+    fake_job = SimpleNamespace(
+        id="job-colabfold-test",
+        tool="colabfold",
+        status="succeeded",
+        inputs={},
+        result={
+            "status": "COMPLETED",
+            "tier": "standalone",
+            "pdb_b64": "SEFMRU9IRUxMTw==",  # valid b64; content irrelevant
+            "pae_matrix_b64": "UEtJRkFLRQ==",
+            "plddt_per_residue": [85.0, 88.0, 90.0, 91.0, 92.0],
+            "mean_plddt": 89.2,
+            "ptm": 0.81,
+            "iptm": 0.76,
+            "chain_count": 1,
+            "total_length": 5,
+            "num_recycles": 1,
+            "use_templates": False,
+            "runtime_seconds": 65,
+        },
+    )
+    with app_with_colabfold_flag.test_request_context():
+        html = app_with_colabfold_flag.jinja_env.get_template(
+            "tools/colabfold_results.html"
+        ).render(job=fake_job, send_target_tools=None)
+
+    assert 'download="colabfold_job-colabfold-test.pdb"' in html, (
+        "PDB download link missing from results partial"
+    )
+    assert "data:chemical/x-pdb;base64,SEFMRU9IRUxMTw==" in html, (
+        "PDB data-URI does not carry the pdb_b64 payload"
+    )
+    assert 'download="colabfold_job-colabfold-test_pae.npz"' in html, (
+        "PAE download link missing from results partial"
+    )
+    assert "data:application/octet-stream;base64,UEtJRkFLRQ==" in html, (
+        "PAE data-URI does not carry the pae_matrix_b64 payload"
+    )
