@@ -205,11 +205,48 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` 
 
 **Modal app:** `ranomics-colabfold-prod`. GPU: **A100-40GB**.
 
-**Timeout:** 15 minutes.
+**Timeout:** 10 minutes (the tools-hub agent deviated from the 15-min spec here — no-MSA ColabFold on <=600 aa runs 1-2 min once JIT is cached, so 600 s gives ~5x headroom while keeping the user's max-charge cap tight).
 
 Schema as D2 but faster defaults, no templates by default. Stub rejection same.
 
 **Pricing:** 2 credits.
+
+#### D3 Status (as of 2026-04-24)
+
+**CODE-COMPLETE on `feat/colabfold-standalone`.** Mirrors the D1 MPNN pattern. Awaits `modal deploy` + 2x consecutive staging smoke on `ranomics-colabfold-prod` before the operator flips `FLAG_TOOL_COLABFOLD=on`.
+
+Shipped this commit:
+- `tools-hub/tools/colabfold/Dockerfile.modal` — image derived from `docker/rfdiffusion/Dockerfile.modal` with RFdiffusion / SE3Transformer / DGL / MPNN stripped. Bakes `static/example/ubiquitin.fasta` (human ubiquitin, 76 aa monomer, UniProt P0CG47) as the smoke fixture. Layer-1 build-time validation fails `modal deploy` if ColabFold, AF2 weights, or the smoke fixture are missing.
+- `tools-hub/tools/colabfold/run_pipeline.py` — `preflight()` (GPU + jax + colabfold + weights + /tmp writable) + `main()` that invokes `colabfold_batch --msa-mode single_sequence --num-recycle 1 --num-models 1 --rank iptm`, parses `*_scores_rank_001_*.json` for pLDDT + ptm + iptm + PAE, b64-encodes the matching `*_unrelaxed_rank_001_*.pdb`, and packs PAE as npz-compressed float16. Stub rejection catches uniform pLDDT, NaN pLDDT, implausible mean pLDDT, and zero ipTM (PXDesign's historical silent-stub signatures).
+- `tools-hub/tools/colabfold/modal_app.py` — Modal wrapper (`ranomics-colabfold-prod`, A100-40GB, 600 s timeout). Self-contained per the Kendrew portability pattern. `run_tool` payload annotated `Any` so `modal run --payload` works.
+- `tools-hub/tools/colabfold/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked ubiquitin fixture) and `standalone` (2 credits, inline FASTA text — no file upload, since FASTAs are tiny). Validates the canonical 20 aa + X alphabet, min 10 aa / max 600 aa per chain, 600 aa total complex cap.
+- `tools-hub/tools/colabfold/meta.py` — citation, repo link, runtime table.
+- `tools-hub/templates/tools/colabfold_form.html` — dark-design-system form, preset picker, FASTA textarea, recycles + templates controls, About panel. Includes the `pilot->standalone` handoff remap from the MPNN Codex P1 fix.
+- `tools-hub/templates/tools/colabfold_results.html` — mean pLDDT + pTM + ipTM + length summary, collapsible per-residue pLDDT spark (CSS bars, no JS deps), clone link.
+- `tools-hub/gpu/modal_client.py` — `PRESET_CAPS` entries `("colabfold","smoke")=120` and `("colabfold","standalone")=420`, plus `APP_NAME_OVERRIDES["colabfold"]="ranomics-colabfold-prod"`. Legacy `("colabfold","fast")=720` retained for pre-D3 planning code paths.
+- `tools-hub/app.py` — `import tools.colabfold` added to the adapter-registration block.
+- `tools-hub/tests/test_colabfold_smoke.py` — 45 offline tests covering adapter registration, validate / build_payload shape, form render (flag on -> 200, flag off -> 404), Modal payload shape, webhook roundtrip, FASTA parser, ColabFold output parser, stub rejection.
+
+**Open / gated on user action:**
+- Modal deployment: `modal deploy tools/colabfold/modal_app.py` has not been run. Image build time is ~10-15 min on first deploy (JAX + cuDNN wheels + AF2 multimer weights download + Layer-1 check); thereafter Modal caches.
+- Staging smoke validation: two consecutive green smoke runs on `ranomics-colabfold-prod` are the gate to flipping `FLAG_TOOL_COLABFOLD=on` per the atomic Definition of Done.
+
+**User action to validate D3 on Modal:**
+
+```bash
+# From tools-hub repo root
+modal deploy tools/colabfold/modal_app.py
+
+# Smoke-tier run (baked 76 aa ubiquitin, expect <=120 s warm / ~4 min cold):
+modal run tools/colabfold/modal_app.py::run_tool --payload '{
+  "tier": "smoke",
+  "job_tier": "smoke",
+  "job_id": "smoke-'$(date +%s)'",
+  "job_spec": {"parameters": {"num_recycles": 1, "use_templates": false}}
+}'
+```
+
+Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_residue` length == 76 with real non-uniform floats, `smoke_result.mean_plddt` in [70, 95], `smoke_result.ptm` in [0.5, 0.95], `smoke_result.pdb_b64` decodes to >=200 bytes of PDB text, stub rejection does not trip. Log two consecutive green runs in VALIDATION-LOG.md before flipping `FLAG_TOOL_COLABFOLD=on` in the tools-hub Railway env.
 
 ---
 
