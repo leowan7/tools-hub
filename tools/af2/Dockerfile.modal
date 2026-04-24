@@ -68,7 +68,7 @@ COPY static/example/BPTI.fasta /opt/smoke_target.fasta
 # See ATOMIC-TOOLS.md "Required elements" #1. Any failure here fails
 # ``modal deploy`` before a GPU seat is ever spent.
 RUN python3 -c "import jax; print('jax', jax.__version__); assert jax.__version__.startswith('0.4.'), jax.__version__" && \
-    python3 -c "import colabfold; print('colabfold', colabfold.__version__)" && \
+    python3 -c "import colabfold; from importlib.metadata import version; print('colabfold', version('colabfold'))" && \
     python3 -c "import numpy, jax.numpy; a = jax.numpy.zeros(1); assert a.shape == (1,)" && \
     python3 -c "import Bio.PDB, numpy, requests" && \
     test -d $COLABFOLD_CACHE_DIR && \
