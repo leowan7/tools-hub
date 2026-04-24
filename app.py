@@ -1036,7 +1036,12 @@ def create_app() -> Flask:
         # Phase 4 cross-tool handoff: only offer the buttons when the
         # source job staged a reusable PDB (has _pdb_storage_path) and
         # finished successfully. Skip the current tool — "send to self"
-        # is what Clone is for.
+        # is what Clone is for. Skip any adapter whose input contract is
+        # not PDB-based — e.g. D2 AF2, which takes FASTA. The generic
+        # ``from_job`` flow only ports a PDB reuse token + chain +
+        # hotspots; offering AF2 as a handoff target would drop the user
+        # on a form that cannot consume the handoff (Codex P2).
+        NON_PDB_INPUT_TOOLS = frozenset({"af2"})
         send_target_tools: list[dict] = []
         if (
             job.status == "succeeded"
@@ -1044,6 +1049,8 @@ def create_app() -> Flask:
         ):
             for other in tool_base.all_adapters():
                 if other.slug == job.tool:
+                    continue
+                if other.slug in NON_PDB_INPUT_TOOLS:
                     continue
                 if not tool_enabled(other.slug):
                     continue
