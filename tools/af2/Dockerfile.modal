@@ -1,0 +1,81 @@
+# Modal container for D2 — AF2 standalone (ColabFold-style).
+#
+# Atomic primitive. Minimal image: CUDA 11.8 + JAX + ColabFold (which
+# bundles AlphaFold2 weights + MSA pipeline). Runs on A100-80GB per
+# ATOMIC-TOOLS.md D2 section.
+#
+# Derivation: ATOMIC-TOOLS.md D2 names docker/bindcraft/Dockerfile.modal
+# as the dependency source. BindCraft installs AF2 through FreeBindCraft
+# which pulls in ~8 GB of conda env (OpenMM, pyRosetta stubs, conda base
+# env, GUI-only deps) that AF2 fold does not need. The same rfdiffusion
+# image already ships a clean pip-based ColabFold + AF2 install — we
+# clone that install block here and drop RFdiffusion, ProteinMPNN, and
+# DGL. Net effect: same AF2 weights + same JAX stack BindCraft uses, but
+# ~70% smaller image and ~10× faster build.
+#
+# See tools-hub/tools/af2/modal_app.py D2 Status notes for the rationale
+# trail.
+#
+# Layer-1 build-time validation at the bottom of the file fails
+# ``modal deploy`` cheaply (no GPU time spent) if JAX, ColabFold, AF2
+# weights, or the smoke fixture is missing.
+FROM runpod/base:0.6.2-cuda11.8.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    COLABFOLD_CACHE_DIR=/opt/colabfold_weights \
+    COLABFOLD_CACHE=/opt/colabfold_weights \
+    # Keep AF2 quiet; JAX dumps a lot of "warning: falling back to
+    # generic vector size" spam otherwise.
+    TF_CPP_MIN_LOG_LEVEL=3
+
+# ---------- System deps ----------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl git python3-pip python3-dev build-essential && \
+    ln -sf /usr/bin/python3 /usr/bin/python && \
+    rm -rf /var/lib/apt/lists/*
+
+# ---------- ColabFold + AF2 weights + JAX (CUDA 11.8 matched) ----------
+# Pin nvidia-cudnn-cu11<9.0 so JAX 0.4.23 finds libcudnn.so.8. Lifted
+# verbatim from docker/rfdiffusion/Dockerfile.modal -- any change here
+# must mirror that file (and the PXDesign image which shares the same
+# AF2 JAX stack).
+RUN python3 -m pip install --no-cache-dir \
+    "nvidia-cudnn-cu11<9.0" \
+    "colabfold[alphafold]==1.5.5" \
+    "jax[cuda11_pip]==0.4.23" \
+    -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html && \
+    python3 -c "from colabfold.download import download_alphafold_params; download_alphafold_params('alphafold2_multimer_v3')" && \
+    python3 -c "from colabfold.download import download_alphafold_params; download_alphafold_params('AlphaFold2-ptm')"
+RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
+
+# ---------- Python utilities ----------
+# Pin numpy<2 for ABI parity with the JAX 0.4.23 wheels (same rationale
+# as the D1 MPNN Dockerfile comment — JAX / AF2 / colabfold were
+# compiled against NumPy 1.x and raise opaque failures under NumPy 2.x
+# at runtime even though imports succeed). Remove once the stack moves
+# to jax>=0.4.28 which ships NumPy-2-compatible bindings.
+RUN python3 -m pip install --no-cache-dir requests biopython "numpy<2"
+
+# ---------- Bake smoke fixture ----------
+# BPTI — 58-residue single-chain monomer, well-characterised structure
+# (PDB 1BPI). Smoke preset runs against this so we can ship without
+# needing the user to upload a FASTA for the smoke tier.
+COPY static/example/BPTI.fasta /opt/smoke_target.fasta
+
+# ---------- Layer 1: build-time fail-fast validation ----------
+# See ATOMIC-TOOLS.md "Required elements" #1. Any failure here fails
+# ``modal deploy`` before a GPU seat is ever spent.
+RUN python3 -c "import jax; print('jax', jax.__version__); assert jax.__version__.startswith('0.4.'), jax.__version__" && \
+    python3 -c "import colabfold; print('colabfold', colabfold.__version__)" && \
+    python3 -c "import numpy, jax.numpy; a = jax.numpy.zeros(1); assert a.shape == (1,)" && \
+    python3 -c "import Bio.PDB, numpy, requests" && \
+    test -d $COLABFOLD_CACHE_DIR && \
+    test -f /opt/smoke_target.fasta && \
+    which colabfold_batch && \
+    which python3 && \
+    echo "layer1 ok"
+
+# NOTE: no COPY run_pipeline.py or CMD — Modal invokes @app.function bodies.
+# The Modal wrapper in tools/af2/modal_app.py copies run_pipeline.py in
+# as a local file add.

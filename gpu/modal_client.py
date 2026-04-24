@@ -74,8 +74,16 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("mpnn", "smoke"):             120,
     ("mpnn", "standalone"):        360,
     ("proteinmpnn", "standalone"): 360,  # legacy alias — pre-D1 planning
+    # D2 AF2 standalone: slug "af2" → ``ranomics-af2-prod``. Smoke runs
+    # the baked BPTI fixture at 1 recycle / no MSA (~1-2 min cold,
+    # <30 s warm). Standalone runs user FASTA with MSA + 3 recycles,
+    # capped at 1500 AA total on the atomic tier; real runs observed
+    # in the 5-10 min window, cap at 20 min to match the Modal
+    # timeout.
+    ("af2", "smoke"):              180,
+    ("af2", "standalone"):         1200,
     ("colabfold", "fast"):         720,
-    ("af2", "standard"):           720,
+    ("af2", "standard"):           720,   # legacy alias — pre-D2 planning
     ("esmfold", "fast"):           360,
     ("af2_ig", "standard"):        720,
     # Composite pipelines — smoke tier (inline return, small preset).
@@ -117,6 +125,7 @@ def preset_gpu_seconds(tool: str, preset: str) -> int:
 
 APP_NAME_OVERRIDES: Dict[str, str] = {
     "mpnn": "ranomics-mpnn-prod",
+    "af2": "ranomics-af2-prod",
 }
 
 

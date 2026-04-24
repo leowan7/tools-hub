@@ -1,0 +1,158 @@
+{# AF2 (D2) results partial — included by job_detail.html on status=succeeded.
+
+   AF2's output schema differs from the composite pipelines and from D1
+   MPNN: we return a single predicted structure (not a list of
+   ``candidates``), plus per-residue pLDDT, a PAE matrix, and pTM/ipTM
+   scalars. Render an NGL structure viewer + a metrics table + export
+   links. No shared results_panel macro (it expects ``candidates``). #}
+
+{% set output = job.result or {} %}
+{% set plddt  = output.get('plddt_per_residue') or [] %}
+{% set ptm    = output.get('ptm') %}
+{% set iptm   = output.get('iptm') %}
+{% set pdb_b64 = output.get('pdb_b64') %}
+{% set num_chains = output.get('num_chains') or 1 %}
+{% set total_aa   = output.get('total_aa') %}
+{% set model_preset = output.get('model_preset') %}
+{% set clone_url  = url_for('tool_form', tool='af2', clone_from=job.id) %}
+
+{# Summary stats computed in Jinja — avoids a second round-trip on the
+   pLDDT array just to show a mean. #}
+{% set plddt_count = plddt | length %}
+{% set plddt_mean  = (plddt | sum / plddt_count) if plddt_count else 0 %}
+{% set plddt_min   = plddt | min if plddt else 0 %}
+{% set plddt_max   = plddt | max if plddt else 0 %}
+
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Predicted structure</span>
+    {% if output.get('tier') %}<span class="panel-badge">{{ output.get('tier') }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+
+    {% if pdb_b64 %}
+      {# NGL structure viewer. Match the inline-CDN pattern the other
+         tools use; PDB is injected via a base64 blob stringified into
+         a data-URI so no second network fetch is needed. #}
+      <div id="af2-ngl-viewer"
+           data-pdb-b64="{{ pdb_b64 }}"
+           style="width: 100%; height: 420px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 1rem;"></div>
+      <script src="https://cdn.jsdelivr.net/npm/ngl@2.0.0-dev.40/dist/ngl.js"></script>
+      <script>
+        (function () {
+          var el = document.getElementById('af2-ngl-viewer');
+          if (!el || typeof NGL === 'undefined') return;
+          try {
+            var stage = new NGL.Stage(el, { backgroundColor: '#0a0a0a' });
+            window.addEventListener('resize', function () { stage.handleResize(); });
+            var pdbBlob = new Blob(
+              [atob(el.getAttribute('data-pdb-b64'))],
+              { type: 'text/plain' }
+            );
+            stage.loadFile(pdbBlob, { ext: 'pdb' }).then(function (comp) {
+              // Colour by pLDDT (AlphaFold's "bfactor" in the PDB) using
+              // the AF2 colour scheme: blue (high) -> cyan -> yellow -> orange.
+              comp.addRepresentation('cartoon', {
+                colorScheme: 'bfactor',
+                colorDomain: [50, 90],
+                colorScale: 'rwb',
+                colorReverse: true,
+              });
+              comp.autoView();
+            });
+          } catch (e) {
+            console.warn('NGL viewer init failed:', e);
+          }
+        })();
+      </script>
+    {% else %}
+      <p class="subtitle">No PDB returned from the AF2 pipeline.</p>
+    {% endif %}
+
+    {# Metric table — pTM / ipTM / pLDDT summary. #}
+    <div style="overflow-x:auto; margin-bottom: 1rem;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="text-align:left; color:var(--text-tertiary); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;">
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Metric</th>
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Value</th>
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Meaning</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary);">pTM</td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+              {% if ptm is not none %}{{ '%.3f' % ptm }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">
+              Predicted TM-score. Confidence in the overall fold (0-1, higher is better).
+            </td>
+          </tr>
+          {% if model_preset == 'multimer' or iptm is not none %}
+            <tr>
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary);">ipTM</td>
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+                {% if iptm is not none %}{{ '%.3f' % iptm }}{% else %}—{% endif %}
+              </td>
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">
+                Interface pTM for multimer interfaces. &gt; 0.6 is a common confidence threshold.
+              </td>
+            </tr>
+          {% endif %}
+          <tr>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary);">pLDDT (mean)</td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+              {% if plddt_count %}{{ '%.1f' % plddt_mean }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">
+              Mean per-residue confidence (0-100). &gt; 70 = confident; &gt; 90 = very confident.
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary);">pLDDT range</td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+              {% if plddt_count %}{{ '%.1f' % plddt_min }} – {{ '%.1f' % plddt_max }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">
+              Per-residue minimum and maximum. Wide spread = mixed regions (disordered + ordered).
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary);">Chains / AA</td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+              {{ num_chains }} / {{ total_aa or '—' }}
+            </td>
+            <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">
+              Model preset: <code>{{ model_preset or 'monomer' }}</code>.
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    {# No "Send this structure to" block: AF2 outputs the predicted PDB
+       as ``pdb_b64`` inside ``job.result``, but the shared cross-tool
+       handoff in ``job_detail()`` only emits ``send_target_tools`` when
+       ``job.inputs._pdb_storage_path`` is set — the handoff reads the
+       *input* PDB, not the output. Wiring the AF2 output into the
+       handoff flow is a separate change (stage the predicted structure
+       as a reusable input first). Until then this block would never
+       render for AF2 jobs, so we omit it entirely to avoid dead UI
+       (Codex P2). #}
+
+    <div style="margin-top:1rem;">
+      <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+      {% if pdb_b64 %}
+        <a href="{{ url_for('af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
+        <a href="{{ url_for('af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (.npy)</a>
+      {% endif %}
+    </div>
+
+    {% if output.get('runtime_seconds') %}
+      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
+        GPU time: {{ output.get('runtime_seconds') }} seconds.
+      </p>
+    {% endif %}
+  </div>
+</div>
