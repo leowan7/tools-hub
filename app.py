@@ -79,6 +79,7 @@ from shared import metric_glossary as _metric_glossary
 from tools import base as tool_base
 import tools.bindcraft   # noqa: F401 — import to register adapter
 import tools.boltzgen    # noqa: F401 — import to register adapter
+import tools.mpnn        # noqa: F401 — import to register adapter (D1 atomic)
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
 from scout import scout_bp
