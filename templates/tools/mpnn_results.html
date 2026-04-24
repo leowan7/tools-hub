@@ -1,0 +1,85 @@
+{# ProteinMPNN (D1) results partial — included by job_detail.html on status=succeeded.
+
+   MPNN's output schema differs from the composite pipelines: we return
+   ``sequences`` (a list of {seq, score, recovery, sample}) rather than
+   ``candidates`` (a list of {pdb_key, scores, ...}). The shared
+   results_panel macro + candidate_table expect the composite shape,
+   so we render a simple sequence table here and skip the macro. The
+   clone link + handoff footer are rendered inline instead. #}
+
+{% set output     = job.result or {} %}
+{% set sequences  = output.get('sequences', []) %}
+{% set clone_url  = url_for('tool_form', tool='mpnn', clone_from=job.id) %}
+
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Sequences ({{ sequences | length }})</span>
+    {% if output.get('tier') %}<span class="panel-badge">{{ output.get('tier') }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    {% if sequences %}
+      <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+        Designed chain(s): <code>{{ output.get('chains_designed') or '—' }}</code>
+        {% if output.get('sampling_temp') is not none %}
+          · temperature <code>{{ output.get('sampling_temp') }}</code>
+        {% endif %}
+      </div>
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+          <thead>
+            <tr style="text-align:left; color:var(--text-tertiary); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;">
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">#</th>
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Score</th>
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Recovery</th>
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Sequence</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for seq in sequences %}
+              <tr>
+                <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary);">{{ loop.index }}</td>
+                <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+                  {% if seq.get('score') is not none %}{{ '%.3f' % seq.score }}{% else %}—{% endif %}
+                </td>
+                <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono);">
+                  {% if seq.get('recovery') is not none %}{{ '%.2f' % seq.recovery }}{% else %}—{% endif %}
+                </td>
+                <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono); word-break:break-all; max-width:640px;">
+                  {{ seq.get('seq') or '' }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if send_target_tools %}
+        <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">
+          <span style="color: var(--text-secondary);">Reuse this backbone in:</span>
+          {% for ho in send_target_tools %}
+            <a href="{{ ho.url }}" class="btn-secondary" style="padding: 0.35rem 0.75rem;">{{ ho.label }}</a>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% else %}
+      <p class="subtitle">
+        No sequences returned. If this persists, try lowering
+        <code>sampling_temp</code> or verifying the backbone chain IDs
+        match the PDB.
+      </p>
+    {% endif %}
+
+    <div style="margin-top:1rem;">
+      <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
+      {% if sequences %}
+        <a href="{{ url_for('export_fasta', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download FASTA</a>
+      {% endif %}
+    </div>
+
+    {% if output.get('runtime_seconds') %}
+      <p style="color:var(--text-secondary);font-size:.8rem;margin-top:1rem;">
+        GPU time: {{ output.get('runtime_seconds') }} seconds.
+      </p>
+    {% endif %}
+  </div>
+</div>

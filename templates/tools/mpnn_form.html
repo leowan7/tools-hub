@@ -1,0 +1,289 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pdb_source_banner, prefill_script %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# D1 — ProteinMPNN standalone. Two-panel layout parallel to
+     RFantibody: form on the left, "About MPNN" panel on the right.
+     Styles are scoped (.mpnn-) so they do not leak into other tools.
+     The ``standalone`` preset shows an additional block of fields
+     (PDB upload, chain picker, num_seq + temp) via the shared
+     pilot-fields toggle — we reuse #pilot-fields because
+     prefill_script() flips it automatically when preset is
+     preselected from a clone/handoff. #}
+  <style>
+    .mpnn-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .mpnn-layout { grid-template-columns: 1fr; }
+    }
+    .mpnn-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .mpnn-about h3:first-child { margin-top: 0; }
+    .mpnn-about p,
+    .mpnn-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .mpnn-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .mpnn-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .mpnn-about ul li:last-child { border-bottom: none; }
+    .mpnn-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .mpnn-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .mpnn-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .mpnn-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .mpnn-runtime-table tr:last-child td { border-bottom: none; }
+    .mpnn-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: -0.75rem 0 1.25rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  {# Preset runtime map mirrors tools/mpnn/meta.py::PRESET_RUNTIME. Kept
+     in the template so the <option> data-attrs can be read without
+     round-tripping through app.py. Update both files together. #}
+  {% set preset_minutes = {
+    'smoke': '1',
+    'standalone': '1',
+  } %}
+
+  <div class="mpnn-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
+          <select name="preset" id="preset" required
+                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
+            {% for preset in adapter.presets %}
+              <option value="{{ preset.slug }}"
+                      data-credits="{{ preset.credits_cost }}"
+                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                      {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
+                {{ preset.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <div id="preset-cost-preview" class="mpnn-cost-preview" aria-live="polite"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+
+          {# Re-using #pilot-fields id so ``prefill_script()`` from
+             _prefill.html toggles visibility when a clone/handoff lands
+             the user here with preset=standalone preselected. #}
+          <div id="pilot-fields" style="display: none;">
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Backbone PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the backbone structure as .pdb, .cif, or .mmcif.
+              Only the Cα / backbone atoms are used; side chains are ignored.
+            </div>
+
+            <label for="chains_to_design" class="label" style="display:block; margin-bottom: 0.4rem;">Chains to design</label>
+            <input type="text" name="chains_to_design" id="chains_to_design" {{ pre_value(pre_fill, "chains_to_design", "A") }} maxlength="24"
+                   style="width: 100%; max-width: 240px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Space- or comma-separated chain IDs that MPNN should redesign
+              (e.g. <code>A</code>, <code>A B</code>, <code>H L</code>).
+              Other chains stay fixed as context.
+            </div>
+
+            <label for="num_seq_per_target" class="label" style="display:block; margin-bottom: 0.4rem;">Number of sequences</label>
+            <input type="number" name="num_seq_per_target" id="num_seq_per_target" {{ pre_value(pre_fill, "num_seq_per_target", "5") }} min="1" max="20"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              How many candidate sequences to sample (1-20).
+            </div>
+
+            <label for="sampling_temp" class="label" style="display:block; margin-bottom: 0.4rem;">Sampling temperature</label>
+            <input type="number" step="0.01" name="sampling_temp" id="sampling_temp" {{ pre_value(pre_fill, "sampling_temp", "0.1") }} min="0.01" max="1"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Lower = more conservative (closer to argmax); higher = more diverse.
+              Defaults to 0.1 per the upstream README.
+            </div>
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Smoke tier runs against our baked 1HEW lysozyme target (~130 aa,
+            chain A); no PDB upload needed.
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Standalone tier runs on your own backbone — upload PDB, pick chain(s).
+            ~30-60 s on A10G-24GB.
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
+    </div>
+
+    <aside class="panel mpnn-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About ProteinMPNN</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it is</h3>
+        <p>
+          ProteinMPNN (<a href="https://www.science.org/doi/10.1126/science.add2187">Dauparas et al., Science 2022</a>).
+          A message-passing neural network that predicts a sequence for a
+          given backbone. Inputs: Cα / backbone coordinates. Outputs:
+          probabilities over the 20 canonical residues at every position,
+          sampled at ``sampling_temp`` to produce candidate sequences.
+          Repo: <a href="https://github.com/dauparas/ProteinMPNN">dauparas/ProteinMPNN</a>.
+        </p>
+
+        <h3>When to use</h3>
+        <p>
+          Pick ProteinMPNN when you already have a backbone — from
+          RFdiffusion, RFantibody, BindCraft, BoltzGen, or a curated PDB —
+          and you need candidate sequences. MPNN does not generate
+          backbones; pair it with a diffusion tool or a known structure.
+        </p>
+
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>Backbone PDB (Cα/backbone atoms sufficient)</li>
+          <li>Chain ID(s) of the region(s) to redesign</li>
+        </ul>
+
+        <h3>Input glossary</h3>
+        <ul>
+          <li><strong>Chains to design</strong> — which chains in the PDB MPNN should redesign. Other chains stay fixed as context.</li>
+          <li><strong>Number of sequences</strong> — how many MPNN samples to draw (1-20). Each sample is independent.</li>
+          <li><strong>Sampling temperature</strong> — lower = more conservative, higher = more diverse. The default 0.1 matches the upstream README.</li>
+        </ul>
+
+        <h3>Runtime &amp; cost</h3>
+        <table class="mpnn-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          MPNN runs in well under a minute on A10G. Unused GPU seconds are
+          refunded in credits when a run finishes faster than its budget.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.querySelector('form');
+      var presetSelect = document.getElementById('preset');
+      var pilotFields = document.getElementById('pilot-fields');
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!form || !presetSelect) return;
+
+      var descriptions = {
+        {% for preset in adapter.presets %}
+          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      };
+
+      function sync() {
+        var value = presetSelect.value;
+        if (pilotFields) {
+          pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
+        }
+        if (costPreview) {
+          var opt = presetSelect.options[presetSelect.selectedIndex];
+          if (opt) {
+            var credits = opt.getAttribute('data-credits');
+            var minutes = opt.getAttribute('data-minutes');
+            costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+          }
+        }
+        if (descEl) {
+          descEl.textContent = descriptions[value] || '';
+        }
+      }
+
+      presetSelect.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+{% endblock %}
