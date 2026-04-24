@@ -111,6 +111,19 @@
     'standalone': '1',
   } %}
 
+  {# The shared ``from_job``/``handoff`` route in app.py sets
+     ``pre_fill["preset"] = "pilot"`` for every tool. The four binder
+     design tools actually have a preset slug ``pilot``; MPNN does not
+     (``smoke`` + ``standalone`` only). Without remapping, the template
+     fell through to ``loop.first`` and silently selected ``smoke``,
+     which runs against the baked 1HEW fixture — a handoff would burn
+     a credit on the wrong backbone. ``standalone`` is the correct
+     real-target equivalent for MPNN. #}
+  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
+  {% if _incoming_preset == 'pilot' %}
+    {% set _incoming_preset = 'standalone' %}
+  {% endif %}
+
   <div class="mpnn-layout">
     <div class="panel">
       <div class="panel-header">
@@ -125,7 +138,7 @@
               <option value="{{ preset.slug }}"
                       data-credits="{{ preset.credits_cost }}"
                       data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
-                      {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
+                      {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
                 {{ preset.label }}
               </option>
             {% endfor %}

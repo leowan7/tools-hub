@@ -279,6 +279,53 @@ def test_submit_rejects_unknown_preset(app_with_mpnn_flag, monkeypatch):
     assert "Pick a preset" in body or "preset" in body.lower()
 
 
+def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
+    app_with_mpnn_flag, monkeypatch
+):
+    """Cross-tool ``from_job`` handoff sets pre_fill['preset']='pilot'.
+    MPNN has no 'pilot' option. Template must remap to 'standalone' so
+    the user's backbone is actually used — otherwise ``loop.first``
+    silently selects 'smoke', which runs the baked 1HEW fixture and
+    burns a credit on the wrong target (Codex P1)."""
+    import re
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "app.load_user_context",
+        lambda: SimpleNamespace(
+            user_id="u1", tier="free", balance=10, email="user@example.com"
+        ),
+    )
+    mock_src = SimpleNamespace(
+        id="src-job-abc",
+        tool="boltzgen",
+        inputs={
+            "target_chain": "A",
+            "hotspot_residues": [10, 20, 30],
+            "_pdb_storage_path": "u1/jobs/src-job-abc/target.pdb",
+            "_pdb_filename": "1cnn.pdb",
+        },
+    )
+    monkeypatch.setattr(
+        "app.get_job",
+        lambda job_id, user_id: mock_src if job_id == "src-job-abc" else None,
+    )
+    client = app_with_mpnn_flag.test_client()
+    _login_session(client)
+    resp = client.get("/tools/mpnn?from_job=src-job-abc")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    smoke_opt = re.search(r'<option value="smoke"[^>]*>', body)
+    standalone_opt = re.search(r'<option value="standalone"[^>]*>', body)
+    assert smoke_opt and standalone_opt, "expected both preset options rendered"
+    assert "selected" in standalone_opt.group(0), (
+        "pilot->standalone remap failed: standalone option was not selected"
+    )
+    assert "selected" not in smoke_opt.group(0), (
+        "smoke option should not be selected on a handoff (would run wrong PDB)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 5 — Modal webhook handler accepts/rejects correctly
 # ---------------------------------------------------------------------------
