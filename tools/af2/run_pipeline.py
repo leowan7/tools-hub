@@ -583,9 +583,18 @@ def parse_af2_output(
     total_aa = _fasta_total_aa(fasta)
     num_chains = _fasta_num_chains(fasta)
 
+    plddt_floats = [float(x) for x in plddt]
+    mean_plddt = (
+        round(sum(plddt_floats) / len(plddt_floats), 2)
+        if plddt_floats
+        else 0.0
+    )
+
     return {
         "pdb_b64": pdb_b64,
-        "plddt_per_residue": [float(x) for x in plddt],
+        "plddt_per_residue": plddt_floats,
+        "mean_plddt": mean_plddt,
+        "plddt_mean": mean_plddt,  # alias — D3 emits mean_plddt; harness accepts either.
         "pae_matrix_b64": pae_matrix_b64,
         "pae_shape": pae_shape,
         "ptm": float(ptm) if ptm is not None else None,
