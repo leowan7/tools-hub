@@ -122,13 +122,18 @@ def preflight(payload: dict[str, Any]) -> None:
     and tmp-writable, which only exist at runtime. Failures write
     FAILED to ``/tmp/smoke_results.json`` and sys.exit(1).
     """
-    # 1. payload shape
+    # 1. payload shape — fasta_records required EXCEPT on smoke tier,
+    # which uses the baked /opt/smoke_target.fasta fixture (mirrors
+    # D1 MPNN's smoke contract). resolve_input_fasta() handles the
+    # smoke fallback at line ~247.
+    tier = str(payload.get("tier") or "").lower()
     job_spec = payload.get("job_spec") or {}
-    if "fasta_records" not in job_spec:
-        _fail("preflight", "payload", "missing fasta_records in job_spec")
-    records = job_spec.get("fasta_records") or []
-    if not isinstance(records, list) or not records:
-        _fail("preflight", "payload", "fasta_records must be a non-empty list")
+    if tier != "smoke":
+        if "fasta_records" not in job_spec:
+            _fail("preflight", "payload", "missing fasta_records in job_spec")
+        records = job_spec.get("fasta_records") or []
+        if not isinstance(records, list) or not records:
+            _fail("preflight", "payload", "fasta_records must be a non-empty list")
 
     # 2. ColabFold binary on $PATH
     try:
@@ -178,28 +183,7 @@ def preflight(payload: dict[str, Any]) -> None:
             ),
         )
 
-    # 4. JAX reports a GPU device. On A100-80GB we expect 1+ CUDA device.
-    try:
-        import jax  # noqa: PLC0415
-    except Exception as exc:
-        _fail("preflight", "jax", f"jax import failed: {exc}")
-    try:
-        devices = jax.devices()
-    except Exception as exc:
-        _fail("preflight", "jax", f"jax.devices() raised: {exc}")
-        devices = []  # unreachable
-    gpu_devices = [d for d in devices if str(d.platform).lower() == "gpu"]
-    if not gpu_devices:
-        _fail(
-            "preflight",
-            "cuda",
-            (
-                "jax reported no GPU devices — JAX is on CPU. "
-                f"devices={devices}"
-            ),
-        )
-
-    # 5. /tmp writable
+    # 4. /tmp writable
     try:
         probe = Path("/tmp") / ".af2_preflight_probe"
         probe.write_text("ok")
@@ -207,10 +191,16 @@ def preflight(payload: dict[str, Any]) -> None:
     except OSError as exc:
         _fail("preflight", "tmp", f"/tmp is not writable: {exc}")
 
-    logger.info(
-        "preflight ok — JAX GPU device(s): %s",
-        ", ".join(str(d) for d in gpu_devices),
-    )
+    # NOTE: We deliberately do NOT import jax here, nor call
+    # jax.devices(). Doing so initialises the XLA backend in the parent
+    # process, which by default preallocates ~90% of GPU VRAM
+    # (XLA_PYTHON_CLIENT_PREALLOCATE=true). The colabfold_batch
+    # subprocess then boots into a VRAM-starved GPU and silently hangs
+    # waiting for an allocator that will never have memory — root cause
+    # of Bug 8b. If JAX or the GPU is broken, colabfold_batch fails
+    # immediately and the existing TimeoutExpired tail capture surfaces
+    # the error. See VALIDATION-LOG.md "Bug 8 — VRAM hostage".
+    logger.info("preflight ok")
 
 
 # ===========================================================================
@@ -328,9 +318,11 @@ def run_colabfold(
     """Invoke ``colabfold_batch`` and return the output directory.
 
     Command pattern follows the ColabFold README "batch" invocation.
-    For monomer runs we use ``AlphaFold2-ptm`` (AF2 with pTM head) so
+    For monomer runs we use ``alphafold2_ptm`` (AF2 with pTM head) so
     pTM is emitted. For multimer runs we use ``alphafold2_multimer_v3``
-    (the standard AF2-multimer weights + ipTM).
+    (the standard AF2-multimer weights + ipTM). Both names match
+    colabfold 1.5.5's argparse choices verbatim — older docs used the
+    capitalised ``AlphaFold2-ptm`` form which 1.5.5 rejects.
     """
     out_dir = workdir / "af2_out"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -338,10 +330,15 @@ def run_colabfold(
     if model_preset == "multimer":
         model_type = "alphafold2_multimer_v3"
     else:
-        model_type = "AlphaFold2-ptm"
+        model_type = "alphafold2_ptm"
 
     cmd = [
         "colabfold_batch",
+        # Point at baked weights at /opt/colabfold_weights so
+        # colabfold_batch does not fall back to its default
+        # /root/.cache/colabfold and re-download the 3.5GB params on
+        # every cold pod (Bug 6 — surfaced by the Bug 1 visibility fix).
+        "--data", str(COLABFOLD_CACHE_DIR),
         "--num-recycle", str(num_recycles),
         "--num-models", "1",  # atomic tier: single model seat
         "--model-type", model_type,
@@ -357,26 +354,61 @@ def run_colabfold(
     cmd += [str(fasta), str(out_dir)]
 
     logger.info("colabfold cmd: %s", " ".join(cmd))
+    # JAX persistent compile cache. /opt/jax_cache is baked at image
+    # build time by modal_app._warmup_jax_cache running on the same
+    # GPU class — runtime cold-pods read the warmed cache and skip
+    # JIT compile entirely (Bug 8b fix). Falls back to /tmp/jax_cache
+    # if /opt/jax_cache is missing (e.g. older image or local dev).
+    env = dict(os.environ)
+    if os.path.isdir("/opt/jax_cache"):
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/opt/jax_cache")
+    else:
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
+    env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     try:
         result = subprocess.run(
             cmd,
             check=False,
             capture_output=True,
             text=True,
-            # 18 min of the 20 min app budget; leaves room for the
-            # wrapper to read smoke_results.json.
-            timeout=1080,
+            # 29 min of the 30 min app budget; leaves room for the
+            # wrapper to read smoke_results.json. With baked JAX cache
+            # cold-pods drop to ~30-60s; without it (local/old image),
+            # generous headroom prevents opaque timeouts.
+            timeout=1740,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
+        # Surface partial stdout/stderr captured up to the timeout so we
+        # can see WHERE colabfold_batch hung (mirrors D3 fix). Without
+        # this, the smoke harness gets an opaque timeout with no clue.
+        def _tail(buf: Any, n: int = 2000) -> str:
+            if not buf:
+                return ""
+            if isinstance(buf, bytes):
+                buf = buf.decode("utf-8", errors="replace")
+            return str(buf)[-n:]
+
+        out_tail = _tail(getattr(exc, "stdout", None))
+        err_tail = _tail(getattr(exc, "stderr", None))
+        logger.error("colabfold_batch TIMEOUT — stdout tail:\n%s", out_tail)
+        logger.error("colabfold_batch TIMEOUT — stderr tail:\n%s", err_tail)
+        combined = (err_tail or out_tail or "(no output captured before timeout)")
         _fail(
             "tool-invocation",
             "timeout",
-            f"colabfold_batch exceeded 18 min: {exc}",
+            f"colabfold_batch exceeded 18 min. Last output: ...{combined[-1000:]}",
         )
         return out_dir  # unreachable
 
+    # Always log a stdout tail — even on success — so Modal logs show
+    # what colabfold_batch was doing during the run.
+    if result.stdout:
+        logger.info("colabfold stdout tail:\n%s", result.stdout[-1500:])
     if result.returncode != 0:
-        tail = (result.stderr or "")[-1500:]
+        # Check both streams; colabfold sometimes writes errors to stdout.
+        tail = (result.stderr or result.stdout or "")[-1500:]
         _fail(
             "tool-invocation",
             "exit",

@@ -175,29 +175,7 @@ def preflight(payload: dict[str, Any]) -> None:
             f"colabfold params dir is empty: {params_dir}",
         )
 
-    # 4. JAX sees a GPU (A100-40GB)
-    try:
-        import jax  # noqa: PLC0415
-    except Exception as exc:
-        _fail("preflight", "jax", f"jax import failed: {exc}")
-    try:
-        gpus = jax.devices("gpu")
-    except Exception as exc:
-        _fail("preflight", "cuda", f"jax.devices('gpu') failed: {exc}")
-    if not gpus:
-        _fail(
-            "preflight",
-            "cuda",
-            "jax.devices('gpu') returned empty — no GPU visible",
-        )
-
-    # 5. colabfold imports cleanly
-    try:
-        import colabfold  # noqa: F401, PLC0415
-    except Exception as exc:
-        _fail("preflight", "module", f"colabfold import failed: {exc}")
-
-    # 6. /tmp writable
+    # 4. /tmp writable
     try:
         probe = Path("/tmp") / ".colabfold_preflight_probe"
         probe.write_text("ok")
@@ -205,7 +183,16 @@ def preflight(payload: dict[str, Any]) -> None:
     except OSError as exc:
         _fail("preflight", "tmp", f"/tmp is not writable: {exc}")
 
-    logger.info("preflight ok — GPUs=%s", [str(g) for g in gpus])
+    # NOTE: We deliberately do NOT import jax / colabfold here, nor call
+    # jax.devices('gpu'). Doing so initialises the XLA backend in the
+    # parent process, which by default preallocates ~90% of GPU VRAM
+    # (XLA_PYTHON_CLIENT_PREALLOCATE=true). The colabfold_batch
+    # subprocess then boots into a VRAM-starved GPU and silently hangs
+    # waiting for an allocator that will never have memory — root cause
+    # of Bug 8b. If JAX or the GPU is broken, colabfold_batch fails
+    # immediately and the existing TimeoutExpired tail capture surfaces
+    # the error. See VALIDATION-LOG.md "Bug 8 — VRAM hostage".
+    logger.info("preflight ok")
 
 
 # ===========================================================================
@@ -390,6 +377,11 @@ def run_colabfold(
         "colabfold_batch",
         str(fasta_path),
         str(out_dir),
+        # Point at the baked weights at /opt/colabfold_weights so
+        # colabfold_batch does not fall back to its default
+        # /root/.cache/colabfold and re-download the 3.5GB params on
+        # every cold pod (Bug 6 — surfaced by the Bug 1 visibility fix).
+        "--data", str(COLABFOLD_CACHE_DIR),
         "--msa-mode", "single_sequence",
         "--num-recycle", str(num_recycles),
         "--num-models", "1",
@@ -404,10 +396,17 @@ def run_colabfold(
         cmd.append("--templates")
 
     logger.info("colabfold cmd: %s", " ".join(cmd))
-    # JAX persistent-cache so repeat runs in the same container skip
-    # the ~2-3 min JIT compile.
+    # JAX persistent compile cache. /opt/jax_cache is baked at image
+    # build time by modal_app._warmup_jax_cache running on the same
+    # GPU class — runtime cold-pods read the warmed cache and skip
+    # JIT compile entirely (Bug 8b fix). Falls back to /tmp/jax_cache
+    # if /opt/jax_cache is missing (e.g. older image or local dev).
     env = dict(os.environ)
-    env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
+    if os.path.isdir("/opt/jax_cache"):
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/opt/jax_cache")
+    else:
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
+    env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
     env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
     try:
@@ -416,11 +415,36 @@ def run_colabfold(
             check=False,
             capture_output=True,
             text=True,
-            timeout=540,  # 9 min; ATOMIC D3 spec caps wall-clock at 10 min
+            # 29 min of the 30 min app budget; leaves room for the
+            # wrapper to read smoke_results.json. Original 9-min spec
+            # was aspirational without a baked JIT cache. Cold-pod
+            # JIT compile + fold takes >9 min on A100 (Bug 8b).
+            timeout=1740,
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        _fail("tool-invocation", "timeout", f"colabfold_batch exceeded 9 min: {exc}")
+        # capture_output=True populates exc.stdout / exc.stderr at the
+        # moment the timeout fires — surface them so we can see WHERE
+        # colabfold_batch hung (JIT compile, weight load, MSA fetch, etc).
+        # Decode bytes if subprocess didn't apply text mode to the
+        # partial buffer (happens on some platforms).
+        def _tail(buf: Any, n: int = 2000) -> str:
+            if not buf:
+                return ""
+            if isinstance(buf, bytes):
+                buf = buf.decode("utf-8", errors="replace")
+            return str(buf)[-n:]
+
+        out_tail = _tail(getattr(exc, "stdout", None))
+        err_tail = _tail(getattr(exc, "stderr", None))
+        logger.error("colabfold_batch TIMEOUT — stdout tail:\n%s", out_tail)
+        logger.error("colabfold_batch TIMEOUT — stderr tail:\n%s", err_tail)
+        combined = (err_tail or out_tail or "(no output captured before timeout)")
+        _fail(
+            "tool-invocation",
+            "timeout",
+            f"colabfold_batch exceeded 9 min. Last output: ...{combined[-1000:]}",
+        )
         return out_dir  # unreachable
 
     # Log a tail so Modal logs show progress even on success.

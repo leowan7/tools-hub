@@ -38,7 +38,10 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-80GB"
-_MAX_SESSION_S = 1200  # 20 min per D2 spec (MSA + fold + inline I/O).
+# 30 min — cold-pod JAX JIT compile + fold takes >18 min for monomer
+# on cold A100 (Bug 8b). Until image.run_function-baked JIT cache
+# lands, give cold smokes enough headroom to actually complete.
+_MAX_SESSION_S = 1800
 _PYTHON = "python3"
 
 
@@ -78,6 +81,11 @@ image = (
     modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
 )
+# NOTE: Option A (image.run_function JAX cache bake) was attempted and
+# rolled back — colabfold_batch consistently exceeds 25 min on Modal
+# A100 even during build, so we cannot bake the JIT cache via that
+# pattern. Root cause not yet identified. Until then, runtime relies on
+# B+ generous timeouts.
 
 app = modal.App("ranomics-af2-prod")
 
