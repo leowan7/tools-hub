@@ -54,15 +54,33 @@ RUN python3 -m pip install --no-cache-dir \
 # ESMFold in transformers lazily imports openfold.np.residue_constants
 # + openfold.utils.rigid_utils for its structure module. Install the
 # headless openfold build (without the full training stack).
-RUN python3 -m pip install --no-cache-dir \
-    "git+https://github.com/aqlaboratory/openfold.git@4b41059694619831a7db195b7e0988fc4ff3a307"
+#
+# openfold's pinned commit (Jul 2023) hardcodes setup.py extra_compile_args
+# to {"cxx": ["-O3"], "nvcc": ["-O3"]} — no -std=c++17. PyTorch 2.1's ATen
+# headers now hard-require C++17 (#error otherwise), so nvcc fails when
+# compiling softmax_cuda_kernel.cu. CXXFLAGS env var does NOT propagate
+# through PyTorch's CUDAExtension build flow, so we clone + sed-patch
+# setup.py inline to inject -std=c++17 into both compiler flag lists.
+RUN git clone https://github.com/aqlaboratory/openfold.git /tmp/openfold && \
+    cd /tmp/openfold && \
+    git checkout 4b41059694619831a7db195b7e0988fc4ff3a307 && \
+    # The actual setup.py uses single quotes and explicitly passes
+    # '-std=c++14' to nvcc. The .cpp host code already gets -std=c++17
+    # from torch's BuildExtension defaults, but the .cu file inherits
+    # openfold's c++14 override. Bump that single string to c++17.
+    sed -i "s/'-std=c++14'/'-std=c++17'/g" setup.py && \
+    grep -n "std=c++" setup.py || (echo "ERROR: c++ flag not found in setup.py after sed" && exit 1) && \
+    TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;9.0" \
+    python3 -m pip install --no-cache-dir . && \
+    cd / && rm -rf /tmp/openfold
 
 # ---------- Bake ESMFold v1 weights ----------
 # Download + cache the ~15 GB ``facebook/esmfold_v1`` checkpoint so
 # cold-start pods don't pay the download cost. Uses the same
 # ``EsmForProteinFolding.from_pretrained`` call ``run_pipeline.py``
 # uses at runtime, so an outright weight/API mismatch fails at build.
-RUN python3 -c "import os; os.environ['HF_HOME']='/opt/hf_cache'; \
+RUN HF_HUB_ENABLE_HF_TRANSFER=0 python3 -c "import os; os.environ['HF_HOME']='/opt/hf_cache'; \
+os.environ['HF_HUB_ENABLE_HF_TRANSFER']='0'; \
 from transformers import EsmForProteinFolding, AutoTokenizer; \
 tok = AutoTokenizer.from_pretrained('facebook/esmfold_v1'); \
 mdl = EsmForProteinFolding.from_pretrained('facebook/esmfold_v1'); \

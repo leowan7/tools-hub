@@ -169,24 +169,33 @@ def preflight(payload: dict[str, Any]) -> None:
     except Exception as exc:
         _fail("preflight", "cuda", f"CUDA probe failed: {exc}")
 
-    # 4. ESMFold weights present in HF cache
+    # 4. ESMFold weights present in HF cache. With both HF_HOME and
+    # TRANSFORMERS_CACHE set in the Dockerfile, transformers writes
+    # directly under TRANSFORMERS_CACHE (no /hub/ subdir). Check both
+    # layouts so we are robust to env-var changes.
     hf_home = os.environ.get("HF_HOME", "/opt/hf_cache")
-    hub_dir = Path(hf_home) / "hub"
-    if not hub_dir.is_dir():
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE", hf_home)
+    candidate_dirs = [
+        Path(hf_home) / "hub",                # standard hf_hub layout
+        Path(transformers_cache),             # flat layout when TRANSFORMERS_CACHE set
+        Path(hf_home),                        # fallback
+    ]
+    hub_dir = next((d for d in candidate_dirs if d.is_dir()), None)
+    if hub_dir is None:
         _fail(
             "preflight",
             "weights",
-            f"HF hub dir missing: {hub_dir}",
+            f"no HF cache dir found among {[str(d) for d in candidate_dirs]}",
         )
     # The ``facebook/esmfold_v1`` snapshot lives under
-    # ``hub/models--facebook--esmfold_v1/``. Its presence confirms the
-    # build-time bake succeeded.
+    # ``models--facebook--esmfold_v1/`` regardless of layout.
     esmfold_snapshots = list(hub_dir.glob("models--facebook--esmfold_v1"))
     if not esmfold_snapshots:
         _fail(
             "preflight",
             "weights",
-            f"facebook/esmfold_v1 snapshot not found under {hub_dir}",
+            f"facebook/esmfold_v1 snapshot not found under {hub_dir} "
+            f"(checked: {[str(d) for d in candidate_dirs]})",
         )
 
     # 5. /tmp writable
