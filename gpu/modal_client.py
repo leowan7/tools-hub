@@ -112,7 +112,7 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("boltzgen", "pilot"):          3600,
     ("boltzgen", "full"):           7200,
     ("pxdesign", "smoke"):          1800,
-    ("pxdesign", "mini_pilot"):     1800,
+    ("pxdesign", "mini_pilot"):     5400,   # observed 35-40 min; 1800 was tight against outer timeout
     ("pxdesign", "pilot"):          3600,
     ("rfdiffusion", "pilot"):       1800,   # blocked pending validation
     ("rfdiffusion", "full"):        3600,
