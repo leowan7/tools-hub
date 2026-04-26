@@ -128,6 +128,61 @@ def _fail(bucket: str, check: str, detail: str) -> None:
 # ===========================================================================
 
 
+def _preflight_jax_gpu(timeout: int = 60) -> None:
+    """Validate JAX can init on GPU + run a tiny JIT in <30 s.
+
+    Runs as a fresh subprocess so this process stays JAX-free (the
+    parent must not import JAX — see the VRAM-hostage note in
+    ``preflight()``). If JAX / cuDNN cannot init on this image, fails
+    in seconds with a useful stderr instead of letting colabfold_batch
+    silently hang for 18-29 min on cold A100 (Bug 8).
+    """
+    script = (
+        "import time, sys; t0 = time.time(); "
+        "import jax, jax.numpy as jnp; "
+        "devs = jax.devices('gpu'); "
+        "assert devs, 'no GPU devices found'; "
+        "x = jnp.ones((128, 128)); "
+        "y = jax.jit(lambda a: a @ a)(x).block_until_ready(); "
+        "print(f'preflight ok jax={jax.__version__} dev={devs[0].device_kind} "
+        "sum={float(y.sum()):.1f} elapsed={time.time()-t0:.1f}s')"
+    )
+    env = dict(os.environ)
+    # Mirror the allocator flags applied to the colabfold_batch
+    # subprocess — keeps preflight from preallocating most of the VRAM
+    # and starving the fold that follows.
+    env.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+    env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    env.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+    env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "4.0")
+    env.setdefault("TF_FORCE_UNIFIED_MEMORY", "1")
+    if os.path.isdir("/opt/jax_cache"):
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/opt/jax_cache")
+    else:
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
+    env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=timeout, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        _fail(
+            "preflight", "jax-gpu",
+            f"JAX GPU preflight timed out after {timeout}s — "
+            "JAX/cuDNN cannot init on this pod.",
+        )
+        return  # unreachable
+    if result.returncode != 0:
+        logger.error("JAX preflight FAILED — stderr:\n%s", result.stderr[-2000:])
+        _fail(
+            "preflight", "jax-gpu",
+            f"JAX GPU preflight failed (exit {result.returncode}): "
+            f"{result.stderr.strip()[-500:]}",
+        )
+    logger.info("JAX preflight: %s", result.stdout.strip())
+
+
 def preflight(payload: dict[str, Any]) -> None:
     """Cheap runtime sanity check. Runs in well under 60 s.
 
@@ -183,15 +238,14 @@ def preflight(payload: dict[str, Any]) -> None:
     except OSError as exc:
         _fail("preflight", "tmp", f"/tmp is not writable: {exc}")
 
-    # NOTE: We deliberately do NOT import jax / colabfold here, nor call
-    # jax.devices('gpu'). Doing so initialises the XLA backend in the
-    # parent process, which by default preallocates ~90% of GPU VRAM
-    # (XLA_PYTHON_CLIENT_PREALLOCATE=true). The colabfold_batch
-    # subprocess then boots into a VRAM-starved GPU and silently hangs
-    # waiting for an allocator that will never have memory — root cause
-    # of Bug 8b. If JAX or the GPU is broken, colabfold_batch fails
-    # immediately and the existing TimeoutExpired tail capture surfaces
-    # the error. See VALIDATION-LOG.md "Bug 8 — VRAM hostage".
+    # NOTE: We deliberately do NOT import jax in this process. Importing
+    # jax here would initialise XLA in the parent and preallocate ~90%
+    # of GPU VRAM, starving the colabfold_batch subprocess. Instead we
+    # validate JAX can init on the GPU via a short subprocess
+    # (_preflight_jax_gpu) so any cuDNN / driver mismatch fails fast
+    # with a clear error rather than 18-29 min of silent JIT hang.
+    _preflight_jax_gpu(timeout=60)
+
     logger.info("preflight ok")
 
 
@@ -396,11 +450,10 @@ def run_colabfold(
         cmd.append("--templates")
 
     logger.info("colabfold cmd: %s", " ".join(cmd))
-    # JAX persistent compile cache. /opt/jax_cache is baked at image
-    # build time by modal_app._warmup_jax_cache running on the same
-    # GPU class — runtime cold-pods read the warmed cache and skip
-    # JIT compile entirely (Bug 8b fix). Falls back to /tmp/jax_cache
-    # if /opt/jax_cache is missing (e.g. older image or local dev).
+    # Subprocess env. Inherits the container env (TF / XLA flags set in
+    # Dockerfile) and adds the LocalColabFold-prescribed VRAM / allocator
+    # flags as a runtime safety net in case the Dockerfile is older than
+    # the runtime helper.
     env = dict(os.environ)
     if os.path.isdir("/opt/jax_cache"):
         env.setdefault("JAX_COMPILATION_CACHE_DIR", "/opt/jax_cache")
@@ -408,54 +461,59 @@ def run_colabfold(
         env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
     env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
     env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    # LocalColabFold's prescribed env-var set for TF/JAX co-tenancy on a
+    # single GPU. TF (pulled in for tf.data feature pipeline) defaults to
+    # claiming nearly all VRAM at import time — JAX then can't allocate
+    # and silently hangs during XLA JIT. These flags force both
+    # frameworks into growth-allocation mode.
+    env.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+    env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    env.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+    env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "4.0")
+    env.setdefault("TF_FORCE_UNIFIED_MEMORY", "1")
+    # Silence the duplicate "oneDNN custom operations are on" log line
+    # that appears twice in the same PID during AF2 multimer SavedModel
+    # restore. With ONEDNN off, a single appearance means TF imported
+    # once; a double appearance means it imported twice (Bug 8 H6 probe).
+    env.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
     try:
         result = subprocess.run(
             cmd,
             check=False,
-            capture_output=True,
-            text=True,
+            # Live-stream colabfold_batch output to Modal logs. The
+            # earlier capture_output=True hid 18-29 min of "silent" hang
+            # behind buffered stdout — without live streaming we could
+            # not see WHERE colabfold_batch stalled. The Modal wrapper
+            # already inherits this stdout/stderr (modal_app.py uses
+            # the same pattern), so colabfold output flows through to
+            # the Modal function logs.
+            stdout=sys.stdout,
+            stderr=sys.stderr,
             # 29 min of the 30 min app budget; leaves room for the
-            # wrapper to read smoke_results.json. Original 9-min spec
-            # was aspirational without a baked JIT cache. Cold-pod
-            # JIT compile + fold takes >9 min on A100 (Bug 8b).
+            # wrapper to read smoke_results.json.
             timeout=1740,
             env=env,
         )
-    except subprocess.TimeoutExpired as exc:
-        # capture_output=True populates exc.stdout / exc.stderr at the
-        # moment the timeout fires — surface them so we can see WHERE
-        # colabfold_batch hung (JIT compile, weight load, MSA fetch, etc).
-        # Decode bytes if subprocess didn't apply text mode to the
-        # partial buffer (happens on some platforms).
-        def _tail(buf: Any, n: int = 2000) -> str:
-            if not buf:
-                return ""
-            if isinstance(buf, bytes):
-                buf = buf.decode("utf-8", errors="replace")
-            return str(buf)[-n:]
-
-        out_tail = _tail(getattr(exc, "stdout", None))
-        err_tail = _tail(getattr(exc, "stderr", None))
-        logger.error("colabfold_batch TIMEOUT — stdout tail:\n%s", out_tail)
-        logger.error("colabfold_batch TIMEOUT — stderr tail:\n%s", err_tail)
-        combined = (err_tail or out_tail or "(no output captured before timeout)")
+    except subprocess.TimeoutExpired:
+        # With live streaming, exc.stdout / exc.stderr are None — the
+        # output already went to Modal's function logs. Reference those.
+        logger.error("colabfold_batch TIMEOUT after 29 min — see Modal function logs for live output above.")
         _fail(
             "tool-invocation",
             "timeout",
-            f"colabfold_batch exceeded 9 min. Last output: ...{combined[-1000:]}",
+            "colabfold_batch exceeded 29 min — see Modal function logs for live output.",
         )
         return out_dir  # unreachable
 
-    # Log a tail so Modal logs show progress even on success.
-    if result.stdout:
-        logger.info("colabfold stdout tail:\n%s", result.stdout[-1500:])
     if result.returncode != 0:
-        tail = (result.stderr or result.stdout or "")[-2000:]
+        # Live streaming already wrote to Modal logs above; just point
+        # at them in the failure record.
+        logger.error("colabfold_batch exit %d — see Modal function logs above.", result.returncode)
         _fail(
             "tool-invocation",
             "exit",
-            f"colabfold_batch exited {result.returncode}: ...{tail}",
+            f"colabfold_batch exited {result.returncode} — see Modal function logs.",
         )
 
     logger.info("colabfold exit 0")

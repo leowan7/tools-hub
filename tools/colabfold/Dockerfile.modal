@@ -42,7 +42,10 @@ RUN find / -xdev -uid +65533 -exec chown root:root {} + 2>/dev/null || true
 # ---------- Python utilities ----------
 # biopython: FASTA parsing + sequence validation.
 # requests: download user-uploaded FASTA from presigned URL on standalone tier.
-RUN python3 -m pip install --no-cache-dir requests biopython
+# numpy<2 mirrors the D2 AF2 image pin: JAX / AF2 / colabfold were
+# compiled against NumPy 1.x and raise opaque failures under NumPy 2.x
+# at runtime even though imports succeed (D1 MPNN Codex P1 finding).
+RUN python3 -m pip install --no-cache-dir requests biopython "numpy<2"
 
 # ---------- Bake a small smoke fixture ----------
 # Human ubiquitin (76 aa monomer, UniProt P0CG47). Tiny, well-folded,

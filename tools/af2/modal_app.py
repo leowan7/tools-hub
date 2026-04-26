@@ -111,6 +111,21 @@ def run_tool(payload: Any) -> dict:
     env = _merged_environment(payload)
     cmd = [_PYTHON, "-u", _RUN_PIPELINE_REMOTE]
 
+    # Clear any stale smoke_results.json from a prior invocation on a
+    # warm Modal container. Without this, if the current run's
+    # run_pipeline.py crashes before writing a fresh file (e.g. early
+    # import error, OOM, sys.exit from preflight with a write failure),
+    # this wrapper would read the previous job's result and
+    # ``gpu.modal_client._interpret_kendrew_return()`` would mark the
+    # new job succeeded with another run's output. Mirrors D3 ColabFold
+    # modal_app.py:123-128 (Codex P1 fix; AF2 was missing it).
+    try:
+        os.remove("/tmp/smoke_results.json")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
+
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
     print(
         f"[run_tool] JOB_ID={env.get('JOB_ID')} TIER={env.get('JOB_TIER')} "
