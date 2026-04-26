@@ -1,0 +1,28 @@
+{# RFdiffusion results partial -- included by job_detail.html on status=succeeded #}
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output     = job.result or {} %}
+{% set candidates = output.get('candidates', []) %}
+{% set columns    = ['ipTM', 'pLDDT', 'i_pAE', 'filter_status'] %}
+{% set clone_url  = url_for('tool_form', tool='rfdiffusion', clone_from=job.id) %}
+
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='rfdiffusion',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=output.get('tier'),
+    gpu_seconds=output.get('gpu_seconds'),
+    send_target_tools=send_target_tools) %}
+  <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;">
+    <p class="subtitle" style="margin:0;">
+      <strong>Zero candidates returned.</strong>
+      RFdiffusion can return zero candidates if every generated backbone
+      fails AF2 multimer validation or the post-design filter. Try the
+      smoke preset (skip_af2 stub) to confirm the pipeline reaches
+      output stage, widen the binder length range, or escalate to pilot
+      tier with hotspots tuned for your target.
+    </p>
+  </div>
+{% endcall %}

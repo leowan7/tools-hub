@@ -1,0 +1,431 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
+
+{% block title %}{{ adapter.label }} -- Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# RFdiffusion form mirrors the rfantibody two-panel layout: form on
+     the left, static "About RFdiffusion" reference panel on the right.
+     Scoped styles live here (prefixed .rfdiffusion-) so we don't touch
+     the shared stylesheet. Copy is kept in sync with
+     tools/rfdiffusion/meta.py by hand. #}
+  <style>
+    .rfdiffusion-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .rfdiffusion-layout { grid-template-columns: 1fr; }
+    }
+    .rfdiffusion-about h3 {
+      font-family: var(--font-body);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      color: var(--accent-text);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 1.25rem 0 0.5rem;
+    }
+    .rfdiffusion-about h3:first-child { margin-top: 0; }
+    .rfdiffusion-about p,
+    .rfdiffusion-about li {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+    .rfdiffusion-about ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .rfdiffusion-about ul li {
+      padding: 0.25rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .rfdiffusion-about ul li:last-child { border-bottom: none; }
+    .rfdiffusion-about code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-primary);
+    }
+    .rfdiffusion-runtime-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .rfdiffusion-runtime-table th {
+      text-align: left;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.62rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .rfdiffusion-runtime-table td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      vertical-align: top;
+    }
+    .rfdiffusion-runtime-table tr:last-child td { border-bottom: none; }
+    .rfdiffusion-cost-preview {
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--accent-text);
+      margin: -0.75rem 0 1.25rem;
+      padding: 0.5rem 0.75rem;
+      border-left: 2px solid var(--accent-dim);
+      background: var(--accent-glow);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .rfdiffusion-binder-length {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      max-width: 320px;
+      margin-bottom: 0.35rem;
+    }
+    .rfdiffusion-binder-length input[type="number"] {
+      width: 100px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+    }
+    .rfdiffusion-binder-length .sep {
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+    }
+
+    /* Hotspot picker -- shared aesthetic with rfantibody / boltzgen / bindcraft / pxdesign. */
+    .hotspot-picker {
+      margin-bottom: 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      overflow: hidden;
+    }
+    .hotspot-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .hotspot-picker-header .label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0;
+    }
+    .hotspot-picker-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+    }
+    .hotspot-picker-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-dim);
+    }
+    .hotspot-viewer {
+      width: 100%;
+      height: 320px;
+      background: var(--bg-deep);
+      position: relative;
+      display: none;
+    }
+    .hotspot-viewer-empty {
+      padding: 1.75rem 1rem;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 0.82rem;
+      font-family: var(--font-body);
+    }
+    .hotspot-viewer-empty code {
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .hotspot-viewer-error {
+      padding: 1rem;
+      color: #f87171;
+      font-size: 0.85rem;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  {# Preset runtime map mirrors tools/rfdiffusion/meta.py::preset_runtime_rows.
+     Kept here so the <option> data-attrs can be read without round-tripping
+     through app.py. Update both files together. #}
+  {% set preset_minutes = {
+    'smoke': '2',
+    'mini_pilot': '7',
+    'pilot': '15-30',
+  } %}
+
+  <div class="rfdiffusion-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
+          <select name="preset" id="preset" required
+                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
+            {% for preset in adapter.presets %}
+              <option value="{{ preset.slug }}"
+                      data-credits="{{ preset.credits_cost }}"
+                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
+                      {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
+                {{ preset.label }}
+              </option>
+            {% endfor %}
+          </select>
+          <div id="preset-cost-preview" class="rfdiffusion-cost-preview" aria-live="polite"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+
+          <div id="pilot-fields" style="display: none;">
+            {{ pdb_source_banner(pdb_source) }}
+            <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Upload the target structure as .pdb, .cif, or .mmcif.
+            </div>
+
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+              Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+              Click residues in the 3D viewer below to toggle them in and out of this list.
+            </div>
+
+            {# 3D hotspot picker -- mirrors rfantibody/boltzgen/bindcraft/pxdesign forms.
+               Renders only after the user uploads a PDB; typed entry stays
+               authoritative, the picker only mutates the input. #}
+            <div class="hotspot-picker" data-hotspot-picker>
+              <div class="hotspot-picker-header">
+                <span class="label">3D residue picker</span>
+                <div class="hotspot-picker-controls">
+                  <label>
+                    <input type="checkbox" id="hotspot-surface-toggle"> Surface
+                  </label>
+                  <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+                </div>
+              </div>
+              <div id="hotspot-empty" class="hotspot-viewer-empty">
+                Upload a target PDB above to enable click-to-pick. Typed
+                entry in the <code>Hotspot residues</code> field above also works.
+              </div>
+              <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+            </div>
+
+            <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+            <div class="rfdiffusion-binder-length">
+              <input type="number" name="binder_length_min" id="binder_length_min"
+                     min="30" max="150" value="55" placeholder="min">
+              <span class="sep">--</span>
+              <input type="number" name="binder_length_max" id="binder_length_max"
+                     min="30" max="150" value="65" placeholder="max">
+            </div>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Range RFdiffusion samples within. Defaults match the Kendrew
+              mini_pilot preset (55-65 residues). 30-150 allowed.
+            </div>
+
+            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+            <input type="number" name="num_designs" id="num_designs" min="1" max="5" value="2"
+                   style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              How many candidates to sample (1-5). Each is independently scored by AF2 multimer (ipTM, pLDDT, i_pAE).
+            </div>
+          </div>
+
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Smoke / preview tier uses our reference PD-L1 IgV (residues 18-132, chain A); no PDB upload needed.
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
+            Pilot tier runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed (~15-30 min on A100-40GB).
+          </div>
+
+          <button type="submit" class="btn-primary">Submit run</button>
+        </form>
+      </div>
+    </div>
+
+    <aside class="panel rfdiffusion-about" aria-labelledby="about-title">
+      <div class="panel-header">
+        <span class="panel-title" id="about-title">About RFdiffusion</span>
+      </div>
+      <div class="panel-body">
+        <h3>What it wraps</h3>
+        <p>
+          RFdiffusion (<a href="{{ paper_url }}">Watson et al., Nature 2023</a>).
+          Diffusion-based de novo backbone generator from the Baker lab,
+          composed with ProteinMPNN sequence design and JAX AF2 multimer
+          validation. Candidates carry real ipTM / pLDDT / i_pAE scores
+          from the AF2 model.
+          Repo: <a href="{{ github_url }}">RosettaCommons/RFdiffusion</a>.
+        </p>
+
+        <h3>When to use</h3>
+        <p>
+          Pick RFdiffusion for general de novo binder design with AF2
+          multimer scoring. For antibody / nanobody scaffolds use
+          RFantibody. For AF2 initial-guess scoring instead of multimer
+          use PXDesign. For hallucination-driven binders without AF2
+          filtering use BindCraft.
+        </p>
+
+        <h3>Prerequisites</h3>
+        <ul>
+          <li>PDB of the target antigen (pilot tier only)</li>
+          <li>Chain ID of the antigen within that PDB</li>
+          <li>Hotspot residues covering the intended epitope</li>
+          <li>Binder length range (30-150 residues)</li>
+        </ul>
+
+        <h3>Input glossary</h3>
+        <ul>
+          <li><strong>Hotspot residues</strong> -- target-chain residue indices the binder should contact. These define the epitope the diffusion model biases toward.</li>
+          <li><strong>Binder length</strong> -- range RFdiffusion samples within, in residues. Tighter ranges sample faster.</li>
+          <li><strong>Num designs</strong> -- how many candidates to sample. Each is independently scored by AF2 multimer.</li>
+          <li><strong>ipTM / pLDDT / i_pAE</strong> -- AF2 multimer confidence metrics. Higher ipTM and pLDDT, lower i_pAE indicates a more confident interface prediction.</li>
+        </ul>
+
+        <h3>Runtime &amp; cost</h3>
+        <table class="rfdiffusion-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for preset in adapter.presets %}
+              <tr>
+                <td>{{ preset.slug }}</td>
+                <td>{{ preset.credits_cost }}</td>
+                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <p style="margin-top: 0.6rem;">
+          Pilot runs email you when complete. Unused GPU seconds are
+          refunded in credits when a run finishes faster than its budget.
+        </p>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.querySelector('form');
+      var presetSelect = document.getElementById('preset');
+      var pilotFields = document.getElementById('pilot-fields');
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!form || !presetSelect) return;
+
+      var descriptions = {
+        {% for preset in adapter.presets %}
+          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
+        {% endfor %}
+      };
+
+      function sync() {
+        var value = presetSelect.value;
+        if (pilotFields) {
+          pilotFields.style.display = (value === 'pilot') ? 'block' : 'none';
+        }
+        if (costPreview) {
+          var opt = presetSelect.options[presetSelect.selectedIndex];
+          if (opt) {
+            var credits = opt.getAttribute('data-credits');
+            var minutes = opt.getAttribute('data-minutes');
+            costPreview.textContent = credits + ' credits . ~' + minutes + ' min . refunded if shorter';
+          }
+        }
+        if (descEl) {
+          descEl.textContent = descriptions[value] || '';
+        }
+      }
+
+      presetSelect.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+
+  {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
+     production. The picker JS degrades gracefully if NGL fails to load --
+     the typed hotspot field keeps working either way. #}
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (typeof window.initHotspotPicker !== 'function') return;
+      window.initHotspotPicker({
+        pdbInputId: 'target_pdb',
+        hotspotInputId: 'hotspot_residues',
+        chainInputId: 'target_chain',
+        viewerId: 'hotspot-viewer',
+        emptyMessageId: 'hotspot-empty',
+        surfaceToggleId: 'hotspot-surface-toggle',
+        clearBtnId: 'hotspot-clear-btn',
+      });
+    });
+  </script>
+  {{ prefill_script(pre_fill) }}
+{% endblock %}

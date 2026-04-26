@@ -114,7 +114,9 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("pxdesign", "smoke"):          1800,
     ("pxdesign", "mini_pilot"):     5400,   # observed 35-40 min; 1800 was tight against outer timeout
     ("pxdesign", "pilot"):          3600,
-    ("rfdiffusion", "pilot"):       1800,   # blocked pending validation
+    ("rfdiffusion", "smoke"):       600,
+    ("rfdiffusion", "mini_pilot"):  1800,
+    ("rfdiffusion", "pilot"):       1800,
     ("rfdiffusion", "full"):        3600,
     # Wave-0 plumbing fixture.
     ("example-gpu", "smoke"):       60,

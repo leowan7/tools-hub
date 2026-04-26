@@ -39,6 +39,7 @@ PICKER_FORM_TEMPLATES = [
     REPO_ROOT / "templates" / "tools" / "rfantibody_form.html",
     REPO_ROOT / "templates" / "tools" / "bindcraft_form.html",
     REPO_ROOT / "templates" / "tools" / "pxdesign_form.html",
+    REPO_ROOT / "templates" / "tools" / "rfdiffusion_form.html",
 ]
 
 

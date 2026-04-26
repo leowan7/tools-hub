@@ -85,6 +85,7 @@ import tools.esmfold     # noqa: F401 — import to register adapter (D4 atomic)
 import tools.mpnn        # noqa: F401 — import to register adapter (D1 atomic)
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
+import tools.rfdiffusion # noqa: F401 — import to register adapter
 from scout import scout_bp
 from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
