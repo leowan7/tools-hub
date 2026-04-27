@@ -68,19 +68,25 @@ def verify_login(email: str, password: str) -> tuple:
         return False, f"Login failed: {msg}", None
 
 
-def register_user(email: str, password: str) -> tuple:
+def register_user(
+    email: str,
+    password: str,
+    *,
+    email_redirect_to: str | None = None,
+) -> tuple:
     """Create a new account via Supabase Auth.
 
     Args:
         email: User email address.
         password: Plaintext password (Supabase enforces min length server-side).
+        email_redirect_to: URL Supabase should redirect to after the user
+            clicks the confirmation link. Without this, Supabase falls back
+            to the project's default Site URL — which on this shared project
+            points at scout.ranomics.com, sending tools-hub signups to the
+            wrong product.
 
     Returns:
         Tuple ``(success: bool, error_message: str, user_id: str | None)``.
-        On success, error_message is an empty string and user_id is the
-        Supabase auth uid. The caller may use this to grant signup-bonus
-        credits immediately (see app.py signup route). On failure, user_id
-        is None.
     """
     if not email or not password:
         return False, "Email and password are required.", None
@@ -89,10 +95,12 @@ def register_user(email: str, password: str) -> tuple:
     if client is None:
         return False, "Authentication service is not configured.", None
 
+    payload: dict = {"email": email.strip(), "password": password}
+    if email_redirect_to:
+        payload["options"] = {"email_redirect_to": email_redirect_to}
+
     try:
-        response = client.auth.sign_up(
-            {"email": email.strip(), "password": password}
-        )
+        response = client.auth.sign_up(payload)
         if response.user:
             user_id = getattr(response.user, "id", None)
             if user_id is None and isinstance(response.user, dict):

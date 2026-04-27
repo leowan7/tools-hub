@@ -238,7 +238,15 @@ def create_app() -> Flask:
                 next="/",
             )
 
-        success, error_msg, user_id = register_user(email, password)
+        # Send the confirmation email's "click here" link back to tools-hub
+        # explicitly. Otherwise Supabase falls back to the project Site URL,
+        # which on the shared Scout/tools-hub project points at scout.
+        public_base = os.environ.get(
+            "PUBLIC_BASE_URL", "https://tools.ranomics.com"
+        ).rstrip("/")
+        success, error_msg, user_id = register_user(
+            email, password, email_redirect_to=f"{public_base}/login"
+        )
         if success:
             # Grant 10 signup-bonus credits immediately. The row lands
             # even if Supabase requires email confirmation before sign-in;
