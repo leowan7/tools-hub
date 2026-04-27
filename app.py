@@ -971,13 +971,17 @@ def create_app() -> Flask:
             )
 
         set_modal_call(job.id, submit_result["function_call_id"])
-        record_spend(
-            ctx.user_id,
-            preset.credits_cost,
-            tool=adapter.slug,
-            reason=f"{adapter.slug} {preset.slug}",
-            job_id=job.id,
-        )
+        # Smoke / preview presets cost 0 credits — skip the ledger write,
+        # which otherwise raises ValueError (record_spend rejects amount<=0)
+        # and 500s the redirect even though the Modal job is already running.
+        if preset.credits_cost > 0:
+            record_spend(
+                ctx.user_id,
+                preset.credits_cost,
+                tool=adapter.slug,
+                reason=f"{adapter.slug} {preset.slug}",
+                job_id=job.id,
+            )
 
         return redirect(url_for("job_detail", job_id=job.id))
 
