@@ -182,8 +182,15 @@ def load_user_context() -> Optional[UserContext]:
     email = session.get("user_email")
     if not email:
         return None
-    user_id = _resolve_user_id(email)
+    # Login route stashes user_id at sign-in time; using it here avoids a
+    # paginated admin.list_users() round-trip on every authenticated render
+    # (which silently returned None and made the navbar show 0 credits).
+    user_id = session.get("user_id") or _resolve_user_id(email)
     if not user_id:
+        logger.warning(
+            "load_user_context: no user_id for %s — context falls back to None.",
+            email,
+        )
         return None
     return UserContext(
         user_id=user_id,

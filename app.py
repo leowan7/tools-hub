@@ -175,9 +175,11 @@ def create_app() -> Flask:
         password = request.form.get("password", "")
         next_url = request.form.get("next", "/")
 
-        success, error_msg = verify_login(email, password)
+        success, error_msg, user_id = verify_login(email, password)
         if success:
             session["user_email"] = email
+            if user_id:
+                session["user_id"] = user_id
             # Restrict redirect to same-origin paths to prevent open redirect.
             if not next_url.startswith("/"):
                 next_url = "/"

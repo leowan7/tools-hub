@@ -33,28 +33,29 @@ logger = logging.getLogger(__name__)
 def verify_login(email: str, password: str) -> tuple:
     """Attempt to sign in via Supabase Auth.
 
-    Args:
-        email: User email address.
-        password: User password.
-
     Returns:
-        Tuple (success: bool, error_message: str). On success, error_message
-        is an empty string.
+        Tuple ``(success: bool, error_message: str, user_id: str | None)``.
+        On success, error_message is empty and user_id is the Supabase auth
+        uid (the caller stashes it in the Flask session so the navbar can
+        render the credit balance without re-resolving on every request).
     """
     if not email or not password:
-        return False, "Email and password are required."
+        return False, "Email and password are required.", None
 
     client = get_supabase_client()
     if client is None:
-        return False, "Authentication service is not configured."
+        return False, "Authentication service is not configured.", None
 
     try:
         response = client.auth.sign_in_with_password(
             {"email": email.strip(), "password": password}
         )
         if response.user:
-            return True, ""
-        return False, "Invalid email or password."
+            user_id = getattr(response.user, "id", None)
+            if user_id is None and isinstance(response.user, dict):
+                user_id = response.user.get("id")
+            return True, "", user_id
+        return False, "Invalid email or password.", None
     except Exception as exc:
         msg = str(exc)
         if (
@@ -62,9 +63,9 @@ def verify_login(email: str, password: str) -> tuple:
             or "credentials" in msg.lower()
             or "email" in msg.lower()
         ):
-            return False, "Invalid email or password."
+            return False, "Invalid email or password.", None
         logger.warning("Supabase login error: %s", exc)
-        return False, f"Login failed: {msg}"
+        return False, f"Login failed: {msg}", None
 
 
 def register_user(email: str, password: str) -> tuple:
