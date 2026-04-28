@@ -31,11 +31,13 @@ GPU: A100-80GB. App: `kendrew-bindcraft-prod`. Timeout: 4 h. Pipeline file: [bac
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-28 | bindcraft | code-check | — | a0dbcf1..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log a0dbcf1..HEAD -- backend/pipelines/bindcraft.py docker/bindcraft/ infrastructure/modal/bindcraft_app.py` returns 0 commits. Pipeline path unchanged from the pilot-E2E green at `a0dbcf1`. |
+| 2026-04-22 | bindcraft | pilot | main | `a0dbcf1` | (not captured) | **PASS** | Leo (kendrew-commit `a0dbcf1`) | **Pilot-tier E2E with caller-uploaded PDB 4Z18.** Internal job `f1f08a62`. 2 candidates with real Leo-attested scores: ipTM=0.82, pLDDT=0.90, pTM=0.79, i_pAE=0.08, Binder_RMSD=0.45, Hotspot_RMSD=4.14, Target_RMSD=0.66. Source: Kendrew commit `a0dbcf1` ("fix(bindcraft): populate real scores + add pilot submission helper") — fixed parser CSV-key + metric-name + filename-suffix bugs; this is the first BindCraft pilot E2E that produced real-scored output. Submit helper: `backend/scripts/submit_pilot.py 4Z18 bindcraft`. **Strongest attested validation of any composite tool — only composite with a caller-PDB pilot E2E on record.** |
 | 2026-04-22 | bindcraft | code-check | — | d421117..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | Zero drift in `infrastructure/modal/bindcraft_app.py`, `docker/bindcraft/**`, `backend/pipelines/bindcraft.py` since last BindCraft-touching commit `d421117` (container v7 bug fixes). All intervening commits land on other pipelines. Pre-audit green path unchanged. |
 | _seed_ | bindcraft | smoke | main | (pre-audit) | — | **PASS** | Leo | Referenced in [infrastructure/modal/README.md](../../llm-proteinDesigner/infrastructure/modal/README.md) and `scratch/modal_spike/bindcraft_spike.py`. Re-validate on staging before Wave 2 ship. |
 | _seed_ | bindcraft | mini_pilot | main | (pre-audit) | — | **PASS** | Leo | Same as above. Re-validate on staging. |
 
-**Ship gate (Wave 2):** code-check current HEAD against the pre-audit green path; only re-run on GPU if Dockerfile or preset changed. Flip `FLAG_TOOL_BINDCRAFT=on` once the code-check clears.
+**Ship gate (Wave 2):** code-check current HEAD against the pre-audit green path — passes (drift-zero confirmation row above). Pilot-tier E2E on 4Z18 strengthens the gate further. `FLAG_TOOL_BINDCRAFT=on` justified.
 
 ---
 
@@ -45,6 +47,7 @@ GPU: A100-40GB. App: `kendrew-rfantibody-prod`. Timeout: 1 h. Pipeline file: [ba
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-28 | rfantibody | code-check | — | 64c4ab0..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 64c4ab0..HEAD -- backend/pipelines/rfantibody.py docker/rfantibody/ infrastructure/modal/rfantibody_app.py` returns 0 commits. Pipeline unchanged from the 2× smoke + 2× mini_pilot greens recorded below. Leo-attested numbers in commit `64c4ab0` are the canonical source: smoke (210s + 62s), mini_pilot (264s + 166s), real pAE/ipAE/pLDDT, ~3600 ATOM PDBs. |
 | 2026-04-22 | rfantibody | code-check | — | 64c4ab0..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | Zero drift in `infrastructure/modal/rfantibody_app.py`, `docker/rfantibody/**`, `backend/pipelines/rfantibody.py` since `64c4ab0`. No intervening commits touched these paths. Parser, preset, Dockerfile, entrypoint unchanged. |
 | 2026-04-22 (from commit) | rfantibody | mini_pilot | main | `64c4ab0` | 264 | **PASS** | Leo | Real pAE/ipAE/pLDDT floats; PDB ~3600 ATOM lines. |
 | 2026-04-22 (from commit) | rfantibody | mini_pilot | main | `64c4ab0` | 166 | **PASS** | Leo | Second consecutive green. |
@@ -61,6 +64,7 @@ GPU: A100-40GB. App: `kendrew-boltzgen-prod`. Timeout: 2 h. Pipeline file: [back
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-28 | boltzgen | code-check | — | 4e9eaa1..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 4e9eaa1..HEAD -- backend/pipelines/boltzgen.py docker/boltzgen/ infrastructure/modal/boltzgen_app.py` returns 0 commits. Pipeline unchanged from the 2× smoke + 2× mini_pilot greens recorded below. Leo-attested numbers in commit `4e9eaa1` are the canonical source: smoke (~270s × 2, ~4.5 min/run), mini_pilot (~360s × 2, ~6 min/run), real ipTM/pLDDT floats. |
 | 2026-04-22 | boltzgen | code-check | — | 4e9eaa1..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | Zero drift in `infrastructure/modal/boltzgen_app.py`, `docker/boltzgen/**`, `backend/pipelines/boltzgen.py` since `4e9eaa1`. No intervening commits touched these paths. Parser, preset, Dockerfile, entrypoint unchanged. |
 | 2026-04-22 (from commit) | boltzgen | mini_pilot | main | `4e9eaa1` | ~360 | **PASS** | Leo | Real ipTM/pLDDT floats. |
 | 2026-04-22 (from commit) | boltzgen | mini_pilot | main | `4e9eaa1` | ~360 | **PASS** | Leo | Second consecutive green. |
@@ -77,6 +81,7 @@ GPU: A100-40GB. App: `kendrew-rfdiffusion-prod`. Timeout: ~1 h. Pipeline file: [
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-28 | rfdiffusion | code-check | — | 05ea947..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 05ea947..HEAD -- backend/pipelines/rfdiffusion.py docker/rfdiffusion/ infrastructure/modal/rfdiffusion_app.py` returns 0 commits. Pipeline unchanged from the 2× smoke + 2× mini_pilot greens at `05ea947`/`d83335c` recorded below. Real GPU runs with explicit job IDs from 2026-04-26 remain canonical. |
 | 2026-04-26 | rfdiffusion | mini_pilot | main | `05ea947` | ~246 | **PASS** | leo | Second consecutive mini_pilot through `kendrew-rfdiffusion-prod`, validating the new tools-hub adapter `build_payload` contract end-to-end. Job `rfdiff-wire-minipilot-1777238051`. 245.7 s warm wallclock (XLA cache populated by earlier `d83335c` run). 2/2 candidates with REAL AF2 multimer scores (cand0: ipTM=0.13 pLDDT=47.94 i_pAE=20.8; cand1: ipTM=0.07 pLDDT=34.45 i_pAE=25.71) — values are intentionally low (de novo binders without optimization against a baked PD-L1 fixture) but verifiably real, not stubs. **Two-PASS streak = 2; ready to flip `FLAG_TOOL_RFDIFFUSION=on`.** |
 | 2026-04-26 | rfdiffusion | mini_pilot | main | `d83335c` | 352 | **PASS** | leo | First mini_pilot ever green. Bug 8 unblock — applied LocalColabFold env vars (`TF_FORCE_GPU_ALLOW_GROWTH=true`, `XLA_PYTHON_CLIENT_PREALLOCATE=false`, `XLA_PYTHON_CLIENT_ALLOCATOR=platform`, `XLA_PYTHON_CLIENT_MEM_FRACTION=4.0`, `TF_FORCE_UNIFIED_MEMORY=1`, `TF_ENABLE_ONEDNN_OPTS=0`) to `_af2_env_with_jax_cache()` in `docker/rfdiffusion/run_pipeline.py`. Job `rfdiff-mini-pilot-bug8-1777223957`, A100-SXM4-80GB, 376.2 s wallclock. 2/2 candidates produced; AF2 multimer stage took ~3 min (was 28+ min silent hang before fix). See `llm-proteinDesigner/docs/blocker-rfdiffusion.md` (RESOLVED 2026-04-26). |
 | 2026-04-26 | rfdiffusion | smoke | main | `05ea947` | ~89 | **PASS** | leo | Second consecutive smoke through the new tools-hub adapter contract. Job `rfdiff-wire-smoke2-1777238033`. 89.4 s warm wallclock. 1 candidate via `tools/rfdiffusion/__init__.py::build_payload` shape (`target_chain="A"`, `hotspot_residues=[]`, `parameters={num_designs:1, diffusion_steps:50, skip_af2:True, binder_length:{min:55,max:65}}`). scores={ipTM:0.46, pLDDT:71.0, i_pAE:11.9, filter_status:'stub (smoke)'} — stub values are documented Kendrew smoke behavior (`skip_af2=True` bypasses AF2 entirely; smoke gate is pipeline-shape only, not score correctness). Two-PASS streak = 2. |
@@ -95,15 +100,27 @@ GPU: A100-80GB. App: `kendrew-pxdesign-prod`. Timeout: 2 h. Pipeline file: [back
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-28 | pxdesign | code-check | — | 5f22eec..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 5f22eec..HEAD -- backend/pipelines/pxdesign.py docker/pxdesign/ infrastructure/modal/pxdesign_app.py` returns 1 commit (`64659d9 chore(pxdesign-docker): add DO-NOT-MOVE banner around cuDNN-9 reinstall`) — comment-only banner around the cuDNN-9 force-reinstall block. Zero functional drift since the validated state. |
+| 2026-04-22 | pxdesign | smoke | main | `5f22eec`-stack (post-score-fix) | 993 | **PASS** | Leo (kendrew-port from `blocker-pxdesign.md`) | **Smoke run 2 — GREEN.** Job `smoke-1776877***`. ~16.5 min wallclock. exit_code 0, status=COMPLETED, 1 candidate, 134472-byte PDB (1243 ATOM lines). Real AF2-IG scores on correct [0,100] pLDDT scale: **ipTM=0.79, pLDDT=94.0, pAE=4.9, filter_status=pass**. Source: `llm-proteinDesigner/docs/blocker-pxdesign.md` "Smoke run 2 (post-score-fix)" section — direct Leo attestation. This is the 1× smoke-tier PASS that justifies the GREEN status block below. |
+| 2026-04-22 | pxdesign | smoke | main | `5f22eec`-stack (pre-score-fix) | 1048 | **FLAG** | Leo (kendrew-port from `blocker-pxdesign.md`) | **Smoke run 1 — pipeline integrity proven, scores on wrong scale.** Job `smoke-1776875***`. ~17.5 min wallclock. exit_code 0, status=COMPLETED, 1 candidate, 134472-byte PDB. Real AF2-IG outputs but on PXDesign's native [0,1] scale (parser fix landed between this run and run 2): ipTM=0.15, pLDDT=0.95 (unscaled), pAE=0.87 (normalized), filter_status=fail. **FLAG (not PASS): pipeline integrity proven — no silent stub — but scores below the 0.3-0.9 expected band due to pre-score-fix parser. Not counted toward 2× streak.** Source: `llm-proteinDesigner/docs/blocker-pxdesign.md` "Smoke run 1 (pre-score-fix)" section. |
 | 2026-04-22 | pxdesign | code-check | — | 5f22eec..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | HEAD == `5f22eec`. No drift possible. Parser (pLDDT [0,1]→[0,100] scaling, unscaled_i_pae preference), preset (smoke/mini_pilot both N=1), Dockerfile (cuDNN 9 + LD_LIBRARY_PATH + forced 9.1.1.17 reinstall), preflight GPU-init subprocess — all still wired per recorded greens. Smoke-tier entry still outstanding (two smoke greens are already documented in `blocker-pxdesign.md` at ~1048 s and ~993 s but were never appended to this log). See outstanding-item note below. |
 | 2026-04-22 (from commit) | pxdesign | mini_pilot | main | `5f22eec` | 918 | **PASS** | Leo | Cold run: ipTM=0.75, pLDDT=94.0, pAE=6.21, filter=pass. 1243-ATOM parseable PDB. From commit `5f22eec` (`fix(pxdesign): mini_pilot N=2 -> N=1 for wall-clock-bound verify`), stacked on `f41e17e` cuDNN 9 fix. |
 | — | pxdesign | smoke | main | (pre-`f41e17e`) | — | **FAIL** | Leo | Smoke ran but AF2-IG (JAX) failed "Unable to load cuDNN"; pipeline silently fell back to stub scores ipTM=0.08 / pLDDT=0.96. **Exit-zero lie — counts as FAIL.** Superseded by `f41e17e` + `5f22eec` above. |
 
-**Status:** 🟢 **GREEN** on `5f22eec` — 2× consecutive mini_pilot PASS with real (non-stub) AF2-IG scores; the cuDNN silent-fallback is resolved by the `f41e17e` cuDNN 9 upgrade + preflight GPU init in a clean subprocess (fails in ~1 GPU-min vs the historical 28-min silent degrade).
+**Status:** 🟡 **AMBER** on `5f22eec` — pipeline integrity proven (no silent-stub fallback after `f41e17e`+`5f22eec`), and `FLAG_TOOL_PXDESIGN=on` is justified for **smoke tier only**. Streaks under the strict 2-PASS-in-a-row rule:
+- **Smoke**: 1× PASS (run 2, post-score-fix). Run 1 is a **FLAG** (pipeline-OK, scores on wrong scale pre-parser-fix).
+- **Mini_pilot**: 1× PASS at `5f22eec` (cold). Second consecutive run owed.
 
-**Ship gate (Wave 4):** code-check `f41e17e` + `5f22eec` against HEAD; confirm the stub-pattern preflight assertion stays wired. One smoke-tier entry still outstanding — add it here before flipping `FLAG_TOOL_PXDESIGN=on`.
+**Ship gate (Wave 4):**
+- ✅ Code-check `f41e17e` + `5f22eec` against HEAD: drift-zero confirmation 2026-04-28 (1 comment-only commit).
+- ⚠️ One more smoke-tier PASS owed to close the 2× streak.
+- ⚠️ One more mini_pilot PASS owed AND verification of the `tools-hub 6a54e19` timeout bump (1800→5400s) before any paying customer is allowed to hit `pxdesign mini_pilot`.
 
-**Outstanding item (2026-04-22, Leo-orchestrator):** `blocker-pxdesign.md` records two successful smoke runs on the `f41e17e`/`5f22eec` stack (smoke run 1 job `smoke-1776875***`, 1048 GPU-s, real scores; smoke run 2 job `smoke-1776877***`, 993 GPU-s, ipTM=0.79/pLDDT=94.0/pAE=4.9/filter=pass) but neither was ever appended to this log. Rather than re-sign the historical runs, plan is 2× fresh smoke-tier on current HEAD. Exact command Leo runs, per-run expected envelope ~15–18 GPU-min, real non-stub AF2-IG scores:
+**Outstanding item (2026-04-22, Leo-orchestrator) — UPDATED 2026-04-28:** Both historical smoke runs from `blocker-pxdesign.md` have now been ported as proper rows above (run 2 PASS, run 1 FLAG). The outstanding work is **fresh runs**, not re-porting:
+1. 1× fresh smoke on current HEAD to close smoke 2× streak (~15-18 GPU-min, ~$1).
+2. 1× fresh mini_pilot on current HEAD to close mini_pilot 2× streak AND verify the post-`5f22eec` timeout bump (~30-40 GPU-min, ~$2-3).
+
+Exact command Leo runs (smoke), per-run expected envelope ~15–18 GPU-min, real non-stub AF2-IG scores:
 
 ```
 modal run infrastructure/modal/pxdesign_app.py::run_tool \
