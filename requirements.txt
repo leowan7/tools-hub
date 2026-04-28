@@ -9,6 +9,7 @@ numpy>=1.24
 stripe>=9.0,<13.0
 python-dotenv>=1.0
 prometheus-client>=0.20
+modal>=1.4,<2.0
 
 # Epitope Scout analysis pipeline (merged from epitope-scout/requirements.txt)
 freesasa==2.2.1
