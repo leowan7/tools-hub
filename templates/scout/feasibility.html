@@ -396,7 +396,7 @@ function runFeasibility() {
     params.set('epitope_id', currentEpitopeId);
   }
 
-  var source = new EventSource('/feasibility/progress?' + params.toString());
+  var source = new EventSource('/scout/feasibility/progress?' + params.toString());
   source.onmessage = function(evt) {
     var data = JSON.parse(evt.data);
     if (data.stage === 'done') {
@@ -626,7 +626,7 @@ function render3DViewer(data) {
     epitope_id: currentEpitopeId,
   });
 
-  var source = new EventSource('/feasibility/progress?' + params.toString());
+  var source = new EventSource('/scout/feasibility/progress?' + params.toString());
   source.onmessage = function(evt) {
     var data = JSON.parse(evt.data);
     if (data.stage === 'done') {

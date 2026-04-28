@@ -321,7 +321,7 @@
       label.textContent = 'Starting analysis\u2026';
 
       const params = new URLSearchParams({ job_id: jobId, chain: chain });
-      const source = new EventSource('/progress?' + params.toString());
+      const source = new EventSource('/scout/progress?' + params.toString());
       _activeSource = source;
 
       source.onmessage = function(evt) {
