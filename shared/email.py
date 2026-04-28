@@ -340,8 +340,41 @@ def _result_summary(job, success: bool) -> str:  # noqa: ANN001
         else:
             detail = str(err)
         return f"The run did not complete: {detail}"
+
     result = job.result or {}
-    cands = result.get("candidates", []) if isinstance(result, dict) else []
+    if not isinstance(result, dict):
+        return "Run finished — see the job page for results."
+
+    # Sequence-design tools (D1 MPNN, future LigandMPNN): 'sequences[]'.
+    seqs = result.get("sequences")
+    if isinstance(seqs, list):
+        n = len(seqs)
+        if n == 0:
+            return (
+                "The run finished but no sequences were returned. "
+                "See the job page for details."
+            )
+        return (
+            f"{n} sequence{'s' if n != 1 else ''} returned with score and "
+            "recovery — see the job page."
+        )
+
+    # Structure-prediction tools (D2 AF2, D3 ColabFold, D4 ESMFold):
+    # 'pdb_b64' + 'mean_plddt' (and optionally 'iptm'/'ptm').
+    if result.get("pdb_b64"):
+        plddt = result.get("mean_plddt")
+        if isinstance(plddt, (int, float)):
+            return (
+                f"Structure prediction complete (mean pLDDT {plddt:.1f}). "
+                "PDB and per-residue metrics on the job page."
+            )
+        return (
+            "Structure prediction complete — PDB and metrics on the job page."
+        )
+
+    # Composite binder-design tools (RFantibody, BindCraft, BoltzGen,
+    # PXDesign, RFdiffusion): 'candidates[]'.
+    cands = result.get("candidates", []) or []
     n = len(cands)
     if n == 0:
         return (
