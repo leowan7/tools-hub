@@ -134,15 +134,16 @@ def _get_tier(user_id: str) -> str:
             client.table("user_tier")
             .select("tier")
             .eq("user_id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         data = getattr(response, "data", None)
         if data and data.get("tier"):
             return str(data["tier"])
     except Exception:
-        # Missing row is expected for brand-new users.
-        pass
+        logger.warning(
+            "Could not read user tier for user %s", user_id, exc_info=True
+        )
     return "free"
 
 
@@ -161,15 +162,16 @@ def _count_runs_last_30d(user_id: str) -> int:
             client.table("scout_run_count_30d")
             .select("runs_last_30d")
             .eq("user_id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         data = getattr(response, "data", None)
         if data and data.get("runs_last_30d") is not None:
             return int(data["runs_last_30d"])
     except Exception:
-        # New users simply have no row in the view — return 0.
-        pass
+        logger.warning(
+            "Could not read scout run count for user %s", user_id, exc_info=True
+        )
     return 0
 
 

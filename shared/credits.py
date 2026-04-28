@@ -139,7 +139,7 @@ def get_balance(user_id: str) -> int:
             client.table("credits_balance")
             .select("balance")
             .eq("user_id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         data = getattr(response, "data", None)
@@ -162,15 +162,16 @@ def get_tier(user_id: str) -> str:
             client.table("user_tier")
             .select("tier")
             .eq("user_id", user_id)
-            .single()
+            .maybe_single()
             .execute()
         )
         data = getattr(response, "data", None)
         if data and data.get("tier"):
             return str(data["tier"])
     except Exception:
-        # Missing row is expected for brand-new users.
-        pass
+        logger.warning(
+            "Could not read user tier for user %s", user_id, exc_info=True
+        )
     return "free"
 
 
