@@ -27,7 +27,7 @@
     <div class="login-body">
 
       <!-- Sign-in panel -->
-      <div id="panel-signin" class="form-panel {% if mode != 'signup' and mode != 'reset' %}active{% endif %}">
+      <div id="panel-signin" class="form-panel {% if mode != 'signup' and mode != 'reset' and mode != 'update_password' %}active{% endif %}">
         {% if success_msg %}
           <div class="success-box">{{ success_msg }}</div>
         {% endif %}
