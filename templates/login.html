@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 
-{% block title %}{% if mode == 'signup' %}Create your Ranomics Tools account — Ranomics protein engineering utilities{% elif mode == 'reset' %}Reset your Ranomics Tools password — Ranomics{% else %}Sign in to Ranomics Tools — Protein engineering & binder design utilities{% endif %}{% endblock %}
+{% block title %}{% if mode == 'signup' %}Create your Ranomics Tools account — Ranomics protein engineering utilities{% elif mode == 'reset' %}Reset your Ranomics Tools password — Ranomics{% elif mode == 'update_password' %}Choose a new password — Ranomics Tools{% else %}Sign in to Ranomics Tools — Protein engineering & binder design utilities{% endif %}{% endblock %}
 
-{% block description %}{% if mode == 'signup' %}Create a free Ranomics Tools account to access the unified dashboard for binder developability, epitope identification, and AI binder design utilities.{% elif mode == 'reset' %}Reset the password for your Ranomics Tools account.{% else %}Sign in to your Ranomics Tools account to access the unified protein engineering and AI binder design utilities dashboard.{% endif %}{% endblock %}
+{% block description %}{% if mode == 'signup' %}Create a free Ranomics Tools account to access the unified dashboard for binder developability, epitope identification, and AI binder design utilities.{% elif mode == 'reset' %}Reset the password for your Ranomics Tools account.{% elif mode == 'update_password' %}Choose a new password for your Ranomics Tools account.{% else %}Sign in to your Ranomics Tools account to access the unified protein engineering and AI binder design utilities dashboard.{% endif %}{% endblock %}
 
 {% block robots %}noindex,follow{% endblock %}
 
@@ -14,10 +14,10 @@
       <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">
         <img src="{{ url_for('static', filename='logo-dark.webp') }}" alt="Ranomics" class="login-logo">
       </a>
-      <h1 class="login-title">{% if mode == 'signup' %}Create your Ranomics Tools account{% elif mode == 'reset' %}Reset your password{% else %}Sign in to Ranomics Tools{% endif %}</h1>
+      <h1 class="login-title">{% if mode == 'signup' %}Create your Ranomics Tools account{% elif mode == 'reset' %}Reset your password{% elif mode == 'update_password' %}Choose a new password{% else %}Sign in to Ranomics Tools{% endif %}</h1>
     </div>
 
-    {% if mode != 'reset' %}
+    {% if mode != 'reset' and mode != 'update_password' %}
       <div class="tab-row">
         <button type="button" class="tab-btn {% if mode != 'signup' %}active{% endif %}" onclick="switchTab('signin')">Sign in</button>
         <button type="button" class="tab-btn {% if mode == 'signup' %}active{% endif %}" onclick="switchTab('signup')">Create account</button>
@@ -108,6 +108,40 @@
         </p>
       </div>
 
+      <!-- Update password panel (lands here from Supabase recovery email) -->
+      <div id="panel-update" class="form-panel {% if mode == 'update_password' %}active{% endif %}">
+        {% if error and mode == 'update_password' %}
+          <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <div id="update-invalid" class="error-box" style="display:none;">
+          This reset link is invalid or has expired.
+          <a href="{{ url_for('forgot_password') }}">Request a new password reset email</a>.
+        </div>
+
+        <form method="POST" action="{{ url_for('reset_password_update') }}" id="update-password-form" style="display:none;">
+          <input type="hidden" name="access_token" id="update-access-token" value="{{ access_token or '' }}">
+          <input type="hidden" name="refresh_token" id="update-refresh-token" value="{{ refresh_token or '' }}">
+
+          <div class="field">
+            <label for="new-password">New password</label>
+            <input type="password" id="new-password" name="password" autocomplete="new-password" required minlength="8">
+            <span class="field-hint">Minimum 8 characters.</span>
+          </div>
+
+          <div class="field">
+            <label for="new-password2">Confirm new password</label>
+            <input type="password" id="new-password2" name="password2" autocomplete="new-password" required>
+          </div>
+
+          <button type="submit" class="btn-submit">Update password</button>
+        </form>
+
+        <p class="auth-footer-link">
+          <a href="{{ url_for('login') }}">Back to sign in</a>
+        </p>
+      </div>
+
     </div>
   </div>
 
@@ -121,5 +155,37 @@
         btn.classList.toggle('active', (i === 0 && tab === 'signin') || (i === 1 && tab === 'signup'));
       });
     }
+
+    {% if mode == 'update_password' %}
+    (function () {
+      var form = document.getElementById('update-password-form');
+      var invalid = document.getElementById('update-invalid');
+      var hash = window.location.hash || '';
+      if (hash.charAt(0) === '#') hash = hash.slice(1);
+      var params = new URLSearchParams(hash);
+      var accessToken = params.get('access_token');
+      var refreshToken = params.get('refresh_token');
+      var type = params.get('type');
+
+      // If the server already rendered an error (e.g. POST validation),
+      // the recovery hash is gone — keep the form visible so the user
+      // can fix and resubmit, but only if hidden tokens are still present.
+      var existingAccess = document.getElementById('update-access-token').value;
+
+      if (accessToken && refreshToken && type === 'recovery') {
+        document.getElementById('update-access-token').value = accessToken;
+        document.getElementById('update-refresh-token').value = refreshToken;
+        form.style.display = '';
+        // Strip the hash so a refresh doesn't re-process the (now-stale) tokens.
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      } else if (existingAccess) {
+        form.style.display = '';
+      } else {
+        invalid.style.display = '';
+      }
+    })();
+    {% endif %}
   </script>
 {% endblock %}

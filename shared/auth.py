@@ -8,6 +8,7 @@ Provides:
   - verify_login(email, password)
   - register_user(email, password)
   - reset_password(email)
+  - update_password(access_token, refresh_token, new_password)
   - login_required — Flask route decorator
 
 Requires these environment variables:
@@ -121,13 +122,21 @@ def register_user(
         return False, f"Registration failed: {msg}", None
 
 
-def reset_password(email: str) -> tuple:
+def reset_password(
+    email: str,
+    *,
+    redirect_to: str | None = None,
+) -> tuple:
     """Send a password reset email via Supabase Auth.
 
     Always returns success to the caller to prevent email enumeration.
 
     Args:
         email: User email address.
+        redirect_to: URL Supabase appends the recovery hash fragment to.
+            Without this, Supabase falls back to the project's Site URL,
+            which on this shared project points at scout.ranomics.com —
+            sending tools-hub users to the wrong product.
 
     Returns:
         Tuple (success: bool, error_message: str).
@@ -139,12 +148,66 @@ def reset_password(email: str) -> tuple:
     if client is None:
         return False, "Authentication service is not configured."
 
+    options = {"redirect_to": redirect_to} if redirect_to else None
+
     try:
-        client.auth.reset_password_email(email.strip())
+        client.auth.reset_password_email(email.strip(), options)
         return True, ""
     except Exception as exc:
         logger.warning("Supabase password reset error: %s", exc)
         return True, ""
+
+
+def update_password(
+    access_token: str,
+    refresh_token: str,
+    new_password: str,
+) -> tuple:
+    """Apply a new password using a Supabase recovery session.
+
+    Used by the /reset-password handler after the user clicks the email
+    link. The recovery URL hash fragment carries access/refresh tokens for
+    a one-time recovery session; we install that session on a fresh client
+    and then call update_user.
+
+    Args:
+        access_token: From the recovery URL hash fragment.
+        refresh_token: From the recovery URL hash fragment.
+        new_password: Plaintext new password (Supabase enforces min length).
+
+    Returns:
+        Tuple (success: bool, error_message: str).
+    """
+    if not access_token or not refresh_token:
+        return False, "Reset link is invalid or has expired."
+    if not new_password:
+        return False, "Password is required."
+
+    client = get_supabase_client()
+    if client is None:
+        return False, "Authentication service is not configured."
+
+    try:
+        client.auth.set_session(access_token, refresh_token)
+    except Exception as exc:
+        logger.warning("Supabase set_session error during reset: %s", exc)
+        return False, "Reset link is invalid or has expired."
+
+    try:
+        response = client.auth.update_user({"password": new_password})
+        if response.user:
+            return True, ""
+        return False, "Password update failed. Please try again."
+    except Exception as exc:
+        msg = str(exc)
+        if "password" in msg.lower() and (
+            "weak" in msg.lower() or "short" in msg.lower()
+        ):
+            return False, "Password is too weak. Use at least 8 characters."
+        if "same" in msg.lower() and "password" in msg.lower():
+            return False, "New password must differ from your old password."
+        logger.warning("Supabase update_user error during reset: %s", exc)
+        return False, f"Password update failed: {msg}"
 
 
 def login_required(f):

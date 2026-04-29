@@ -302,7 +302,16 @@ def create_app() -> Flask:
             )
 
         email = request.form.get("email", "").strip()
-        success, error_msg = reset_password(email)
+        # Send the recovery email's "click here" link to tools-hub's
+        # /reset-password route. Otherwise Supabase falls back to the
+        # project Site URL, which on the shared Scout/tools-hub project
+        # points at scout.
+        public_base = os.environ.get(
+            "PUBLIC_BASE_URL", "https://tools.ranomics.com"
+        ).rstrip("/")
+        success, error_msg = reset_password(
+            email, redirect_to=f"{public_base}/reset-password"
+        )
 
         if success:
             return render_template(
@@ -324,6 +333,98 @@ def create_app() -> Flask:
             email=email,
             next="/",
             reset_success=None,
+        )
+
+    @flask_app.route("/reset-password", methods=["GET", "POST"])
+    def reset_password_update():
+        """Land Supabase recovery clicks and apply the new password.
+
+        The recovery URL hash fragment (#access_token=...&refresh_token=...
+        &type=recovery) is read client-side by JS in login.html and
+        round-tripped via hidden form fields on POST.
+        """
+        from shared.auth import update_password  # noqa: PLC0415
+
+        if request.method == "GET":
+            return render_template(
+                "login.html",
+                mode="update_password",
+                error=None,
+                next="/",
+            )
+
+        access_token = request.form.get("access_token", "").strip()
+        refresh_token = request.form.get("refresh_token", "").strip()
+        password = request.form.get("password", "")
+        password2 = request.form.get("password2", "")
+
+        if not access_token or not refresh_token:
+            return render_template(
+                "login.html",
+                mode="update_password",
+                error=(
+                    "Reset link is invalid or has expired. "
+                    "Request a new password reset email."
+                ),
+                next="/",
+            )
+
+        # Validation errors re-render with the tokens preserved so the user
+        # can fix and resubmit without going back to their email.
+        if not password:
+            return render_template(
+                "login.html",
+                mode="update_password",
+                error="Password is required.",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                next="/",
+            )
+
+        if len(password) < 8:
+            return render_template(
+                "login.html",
+                mode="update_password",
+                error="Password must be at least 8 characters.",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                next="/",
+            )
+
+        if password != password2:
+            return render_template(
+                "login.html",
+                mode="update_password",
+                error="Passwords do not match.",
+                access_token=access_token,
+                refresh_token=refresh_token,
+                next="/",
+            )
+
+        success, error_msg = update_password(
+            access_token, refresh_token, password
+        )
+
+        if success:
+            return render_template(
+                "login.html",
+                mode="signin",
+                error=None,
+                email=None,
+                next="/",
+                success_msg=(
+                    "Password updated. Sign in with your new password."
+                ),
+            )
+
+        # Supabase rejected the update (e.g. weak password). The recovery
+        # session was consumed by set_session, so a retry needs a fresh
+        # email link — don't preserve tokens here.
+        return render_template(
+            "login.html",
+            mode="update_password",
+            error=error_msg,
+            next="/",
         )
 
     @flask_app.route("/logout", methods=["POST"])
