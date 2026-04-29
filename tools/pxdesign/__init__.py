@@ -44,7 +44,13 @@ def validate(
     knob for the reference-target tiers.
     """
     preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "mini_pilot", "pilot"}:
+    # mini_pilot is hidden from the form pending Kendrew pipeline fixes
+    # (see tools-hub/docs/VALIDATION-LOG.md: 2026-04-28 mini_pilot FAIL —
+    # subprocess hung at 78.5% inside AF2-IG Protenix DDIM sampler;
+    # root cause is Kendrew docker/pxdesign/run_pipeline.py:1001 inner
+    # 4500s subprocess timeout + unpinned upstream ColabDesign/PXDesign).
+    # Reject any direct POST that tries to slip mini_pilot through.
+    if preset not in {"smoke", "pilot"}:
         return None, "Pick a preset."
 
     if preset in {"smoke", "mini_pilot"}:
@@ -170,15 +176,8 @@ adapter = ToolAdapter(
                 "(baked target), real AF2-IG scores."
             ),
         ),
-        Preset(
-            slug="mini_pilot",
-            label="Preview — 1 design + post-filter, 16 credits",
-            credits_cost=16,
-            description=(
-                "~35 min, 1 candidate with post-filter against PD-L1 "
-                "reference, pilot-quality scoring."
-            ),
-        ),
+        # mini_pilot tier hidden 2026-04-29 pending Kendrew pipeline fixes.
+        # Re-introduce once VALIDATION-LOG mini_pilot streak hits 2x GREEN.
         Preset(
             slug="pilot",
             label="Pilot — your target, ~45 min",

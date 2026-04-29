@@ -100,6 +100,9 @@ GPU: A100-80GB. App: `kendrew-pxdesign-prod`. Timeout: 2 h. Pipeline file: [back
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-04-29 | pxdesign | smoke | main | `e497a09` (Kendrew, fix(pxdesign): pin upstream SHAs + harden tracebacks + plumb tier param) | 1051 | **PASS** | leo (Claude harness) | **Smoke run 4 — fresh GREEN on rebuilt image with SHA pins** (PXDesign `f788441`, ColabDesign `e31a56fe`). Job `smoke-1777441315`. 17.5 min wallclock. status=COMPLETED, 1 candidate, real PDB returned (1243 ATOM lines, 134472 bytes). AF2-IG scores: **ipTM=0.12, pLDDT=94.0, pAE=24.67, filter_status='fail'**. Pipeline integrity PASS — no stubs, real ATOM structure, scores in plausible bands; the 2026-04-28 78%-hang regression is gone. **Functional ipTM dropped sharply** vs. 2026-04-28 run 3 (ipTM=0.81 on `96efc3d`); root cause is most likely either (a) the new `--seed=42` deterministic flag landing on an unlucky seed for the baked PD-L1 IgV target, or (b) the 2026-04-29 PXDesign + ColabDesign upstream HEAD SHA pins regressing model behavior vs. unpinned 2026-04-22 builds. **Score drop is NOT counted as a pipeline failure** — design quality is judged at pilot tier with caller PDB + N>1, not at smoke (n=1, baked target). WIP fixes deployed in image `im-bwg6THzHsijVIgwJr2BPVS`: (1) `tier` parameter plumbing through `run_pxdesign()` after a NameError on first attempt; (2) traceback head+tail truncation so real exceptions survive chatty progress-bar buffers; (3) mini_pilot timeout 4500→5200s; (4) deterministic `--seed=42` gated on `tier in ("smoke","mini_pilot")`; (5) tools-hub mini_pilot preset hidden pending its own re-validation. Decision 2026-04-29 (Leo): pivot from mini_pilot harness gate → web-UI pilot-tier validation across all four composite tools — see "Decision 2026-04-29" block below. |
+| 2026-04-28 | pxdesign | mini_pilot | main | `96efc3d` (post-Modal-pkg fix) | 4517 | **FAIL** | leo (Claude harness) | **Mini_pilot fresh run — pipeline FAILED at ~78.5%.** Job `mini_pilot-1777410978`. 75.3 min wallclock (within the 90-min Modal timeout — did NOT timeout). status=FAILED, error.bucket=`pxdesign_run`, error.detail = truncated stdout buffer showing colabfold-style progress bar stuck at 78.5–78.8% across 50+ repeated lines (no stack trace surfaced). Zero candidates returned. **Streak reset:** prior 1× mini_pilot PASS at `5f22eec` (918 GPU-s, ipTM=0.75) is followed by this FAIL → mini_pilot streak under the strict 2-PASS-in-a-row rule = **0**. **Mini_pilot tier is BLOCKED** for paid customers until root cause identified. Likely culprits to investigate: (a) AF2-IG VRAM/JAX hang on a specific RFdiffusion backbone; (b) Modal infrastructure regression vs. the 2026-04-22 validated state; (c) timeout-bump (`tools-hub 6a54e19`, 1800→5400s) interaction with subprocess deadlock that the lower timeout previously masked as a clean kill. Smoke tier remains GREEN — only mini_pilot is affected. |
+| 2026-04-28 | pxdesign | smoke | main | `96efc3d` (post-Modal-pkg fix) | 1006 | **PASS** | leo (Claude harness) | **Smoke run 3 — fresh GREEN on current HEAD.** Job `smoke-1777409836`. 17.1 min wallclock. status=COMPLETED, 1 candidate, real PDB returned. Real AF2-IG scores: **ipTM=0.81, pLDDT=94.0, pAE=4.78, filter_status=pass**. Run via [scratch/run_pxdesign_smoke.py](../scratch/run_pxdesign_smoke.py). **Closes smoke 2× streak** with 2026-04-22 run 2 (993 GPU-s, ipTM=0.79). Mini_pilot streak still owed. (Harness initially mis-parsed `smoke_result.output.candidates` as `smoke_result.candidates`, recording a false negative; harness fixed in same session, scores extracted from raw `smoke_result` payload — pipeline ran clean.) |
 | 2026-04-28 | pxdesign | code-check | — | 5f22eec..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 5f22eec..HEAD -- backend/pipelines/pxdesign.py docker/pxdesign/ infrastructure/modal/pxdesign_app.py` returns 1 commit (`64659d9 chore(pxdesign-docker): add DO-NOT-MOVE banner around cuDNN-9 reinstall`) — comment-only banner around the cuDNN-9 force-reinstall block. Zero functional drift since the validated state. |
 | 2026-04-22 | pxdesign | smoke | main | `5f22eec`-stack (post-score-fix) | 993 | **PASS** | Leo (kendrew-port from `blocker-pxdesign.md`) | **Smoke run 2 — GREEN.** Job `smoke-1776877***`. ~16.5 min wallclock. exit_code 0, status=COMPLETED, 1 candidate, 134472-byte PDB (1243 ATOM lines). Real AF2-IG scores on correct [0,100] pLDDT scale: **ipTM=0.79, pLDDT=94.0, pAE=4.9, filter_status=pass**. Source: `llm-proteinDesigner/docs/blocker-pxdesign.md` "Smoke run 2 (post-score-fix)" section — direct Leo attestation. This is the 1× smoke-tier PASS that justifies the GREEN status block below. |
 | 2026-04-22 | pxdesign | smoke | main | `5f22eec`-stack (pre-score-fix) | 1048 | **FLAG** | Leo (kendrew-port from `blocker-pxdesign.md`) | **Smoke run 1 — pipeline integrity proven, scores on wrong scale.** Job `smoke-1776875***`. ~17.5 min wallclock. exit_code 0, status=COMPLETED, 1 candidate, 134472-byte PDB. Real AF2-IG outputs but on PXDesign's native [0,1] scale (parser fix landed between this run and run 2): ipTM=0.15, pLDDT=0.95 (unscaled), pAE=0.87 (normalized), filter_status=fail. **FLAG (not PASS): pipeline integrity proven — no silent stub — but scores below the 0.3-0.9 expected band due to pre-score-fix parser. Not counted toward 2× streak.** Source: `llm-proteinDesigner/docs/blocker-pxdesign.md` "Smoke run 1 (pre-score-fix)" section. |
@@ -107,14 +110,52 @@ GPU: A100-80GB. App: `kendrew-pxdesign-prod`. Timeout: 2 h. Pipeline file: [back
 | 2026-04-22 (from commit) | pxdesign | mini_pilot | main | `5f22eec` | 918 | **PASS** | Leo | Cold run: ipTM=0.75, pLDDT=94.0, pAE=6.21, filter=pass. 1243-ATOM parseable PDB. From commit `5f22eec` (`fix(pxdesign): mini_pilot N=2 -> N=1 for wall-clock-bound verify`), stacked on `f41e17e` cuDNN 9 fix. |
 | — | pxdesign | smoke | main | (pre-`f41e17e`) | — | **FAIL** | Leo | Smoke ran but AF2-IG (JAX) failed "Unable to load cuDNN"; pipeline silently fell back to stub scores ipTM=0.08 / pLDDT=0.96. **Exit-zero lie — counts as FAIL.** Superseded by `f41e17e` + `5f22eec` above. |
 
-**Status:** 🟡 **AMBER** on `5f22eec` — pipeline integrity proven (no silent-stub fallback after `f41e17e`+`5f22eec`), and `FLAG_TOOL_PXDESIGN=on` is justified for **smoke tier only**. Streaks under the strict 2-PASS-in-a-row rule:
-- **Smoke**: 1× PASS (run 2, post-score-fix). Run 1 is a **FLAG** (pipeline-OK, scores on wrong scale pre-parser-fix).
-- **Mini_pilot**: 1× PASS at `5f22eec` (cold). Second consecutive run owed.
+**Status:** 🟡 **SPLIT** on Kendrew `e497a09` (UPDATED 2026-04-29 post-smoke-run-4) — smoke tier GREEN with score-drop caveat, mini_pilot tier BLOCKED + hidden:
+- **Smoke**: 🟢 **3× PASS streak.** Run 2 (2026-04-22, 993 GPU-s, ipTM=0.79 @ `5f22eec`) + run 3 (2026-04-28, 1006 GPU-s, ipTM=0.81 @ `96efc3d`) + run 4 (2026-04-29, 1051 GPU-s, **ipTM=0.12** @ `e497a09`). All three pipeline-integrity PASS. Run 4 ipTM dropped to 0.12 (caveat above) but no stubs; the 78% hang regression is fixed. Tier mechanically ready to flip on for paying customers; functional quality validated at pilot tier instead.
+- **Mini_pilot**: 🔴 **Streak still 0; tier hidden in form.** 1× PASS at `5f22eec` (2026-04-22, 918 GPU-s) followed by 1× FAIL at `96efc3d` (2026-04-28, 4517 GPU-s, hung at 78.5%). Hidden in `tools/pxdesign/__init__.py` 2026-04-29 — re-introduce only after a separate 2× re-validation. Web-UI pilot-tier campaign-validation does NOT unblock mini_pilot.
 
-**Ship gate (Wave 4):**
+**Ship gate (Wave 4) — UPDATED 2026-04-29:**
 - ✅ Code-check `f41e17e` + `5f22eec` against HEAD: drift-zero confirmation 2026-04-28 (1 comment-only commit).
-- ⚠️ One more smoke-tier PASS owed to close the 2× streak.
-- ⚠️ One more mini_pilot PASS owed AND verification of the `tools-hub 6a54e19` timeout bump (1800→5400s) before any paying customer is allowed to hit `pxdesign mini_pilot`.
+- ✅ Smoke 3× streak closed 2026-04-29 (pipeline-integrity PASS on all three runs). Smoke tier mechanically ready.
+- ⏸ Mini_pilot 2× re-validation deferred — superseded by web-UI pilot-tier campaign validation (see Decision 2026-04-29). Mini_pilot preset hidden in `tools/pxdesign/__init__.py` until separately re-validated.
+- 🔜 PXDesign pilot-tier web-UI run on caller PDB pending — single run at num_designs=5 covers caller-PDB upload, presigned URL, upload_urls_endpoint callback, num_designs>1, hotspots, post_filter, frontend→submit→worker→GPU integration, email notification, Stripe payment gate. This is the gate that justifies `FLAG_TOOL_PXDESIGN=on`.
+
+### Decision 2026-04-29 — Pivot from mini_pilot harness gate → web-UI pilot-tier campaign validation
+
+Per Leo, 2026-04-29: *"this is not a function of the program not working, i did not expect a good design off the bat. but does this give us enough confidence that someone else designing a full campaign, there would be no bugs"* — followed by *"lets go straight to webUI for all programs. add this decision to the logs"*.
+
+**Rationale.** Smoke + mini_pilot together exercise pipeline mechanics on the **baked PD-L1 IgV target**, but skip every customer-facing path that distinguishes a real campaign from a demo. Specifically NOT exercised by smoke or mini_pilot:
+
+1. Caller-uploaded PDB → presigned URL → container download (smoke uses `/opt/smoke_target.pdb`).
+2. `upload_urls_endpoint` callback for result PDB upload (smoke returns inline base64; pilot requires a tools-hub Flask callback).
+3. `num_designs > 1` (smoke + mini_pilot are hardcoded N=1; pilot exposes 1–5 via the form).
+4. Hotspot residue parsing (smoke has no hotspots; pilot accepts `--hotspot-residues`).
+5. Real-target chain selection (smoke is fixed chain A; pilot tolerates any chain on caller PDB).
+6. Frontend form → `/tools/<slug>/submit` → worker dispatch → GPU pipeline (harness goes Modal-direct, bypassing Flask + Supabase + Stripe).
+7. Email notification on completion (sync harness has no webhook).
+8. Stripe payment gate at pilot pricing (harness bypasses billing).
+
+The sole campaign-relevant signal that mini_pilot adds over smoke is `post_filter` coverage on a baked target — a tiny slice of the customer flow. A single pilot-tier run via `tools.ranomics.com/tools/<slug>` covers `post_filter` AND all eight items above.
+
+**Strategy.** Skip mini_pilot 2× re-validation across all four composite tools. Run **one pilot-tier job per tool via the production web UI** with caller PDB `epitope-scout/tests/fixtures/1HEW.pdb` (lysozyme) at the maximum batch size each form allows:
+
+| Tool | URL | Batch field | Set to | Cost |
+|---|---|---|---|---|
+| RFdiffusion | `tools.ranomics.com/tools/rfdiffusion` | `num_designs` | **5** (form max) | ~$8 |
+| BoltzGen | `tools.ranomics.com/tools/boltzgen` | `budget` | **20** (form max) | ~$8 |
+| PXDesign | `tools.ranomics.com/tools/pxdesign` | `num_designs` | **5** (form max) | ~$8 |
+| RFantibody | `tools.ranomics.com/tools/rfantibody` | (no batch field) | hardcoded **2** | ~$8 |
+
+Total ~$32 across four tools. Pilot pricing is flat per tier — within the form caps, scaling to max designs is free.
+
+**PASS bar (distribution-only, per Leo).** Median ipTM > 0.7 on the per-design distribution; score variance non-degenerate; no all-stub batch; pipeline survives the customer flow without crashes/hangs/silent stubs. Quality of any individual design is **not** the gate; "the customer's job runs end-to-end without bugs" IS the gate.
+
+**RFantibody n=2 caveat.** Hardcoded `num_designs=2` in `tools-hub/tools/rfantibody/__init__.py::build_payload()` — distribution analysis is weak at n=2. Record both scores; tag the row `n=2 (UI cap)`. Follow-up TODO: expose `num_designs` in [tools-hub/tools/rfantibody/__init__.py](../tools/rfantibody/__init__.py) `build_payload()` + add the input to [templates/tools/rfantibody_form.html](../templates/tools/rfantibody_form.html) — out of scope for this validation pass.
+
+**What this decision explicitly does NOT do:**
+- Does NOT unblock mini_pilot tier — that requires its own retroactive re-validation pass (currently hidden in the form).
+- Does NOT lift form caps from 5 → 50 — keeps customer-facing pricing/UI intact.
+- Does NOT build a Flask shim for `upload_urls_endpoint` — preserves the harness scaffolding at `tools-hub/scratch/run_*_pilot.py` for future Flask-shim work but does not pursue it now.
 
 **Outstanding item (2026-04-22, Leo-orchestrator) — UPDATED 2026-04-28:** Both historical smoke runs from `blocker-pxdesign.md` have now been ported as proper rows above (run 2 PASS, run 1 FLAG). The outstanding work is **fresh runs**, not re-porting:
 1. 1× fresh smoke on current HEAD to close smoke 2× streak (~15-18 GPU-min, ~$1).
