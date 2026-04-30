@@ -262,7 +262,7 @@ def cancel_job(
     user_id: str,
     modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
 ) -> tuple[Optional["ToolJob"], Optional[str]]:
-    """Cancel a pending/running job. Owner-scoped, full credit refund.
+    """Cancel a pending/running job. Owner-scoped; refunds only what was spent.
 
     Flow:
       1. Owner-scope fetch; reject if missing or already terminal.
@@ -270,7 +270,9 @@ def cancel_job(
          the tool_jobs row is the authoritative state and a stray Modal
          run terminates harmlessly once the tools-hub side is terminal).
       3. Mark the job 'cancelled' with an error bucket of the same name.
-      4. Refund the full ``credits_cost`` to the user's ledger.
+      4. Refund the actual spend recorded on the ledger (NOT
+         ``credits_cost``). Orphaned rows where ``record_spend`` never ran
+         refund 0; live rows refund the full debit.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
     refusal. Safe to call repeatedly — once the row is terminal, the
@@ -309,17 +311,34 @@ def cancel_job(
         )
         return None, f"already_{current}"
 
+    # Refund only the credits actually debited on the ledger. Without this
+    # guard an orphaned row (where ``record_spend`` never ran because the
+    # submit handler short-circuited after ``create_job``) would still
+    # refund ``credits_cost`` and mint free credits. Production incident
+    # 2026-04-30: a pxdesign submission with no PDB attached created an
+    # orphan row, the user cancelled it, and got 15 cr that were never
+    # debited.
     if job.credits_cost > 0:
         try:
-            from shared.credits import record_refund  # noqa: PLC0415
-            record_refund(
-                job.user_id,
-                job.credits_cost,
-                tool=job.tool,
-                reason=f"{job.tool} {job.preset} cancelled by user",
-                job_id=job.id,
-                metadata={"cancelled_from_status": job.status},
+            from shared.credits import (  # noqa: PLC0415
+                get_spent_for_job, record_refund,
             )
+            spent = get_spent_for_job(job.id)
+            if spent <= 0:
+                logger.info(
+                    "cancel_job: no spend ledger entry for job %s; "
+                    "skipping refund (credits_cost=%d, but ledger reports 0).",
+                    job.id, job.credits_cost,
+                )
+            else:
+                record_refund(
+                    job.user_id,
+                    spent,
+                    tool=job.tool,
+                    reason=f"{job.tool} {job.preset} cancelled by user",
+                    job_id=job.id,
+                    metadata={"cancelled_from_status": job.status},
+                )
         except Exception:
             logger.warning(
                 "Cancel refund failed for job %s (credits=%d)",

@@ -934,8 +934,34 @@ def create_app() -> Flask:
         if ctx.balance < preset.credits_cost:
             return redirect(url_for("account", insufficient_credits=1))
 
-        # Create the tool_jobs row FIRST so we have job_id + job_token for
-        # the Modal payload and a persistent handle even if Modal submit
+        # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
+        # smoke / preview do not. Falls back to the adapter-level flag for
+        # legacy single-tier tools (e.g. BindCraft pilot-only).
+        needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
+        uploaded = request.files.get("target_pdb")
+        reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
+
+        # Gate "no PDB attached" BEFORE create_job. Otherwise the row gets
+        # written, the upload check fails further down, and the row sits
+        # in 'pending' forever as an orphan with no Modal call and no
+        # spend ledger entry. Production incident 2026-04-30: a pxdesign
+        # pilot submit with no file attached created job d2d421ad which
+        # showed PENDING for 2.5 hours until manually cancelled.
+        if needs_pdb and not (
+            (uploaded is not None and uploaded.filename)
+            or reuse_token.startswith("job:")
+            or reuse_token.startswith("handoff:")
+        ):
+            return render_template(
+                adapter.form_template,
+                adapter=adapter,
+                error="Upload a target PDB file.",
+                pre_fill=inputs,
+                pdb_source=None,
+            )
+
+        # Create the tool_jobs row so we have job_id + job_token for the
+        # Modal payload and a persistent handle even if Modal submit
         # raises. Credits debit happens only on successful Modal submit.
         job = create_job(
             user_id=ctx.user_id,
@@ -959,13 +985,7 @@ def create_app() -> Flask:
         presigned_url = ""
         staged_path = ""
         staged_filename = ""
-        # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
-        # smoke / preview do not. Falls back to the adapter-level flag for
-        # legacy single-tier tools (e.g. BindCraft pilot-only).
-        needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
         if needs_pdb:
-            uploaded = request.files.get("target_pdb")
-            reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
             try:
                 if uploaded is not None and uploaded.filename:
                     staged_filename = uploaded.filename
@@ -1009,14 +1029,6 @@ def create_app() -> Flask:
                         filename=ho.pdb_filename,
                     )
                     mark_consumed(ho.id)
-                else:
-                    return render_template(
-                        adapter.form_template,
-                        adapter=adapter,
-                        error="Upload a target PDB file.",
-                        pre_fill=inputs,
-                        pdb_source=None,
-                    )
 
                 presigned_url = presigned_input_url(
                     staged_path, expires_seconds=7200

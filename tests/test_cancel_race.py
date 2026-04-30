@@ -167,7 +167,12 @@ class TestCancelBeatsLateWebhook:
         fake_modal.cancel.return_value = {"ok": True, "error": None}
 
         # Stage 1: user cancel lands first. Full refund + row cancelled.
-        with patch("shared.credits.record_refund") as refund:
+        # ``get_spent_for_job`` is patched to mirror the production case
+        # where ``record_spend`` already debited the user — cancel refunds
+        # what the ledger reports, not the row's ``credits_cost`` field.
+        with patch("shared.credits.record_refund") as refund, patch(
+            "shared.credits.get_spent_for_job", return_value=22
+        ):
             refund.return_value = True
             job_after_cancel, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal

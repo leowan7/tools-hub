@@ -232,7 +232,11 @@
           <div id="pilot-fields" style="display: none;">
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
+            {# Required (server-render) when no staged source. Toggled by
+               the preset-change JS below to avoid blocking non-pilot
+               submissions on a hidden empty input. #}
             <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                   {% if not pdb_source %}required{% endif %}
                    style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               Upload the target structure as .pdb, .cif, or .mmcif.
@@ -387,8 +391,17 @@
 
       function sync() {
         var value = presetSelect.value;
+        var isPilot = value === 'pilot';
         if (pilotFields) {
-          pilotFields.style.display = (value === 'pilot') ? 'block' : 'none';
+          pilotFields.style.display = isPilot ? 'block' : 'none';
+        }
+        // Toggle ``required`` on the file input so non-pilot submissions
+        // don't trip browser validation on a hidden empty input
+        // (orphan-row prevention 2026-04-30).
+        var fileInput = document.getElementById('target_pdb');
+        if (fileInput) {
+          var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');
+          fileInput.required = isPilot && !hasReuse;
         }
         if (costPreview) {
           var opt = presetSelect.options[presetSelect.selectedIndex];

@@ -300,7 +300,9 @@ class TestCancelJob:
         row = self._prime(store, status="running", credits_cost=22)
         fake_modal = MagicMock()
         fake_modal.cancel.return_value = {"ok": True, "error": None}
-        with patch("shared.credits.record_refund") as refund:
+        with patch("shared.credits.record_refund") as refund, patch(
+            "shared.credits.get_spent_for_job", return_value=22
+        ):
             refund.return_value = True
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
@@ -312,7 +314,56 @@ class TestCancelJob:
         refund.assert_called_once()
         refund_kwargs = refund.call_args.kwargs
         assert refund_kwargs["tool"] == "bindcraft"
-        assert refund.call_args.args[1] == 22  # full refund
+        assert refund.call_args.args[1] == 22  # full refund matches spend
+
+    def test_cancel_orphaned_row_skips_refund(
+        self, patched_service_client, store
+    ):
+        """Orphaned rows have credits_cost set but no ledger ``spend`` entry.
+
+        Production incident 2026-04-30: a pxdesign submit with no PDB
+        attached wrote a ``pending`` row, the upload check failed,
+        ``record_spend`` never ran. User cancelled the orphan and got 15
+        free credits. ``cancel_job`` must check the ledger before
+        refunding, not blindly trust ``credits_cost``.
+        """
+        row = self._prime(store, status="pending", credits_cost=15,
+                          modal_function_call_id=None)
+        fake_modal = MagicMock()
+        with patch("shared.credits.record_refund") as refund, patch(
+            "shared.credits.get_spent_for_job", return_value=0
+        ):
+            job, err = jobs_mod.cancel_job(
+                row["id"], user_id=row["user_id"], modal_client=fake_modal
+            )
+        assert err is None
+        assert job is not None
+        assert job.status == "cancelled"
+        # The whole point: no refund minted because nothing was spent.
+        refund.assert_not_called()
+
+    def test_cancel_partial_spend_refunds_only_what_was_spent(
+        self, patched_service_client, store
+    ):
+        """Defensive: if a future code path ever debits less than
+        ``credits_cost`` (e.g. partial pre-auth), the refund must still
+        match what the ledger reports — not the row's nominal cost.
+        """
+        row = self._prime(store, status="running", credits_cost=15)
+        fake_modal = MagicMock()
+        fake_modal.cancel.return_value = {"ok": True, "error": None}
+        with patch("shared.credits.record_refund") as refund, patch(
+            "shared.credits.get_spent_for_job", return_value=8
+        ):
+            refund.return_value = True
+            job, err = jobs_mod.cancel_job(
+                row["id"], user_id=row["user_id"], modal_client=fake_modal
+            )
+        assert err is None
+        assert job.status == "cancelled"
+        refund.assert_called_once()
+        # Refund the actual spend (8), not the nominal credits_cost (15).
+        assert refund.call_args.args[1] == 8
 
     def test_cancel_already_terminal_is_refused(
         self, patched_service_client, store
@@ -333,7 +384,9 @@ class TestCancelJob:
     ):
         row = self._prime(store, modal_function_call_id=None)
         fake_modal = MagicMock()
-        with patch("shared.credits.record_refund"):
+        with patch("shared.credits.record_refund"), patch(
+            "shared.credits.get_spent_for_job", return_value=0
+        ):
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )

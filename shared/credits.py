@@ -313,6 +313,38 @@ def record_refund(
         return False
 
 
+def get_spent_for_job(job_id: str) -> int:
+    """Sum the ``spend`` ledger entries for a single job; returns positive int.
+
+    Used by ``cancel_job`` to refund only the credits the user was actually
+    debited. Without this guard, an orphaned ``tool_jobs`` row (created by
+    a submit handler that crashed before ``record_spend`` ran) would still
+    refund ``credits_cost`` on cancel, minting credits for free.
+
+    Returns 0 when the ledger has no spend entry for ``job_id``.
+    """
+    if not job_id:
+        return 0
+    client = get_service_client()
+    if client is None:
+        return 0
+    try:
+        response = (
+            client.table("credits_ledger")
+            .select("delta")
+            .eq("job_id", job_id)
+            .eq("kind", "spend")
+            .execute()
+        )
+        rows = list(getattr(response, "data", None) or [])
+        return -sum(int(r["delta"]) for r in rows)
+    except Exception:
+        logger.warning(
+            "Failed to query spend ledger for job %s", job_id, exc_info=True
+        )
+        return 0
+
+
 def recent_ledger(user_id: str, limit: int = 20) -> list[dict]:
     """Return the most recent ledger entries for a user."""
     client = get_service_client()
