@@ -29,6 +29,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _synthetic_pdb_bytes(num_residues: int = 80, chain: str = "A") -> bytes:
+    """Produce a minimal-but-valid PDB with ``num_residues`` ALA on chain.
+
+    Each residue has full N/CA/C/O backbone with non-zero coords so it
+    survives shared.pdb_inspect's checks AND the GPU-side
+    pipeline_normalize.normalize_for_pipeline backbone validator.
+    """
+    lines: list = ["HEADER    SYNTHETIC TEST"]
+    atom_id = 0
+    for resnum in range(1, num_residues + 1):
+        for atom_name, dx in (("N", 0), ("CA", 1), ("C", 2), ("O", 3)):
+            atom_id += 1
+            x = float(resnum + dx)
+            lines.append(
+                f"ATOM  {atom_id:5d}  {atom_name:<3s} ALA {chain}{resnum:4d}"
+                f"    {x:8.3f}{1.0:8.3f}{1.0:8.3f}  1.00 10.00           "
+                f"{atom_name[0]}"
+            )
+    lines.append("END")
+    return "\n".join(lines).encode()
+
+
 @pytest.fixture
 def app_with_pxdesign_flag(monkeypatch):
     monkeypatch.setenv("FLAG_TOOL_PXDESIGN", "on")
@@ -134,7 +156,10 @@ class TestPxdesignMissingPdbDoesNotOrphan:
                     "hotspot_residues": "35,52,62",
                     "binder_length": "40",
                     "num_designs": "2",
-                    "target_pdb": (io.BytesIO(b"ATOM      1  CA  ALA A   1\n"),
+                    # Synthetic 80-residue chain A so hotspots 35/52/62
+                    # fall in range under the new pre-flight validator
+                    # (shared/pdb_inspect.py).
+                    "target_pdb": (io.BytesIO(_synthetic_pdb_bytes(80)),
                                    "test.pdb"),
                 },
                 content_type="multipart/form-data",

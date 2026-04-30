@@ -69,6 +69,12 @@ from shared.jobs import (
     update_inputs,
 )
 from shared.metrics import register_metrics
+from shared.pdb_inspect import (
+    inspect_pdb_bytes,
+    summarize_for_log,
+    validate_hotspots,
+    validate_target_chain,
+)
 from shared.storage import (
     StorageError,
     copy_input,
@@ -960,6 +966,58 @@ def create_app() -> Flask:
                 pdb_source=None,
             )
 
+        # ---- PDB pre-flight inspection (Bug 9 follow-on) ----
+        # Run a fast Biopython inspection on freshly-uploaded files so we
+        # can reject obvious garbage (no protein, no ATOM records, malformed
+        # parse) and validate user-typed target_chain + hotspots BEFORE
+        # debiting credits or spinning up Modal. Reuse-token paths are not
+        # re-inspected (the source job's PDB has already passed this gate).
+        # Bytes are read here ONCE; we pass them through to upload_input
+        # below so we don't need to seek the file pointer back.
+        pdb_bytes: bytes | None = None
+        inspection = None
+        if needs_pdb and uploaded is not None and uploaded.filename:
+            pdb_bytes = uploaded.read()
+            inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
+            logger.info(
+                "pdb_inspect %s/%s: %s",
+                adapter.slug, preset.slug, summarize_for_log(inspection),
+            )
+            if not inspection.ok:
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error=inspection.error,
+                    pre_fill=inputs,
+                    pdb_source=None,
+                )
+            target_chain = (inputs.get("target_chain") or "").strip()
+            if target_chain:
+                chain_err = validate_target_chain(inspection, target_chain)
+                if chain_err:
+                    return render_template(
+                        adapter.form_template, adapter=adapter,
+                        error=chain_err, pre_fill=inputs, pdb_source=None,
+                    )
+                hotspots = inputs.get("hotspot_residues") or []
+                if hotspots:
+                    in_range, out_of_range = validate_hotspots(
+                        inspection, target_chain, hotspots,
+                    )
+                    if out_of_range:
+                        chain = inspection.chain(target_chain)
+                        return render_template(
+                            adapter.form_template, adapter=adapter,
+                            error=(
+                                f"Hotspot residue(s) {out_of_range} are not "
+                                f"in chain {target_chain} "
+                                f"(residue range: "
+                                f"{chain.min_resnum}..{chain.max_resnum}). "
+                                f"Use original PDB numbering."
+                            ),
+                            pre_fill=inputs, pdb_source=None,
+                        )
+
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
         # raises. Credits debit happens only on successful Modal submit.
@@ -989,11 +1047,14 @@ def create_app() -> Flask:
             try:
                 if uploaded is not None and uploaded.filename:
                     staged_filename = uploaded.filename
+                    # pdb_bytes was read during pre-flight inspection above;
+                    # reuse it instead of double-reading the upload.
+                    file_data = pdb_bytes if pdb_bytes is not None else uploaded.read()
                     staged_path = upload_input(
                         user_id=ctx.user_id,
                         job_id=job.id,
                         filename=uploaded.filename,
-                        data=uploaded.read(),
+                        data=file_data,
                         content_type=uploaded.mimetype or "chemical/x-pdb",
                     )
                 elif reuse_token.startswith("job:"):
