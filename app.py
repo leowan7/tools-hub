@@ -44,6 +44,7 @@ from flask import (
     url_for,
 )
 from flask_compress import Compress
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from gpu.modal_client import ModalClient
 from shared.credits import (
@@ -100,6 +101,16 @@ def create_app() -> Flask:
         Flask: Configured Flask application instance.
     """
     flask_app = Flask(__name__)
+
+    # Trust the X-Forwarded-Proto/X-Forwarded-Host headers Railway sets.
+    # Without this, Flask sees the internal http:// hop and url_for(_external=True)
+    # generates http:// URLs — which Railway 405s when the Modal pipeline tries
+    # to POST a webhook back to /webhooks/modal/<job_id>/<token>. PREFERRED_URL_SCHEME
+    # is the belt-and-suspenders fallback if the header is ever stripped upstream.
+    flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_proto=1, x_host=1)
+    flask_app.config["PREFERRED_URL_SCHEME"] = os.environ.get(
+        "PREFERRED_URL_SCHEME", "https"
+    )
 
     # Enable gzip/brotli compression on text responses (HTML, CSS, JS, JSON).
     # Reduces transfer size 70-90% on repeat-heavy pages and speeds up first paint.

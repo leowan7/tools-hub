@@ -391,15 +391,17 @@ def _interpret_kendrew_return(raw_result: Any) -> Dict[str, Any]:
             "exit_code": int,
             "smoke_result": dict | None,
             "provider_job_id": str,
+            "webhook_outcome": dict | None,  # {"delivered": bool, "detail": str}
             ...
         }
 
-    When ``smoke_result`` is present and carries ``status=="COMPLETED"``
-    we succeed; when it carries ``status=="FAILED"`` we fail with the
-    ``error`` bucket. When ``smoke_result`` is None we treat exit_code
-    == 0 as succeeded with an empty result payload (pipeline used the
-    webhook path; the actual result lands via the Modal callback
-    webhook on tools-hub).
+    Modal calls are synchronous: by the time the FunctionCall returns,
+    the entire subprocess (including post_webhook for the webhook tier)
+    has finished. So ``smoke_result is None`` here means the pipeline
+    took the webhook path AND the webhook was already attempted. If the
+    webhook had succeeded the job would already be terminal via the
+    ``/webhooks/modal`` handler, not via this poll. So smoke_result
+    missing here is treated as a webhook-delivery failure.
     """
     if not isinstance(raw_result, dict):
         return {
@@ -437,19 +439,24 @@ def _interpret_kendrew_return(raw_result: Any) -> Dict[str, Any]:
             "error": f"unexpected smoke_result.status: {status_raw!r}",
         }
 
-    # smoke_result missing: pipeline must be using the webhook path.
+    # smoke_result missing: pipeline used the webhook path. Modal is
+    # synchronous, so the webhook was already attempted by the time we
+    # see this return. If it had succeeded the job would already be
+    # terminal — so missing-result here means webhook delivery failed.
+    webhook_outcome = raw_result.get("webhook_outcome") or {}
+    detail = webhook_outcome.get("detail") or "no webhook_outcome reported by pipeline"
     if exit_code == 0:
         return {
-            "status": "running",
+            "status": "failed",
             "result": None,
             "gpu_seconds_used": None,
-            "error": None,
+            "error": f"webhook delivery failed (pipeline exited 0): {detail}",
         }
     return {
         "status": "failed",
         "result": None,
         "gpu_seconds_used": None,
-        "error": f"run_pipeline exited {exit_code} with no smoke_result",
+        "error": f"run_pipeline exited {exit_code} with no smoke_result; webhook detail: {detail}",
     }
 
 
