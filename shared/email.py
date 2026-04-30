@@ -139,17 +139,24 @@ def _tool_label(slug: str) -> str:
 def _render_html(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
     """Plain HTML — no template engine to keep this email worker-portable."""
     summary = _result_summary(job, success)
+    headline = (
+        f"Your {_tool_label(job.tool)} run is ready"
+        if success
+        else f"Your {_tool_label(job.tool)} run failed"
+    )
+    cta_bg = "#1f9d55" if success else "#525252"
+    cta_label = "View results" if success else "View job details"
     cta = (
         '<a href="' + job_url + '" '
-        'style="display:inline-block;padding:12px 22px;background:#1f9d55;'
+        f'style="display:inline-block;padding:12px 22px;background:{cta_bg};'
         'color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">'
-        "View results"
+        f"{cta_label}"
         "</a>"
     )
     return f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
-      <h2 style="margin-top:0;">Your {_tool_label(job.tool)} run is ready</h2>
+      <h2 style="margin-top:0;">{headline}</h2>
       <p>{summary}</p>
       <p style="margin:24px 0;">{cta}</p>
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
@@ -166,10 +173,16 @@ def _render_html(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
 
 def _render_text(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
     summary = _result_summary(job, success)
+    headline = (
+        f"Your {_tool_label(job.tool)} run is ready."
+        if success
+        else f"Your {_tool_label(job.tool)} run failed."
+    )
+    link_label = "View results" if success else "View job details"
     return (
-        f"Your {_tool_label(job.tool)} run is ready.\n\n"
+        f"{headline}\n\n"
         f"{summary}\n\n"
-        f"View results: {job_url}\n\n"
+        f"{link_label}: {job_url}\n\n"
         f"Job {job.id} · preset {job.preset} · "
         f"{job.credits_cost} credits · submitted {(job.created_at or '')[:19]}\n\n"
         "Ranomics Tools — tools.ranomics.com"
@@ -339,6 +352,22 @@ def _result_summary(job, success: bool) -> str:  # noqa: ANN001
             detail = err.get("detail") or err.get("message") or "see job page for details"
         else:
             detail = str(err)
+        # complete_job → _refund_unused_credits issues a full refund when a
+        # failed job consumed no GPU time. Mirror that condition here so we
+        # don't claim a refund happened when one didn't.
+        is_full_refund = (
+            job.status == "failed"
+            and not job.gpu_seconds_used
+            and (job.credits_cost or 0) > 0
+        )
+        if is_full_refund:
+            n = job.credits_cost
+            unit = "credit" if n == 1 else "credits"
+            verb = "was" if n == 1 else "were"
+            return (
+                f"The run did not complete and your {n} {unit} {verb} refunded. "
+                f"Detail: {detail}"
+            )
         return f"The run did not complete: {detail}"
 
     result = job.result or {}

@@ -211,6 +211,79 @@ class TestCompletionEmail:
 
 
 # ---------------------------------------------------------------------------
+# 1b. _refund_unused_credits: full refund on no-work failures, prorated on
+#     under-budget successes, no refund when real GPU time was consumed.
+# ---------------------------------------------------------------------------
+
+
+class TestRefundUnusedCredits:
+    def _job(self, **over) -> ToolJob:
+        return ToolJob.from_row(_row(**over))
+
+    def test_failed_with_no_gpu_time_full_refund(self):
+        """Pipeline crashed before doing real work — refund full pre-auth."""
+        job = self._job(
+            status="failed", credits_cost=10, gpu_seconds_used=None, tool="boltzgen"
+        )
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_called_once()
+        assert refund.call_args.args[1] == 10
+        assert refund.call_args.kwargs["tool"] == "boltzgen"
+        assert refund.call_args.kwargs["metadata"]["refund_kind"] == "system_failure"
+
+    def test_failed_with_zero_gpu_time_full_refund(self):
+        """gpu_seconds_used=0 is the same signal as None — refund."""
+        job = self._job(status="failed", credits_cost=15, gpu_seconds_used=0)
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_called_once()
+        assert refund.call_args.args[1] == 15
+
+    def test_failed_with_real_gpu_time_no_refund(self):
+        """Real GPU consumed before failure — keep the credits."""
+        job = self._job(status="failed", credits_cost=10, gpu_seconds_used=420)
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_not_called()
+
+    def test_timeout_no_refund(self):
+        """Timeout means GPU ran the full preset cap — no refund."""
+        job = self._job(status="timeout", credits_cost=10, gpu_seconds_used=None)
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_not_called()
+
+    def test_succeeded_under_cap_prorated_refund(self):
+        """Used a quarter of the cap — refund three quarters."""
+        job = self._job(
+            status="succeeded", credits_cost=20, gpu_seconds_used=60, tool="bindcraft",
+            preset="pilot",
+        )
+        with patch("shared.credits.record_refund") as refund, patch(
+            "gpu.modal_client.preset_gpu_seconds", return_value=240
+        ):
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_called_once()
+        # 60/240 used = 25% kept = 5 credits used, 15 refunded.
+        assert refund.call_args.args[1] == 15
+
+    def test_succeeded_no_gpu_time_no_refund(self):
+        """No gpu_seconds_used recorded — cannot prorate, keep credits."""
+        job = self._job(status="succeeded", credits_cost=20, gpu_seconds_used=None)
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_not_called()
+
+    def test_zero_credits_cost_no_refund(self):
+        """No pre-auth was debited (e.g. internal smoke tier) — nothing to refund."""
+        job = self._job(status="failed", credits_cost=0, gpu_seconds_used=None)
+        with patch("shared.credits.record_refund") as refund:
+            jobs_mod._refund_unused_credits(job)
+        refund.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # 2. cancel_job refunds full credits + marks cancelled + idempotent
 # ---------------------------------------------------------------------------
 

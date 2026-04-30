@@ -417,18 +417,54 @@ def complete_job(
 
 
 def _refund_unused_credits(job: "ToolJob") -> None:
-    """Refund credits proportional to unused GPU seconds.
+    """Refund credits for partially-used or never-started runs.
 
-    Pre-authorisation: ``credits_cost`` was debited on submit. If the
-    job actually used less GPU time than the preset's cap, the user
-    keeps the difference. Failed and timed-out runs get no refund —
-    we still spent the GPU time.
+    Pre-authorisation: ``credits_cost`` was debited on submit. Two refund
+    paths:
+
+    * ``succeeded`` with ``gpu_seconds_used`` under the preset cap →
+      prorated refund of the unused fraction.
+    * ``failed`` with no ``gpu_seconds_used`` → full refund. The pipeline
+      crashed before doing real work (e.g. early input-parse failure or
+      webhook-delivery failure) so the customer should not be charged.
+
+    Other failure modes (real GPU work that crashed late, where
+    ``gpu_seconds_used`` is set) and ``timeout`` keep the credits — the
+    GPU time was actually consumed.
     """
+    if job.credits_cost <= 0:
+        return
+
+    if job.status == "failed":
+        if job.gpu_seconds_used and job.gpu_seconds_used > 0:
+            return
+        try:
+            from shared.credits import record_refund  # noqa: PLC0415
+            record_refund(
+                job.user_id,
+                job.credits_cost,
+                tool=job.tool,
+                reason=(
+                    f"{job.tool} {job.preset} system-failure refund: "
+                    "pipeline produced no result"
+                ),
+                job_id=job.id,
+                metadata={"refund_kind": "system_failure"},
+            )
+            logger.info(
+                "Full-refunded %d credit(s) for failed job %s (no GPU time)",
+                job.credits_cost,
+                job.id,
+            )
+        except Exception:
+            logger.warning(
+                "System-failure refund failed for job %s", job.id, exc_info=True
+            )
+        return
+
     if job.status != "succeeded":
         return
     if not job.gpu_seconds_used or job.gpu_seconds_used <= 0:
-        return
-    if job.credits_cost <= 0:
         return
 
     from gpu.modal_client import preset_gpu_seconds  # noqa: PLC0415
