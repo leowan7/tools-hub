@@ -791,7 +791,7 @@ def create_app() -> Flask:
         """Return (adapter, error_response). ``error_response`` is non-None on fail."""
         adapter = tool_base.get(tool_slug)
         if adapter is None:
-            return None, (render_template("coming_soon.html"), 404)
+            return None, (render_template("404.html"), 404)
         if not tool_enabled(tool_slug):
             return None, (render_template("coming_soon.html"), 404)
         return adapter, None
@@ -1158,7 +1158,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         adapter = tool_base.get(job.tool)
         preset_obj = adapter.preset_for(job.preset) if adapter else None
 
@@ -1366,7 +1366,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         candidates = (job.result or {}).get("candidates", [])
         buf = io.StringIO()
         all_score_keys: list[str] = []
@@ -1397,7 +1397,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         result = job.result or {}
         candidates = result.get("candidates", [])
         mpnn_sequences = result.get("sequences", [])
@@ -1458,7 +1458,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None or job.tool != "af2":
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         pdb_b64 = (job.result or {}).get("pdb_b64") or ""
         if not pdb_b64:
             return Response(
@@ -1501,7 +1501,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None or job.tool != "af2":
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         pae_b64 = (job.result or {}).get("pae_matrix_b64") or ""
         if not pae_b64:
             return Response(
@@ -1539,7 +1539,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         candidates = (job.result or {}).get("candidates", [])
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1658,7 +1658,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         campaign = get_campaign(campaign_id, user_id=ctx.user_id)
         if campaign is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         submitted_flash = request.args.get("submitted") == "1"
         return render_template(
             "campaigns/detail.html",
@@ -1687,7 +1687,7 @@ def create_app() -> Flask:
         if not email:
             return redirect(url_for("login", next=request.path))
         if email not in STAFF_EMAILS:
-            return render_template("coming_soon.html"), 403
+            return render_template("404.html"), 404
         status_filter = request.args.get("status") or None
         campaigns = list_all_campaigns(status=status_filter)
         return render_template(
@@ -1705,10 +1705,10 @@ def create_app() -> Flask:
         if not email:
             return redirect(url_for("login", next=request.path))
         if email not in STAFF_EMAILS:
-            return render_template("coming_soon.html"), 403
+            return render_template("404.html"), 404
         campaign = get_campaign(campaign_id)
         if campaign is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
         flash_msg = request.args.get("updated") == "1" and "Status updated."
         return render_template(
             "admin/campaign_detail.html",
@@ -1726,11 +1726,11 @@ def create_app() -> Flask:
         if not email:
             return redirect(url_for("login"))
         if email not in STAFF_EMAILS:
-            return render_template("coming_soon.html"), 403
+            return render_template("404.html"), 404
 
         campaign = get_campaign(campaign_id)
         if campaign is None:
-            return render_template("coming_soon.html"), 404
+            return render_template("404.html"), 404
 
         prev_status     = campaign.status
         new_status      = request.form.get("status", "").strip()

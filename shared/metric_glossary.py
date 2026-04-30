@@ -38,6 +38,28 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "< 5 Å across the interface",
         "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
     },
+    "ipAE": {
+        "label": "ipAE (Å)",
+        "definition": (
+            "Interaction Predicted Aligned Error. The pAE restricted to residue "
+            "pairs that span the binder-target interface. RFantibody's primary "
+            "binding-quality metric — a confident interface predicts a real "
+            "interaction. Lower is better."
+        ),
+        "good_range": "< 10 Å passes; < 6 Å strong",
+        "citation": "Bennett et al., bioRxiv 2024 (RFantibody)",
+    },
+    "i_pAE": {
+        "label": "i_pAE (Å)",
+        "definition": (
+            "Interface Predicted Aligned Error. The pAE restricted to residue "
+            "pairs that span the binder-target interface. AF2-multimer's "
+            "binder-quality metric — a confident interface predicts a real "
+            "interaction. Lower is better."
+        ),
+        "good_range": "< 10 Å passes; < 6 Å strong",
+        "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",
+    },
     "pTM": {
         "label": "pTM",
         "definition": (
@@ -103,6 +125,8 @@ _FORMAT: dict[str, str] = {
     "ipTM": ".3f",
     "pLDDT": ".1f",
     "pAE": ".2f",
+    "ipAE": ".2f",
+    "i_pAE": ".2f",
     "pTM": ".3f",
     "refolding_rmsd": ".2f",
     "RMSD": ".2f",

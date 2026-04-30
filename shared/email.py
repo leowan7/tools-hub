@@ -56,14 +56,15 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
     from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
 
     job_url = f"{base_url}/jobs/{job.id}"
-    is_success = job.status == "succeeded"
-    subject = (
-        f"Your {_tool_label(job.tool)} run finished"
-        if is_success
-        else f"Your {_tool_label(job.tool)} run failed"
-    )
-    html_body = _render_html(job=job, job_url=job_url, success=is_success)
-    text_body = _render_text(job=job, job_url=job_url, success=is_success)
+    tone = _result_tone(job)
+    tool = _tool_label(job.tool)
+    subject = {
+        "success":   f"Your {tool} run finished",
+        "empty":     f"Your {tool} run finished — no candidates",
+        "failed":    f"Your {tool} run failed",
+    }[tone]
+    html_body = _render_html(job=job, job_url=job_url, tone=tone)
+    text_body = _render_text(job=job, job_url=job_url, tone=tone)
 
     if not api_key:
         logger.info(
@@ -136,16 +137,17 @@ def _tool_label(slug: str) -> str:
     return labels.get(slug, slug)
 
 
-def _render_html(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
+def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     """Plain HTML — no template engine to keep this email worker-portable."""
-    summary = _result_summary(job, success)
-    headline = (
-        f"Your {_tool_label(job.tool)} run is ready"
-        if success
-        else f"Your {_tool_label(job.tool)} run failed"
-    )
-    cta_bg = "#1f9d55" if success else "#525252"
-    cta_label = "View results" if success else "View job details"
+    summary = _result_summary(job, tone=tone)
+    tool = _tool_label(job.tool)
+    headline = {
+        "success": f"Your {tool} run is ready",
+        "empty":   f"Your {tool} run finished — no candidates",
+        "failed":  f"Your {tool} run failed",
+    }[tone]
+    cta_bg = "#1f9d55" if tone == "success" else "#525252"
+    cta_label = "View results" if tone == "success" else "View job details"
     cta = (
         '<a href="' + job_url + '" '
         f'style="display:inline-block;padding:12px 22px;background:{cta_bg};'
@@ -171,14 +173,15 @@ def _render_html(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
     """.strip()
 
 
-def _render_text(*, job, job_url: str, success: bool) -> str:  # noqa: ANN001
-    summary = _result_summary(job, success)
-    headline = (
-        f"Your {_tool_label(job.tool)} run is ready."
-        if success
-        else f"Your {_tool_label(job.tool)} run failed."
-    )
-    link_label = "View results" if success else "View job details"
+def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
+    summary = _result_summary(job, tone=tone)
+    tool = _tool_label(job.tool)
+    headline = {
+        "success": f"Your {tool} run is ready.",
+        "empty":   f"Your {tool} run finished — no candidates.",
+        "failed":  f"Your {tool} run failed.",
+    }[tone]
+    link_label = "View results" if tone == "success" else "View job details"
     return (
         f"{headline}\n\n"
         f"{summary}\n\n"
@@ -345,8 +348,50 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
         logger.warning("send_campaign_status_email failed", exc_info=True)
 
 
-def _result_summary(job, success: bool) -> str:  # noqa: ANN001
-    if not success:
+def _result_tone(job) -> str:  # noqa: ANN001
+    """Return ``"success"``, ``"empty"``, or ``"failed"``.
+
+    ``empty`` covers the soft-fail case: the pipeline ran end-to-end but
+    produced no usable output (every design rejected by the post-pipeline
+    filter, MPNN returned no sequences, etc.). The job row is technically
+    ``status="succeeded"`` but the user has nothing to look at.
+    """
+    if job.status != "succeeded":
+        return "failed"
+    if _is_empty_result(job):
+        return "empty"
+    return "success"
+
+
+def _is_empty_result(job) -> bool:  # noqa: ANN001
+    """True when a succeeded job's result payload contains no useful output.
+
+    Recognised "useful output" shapes:
+      * ``sequences`` (sequence-design tools — MPNN, future LigandMPNN)
+      * ``candidates`` (composite binder tools — RFantibody, RFdiffusion,
+        BoltzGen, BindCraft, PXDesign)
+      * ``pdb_b64`` (structure-prediction tools — AF2, ColabFold, ESMFold)
+
+    A tool whose result shape is not recognised is treated as a real
+    success — we'd rather show the user a working page than misclassify
+    a future tool's output.
+    """
+    result = job.result or {}
+    if not isinstance(result, dict):
+        return False
+    seqs = result.get("sequences")
+    if isinstance(seqs, list):
+        return len(seqs) == 0
+    cands = result.get("candidates")
+    if isinstance(cands, list):
+        return len(cands) == 0
+    if result.get("pdb_b64"):
+        return False
+    return False
+
+
+def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
+    if tone == "failed":
         err = job.error or {}
         if isinstance(err, dict):
             detail = err.get("detail") or err.get("message") or "see job page for details"
@@ -370,6 +415,23 @@ def _result_summary(job, success: bool) -> str:  # noqa: ANN001
             )
         return f"The run did not complete: {detail}"
 
+    if tone == "empty":
+        result = job.result or {}
+        seqs = result.get("sequences") if isinstance(result, dict) else None
+        if isinstance(seqs, list):
+            return (
+                "The run finished but no sequences were returned. See the job "
+                "page for details, or rerun with different parameters."
+            )
+        return (
+            "The pipeline finished but produced no passing candidates. This "
+            "can happen for difficult targets or when a small design budget "
+            "leaves no room to filter — see the job page for the per-design "
+            "scores, then try expanding binder length, hotspot list, or "
+            "number of designs."
+        )
+
+    # tone == "success" — empty-result cases were already handled above.
     result = job.result or {}
     if not isinstance(result, dict):
         return "Run finished — see the job page for results."
@@ -378,11 +440,6 @@ def _result_summary(job, success: bool) -> str:  # noqa: ANN001
     seqs = result.get("sequences")
     if isinstance(seqs, list):
         n = len(seqs)
-        if n == 0:
-            return (
-                "The run finished but no sequences were returned. "
-                "See the job page for details."
-            )
         return (
             f"{n} sequence{'s' if n != 1 else ''} returned with score and "
             "recovery — see the job page."
@@ -405,12 +462,6 @@ def _result_summary(job, success: bool) -> str:  # noqa: ANN001
     # PXDesign, RFdiffusion): 'candidates[]'.
     cands = result.get("candidates", []) or []
     n = len(cands)
-    if n == 0:
-        return (
-            "The pipeline finished but produced no passing candidates. This "
-            "can happen for difficult targets — see the job page for the full "
-            "error taxonomy and try expanding binder length or hotspot list."
-        )
     return (
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
         "downloadable PDBs."
