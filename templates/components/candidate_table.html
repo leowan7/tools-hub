@@ -74,10 +74,15 @@
   position: relative;
   vertical-align: middle;
 }
+/* Tooltip is anchored BELOW the icon because the table lives inside
+   .cand-table-scroll (overflow-x: auto, which per spec implicitly clips
+   on the y-axis too). Anchoring above the header would put the tooltip
+   above the wrapper's top edge and clip the text — the user would see
+   only an empty tooltip border. */
 .mtt::after {
   content: attr(data-tooltip);
   position: absolute;
-  bottom: 125%;
+  top: calc(100% + .35rem);
   left: 50%;
   transform: translateX(-50%);
   background: #1e2a3a;
