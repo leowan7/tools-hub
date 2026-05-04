@@ -8,9 +8,10 @@ BindCraft is structure-based de novo binder design built on
 JAX + AlphaFold2 multimer + ColabDesign. Unlike RFantibody, there
 is no baked reference target — every run requires a caller-supplied
 target PDB (``requires_pdb=True``). The only preset shipped today is
-``pilot`` (num_designs=2); smoke / mini_pilot tiers are intentionally
-not offered because the BindCraft pipeline cost floor is ~45 min on
-A100-80GB.
+``pilot`` (caller-controlled ``num_designs`` 1-5, default 2); smoke /
+mini_pilot tiers are intentionally not offered because the BindCraft
+pipeline cost floor is ~45 min on A100-80GB regardless of design
+count.
 """
 
 from __future__ import annotations
@@ -59,6 +60,14 @@ def validate(
     if binder_length_min > binder_length_max:
         return None, "binder_length_min must be <= binder_length_max."
 
+    raw_num_designs = (form.get("num_designs") or "2").strip()
+    try:
+        num_designs = int(raw_num_designs)
+    except ValueError:
+        return None, "num_designs must be a whole number."
+    if num_designs < 1 or num_designs > 5:
+        return None, "num_designs must be between 1 and 5."
+
     return (
         {
             "preset": preset,
@@ -66,6 +75,7 @@ def validate(
             "hotspot_residues": hotspot_residues,
             "binder_length_min": binder_length_min,
             "binder_length_max": binder_length_max,
+            "num_designs": num_designs,
         },
         None,
     )
@@ -85,7 +95,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
                 "min": inputs["binder_length_min"],
                 "max": inputs["binder_length_max"],
             },
-            "num_designs": 2,
+            "num_designs": inputs["num_designs"],
         },
     }
 
@@ -101,10 +111,11 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — 2 designs, 20 credits",
+            label="Pilot — your target, ~45 min",
             credits_cost=20,
             description=(
-                "~45 min, 2 final designs, results emailed on completion."
+                "~45 min on A100-80GB, 1-5 final designs (you choose), "
+                "results emailed on completion."
             ),
             requires_pdb=True,
             long_running=True,

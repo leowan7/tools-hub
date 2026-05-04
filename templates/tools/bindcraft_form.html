@@ -262,6 +262,13 @@
           <input type="number" name="binder_length_max" id="binder_length_max" required {{ pre_value(pre_fill, "binder_length_max", "100") }} min="50" max="150"
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
 
+          <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+          <input type="number" name="num_designs" id="num_designs" required {{ pre_value(pre_fill, "num_designs", "2") }} min="1" max="5"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            How many final filtered designs to return (1-5). Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. Pipeline cost floor is ~45 min regardless of count.
+          </div>
+
           <button type="submit" class="btn-primary">Submit run (20 credits)</button>
         </form>
       </div>
