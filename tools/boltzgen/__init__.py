@@ -144,7 +144,12 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
             "hotspot_residues": [],
         }
 
-    # Pilot tier.
+    # Pilot tier. num_designs is the candidate population BoltzGen generates
+    # and refolds (budget then selects the top-N to return). 1000 was the
+    # original wave-2 default but ran past the 6600s subprocess timeout in
+    # docker/boltzgen/run_pipeline.py:1407 on A100-40GB. 200 fits comfortably
+    # within the "~15-60 min" pilot description and still gives the filter
+    # enough population to find passing designs.
     return {
         "target_chain": inputs["target_chain"],
         "hotspot_residues": inputs["hotspot_residues"],
@@ -153,7 +158,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
                 "min": inputs["binder_length_min"],
                 "max": inputs["binder_length_max"],
             },
-            "num_designs": 1000,
+            "num_designs": 200,
             "budget": inputs["budget"],
             "protocol": "protein-anything",
         },
