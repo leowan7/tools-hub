@@ -384,12 +384,21 @@ def complete_job(
         return job
 
     # Pull gpu_seconds out of the inline result payload if not given.
+    # Kendrew pilot pipelines (bindcraft/boltzgen/pxdesign/rfantibody) emit
+    # `runtime_minutes` in their webhook payload rather than `gpu_seconds`,
+    # so accept either and convert minutes->seconds. Without this fallback,
+    # the job_detail.html template renders "Completed in — GPU-seconds." with
+    # a literal em-dash because `gpu_seconds_used` ends up NULL in Supabase.
     if gpu_seconds_used is None and isinstance(result, dict):
         for key in ("gpu_seconds", "runtime_seconds"):
             v = result.get(key)
             if isinstance(v, (int, float)) and v > 0:
                 gpu_seconds_used = int(v)
                 break
+        if gpu_seconds_used is None:
+            v = result.get("runtime_minutes")
+            if isinstance(v, (int, float)) and v > 0:
+                gpu_seconds_used = int(v * 60)
 
     # CAS transition — the update is constrained to rows where status is
     # still non-terminal. If it returns False, a concurrent writer (user
