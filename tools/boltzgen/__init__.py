@@ -127,9 +127,15 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     """
     preset = inputs["preset"]
 
+    # job_tier is also set at the wrapper level by gpu/modal_client.py, but we
+    # echo it inside job_spec so older run_pipeline.py builds (which read
+    # job_spec.get("job_tier")) still resolve the tier correctly. This is what
+    # gates the pilot fallback that emits top-N designs when none pass the
+    # strict ipTM/pLDDT/RMSD thresholds.
     if preset in {"smoke", "mini_pilot"}:
         is_smoke = preset == "smoke"
         return {
+            "job_tier": preset,
             "target_chain": "A",
             "parameters": {
                 "binder_length": {
@@ -151,6 +157,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     # within the "~15-60 min" pilot description and still gives the filter
     # enough population to find passing designs.
     return {
+        "job_tier": "pilot",
         "target_chain": inputs["target_chain"],
         "hotspot_residues": inputs["hotspot_residues"],
         "parameters": {
