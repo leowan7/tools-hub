@@ -15,6 +15,31 @@
   </div>
   <div class="panel-body">
     {% if candidates %}
+      {# Detect populated-but-all-failing case. filter_status is 'pass' on
+         designs that cleared the production filter, 'below threshold' on
+         pilot-fallback designs, and 'fail' on pxdesign filter rejections.
+         Designs with no filter_status at all (boltzgen normal path) are
+         treated as passing. Banner fires only when EVERY candidate has
+         a non-pass, non-stub filter_status set. #}
+      {% set ns = namespace(failing=0, total=candidates|length) %}
+      {% for c in candidates %}
+        {% set fs = c.get('scores', {}).get('filter_status', '') %}
+        {% if fs and fs != 'pass' and 'stub' not in fs %}
+          {% set ns.failing = ns.failing + 1 %}
+        {% endif %}
+      {% endfor %}
+      {% if ns.failing > 0 and ns.failing == ns.total %}
+        <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
+          <p class="subtitle" style="margin:0;">
+            <strong>All {{ ns.total }} designs fell below quality thresholds.</strong>
+            The pipeline ran cleanly. These candidates are shown so you can
+            see the score distribution, but they should not be advanced to
+            validation without re-screening. To find passing designs, try
+            increasing the budget, widening the binder length range, or
+            refining hotspots for your target.
+          </p>
+        </div>
+      {% endif %}
       {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url) }}
       {% if send_target_tools %}
         <div class="results-handoff" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.88rem;">

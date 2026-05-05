@@ -109,12 +109,14 @@ GLOSSARY: dict[str, dict] = {
     "filter_status": {
         "label": "Filter",
         "definition": (
-            "Pipeline quality gate result. Indicates whether the design passed "
-            "post-diffusion validation (AF2-IG re-scoring, RMSD, SC thresholds). "
-            "A 'stub' value means the silent-fallback path was triggered — "
-            "do not trust those numbers."
+            "Pipeline quality gate result. 'pass' means the design cleared all "
+            "production thresholds (AF2-IG re-scoring, RMSD, SC). 'below "
+            "threshold' means the pipeline ran cleanly but the design did "
+            "not meet pilot-tier quality bars — useful for inspecting the "
+            "score distribution, not for advancing to validation. 'stub' "
+            "marks smoke-test stubs whose scores are placeholders."
         ),
-        "good_range": "passed",
+        "good_range": "pass",
         "citation": "",
     },
 }
