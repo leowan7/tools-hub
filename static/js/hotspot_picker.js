@@ -110,6 +110,12 @@
       return;
     }
 
+    // The viewer div ships display:none. NGL.Stage captures container
+    // dimensions at construction; a 0x0 container yields a 0x0 canvas
+    // that never auto-recovers. Flip visibility BEFORE constructing.
+    if (this.emptyEl) this.emptyEl.style.display = 'none';
+    this.viewerEl.style.display = 'block';
+
     if (!this.stage) {
       this.stage = new NGL.Stage(this.viewerEl, {
         backgroundColor: '#0D1520',
@@ -117,6 +123,15 @@
       window.addEventListener('resize', function () {
         if (self.stage) self.stage.handleResize();
       });
+      // Defensive: also handle container resize (responsive layouts,
+      // panels collapsing). ResizeObserver is supported in all modern
+      // browsers; degrade silently if missing.
+      if (typeof ResizeObserver !== 'undefined') {
+        var ro = new ResizeObserver(function () {
+          if (self.stage) self.stage.handleResize();
+        });
+        ro.observe(this.viewerEl);
+      }
     } else if (this.component) {
       this.stage.removeComponent(this.component);
       this.component = null;
@@ -124,9 +139,10 @@
       this.surfaceRepr = null;
       this.hotspotRepr = null;
     }
-
-    if (this.emptyEl) this.emptyEl.style.display = 'none';
-    this.viewerEl.style.display = 'block';
+    // Belt-and-suspenders: if the stage was somehow constructed against
+    // a 0x0 container (race, browser quirk), force a resize now that
+    // we've laid out at the real dimensions.
+    this.stage.handleResize();
 
     var ext = (file.name.split('.').pop() || 'pdb').toLowerCase();
     var fmt = ext === 'cif' || ext === 'mmcif' ? 'cif' : 'pdb';
