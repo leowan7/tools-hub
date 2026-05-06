@@ -5,6 +5,7 @@
 {% set candidates = output.get('candidates', []) %}
 {% set columns    = ['ipTM', 'pLDDT', 'pAE', 'filter_status'] %}
 {% set clone_url  = url_for('tool_form', tool='pxdesign', clone_from=job.id) %}
+{% set tier_now   = output.get('tier') or job.tier or '' %}
 
 {% call results_panel(
     candidates=candidates,
@@ -12,16 +13,23 @@
     tool_slug='pxdesign',
     job_id=job.id,
     clone_url=clone_url,
-    tier=output.get('tier'),
+    tier=tier_now,
     gpu_seconds=output.get('gpu_seconds'),
     send_target_tools=send_target_tools) %}
   <div style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;">
     <p class="subtitle" style="margin:0;">
       <strong>Zero candidates returned.</strong>
-      PXDesign can legitimately return zero candidates when every generated
-      backbone fails the post-filter or the AF2-IG validator. Try the smoke
-      preset (no post-filter), adjust binder length, or escalate to pilot
-      tier for deeper sampling.
+      PXDesign can return zero candidates when every generated backbone
+      fails the AF2-IG post-filter.
+      {% if tier_now in ('smoke', 'mini_pilot') %}
+        Try escalating to pilot tier for the full validator pipeline,
+        widening the binder length range, or refining hotspots for your
+        target.
+      {% else %}
+        Try widening the binder length range, refining hotspots for your
+        target, or running the smoke preset to bypass the post-filter and
+        confirm the pipeline reaches output stage.
+      {% endif %}
     </p>
   </div>
 {% endcall %}
