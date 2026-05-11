@@ -1,7 +1,51 @@
-{# Shared footer for the Ranomics tools hub. Extracted from base.html so
-   tool pages and marketing surfaces can reuse the identical element.
-#}
-<footer>
-  Ranomics &middot; AI protein design and yeast display CRO &middot;
-  <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">ranomics.com</a>
+{# Shared footer for the Ranomics tools hub. Expands the back-link to
+   ranomics.com into a "Wet-lab validation" column so a user with a
+   designed binder can find the right CRO program in one click. #}
+<footer class="site-footer">
+  <div class="site-footer-inner">
+    <div class="site-footer-brand">
+      <strong>Ranomics</strong>
+      <span class="site-footer-tag">AI protein design and yeast display CRO &middot; Toronto, Canada</span>
+    </div>
+
+    <div class="site-footer-cols">
+      <div>
+        <span class="site-footer-col-title">Self-serve</span>
+        <ul>
+          <li><a href="{{ url_for('index') }}">Tools home</a></li>
+          <li><a href="{{ url_for('tools_comparison') }}">All tools</a></li>
+          <li><a href="{{ url_for('pricing') }}">Pricing</a></li>
+          {% if session.get('user_email') %}
+            <li><a href="{{ url_for('jobs_list') }}">My runs</a></li>
+            <li><a href="{{ url_for('campaigns_dashboard') }}">Campaigns</a></li>
+          {% endif %}
+        </ul>
+      </div>
+
+      <div>
+        <span class="site-footer-col-title">Wet-lab validation</span>
+        <ul>
+          <li><a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Binder Pilot</a></li>
+          <li><a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer">AI Binder Sprint</a></li>
+          <li><a href="https://www.ranomics.com/yeast-display" target="_blank" rel="noopener noreferrer">Yeast display CRO</a></li>
+          <li><a href="https://www.ranomics.com/biotechnology-services" target="_blank" rel="noopener noreferrer">All services</a></li>
+          <li><a href="https://www.ranomics.com/ranomics-contact" target="_blank" rel="noopener noreferrer">Talk to our team</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <span class="site-footer-col-title">Resources</span>
+        <ul>
+          <li><a href="https://www.ranomics.com/resource-hub" target="_blank" rel="noopener noreferrer">Resource hub</a></li>
+          <li><a href="https://www.ranomics.com/technology" target="_blank" rel="noopener noreferrer">Technology</a></li>
+          <li><a href="https://www.ranomics.com/applications" target="_blank" rel="noopener noreferrer">Applications</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="site-footer-bottom">
+    Ranomics &middot;
+    <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">ranomics.com</a>
+  </div>
 </footer>

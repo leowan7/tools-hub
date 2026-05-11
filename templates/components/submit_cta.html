@@ -1,0 +1,58 @@
+{# submit_cta.html — primary submit button with optional credit-cost
+   confirmation modal.
+
+   Wires a click handler that reads the active preset's data-credits
+   attribute and asks the user to confirm before submitting when the
+   cost meets or exceeds ``confirm_threshold`` credits. Closes Bug B
+   (job-submit idempotency 2026-04-29 — accidental double-submits at
+   pilot tier).
+
+Usage:
+
+    {% from "components/submit_cta.html" import submit_cta, submit_cta_script %}
+    {{ submit_cta(label="Submit run") }}
+    ...
+    {{ submit_cta_script(confirm_threshold=10) }}
+#}
+
+{% macro submit_cta(label="Submit run") %}
+  <button type="submit" class="btn-primary submit-cta" data-submit-cta>{{ label }}</button>
+{% endmacro %}
+
+{% macro submit_cta_script(confirm_threshold=10) %}
+  <script>
+    (function () {
+      var btn = document.querySelector('[data-submit-cta]');
+      var presetSelect = document.getElementById('preset');
+      if (!btn) return;
+      var form = btn.closest('form');
+      if (!form) return;
+      var threshold = {{ confirm_threshold }};
+      var armed = false;
+
+      form.addEventListener('submit', function (event) {
+        if (armed) return;  // user already confirmed
+        if (!presetSelect) return;
+        var opt = presetSelect.options[presetSelect.selectedIndex];
+        if (!opt) return;
+        var credits = parseInt(opt.getAttribute('data-credits') || '0', 10);
+        if (credits < threshold) return;
+        var label = opt.textContent.trim();
+        var ok = window.confirm(
+          'This run will cost up to ' + credits + ' credits (' + label + ').\n\n' +
+          'Unused GPU seconds are refunded automatically. Continue?'
+        );
+        if (!ok) {
+          event.preventDefault();
+          return;
+        }
+        armed = true;
+        // Disable the button so a second click during dispatch does
+        // not double-submit. The form is already submitting at this
+        // point.
+        btn.disabled = true;
+        btn.textContent = 'Submitting…';
+      });
+    })();
+  </script>
+{% endmacro %}

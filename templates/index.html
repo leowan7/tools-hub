@@ -2,7 +2,196 @@
 
 {% block title %}Ranomics Tools — GPU protein design with wet-lab validation{% endblock %}
 
-{% block description %}Design binders on dedicated Modal A100s. No shared batch queues. Prorated billing. Validate designs in Ranomics' yeast display lab. BindCraft, RFantibody, BoltzGen, PXDesign, Epitope Scout.{% endblock %}
+{% block description %}Design binders on dedicated GPUs. No shared batch queues. Prorated billing. Validate designs in Ranomics' yeast display lab. BindCraft, RFantibody, BoltzGen, PXDesign, Epitope Scout.{% endblock %}
+
+{% block head_extra %}
+  <style>
+    .home-recent {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.85rem;
+    }
+    @media (max-width: 900px) { .home-recent { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 600px) { .home-recent { grid-template-columns: 1fr; } }
+    .home-recent-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      padding: 0.85rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      transition: border-color 120ms ease;
+    }
+    .home-recent-card:hover { border-color: var(--accent); }
+    .home-recent-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    .home-recent-tool {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 0.95rem;
+      text-decoration: none;
+    }
+    .home-recent-tool:hover {
+      color: var(--accent-text);
+    }
+    .home-recent-id {
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+      font-family: var(--font-mono, monospace);
+    }
+    .home-recent-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      align-items: center;
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+    }
+    .home-recent-actions {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border-subtle);
+      display: flex;
+      gap: 0.85rem;
+      font-size: 0.82rem;
+    }
+    .home-recent-actions a { color: var(--accent-text); text-decoration: none; }
+    .home-recent-actions a:hover { text-decoration: underline; }
+    .home-recent-empty {
+      padding: 1.5rem 1rem;
+      text-align: center;
+      color: var(--text-secondary);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-md);
+      font-size: 0.92rem;
+    }
+
+    .home-catalog-section {
+      margin-top: 1rem;
+    }
+    .home-catalog-section + .home-catalog-section { margin-top: 2rem; }
+    .home-catalog-section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.55rem;
+      margin-bottom: 1.25rem;
+    }
+    .home-catalog-section-title {
+      font-size: 0.86rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-primary);
+    }
+    .home-catalog-section-link {
+      color: var(--accent);
+      font-size: 0.84rem;
+      text-decoration: none;
+    }
+    .home-catalog-section-link:hover { text-decoration: underline; }
+
+    .home-catalog-group {
+      margin-bottom: 1.75rem;
+    }
+    .home-catalog-group:last-child { margin-bottom: 0; }
+    .home-catalog-group-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+    }
+    .home-catalog-group-title {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent-text);
+    }
+    .home-catalog-group-count {
+      color: var(--text-tertiary);
+      font-size: 0.75rem;
+    }
+
+    .home-catalog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.85rem;
+    }
+    .home-catalog-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      padding: 1rem 1.05rem 0.95rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 120ms ease, transform 120ms ease;
+    }
+    .home-catalog-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .home-catalog-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .home-catalog-card-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 1rem;
+    }
+    .home-catalog-card-pill {
+      font-size: 0.7rem;
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .home-catalog-card-pill-free {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .home-catalog-card-tagline {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      margin: 0;
+    }
+    .home-catalog-card-meta {
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+    }
+    .home-catalog-card-meta strong {
+      color: var(--text-primary);
+      font-weight: 500;
+      font-family: var(--font-mono, monospace);
+    }
+    .home-catalog-card-cta {
+      margin-top: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .home-catalog-card-cta svg { width: 14px; height: 14px; }
+  </style>
+{% endblock %}
 
 {% block content %}
 
@@ -13,21 +202,105 @@
       <h1>Design binders on our GPUs. Validate in our lab.</h1>
       <p class="landing-hero-lede">
         Run BindCraft, RFantibody, BoltzGen, and PXDesign on dedicated
-        Modal A100s, not a shared batch queue. Every tool hands off
-        cleanly into Ranomics' yeast display campaigns when you're ready
-        to put designs on cells.
+        GPUs &mdash; not a shared queue. Every tool hands off cleanly
+        into Ranomics' yeast display campaigns when you're ready to put
+        designs on cells.
       </p>
       <div class="landing-hero-cta">
-        {% if session.get('user_email') %}
+        {% if authenticated %}
           <a href="#tools" class="btn-primary-lg">Open tools</a>
           <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See pricing</a>
         {% else %}
           <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free — 10 credits</a>
-          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See pricing</a>
+          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% endif %}
       </div>
     </div>
   </section>
+
+  {# ─── Recent runs dashboard (auth only) ───────────────────────────── #}
+  {% if authenticated %}
+    <section class="section" id="recent">
+      <div class="section-head">
+        <span class="section-eyebrow">Recent runs</span>
+        <h2 class="section-title">Pick up where you left off.</h2>
+      </div>
+      {% if recent_jobs %}
+        <div class="home-recent">
+          {% for job in recent_jobs %}
+            <div class="home-recent-card">
+              <div class="home-recent-row">
+                <a href="{{ url_for('job_detail', job_id=job.id) }}" class="home-recent-tool">{{ job.tool }}</a>
+                <span class="home-recent-id">{{ job.id[:8] }}</span>
+              </div>
+              <div class="home-recent-meta">
+                <span>{{ job.preset }}</span>
+                <span>·</span>
+                <span>{{ job.status }}</span>
+                {% if job.credits_cost %}
+                  <span>·</span>
+                  <span>{{ job.credits_cost }} cr</span>
+                {% endif %}
+              </div>
+              <div class="home-recent-actions">
+                <a href="{{ url_for('job_detail', job_id=job.id) }}">Open →</a>
+                <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+        <div style="margin-top: 0.85rem; text-align: right;">
+          <a href="{{ url_for('jobs_list') }}" class="home-catalog-section-link">All runs →</a>
+        </div>
+      {% else %}
+        <div class="home-recent-empty">
+          You haven't run anything yet. Pick a tool below to start your first design.
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  {# ─── Tool catalog grouped by workflow stage ─────────────────────── #}
+  {% if grouped %}
+    <section class="section" id="tools">
+      <div class="home-catalog-section-head">
+        <span class="home-catalog-section-title">{% if authenticated %}Run a new tool{% else %}What you can run{% endif %}</span>
+        <a href="{{ url_for('tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
+      </div>
+      {% for category, items in grouped %}
+        <div class="home-catalog-group">
+          <div class="home-catalog-group-head">
+            <span class="home-catalog-group-title">{{ category }}</span>
+            <span class="home-catalog-group-count">{{ items|length }} tool{{ '' if items|length == 1 else 's' }}</span>
+          </div>
+          <div class="home-catalog-grid">
+            {% for tool in items %}
+              {% if tool.external %}
+                <a class="home-catalog-card" href="{{ tool.route }}" target="_blank" rel="noopener noreferrer">
+              {% elif authenticated %}
+                <a class="home-catalog-card" href="{{ tool.route }}">
+              {% else %}
+                <a class="home-catalog-card" href="{{ url_for('login', next=tool.route) }}">
+              {% endif %}
+                <div class="home-catalog-card-head">
+                  <span class="home-catalog-card-name">{{ tool.name }}</span>
+                  <span class="home-catalog-card-pill {% if tool.is_free %}home-catalog-card-pill-free{% endif %}">{{ tool.credit_band }}</span>
+                </div>
+                <p class="home-catalog-card-tagline">{{ tool.tagline }}</p>
+                {% if tool.runtime_band and tool.runtime_band != '—' %}
+                  <span class="home-catalog-card-meta">Runtime <strong>{{ tool.runtime_band }}</strong></span>
+                {% endif %}
+                <span class="home-catalog-card-cta">
+                  {% if authenticated %}Open tool{% else %}Sign in to run{% endif %}
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
+              </a>
+            {% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </section>
+  {% endif %}
 
   {# ─── Why Ranomics (differentiation strip) ────────────────────────── #}
   <section class="section">
@@ -48,9 +321,9 @@
         </span>
         <h3 class="why-card-title">No shared batch queues</h3>
         <p class="why-card-body">
-          Dedicated Modal A100/A100-80GB per job. Predictable runtime,
-          no "your job is #47 in line." Pilots finish in 15 to 45 minutes
-          with real scores, not stubs.
+          A dedicated GPU per job. Predictable runtime, no "your job is
+          #47 in line." Pilots finish in 15 to 45 minutes with real
+          scores, not stubs.
         </p>
       </article>
       <article class="why-card">
@@ -71,8 +344,8 @@
         <h3 class="why-card-title">Validated pipelines, public audit log</h3>
         <p class="why-card-body">
           Every tool ships only after two consecutive real-score passes
-          on Modal staging. We publish the commit SHAs, run dates, and
-          failure modes, not just marketing claims.
+          on staging. We publish the commit SHAs, run dates, and failure
+          modes, not just marketing claims.
         </p>
       </article>
     </div>
@@ -89,7 +362,7 @@
         <span class="step-num">STEP 01</span>
         <h3 class="step-title">Score the target</h3>
         <p class="step-body">
-          Use <a href="https://scout.ranomics.com" target="_blank" rel="noopener noreferrer">Epitope Scout</a>
+          Use <a href="{{ url_for('scout.index') }}">Epitope Scout</a>
           (free) to score your target's surface on six feasibility
           dimensions: topology, rigidity, accessibility, glycan risk,
           interface competition, before burning GPU-hours on a hard
@@ -110,46 +383,16 @@
         <span class="step-num">STEP 03</span>
         <h3 class="step-title">Validate in the lab</h3>
         <p class="step-body">
-          Send your shortlist directly into a Ranomics yeast display
-          campaign. Same team, same data loop. Computational designs
-          and wet-lab validation share one pipeline, not a handoff email.
+          Send your shortlist into a
+          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Binder Pilot</a>
+          or
+          <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer">AI Binder Sprint</a>.
+          Same team, same data loop. Computational designs and wet-lab
+          validation share one pipeline, not a handoff email.
         </p>
       </article>
     </div>
   </section>
-
-  {# ─── Tool grid (signed-in only) ──────────────────────────────────── #}
-  {% if tools %}
-    <section class="section" id="tools">
-      <div class="section-head">
-        <span class="section-eyebrow">Your tools</span>
-        <h2 class="section-title">Pick a tool to run.</h2>
-      </div>
-      <div class="tool-grid">
-        {% for tool in tools %}
-          {% if tool.external %}
-            <a class="tool-card" href="{{ tool.href }}" target="_blank" rel="noopener noreferrer">
-          {% else %}
-            <a class="tool-card" href="{{ tool.href }}">
-          {% endif %}
-            <div class="tool-card-header">
-              <span class="tool-card-name">{{ tool.name }}</span>
-              {% if tool.status == 'live' %}
-                <span class="tool-card-status tool-card-status-live">Live</span>
-              {% else %}
-                <span class="tool-card-status tool-card-status-soon">Coming soon</span>
-              {% endif %}
-            </div>
-            <p class="tool-card-tagline">{{ tool.tagline }}</p>
-            <span class="tool-card-cta">
-              {% if tool.status == 'live' %}Open tool{% else %}Preview{% endif %}
-              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </span>
-          </a>
-        {% endfor %}
-      </div>
-    </section>
-  {% endif %}
 
   {# ─── Pricing teaser → /pricing ──────────────────────────────────── #}
   <section class="section">

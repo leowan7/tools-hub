@@ -105,8 +105,8 @@ adapter = ToolAdapter(
     label="BindCraft — de novo binder design",
     blurb=(
         "Structure-based de novo binder design on JAX + AlphaFold2 "
-        "multimer + ColabDesign. Runs on A100-80GB with a 4-hour "
-        "max session; results are emailed on completion."
+        "multimer + ColabDesign. 4-hour max session; results are "
+        "emailed on completion."
     ),
     presets=(
         Preset(

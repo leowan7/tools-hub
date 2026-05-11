@@ -1,16 +1,157 @@
 {% extends "base.html" %}
 
-{% block title %}All tools compared — Ranomics Tools{% endblock %}
+{% block title %}All tools — Ranomics Tools{% endblock %}
 
-{% block description %}Compare Ranomics' GPU protein-design tools — BindCraft, RFantibody, BoltzGen, and PXDesign — on runtime, credit cost, and underlying method.{% endblock %}
+{% block description %}Free GPU-backed protein design tools — Epitope Scout, ProteinMPNN, BindCraft, RFantibody, BoltzGen, RFdiffusion, PXDesign, AlphaFold2, ColabFold, ESMFold. Run on dedicated GPUs with prorated billing and wet-lab handoff into the Ranomics yeast display CRO.{% endblock %}
 
 {% block head_extra %}
   <style>
+    .catalog-loop {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.85rem;
+      margin: 1.5rem 0 2.25rem;
+    }
+    .catalog-loop-step {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.85rem 1rem;
+    }
+    .catalog-loop-num {
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      color: var(--accent);
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .catalog-loop-title {
+      display: block;
+      margin-top: 0.3rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 0.95rem;
+    }
+    .catalog-loop-body {
+      display: block;
+      margin-top: 0.35rem;
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+    @media (max-width: 900px) {
+      .catalog-loop { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 540px) {
+      .catalog-loop { grid-template-columns: 1fr; }
+    }
+
+    .catalog-section {
+      margin: 2rem 0 0.5rem;
+    }
+    .catalog-section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.55rem;
+      margin-bottom: 1rem;
+    }
+    .catalog-section-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-primary);
+    }
+    .catalog-section-count {
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+    }
+
+    .catalog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.85rem;
+    }
+    .catalog-card {
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+      padding: 1rem 1.05rem 0.95rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 120ms ease, transform 120ms ease;
+    }
+    .catalog-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .catalog-card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .catalog-card-name {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 1rem;
+      line-height: 1.25;
+    }
+    .catalog-card-pill {
+      font-size: 0.7rem;
+      padding: 0.18rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+    .catalog-card-pill-free {
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+    .catalog-card-tagline {
+      color: var(--text-secondary);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      margin: 0;
+    }
+    .catalog-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.85rem;
+      color: var(--text-secondary);
+      font-size: 0.78rem;
+      margin-top: 0.15rem;
+    }
+    .catalog-card-meta strong {
+      color: var(--text-primary);
+      font-weight: 500;
+      font-family: var(--font-mono, monospace);
+    }
+    .catalog-card-cta {
+      margin-top: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: var(--accent);
+      font-size: 0.85rem;
+      font-weight: 500;
+    }
+    .catalog-card-cta svg { width: 14px; height: 14px; }
+
+    .catalog-comparison {
+      margin-top: 3rem;
+    }
     .comparison-table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.92rem;
-      margin-top: 1.5rem;
+      font-size: 0.9rem;
     }
     .comparison-table thead tr {
       background: var(--bg-elevated);
@@ -19,12 +160,12 @@
       text-align: left;
     }
     .comparison-table th {
-      padding: 0.75rem 0.85rem;
+      padding: 0.65rem 0.75rem;
       font-weight: 500;
       letter-spacing: 0.02em;
     }
     .comparison-table td {
-      padding: 0.75rem 0.85rem;
+      padding: 0.65rem 0.75rem;
       border-bottom: 1px solid var(--border);
       vertical-align: top;
     }
@@ -36,7 +177,7 @@
     .comparison-tool-slug {
       display: block;
       color: var(--text-secondary);
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       margin-top: 0.2rem;
       font-family: var(--font-mono, monospace);
     }
@@ -46,7 +187,7 @@
     }
     .comparison-cost-line {
       color: var(--text-secondary);
-      font-size: 0.85rem;
+      font-size: 0.82rem;
     }
     .comparison-cost-line strong {
       color: var(--text-primary);
@@ -55,12 +196,12 @@
     .comparison-links a {
       color: var(--accent);
       text-decoration: none;
+      font-size: 0.82rem;
     }
     .comparison-links a:hover { text-decoration: underline; }
     .comparison-links .comparison-link-row {
       display: block;
       margin-top: 0.25rem;
-      font-size: 0.85rem;
     }
     .comparison-wrap {
       overflow-x: auto;
@@ -79,58 +220,163 @@
 
 {% block content %}
   <div class="hero">
-    <p class="label-accent">TOOLS</p>
-    <h1>All four GPU pipelines at a glance.</h1>
-    <p class="subtitle">Pick the one that matches your design intent. Every tool runs on the same credit ledger, with prorated billing and published audit logs.</p>
+    <p class="label-accent">All tools</p>
+    <h1>The Ranomics protein-design tool catalog.</h1>
+    <p class="subtitle">
+      Run feasibility scoring, generative binder design, structure
+      prediction, and library planning on the same credit ledger. Every
+      pipeline lands ranked candidates with downloadable PDBs and hands
+      off cleanly into Ranomics' yeast display CRO when a design is
+      worth validating.
+    </p>
   </div>
 
-  <div class="comparison-wrap">
-    <table class="comparison-table">
-      <thead>
-        <tr>
-          <th>Tool</th>
-          <th>Best for</th>
-          <th>Typical runtime</th>
-          <th>Credit cost (smoke / pilot)</th>
-          <th>Paper / Repo</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in tools %}
-          <tr>
-            <td>
-              <span class="comparison-tool-name">{{ row.name }}</span>
-              <span class="comparison-tool-slug">{{ row.slug }}</span>
-            </td>
-            <td class="comparison-one-liner">{{ row.comparison_one_liner }}</td>
-            <td>
-              <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_runtime }}</strong></div>
-              <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_runtime }}</strong></div>
-            </td>
-            <td>
-              <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_credits }}</strong>{% if row.smoke_credits != '—' %} credits{% endif %}</div>
-              <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_credits }}</strong>{% if row.pilot_credits != '—' %} credits{% endif %}</div>
-            </td>
-            <td class="comparison-links">
-              {% if row.paper_url %}
-                <a href="{{ row.paper_url }}" target="_blank" rel="noopener">{{ row.paper_citation }}</a>
-              {% else %}
-                {{ row.paper_citation }}
-              {% endif %}
-              {% if row.github_url %}
-                <span class="comparison-link-row">
-                  <a href="{{ row.github_url }}" target="_blank" rel="noopener">Source repo</a>
-                </span>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+  {# ─── The iteration loop ─────────────────────────────────────────── #}
+  <section>
+    <div class="catalog-loop">
+      <div class="catalog-loop-step">
+        <span class="catalog-loop-num">Step 1</span>
+        <span class="catalog-loop-title">Score the target</span>
+        <span class="catalog-loop-body">
+          Use Epitope Scout to identify candidate epitopes and rate
+          binder-design feasibility before burning GPU-hours.
+        </span>
+      </div>
+      <div class="catalog-loop-step">
+        <span class="catalog-loop-num">Step 2</span>
+        <span class="catalog-loop-title">Generate binders</span>
+        <span class="catalog-loop-body">
+          Run BindCraft, RFdiffusion, BoltzGen, RFantibody, or PXDesign
+          on a target PDB. Score, clone, tweak, re-run.
+        </span>
+      </div>
+      <div class="catalog-loop-step">
+        <span class="catalog-loop-num">Step 3</span>
+        <span class="catalog-loop-title">Validate in silico</span>
+        <span class="catalog-loop-body">
+          Refold candidates with AlphaFold2, ColabFold, or ESMFold.
+          Use ProteinMPNN to redesign sequences on a fixed backbone.
+        </span>
+      </div>
+      <div class="catalog-loop-step">
+        <span class="catalog-loop-num">Step 4</span>
+        <span class="catalog-loop-title">Validate in the lab</span>
+        <span class="catalog-loop-body">
+          Hand the shortlist into a Ranomics yeast display campaign.
+          Same team, same data loop — design and wet-lab share one
+          pipeline.
+        </span>
+      </div>
+    </div>
+  </section>
+
+  {# ─── Tile grid grouped by category ───────────────────────────────── #}
+  {% if grouped %}
+    {% for category, items in grouped %}
+      <section class="catalog-section">
+        <div class="catalog-section-head">
+          <span class="catalog-section-title">{{ category }}</span>
+          <span class="catalog-section-count">{{ items|length }} tool{{ '' if items|length == 1 else 's' }}</span>
+        </div>
+        <div class="catalog-grid">
+          {% for tool in items %}
+            {% if tool.external %}
+              <a class="catalog-card" href="{{ tool.route }}" target="_blank" rel="noopener noreferrer">
+            {% elif authenticated %}
+              <a class="catalog-card" href="{{ tool.route }}">
+            {% else %}
+              <a class="catalog-card" href="{{ url_for('login', next=tool.route) }}">
+            {% endif %}
+              <div class="catalog-card-head">
+                <span class="catalog-card-name">{{ tool.name }}</span>
+                <span class="catalog-card-pill {% if tool.is_free %}catalog-card-pill-free{% endif %}">{{ tool.credit_band }}</span>
+              </div>
+              <p class="catalog-card-tagline">{{ tool.tagline }}</p>
+              <div class="catalog-card-meta">
+                {% if tool.runtime_band and tool.runtime_band != '—' %}
+                  <span>Runtime <strong>{{ tool.runtime_band }}</strong></span>
+                {% endif %}
+                {% if tool.paper_citation and tool.paper_citation != '—' %}
+                  <span>{{ tool.paper_citation }}</span>
+                {% endif %}
+              </div>
+              <span class="catalog-card-cta">
+                {% if authenticated %}Open tool{% else %}Sign in to run{% endif %}
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M7 4l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </span>
+            </a>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+  {% endif %}
+
+  {# ─── Comparison matrix at the bottom for power users ─────────────── #}
+  {% set gpu_rows = [] %}
+  {% for tool in tools %}
+    {% if tool.paper_url or tool.github_url %}
+      {% set _ = gpu_rows.append(tool) %}
+    {% endif %}
+  {% endfor %}
+  {% if gpu_rows %}
+    <section class="catalog-comparison">
+      <div class="catalog-section-head">
+        <span class="catalog-section-title">Side-by-side comparison</span>
+        <span class="catalog-section-count">runtime · cost · paper</span>
+      </div>
+      <div class="comparison-wrap">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Best for</th>
+              <th>Typical runtime</th>
+              <th>Credit cost (smoke / pilot)</th>
+              <th>Paper / Repo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in gpu_rows %}
+              <tr>
+                <td>
+                  <span class="comparison-tool-name">{{ row.name }}</span>
+                  <span class="comparison-tool-slug">{{ row.slug }}</span>
+                </td>
+                <td class="comparison-one-liner">{{ row.comparison_one_liner }}</td>
+                <td>
+                  <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_runtime }}</strong></div>
+                  <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_runtime }}</strong></div>
+                </td>
+                <td>
+                  <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_credits }}</strong>{% if row.smoke_credits not in ['—', 'Free'] %} credits{% endif %}</div>
+                  <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_credits }}</strong>{% if row.pilot_credits not in ['—', 'Free'] %} credits{% endif %}</div>
+                </td>
+                <td class="comparison-links">
+                  {% if row.paper_url %}
+                    <a href="{{ row.paper_url }}" target="_blank" rel="noopener">{{ row.paper_citation }}</a>
+                  {% else %}
+                    {{ row.paper_citation }}
+                  {% endif %}
+                  {% if row.github_url %}
+                    <span class="comparison-link-row">
+                      <a href="{{ row.github_url }}" target="_blank" rel="noopener">Source repo</a>
+                    </span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
 
   <div class="comparison-footer">
     <p>Every tool's results page hands off directly into a Ranomics yeast display campaign.</p>
-    <p><a href="{{ url_for('pricing') }}">See pricing</a></p>
+    <p>
+      <a href="{{ url_for('pricing') }}">See pricing</a>
+      · <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener">Binder Pilot CRO</a>
+      · <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener">AI Binder Sprint</a>
+    </p>
   </div>
 {% endblock %}

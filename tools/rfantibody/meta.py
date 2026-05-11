@@ -44,3 +44,63 @@ comparison_one_liner: str = (
     "BoltzGen."
 )
 example_output_id: Optional[str] = None
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page.
+about: dict = {
+    "what_it_is": (
+        "RFantibody (Bennett et al., bioRxiv 2024). RoseTTAFold-derived "
+        "diffusion model that generates VHH (single-domain) and scFv "
+        "antibody scaffolds against a target. Outputs are scored with "
+        "AF2 re-prediction (pAE, pLDDT, ipAE)."
+    ),
+    "when_to_use": [
+        "You want an antibody scaffold (VHH or scFv) rather than a de novo mini-protein.",
+        "Your downstream validation uses yeast display, mammalian display, or hybridoma workflows.",
+        "Your target is a standard protein epitope without heavy glycosylation.",
+    ],
+    "prerequisites": [
+        "Target structure (<code>.pdb</code> / <code>.cif</code>).",
+        "Chain ID of the target.",
+        "At least one hotspot residue defining the epitope face.",
+    ],
+    "inputs": [
+        {
+            "name": "Scaffold",
+            "explanation": (
+                "VHH (single-domain heavy-chain antibody) or scFv "
+                "(single-chain Fv with linked VH and VL). VHH is "
+                "smaller, easier to express; scFv has higher avidity "
+                "potential."
+            ),
+        },
+        {
+            "name": "Hotspot residues",
+            "explanation": (
+                "Comma-separated target-chain residues defining the "
+                "epitope the CDRs should target."
+            ),
+        },
+        {
+            "name": "Number of designs",
+            "explanation": (
+                "How many candidates to generate. Each passes AF2 "
+                "re-prediction filtering on pAE and pLDDT."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 2, "typical": "~3 min"},
+        {"preset": "mini_pilot", "credits": 8, "typical": "~7 min"},
+        {"preset": "pilot", "credits": 15, "typical": "15&ndash;60 min"},
+    ],
+    "output_summary": (
+        "Ranked antibody candidates with pAE, pLDDT, ipAE, and "
+        "downloadable PDBs. Filter at pAE &le; 5 / ipAE &le; 6 for "
+        "downstream wet-lab work."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

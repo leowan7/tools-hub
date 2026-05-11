@@ -35,3 +35,64 @@ comparison_one_liner: str = (
     "or BoltzGen first and feed the output PDB here."
 )
 example_output_id: Optional[str] = None
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page. Field shape and
+# rendering rules are documented at the top of about_panel.html.
+about: dict = {
+    "what_it_is": (
+        "ProteinMPNN (Dauparas et al., <em>Science</em> 2022). A "
+        "message-passing graph neural network that scores the 20 "
+        "canonical residues at every backbone position, conditioned on "
+        "C&alpha; / backbone coordinates. Sampling at "
+        "<code>sampling_temp</code> produces candidate sequences that "
+        "fold into the input geometry."
+    ),
+    "when_to_use": [
+        "You already have a backbone and need candidate sequences for it.",
+        "You want to redesign a binder produced by RFdiffusion, RFantibody, BindCraft, or BoltzGen.",
+        "You want to thread alternative sequences through a curated PDB before ordering.",
+    ],
+    "prerequisites": [
+        "Backbone PDB / mmCIF — only C&alpha; and backbone atoms are used.",
+        "Chain ID(s) of the region(s) to redesign. Other chains stay fixed as context.",
+    ],
+    "inputs": [
+        {
+            "name": "Chains to design",
+            "explanation": (
+                "Which chains in the PDB MPNN should redesign "
+                "(e.g. <code>A</code>, <code>A B</code>, <code>H L</code>). "
+                "Other chains are held fixed as context."
+            ),
+        },
+        {
+            "name": "Number of sequences",
+            "explanation": (
+                "How many independent samples to draw (1&ndash;20). Each "
+                "sample is independent; rank by score and ProteinMPNN "
+                "recovery rate."
+            ),
+        },
+        {
+            "name": "Sampling temperature",
+            "explanation": (
+                "Lower = more conservative (closer to argmax); higher = "
+                "more diverse. Defaults to 0.1 per the upstream README."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 0, "typical": "~1 min"},
+        {"preset": "standalone", "credits": 1, "typical": "~1 min"},
+    ],
+    "output_summary": (
+        "Ranked candidate sequences with per-position score and overall "
+        "ProteinMPNN recovery, downloadable as FASTA. Pair downstream "
+        "with AlphaFold2 / ColabFold to confirm the predicted fold."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

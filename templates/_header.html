@@ -19,7 +19,10 @@
       <a href="{{ url_for('index') }}" class="brand-tool-link">Tools</a>
     </div>
     <div class="navbar-right">
-      <a href="{{ url_for('scout.index') }}" class="nav-link-public">Scout</a>
+      <a href="{{ url_for('tools_comparison') }}" class="nav-link-public">All tools</a>
+      {% if session.get('user_email') %}
+        <a href="{{ url_for('jobs_list') }}" class="nav-link-public">My runs</a>
+      {% endif %}
       <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
       {% if session.get('user_email') %}
         {% if ranomics_tier %}

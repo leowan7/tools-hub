@@ -127,7 +127,7 @@ adapter = ToolAdapter(
     blurb=(
         "Structure-based antibody binder design. Generates nanobody (VHH) "
         "or scFv candidates against a target epitope, then validates the "
-        "fold with RoseTTAFold-2. A100-40GB."
+        "fold with RoseTTAFold-2."
     ),
     presets=(
         Preset(

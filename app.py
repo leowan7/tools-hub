@@ -100,6 +100,259 @@ from webhooks.stripe import register_stripe_webhook
 logger = logging.getLogger(__name__)
 
 
+# Static taglines for the hardcoded (non-adapter) tools. These three tools
+# are not part of the GPU tool_base registry, so they are added to the
+# catalog directly. Pricing strings are shown verbatim as the credit_band
+# in tile renders.
+_HARDCODED_TOOLS: tuple[dict, ...] = (
+    {
+        "slug": "epitope-scout",
+        "name": "Epitope Scout",
+        "tagline": (
+            "Score a target's surface for binder-design feasibility "
+            "before committing GPU time."
+        ),
+        "comparison_one_liner": (
+            "Pick Epitope Scout first to identify candidate epitopes "
+            "and per-dimension feasibility for any target."
+        ),
+        "category": "Scope the target",
+        "smoke_runtime": "~30 s",
+        "pilot_runtime": "—",
+        "smoke_credits": "Free",
+        "pilot_credits": "Free",
+        "credit_band": "Free",
+        "runtime_band": "~30 s",
+        "is_free": True,
+        "paper_citation": "—",
+        "paper_url": "",
+        "github_url": "",
+        "endpoint": "scout.index",
+        "external": False,
+        "status": "live",
+    },
+    {
+        "slug": "developability",
+        "name": "Binder Developability Scout",
+        "tagline": (
+            "Flag developability liabilities in antibody and nanobody "
+            "sequences before you order them."
+        ),
+        "comparison_one_liner": (
+            "Pick Developability Scout when you have a sequence and "
+            "need a quick liability scan (CDR length, hydrophobic "
+            "patches, charge balance, isoelectric point)."
+        ),
+        "category": "Check developability",
+        "smoke_runtime": "<5 s",
+        "pilot_runtime": "—",
+        "smoke_credits": "Free",
+        "pilot_credits": "Free",
+        "credit_band": "Free",
+        "runtime_band": "<5 s",
+        "is_free": True,
+        "paper_citation": "—",
+        "paper_url": "",
+        "github_url": "",
+        "endpoint": "developability",
+        "external": False,
+        "status": "live",
+    },
+    {
+        "slug": "library-planner",
+        "name": "Yeast Display Library Planner",
+        "tagline": (
+            "Plan yeast display libraries with realistic diversity and "
+            "screen-size estimates for your scaffold and Kd target."
+        ),
+        "comparison_one_liner": (
+            "Pick the Library Planner when you have a binder design "
+            "shortlist and need to scope library size, diversification "
+            "scheme, and screening throughput before ordering DNA."
+        ),
+        "category": "Scope the target",
+        "smoke_runtime": "<5 s",
+        "pilot_runtime": "—",
+        "smoke_credits": "Free",
+        "pilot_credits": "Free",
+        "credit_band": "Free",
+        "runtime_band": "<5 s",
+        "is_free": True,
+        "paper_citation": "—",
+        "paper_url": "",
+        "github_url": "",
+        "endpoint": "library_planner",
+        "external": False,
+        "status": "live",
+    },
+)
+
+
+# Maps each GPU tool slug to a workflow-stage category. The four
+# categories track the iteration loop scientists actually walk through:
+# scope a target, design binders against it, predict structures to
+# validate in silico, then check developability before ordering.
+# A flat 12-tile grid was visually noisy; grouping by stage makes the
+# workflow visible at a glance.
+_TOOL_CATEGORIES: dict[str, str] = {
+    "mpnn": "Design binders",
+    "bindcraft": "Design binders",
+    "rfantibody": "Design binders",
+    "rfdiffusion": "Design binders",
+    "boltzgen": "Design binders",
+    "pxdesign": "Design binders",
+    "af2": "Predict structures",
+    "colabfold": "Predict structures",
+    "esmfold": "Predict structures",
+}
+
+
+def _build_tools_catalog() -> list[dict]:
+    """Return the unified tool catalog used by the homepage tile grid
+    and the ``/tools`` discovery page.
+
+    Each entry includes display name, tagline, category, route, and
+    runtime / credit bands so a single template can render the tile
+    layout, the comparison matrix, and the homepage cards from one
+    source of truth. Hardcoded tools (Epitope Scout, Developability,
+    Library Planner) are included regardless of feature flags;
+    GPU adapters are filtered through ``tool_enabled`` so a flag-off
+    tool stays invisible to the catalog.
+    """
+    import importlib  # noqa: PLC0415
+
+    catalog: list[dict] = []
+
+    # Hardcoded tools (not part of tool_base registry). External Scout
+    # link is resolved at request time so the URL adapts to the current
+    # host (covers local dev vs production).
+    for entry in _HARDCODED_TOOLS:
+        item = dict(entry)
+        endpoint = item.pop("endpoint", None)
+        try:
+            item["route"] = url_for(endpoint) if endpoint else "#"
+        except Exception:  # noqa: BLE001 — outside request context
+            item["route"] = "#"
+        catalog.append(item)
+
+    # GPU adapters (flag-gated).
+    for adapter in tool_base.all_adapters():
+        if not tool_enabled(adapter.slug):
+            continue
+
+        meta = None
+        try:
+            meta = importlib.import_module(f"tools.{adapter.slug}.meta")
+        except ImportError:
+            pass
+
+        smoke_runtime = "—"
+        pilot_runtime = "—"
+        if meta is not None:
+            runtime_map = getattr(meta, "PRESET_RUNTIME", None)
+            if runtime_map:
+                smoke_entry = runtime_map.get("smoke") or {}
+                pilot_entry = runtime_map.get("pilot") or {}
+                if smoke_entry.get("typical_minutes"):
+                    smoke_runtime = f"{smoke_entry['typical_minutes']} min"
+                if pilot_entry.get("typical_minutes"):
+                    pilot_runtime = f"{pilot_entry['typical_minutes']} min"
+            else:
+                legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
+                for legacy in legacy_rows:
+                    if legacy.get("slug") == "smoke" and legacy.get("runtime"):
+                        smoke_runtime = legacy["runtime"]
+                    if legacy.get("slug") == "pilot" and legacy.get("runtime"):
+                        pilot_runtime = legacy["runtime"]
+
+        # Smoke / pilot are the conventional preset slugs for composite
+        # tools. Atomic primitives (MPNN, AF2, ColabFold, ESMFold) use
+        # ``smoke`` + ``standalone`` instead. Compute the band by looking
+        # at every preset on the adapter so the catalog stays correct
+        # regardless of preset naming.
+        smoke_preset = adapter.preset_for("smoke")
+        pilot_preset = adapter.preset_for("pilot")
+        smoke_credits_int = smoke_preset.credits_cost if smoke_preset else None
+        pilot_credits_int = pilot_preset.credits_cost if pilot_preset else None
+        smoke_credits = (
+            "Free" if smoke_credits_int == 0
+            else (str(smoke_credits_int) if smoke_credits_int is not None else "—")
+        )
+        pilot_credits = (
+            str(pilot_credits_int) if pilot_credits_int is not None else "—"
+        )
+
+        all_costs = [
+            p.credits_cost for p in adapter.presets
+            if p.credits_cost is not None
+        ]
+        non_zero_costs = [c for c in all_costs if c > 0]
+        has_free_tier = any(c == 0 for c in all_costs)
+        if non_zero_costs:
+            min_cost = min(non_zero_costs)
+            max_cost = max(non_zero_costs)
+            if has_free_tier and min_cost == max_cost:
+                credit_band = f"Free or {max_cost} cr"
+            elif has_free_tier:
+                credit_band = f"Free · {min_cost}–{max_cost} cr"
+            elif min_cost == max_cost:
+                credit_band = f"{max_cost} cr"
+            else:
+                credit_band = f"{min_cost}–{max_cost} cr"
+        elif has_free_tier:
+            credit_band = "Free"
+        else:
+            credit_band = "—"
+
+        if smoke_runtime != "—" and pilot_runtime != "—" and smoke_runtime != pilot_runtime:
+            runtime_band = f"{smoke_runtime} – {pilot_runtime}"
+        elif pilot_runtime != "—":
+            runtime_band = pilot_runtime
+        elif smoke_runtime != "—":
+            runtime_band = smoke_runtime
+        else:
+            runtime_band = "—"
+
+        display_name = adapter.label.split("—")[0].strip() or adapter.label
+        try:
+            route = url_for("tool_form", tool=adapter.slug)
+        except Exception:  # noqa: BLE001
+            route = f"/tools/{adapter.slug}"
+
+        catalog.append(
+            {
+                "slug": adapter.slug,
+                "name": display_name,
+                "tagline": adapter.blurb,
+                "comparison_one_liner": getattr(
+                    meta, "comparison_one_liner", "—"
+                ) if meta is not None else "—",
+                "category": _TOOL_CATEGORIES.get(adapter.slug, "Other"),
+                "smoke_runtime": smoke_runtime,
+                "pilot_runtime": pilot_runtime,
+                "smoke_credits": smoke_credits,
+                "pilot_credits": pilot_credits,
+                "runtime_band": runtime_band,
+                "credit_band": credit_band,
+                "is_free": smoke_credits_int == 0,
+                "paper_citation": getattr(
+                    meta, "paper_citation", "—"
+                ) if meta is not None else "—",
+                "paper_url": getattr(
+                    meta, "paper_url", ""
+                ) if meta is not None else "",
+                "github_url": getattr(
+                    meta, "github_url", ""
+                ) if meta is not None else "",
+                "route": route,
+                "external": False,
+                "status": "live",
+            }
+        )
+
+    return catalog
+
+
 def create_app() -> Flask:
     """Create and configure the tools-hub Flask application.
 
@@ -131,6 +384,21 @@ def create_app() -> Flask:
 
     # Metric glossary available in all templates (candidate_table macro reads it).
     flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
+
+    # ``tool_about(adapter)`` returns the structured About-panel dict
+    # from ``tools/<slug>/meta.py``. Lets refactored form templates
+    # render the shared about_panel macro without every render_template
+    # call site needing to pass an explicit ``about=`` kwarg.
+    def _tool_about(adapter):
+        import importlib  # noqa: PLC0415
+        if adapter is None:
+            return {}
+        try:
+            meta = importlib.import_module(f"tools.{adapter.slug}.meta")
+        except ImportError:
+            return {}
+        return getattr(meta, "about", {}) or {}
+    flask_app.jinja_env.globals["tool_about"] = _tool_about
 
     # Inject the current user's tier + credit balance into every template
     # so the shared header can render the tier badge / credits pill without
@@ -463,64 +731,53 @@ def create_app() -> Flask:
 
     @flask_app.route("/", methods=["GET"])
     def index():
-        """Landing page — public to logged-out visitors, tool grid for
-        signed-in users. The template shows the tool grid only when
-        ``session.user_email`` is set.
+        """Landing page.
+
+        For anonymous visitors: marketing hero + tool catalog tiles
+        with sign-in CTAs, so first-time visitors can see what runs on
+        the platform without signing up.
+
+        For authenticated users: a "Recent runs" dashboard strip on top
+        (top 3 jobs with clone shortcuts), then the tool catalog tiles
+        for new runs.
         """
-        tools = []
+        catalog = _build_tools_catalog()
+
+        # Match the grouped layout used by /tools — same categories,
+        # same order, just rendered as wide tile sections instead of a
+        # comparison matrix.
+        category_order = (
+            "Scope the target",
+            "Design binders",
+            "Predict structures",
+            "Check developability",
+            "Other",
+        )
+        grouped: list[tuple[str, list[dict]]] = []
+        for category in category_order:
+            members = [t for t in catalog if t.get("category") == category]
+            if members:
+                grouped.append((category, members))
+
+        recent_jobs: list = []
         if session.get("user_email"):
-            tools = [
-                {
-                    "id": "epitope-scout",
-                    "name": "Epitope Scout",
-                    "tagline": (
-                        "Identify candidate surface epitopes for binder "
-                        "design campaigns."
-                    ),
-                    "status": "live",
-                    "href": "https://scout.ranomics.com",
-                    "external": True,
-                },
-                {
-                    "id": "developability",
-                    "name": "Binder Developability Scout",
-                    "tagline": (
-                        "Flag developability liabilities in antibody and "
-                        "nanobody sequences before you order them."
-                    ),
-                    "status": "live",
-                    "href": url_for("developability"),
-                    "external": False,
-                },
-                {
-                    "id": "library-planner",
-                    "name": "Yeast Display Library Planner",
-                    "tagline": (
-                        "Plan yeast display libraries with realistic "
-                        "diversity and screen-size estimates."
-                    ),
-                    "status": "live",
-                    "href": url_for("library_planner"),
-                    "external": False,
-                },
-            ]
-            # Append every flag-enabled GPU tool adapter so the hub page
-            # stays in sync with what actually ships. Flags default off so
-            # the card disappears until the operator flips production on.
-            for adapter in tool_base.all_adapters():
-                if not tool_enabled(adapter.slug):
-                    continue
-                tools.append(
-                    {
-                        "id": adapter.slug,
-                        "name": adapter.label,
-                        "tagline": adapter.blurb,
-                        "status": "live",
-                        "href": url_for("tool_form", tool=adapter.slug),
-                        "external": False,
-                    }
-                )
-        return render_template("index.html", tools=tools)
+            ctx = load_user_context()
+            if ctx is not None:
+                try:
+                    recent_jobs = list(
+                        list_jobs_for_user(ctx.user_id, limit=3)
+                    )
+                except Exception:  # noqa: BLE001 — never block the homepage
+                    logger.exception("Failed to load recent jobs for homepage")
+                    recent_jobs = []
+
+        return render_template(
+            "index.html",
+            tools=catalog,
+            grouped=grouped,
+            recent_jobs=recent_jobs,
+            authenticated=bool(session.get("user_email")),
+        )
 
     @flask_app.route("/pricing", methods=["GET"])
     def pricing():
@@ -1357,72 +1614,37 @@ def create_app() -> Flask:
 
     @flask_app.route("/tools", methods=["GET"])
     def tools_comparison():
-        """Public tool comparison matrix for BindCraft / RFantibody /
-        BoltzGen / PXDesign. Pulls comparison_one_liner / paper_url /
-        github_url from each tool's ``meta`` module and runtime /
-        credit cost from the adapter's ``presets`` tuple.
+        """Public discovery hub for the full tool catalog.
+
+        Renders the iteration-loop framing, a category-grouped tile
+        grid, and the comparison matrix at the bottom for power users.
+        Catalog includes both hardcoded tools (Epitope Scout, Binder
+        Developability Scout, Library Planner) and flag-enabled GPU
+        adapters.
         """
-        import importlib  # noqa: PLC0415
+        catalog = _build_tools_catalog()
 
-        rows = []
-        for adapter in tool_base.all_adapters():
-            meta = None
-            try:
-                meta = importlib.import_module(f"tools.{adapter.slug}.meta")
-            except ImportError:
-                pass
+        # Group catalog into workflow-stage sections in a stable order.
+        # The order mirrors the iteration loop a scientist walks through.
+        category_order = (
+            "Scope the target",
+            "Design binders",
+            "Predict structures",
+            "Check developability",
+            "Other",
+        )
+        grouped: list[tuple[str, list[dict]]] = []
+        for category in category_order:
+            members = [t for t in catalog if t.get("category") == category]
+            if members:
+                grouped.append((category, members))
 
-            # Resolve typical runtime for smoke and pilot presets. Most
-            # tools expose ``PRESET_RUNTIME``; pxdesign ships
-            # ``preset_runtime_rows`` with a slightly different shape.
-            smoke_runtime = "—"
-            pilot_runtime = "—"
-            if meta is not None:
-                runtime_map = getattr(meta, "PRESET_RUNTIME", None)
-                if runtime_map:
-                    smoke_entry = runtime_map.get("smoke") or {}
-                    pilot_entry = runtime_map.get("pilot") or {}
-                    if smoke_entry.get("typical_minutes"):
-                        smoke_runtime = f"{smoke_entry['typical_minutes']} min"
-                    if pilot_entry.get("typical_minutes"):
-                        pilot_runtime = f"{pilot_entry['typical_minutes']} min"
-                else:
-                    legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-                    for legacy in legacy_rows:
-                        if legacy.get("slug") == "smoke" and legacy.get("runtime"):
-                            smoke_runtime = legacy["runtime"]
-                        if legacy.get("slug") == "pilot" and legacy.get("runtime"):
-                            pilot_runtime = legacy["runtime"]
-
-            smoke_preset = adapter.preset_for("smoke")
-            pilot_preset = adapter.preset_for("pilot")
-            smoke_credits = str(smoke_preset.credits_cost) if smoke_preset else "—"
-            pilot_credits = str(pilot_preset.credits_cost) if pilot_preset else "—"
-
-            # Display name: strip any "Tool — tagline" suffix the adapter
-            # label carries for the form page.
-            display_name = adapter.label.split("—")[0].strip() or adapter.label
-
-            rows.append(
-                {
-                    "slug": adapter.slug,
-                    "name": display_name,
-                    "comparison_one_liner": getattr(
-                        meta, "comparison_one_liner", "—"
-                    ) if meta is not None else "—",
-                    "paper_citation": getattr(
-                        meta, "paper_citation", "—"
-                    ) if meta is not None else "—",
-                    "paper_url": getattr(meta, "paper_url", "") if meta is not None else "",
-                    "github_url": getattr(meta, "github_url", "") if meta is not None else "",
-                    "smoke_runtime": smoke_runtime,
-                    "pilot_runtime": pilot_runtime,
-                    "smoke_credits": smoke_credits,
-                    "pilot_credits": pilot_credits,
-                }
-            )
-
-        return render_template("tools/comparison.html", tools=rows)
+        return render_template(
+            "tools/comparison.html",
+            tools=catalog,
+            grouped=grouped,
+            authenticated=bool(session.get("user_email")),
+        )
 
     # ------------------------------------------------------------------
     # Export routes — /jobs/<id>/export.{csv,fasta,zip}

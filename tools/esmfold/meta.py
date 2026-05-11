@@ -36,3 +36,45 @@ comparison_one_liner: str = (
     "full MSA-backed accuracy."
 )
 example_output_id: Optional[str] = None
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page.
+about: dict = {
+    "what_it_is": (
+        "ESMFold (Lin et al., <em>Science</em> 2023). Single-sequence "
+        "monomer structure prediction from the ESM-2 language model. "
+        "No MSA, no multimer support &mdash; fastest fold available "
+        "when an MSA is unavailable or unhelpful."
+    ),
+    "when_to_use": [
+        "You need a monomer fold in well under a minute.",
+        "Your sequence has no detectable homologs (orphan or designed).",
+        "You're triaging a large set of sequences and need throughput.",
+    ],
+    "prerequisites": [
+        "Single FASTA sequence (monomer only).",
+        "Sequence length under ~600 residues for best accuracy.",
+    ],
+    "inputs": [
+        {
+            "name": "Sequence",
+            "explanation": (
+                "Single-chain FASTA. Multimers and non-canonical residues "
+                "are not supported &mdash; use ColabFold or AF2 instead."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 0, "typical": "~30 s"},
+        {"preset": "standalone", "credits": 1, "typical": "~30 s"},
+    ],
+    "output_summary": (
+        "Predicted PDB with per-residue pLDDT. No PAE (single-sequence "
+        "prediction has no inter-domain signal). Use as a fast "
+        "self-consistency check on designed sequences."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

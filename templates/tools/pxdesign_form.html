@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -286,88 +287,8 @@
       </div>
     </div>
 
-    {# ---------- RIGHT: About PXDesign panel ---------- #}
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">About PXDesign</span>
-      </div>
-      <div class="panel-body">
-        <div class="pxdesign-about-section">
-          <h3>What it wraps</h3>
-          <p>
-            Ranomics in-house binder-design pipeline. An RFdiffusion-style
-            backbone generator proposes binders against the target, and
-            every candidate is re-scored with JAX AlphaFold2 run in
-            Initial Guess mode (AF2-IG). Reported ipTM, pLDDT, and pAE
-            come from the AF2 monomer model, not from the generator.
-          </p>
-          <p style="margin-top: 0.45rem;">
-            Scoring stage: Bennett et al., <em>Nat. Commun.</em> 14, 2625
-            (2023). <a href="https://www.nature.com/articles/s41467-023-38328-5" rel="noopener">Paper</a>.
-            Pipeline source is private (Kendrew).
-          </p>
-        </div>
-
-        <div class="pxdesign-about-section">
-          <h3>When to pick PXDesign</h3>
-          <p>
-            Pick PXDesign when AF2 confidence against a defined target
-            matters and you want real ipTM, pLDDT, and pAE on every
-            candidate. For hallucination-driven binder design without
-            AF2 filtering use BindCraft, for antibody and nanobody CDRs
-            use RFantibody, and for target structure generation without
-            binder design use BoltzGen.
-          </p>
-        </div>
-
-        <div class="pxdesign-about-section">
-          <h3>Prerequisites</h3>
-          <ul>
-            <li>An account tier with the credit balance listed below.</li>
-            <li>For the pilot tier: a target structure in <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code> format, the target chain ID, and at least one hotspot residue index on that chain.</li>
-            <li>For smoke and preview tiers: nothing — both run against the baked PD-L1 IgV reference target.</li>
-          </ul>
-        </div>
-
-        <div class="pxdesign-about-section">
-          <h3>What the inputs mean</h3>
-          <ul>
-            <li><strong>Preset</strong>: smoke skips the post-design filter, preview adds it against the PD-L1 reference, pilot runs the full post-filtered pipeline against your uploaded target.</li>
-            <li><strong>Binder length</strong>: residue count of the generated binder chain (40–150).</li>
-            <li><strong>Target chain</strong>: chain ID in the uploaded structure the binder should engage.</li>
-            <li><strong>Hotspot residues</strong>: comma-separated residue indices on the target chain used as contact bias for the generator.</li>
-            <li><strong>Number of designs</strong>: how many independent backbones to generate and score (1–5).</li>
-          </ul>
-        </div>
-
-        <div class="pxdesign-about-section">
-          <h3>Runtime and cost</h3>
-          <table class="pxdesign-runtime-table">
-            <thead>
-              <tr>
-                <th>Preset</th>
-                <th>Credits</th>
-                <th>Runtime</th>
-                <th>Target</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in preset_runtime_rows %}
-                <tr>
-                  <td class="pxdesign-runtime-slug">{{ row.slug }}</td>
-                  <td>{{ row.credits }}</td>
-                  <td>{{ row.runtime }}</td>
-                  <td>{{ row.target }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          <p style="margin-top: 0.55rem; font-size: 0.8rem; color: var(--text-tertiary);">
-            Credits are refunded prorated when a run finishes faster than the preset budget.
-          </p>
-        </div>
-      </div>
-    </div>
+    {# ---------- RIGHT: About PXDesign (driven by tools/pxdesign/meta.py:about) ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
   <script>

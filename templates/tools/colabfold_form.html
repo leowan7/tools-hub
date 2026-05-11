@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, prefill_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -202,70 +203,7 @@
       </div>
     </div>
 
-    <aside class="panel colabfold-about" aria-labelledby="about-title">
-      <div class="panel-header">
-        <span class="panel-title" id="about-title">About ColabFold</span>
-      </div>
-      <div class="panel-body">
-        <h3>What it is</h3>
-        <p>
-          ColabFold (<a href="https://www.nature.com/articles/s41592-022-01488-1">Mirdita et al., Nature Methods 2022</a>).
-          A fast AlphaFold2 runner that swaps AF2's JackHMMER MSA for the
-          MMseqs2 server. Here we run the no-MSA path — single-sequence
-          input, 1 recycle, no templates — which trades some accuracy
-          for a ~1-2 min turnaround on A100-40GB.
-          Repo: <a href="https://github.com/sokrypton/ColabFold">sokrypton/ColabFold</a>.
-        </p>
-
-        <h3>When to use</h3>
-        <p>
-          Pick ColabFold for a fast, good-enough fold — triaging designs
-          from RFdiffusion / BindCraft, spot-checking a mutation, or
-          anywhere you'd reach for ESMFold but need a proper PAE matrix.
-          For full-accuracy work use AF2 standalone (D2, 2 credits)
-          with MSA + templates.
-        </p>
-
-        <h3>Inputs</h3>
-        <ul>
-          <li><strong>FASTA</strong> — one or more chains, 10-600 aa total. Monomer or multimer.</li>
-          <li><strong>Number of recycles</strong> — 1-5. Default 1 for speed.</li>
-          <li><strong>Use templates</strong> — off by default. Pulls from PDB70 when on.</li>
-        </ul>
-
-        <h3>Outputs</h3>
-        <ul>
-          <li>Predicted structure (PDB, top-ranked model)</li>
-          <li>Per-residue pLDDT</li>
-          <li>PAE matrix (npz-compressed)</li>
-          <li>pTM (and ipTM for multimers)</li>
-        </ul>
-
-        <h3>Runtime &amp; cost</h3>
-        <table class="colabfold-runtime-table">
-          <thead>
-            <tr>
-              <th>Preset</th>
-              <th>Credits</th>
-              <th>Typical min</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for preset in adapter.presets %}
-              <tr>
-                <td>{{ preset.slug }}</td>
-                <td>{{ preset.credits_cost }}</td>
-                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <p style="margin-top: 0.6rem;">
-          Unused GPU seconds are refunded in credits when a run finishes
-          faster than its budget.
-        </p>
-      </div>
-    </aside>
+    {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
   <script>

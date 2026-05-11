@@ -109,4 +109,8 @@ class TestComingSoonStillUsedForFlagOff:
         resp = client.get("/tools/af2")
         assert resp.status_code == 404
         body = resp.get_data(as_text=True)
-        assert "finalising this tool" in body
+        # Coming-soon page identifies itself with the "Coming soon" badge
+        # in the panel header. The body copy can change without breaking
+        # this contract.
+        assert "Coming soon" in body
+        assert "feature-flagged off" in body

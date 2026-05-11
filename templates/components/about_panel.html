@@ -1,0 +1,107 @@
+{# about_panel.html — right-rail "About <Tool>" content driven by
+   structured data in tools/<slug>/meta.py.
+
+Consumes an ``about`` dict with this shape:
+
+    about = {
+        "what_it_is":     str,                                 # 1-2 sentences (HTML allowed for paper links)
+        "when_to_use":    list[str],                            # bullets
+        "prerequisites":  list[str],                            # bullets
+        "inputs":         list[{"name": str, "explanation": str}],
+        "runtime_table":  list[{"preset": str, "credits": str|int, "typical": str}],
+        "output_summary": str,                                 # 1 sentence; rendered after runtime table
+        "paper_url":      str (optional),                       # for the inline <a> in what_it_is
+        "paper_citation": str (optional),
+        "github_url":     str (optional),
+    }
+
+Any missing field is silently skipped.
+
+Usage:
+
+    {% from "components/about_panel.html" import about_panel %}
+    {{ about_panel(adapter, about) }}
+#}
+
+{% macro about_panel(adapter, about) %}
+  <aside class="panel about-panel" aria-labelledby="about-panel-title-{{ adapter.slug }}">
+    <div class="panel-header">
+      <span class="panel-title" id="about-panel-title-{{ adapter.slug }}">About {{ adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label }}</span>
+    </div>
+    <div class="panel-body">
+      {% if about.what_it_is %}
+        <h3>What it is</h3>
+        <p>{{ about.what_it_is|safe }}</p>
+      {% endif %}
+
+      {% if about.when_to_use %}
+        <h3>When to use</h3>
+        {% if about.when_to_use is string %}
+          <p>{{ about.when_to_use|safe }}</p>
+        {% else %}
+          <ul>
+            {% for item in about.when_to_use %}
+              <li>{{ item|safe }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      {% endif %}
+
+      {% if about.prerequisites %}
+        <h3>Prerequisites</h3>
+        <ul>
+          {% for item in about.prerequisites %}
+            <li>{{ item|safe }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if about.inputs %}
+        <h3>Input glossary</h3>
+        <ul>
+          {% for item in about.inputs %}
+            <li><strong>{{ item.name }}</strong> — {{ item.explanation|safe }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if about.runtime_table %}
+        <h3>Runtime &amp; cost</h3>
+        <table class="about-runtime-table">
+          <thead>
+            <tr>
+              <th>Preset</th>
+              <th>Credits</th>
+              <th>Typical min</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in about.runtime_table %}
+              <tr>
+                <td>{{ row.preset }}</td>
+                <td>{{ row.credits }}</td>
+                <td>{{ row.typical }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if about.output_summary %}
+        <p style="margin-top: 0.6rem;">{{ about.output_summary|safe }}</p>
+      {% endif %}
+
+      {% if about.paper_url or about.github_url %}
+        <h3>References</h3>
+        <ul>
+          {% if about.paper_url %}
+            <li><a href="{{ about.paper_url }}" target="_blank" rel="noopener">{{ about.paper_citation or 'Paper' }}</a></li>
+          {% endif %}
+          {% if about.github_url %}
+            <li><a href="{{ about.github_url }}" target="_blank" rel="noopener">Source repo</a></li>
+          {% endif %}
+        </ul>
+      {% endif %}
+    </div>
+  </aside>
+{% endmacro %}

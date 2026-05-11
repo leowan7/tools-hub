@@ -73,3 +73,63 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
         "target": "Your uploaded target",
     },
 )
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page.
+about: dict = {
+    "what_it_is": (
+        "PXDesign &mdash; Ranomics in-house binder-design pipeline. An "
+        "RFdiffusion-style backbone generator paired with JAX AF2 in "
+        "Initial Guess mode for fast, accurate scoring (Bennett et al., "
+        "<em>Nature Communications</em> 2023). Every candidate carries "
+        "real ipTM, pLDDT, and pAE from the AF2-IG stage."
+    ),
+    "when_to_use": [
+        "AF2 confidence against a defined target matters and you want real ipTM / pLDDT / pAE on every candidate.",
+        "You want faster scoring than full AF2 multimer (Initial Guess shortcut).",
+        "You want the same scoring pipeline that drives Ranomics' wet-lab campaigns.",
+    ],
+    "prerequisites": [
+        "Target structure (<code>.pdb</code> / <code>.cif</code>).",
+        "Chain ID of the target.",
+        "At least one hotspot residue.",
+    ],
+    "inputs": [
+        {
+            "name": "Hotspot residues",
+            "explanation": (
+                "Comma-separated target-chain residues defining the "
+                "epitope. Click in the 3D viewer to toggle."
+            ),
+        },
+        {
+            "name": "Binder length",
+            "explanation": (
+                "Residue count for the generated binder. ~40 residues "
+                "is the validated default; PD-L1 published binders are "
+                "in this range."
+            ),
+        },
+        {
+            "name": "Number of designs",
+            "explanation": (
+                "How many candidates to score. Higher counts increase "
+                "credits and runtime linearly."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 8, "typical": "~17 min"},
+        {"preset": "mini_pilot", "credits": 16, "typical": "~35 min"},
+        {"preset": "pilot", "credits": 15, "typical": "30&ndash;60 min"},
+    ],
+    "output_summary": (
+        "Ranked candidates with ipTM, pLDDT, pAE, and downloadable PDBs. "
+        "Target ipTM &ge; 0.70 on 1&ndash;2 of 5 designs for a tractable "
+        "epitope."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

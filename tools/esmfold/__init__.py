@@ -176,7 +176,7 @@ adapter = ToolAdapter(
     label="ESMFold — single-sequence fold",
     blurb=(
         "Paste a FASTA, get a predicted structure with pLDDT. "
-        "ESM-2 language-model fold, monomer-only — A100-40GB, ~30 s per run."
+        "ESM-2 language-model fold, monomer-only — ~30 s per run."
     ),
     presets=(
         Preset(

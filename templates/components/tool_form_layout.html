@@ -1,0 +1,25 @@
+{# tool_form_layout.html — two-column grid wrapper for tool form pages.
+
+Provides the consistent left-rail form / right-rail about-panel layout
+shared by every GPU tool. Collapses to a single column below 900px.
+
+Usage:
+
+    {% from "components/tool_form_layout.html" import tool_form_layout %}
+    {% call tool_form_layout() %}
+      <div class="tool-form-main">
+        ...form fields...
+      </div>
+      <aside class="tool-form-about">
+        ...about panel...
+      </aside>
+    {% endcall %}
+
+Or via the explicit slots if you prefer parameters over caller content.
+#}
+
+{% macro tool_form_layout() %}
+  <div class="tool-form-layout">
+    {{ caller() }}
+  </div>
+{% endmacro %}

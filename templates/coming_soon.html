@@ -18,13 +18,17 @@
     </div>
     <div class="panel-body">
       <p class="coming-soon-body">
-        We are finalising this tool. If you want a preview or early access
-        for your campaign, get in touch at
+        This tool is feature-flagged off in production. We are
+        finalising it and will switch it on once two consecutive
+        real-score passes land in
+        <a href="https://github.com/leowan7/tools-hub" target="_blank" rel="noopener">VALIDATION-LOG.md</a>.
+        For early access on a specific campaign, contact us at
         <a href="mailto:hello@ranomics.com">hello@ranomics.com</a>.
       </p>
 
       <div class="coming-soon-actions">
-        <a href="{{ url_for('index') }}" class="btn-secondary">Back to tools</a>
+        <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Browse all tools</a>
+        <a href="{{ url_for('index') }}" class="btn-secondary">Tools home</a>
       </div>
     </div>
   </div>

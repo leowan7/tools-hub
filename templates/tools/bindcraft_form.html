@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
+{% from "components/about_panel.html" import about_panel %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -274,80 +275,8 @@
       </div>
     </div>
 
-    {# ---------- RIGHT: About BindCraft panel ---------- #}
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">About BindCraft</span>
-      </div>
-      <div class="panel-body">
-        <div class="bindcraft-about-section">
-          <h3>What it wraps</h3>
-          <p>
-            BindCraft (<a href="https://www.biorxiv.org/content/10.1101/2024.09.30.615802v1" rel="noopener">Pacesa et al., bioRxiv 2024.09.30.615802</a>).
-            AlphaFold2-Multimer backbone design with hotspot-focused
-            backpropagation, followed by ProteinMPNN sequence design and
-            AF2 re-prediction filtering.
-            Repo: <a href="https://github.com/martinpacesa/BindCraft" rel="noopener">martinpacesa/BindCraft</a>.
-          </p>
-        </div>
-
-        <div class="bindcraft-about-section">
-          <h3>When to pick BindCraft</h3>
-          <p>
-            Pick BindCraft when you have a target PDB plus known hotspot
-            residues and want de novo 60-150 aa protein binders. For
-            VHH/scFv antibody scaffolds, use RFantibody. For targets with
-            glycans or non-canonical residues, use BoltzGen.
-          </p>
-        </div>
-
-        <div class="bindcraft-about-section">
-          <h3>Prerequisites</h3>
-          <ul>
-            <li>Target structure in <code>.pdb</code>, <code>.cif</code>, or <code>.mmcif</code> format.</li>
-            <li>Chain ID of the target within that structure.</li>
-            <li>At least one hotspot residue index on the target chain.</li>
-          </ul>
-        </div>
-
-        <div class="bindcraft-about-section">
-          <h3>What the inputs mean</h3>
-          <ul>
-            <li><strong>Hotspot residues</strong>: comma-separated target-chain residue indices the binder should contact. These bias the AF2 backpropagation toward the intended epitope.</li>
-            <li><strong>Binder length (min/max)</strong>: residue-count window for the generated binder chain (50-150).</li>
-            <li><strong>Num designs</strong>: how many final filtered designs are returned. Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds.</li>
-            <li><strong>Seed</strong>: RNG seed for reproducible sampling; set automatically per run.</li>
-          </ul>
-        </div>
-
-        <div class="bindcraft-about-section">
-          <h3>Runtime and cost</h3>
-          <table class="bindcraft-runtime-table">
-            <thead>
-              <tr>
-                <th>Preset</th>
-                <th>Credits</th>
-                <th>Runtime</th>
-                <th>Target</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for row in preset_runtime_rows %}
-                <tr>
-                  <td class="bindcraft-runtime-slug">{{ row.slug }}</td>
-                  <td>{{ row.credits }}</td>
-                  <td>{{ row.runtime }}</td>
-                  <td>{{ row.target }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          <p style="margin-top: 0.55rem; font-size: 0.8rem; color: var(--text-tertiary);">
-            Credits are refunded prorated when a run finishes faster than the preset budget.
-          </p>
-        </div>
-      </div>
-    </div>
+    {# ---------- RIGHT: About BindCraft (driven by tools/bindcraft/meta.py:about) ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
   <script>

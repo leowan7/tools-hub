@@ -42,3 +42,52 @@ comparison_one_liner: str = (
     "ESMFold (D4); for affinity-aware folds use Boltz-2 (D6)."
 )
 example_output_id: Optional[str] = None
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page.
+about: dict = {
+    "what_it_is": (
+        "AlphaFold2 (Jumper et al., <em>Nature</em> 2021) packaged "
+        "via ColabFold (Mirdita et al., <em>Nature Methods</em> 2022). "
+        "Standard MSA-backed structure prediction with calibrated "
+        "pLDDT and PAE, monomer or multimer."
+    ),
+    "when_to_use": [
+        "You need the gold-standard fold with full MSA + templates and calibrated confidence.",
+        "Your target is monomeric or a small multimer (2&ndash;4 chains).",
+        "You can wait ~5&ndash;10 min per run for MMseqs2 MSA fetch + 3 recycles.",
+    ],
+    "prerequisites": [
+        "Single-letter FASTA sequence(s). Multimers separated by <code>:</code> or pasted as multi-record FASTA.",
+        "A stable target topology &mdash; AF2 underperforms on intrinsically disordered or flexible regions.",
+    ],
+    "inputs": [
+        {
+            "name": "Sequence",
+            "explanation": (
+                "Paste FASTA. Use <code>:</code> as a chain separator "
+                "for multimers (e.g. <code>SEQ_A:SEQ_B</code>)."
+            ),
+        },
+        {
+            "name": "Recycles",
+            "explanation": (
+                "Number of model recycles. 3 is the AF2 default; lower "
+                "is faster but trades a small amount of accuracy."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 0, "typical": "~2 min"},
+        {"preset": "standalone", "credits": 2, "typical": "5&ndash;10 min"},
+    ],
+    "output_summary": (
+        "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM / "
+        "ipTM (multimers). Download PDB or PAE matrix for downstream "
+        "filtering and analysis."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

@@ -1,0 +1,124 @@
+{# field_group.html — consistent label + input + helper text rendering
+   for tool form fields. Replaces the hand-rolled
+   <label>/<input>/<div class="helper"> triplets repeated across all 8
+   form templates with their own scoped styles.
+
+Macros:
+
+    field_text(name, label, helper, value="", placeholder="", required=False, max_length=None, max_width="320px")
+    field_number(name, label, helper, value="", min=None, max=None, step=None, required=False, max_width="160px")
+    field_select(name, label, helper, options, value="", required=False, max_width="320px")
+        # options: list of (value, label) tuples or list of dicts {value, label, description}
+    field_textarea(name, label, helper, value="", rows=4, placeholder="", required=False)
+    field_file(name, label, helper, accept=None, required=True, max_width="520px")
+
+All macros accept a `prefilled` dict — pass ``pre_fill`` from the route
+handler so clone/handoff values are picked up automatically. Falls back
+to ``value=`` if the prefilled dict has no value for ``name``.
+
+Usage:
+
+    {% from "components/field_group.html" import field_text, field_number, field_select %}
+    {{ field_text("hotspot_residues", "Hotspot residues",
+                  "Comma-separated PDB residue numbers (e.g. 35, 52, 62).",
+                  prefilled=pre_fill, required=True) }}
+#}
+
+{% macro _resolve_value(name, prefilled, default) -%}
+{%- if prefilled and prefilled.get(name) is not none -%}
+{{- prefilled.get(name) -}}
+{%- else -%}
+{{- default -}}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro field_text(name, label, helper, value="", placeholder="", required=false, max_length=none, max_width="320px", prefilled=none) %}
+  <div class="field-group">
+    <label for="{{ name }}" class="field-label">{{ label }}{% if required %} <span class="field-required">*</span>{% endif %}</label>
+    <input
+      type="text"
+      name="{{ name }}"
+      id="{{ name }}"
+      class="field-input"
+      style="max-width: {{ max_width }};"
+      value="{{ _resolve_value(name, prefilled, value) }}"
+      {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+      {% if required %}required{% endif %}
+      {% if max_length %}maxlength="{{ max_length }}"{% endif %}
+    >
+    {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro field_number(name, label, helper, value="", min=none, max=none, step=none, required=false, max_width="160px", prefilled=none) %}
+  <div class="field-group">
+    <label for="{{ name }}" class="field-label">{{ label }}{% if required %} <span class="field-required">*</span>{% endif %}</label>
+    <input
+      type="number"
+      name="{{ name }}"
+      id="{{ name }}"
+      class="field-input"
+      style="max-width: {{ max_width }};"
+      value="{{ _resolve_value(name, prefilled, value) }}"
+      {% if min is not none %}min="{{ min }}"{% endif %}
+      {% if max is not none %}max="{{ max }}"{% endif %}
+      {% if step is not none %}step="{{ step }}"{% endif %}
+      {% if required %}required{% endif %}
+    >
+    {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro field_select(name, label, helper, options, value="", required=false, max_width="320px", prefilled=none) %}
+  {% set _v = _resolve_value(name, prefilled, value) %}
+  <div class="field-group">
+    <label for="{{ name }}" class="field-label">{{ label }}{% if required %} <span class="field-required">*</span>{% endif %}</label>
+    <select
+      name="{{ name }}"
+      id="{{ name }}"
+      class="field-input"
+      style="max-width: {{ max_width }};"
+      {% if required %}required{% endif %}
+    >
+      {% for opt in options %}
+        {% if opt is mapping %}
+          <option value="{{ opt.value }}" {% if _v == opt.value %}selected{% endif %} {% if opt.description %}data-description="{{ opt.description }}"{% endif %}>{{ opt.label }}</option>
+        {% else %}
+          <option value="{{ opt[0] }}" {% if _v == opt[0] %}selected{% endif %}>{{ opt[1] }}</option>
+        {% endif %}
+      {% endfor %}
+    </select>
+    {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro field_textarea(name, label, helper, value="", rows=4, placeholder="", required=false, prefilled=none) %}
+  <div class="field-group">
+    <label for="{{ name }}" class="field-label">{{ label }}{% if required %} <span class="field-required">*</span>{% endif %}</label>
+    <textarea
+      name="{{ name }}"
+      id="{{ name }}"
+      class="field-input"
+      rows="{{ rows }}"
+      {% if placeholder %}placeholder="{{ placeholder }}"{% endif %}
+      {% if required %}required{% endif %}
+    >{{ _resolve_value(name, prefilled, value) }}</textarea>
+    {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
+  </div>
+{% endmacro %}
+
+{% macro field_file(name, label, helper, accept=none, required=true, max_width="520px") %}
+  <div class="field-group">
+    <label for="{{ name }}" class="field-label">{{ label }}{% if required %} <span class="field-required">*</span>{% endif %}</label>
+    <input
+      type="file"
+      name="{{ name }}"
+      id="{{ name }}"
+      class="field-input"
+      style="max-width: {{ max_width }};"
+      {% if accept %}accept="{{ accept }}"{% endif %}
+      {% if required %}required{% endif %}
+    >
+    {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
+  </div>
+{% endmacro %}

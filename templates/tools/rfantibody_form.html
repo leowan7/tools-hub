@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -282,70 +283,7 @@
       </div>
     </div>
 
-    <aside class="panel rfantibody-about" aria-labelledby="about-title">
-      <div class="panel-header">
-        <span class="panel-title" id="about-title">About RFantibody</span>
-      </div>
-      <div class="panel-body">
-        <h3>What it wraps</h3>
-        <p>
-          RFantibody (<a href="https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2">Bennett et al., bioRxiv 2024</a>).
-          RFdiffusion fine-tuned for antibody scaffolds, paired with
-          ProteinMPNN sequence design and RF2 filtering. Supports VHH
-          (single-domain / nanobody) and scFv design.
-          Repo: <a href="https://github.com/RosettaCommons/RFantibody">RosettaCommons/RFantibody</a>.
-        </p>
-
-        <h3>When to use</h3>
-        <p>
-          Pick RFantibody when you need an antibody scaffold (VHH or scFv)
-          against a target PDB. For de novo non-antibody binders, use
-          BindCraft. For designs involving modified residues or glycans,
-          use BoltzGen.
-        </p>
-
-        <h3>Prerequisites</h3>
-        <ul>
-          <li>PDB of the target antigen</li>
-          <li>Chain ID of the antigen within that PDB</li>
-          <li>Hotspot residues covering the intended epitope</li>
-          <li>Scaffold type — VHH or scFv</li>
-        </ul>
-
-        <h3>Input glossary</h3>
-        <ul>
-          <li><strong>VHH</strong> — single-domain heavy-chain-only antibody (nanobody); one engineered CDR3 carries most of the paratope.</li>
-          <li><strong>scFv</strong> — single-chain Fv; VH and VL joined by a flexible linker, six CDRs total.</li>
-          <li><strong>Hotspot residues</strong> — target-chain residue indices the binder should contact. These define the epitope the diffusion model biases toward.</li>
-          <li><strong>CDR lengths</strong> — per-loop length spec, e.g. <code>H1:8,H2:7,H3:10-16</code>. H3 accepts a range; H1/H2 are fixed.</li>
-          <li><strong>Num designs</strong> — how many candidates to sample. Each is independently scored by RF2 (ipTM, pLDDT, pAE, pTM).</li>
-        </ul>
-
-        <h3>Runtime &amp; cost</h3>
-        <table class="rfantibody-runtime-table">
-          <thead>
-            <tr>
-              <th>Preset</th>
-              <th>Credits</th>
-              <th>Typical min</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for preset in adapter.presets %}
-              <tr>
-                <td>{{ preset.slug }}</td>
-                <td>{{ preset.credits_cost }}</td>
-                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <p style="margin-top: 0.6rem;">
-          Pilot runs email you when complete. Unused GPU seconds are
-          refunded in credits when a run finishes faster than its budget.
-        </p>
-      </div>
-    </aside>
+    {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
   <script>

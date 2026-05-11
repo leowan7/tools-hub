@@ -1,0 +1,53 @@
+{# cost_preview.html — reactive credit-cost block shown above the submit
+   button. Reads the data-credits and data-minutes attrs the form's
+   preset <select> options carry, and updates as the user changes the
+   preset.
+
+   The form is expected to have:
+     - <select id="preset"> with <option data-credits="N" data-minutes="M">
+     - The macro emits a <div id="preset-cost-preview"> for the JS to write into
+
+   Drop the macro right after your preset select, then call
+   ``cost_preview_script()`` once at the bottom of the form.
+
+Usage:
+
+    {% from "components/cost_preview.html" import cost_preview, cost_preview_script %}
+    {{ cost_preview() }}
+    ...rest of form...
+    {{ cost_preview_script() }}
+#}
+
+{% macro cost_preview() %}
+  <div id="preset-cost-preview" class="cost-preview" aria-live="polite"></div>
+  <div id="preset-description" class="cost-preview-desc"></div>
+{% endmacro %}
+
+{% macro cost_preview_script() %}
+  <script>
+    (function () {
+      var presetSelect = document.getElementById('preset');
+      var costPreview = document.getElementById('preset-cost-preview');
+      var descEl = document.getElementById('preset-description');
+      if (!presetSelect || !costPreview) return;
+
+      function sync() {
+        var opt = presetSelect.options[presetSelect.selectedIndex];
+        if (!opt) return;
+        var credits = opt.getAttribute('data-credits');
+        var minutes = opt.getAttribute('data-minutes');
+        var creditLabel = (credits === '0') ? 'Free' : (credits + ' credit' + (credits === '1' ? '' : 's'));
+        var minutesLabel = minutes && minutes !== '?' ? ' · ~' + minutes + ' min' : '';
+        var refundNote = (credits !== '0') ? ' · refunded if shorter' : '';
+        costPreview.textContent = creditLabel + minutesLabel + refundNote;
+        if (descEl) {
+          var desc = opt.getAttribute('data-description') || '';
+          descEl.textContent = desc;
+        }
+      }
+
+      presetSelect.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+{% endmacro %}

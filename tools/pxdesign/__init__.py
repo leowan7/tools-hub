@@ -162,9 +162,8 @@ adapter = ToolAdapter(
     blurb=(
         "Binder design with JAX AF2 Initial Guess validation — real "
         "ipTM / pLDDT / pAE from the AF2 monomer model run in "
-        "initial-guess mode against the target. GPU: A100-80GB. "
-        "Known-good on commit 5f22eec (cuDNN 9 upgrade). Historical "
-        "smoke runs ~17 min; mini_pilot ~30–40 min; pilot ~30–60 min."
+        "initial-guess mode against the target. Smoke ~17 min, "
+        "mini_pilot ~30–40 min, pilot ~30–60 min."
     ),
     presets=(
         Preset(

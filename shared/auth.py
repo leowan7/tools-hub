@@ -237,6 +237,8 @@ def require_staff(f):
         if not email:
             return redirect(url_for("login", next=request.path))
         if email not in STAFF_EMAILS:
-            return render_template("coming_soon.html"), 403
+            # Staff-only routes return 404 rather than 403 so their
+            # existence is not revealed to authenticated non-staff users.
+            return render_template("404.html"), 404
         return f(*args, **kwargs)
     return decorated_function

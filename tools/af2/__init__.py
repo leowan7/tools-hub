@@ -271,8 +271,7 @@ adapter = ToolAdapter(
     label="AlphaFold2 — structure prediction from sequence",
     blurb=(
         "Paste a FASTA (monomer or multimer), get a predicted structure "
-        "with pLDDT, PAE, and pTM/ipTM. Atomic primitive — A100-80GB, "
-        "~5-10 min per run."
+        "with pLDDT, PAE, and pTM/ipTM. ~5-10 min per run."
     ),
     presets=(
         Preset(

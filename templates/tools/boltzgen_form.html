@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -297,71 +298,7 @@
       </div>
     </div>
 
-    <aside class="panel boltzgen-about" aria-labelledby="about-title">
-      <div class="panel-header">
-        <span class="panel-title" id="about-title">About BoltzGen</span>
-      </div>
-      <div class="panel-body">
-        <h3>What it wraps</h3>
-        <p>
-          Boltz-1 / Boltz-2 (<a href="https://github.com/jwohlwend/boltz">Wohlwend et al., MIT 2024</a>).
-          Joint structure + sequence generation in an OpenFold-style
-          architecture with native support for modified residues,
-          glycans, and non-canonical amino acids.
-          Repo: <a href="https://github.com/jwohlwend/boltz">jwohlwend/boltz</a>.
-        </p>
-
-        <h3>When to use</h3>
-        <p>
-          Pick BoltzGen when your target involves glycans,
-          post-translational modifications, or non-canonical residues
-          that AlphaFold-based tools cannot represent. For standard
-          protein-only targets, BindCraft or RFantibody are faster and
-          cheaper.
-        </p>
-
-        <h3>Prerequisites</h3>
-        <ul>
-          <li>Target structure as .pdb, .cif, or .mmcif</li>
-          <li>Chain ID of the target within that structure</li>
-          <li>Optional hotspot residues (comma-separated indices)</li>
-          <li>Optional modification annotations (glycan sites, PTMs)</li>
-        </ul>
-
-        <h3>Input glossary</h3>
-        <ul>
-          <li><strong>Modified residues</strong> — residues carrying a covalent modification (phosphorylation, methylation, glycan attachment). Boltz represents these natively; AlphaFold2 substitutes the nearest canonical amino acid.</li>
-          <li><strong>Glycan attachment</strong> — N-linked or O-linked glycan chains on target residues. Many receptor and membrane-protein epitopes are glycan-shielded; designs that ignore glycans often fail in binding assays.</li>
-          <li><strong>Hotspot residues</strong> — target-chain indices the binder should contact. Optional for BoltzGen; leave blank for unconstrained sampling.</li>
-          <li><strong>Binder length</strong> — min and max residue count for generated binders. Boltz samples lengths uniformly in this window.</li>
-          <li><strong>Budget</strong> — number of final candidates returned after scoring and filtering.</li>
-        </ul>
-
-        <h3>Runtime &amp; cost</h3>
-        <table class="boltzgen-runtime-table">
-          <thead>
-            <tr>
-              <th>Preset</th>
-              <th>Credits</th>
-              <th>Typical min</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for preset in adapter.presets %}
-              <tr>
-                <td>{{ preset.slug }}</td>
-                <td>{{ preset.credits_cost }}</td>
-                <td>{{ preset_minutes.get(preset.slug, '?') }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <p style="margin-top: 0.6rem;">
-          Pilot runs email you when complete. Unused GPU seconds are
-          refunded in credits when a run finishes faster than its budget.
-        </p>
-      </div>
-    </aside>
+    {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
   <script>

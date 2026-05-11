@@ -178,7 +178,7 @@ adapter = ToolAdapter(
     blurb=(
         "Boltz-2 binder design. Generates a binder backbone against a "
         "target, refolds each candidate, and scores affinity via ipTM "
-        "and pLDDT. A100-40GB."
+        "and pLDDT."
     ),
     presets=(
         Preset(

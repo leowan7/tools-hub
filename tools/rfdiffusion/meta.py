@@ -67,3 +67,63 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
         "target": "Your uploaded target",
     },
 )
+
+
+# Structured about-panel content. Consumed by the shared
+# components/about_panel.html macro on the form page.
+about: dict = {
+    "what_it_is": (
+        "RFdiffusion (Watson et al., <em>Nature</em> 2023). "
+        "Diffusion-based backbone generator. The Ranomics composite "
+        "pipeline pairs it with ProteinMPNN sequence design and AF2 "
+        "multimer scoring, so every candidate carries real ipTM / "
+        "pLDDT / i_pAE statistics from the AF2 re-prediction stage."
+    ),
+    "when_to_use": [
+        "You want general de novo binder design with AF2-grounded scoring.",
+        "Your target is a standard protein epitope (no glycans, no PTMs).",
+        "You want flexible binder length and topology rather than an antibody scaffold.",
+    ],
+    "prerequisites": [
+        "Target structure (<code>.pdb</code> / <code>.cif</code>).",
+        "Chain ID of the target.",
+        "At least one hotspot residue.",
+    ],
+    "inputs": [
+        {
+            "name": "Hotspot residues",
+            "explanation": (
+                "Comma-separated target-chain residues the binder "
+                "should contact during diffusion."
+            ),
+        },
+        {
+            "name": "Binder length (min/max)",
+            "explanation": (
+                "Residue-count window. 55&ndash;65 is a sane default for "
+                "compact PD-L1-style targets; longer binders work for "
+                "larger interfaces."
+            ),
+        },
+        {
+            "name": "Number of designs",
+            "explanation": (
+                "How many candidates to generate. Each passes "
+                "ProteinMPNN sequence design and AF2 multimer scoring."
+            ),
+        },
+    ],
+    "runtime_table": [
+        {"preset": "smoke", "credits": 2, "typical": "~2 min"},
+        {"preset": "mini_pilot", "credits": 8, "typical": "~7 min"},
+        {"preset": "pilot", "credits": 15, "typical": "15&ndash;30 min"},
+    ],
+    "output_summary": (
+        "Ranked candidates with ipTM, pLDDT, i_pAE, and downloadable "
+        "PDBs. Aim for at least 1/5 ipTM &ge; 0.65 on a tractable "
+        "target before committing to a full pilot."
+    ),
+    "paper_citation": paper_citation,
+    "paper_url": paper_url,
+    "github_url": github_url,
+}

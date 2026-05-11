@@ -220,7 +220,7 @@ adapter = ToolAdapter(
     label="ColabFold — fast no-MSA fold",
     blurb=(
         "Paste a FASTA, get a predicted structure with pLDDT and PAE. "
-        "No-MSA speed tier — A100-40GB, ~1-2 min per run."
+        "No-MSA speed tier — ~1-2 min per run."
     ),
     presets=(
         Preset(

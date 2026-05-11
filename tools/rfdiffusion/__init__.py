@@ -169,8 +169,8 @@ adapter = ToolAdapter(
     blurb=(
         "Composite binder design: RFdiffusion backbones + ProteinMPNN "
         "sequences + AF2 multimer validation. Candidates carry real "
-        "ipTM / pLDDT / i_pAE scores. GPU: A100-40GB. Mini_pilot ~7 min "
-        "warm; pilot ~15-30 min on caller targets."
+        "ipTM / pLDDT / i_pAE scores. Mini_pilot ~7 min warm; "
+        "pilot ~15-30 min on caller targets."
     ),
     presets=(
         Preset(
