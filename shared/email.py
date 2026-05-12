@@ -348,6 +348,220 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
         logger.warning("send_campaign_status_email failed", exc_info=True)
 
 
+def send_workspace_cap_warning(
+    *,
+    user_email: str,
+    workspace,
+) -> bool:
+    """Notify a customer that their Workspace has crossed 80% of cap.
+
+    Triggered when ``shared.workspaces.charge_for_job`` reports a
+    crossed warning threshold. Pre-emptive — gives the user a chance to
+    upgrade to XL or activate a second Workspace before they hit the
+    hard 100% block mid-iteration.
+
+    Best-effort: returns False on missing config or send failure.
+    """
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    base_url = os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+
+    workspace_url = f"{base_url}/workspaces/{workspace.id}"
+    target_label = workspace.target_label or workspace.target_pdb_id
+    pct_used = workspace.pct_used
+    remaining_usd = workspace.remaining_usd
+    cap_usd = workspace.modal_cap_usd
+
+    subject = f"Your Workspace is at {pct_used:.0f}% — {target_label}"
+
+    sku_label = (
+        "Target Workspace XL"
+        if workspace.sku == "workspace_xl"
+        else "Target Workspace"
+    )
+    upgrade_cta = ""
+    if workspace.sku == "workspace_standard":
+        upgrade_cta = """
+      <p style="margin:18px 0 0 0; font-size:14px;">
+        Need more compute on this target? <strong>Target Workspace XL</strong>
+        gives you 5× the budget ($500 Modal cap), priority GPU queue, and a
+        30-minute onboarding call — $2,499 per target.
+      </p>
+      <p style="margin:10px 0 0 0;">
+        <a href="{pricing_url}" style="color:#2B9E7E;">See Workspace XL →</a>
+      </p>
+    """.format(pricing_url=f"{base_url}/pricing")
+
+    html_body = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin-top:0;">Workspace at {pct_used:.0f}%</h2>
+      <p>Your <strong>{sku_label}</strong> for <strong>{target_label}</strong>
+         has used {pct_used:.0f}% of its compute budget. About
+         <strong>${remaining_usd:.2f}</strong> of Modal compute remains
+         (cap ${cap_usd:.2f}).</p>
+      <p>Designs will stop dispatching once the cap is reached — but you
+         can keep using anything already finished, and the Workspace stays
+         readable until it expires.</p>
+      <p style="margin:18px 0;">
+        <a href="{workspace_url}"
+           style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
+          Open Workspace
+        </a>
+      </p>
+      {upgrade_cta}
+      <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+      <p style="font-size:12px;color:#999;">
+        Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">
+        tools.ranomics.com</a>
+      </p>
+    </div>
+    """.strip()
+
+    text_body = (
+        f"Your {sku_label} for {target_label} is at {pct_used:.0f}% of "
+        f"compute budget (${remaining_usd:.2f} remaining of ${cap_usd:.2f}).\n\n"
+        f"Open the Workspace: {workspace_url}\n\n"
+        f"Need more compute? See Workspace XL: {base_url}/pricing\n\n"
+        "Ranomics Tools — tools.ranomics.com"
+    )
+
+    return _send_simple(
+        api_key=api_key,
+        from_addr=from_addr,
+        to_email=user_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        log_tag=f"workspace_warn ws={workspace.id}",
+    )
+
+
+def send_workspace_cap_exhausted(
+    *,
+    user_email: str,
+    workspace,
+) -> bool:
+    """Notify a customer that their Workspace cap has been fully consumed.
+
+    Triggered when a submission is blocked because the Workspace is at
+    100%. Sent at most once per Workspace (caller should de-dupe).
+    """
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    base_url = os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+
+    workspace_url = f"{base_url}/workspaces/{workspace.id}"
+    target_label = workspace.target_label or workspace.target_pdb_id
+    sku_label = (
+        "Target Workspace XL"
+        if workspace.sku == "workspace_xl"
+        else "Target Workspace"
+    )
+
+    subject = f"Workspace compute cap reached — {target_label}"
+    upgrade_block = ""
+    if workspace.sku == "workspace_standard":
+        upgrade_block = f"""
+      <p style="margin:18px 0 0 0; font-size:14px;">
+        <strong>Need to keep going?</strong> Workspace XL gives you 5× the
+        compute budget on a new target — $2,499 per target.
+      </p>
+      <p style="margin:10px 0 0 0;">
+        <a href="{base_url}/pricing" style="color:#2B9E7E;">See Workspace XL →</a>
+      </p>
+        """
+
+    html_body = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
+      <h2 style="margin-top:0;">Compute cap reached</h2>
+      <p>Your <strong>{sku_label}</strong> for <strong>{target_label}</strong>
+         has used its full ${workspace.modal_cap_usd:.2f} compute budget.</p>
+      <p>New design runs on this target are paused. Results from completed
+         runs remain available until the Workspace expires.</p>
+      <p style="margin:18px 0;">
+        <a href="{workspace_url}"
+           style="display:inline-block;padding:12px 22px;background:#525252;
+                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
+          View results
+        </a>
+      </p>
+      {upgrade_block}
+      <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+      <p style="font-size:12px;color:#999;">
+        Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">
+        tools.ranomics.com</a>
+      </p>
+    </div>
+    """.strip()
+
+    text_body = (
+        f"Your {sku_label} for {target_label} has used its full "
+        f"${workspace.modal_cap_usd:.2f} compute budget.\n\n"
+        f"View results: {workspace_url}\n\n"
+        f"Need to keep going? See Workspace XL: {base_url}/pricing\n\n"
+        "Ranomics Tools — tools.ranomics.com"
+    )
+
+    return _send_simple(
+        api_key=api_key,
+        from_addr=from_addr,
+        to_email=user_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        log_tag=f"workspace_exhausted ws={workspace.id}",
+    )
+
+
+def _send_simple(
+    *,
+    api_key: str,
+    from_addr: str,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    log_tag: str,
+) -> bool:
+    """Shared Resend POST helper for workspace emails."""
+    if not api_key:
+        logger.info("EMAIL (no RESEND_API_KEY): %s to=%s subject=%r",
+                    log_tag, to_email, subject)
+        return False
+    try:
+        response = requests.post(
+            RESEND_ENDPOINT,
+            json={
+                "from": from_addr,
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+                "text": text_body,
+            },
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+    except Exception:
+        logger.warning("Resend POST failed for %s", log_tag, exc_info=True)
+        return False
+    if response.status_code >= 300:
+        logger.warning(
+            "Resend non-2xx for %s: HTTP %d body=%s",
+            log_tag, response.status_code, response.text[:200],
+        )
+        return False
+    logger.info("Email sent: %s to=%s (resend id=%s)",
+                log_tag, to_email,
+                (response.json() or {}).get("id"))
+    return True
+
+
 def _result_tone(job) -> str:  # noqa: ANN001
     """Return ``"success"``, ``"empty"``, or ``"failed"``.
 
