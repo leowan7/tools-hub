@@ -180,9 +180,23 @@ Rollout order: MPNN (Wave 2, pattern setter) → AF2 (Wave 3) → ColabFold + ES
 
 ---
 
-## Pricing — subscriptions for CPU, credits for GPU
+## Pricing — Target Workspaces (per-project, self-serve)
 
-Actual timeouts from Kendrew's pipeline code:
+**Replaced the credit-tier subscription model on 2026-05-11.** Previously
+the offer was three monthly tiers (Scout Pro $49 / Lab $299 / Lab+ $999)
+each granting a fixed monthly credit allowance. The math didn't close: a
+real binder campaign costs $1,500+ in Modal compute alone, while the top
+tier (600 credits/mo ≈ $600 retail) didn't fund one full campaign. The
+unit of sale ("credits") also failed the legibility test — customers
+couldn't predict what a campaign would cost before paying.
+
+The new model is **per-target Workspaces**: pay once to activate one
+target for 30 days of unlimited design runs, against a USD-denominated
+Modal compute cap. Matches how researchers actually request budget
+(per-project) and answers the user's stated concern ("how much credit do
+I need for a real campaign?").
+
+Actual timeouts from Kendrew's pipeline code (unchanged):
 
 | Tool | GPU SKU | Typical runtime | Timeout |
 |---|---|---|---|
@@ -192,49 +206,94 @@ Actual timeouts from Kendrew's pipeline code:
 | RFdiffusion | A100-40GB | 10 – 30 min | ~1 h |
 | PXDesign | A100-80GB | 8 min – 1 h | 2 h |
 
-Binder campaigns chain dozens of batches into hundreds of GPU-hours; any fixed job quota is mispriced 40×. Credits for GPU, subscriptions for CPU + perks.
+### Launch offer (3 SKUs)
 
-### Tier structure
-
-| Tier | Price | Includes | Target |
+| SKU | Price | What you get | Target customer |
 |---|---|---|---|
-| **Free** | $0 | Scout ×3/mo, Developability ∞, Library Planner ∞, ProteinMPNN ×3/mo, ColabFold ×3/mo, no full pipelines | Academics, lead gen |
-| **Scout Pro** | $49/mo | Unlimited Scout + Developability + Library Planner + atomics + API key + **10 GPU credits/mo** | Indie scientist |
-| **Lab** | $299/mo | All above + **150 GPU credits/mo** + 20 GB storage + priority + email support | Small biotech |
-| **Lab+** | $999/mo | All above + **600 GPU credits/mo** + batch API + Slack support | Mid biotech |
-| **Credit top-ups** | $50 / $250 / $1000 | 50 / 275 / 1200 credits (10% and 20% volume discount). Never expire. | Anyone exceeding tier |
-| **Enterprise** | Custom | Dedicated A100 pools, SSO, invoicing, SLA, on-prem option | Pharma / CDMO |
-| **Binder Pilot handoff** | CRO pricing | "Validate in our lab" CTA on every results page | Existing Ranomics funnel |
+| **Free Scout** | $0 | Epitope Scout unlimited + view sample reports + Developability + Library Planner | Lead capture, feasibility check |
+| **Target Workspace** | $499 / target, 30 days | All design tools on one target, **$100 Modal compute cap** (≈500–2,000 designs), 7-day money-back on first purchase | Academic, seed biotech, modern campaigns |
+| **Target Workspace XL** | $2,499 / target, 30 days | Same + **$500 Modal compute cap** (≈2,500–10,000+ designs), priority GPU queue, 30-min onboarding call | Industrial sweep, pharma exploration |
 
-### Credit rates (shown in UI before submit)
+**No subscriptions at launch.** Lab Annual ($9,999/yr unlimited
+Workspaces) and Enterprise (custom, $25k+/yr w/ SAML, audit logs, etc.)
+are post-launch upgrades — activate when 5+ Workspace customers ask for
+bulk or IT-grade features.
 
-1 credit = $1 retail. Modal compute cost ≈ 35% of retail → **~65% gross margin**.
+### Real $/design data (from VALIDATION-LOG.md)
 
-| Preset | Max GPU-hrs | SKU | Modal cost | **Price (credits)** |
-|---|---|---|---|---|
-| ProteinMPNN | 0.1 | A10G-24GB | ~$0.11 | **1** |
-| ColabFold | 0.2 | A100-40GB | ~$0.40 | **2** |
-| AF2 fold | 0.2 | A100-80GB | ~$0.75 | **2** |
-| ESMFold | 0.1 | A100-40GB | ~$0.20 | **1** |
-| RFdiffusion pilot | 0.5 | A100-40GB | ~$1.05 | **3** |
-| RFdiffusion full | 1 | A100-40GB | ~$2.10 | **6** |
-| RFantibody pilot | 0.5 | A100-40GB | ~$1.05 | **3** |
-| RFantibody full | 1 | A100-40GB | ~$2.10 | **6** |
-| BoltzGen pilot | 1 | A100-40GB | ~$1.85 | **6** |
-| BoltzGen full | 2 | A100-40GB | ~$4.20 | **11** |
-| BindCraft pilot | 2 | A100-80GB | ~$7.40 | **22** |
-| BindCraft full | 4 | A100-80GB | ~$14.80 | **44** |
-| PXDesign pilot (post-fix) | 1 | A100-80GB | ~$3.70 | **11** |
-| Boltz-2 (when live) | 0.5 | A100-80GB | ~$1.85 | **6** |
+Used to size the Modal compute caps:
 
-Jobs that finish early refund unused GPU-minutes as credits (prorate on actual Modal wall-clock). Timeouts charge full preset price.
+| Pipeline | $/design (measured) |
+|---|---|
+| RFdiffusion mini_pilot | $0.04 |
+| RFantibody mini_pilot | $0.03 |
+| BoltzGen mini_pilot | $0.10 |
+| ProteinMPNN smoke | $0.002 |
+| AF2 smoke | $0.13 |
+| PXDesign smoke | $0.27 |
+
+Median ≈ **$0.04–$0.10/design**. BindCraft (Pacesa et al., Nature 2025)
+shows nanomolar binders typically emerge from **10 experimentally
+validated designs** filtered from a smaller in-silico pool — so 500–2,000
+in-silico designs (≈$20–$80 Modal) is more than enough for a modern
+campaign. For industrial sweeps (10k–50k designs ≈$500–$5,000 Modal),
+Workspace XL exists.
+
+### Margin model
+
+Per-Workspace gross margin, measured against the cap (worst case) and
+typical usage (likely case):
+
+| SKU | Price | Cap | Worst case (cap reached) | Typical (heavy user) | Margin (typical) |
+|---|---|---|---|---|---|
+| Workspace | $499 | $100 | $399 / 80% | ~$20–$60 Modal | 88%+ |
+| Workspace XL | $2,499 | $500 | $1,999 / 80% | ~$200–$400 Modal | 84%+ |
+
+Heavy users approaching the cap still leave the project net-positive.
+Light users (50% margin floor maintained at the cap) drive the average
+margin to ~88%.
+
+### Refund policy
+
+**7-day money-back on your first Workspace ever**, no questions asked.
+After 7 days OR on subsequent Workspaces: no refunds. Clock starts at
+activation (Stripe checkout completion), not first use. Refund button is
+on the workspace dashboard; click → Stripe refund + workspace status flip
+to ``refunded`` (no further submissions). Anti-abuse: refund eligibility
+flips off the moment the user has any prior workspace in their history
+(even refunded), so a single ``stripe_customer_id`` can only refund once.
 
 ### Implementation
-- Stripe Payment Link for Scout Pro ($49/mo recurring).
-- Stripe Checkout + webhook for Lab / Lab+ / credit packs.
-- Supabase columns: `tier`, `credit_balance_cents`, `credits_granted_this_period`, `period_ends_at`.
-- Pre-job authorization: deduct preset price; refund delta on completion using Modal's actual billed seconds.
-- Phase-2: migrate to Stripe Billing metered usage if warranted.
+
+- **Supabase**: `public.workspaces` table (migration 0014) — see schema
+  in [`supabase/migrations/0014_workspaces.sql`](../supabase/migrations/0014_workspaces.sql).
+- **Lifecycle code**: [`shared/workspaces.py`](../shared/workspaces.py) —
+  ``activate_workspace``, ``charge_workspace``, ``request_refund``,
+  ``expire_workspaces`` (cron), ``workspace_preflight``, ``charge_for_job``.
+- **SKU registry**: [`billing/tiers.py`](../billing/tiers.py) — two SKUs
+  with caps + durations + Stripe price-id env mappings.
+- **Stripe one-time checkout**: [`billing/checkout.py`](../billing/checkout.py)
+  — ``mode="payment"``, metadata carries ``sku`` + ``target_pdb_id``.
+- **Webhook handler**: [`webhooks/stripe.py`](../webhooks/stripe.py) —
+  ``checkout.session.completed`` → ``activate_workspace``;
+  ``POST /webhooks/refund-request`` for first-Workspace refunds.
+- **GPU cost translation**: ``GPU_USD_PER_SECOND`` table in
+  ``shared/workspaces.py`` (Modal sticker pricing per SKU) →
+  ``compute_modal_cost_usd`` → ``charge_for_job`` (called from
+  ``webhooks/modal.py`` on job completion).
+- **Internal credit ledger** preserved as accounting only —
+  ``public.credits_ledger`` still tracks every workspace activation
+  (grant) and per-job spend, but is invisible to customers.
+
+### Migration from the legacy tier model
+
+The legacy tables (``user_tier``, ``credits_ledger``) stay in place;
+``credits_ledger`` is repurposed as internal accounting for the new
+Workspace model. The old subscription tier enum values
+(``scout_pro``/``lab``/``lab_plus``) remain in the database for any
+pre-rework customer rows but are no longer assigned to new accounts.
+``user_tier.stripe_customer_id`` is reused as the Stripe customer ↔
+Supabase user map for repeat Workspace purchases.
 
 ---
 
