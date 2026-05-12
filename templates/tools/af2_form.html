@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "components/about_panel.html" import about_panel %}
-{% from "tools/_prefill.html" import pre_value, prefill_script %}
+{% from "tools/_prefill.html" import pre_value, prefill_script, workspace_hidden_inputs %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -142,6 +142,7 @@
       </div>
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          {{ workspace_hidden_inputs(workspace_ctx) }}
           <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
           <select name="preset" id="preset" required
                   style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">

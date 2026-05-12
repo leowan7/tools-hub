@@ -198,21 +198,28 @@
   {# ─── Cinematic hero ──────────────────────────────────────────────── #}
   <section class="landing-hero">
     <div class="landing-hero-inner">
-      <span class="landing-eyebrow">AI protein design · wet-lab validated</span>
-      <h1>Design binders on our GPUs. Validate in our lab.</h1>
+      <span class="landing-eyebrow">AI protein design · self-serve · per target</span>
+      <h1>Design binders against your target.</h1>
       <p class="landing-hero-lede">
-        Run BindCraft, RFantibody, BoltzGen, and PXDesign on dedicated
-        GPUs &mdash; not a shared queue. Every tool hands off cleanly
-        into Ranomics' yeast display campaigns when you're ready to put
-        designs on cells.
+        Activate a Target Workspace, then run every pipeline &mdash; RFdiffusion,
+        BindCraft, RFantibody, BoltzGen, MPNN, AF2 &mdash; on the same target
+        for 30 days. <strong>$499 per target. No subscription. 7-day money-back
+        on your first Workspace.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
-          <a href="#tools" class="btn-primary-lg">Open tools</a>
-          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See pricing</a>
+          {% if active_workspaces_count and active_workspaces_count > 0 %}
+            <a href="/workspaces" class="btn-primary-lg">
+              Open your Workspace{% if active_workspaces_count > 1 %}s{% endif %}
+            </a>
+            <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">+ Activate another target</a>
+          {% else %}
+            <a href="/pricing" class="btn-primary-lg">Activate a target — $499</a>
+            <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          {% endif %}
         {% else %}
-          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free — 10 credits</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start with Free Scout</a>
+          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See Workspace pricing</a>
         {% endif %}
       </div>
     </div>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "tools/_prefill.html" import pre_value, pdb_source_banner, prefill_script %}
+{% from "tools/_prefill.html" import pre_value, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
 {% from "components/about_panel.html" import about_panel %}
 {% from "components/cost_preview.html" import cost_preview, cost_preview_script %}
 {% from "components/submit_cta.html" import submit_cta, submit_cta_script %}
@@ -54,6 +54,7 @@
       </div>
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+          {{ workspace_hidden_inputs(workspace_ctx) }}
           <div class="field-group">
             <label for="preset" class="field-label">Preset</label>
             <select name="preset" id="preset" required class="field-input" style="max-width: 420px;">

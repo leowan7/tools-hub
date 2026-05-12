@@ -40,6 +40,21 @@ value="{{ (pre_fill.get(key) if pre_fill else None) or default }}"
   {% endif %}
 {%- endmacro %}
 
+{# Workspace context — hidden inputs forwarded from the GET form to /submit.
+
+When a user clicks a tool from /workspaces/<id>, the link includes
+``?workspace_id=...&target_pdb_id=...``. The GET handler passes those
+through to the form template as ``workspace_ctx``. This macro renders
+the two hidden inputs so the POST handler can re-read them and gate the
+submission via ``shared.workspaces.workspace_preflight``.
+#}
+{% macro workspace_hidden_inputs(workspace_ctx) -%}
+  {% if workspace_ctx and workspace_ctx.workspace_id and workspace_ctx.target_pdb_id %}
+    <input type="hidden" name="workspace_id" value="{{ workspace_ctx.workspace_id }}">
+    <input type="hidden" name="target_pdb_id" value="{{ workspace_ctx.target_pdb_id }}">
+  {% endif %}
+{%- endmacro %}
+
 {% macro prefill_script(pre_fill) -%}
   {% if pre_fill and pre_fill.get("preset") %}
     <script>

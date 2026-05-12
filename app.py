@@ -400,22 +400,29 @@ def create_app() -> Flask:
         return getattr(meta, "about", {}) or {}
     flask_app.jinja_env.globals["tool_about"] = _tool_about
 
-    # Inject the current user's tier + credit balance into every template
-    # so the shared header can render the tier badge / credits pill without
-    # every view recomputing them. Cheap on Wave-0 volume; move to a
-    # per-request cache once call counts climb.
+    # Inject Workspace context into every template so the shared header
+    # can render the "Active Workspaces (N)" badge. Replaces the legacy
+    # ranomics_tier / ranomics_credits injection from the subscription
+    # model. ``now`` is also injected so workspace templates can render
+    # "N days remaining" without each view recomputing it.
     @flask_app.context_processor
-    def inject_ranomics_context():
+    def inject_workspace_context():
+        from datetime import datetime, timezone  # noqa: PLC0415
+        from shared.workspaces import active_workspaces_count  # noqa: PLC0415
+
+        base = {
+            "now": datetime.now(timezone.utc),
+            "active_workspaces_count": 0,
+            "ranomics_user_id": None,
+        }
         if not session.get("user_email"):
-            return {"ranomics_tier": None, "ranomics_credits": None}
+            return base
         ctx = load_user_context()
         if ctx is None:
-            return {"ranomics_tier": None, "ranomics_credits": None}
-        return {
-            "ranomics_tier": ctx.tier,
-            "ranomics_credits": ctx.balance,
-            "ranomics_user_id": ctx.user_id,
-        }
+            return base
+        base["active_workspaces_count"] = active_workspaces_count(ctx.user_id)
+        base["ranomics_user_id"] = ctx.user_id
+        return base
 
     # Stripe webhook — mounted at /webhooks/stripe. Signature verification
     # + event_id idempotency live inside webhooks/stripe.py.
@@ -787,24 +794,33 @@ def create_app() -> Flask:
     @flask_app.route("/billing/checkout", methods=["GET"])
     @login_required
     def billing_checkout():
-        """Create a Stripe Checkout Session and redirect the user to it.
+        """Create a Stripe Checkout Session for a Workspace SKU.
 
-        Accepts ``?plan=scout_pro|lab|lab_plus``. Unknown plans 404.
+        Accepts ``?sku=workspace_standard|workspace_xl`` plus a
+        ``target_pdb_id`` query param (set by /workspaces/new POST
+        after the user has uploaded their target PDB to storage).
         """
         from billing.checkout import create_checkout_session  # noqa: PLC0415
+        from billing.tiers import SKU_NAMES  # noqa: PLC0415
 
-        plan = request.args.get("plan", "").strip()
-        if plan not in ("scout_pro", "lab", "lab_plus"):
+        sku = request.args.get("sku", "").strip()
+        target_pdb_id = request.args.get("target_pdb_id", "").strip()
+        target_label = request.args.get("target_label", "").strip() or None
+        if sku not in SKU_NAMES:
             return redirect(url_for("pricing"))
+        if not target_pdb_id:
+            # Bounce back to the new-Workspace form so the user can
+            # upload a target before paying.
+            return redirect(f"/workspaces/new?sku={sku}")
 
         base = request.url_root.rstrip("/")
-        success_url = (
-            base + url_for("account") + "?success=1"
-        )
+        success_url = base + "/workspaces?success=1"
         cancel_url = base + url_for("pricing") + "?cancelled=1"
 
         url, error = create_checkout_session(
-            plan,
+            sku,
+            target_pdb_id=target_pdb_id,
+            target_label=target_label,
             success_url=success_url,
             cancel_url=cancel_url,
         )
@@ -812,6 +828,158 @@ def create_app() -> Flask:
             logger.warning("Checkout creation failed: %s", error)
             return redirect(url_for("pricing") + "?checkout_error=1")
         return redirect(url, code=303)
+
+    # ------------------------------------------------------------------
+    # Workspace routes (new — replaces the legacy subscription tier
+    # gating). See shared/workspaces.py for the lifecycle module.
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/workspaces", methods=["GET"])
+    @login_required
+    def workspaces_list():
+        """List active + past Workspaces for the signed-in user."""
+        from shared.workspaces import (  # noqa: PLC0415
+            list_active_workspaces,
+            list_workspace_history,
+        )
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        active = list_active_workspaces(ctx.user_id)
+        history = list_workspace_history(ctx.user_id, limit=20)
+        # Hide currently-active rows from the history view (avoid dupes).
+        active_ids = {ws.id for ws in active}
+        expired_or_refunded = [
+            ws for ws in history if ws.id not in active_ids
+        ]
+        return render_template(
+            "workspaces/list.html",
+            active_workspaces=active,
+            expired_workspaces=expired_or_refunded,
+        )
+
+    @flask_app.route("/workspaces/new", methods=["GET"])
+    @login_required
+    def workspaces_new():
+        """Render the new-Workspace form (upload PDB + confirm SKU)."""
+        from billing.tiers import SKU_NAMES  # noqa: PLC0415
+
+        sku = request.args.get("sku", "workspace_standard").strip()
+        if sku not in SKU_NAMES:
+            sku = "workspace_standard"
+        return render_template("workspaces/new.html", sku=sku)
+
+    @flask_app.route("/workspaces/new", methods=["POST"])
+    @login_required
+    def workspaces_new_submit():
+        """Handle PDB upload, stage it in storage, redirect to Stripe.
+
+        On success: redirects to /billing/checkout with the resolved
+        target_pdb_id baked into the URL so the Stripe checkout session
+        carries it through to the activation webhook.
+        """
+        from billing.tiers import SKU_NAMES  # noqa: PLC0415
+        from shared.storage import upload_input  # noqa: PLC0415
+        from shared.pdb_inspect import inspect_pdb  # noqa: PLC0415
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        sku = (request.form.get("sku") or "workspace_standard").strip()
+        if sku not in SKU_NAMES:
+            sku = "workspace_standard"
+        target_label = (request.form.get("target_label") or "").strip()
+
+        uploaded = request.files.get("target_pdb_file")
+        if not uploaded or not uploaded.filename:
+            return redirect(f"/workspaces/new?sku={sku}&error=missing_pdb")
+
+        data = uploaded.read()
+        if not data:
+            return redirect(f"/workspaces/new?sku={sku}&error=empty_pdb")
+
+        # Stash under workspace-targets/{user_id}/{timestamp}-{filename}.
+        # We use a synthetic "job_id" slot to namespace the upload; the
+        # actual Workspace id doesn't exist yet (created by the Stripe
+        # webhook after payment).
+        import secrets  # noqa: PLC0415
+        from datetime import datetime, timezone  # noqa: PLC0415
+        upload_token = (
+            datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            + "-" + secrets.token_hex(4)
+        )
+        try:
+            object_path = upload_input(
+                user_id=ctx.user_id,
+                job_id=f"workspace-target-{upload_token}",
+                filename=uploaded.filename,
+                data=data,
+                content_type="chemical/x-pdb",
+            )
+        except Exception:
+            logger.exception(
+                "Failed to stage target PDB for user=%s sku=%s",
+                ctx.user_id, sku,
+            )
+            return redirect(f"/workspaces/new?sku={sku}&error=upload_failed")
+
+        # Optional: sanity-check the PDB structure (chains, residues).
+        # Failure here is non-fatal — we'd rather let a quirky PDB
+        # through than block a paying customer.
+        try:
+            inspect_pdb(data)
+        except Exception:
+            logger.info(
+                "PDB inspection failed for upload by %s; continuing.",
+                ctx.user_id, exc_info=True,
+            )
+
+        # The "target_pdb_id" we pass through to Stripe metadata is the
+        # storage object path itself — it's globally unique, durable, and
+        # the Modal pipeline can fetch the PDB via presigned URL when
+        # actually running a tool inside this Workspace.
+        target_pdb_id = object_path
+        from urllib.parse import quote_plus  # noqa: PLC0415
+        return redirect(
+            "/billing/checkout"
+            f"?sku={sku}"
+            f"&target_pdb_id={quote_plus(target_pdb_id)}"
+            f"&target_label={quote_plus(target_label)}"
+        )
+
+    @flask_app.route("/workspaces/<workspace_id>", methods=["GET"])
+    @login_required
+    def workspace_detail(workspace_id: str):
+        """Show a single Workspace dashboard with cap meter + tool buttons."""
+        from shared.workspaces import get_workspace  # noqa: PLC0415
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        ws = get_workspace(workspace_id)
+        if ws is None or ws.user_id != ctx.user_id:
+            return redirect(url_for("workspaces_list"))
+
+        # Pull recent jobs scoped to this Workspace's target. (The
+        # tool_jobs table doesn't yet have a workspace_id column — we
+        # match on target via job metadata when the route handlers add
+        # it; for now show all the user's recent jobs as a fallback.)
+        workspace_jobs: list = []
+        try:
+            from shared.jobs import list_jobs_for_user  # noqa: PLC0415
+            workspace_jobs = list_jobs_for_user(ctx.user_id, limit=10)
+        except Exception:
+            workspace_jobs = []
+
+        return render_template(
+            "workspaces/detail.html",
+            workspace=ws,
+            workspace_jobs=workspace_jobs,
+        )
 
     @flask_app.route("/billing/portal", methods=["GET"])
     @login_required
@@ -831,13 +999,23 @@ def create_app() -> Flask:
     @flask_app.route("/account", methods=["GET"])
     @login_required
     def account():
-        """Account dashboard: tier, credits, and last 20 ledger entries."""
+        """Account dashboard: active Workspaces + Workspace history."""
+        from shared.workspaces import (  # noqa: PLC0415
+            list_active_workspaces,
+            list_workspace_history,
+        )
+
         ctx = load_user_context()
-        ledger = recent_ledger(ctx.user_id, limit=20) if ctx else []
+        active: list = []
+        history: list = []
+        if ctx is not None:
+            active = list_active_workspaces(ctx.user_id)
+            history = list_workspace_history(ctx.user_id, limit=20)
         return render_template(
             "account.html",
             user_email=session.get("user_email", ""),
-            ledger=ledger,
+            active_workspaces=active,
+            workspace_history=history,
         )
 
     # ------------------------------------------------------------------
@@ -1074,6 +1252,11 @@ def create_app() -> Flask:
             validate BoltzGen output with PXDesign, etc.
           * ``handoff=<handoff_id>`` — target PDB + chain + hotspots from
             Epitope Scout via ``public.scout_handoffs``.
+          * ``workspace_id=<ws_id>&target_pdb_id=<storage_path>`` —
+            Workspace-funded run. The detail page at
+            /workspaces/<id> emits these together so the POST gate
+            (``workspace_preflight``) can verify the run is funded by
+            an active Workspace and bill the actual Modal cost back.
         """
         adapter, err = _require_tool(tool)
         if err:
@@ -1082,6 +1265,18 @@ def create_app() -> Flask:
         ctx = load_user_context()
         if ctx is None:
             return redirect(url_for("login"))
+
+        # Workspace context (Wave-2 launch). Forwarded as hidden form
+        # inputs by templates/tools/_prefill.html::workspace_hidden_inputs
+        # so the POST handler can re-read and gate.
+        workspace_ctx: dict | None = None
+        ws_id_q = (request.args.get("workspace_id") or "").strip()
+        ws_target_q = (request.args.get("target_pdb_id") or "").strip()
+        if ws_id_q and ws_target_q:
+            workspace_ctx = {
+                "workspace_id": ws_id_q,
+                "target_pdb_id": ws_target_q,
+            }
 
         pre_fill: dict = {}
         pdb_source = None  # dict describing a reusable PDB, or None
@@ -1159,6 +1354,7 @@ def create_app() -> Flask:
             error=None,
             pre_fill=pre_fill,
             pdb_source=pdb_source,
+            workspace_ctx=workspace_ctx,
         )
 
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
@@ -1174,6 +1370,24 @@ def create_app() -> Flask:
         if ctx is None:
             return redirect(url_for("login"))
 
+        # Workspace context (Wave-2). The /workspaces/<id> detail page
+        # links to /tools/<slug>?workspace_id=...&target_pdb_id=... and
+        # the form template forwards both as hidden inputs (see
+        # ``workspace_hidden_inputs`` macro in
+        # ``templates/tools/_prefill.html``). When present, the
+        # workspace_preflight gate below rejects expired or
+        # cap-exhausted workspaces BEFORE we create the job row, and the
+        # IDs flow through to ``create_job`` so the completion-side
+        # ``charge_for_job`` wiring (item #6) can bill the right cap.
+        ws_id_form = (request.form.get("workspace_id") or "").strip()
+        ws_target_form = (request.form.get("target_pdb_id") or "").strip()
+        workspace_ctx: dict | None = None
+        if ws_id_form and ws_target_form:
+            workspace_ctx = {
+                "workspace_id": ws_id_form,
+                "target_pdb_id": ws_target_form,
+            }
+
         inputs, error_msg = adapter.validate(request.form, request.files)
         if inputs is None:
             return render_template(
@@ -1182,6 +1396,7 @@ def create_app() -> Flask:
                 error=error_msg,
                 pre_fill=dict(request.form.items()),
                 pdb_source=None,
+                workspace_ctx=workspace_ctx,
             )
 
         preset = adapter.preset_for(inputs["preset"])
@@ -1192,7 +1407,39 @@ def create_app() -> Flask:
                 error="Unknown preset.",
                 pre_fill=inputs,
                 pdb_source=None,
+                workspace_ctx=workspace_ctx,
             )
+
+        # Workspace gate (when context present). Rejects expired,
+        # refunded, or cap-exhausted workspaces BEFORE the job row is
+        # written, BEFORE PDB upload, BEFORE the Modal call. Submissions
+        # without workspace context fall through to the legacy credits
+        # gate below — that path remains during transition; once Phase 4
+        # validation is clean and all entry points (Scout handoff,
+        # direct URLs) route through Workspace activation, this fall-
+        # through can be flipped to a hard reject.
+        if workspace_ctx is not None:
+            from shared.workspaces import workspace_preflight  # noqa: PLC0415
+            preflight = workspace_preflight(
+                ctx.user_id, workspace_ctx["target_pdb_id"]
+            )
+            if not preflight.allow:
+                if preflight.reason == "no_workspace":
+                    return redirect(url_for("workspaces_new"))
+                # cap_exceeded / expired: send the user to the workspace
+                # detail so the cap meter + upgrade CTA explain why.
+                return redirect(
+                    url_for(
+                        "workspace_detail",
+                        workspace_id=workspace_ctx["workspace_id"],
+                    )
+                )
+            # Sanity-check: the user's active workspace for this target
+            # may differ from the one the form claims (e.g. if they
+            # bought a second workspace mid-session). Trust the form ID
+            # for charge attribution; preflight already confirmed an
+            # active workspace exists for this user+target.
+            workspace_ctx["workspace_id"] = preflight.workspace.id
 
         if ctx.balance < preset.credits_cost:
             return redirect(url_for("account", insufficient_credits=1))
@@ -1221,6 +1468,7 @@ def create_app() -> Flask:
                 error="Upload a target PDB file.",
                 pre_fill=inputs,
                 pdb_source=None,
+                workspace_ctx=workspace_ctx,
             )
 
         # ---- PDB pre-flight inspection (Bug 9 follow-on) ----
@@ -1247,6 +1495,7 @@ def create_app() -> Flask:
                     error=inspection.error,
                     pre_fill=inputs,
                     pdb_source=None,
+                    workspace_ctx=workspace_ctx,
                 )
             target_chain = (inputs.get("target_chain") or "").strip()
             if target_chain:
@@ -1255,6 +1504,7 @@ def create_app() -> Flask:
                     return render_template(
                         adapter.form_template, adapter=adapter,
                         error=chain_err, pre_fill=inputs, pdb_source=None,
+                        workspace_ctx=workspace_ctx,
                     )
                 hotspots = inputs.get("hotspot_residues") or []
                 if hotspots:
@@ -1273,17 +1523,25 @@ def create_app() -> Flask:
                                 f"Use original PDB numbering."
                             ),
                             pre_fill=inputs, pdb_source=None,
+                            workspace_ctx=workspace_ctx,
                         )
 
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
         # raises. Credits debit happens only on successful Modal submit.
+        # Workspace IDs (when present) are stashed in inputs._workspace
+        # so the completion-side ``charge_for_job`` (item #6) bills the
+        # right cap.
+        ws_target = workspace_ctx["target_pdb_id"] if workspace_ctx else None
+        ws_id = workspace_ctx["workspace_id"] if workspace_ctx else None
         job = create_job(
             user_id=ctx.user_id,
             tool=adapter.slug,
             preset=preset.slug,
             inputs=inputs,
             credits_cost=preset.credits_cost,
+            target_pdb_id=ws_target,
+            workspace_id=ws_id,
         )
         if job is None:
             return render_template(
@@ -1295,6 +1553,7 @@ def create_app() -> Flask:
                 ),
                 pre_fill=inputs,
                 pdb_source=None,
+                workspace_ctx=workspace_ctx,
             )
 
         presigned_url = ""
@@ -1372,6 +1631,7 @@ def create_app() -> Flask:
                     error=f"Upload failed: {exc}",
                     pre_fill=inputs,
                     pdb_source=None,
+                    workspace_ctx=workspace_ctx,
                 )
 
         job_spec = adapter.build_payload(inputs, presigned_url)
@@ -1410,6 +1670,7 @@ def create_app() -> Flask:
                 ),
                 pre_fill=inputs,
                 pdb_source=None,
+                workspace_ctx=workspace_ctx,
             )
 
         set_modal_call(job.id, submit_result["function_call_id"])

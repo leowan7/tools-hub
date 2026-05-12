@@ -187,6 +187,295 @@ a:hover { color: var(--warm-white); }
   text-transform: uppercase;
 }
 
+/* =========================================================================
+   Workspace UI — list, detail, new (Phase 3.1 of the Workspace SKU rework).
+   Scoped to .workspace-* prefix so nothing else is affected.
+   ========================================================================= */
+
+.workspace-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.workspace-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  padding: 1rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  transition: border-color 120ms ease;
+}
+.workspace-card:hover { border-color: var(--accent); }
+.workspace-card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+.workspace-target-label {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+}
+.workspace-sku-badge {
+  font-family: var(--font-body);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(138, 148, 168, 0.08);
+  color: var(--text-tertiary);
+}
+.workspace-sku-workspace_xl {
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  border-color: rgba(43, 158, 126, 0.30);
+}
+.workspace-sku-workspace_standard {
+  background: rgba(138, 148, 168, 0.12);
+  color: var(--text-secondary);
+}
+
+.workspace-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.workspace-meter-bar {
+  position: relative;
+  height: 6px;
+  background: rgba(138, 148, 168, 0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.workspace-meter-fill {
+  height: 100%;
+  background: var(--accent-text, #2B9E7E);
+  transition: width 200ms ease;
+}
+.workspace-meter-fill-mid  { background: #d4a017; }
+.workspace-meter-fill-high { background: #c64a3c; }
+.workspace-meter-meta {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.workspace-meter-spent { color: var(--text-primary); font-weight: 600; }
+.workspace-meter-sep   { opacity: 0.6; }
+.workspace-meter-cap   { color: var(--text-secondary); }
+.workspace-meter-pct   { opacity: 0.75; }
+.workspace-meter-detail .workspace-meter-bar { height: 10px; border-radius: 5px; }
+
+.workspace-card-footer {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-subtle, rgba(138, 148, 168, 0.18));
+  font-size: 0.82rem;
+}
+.workspace-days-remaining { color: var(--text-tertiary); }
+.workspace-card-cta { color: var(--accent-text, #2B9E7E); text-decoration: none; font-weight: 500; }
+.workspace-card-cta:hover { text-decoration: underline; }
+
+.workspace-empty {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  padding: 2rem 1.5rem;
+  text-align: center;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.workspace-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.workspace-history-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.workspace-history-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--border-subtle, rgba(138, 148, 168, 0.12));
+  color: var(--text-secondary);
+}
+.workspace-history-link { color: var(--accent-text, #2B9E7E); text-decoration: none; }
+.workspace-history-link:hover { text-decoration: underline; }
+.workspace-status-active   { color: var(--accent-text, #2B9E7E); }
+.workspace-status-expired  { color: var(--text-tertiary); }
+.workspace-status-refunded { color: #c64a3c; }
+
+/* Detail page — tool cards and alerts */
+.workspace-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.7rem;
+}
+.workspace-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  text-decoration: none;
+  transition: border-color 120ms ease;
+}
+.workspace-tool-card:hover { border-color: var(--accent); }
+.workspace-tool-card-name { font-weight: 600; color: var(--text-primary); font-size: 0.95rem; }
+.workspace-tool-card-tagline { color: var(--text-secondary); font-size: 0.78rem; line-height: 1.4; margin: 0; }
+.workspace-tool-card-cta { color: var(--accent-text, #2B9E7E); font-size: 0.82rem; margin-top: auto; padding-top: 0.4rem; }
+.workspace-tool-card-disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; }
+
+.workspace-alert {
+  margin-top: 0.85rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.workspace-alert-warn {
+  background: rgba(212, 160, 23, 0.10);
+  border: 1px solid rgba(212, 160, 23, 0.35);
+  color: #d4a017;
+}
+.workspace-alert-blocked {
+  background: rgba(198, 74, 60, 0.10);
+  border: 1px solid rgba(198, 74, 60, 0.35);
+  color: #c64a3c;
+}
+.workspace-alert-cta {
+  margin-left: 0.6rem;
+  color: inherit;
+  text-decoration: underline;
+}
+
+.workspace-runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.workspace-runs-table th,
+.workspace-runs-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border-subtle, rgba(138, 148, 168, 0.12));
+}
+
+/* Workspace activation form (templates/workspaces/new.html) */
+.workspace-new-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 800px) {
+  .workspace-new-grid { grid-template-columns: 1fr; }
+}
+.workspace-new-form {
+  padding: 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.workspace-new-summary {
+  padding: 1.25rem;
+  border: 1px solid rgba(43, 158, 126, 0.30);
+  border-radius: var(--radius-md);
+  background: var(--accent-glow);
+}
+.workspace-new-summary-title {
+  margin: 0 0 0.55rem 0;
+  font-size: 0.95rem;
+  color: var(--accent-text, #2B9E7E);
+}
+.workspace-new-price {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+.workspace-new-price-amount {
+  font-size: 1.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.workspace-new-price-unit { color: var(--text-tertiary); font-size: 0.78rem; }
+.workspace-new-features {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.workspace-new-features li {
+  padding: 0.25rem 0;
+  position: relative;
+  padding-left: 1rem;
+}
+.workspace-new-features li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--accent-text, #2B9E7E);
+}
+.workspace-new-footnote {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border-subtle, rgba(138, 148, 168, 0.18));
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+.workspace-new-footnote a { color: var(--accent-text, #2B9E7E); }
+
+/* Workspace nav link — replaces the legacy tier badge + credits pill. */
+.nav-workspaces-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(43, 158, 126, 0.30);
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  text-decoration: none;
+  font-size: 0.78rem;
+}
+.nav-workspaces-link:hover { border-color: var(--accent-text); }
+.nav-workspaces-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+.nav-workspaces-count {
+  font-weight: 600;
+}
+.nav-workspaces-label {
+  font-size: 0.6rem;
+  color: var(--accent-text);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
 .btn-logout {
   background: transparent;
   color: var(--text-tertiary);

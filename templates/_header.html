@@ -1,13 +1,10 @@
 {# Shared top navigation for the Ranomics tools hub.
-   Extracted from base.html so Stream F (marketing) and Stream B/C/D
-   tool pages can drop the exact same shell. Consumes:
+   Consumes:
 
-     session.user_email            - set by Flask login flow
-     ranomics_tier (optional)      - 'free' / 'scout_pro' / 'lab' / 'lab_plus'
-     ranomics_credits (optional)   - current credit balance (int)
-
-   Both ranomics_tier and ranomics_credits are injected by app.py via
-   a context processor so every authenticated page gets them free.
+     session.user_email           - set by Flask login flow
+     active_workspaces_count      - injected by app.py context processor
+                                    (replaces ranomics_tier / ranomics_credits
+                                    badges from the legacy subscription model)
 #}
 <header class="navbar">
   <div class="navbar-inner">
@@ -25,19 +22,16 @@
       {% endif %}
       <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
       {% if session.get('user_email') %}
-        {% if ranomics_tier %}
-          <span class="nav-tier-badge nav-tier-{{ ranomics_tier }}">
-            {% if ranomics_tier == 'scout_pro' %}Scout Pro
-            {% elif ranomics_tier == 'lab' %}Lab
-            {% elif ranomics_tier == 'lab_plus' %}Lab+
-            {% else %}Free{% endif %}
-          </span>
-        {% endif %}
-        {% if ranomics_credits is not none %}
-          <span class="nav-credits" title="GPU credits available">
-            <span class="nav-credits-value mono">{{ ranomics_credits }}</span>
-            <span class="nav-credits-label">credits</span>
-          </span>
+        {% if active_workspaces_count and active_workspaces_count > 0 %}
+          <a href="/workspaces" class="nav-link-public nav-workspaces-link" title="Active Workspaces">
+            <span class="nav-workspaces-icon" aria-hidden="true">▣</span>
+            <span class="nav-workspaces-count">{{ active_workspaces_count }}</span>
+            <span class="nav-workspaces-label">{% if active_workspaces_count == 1 %}Workspace{% else %}Workspaces{% endif %}</span>
+          </a>
+        {% else %}
+          <a href="/pricing" class="nav-link-public" title="Activate a target">
+            <span style="color: var(--accent-text, #2B9E7E);">+ Activate target</span>
+          </a>
         {% endif %}
         <a href="{{ url_for('campaigns_dashboard') }}" class="nav-link-public">Campaigns</a>
         <a href="{{ url_for('account') }}" class="nav-link">{{ session.get('user_email') }}</a>

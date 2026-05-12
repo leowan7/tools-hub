@@ -2,43 +2,43 @@
 
 {% block title %}Pricing — Ranomics Tools{% endblock %}
 
-{% block description %}Pricing for tools.ranomics.com — Free tier with 10 signup credits, Scout Pro $49/mo, Lab $299/mo, Lab+ $999/mo. Credits are prorated: unused GPU time refunds automatically.{% endblock %}
+{% block description %}Per-target Workspace pricing for tools.ranomics.com. Activate a target, run unlimited design pipelines on it for 30 days. $499 for the standard Workspace, $2,499 for the XL tier with 5× the compute budget. 7-day money-back on your first Workspace.{% endblock %}
 
 {% block content %}
 
   <section class="section-head" style="margin-top: 1.5rem; margin-bottom: 2rem;">
     <span class="section-eyebrow">Pricing</span>
     <h1 style="font-size: clamp(2rem, 4vw, 2.75rem); line-height: 1.1;">
-      Credits, not compute contracts.
+      Activate your target. Iterate freely for 30&nbsp;days.
     </h1>
     <p class="section-lede">
-      Every job reserves a GPU-seconds cap up front, then refunds the
-      unused portion when it finishes early. No shared batch queue, no
-      hidden minimums, no "contact sales" barrier. Upgrade or cancel in
-      the Stripe Billing Portal whenever you want.
+      You buy one Workspace per target. Every design pipeline — RFdiffusion,
+      BindCraft, RFantibody, BoltzGen, ProteinMPNN, AF2, ColabFold — runs
+      inside that Workspace against a single Modal compute budget. No
+      monthly subscription. No metered credits. No surprise bills.
     </p>
   </section>
 
   <section class="section">
     <div class="pricing-grid">
 
-      {# ─── Free ─────────────────────────────────────────────────────── #}
+      {# ─── Free Scout ──────────────────────────────────────────────── #}
       <article class="price-card">
         <div>
-          <span class="price-tier-name">Free</span>
+          <span class="price-tier-name">Free Scout</span>
         </div>
         <div class="price-amount">
           <span class="price-amount-value">$0</span>
           <span class="price-amount-unit">forever</span>
         </div>
         <p class="price-lede">
-          Try the workflow end-to-end before committing.
+          Score a target's feasibility before you commit to designing on it.
         </p>
         <ul class="price-features">
-          <li>10 GPU credits on signup (one-time)</li>
           <li>Unlimited Epitope Scout, Developability Scout, Library Planner</li>
-          <li>All generative tool smoke runs on the PD-L1 demo target</li>
-          <li>Job history, download all PDBs</li>
+          <li>View sample reports from validated Workspace runs</li>
+          <li>Pre-flight check for any target you're considering</li>
+          <li>Email support — reply from Leo, not a ticket bot</li>
         </ul>
         <div class="price-cta">
           {% if session.get('user_email') %}
@@ -49,86 +49,70 @@
         </div>
       </article>
 
-      {# ─── Scout Pro ────────────────────────────────────────────────── #}
+      {# ─── Target Workspace ────────────────────────────────────────── #}
       <article class="price-card price-card-featured">
         <span class="price-tier-badge">Most popular</span>
         <div>
-          <span class="price-tier-name">Scout Pro</span>
+          <span class="price-tier-name">Target Workspace</span>
         </div>
         <div class="price-amount">
-          <span class="price-amount-value">$49</span>
-          <span class="price-amount-unit">/ month</span>
+          <span class="price-amount-value">$499</span>
+          <span class="price-amount-unit">per target · 30 days</span>
         </div>
         <p class="price-lede">
-          For the indie scientist running their own targets.
+          One target, unlimited iterations across every design pipeline.
         </p>
         <ul class="price-features">
-          <li>10 GPU credits per month</li>
-          <li>≈ 1 BindCraft pilot or 5 RFantibody previews / month</li>
-          <li>Priority Modal dispatch over free tier</li>
-          <li>Email support — reply from Leo, not a ticket bot</li>
-          <li>Everything in Free</li>
+          <li>All tools: RFdiffusion, BindCraft, RFantibody, BoltzGen, MPNN, AF2, ColabFold</li>
+          <li>~500–2,000 design candidates per Workspace</li>
+          <li>Iterate hotspots, parameters, batch sizes freely</li>
+          <li>Real ipTM, pLDDT, i_pAE, developability scores on every output</li>
+          <li>$100 Modal compute budget (cap visible in dashboard)</li>
+          <li><strong>7-day money-back</strong> on your first Workspace</li>
         </ul>
         <div class="price-cta">
-          <a href="{{ url_for('billing_checkout') }}?plan=scout_pro" class="btn-primary-lg" style="width: 100%; justify-content: center;">Get Scout Pro</a>
+          {% if session.get('user_email') %}
+            <a href="/workspaces/new?sku=workspace_standard" class="btn-primary-lg" style="width: 100%; justify-content: center;">Activate a target</a>
+          {% else %}
+            <a href="{{ url_for('signup') }}?next=/workspaces/new?sku=workspace_standard" class="btn-primary-lg" style="width: 100%; justify-content: center;">Activate a target</a>
+          {% endif %}
         </div>
       </article>
 
-      {# ─── Lab ──────────────────────────────────────────────────────── #}
+      {# ─── Target Workspace XL ─────────────────────────────────────── #}
       <article class="price-card">
         <div>
-          <span class="price-tier-name">Lab</span>
+          <span class="price-tier-name">Target Workspace XL</span>
         </div>
         <div class="price-amount">
-          <span class="price-amount-value">$299</span>
-          <span class="price-amount-unit">/ month</span>
+          <span class="price-amount-value">$2,499</span>
+          <span class="price-amount-unit">per target · 30 days</span>
         </div>
         <p class="price-lede">
-          For small biotechs running several campaigns in parallel.
+          Industrial-scale exploration on one target. 5× the compute budget.
         </p>
         <ul class="price-features">
-          <li>150 GPU credits per month</li>
-          <li>≈ 6 BindCraft pilots or 14 RFantibody pilots / month</li>
-          <li>20 GB result storage</li>
-          <li>Cross-tool handoffs (pass candidates between tools)</li>
-          <li>Everything in Scout Pro</li>
+          <li>Everything in Target Workspace, plus:</li>
+          <li><strong>$500 Modal compute budget</strong> (~2,500–10,000+ designs)</li>
+          <li>Priority GPU queue (jumps Standard Workspaces)</li>
+          <li>30-min onboarding call with the team</li>
+          <li>Slack thread for the duration of the Workspace</li>
         </ul>
         <div class="price-cta">
-          <a href="{{ url_for('billing_checkout') }}?plan=lab" class="btn-primary" style="width: 100%; justify-content: center;">Get Lab</a>
-        </div>
-      </article>
-
-      {# ─── Lab+ ─────────────────────────────────────────────────────── #}
-      <article class="price-card">
-        <div>
-          <span class="price-tier-name">Lab+</span>
-        </div>
-        <div class="price-amount">
-          <span class="price-amount-value">$999</span>
-          <span class="price-amount-unit">/ month</span>
-        </div>
-        <p class="price-lede">
-          For teams running programs across multiple targets.
-        </p>
-        <ul class="price-features">
-          <li>600 GPU credits per month</li>
-          <li>≈ 25 BindCraft pilots / month</li>
-          <li>Batch API access</li>
-          <li>Shared Slack channel with the Ranomics team</li>
-          <li>Discounted wet-lab validation (Binder Pilot program)</li>
-          <li>Everything in Lab</li>
-        </ul>
-        <div class="price-cta">
-          <a href="{{ url_for('billing_checkout') }}?plan=lab_plus" class="btn-primary" style="width: 100%; justify-content: center;">Get Lab+</a>
+          {% if session.get('user_email') %}
+            <a href="/workspaces/new?sku=workspace_xl" class="btn-primary" style="width: 100%; justify-content: center;">Activate a target — XL</a>
+          {% else %}
+            <a href="{{ url_for('signup') }}?next=/workspaces/new?sku=workspace_xl" class="btn-primary" style="width: 100%; justify-content: center;">Activate a target — XL</a>
+          {% endif %}
         </div>
       </article>
 
     </div>
 
     <p class="price-footnote" style="margin-top: 1.5rem; text-align: center;">
-      All plans are month-to-month. Cancel anytime from the Stripe
-      Billing Portal. Credits roll over within a billing period;
-      unused credits expire at the end of each cycle.
+      One Workspace activates one target for 30&nbsp;days. Unused compute
+      does not roll over — but you can buy a new Workspace on the same
+      target if you need to keep iterating past the cap.
     </p>
   </section>
 
@@ -140,11 +124,11 @@
       </div>
       <div class="panel-body">
         <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch;">
-          Every tool's results page hands off directly into a Ranomics
+          Every Workspace's results page hands off directly into a Ranomics
           yeast display campaign. We review your shortlist, scope the
-          screen, and put binders on the surface of live cells. Pricing
-          for wet-lab is separate and depends on the target, library
-          size, and timeline.
+          screen, and put binders on the surface of live cells. Wet-lab
+          pricing is separate and depends on target, library size, and
+          timeline.
         </p>
         <div style="margin-top: 1rem;">
           <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary">
@@ -155,39 +139,71 @@
     </div>
   </section>
 
-  {# ─── FAQ-lite ────────────────────────────────────────────────── #}
+  {# ─── FAQ ─────────────────────────────────────────────────────── #}
   <section class="section">
     <div class="section-head">
       <span class="section-eyebrow">Questions</span>
-      <h2 class="section-title">What a credit covers.</h2>
+      <h2 class="section-title">What a Workspace covers.</h2>
     </div>
     <div class="why-grid">
       <article class="why-card">
-        <h3 class="why-card-title">What's a credit worth?</h3>
+        <h3 class="why-card-title">What does a Workspace include?</h3>
         <p class="why-card-body">
-          A credit is one GPU-minute on an A100 baseline. A BindCraft
-          pilot reserves 22 credits (≈ 45 min on A100-80GB); if it
-          finishes in 30 min, 7 credits refund to your ledger. Smoke
-          runs are 2 to 8 credits.
+          Activate one target PDB and run as many design jobs as you want
+          for 30 days, against a $100 (Standard) or $500 (XL) Modal compute
+          budget. All pipelines — RFdiffusion, BindCraft, RFantibody,
+          BoltzGen, MPNN, AF2, ColabFold — work on that target inside the
+          Workspace. Every result page shows the actual scores (ipTM,
+          pLDDT, i_pAE, developability) — no stubs.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">What happens if a job fails?</h3>
+        <h3 class="why-card-title">What if I need more than 2,000 designs?</h3>
         <p class="why-card-body">
-          Pre-flight input validation runs before GPU time is consumed.
-          If the preflight rejects, zero credits are charged. If the GPU
-          job itself fails mid-run, any unused cap refunds — you pay
-          only for compute actually used.
+          For most BindCraft / RFdiffusion campaigns, 500–2,000 in-silico
+          designs is more than enough — modern pipelines find nanomolar
+          binders from just 10–100 experimentally screened candidates
+          (Pacesa et al., Nature 2025). For industrial-scale sweeps with
+          10k+ designs, activate <strong>Workspace XL</strong> instead —
+          $500 Modal budget, priority GPU queue.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">What if my target is hard?</h3>
+        <p class="why-card-body">
+          Your <strong>first Workspace</strong> is covered by a 7-day
+          no-questions-asked money-back guarantee. Use Epitope Scout
+          (free) to score feasibility before you commit, and click the
+          refund button on the workspace dashboard within 7 days if the
+          output isn't what you needed.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Can I run multiple targets in one Workspace?</h3>
+        <p class="why-card-body">
+          No — a Workspace is scoped to a single target so the compute
+          budget stays predictable. If you have several targets, activate
+          one Workspace per target. The Workspace dashboard tracks them
+          side-by-side.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">What happens after 30 days?</h3>
+        <p class="why-card-body">
+          The Workspace expires and new submissions stop. All your finished
+          results and PDB downloads remain readable in your account — you
+          don't lose data. To keep iterating, activate a new Workspace on
+          the same target.
         </p>
       </article>
       <article class="why-card">
         <h3 class="why-card-title">Can I run on my own GPUs?</h3>
         <p class="why-card-body">
-          Not today. Every tool runs on Modal infrastructure we manage
-          and validate — that's the tradeoff for published audit logs
-          and predictable runtimes. For self-hosted workflows, the
-          underlying models (RFdiffusion, RFantibody, BoltzGen) are
-          open source.
+          Not today. Every tool runs on Modal infrastructure we manage and
+          validate — that's the tradeoff for published audit logs and
+          predictable runtimes. For self-hosted workflows the underlying
+          models (RFdiffusion, BindCraft, RFantibody, BoltzGen, MPNN) are
+          all open source.
         </p>
       </article>
     </div>
