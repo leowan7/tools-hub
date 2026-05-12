@@ -1,14 +1,25 @@
-"""Stripe price-id to tier + monthly credit grant mapping.
+"""Stripe price-id to Workspace SKU mapping.
 
 Configured via environment variables so the same code runs against
-Stripe test mode and live mode without code changes. Each tier expects
-two env vars:
+Stripe test mode and live mode without code changes. Each SKU expects:
 
-    STRIPE_PRICE_<TIER>              the ``price_...`` id from Stripe
-    STRIPE_CREDITS_<TIER>            credits granted per billing period
+    STRIPE_PRICE_<SKU>              the ``price_...`` id from Stripe
 
-Unset prices are simply absent from the map — the webhook handler treats
-an unknown price id as a no-op tier flip (but still records the event).
+(Modal compute caps and durations are NOT env-tunable — they're product
+contracts. Hardcoded in ``_DEFAULT_SKUS`` and mirrored in
+``shared.workspaces._SKU_CONFIG``.)
+
+Unset price ids are absent from the map — the webhook handler treats an
+unknown price id as a no-op SKU lookup (still records the event for
+audit).
+
+History
+-------
+Previously this module mapped to subscription tiers
+(``scout_pro``/``lab``/``lab_plus``) with monthly credit grants. That
+model could not fund a real design campaign at sustainable margin (see
+``docs/PRODUCT-PLAN.md`` §Pricing). Replaced 2026-05-11 with the
+per-target Workspace SKU model.
 """
 
 from __future__ import annotations
@@ -19,46 +30,114 @@ from typing import Optional
 
 
 @dataclass(frozen=True)
-class TierPlan:
-    """Subscription plan mapped from a Stripe price id."""
+class WorkspaceSKU:
+    """A one-time Workspace product available for sale.
 
-    tier: str
-    monthly_credits: int
+    Attributes
+    ----------
+    sku
+        Internal identifier (``workspace_standard`` or ``workspace_xl``).
+        Matches the ``workspace_sku`` enum in supabase migration 0014.
+    modal_cap_usd
+        Compute spend ceiling per workspace, in USD. Standard = $100;
+        XL = $500.
+    duration_days
+        Workspace TTL after activation. 30 days for both SKUs.
+    refund_eligible
+        Whether this SKU participates in the first-Workspace 7-day refund
+        policy. True for both launch SKUs.
+    list_price_usd
+        Headline retail price shown to the customer ($499 / $2,499).
+        Stripe is the source of truth for actual charge amounts; this
+        field is informational (used in margin reporting + the pricing
+        page tooltip).
+    """
+
+    sku: str
+    modal_cap_usd: float
+    duration_days: int
+    refund_eligible: bool
+    list_price_usd: float
 
 
-# Default monthly credit grants per PRODUCT-PLAN.md §Pricing.
-_DEFAULT_CREDITS = {
-    "scout_pro": 10,
-    "lab": 150,
-    "lab_plus": 600,
+# Product contracts. Kept in sync with shared/workspaces.py _SKU_CONFIG.
+_DEFAULT_SKUS = {
+    "workspace_standard": WorkspaceSKU(
+        sku="workspace_standard",
+        modal_cap_usd=100.00,
+        duration_days=30,
+        refund_eligible=True,
+        list_price_usd=499.00,
+    ),
+    "workspace_xl": WorkspaceSKU(
+        sku="workspace_xl",
+        modal_cap_usd=500.00,
+        duration_days=30,
+        refund_eligible=True,
+        list_price_usd=2499.00,
+    ),
 }
 
 
-def _credits_for(tier: str) -> int:
-    env_key = f"STRIPE_CREDITS_{tier.upper()}"
-    raw = os.environ.get(env_key, "").strip()
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _DEFAULT_CREDITS.get(tier, 0)
+SKU_NAMES = tuple(_DEFAULT_SKUS.keys())
 
 
-def price_to_plan() -> dict[str, TierPlan]:
-    """Build the Stripe price-id -> TierPlan lookup from env."""
-    mapping: dict[str, TierPlan] = {}
-    for tier in ("scout_pro", "lab", "lab_plus"):
+def get_sku(sku: str) -> Optional[WorkspaceSKU]:
+    """Return the canonical WorkspaceSKU for the given internal id."""
+    return _DEFAULT_SKUS.get(sku)
+
+
+def all_skus() -> list[WorkspaceSKU]:
+    """All currently-sold Workspace SKUs, in display order."""
+    return list(_DEFAULT_SKUS.values())
+
+
+def price_to_sku() -> dict[str, WorkspaceSKU]:
+    """Build the Stripe price-id -> WorkspaceSKU lookup from env."""
+    mapping: dict[str, WorkspaceSKU] = {}
+    for sku_id, sku in _DEFAULT_SKUS.items():
         price_id = os.environ.get(
-            f"STRIPE_PRICE_{tier.upper()}", ""
+            f"STRIPE_PRICE_{sku_id.upper()}", ""
         ).strip()
         if price_id:
-            mapping[price_id] = TierPlan(
-                tier=tier, monthly_credits=_credits_for(tier)
-            )
+            mapping[price_id] = sku
     return mapping
 
 
-def lookup_plan(price_id: str) -> Optional[TierPlan]:
-    """Return the TierPlan for a Stripe price id, or None if unmapped."""
-    return price_to_plan().get(price_id)
+def lookup_sku(price_id: str) -> Optional[WorkspaceSKU]:
+    """Return the WorkspaceSKU for a Stripe price id, or None if unmapped."""
+    return price_to_sku().get(price_id)
+
+
+# ---------------------------------------------------------------------------
+# Display helpers — used by templates/pricing.html and the workspace dashboard
+# ---------------------------------------------------------------------------
+
+
+_DISPLAY = {
+    "workspace_standard": {
+        "display_name": "Target Workspace",
+        "headline_price": "$499",
+        "duration_label": "30 days",
+        "scale_label": "~500–2,000 designs",
+        "lede": (
+            "Activate one target. 30 days of unlimited design runs "
+            "across every pipeline on tools-hub."
+        ),
+    },
+    "workspace_xl": {
+        "display_name": "Target Workspace XL",
+        "headline_price": "$2,499",
+        "duration_label": "30 days",
+        "scale_label": "~2,500–10,000+ designs",
+        "lede": (
+            "Industrial-scale exploration on one target. 5× the compute "
+            "budget of Standard, plus priority queue."
+        ),
+    },
+}
+
+
+def display_for(sku: str) -> dict:
+    """Customer-facing display strings for a SKU (template-safe)."""
+    return _DISPLAY.get(sku, {})
