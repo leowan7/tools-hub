@@ -108,12 +108,31 @@ def create_job(
     preset: str,
     inputs: dict,
     credits_cost: int,
+    target_pdb_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Optional[ToolJob]:
-    """Insert a new tool_jobs row in pending status. Returns None on failure."""
+    """Insert a new tool_jobs row in pending status. Returns None on failure.
+
+    ``target_pdb_id`` and ``workspace_id`` are optional Workspace-binding
+    hints. When set, they are stashed in ``inputs._workspace`` so the
+    completion path (``complete_job`` -> ``_charge_workspace_for_completed_job``)
+    can deduct the actual Modal cost from the right Workspace cap. Stored
+    inside the jsonb column rather than as dedicated columns to avoid a
+    schema migration — same pattern as ``inputs._progress`` from heartbeats.
+    """
     client = get_service_client()
     if client is None:
         logger.error("Cannot create job: Supabase service client unavailable.")
         return None
+    if target_pdb_id or workspace_id:
+        # Copy so we don't mutate the caller's dict.
+        inputs = dict(inputs)
+        ws_ctx = dict(inputs.get("_workspace") or {})
+        if target_pdb_id:
+            ws_ctx["target_pdb_id"] = target_pdb_id
+        if workspace_id:
+            ws_ctx["workspace_id"] = workspace_id
+        inputs["_workspace"] = ws_ctx
     row = {
         "user_id": user_id,
         "tool": tool,
@@ -440,6 +459,7 @@ def complete_job(
         return fresh
 
     _refund_unused_credits(fresh)
+    _charge_workspace_for_completed_job(fresh)
     _send_completion_email(fresh)
     return fresh
 
@@ -532,6 +552,105 @@ def _refund_unused_credits(job: "ToolJob") -> None:
     except Exception:
         logger.warning(
             "Prorated refund failed for job %s", job.id, exc_info=True
+        )
+
+
+def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
+    """Deduct actual Modal compute cost from the active Workspace.
+
+    Runs after a job reaches a terminal state with measured GPU time.
+    Workspace context (``target_pdb_id``, optional ``gpu_sku``) is read
+    from ``inputs._workspace`` — stashed at submission time by
+    ``create_job``. Legacy/orphan jobs without that context are skipped;
+    the credits-ledger refund path in ``_refund_unused_credits`` runs
+    independently for both cases.
+
+    On crossing the 80% cap warning threshold, dispatches the
+    ``send_workspace_cap_warning`` email best-effort. Email and charge
+    are wrapped in try/except so a flaky transactional-email provider
+    never aborts terminal-state finalisation.
+    """
+    if job.status not in ("succeeded", "failed"):
+        return
+    if not job.gpu_seconds_used or job.gpu_seconds_used <= 0:
+        return
+
+    ws_ctx = (job.inputs or {}).get("_workspace") or {}
+    if not isinstance(ws_ctx, dict):
+        return
+    target_pdb_id = ws_ctx.get("target_pdb_id")
+    if not target_pdb_id:
+        return  # Pre-Workspace job — never went through workspace_preflight.
+
+    # Resolve GPU SKU: prefer the pipeline's own report (in the result
+    # payload), then the value stashed at submission time, else None
+    # (charge_for_job falls back to a conservative DEFAULT_USD_PER_SECOND).
+    gpu_sku: Optional[str] = None
+    if isinstance(job.result, dict):
+        candidate = job.result.get("gpu_sku")
+        if isinstance(candidate, str) and candidate:
+            gpu_sku = candidate
+    if not gpu_sku:
+        candidate = ws_ctx.get("gpu_sku")
+        if isinstance(candidate, str) and candidate:
+            gpu_sku = candidate
+
+    try:
+        from shared.workspaces import (  # noqa: PLC0415
+            charge_for_job,
+            crossed_warn_threshold,
+            get_active_workspace,
+        )
+    except Exception:
+        logger.warning(
+            "Workspace charge skipped for job %s: workspaces module import failed.",
+            job.id, exc_info=True,
+        )
+        return
+
+    # Snapshot the before-state so we can detect a 80% threshold crossing
+    # without changing charge_for_job's signature (locked by tests).
+    ws_before = get_active_workspace(job.user_id, target_pdb_id)
+    if ws_before is None:
+        # Workspace expired / refunded / never existed for this target.
+        # charge_for_job would no-op too — short-circuit.
+        return
+
+    try:
+        ws_after = charge_for_job(
+            job.user_id,
+            target_pdb_id,
+            gpu_seconds=job.gpu_seconds_used,
+            gpu_sku=gpu_sku,
+            tool=job.tool,
+            job_id=job.id,
+        )
+    except Exception:
+        logger.warning(
+            "charge_for_job raised for job %s; spend not recorded.",
+            job.id, exc_info=True,
+        )
+        return
+    if ws_after is None:
+        return
+
+    if not crossed_warn_threshold(
+        ws_before.modal_spent_usd,
+        ws_after.modal_spent_usd,
+        ws_after.modal_cap_usd,
+    ):
+        return
+
+    user_email = _resolve_email_for_user(job.user_id)
+    if not user_email:
+        return
+    try:
+        from shared.email import send_workspace_cap_warning  # noqa: PLC0415
+        send_workspace_cap_warning(user_email=user_email, workspace=ws_after)
+    except Exception:
+        logger.warning(
+            "Workspace cap-warning email failed for ws=%s job=%s",
+            ws_after.id, job.id, exc_info=True,
         )
 
 
