@@ -291,8 +291,18 @@ def register_user(
             classification=classification.value,
         )
 
-    # ----- Layer 4: Supabase sign_up -----------------------------------------
-    client = get_supabase_client()
+    # ----- Layer 4: Supabase create_user (service-role) ----------------------
+    # Use the service-role admin API instead of anon-client sign_up. This
+    # lets us turn off "Allow new users to sign up" in the Supabase
+    # dashboard so bots can't hit POST /auth/v1/signup directly with the
+    # public anon key — every account creation must come through this
+    # Flask route, which means our honeypot / timing / domain / purpose
+    # filters can't be bypassed. The email_redirect_to argument is
+    # accepted but no longer used (admin.create_user does not send a
+    # confirmation email).
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    client = get_service_client()
     if client is None:
         return SignupResult(
             success=False,
@@ -301,12 +311,14 @@ def register_user(
             classification=classification.value,
         )
 
-    payload: dict = {"email": email, "password": password}
-    if email_redirect_to:
-        payload["options"] = {"email_redirect_to": email_redirect_to}
+    _ = email_redirect_to  # consumed by the legacy sign_up path; kept for caller compat
 
     try:
-        response = client.auth.sign_up(payload)
+        response = client.auth.admin.create_user({
+            "email": email,
+            "password": password,
+            "email_confirm": True,
+        })
     except Exception as exc:
         msg = str(exc)
         low = msg.lower()

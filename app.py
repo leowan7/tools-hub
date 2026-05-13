@@ -644,9 +644,8 @@ def create_app() -> Flask:
             email=email,
             next="/",
             success_msg=(
-                "Account created with 10 free credits. Check your "
-                "email and click the confirmation link before "
-                "signing in."
+                "Account created with 10 free credits. "
+                "Sign in to get started."
             ),
         )
 
