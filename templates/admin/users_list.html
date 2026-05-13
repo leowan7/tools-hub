@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Admin — Users — Ranomics Tools{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Users (admin)</h1>
+  <p class="subtitle">All accounts, sorted by last activity. Click a row for the full timeline.</p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.25rem;">
+  <a href="/admin/users" class="panel-badge active-chip"
+     style="text-decoration:none;padding:.3rem .7rem;">All users</a>
+  <a href="/admin/signups/rejected" class="panel-badge"
+     style="text-decoration:none;padding:.3rem .7rem;">Rejected signups</a>
+  <a href="/admin/campaigns" class="panel-badge"
+     style="text-decoration:none;padding:.3rem .7rem;">Campaigns</a>
+</div>
+
+<style>
+  .active-chip { background:var(--accent);color:#fff;border-color:var(--accent); }
+  .quality-business { color:#2B9E7E; }
+  .quality-academic { color:#7B61FF; }
+  .quality-personal_explained { color:#D4A14B; }
+  .quality-legacy { color:var(--text-secondary); }
+</style>
+
+{% if users %}
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);text-align:left;">
+            <th style="padding:.5rem .75rem;">Email</th>
+            <th style="padding:.5rem .75rem;">Quality</th>
+            <th style="padding:.5rem .75rem;">Purpose</th>
+            <th style="padding:.5rem .75rem;">Signed up</th>
+            <th style="padding:.5rem .75rem;text-align:right;">Balance</th>
+            <th style="padding:.5rem .75rem;text-align:right;">Runs 30d</th>
+            <th style="padding:.5rem .75rem;text-align:right;">Events 30d</th>
+            <th style="padding:.5rem .75rem;">Last activity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+            <tr style="border-bottom:1px solid var(--border);cursor:pointer;"
+                onclick="window.location='/admin/users/{{ u.user_id }}'">
+              <td style="padding:.5rem .75rem;font-weight:500;">{{ u.email or u.user_id[:8] }}</td>
+              <td style="padding:.5rem .75rem;">
+                <span class="quality-{{ u.signup_quality }}">{{ u.signup_quality }}</span>
+              </td>
+              <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;max-width:280px;">
+                {% if u.purpose %}{{ u.purpose[:120] }}{% if u.purpose | length > 120 %}…{% endif %}{% else %}—{% endif %}
+              </td>
+              <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">
+                {{ u.created_at[:10] if u.created_at else '—' }}
+              </td>
+              <td style="padding:.5rem .75rem;text-align:right;">{{ u.balance }}</td>
+              <td style="padding:.5rem .75rem;text-align:right;">{{ u.runs_30d }}</td>
+              <td style="padding:.5rem .75rem;text-align:right;">{{ u.events_30d }}</td>
+              <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">
+                {{ u.last_activity[:16] if u.last_activity else '—' }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% else %}
+  <div class="panel">
+    <div class="panel-body" style="text-align:center;padding:2rem;">
+      <p class="subtitle">No users to show yet, or the service-role client is misconfigured. Check SUPABASE_SERVICE_ROLE_KEY.</p>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Admin — User detail — Ranomics Tools{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>{{ target.email or target.user_id }}</h1>
+  <p class="subtitle">
+    Signed up {{ target.created_at[:10] if target.created_at else '—' }} ·
+    {{ target.balance }} credits ·
+    quality <strong>{{ target.profile.signup_quality or 'legacy' }}</strong>
+    {% if target.profile.domain_class %}· domain {{ target.profile.domain_class }}{% endif %}
+  </p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.25rem;">
+  <a href="/admin/users" class="panel-badge"
+     style="text-decoration:none;padding:.3rem .7rem;">← All users</a>
+  <a href="/admin/signups/rejected" class="panel-badge"
+     style="text-decoration:none;padding:.3rem .7rem;">Rejected signups</a>
+</div>
+
+{% if target.profile.purpose %}
+  <div class="panel" style="margin-bottom:1.25rem;">
+    <div class="panel-body">
+      <h3 style="margin:0 0 .5rem 0;font-size:.9rem;color:var(--text-secondary);">
+        What they're working on
+      </h3>
+      <p style="margin:0;font-style:italic;">"{{ target.profile.purpose }}"</p>
+    </div>
+  </div>
+{% endif %}
+
+<h2 style="font-size:1.05rem;margin:1.5rem 0 .75rem 0;">Timeline</h2>
+
+{% if target.timeline %}
+  <div class="panel">
+    <div class="panel-body" style="padding:0;">
+      <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);text-align:left;">
+            <th style="padding:.5rem .75rem;">When</th>
+            <th style="padding:.5rem .75rem;">Kind</th>
+            <th style="padding:.5rem .75rem;">Action</th>
+            <th style="padding:.5rem .75rem;">Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for entry in target.timeline %}
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:.4rem .75rem;color:var(--text-secondary);white-space:nowrap;">
+                {{ entry.created_at[:19] if entry.created_at else '—' }}
+              </td>
+              <td style="padding:.4rem .75rem;">
+                {% if entry.kind == 'event' %}
+                  <span style="color:#7B61FF;">event</span>
+                {% elif entry.kind == 'run' %}
+                  <span style="color:#2B9E7E;">run</span>
+                {% elif entry.kind == 'credit' %}
+                  <span style="color:#D4A14B;">credit</span>
+                {% else %}{{ entry.kind }}{% endif %}
+              </td>
+              <td style="padding:.4rem .75rem;font-weight:500;">
+                {% if entry.kind == 'run' and entry.job_id %}
+                  <a href="/jobs/{{ entry.job_id }}" target="_blank" rel="noopener">
+                    {{ entry.label }}
+                  </a>
+                {% else %}{{ entry.label }}{% endif %}
+              </td>
+              <td style="padding:.4rem .75rem;color:var(--text-secondary);font-size:.82rem;">
+                {{ entry.detail }}
+                {% if entry.props %}
+                  <code style="font-size:.75rem;color:var(--text-secondary);">{{ entry.props }}</code>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% else %}
+  <div class="panel">
+    <div class="panel-body" style="text-align:center;padding:2rem;">
+      <p class="subtitle">No activity recorded yet.</p>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

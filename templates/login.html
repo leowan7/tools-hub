@@ -61,7 +61,19 @@
           <div class="error-box">{{ error }}</div>
         {% endif %}
 
-        <form method="POST" action="{{ url_for('signup') }}">
+        <form method="POST" action="{{ url_for('signup') }}" autocomplete="on">
+          {# Signed timestamp + honeypot pair: server rejects submits
+             whose timestamp arrives <2s after render (bot speed) or
+             >1h later (stale token), or whose hidden honeypot field
+             arrived non-empty (bots fill every input they can see).
+             The honeypot is moved off-screen rather than display:none
+             so submitters using auto-fill extensions still skip it. #}
+          <input type="hidden" name="signup_token" value="{{ signup_token or '' }}">
+          <div aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;">
+            <label for="signup-website">Leave this field blank</label>
+            <input type="text" id="signup-website" name="website" tabindex="-1" autocomplete="off" value="">
+          </div>
+
           <div class="field">
             <label for="signup-email">Email</label>
             <input type="email" id="signup-email" name="email" autocomplete="email" required value="{{ signup_email or '' }}">
@@ -76,6 +88,14 @@
           <div class="field">
             <label for="signup-password2">Confirm password</label>
             <input type="password" id="signup-password2" name="password2" autocomplete="new-password" required>
+          </div>
+
+          <div class="field">
+            <label for="signup-purpose">What are you working on?</label>
+            <textarea id="signup-purpose" name="purpose" rows="3"
+                      maxlength="500"
+                      placeholder="A sentence or two about your target, lab, or project helps us tune what we build.">{{ signup_purpose or '' }}</textarea>
+            <span class="field-hint">Optional for institutional or work email. Required for personal email (30+ characters).</span>
           </div>
 
           <button type="submit" class="btn-submit">Create account</button>

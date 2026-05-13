@@ -1,0 +1,228 @@
+{# Daily activity digest for tools.ranomics.com.
+   Plain inline-styled HTML — must render in Gmail, Outlook, Apple Mail
+   without any CSS classes or external assets. Width capped at 640px.
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:640px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+
+  <h1 style="margin:0 0 .25rem 0;font-size:20px;">
+    tools.ranomics.com — Daily digest
+  </h1>
+  <p style="margin:0 0 1.25rem 0;font-size:12px;color:#888;">
+    Window: {{ p.window_start[:19] }} → {{ p.window_end[:19] }}
+    ({{ p.window_hours }}h)
+  </p>
+
+  {# ------- Section 1: Headline ------- #}
+  <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:1.5rem;">
+    <tr>
+      <td style="padding:6px 0;color:#666;width:55%;">New signups</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">
+        {{ p.signups_total }}
+        {% if p.signups_by_quality %}
+          <span style="color:#888;font-weight:400;font-size:12px;">
+            ({% for k, v in p.signups_by_quality.items() %}{{ v }} {{ k }}{% if not loop.last %} · {% endif %}{% endfor %})
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:6px 0;color:#666;">Rejected</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">
+        {{ p.rejections_total }}
+        {% if p.rejections_by_reason %}
+          <span style="color:#888;font-weight:400;font-size:12px;">
+            ({% for k, v in p.rejections_by_reason.items() %}{{ v }} {{ k }}{% if not loop.last %} · {% endif %}{% endfor %})
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:6px 0;color:#666;">Tool runs</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">
+        {{ p.runs_total }}
+        {% if p.runs_by_status %}
+          <span style="color:#888;font-weight:400;font-size:12px;">
+            ({% for k, v in p.runs_by_status.items() %}{{ v }} {{ k }}{% if not loop.last %} · {% endif %}{% endfor %})
+          </span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <td style="padding:6px 0;color:#666;">Active users</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.active_users }}</td>
+    </tr>
+    <tr>
+      <td style="padding:6px 0;color:#666;">Pricing-page views</td>
+      <td style="padding:6px 0;font-weight:600;text-align:right;">{{ p.pricing_views }}</td>
+    </tr>
+  </table>
+
+  {# ------- Section 2: Who's hot ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Who's hot
+  </h2>
+  {% if p.hot_users %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="text-align:left;color:#888;">
+          <th style="padding:4px 8px 4px 0;font-weight:500;">User</th>
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Signal</th>
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Tools</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Runs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in p.hot_users %}
+          <tr style="border-top:1px solid #f0f0f0;">
+            <td style="padding:6px 8px 6px 0;">
+              <a href="{{ u.url }}" style="color:#2B9E7E;text-decoration:none;">{{ u.email }}</a>
+              <div style="font-size:11px;color:#888;">{{ u.signup_quality }}{% if u.domain_class %} · {{ u.domain_class }}{% endif %}</div>
+            </td>
+            <td style="padding:6px 8px 6px 0;">
+              {{ u.signals | join(' · ') }}
+            </td>
+            <td style="padding:6px 8px 6px 0;color:#555;">
+              {% if u.tools %}{{ u.tools | join(', ') }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:6px 0;text-align:right;font-weight:600;">{{ u.runs }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p style="font-size:13px;color:#888;margin:0;">No high-intent signals in this window.</p>
+  {% endif %}
+
+  {# ------- Section 3: New signups ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    New signups
+  </h2>
+  {% if p.new_signups %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="text-align:left;color:#888;">
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Email</th>
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Quality</th>
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Purpose</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in p.new_signups %}
+          <tr style="border-top:1px solid #f0f0f0;">
+            <td style="padding:6px 8px 6px 0;">
+              <a href="{{ s.url }}" style="color:#2B9E7E;text-decoration:none;">{{ s.email }}</a>
+            </td>
+            <td style="padding:6px 8px 6px 0;">{{ s.signup_quality }}</td>
+            <td style="padding:6px 8px 6px 0;color:#555;font-style:italic;">
+              {% if s.purpose %}"{{ s.purpose }}"{% else %}—{% endif %}
+            </td>
+            <td style="padding:6px 0;text-align:right;color:#888;">{{ s.created_at[11:16] }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p style="font-size:13px;color:#888;margin:0;">No new signups in this window.</p>
+  {% endif %}
+
+  {# ------- Section 4: Tool activity ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Tool activity
+  </h2>
+  {% if p.tool_activity %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="text-align:left;color:#888;">
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Tool</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Runs</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">OK</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Fail</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Timeout</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">GPU s</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in p.tool_activity %}
+          <tr style="border-top:1px solid #f0f0f0;">
+            <td style="padding:6px 8px 6px 0;font-weight:500;">{{ t.tool }}</td>
+            <td style="padding:6px 0;text-align:right;">{{ t.runs }}</td>
+            <td style="padding:6px 0;text-align:right;color:#2B9E7E;">{{ t.ok }}</td>
+            <td style="padding:6px 0;text-align:right;color:#C44;">{{ t.fail }}</td>
+            <td style="padding:6px 0;text-align:right;color:#C44;">{{ t.timeout }}</td>
+            <td style="padding:6px 0;text-align:right;color:#888;">{{ t.gpu_seconds }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p style="font-size:13px;color:#888;margin:0;">No tool runs in this window.</p>
+  {% endif %}
+
+  {# ------- Section 5: Rejections ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Rejected signups
+  </h2>
+  {% if p.rejections %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="text-align:left;color:#888;">
+          <th style="padding:4px 8px 4px 0;font-weight:500;">Reason</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Count</th>
+          <th style="padding:4px 0 4px 12px;font-weight:500;">Sample emails</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in p.rejections %}
+          <tr style="border-top:1px solid #f0f0f0;">
+            <td style="padding:6px 8px 6px 0;font-weight:500;">{{ r.reason }}</td>
+            <td style="padding:6px 0;text-align:right;">{{ r.count }}</td>
+            <td style="padding:6px 0 6px 12px;color:#555;font-size:12px;">
+              {{ r.samples | join(', ') }}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="font-size:12px;color:#888;margin:.5rem 0 0 0;">
+      Scan for false positives at
+      <a href="{{ p.site_base_url }}/admin/signups/rejected" style="color:#2B9E7E;">/admin/signups/rejected</a>.
+    </p>
+  {% else %}
+    <p style="font-size:13px;color:#888;margin:0;">No rejected signups in this window.</p>
+  {% endif %}
+
+  {# ------- Section 6: Lapsed users ------- #}
+  <h2 style="margin:1.5rem 0 .5rem 0;font-size:15px;border-bottom:1px solid #e5e5e5;padding-bottom:.25rem;">
+    Lapsed users (active 7-14 days ago, silent today)
+  </h2>
+  {% if p.lapsed_users %}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="text-align:left;color:#888;">
+          <th style="padding:4px 8px 4px 0;font-weight:500;">User</th>
+          <th style="padding:4px 0;font-weight:500;text-align:right;">Last active</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in p.lapsed_users %}
+          <tr style="border-top:1px solid #f0f0f0;">
+            <td style="padding:6px 8px 6px 0;">
+              <a href="{{ u.url }}" style="color:#2B9E7E;text-decoration:none;">{{ u.email }}</a>
+            </td>
+            <td style="padding:6px 0;text-align:right;color:#888;">{{ u.last_active }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p style="font-size:13px;color:#888;margin:0;">No lapsed users to flag.</p>
+  {% endif %}
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:2rem 0 1rem 0;">
+  <p style="font-size:11px;color:#aaa;margin:0;">
+    Ranomics Tools — <a href="{{ p.site_base_url }}" style="color:#aaa;">tools.ranomics.com</a>
+  </p>
+</div>

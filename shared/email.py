@@ -516,6 +516,46 @@ def send_workspace_cap_exhausted(
     )
 
 
+def send_daily_digest(
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    payload_summary: Optional[dict] = None,
+) -> bool:
+    """Send the daily activity digest.
+
+    Plain wrapper around the existing Resend helper. The HTML body is
+    rendered upstream in ``cron.daily_digest.render_digest_html`` so
+    this layer just handles delivery + logging.
+
+    Returns True on confirmed send. Failures are logged but the caller
+    does not need to special-case them — the digest is best-effort.
+    """
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+    # Plain-text version mirrors the headline of the HTML body. Email
+    # clients that strip HTML still see the key counts at a glance.
+    summary = payload_summary or {}
+    text_body = (
+        f"{subject}\n\n"
+        f"New signups: {summary.get('signups', 0)}\n"
+        f"Rejected:    {summary.get('rejections', 0)}\n"
+        f"Tool runs:   {summary.get('runs', 0)}\n"
+        f"Active users:{summary.get('active_users', 0)}\n\n"
+        "Open in a HTML-capable client for the full breakdown."
+    )
+    return _send_simple(
+        api_key=api_key,
+        from_addr=from_addr,
+        to_email=to_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        log_tag="daily_digest",
+    )
+
+
 def _send_simple(
     *,
     api_key: str,

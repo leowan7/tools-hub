@@ -475,6 +475,19 @@ def create_app() -> Flask:
             # Restrict redirect to same-origin paths to prevent open redirect.
             if not next_url.startswith("/"):
                 next_url = "/"
+            try:
+                from shared.events import log_event  # noqa: PLC0415
+                log_event(
+                    event_type="login",
+                    user_id=user_id,
+                    session_id=session.get("anon_session_id"),
+                    path="/login",
+                    ip=(request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                        or request.remote_addr),
+                    user_agent=request.headers.get("User-Agent"),
+                )
+            except Exception:
+                logger.warning("login event log failed", exc_info=True)
             return redirect(next_url)
 
         return render_template(
@@ -487,8 +500,20 @@ def create_app() -> Flask:
 
     @flask_app.route("/signup", methods=["GET", "POST"])
     def signup():
-        """Render the sign-up form (GET) or handle new account creation (POST)."""
-        from shared.auth import register_user  # noqa: PLC0415
+        """Render the sign-up form (GET) or handle new account creation (POST).
+
+        On POST, four guards run before Supabase Auth is touched:
+        honeypot, signed-timestamp timing, email-domain classification,
+        and (for personal domains) the "what are you working on" note.
+        Failures are logged to public.signup_rejections so the daily
+        digest can flag false positives.
+        """
+        from shared.auth import (  # noqa: PLC0415
+            SignupContext,
+            issue_signup_token,
+            register_user,
+        )
+        from shared.events import log_event, log_signup_rejection  # noqa: PLC0415
 
         if request.method == "GET":
             return render_template(
@@ -496,37 +521,43 @@ def create_app() -> Flask:
                 mode="signup",
                 error=None,
                 signup_email=None,
+                signup_purpose=None,
+                signup_token=issue_signup_token(),
                 next="/",
             )
 
         email = request.form.get("email", "").strip()
         password = request.form.get("password", "")
         password2 = request.form.get("password2", "")
+        purpose = request.form.get("purpose", "").strip()
+        honeypot = request.form.get("website", "").strip()
+        token = request.form.get("signup_token", "")
+        client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                     or request.remote_addr)
+        user_agent = request.headers.get("User-Agent")
 
-        if not email or not password:
-            return render_template(
-                "login.html",
-                mode="signup",
-                error="Email and password are required.",
-                signup_email=email,
-                next="/",
-            )
-
-        if len(password) < 8:
-            return render_template(
-                "login.html",
-                mode="signup",
-                error="Password must be at least 8 characters.",
-                signup_email=email,
-                next="/",
-            )
-
-        if password != password2:
+        # Password-pair check runs before register_user so the user sees
+        # this error without re-typing their email + purpose. The
+        # honeypot / timing checks still happen below — confirmation
+        # mismatch is a UX problem, not a junk-filter problem.
+        if password and password2 and password != password2:
             return render_template(
                 "login.html",
                 mode="signup",
                 error="Passwords do not match.",
                 signup_email=email,
+                signup_purpose=purpose,
+                signup_token=issue_signup_token(),
+                next="/",
+            )
+        if password and len(password) < 8:
+            return render_template(
+                "login.html",
+                mode="signup",
+                error="Password must be at least 8 characters.",
+                signup_email=email,
+                signup_purpose=purpose,
+                signup_token=issue_signup_token(),
                 next="/",
             )
 
@@ -536,47 +567,122 @@ def create_app() -> Flask:
         public_base = os.environ.get(
             "PUBLIC_BASE_URL", "https://tools.ranomics.com"
         ).rstrip("/")
-        success, error_msg, user_id = register_user(
-            email, password, email_redirect_to=f"{public_base}/login"
+
+        ctx = SignupContext(
+            email=email,
+            password=password,
+            purpose=purpose,
+            honeypot=honeypot,
+            token=token,
+            ip=client_ip,
+            user_agent=user_agent,
         )
-        if success:
-            # Grant 10 signup-bonus credits immediately. The row lands
-            # even if Supabase requires email confirmation before sign-in;
-            # the balance is waiting when the user first logs in.
-            if user_id:
-                from shared.credits import record_grant  # noqa: PLC0415
-                try:
-                    record_grant(
-                        user_id,
-                        10,
-                        reason="signup bonus",
-                        metadata={"source": "signup"},
-                    )
-                except Exception:
-                    logger.warning(
-                        "Signup-bonus grant failed for %s", email,
-                        exc_info=True,
-                    )
+        result = register_user(ctx, email_redirect_to=f"{public_base}/login")
+
+        if not result.success:
+            # Honeypot hits never see an error — the bot got the same
+            # generic page as a real user re-fetching after a failure.
+            # Everyone else sees the per-reason message.
+            if result.rejection_reason:
+                log_signup_rejection(
+                    email=email,
+                    reason=result.rejection_reason,
+                    ip=client_ip,
+                    user_agent=user_agent,
+                )
             return render_template(
                 "login.html",
-                mode="signin",
-                error=None,
-                email=email,
+                mode="signup",
+                error=result.error_message,
+                signup_email=email,
+                signup_purpose=purpose,
+                signup_token=issue_signup_token(),
                 next="/",
-                success_msg=(
-                    "Account created with 10 free credits. Check your "
-                    "email and click the confirmation link before "
-                    "signing in."
-                ),
             )
+
+        # Grant 10 signup-bonus credits immediately. The row lands
+        # even if Supabase requires email confirmation before sign-in;
+        # the balance is waiting when the user first logs in.
+        if result.user_id:
+            from shared.credits import record_grant  # noqa: PLC0415
+            try:
+                record_grant(
+                    result.user_id,
+                    10,
+                    reason="signup bonus",
+                    metadata={
+                        "source": "signup",
+                        "signup_quality": result.signup_quality,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Signup-bonus grant failed for %s", email,
+                    exc_info=True,
+                )
+
+        log_event(
+            event_type="signup_completed",
+            user_id=result.user_id,
+            session_id=session.get("anon_session_id"),
+            path="/signup",
+            props={
+                "domain_class": result.classification,
+                "signup_quality": result.signup_quality,
+            },
+            ip=client_ip,
+            user_agent=user_agent,
+        )
 
         return render_template(
             "login.html",
-            mode="signup",
-            error=error_msg,
-            signup_email=email,
+            mode="signin",
+            error=None,
+            email=email,
             next="/",
+            success_msg=(
+                "Account created with 10 free credits. Check your "
+                "email and click the confirmation link before "
+                "signing in."
+            ),
         )
+
+    @flask_app.route("/api/track", methods=["POST"])
+    def api_track():
+        """Append a behavioural event to ``public.user_events``.
+
+        Body: JSON ``{event_type, path?, props?, session_id?}``.
+        Returns 204 always (best-effort).
+        """
+        from shared.events import log_event  # noqa: PLC0415
+
+        try:
+            payload = request.get_json(silent=True) or {}
+        except Exception:
+            payload = {}
+        event_type = str(payload.get("event_type") or "").strip()[:64]
+        if not event_type:
+            return ("", 204)
+        path = payload.get("path")
+        props_raw = payload.get("props") or {}
+        props = props_raw if isinstance(props_raw, dict) else {}
+        session_id = (payload.get("session_id") or "").strip() or None
+        if session_id:
+            session["anon_session_id"] = session_id[:64]
+        elif session.get("anon_session_id"):
+            session_id = session["anon_session_id"]
+
+        log_event(
+            event_type=event_type,
+            user_id=session.get("user_id"),
+            session_id=session_id,
+            path=path if isinstance(path, str) else None,
+            props=props,
+            ip=(request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                or request.remote_addr),
+            user_agent=request.headers.get("User-Agent"),
+        )
+        return ("", 204)
 
     @flask_app.route("/forgot-password", methods=["GET", "POST"])
     def forgot_password():
@@ -2328,10 +2434,345 @@ def create_app() -> Flask:
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?updated=1"
         )
 
+    # ------------------------------------------------------------------
+    # Admin routes — /admin/users/* and /admin/signups/rejected
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/admin/users", methods=["GET"])
+    def admin_users_list():
+        """Per-user activity dashboard: signup quality, runs, last seen.
+
+        Pulls auth.users via service role (50-row first page), joins
+        ``public.user_profiles``, ``credits_balance``, and the trailing
+        30-day count from ``public.user_events`` + ``public.tool_jobs``.
+        Sorts by last-activity DESC so the most engaged users surface
+        first.
+        """
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login", next=request.path))
+        if email not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        client = get_service_client()
+        users: list[dict] = []
+        if client is not None:
+            try:
+                from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+                window_start = (
+                    datetime.now(timezone.utc) - timedelta(days=30)
+                ).isoformat()
+
+                page = client.auth.admin.list_users()
+                auth_users = getattr(page, "users", None) or page
+
+                profile_rows = (
+                    client.table("user_profiles").select("*").execute().data or []
+                )
+                profiles_by_id = {r["user_id"]: r for r in profile_rows}
+
+                balance_rows = (
+                    client.table("credits_balance")
+                    .select("user_id,balance")
+                    .execute()
+                    .data
+                    or []
+                )
+                balance_by_id = {r["user_id"]: r.get("balance", 0) for r in balance_rows}
+
+                event_rows = (
+                    client.table("user_events")
+                    .select("user_id,event_type,created_at")
+                    .gte("created_at", window_start)
+                    .execute()
+                    .data
+                    or []
+                )
+                run_rows = (
+                    client.table("tool_jobs")
+                    .select("user_id,created_at,status")
+                    .gte("created_at", window_start)
+                    .execute()
+                    .data
+                    or []
+                )
+
+                from collections import defaultdict  # noqa: PLC0415
+                event_count: dict = defaultdict(int)
+                last_event: dict = {}
+                for r in event_rows:
+                    uid = r.get("user_id")
+                    if not uid:
+                        continue
+                    event_count[uid] += 1
+                    ts = r.get("created_at") or ""
+                    if ts > last_event.get(uid, ""):
+                        last_event[uid] = ts
+
+                run_count: dict = defaultdict(int)
+                last_run: dict = {}
+                for r in run_rows:
+                    uid = r.get("user_id")
+                    if not uid:
+                        continue
+                    run_count[uid] += 1
+                    ts = r.get("created_at") or ""
+                    if ts > last_run.get(uid, ""):
+                        last_run[uid] = ts
+
+                for u in auth_users:
+                    uid = getattr(u, "id", None) or (u.get("id") if isinstance(u, dict) else None)
+                    if not uid:
+                        continue
+                    user_email = (
+                        getattr(u, "email", None)
+                        or (u.get("email") if isinstance(u, dict) else None)
+                    )
+                    created_at = (
+                        getattr(u, "created_at", None)
+                        or (u.get("created_at") if isinstance(u, dict) else None)
+                    )
+                    profile = profiles_by_id.get(uid, {})
+                    last_activity = max(
+                        last_event.get(uid, ""),
+                        last_run.get(uid, ""),
+                    ) or created_at or ""
+                    users.append({
+                        "user_id": uid,
+                        "email": user_email,
+                        "created_at": str(created_at)[:19] if created_at else "",
+                        "signup_quality": profile.get("signup_quality") or "legacy",
+                        "domain_class": profile.get("domain_class") or "",
+                        "purpose": profile.get("purpose"),
+                        "balance": balance_by_id.get(uid, 0),
+                        "runs_30d": run_count.get(uid, 0),
+                        "events_30d": event_count.get(uid, 0),
+                        "last_activity": str(last_activity)[:19] if last_activity else "",
+                    })
+                users.sort(key=lambda u: u.get("last_activity") or "", reverse=True)
+            except Exception:
+                logger.warning("admin_users_list query failed", exc_info=True)
+
+        return render_template("admin/users_list.html", users=users)
+
+    @flask_app.route("/admin/users/<user_id>", methods=["GET"])
+    def admin_user_detail(user_id: str):
+        """Per-user activity timeline: events + tool runs + credits."""
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        viewer = session.get("user_email", "")
+        if not viewer:
+            return redirect(url_for("login", next=request.path))
+        if viewer not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        client = get_service_client()
+        target = {
+            "user_id": user_id,
+            "email": None,
+            "created_at": "",
+            "profile": {},
+            "balance": 0,
+            "timeline": [],
+        }
+        if client is None:
+            return render_template("admin/user_detail.html", target=target)
+
+        try:
+            user_resp = client.auth.admin.get_user_by_id(user_id)
+            user_obj = getattr(user_resp, "user", None)
+            if user_obj is not None:
+                target["email"] = getattr(user_obj, "email", None)
+                target["created_at"] = (
+                    str(getattr(user_obj, "created_at", "") or "")[:19]
+                )
+        except Exception:
+            logger.warning("get_user_by_id failed for %s", user_id, exc_info=True)
+
+        try:
+            prof = (
+                client.table("user_profiles")
+                .select("*")
+                .eq("user_id", user_id)
+                .maybe_single()
+                .execute()
+            )
+            target["profile"] = getattr(prof, "data", None) or {}
+        except Exception:
+            target["profile"] = {}
+
+        try:
+            bal = (
+                client.table("credits_balance")
+                .select("balance")
+                .eq("user_id", user_id)
+                .maybe_single()
+                .execute()
+            )
+            data = getattr(bal, "data", None) or {}
+            target["balance"] = int(data.get("balance") or 0)
+        except Exception:
+            target["balance"] = 0
+
+        # Build a unified timeline by interleaving three sources.
+        timeline: list[dict] = []
+        try:
+            events = (
+                client.table("user_events")
+                .select("event_type,path,props,created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .limit(200)
+                .execute()
+                .data
+                or []
+            )
+            for e in events:
+                timeline.append({
+                    "kind": "event",
+                    "label": e.get("event_type"),
+                    "detail": e.get("path") or "",
+                    "props": e.get("props") or {},
+                    "created_at": e.get("created_at"),
+                })
+        except Exception:
+            logger.warning("user_events query failed", exc_info=True)
+        try:
+            runs = (
+                client.table("tool_jobs")
+                .select("id,tool,preset,status,credits_cost,created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .limit(100)
+                .execute()
+                .data
+                or []
+            )
+            for r in runs:
+                timeline.append({
+                    "kind": "run",
+                    "label": f"{r.get('tool')} run · {r.get('status')}",
+                    "detail": f"preset={r.get('preset')} · {r.get('credits_cost')} credits",
+                    "job_id": r.get("id"),
+                    "created_at": r.get("created_at"),
+                })
+        except Exception:
+            logger.warning("tool_jobs query failed", exc_info=True)
+        try:
+            ledger = (
+                client.table("credits_ledger")
+                .select("kind,delta,reason,tool,created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .limit(100)
+                .execute()
+                .data
+                or []
+            )
+            for l in ledger:
+                timeline.append({
+                    "kind": "credit",
+                    "label": f"{l.get('kind')} ({l.get('delta')})",
+                    "detail": l.get("reason") or "",
+                    "tool": l.get("tool"),
+                    "created_at": l.get("created_at"),
+                })
+        except Exception:
+            logger.warning("credits_ledger query failed", exc_info=True)
+
+        timeline.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+        target["timeline"] = timeline
+        return render_template("admin/user_detail.html", target=target)
+
+    @flask_app.route("/admin/signups/rejected", methods=["GET"])
+    def admin_signups_rejected():
+        """Last 30 days of /signup rejections, grouped by reason."""
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        viewer = session.get("user_email", "")
+        if not viewer:
+            return redirect(url_for("login", next=request.path))
+        if viewer not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        from collections import defaultdict  # noqa: PLC0415
+        from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+        rows: list[dict] = []
+        client = get_service_client()
+        if client is not None:
+            try:
+                window_start = (
+                    datetime.now(timezone.utc) - timedelta(days=30)
+                ).isoformat()
+                rows = (
+                    client.table("signup_rejections")
+                    .select("*")
+                    .gte("created_at", window_start)
+                    .order("created_at", desc=True)
+                    .limit(500)
+                    .execute()
+                    .data
+                    or []
+                )
+            except Exception:
+                logger.warning(
+                    "admin_signups_rejected query failed", exc_info=True
+                )
+
+        grouped: dict = defaultdict(list)
+        for r in rows:
+            grouped[r.get("reason") or "unknown"].append(r)
+        groups = sorted(
+            (
+                {
+                    "reason": reason,
+                    "count": len(entries),
+                    "entries": entries[:25],
+                }
+                for reason, entries in grouped.items()
+            ),
+            key=lambda g: g["count"],
+            reverse=True,
+        )
+
+        return render_template(
+            "admin/signups_rejected.html",
+            groups=groups,
+            total=len(rows),
+        )
+
     @flask_app.errorhandler(404)
     def not_found(_):
         """Render the branded 404 page for unknown routes."""
         return render_template("404.html"), 404
+
+    # ------------------------------------------------------------------
+    # CLI commands — invoked by Railway cron or local `flask` runner
+    # ------------------------------------------------------------------
+
+    @flask_app.cli.command("digest:send")
+    def cli_digest_send():
+        """Build + send the daily digest to STAFF_NOTIFY_EMAIL.
+
+        Usage::
+
+            flask digest:send
+
+        Override the trailing window with DIGEST_WINDOW_HOURS (default 24).
+        """
+        from cron.daily_digest import send_digest  # noqa: PLC0415
+
+        with flask_app.app_context():
+            ok = send_digest()
+        click_msg = "sent" if ok else "failed (see logs)"
+        # Use stdout so Railway cron logs show the outcome line.
+        print(f"digest:send {click_msg}", flush=True)
 
     return flask_app
 

@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Admin — Rejected signups — Ranomics Tools{% endblock %}
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Rejected signups (last 30 days)</h1>
+  <p class="subtitle">
+    {{ total }} total · grouped by reason. Scan for false positives — if a
+    legitimate prospect was blocked, manually allowlist by deploying an
+    update to the personal/disposable lists or contacting them directly.
+  </p>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:1.25rem;">
+  <a href="/admin/users" class="panel-badge"
+     style="text-decoration:none;padding:.3rem .7rem;">← All users</a>
+  <a href="/admin/signups/rejected" class="panel-badge active-chip"
+     style="text-decoration:none;padding:.3rem .7rem;">Rejected signups</a>
+</div>
+
+<style>
+  .active-chip { background:var(--accent);color:#fff;border-color:var(--accent); }
+</style>
+
+{% if groups %}
+  {% for g in groups %}
+    <h2 style="font-size:1.05rem;margin:1.5rem 0 .5rem 0;">
+      {{ g.reason }} <span style="color:var(--text-secondary);font-weight:400;">({{ g.count }})</span>
+    </h2>
+    <div class="panel" style="margin-bottom:.75rem;">
+      <div class="panel-body" style="padding:0;">
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--border);color:var(--text-secondary);text-align:left;">
+              <th style="padding:.5rem .75rem;">Email</th>
+              <th style="padding:.5rem .75rem;">When</th>
+              <th style="padding:.5rem .75rem;">IP</th>
+              <th style="padding:.5rem .75rem;">User agent</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in g.entries %}
+              <tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:.4rem .75rem;font-weight:500;">{{ e.email }}</td>
+                <td style="padding:.4rem .75rem;color:var(--text-secondary);">
+                  {{ e.created_at[:19] if e.created_at else '—' }}
+                </td>
+                <td style="padding:.4rem .75rem;color:var(--text-secondary);font-size:.78rem;">
+                  {{ e.ip or '—' }}
+                </td>
+                <td style="padding:.4rem .75rem;color:var(--text-secondary);font-size:.78rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                  {{ e.user_agent or '—' }}
+                </td>
+              </tr>
+            {% endfor %}
+            {% if g.count > g.entries | length %}
+              <tr>
+                <td colspan="4" style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.78rem;text-align:center;">
+                  Showing {{ g.entries | length }} of {{ g.count }}.
+                </td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="panel">
+    <div class="panel-body" style="text-align:center;padding:2rem;">
+      <p class="subtitle">No rejected signups in the last 30 days.</p>
+    </div>
+  </div>
+{% endif %}
+{% endblock %}
