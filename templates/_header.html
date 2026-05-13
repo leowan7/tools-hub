@@ -34,6 +34,11 @@
           </a>
         {% endif %}
         <a href="{{ url_for('campaigns_dashboard') }}" class="nav-link-public">Campaigns</a>
+        {% if is_staff %}
+          <a href="/admin/users" class="nav-link-public"
+             style="color: var(--accent-text, #2B9E7E); border: 1px solid var(--accent-text, #2B9E7E); padding: 0.2rem 0.6rem; border-radius: 4px;"
+             title="Staff-only admin">Admin</a>
+        {% endif %}
         <a href="{{ url_for('account') }}" class="nav-link">{{ session.get('user_email') }}</a>
         <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
           <button type="submit" class="btn-logout">Sign out</button>

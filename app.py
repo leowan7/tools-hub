@@ -408,14 +408,17 @@ def create_app() -> Flask:
     @flask_app.context_processor
     def inject_workspace_context():
         from datetime import datetime, timezone  # noqa: PLC0415
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
         from shared.workspaces import active_workspaces_count  # noqa: PLC0415
 
+        email = session.get("user_email") or ""
         base = {
             "now": datetime.now(timezone.utc),
             "active_workspaces_count": 0,
             "ranomics_user_id": None,
+            "is_staff": email in STAFF_EMAILS,
         }
-        if not session.get("user_email"):
+        if not email:
             return base
         ctx = load_user_context()
         if ctx is None:
