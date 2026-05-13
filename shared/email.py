@@ -720,3 +720,100 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "
         "downloadable PDBs."
     )
+
+
+# ---------------------------------------------------------------------------
+# Wallet email senders (stubs)
+# ---------------------------------------------------------------------------
+# Wave 2 Agent G fills in the real Resend bodies. These stubs let
+# ``shared.wallet`` and ``shared.wallet_funnel`` import + call senders
+# without import-time failures. Each stub logs at WARNING so a missed
+# fill-in shows up in the log stream rather than failing silently.
+
+
+def send_signup_credit_email(*args, **kwargs) -> bool:
+    """STUB. Welcome plus $5 signup credit confirmation."""
+    logger.warning("stub: send_signup_credit_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_topup_confirmation_email(*args, **kwargs) -> bool:
+    """STUB. Manual top-up succeeded confirmation."""
+    logger.warning("stub: send_topup_confirmation_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_auto_reload_charged_email(*args, **kwargs) -> bool:
+    """STUB. Auto-reload succeeded confirmation."""
+    logger.warning("stub: send_auto_reload_charged_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_auto_reload_failed_email(*args, **kwargs) -> bool:
+    """STUB. Auto-reload PaymentIntent declined or no saved card."""
+    logger.warning("stub: send_auto_reload_failed_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_auto_reload_rate_limited_email(*args, **kwargs) -> bool:
+    """STUB. Auto-reload skipped due to 24h count rate limit."""
+    logger.warning(
+        "stub: send_auto_reload_rate_limited_email called with %r %r", args, kwargs
+    )
+    return False
+
+
+def send_auto_reload_monthly_cap_email(*args, **kwargs) -> bool:
+    """STUB. Auto-reload skipped due to monthly cap."""
+    logger.warning(
+        "stub: send_auto_reload_monthly_cap_email called with %r %r", args, kwargs
+    )
+    return False
+
+
+def send_low_balance_email(*args, **kwargs) -> bool:
+    """STUB. Balance dropped below low-balance threshold."""
+    logger.warning("stub: send_low_balance_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_job_capped_email(*args, **kwargs) -> bool:
+    """STUB. Submission blocked by per-tool hard cap."""
+    logger.warning("stub: send_job_capped_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_daily_cap_email(*args, **kwargs) -> bool:
+    """STUB. Submission blocked by daily spend cap."""
+    logger.warning("stub: send_daily_cap_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_pilot_intro_email(*args, **kwargs) -> bool:
+    """STUB. 30-day spend crossed $1k threshold."""
+    logger.warning("stub: send_pilot_intro_email called with %r %r", args, kwargs)
+    return False
+
+
+def send_wallet_frozen_email(*args, **kwargs) -> bool:
+    """STUB. Wallet frozen pending chargeback dispute."""
+    logger.warning("stub: send_wallet_frozen_email called with %r %r", args, kwargs)
+    return False
+
+
+def alert_sales_slack(*args, **kwargs) -> bool:
+    """STUB. Internal Slack alert for sales-qualified spend."""
+    logger.warning("stub: alert_sales_slack called with %r %r", args, kwargs)
+    return False
+
+
+def alert_sales_slack_high(*args, **kwargs) -> bool:
+    """STUB. Internal Slack alert for high-value spend."""
+    logger.warning("stub: alert_sales_slack_high called with %r %r", args, kwargs)
+    return False
+
+
+def alert_ops_slack(*args, **kwargs) -> bool:
+    """STUB. Internal ops Slack alert (e.g. wallet freeze, reconciliation drift)."""
+    logger.warning("stub: alert_ops_slack called with %r %r", args, kwargs)
+    return False
