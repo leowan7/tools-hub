@@ -1,220 +1,420 @@
-"""Stripe Checkout Session creation for tools-hub Workspace purchases.
+"""Stripe Checkout Session creation for wallet top ups.
 
-The user flow:
-1. Sign in.
-2. Upload a target PDB (stored in Supabase storage); receive ``target_pdb_id``.
-3. Pick a Workspace SKU (Standard or XL).
-4. ``/billing/checkout?sku=<sku>&target_pdb_id=<id>`` creates a Stripe
-   one-time Checkout Session.
-5. Pay -> Stripe redirects to ``success_url`` while emitting
-   ``checkout.session.completed``.
-6. The webhook in ``webhooks/stripe.py`` reads the session metadata
-   (``sku`` + ``target_pdb_id``) and calls
-   ``shared.workspaces.activate_workspace``.
+Replaces the prior Workspace SKU Checkout flow (2026-05-11 era, archived
+2026-05-14 with the wallet pivot). The wallet model has a single Stripe
+product (``Tools-Hub Wallet Top-Up`` is the dashboard product name) with
+no fixed Price. Each Checkout Session passes an inline ``price_data``
+with the user supplied amount, so the same product covers $20 and
+$5,000 top ups alike.
 
-Env vars:
+Lifecycle of one top up
+=======================
+::
 
-    STRIPE_SECRET_KEY                       sk_test_... or sk_live_...
-    STRIPE_PRICE_WORKSPACE_STANDARD         price id for the $499 SKU
-    STRIPE_PRICE_WORKSPACE_XL               price id for the $2,499 SKU
-    APP_URL                                 base URL for redirects
+    [user clicks "Top up $X" on /account or pricing]
+            |
+            v
+    create_topup_session(user_id, email, amount_usd)
+            |
+            v
+    Stripe Checkout Session created with inline price_data
+            |
+            v
+    [user pays on Stripe hosted page]
+            |
+            v
+    success_url -> /account/topup-complete?session_id=cs_...
+            |                 (Agent E renders the confirmation page)
+            v
+    checkout.session.completed webhook fires
+            |                 (Agent D credits the wallet via
+            |                  shared.wallet.top_up_wallet, which
+            |                  is idempotent on the Stripe event id)
+            v
+    wallet balance reflects the top up
 
-History
--------
-Previously this module created recurring subscription Checkout Sessions
-for ``scout_pro``/``lab``/``lab_plus``. Replaced 2026-05-11 with one-time
-Workspace SKU sessions (see ``docs/PRODUCT-PLAN.md`` §Pricing).
+The webhook is the only authority that credits the wallet. The
+success_url page is read only; it polls the wallet row until the
+ledger entry appears.
+
+Required environment variables
+------------------------------
+
+::
+
+    STRIPE_SECRET_KEY                Stripe API key (sk_test_ or sk_live_)
+    STRIPE_WALLET_TOPUP_PRODUCT_ID   prod_... id for the wallet product
+    APP_BASE_URL                     base URL for success_url and cancel_url
+                                     (e.g. https://tools.ranomics.com).
+                                     Falls back to APP_URL and then to
+                                     localhost in dev.
+
+Optional environment variables
+------------------------------
+
+::
+
+    WALLET_MIN_TOPUP_USD             defaults to ``20.00`` per
+                                     ``shared.wallet.MIN_TOPUP_USD``
+    WALLET_MAX_TOPUP_USD             defaults to ``5000.00``. Caps the
+                                     largest single Checkout amount.
+                                     Auto reload monthly caps are
+                                     enforced separately in the wallet
+                                     module.
+
+The wallet pivot exclusively uses ``automatic_tax.enabled=true``. The
+Stripe dashboard product must have ``Tax behaviour`` configured before
+this code goes live in production. See plan ``Pass 3`` for the
+dashboard click path.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional, Tuple
-
-from flask import session
-
-from billing.tiers import get_sku, SKU_NAMES
 
 logger = logging.getLogger(__name__)
 
 
-_SKU_TO_PRICE_ENV = {
-    "workspace_standard": "STRIPE_PRICE_WORKSPACE_STANDARD",
-    "workspace_xl": "STRIPE_PRICE_WORKSPACE_XL",
-}
+# Cents per dollar. Stripe amounts are integers in the smallest currency
+# unit; we only support USD.
+_CENTS_PER_DOLLAR = Decimal("100")
 
 
-def _price_id_for(sku: str) -> Optional[str]:
-    env_key = _SKU_TO_PRICE_ENV.get(sku)
-    if not env_key:
-        return None
-    value = os.environ.get(env_key, "").strip()
-    return value or None
+def _default_min_topup_usd() -> Decimal:
+    """Return the configured floor for a single top up, in USD.
+
+    Falls back to ``shared.wallet.MIN_TOPUP_USD`` (currently $20) if the
+    env var is unset or malformed.
+    """
+    raw = os.environ.get("WALLET_MIN_TOPUP_USD", "").strip()
+    if raw:
+        try:
+            return Decimal(raw)
+        except (InvalidOperation, ValueError):
+            logger.warning(
+                "WALLET_MIN_TOPUP_USD=%r is not a valid decimal; "
+                "falling back to module default.",
+                raw,
+            )
+    try:
+        from shared.wallet import MIN_TOPUP_USD  # noqa: PLC0415
+
+        return MIN_TOPUP_USD
+    except Exception:
+        return Decimal("20.00")
+
+
+def _default_max_topup_usd() -> Decimal:
+    """Return the configured ceiling for a single top up, in USD.
+
+    Defaults to $5,000 when the env var is unset. The monthly auto reload
+    cap (``DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD``) is a separate guard and
+    is enforced inside the wallet module, not here.
+    """
+    raw = os.environ.get("WALLET_MAX_TOPUP_USD", "").strip()
+    if raw:
+        try:
+            return Decimal(raw)
+        except (InvalidOperation, ValueError):
+            logger.warning(
+                "WALLET_MAX_TOPUP_USD=%r is not a valid decimal; "
+                "falling back to module default.",
+                raw,
+            )
+    return Decimal("5000.00")
+
+
+def _base_url() -> str:
+    """Return the URL prefix for Checkout success and cancel redirects.
+
+    Prefers ``APP_BASE_URL`` (the new wallet pivot var name) and falls
+    back to ``APP_URL`` for the existing Railway environments. The fall
+    back to localhost is for local dev only and should never reach
+    production.
+    """
+    candidate = (
+        os.environ.get("APP_BASE_URL", "").strip()
+        or os.environ.get("APP_URL", "").strip()
+        or "http://localhost:5055"
+    )
+    return candidate.rstrip("/")
+
+
+def _product_id() -> Optional[str]:
+    """Return the wallet top up Stripe product id from env.
+
+    Accepts ``STRIPE_WALLET_TOPUP_PRODUCT_ID`` (plan name) or
+    ``STRIPE_TOPUP_PRODUCT_ID`` (shorthand seen in some handoff drafts).
+    """
+    for key in ("STRIPE_WALLET_TOPUP_PRODUCT_ID", "STRIPE_TOPUP_PRODUCT_ID"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
 
 
 def _stripe_client():
-    """Import + configure the Stripe SDK lazily.
+    """Return the configured ``stripe`` module, or ``None`` if missing.
 
-    Returns the ``stripe`` module with ``api_key`` set, or None if the
-    package or API key is missing.
+    Lazy import keeps the module importable in environments without the
+    Stripe SDK installed (e.g. CI containers that only run unit tests).
     """
     api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
     if not api_key:
-        logger.error("STRIPE_SECRET_KEY is not set — cannot create checkout.")
+        logger.error(
+            "STRIPE_SECRET_KEY is not set; cannot create a Checkout Session."
+        )
         return None
     try:
         import stripe  # noqa: PLC0415
     except ImportError:
-        logger.error("stripe package not installed.")
+        logger.error("stripe package is not installed.")
         return None
     stripe.api_key = api_key
     return stripe
 
 
-def _resolve_customer_email() -> Optional[str]:
-    """Return the signed-in user's email from the Flask session."""
-    email = session.get("user_email")
-    return email.strip() if isinstance(email, str) and email else None
+def _coerce_amount(amount_usd) -> Optional[Decimal]:
+    """Normalise ``amount_usd`` to ``Decimal`` rounded to two places.
+
+    Returns ``None`` if the value is not parseable.
+    """
+    if amount_usd is None:
+        return None
+    if isinstance(amount_usd, Decimal):
+        value = amount_usd
+    else:
+        try:
+            value = Decimal(str(amount_usd))
+        except (InvalidOperation, ValueError):
+            return None
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def create_checkout_session(
-    sku: str,
+def create_topup_session(
+    user_id: str,
+    user_email: str,
+    amount_usd,
     *,
-    target_pdb_id: str,
-    success_url: str,
-    cancel_url: str,
-    target_label: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Create a Stripe one-time Checkout Session for a Workspace SKU.
+    save_payment_method: bool = False,
+    product_id: Optional[str] = None,
+    base_url: Optional[str] = None,
+    min_topup_usd: Optional[Decimal] = None,
+    max_topup_usd: Optional[Decimal] = None,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """Create a Stripe Checkout Session for a wallet top up.
 
     Parameters
     ----------
-    sku
-        One of ``workspace_standard`` / ``workspace_xl``.
-    target_pdb_id
-        Identifier the webhook will pass to ``activate_workspace``. Must
-        already be persisted (Supabase storage upload) before checkout.
-    success_url / cancel_url
-        Stripe redirect URLs. Success should land on the workspace
-        dashboard once the webhook has activated it.
-    target_label
-        Optional human-readable label (e.g. ``"PD-L1 (4Z18)"``) shown on
-        the workspace dashboard. Not used by the webhook.
+    user_id
+        Supabase ``auth.users.id`` for the signed in user. Flows through
+        Session metadata so the webhook handler can credit the right
+        wallet.
+    user_email
+        Used to prefill the Checkout Session.
+    amount_usd
+        The dollar amount the user wants to add. Accepted as a
+        ``Decimal``, ``int``, ``float``, or numeric string. Bounded by
+        ``min_topup_usd`` and ``max_topup_usd``.
+    save_payment_method
+        When ``True``, ask Stripe to retain the card so off session auto
+        reload PaymentIntents can charge it later. The webhook stores
+        ``stripe_payment_method_id`` on the wallet row when the Session
+        completes.
+    product_id, base_url, min_topup_usd, max_topup_usd
+        Optional overrides. Mainly used by tests; production paths read
+        these from the environment.
 
     Returns
     -------
-    ``(url, None)`` on success or ``(None, error)`` on failure. The URL
-    should be served as a 303 redirect.
+    ``(session_dict, None)`` on success or ``(None, error_message)`` on
+    failure. ``session_dict`` always contains ``id`` and ``url``.
     """
-    if sku not in SKU_NAMES:
-        return None, (
-            f"Unknown Workspace SKU '{sku}'. Expected one of: "
-            + ", ".join(SKU_NAMES)
-        )
-    if not target_pdb_id or not isinstance(target_pdb_id, str):
-        return None, "Missing target_pdb_id."
+    if not user_id or not isinstance(user_id, str):
+        return None, "Missing user_id."
+    if not user_email or not isinstance(user_email, str):
+        return None, "Missing user_email."
 
-    price_id = _price_id_for(sku)
-    if not price_id:
+    amount = _coerce_amount(amount_usd)
+    if amount is None or amount <= 0:
+        return None, "Top up amount must be a positive number."
+
+    floor = min_topup_usd if min_topup_usd is not None else _default_min_topup_usd()
+    ceiling = (
+        max_topup_usd if max_topup_usd is not None else _default_max_topup_usd()
+    )
+    if amount < floor:
         return None, (
-            f"No Stripe price configured for {sku}. "
-            "Ask Leo to set STRIPE_PRICE_" + sku.upper() + "."
+            f"Top up amount {amount} USD is below the minimum of "
+            f"{floor} USD."
+        )
+    if amount > ceiling:
+        return None, (
+            f"Top up amount {amount} USD exceeds the maximum of "
+            f"{ceiling} USD per Checkout. Contact support for larger "
+            "transfers."
+        )
+
+    resolved_product = (product_id or _product_id() or "").strip()
+    if not resolved_product:
+        return None, (
+            "Wallet top up product is not configured. "
+            "Set STRIPE_WALLET_TOPUP_PRODUCT_ID in the environment."
         )
 
     stripe = _stripe_client()
     if stripe is None:
         return None, "Stripe is not configured."
 
-    customer_email = _resolve_customer_email()
-    if not customer_email:
-        return None, "Sign in before purchasing a Workspace."
+    resolved_base = (base_url or _base_url()).rstrip("/")
+    success_url = (
+        resolved_base
+        + "/account/topup-complete?session_id={CHECKOUT_SESSION_ID}"
+    )
+    cancel_url = resolved_base + "/account?topup=cancelled"
 
-    sku_obj = get_sku(sku)
+    unit_amount_cents = int(
+        (amount * _CENTS_PER_DOLLAR).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+
+    session_args = {
+        # One time payment. Auto reload uses PaymentIntent.create off
+        # session and never touches this code path.
+        "mode": "payment",
+        "payment_method_types": ["card"],
+        "customer_email": user_email,
+        "line_items": [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "product": resolved_product,
+                    "unit_amount": unit_amount_cents,
+                },
+                "quantity": 1,
+            }
+        ],
+        # Stripe Tax must be enabled on every wallet top up Session;
+        # the dashboard product is configured with the right tax
+        # category (see Stripe dashboard Pass 3 in the plan).
+        "automatic_tax": {"enabled": True},
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "metadata": {
+            "user_id": user_id,
+            "kind": "topup",
+            "amount_usd": str(amount),
+        },
+    }
+    if save_payment_method:
+        # Tag the underlying PaymentIntent so the webhook knows to
+        # persist stripe_payment_method_id on the wallet row.
+        session_args["payment_intent_data"] = {
+            "setup_future_usage": "off_session",
+            "metadata": {
+                "user_id": user_id,
+                "kind": "topup",
+                "save_pm": "true",
+            },
+        }
+        session_args["metadata"]["save_pm"] = "true"
 
     try:
-        stripe_session = stripe.checkout.Session.create(
-            # One-time payment — the user pays once per Workspace.
-            mode="payment",
-            line_items=[{"price": price_id, "quantity": 1}],
-            customer_email=customer_email,
-            success_url=success_url,
-            cancel_url=cancel_url,
-            allow_promotion_codes=True,
-            billing_address_collection="auto",
-            # Stripe Tax handles VAT/sales tax for international buyers.
-            automatic_tax={"enabled": True},
-            # metadata flows through to the webhook so it can reconstruct
-            # the activation request without round-tripping Stripe.
-            metadata={
-                "sku": sku,
-                "target_pdb_id": target_pdb_id,
-                "target_label": target_label or "",
-                "modal_cap_usd": (
-                    str(sku_obj.modal_cap_usd) if sku_obj else ""
-                ),
-                "list_price_usd": (
-                    str(sku_obj.list_price_usd) if sku_obj else ""
-                ),
-            },
-            # Stripe Idempotency-Key prevents double-charging on double-clicks
-            # and webhook retries.
-            payment_intent_data={
-                "metadata": {
-                    "sku": sku,
-                    "target_pdb_id": target_pdb_id,
-                },
-            },
-        )
+        stripe_session = stripe.checkout.Session.create(**session_args)
     except Exception as exc:  # stripe.error.* + network
         logger.error(
-            "Stripe Checkout Session.create failed for sku=%s target=%s: %s",
-            sku,
-            target_pdb_id,
+            "Stripe Checkout Session.create failed for user=%s amount=%s: %s",
+            user_id,
+            amount,
             exc,
             exc_info=True,
         )
-        return None, "Could not create checkout session. Try again."
+        return None, "Could not create the Checkout Session. Try again."
 
-    url = getattr(stripe_session, "url", None)
-    if not url:
-        return None, "Stripe did not return a checkout URL."
-    return url, None
+    session_id = _attr(stripe_session, "id")
+    session_url = _attr(stripe_session, "url")
+    if not session_id or not session_url:
+        return None, "Stripe did not return a Session id and url."
+
+    logger.info(
+        "Created top up Checkout Session: user=%s amount=%s session=%s "
+        "save_pm=%s",
+        user_id,
+        amount,
+        session_id,
+        save_payment_method,
+    )
+    return (
+        {
+            "id": session_id,
+            "url": session_url,
+            "amount_usd": str(amount),
+            "save_payment_method": bool(save_payment_method),
+        },
+        None,
+    )
+
+
+def retrieve_topup_session(session_id: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Fetch a previously created Checkout Session for the success page.
+
+    Used by Agent E's ``/account/topup-complete`` endpoint to display
+    the just paid amount while the webhook credits the wallet behind
+    the scenes.
+    """
+    if not session_id or not isinstance(session_id, str):
+        return None, "Missing session_id."
+    stripe = _stripe_client()
+    if stripe is None:
+        return None, "Stripe is not configured."
+    try:
+        stripe_session = stripe.checkout.Session.retrieve(session_id)
+    except Exception as exc:
+        logger.warning(
+            "Stripe Checkout Session.retrieve failed for %s: %s",
+            session_id,
+            exc,
+            exc_info=True,
+        )
+        return None, "Could not look up the Checkout Session."
+    return (
+        {
+            "id": _attr(stripe_session, "id"),
+            "url": _attr(stripe_session, "url"),
+            "status": _attr(stripe_session, "status"),
+            "payment_status": _attr(stripe_session, "payment_status"),
+            "amount_total": _attr(stripe_session, "amount_total"),
+            "currency": _attr(stripe_session, "currency"),
+            "customer_email": _attr(stripe_session, "customer_email"),
+            "metadata": _attr(stripe_session, "metadata") or {},
+            "payment_intent": _attr(stripe_session, "payment_intent"),
+        },
+        None,
+    )
 
 
 def create_portal_session(
     *,
+    customer_id: str,
     return_url: str,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Create a Stripe Billing Portal session for the current user.
+    """Open a Stripe Billing Portal for a wallet customer.
 
-    Used so customers can download Workspace receipts and update payment
-    methods. Requires a prior Workspace purchase (Stripe customer exists).
+    The wallet model keeps a ``stripe_customer_id`` on every wallet row
+    that has saved a payment method (for auto reload). The portal lets
+    those customers remove or replace the card and download receipts
+    for past top ups. Wallets without a saved card have no Stripe
+    customer record and cannot use the portal.
     """
-    email = _resolve_customer_email()
-    if not email:
-        return None, "Sign in before managing billing."
-
+    if not customer_id:
+        return None, "No Stripe customer on file. Top up to create one."
     stripe = _stripe_client()
     if stripe is None:
         return None, "Stripe is not configured."
-
-    customer_id = _lookup_customer_id_by_email(email)
-    if not customer_id:
-        # Fall back to a Stripe-side lookup if we have no local record.
-        try:
-            customers = stripe.Customer.list(email=email, limit=1)
-            data = getattr(customers, "data", None) or []
-            if data:
-                customer_id = data[0].get("id")
-        except Exception:
-            logger.warning(
-                "Stripe Customer.list failed for %s.", email, exc_info=True
-            )
-
-    if not customer_id:
-        return None, "No Stripe customer yet. Activate a Workspace first."
-
     try:
         portal = stripe.billing_portal.Session.create(
             customer=customer_id,
@@ -227,98 +427,26 @@ def create_portal_session(
             exc_info=True,
         )
         return None, "Could not open the billing portal. Try again."
-
-    url = getattr(portal, "url", None)
+    url = _attr(portal, "url")
     if not url:
         return None, "Stripe did not return a portal URL."
     return url, None
 
 
-def issue_workspace_refund(
-    workspace_id: str,
-    stripe_payment_intent_id: str,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Issue a Stripe refund for a Workspace's payment intent.
+def _attr(obj, name: str):
+    """Read ``name`` from a Stripe object or a plain dict.
 
-    Used by the ``/webhooks/refund-request`` endpoint after eligibility
-    has been verified (first-Workspace, within 7-day window, not already
-    refunded).
-
-    Returns ``(stripe_refund_id, None)`` on success or
-    ``(None, error_message)`` on failure.
+    Real ``stripe.checkout.Session`` instances support both attribute
+    and item access. The fake Sessions returned by the test suite are
+    plain dicts, so this helper smooths the seam.
     """
-    stripe = _stripe_client()
-    if stripe is None:
-        return None, "Stripe is not configured."
-
-    if not stripe_payment_intent_id:
-        return None, "Workspace has no recorded payment intent."
-
-    try:
-        refund = stripe.Refund.create(
-            payment_intent=stripe_payment_intent_id,
-            reason="requested_by_customer",
-            metadata={"workspace_id": workspace_id},
-            # Idempotency key prevents double-refunds if the client
-            # retries; uses the workspace id as the natural unique key.
-            idempotency_key=f"workspace_refund_{workspace_id}",
-        )
-    except Exception as exc:
-        logger.error(
-            "Stripe Refund.create failed for workspace=%s pi=%s: %s",
-            workspace_id,
-            stripe_payment_intent_id,
-            exc,
-            exc_info=True,
-        )
-        return None, "Could not issue refund. Try again or contact support."
-
-    refund_id = getattr(refund, "id", None)
-    if not refund_id:
-        return None, "Stripe did not return a refund id."
-    return refund_id, None
-
-
-def _lookup_customer_id_by_email(email: str) -> Optional[str]:
-    """Pull the stripe_customer_id out of user_tier for this email.
-
-    Note: user_tier is still populated by the legacy subscription flow
-    for any pre-existing customers. New Workspace purchases write
-    stripe_customer_id implicitly via Stripe (email match) but do not
-    require this table. If absent we fall back to Stripe Customer.list.
-    """
-    from shared.credits import get_service_client  # noqa: PLC0415
-
-    client = get_service_client()
-    if client is None:
+    if obj is None:
         return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    if hasattr(obj, name):
+        return getattr(obj, name)
     try:
-        page = client.auth.admin.list_users()
-        users = getattr(page, "users", None) or page
-        user_id = None
-        for user in users:
-            candidate = getattr(user, "email", None) or (
-                user.get("email") if isinstance(user, dict) else None
-            )
-            if candidate and candidate.lower() == email.lower():
-                user_id = getattr(user, "id", None) or user.get("id")
-                break
-        if not user_id:
-            return None
-        response = (
-            client.table("user_tier")
-            .select("stripe_customer_id")
-            .eq("user_id", user_id)
-            .maybe_single()
-            .execute()
-        )
-        data = getattr(response, "data", None)
-        if data and data.get("stripe_customer_id"):
-            return str(data["stripe_customer_id"])
+        return obj[name]
     except Exception:
-        logger.warning(
-            "Could not resolve stripe_customer_id for %s.",
-            email,
-            exc_info=True,
-        )
-    return None
+        return None
