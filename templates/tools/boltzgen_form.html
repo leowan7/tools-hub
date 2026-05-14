@@ -298,7 +298,7 @@
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
-          <button type="submit" class="btn-primary">Submit run ({{ adapter.presets[0].credits_cost }}–{{ adapter.presets[-1].credits_cost }} credits)</button>
+          <button type="submit" class="btn-primary">Submit run</button>
         </form>
       </div>
     </div>
@@ -328,10 +328,9 @@
           fileInput.required = isPilot && !hasReuse;
         }
         if (costPreview && selected) {
-          var credits = selected.getAttribute('data-credits');
           var minutes = selected.getAttribute('data-minutes');
-          if (credits && minutes) {
-            costPreview.textContent = credits + ' credits · ~' + minutes + ' min · refunded if shorter';
+          if (minutes) {
+            costPreview.textContent = '~' + minutes + ' min · refunded if shorter';
           }
         }
       }

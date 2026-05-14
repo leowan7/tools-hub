@@ -320,13 +320,12 @@
       function updateCostPreview(selected) {
         if (!costPreview) return;
         if (!selected) {
-          costPreview.textContent = 'Select a preset to see cost and runtime.';
+          costPreview.textContent = 'Select a preset to see runtime.';
           costPreview.setAttribute('data-empty', 'true');
           return;
         }
-        var credits = selected.getAttribute('data-credits') || '?';
         var minutes = selected.getAttribute('data-minutes') || '?';
-        costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+        costPreview.textContent = '~' + minutes + ' min \u00b7 refunded if shorter';
         costPreview.setAttribute('data-empty', 'false');
       }
 

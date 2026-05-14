@@ -260,9 +260,8 @@
         if (costPreview) {
           var opt = presetSelect.options[presetSelect.selectedIndex];
           if (opt) {
-            var credits = opt.getAttribute('data-credits');
             var minutes = opt.getAttribute('data-minutes');
-            costPreview.textContent = credits + ' credits \u00b7 ~' + minutes + ' min \u00b7 refunded if shorter';
+            costPreview.textContent = '~' + minutes + ' min \u00b7 refunded if shorter';
           }
         }
         if (descEl) {
