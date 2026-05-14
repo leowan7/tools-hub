@@ -295,8 +295,8 @@
             target.
           </div>
 
-          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
-          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
           <button type="submit" class="btn-primary">Submit run ({{ adapter.presets[0].credits_cost }}–{{ adapter.presets[-1].credits_cost }} credits)</button>
         </form>

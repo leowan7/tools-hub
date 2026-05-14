@@ -272,8 +272,8 @@
             How many final filtered designs to return (1-5). Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. Pipeline cost floor is ~45 min regardless of count.
           </div>
 
-          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
-          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
           <button type="submit" class="btn-primary">Submit run (20 credits)</button>
         </form>

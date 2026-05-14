@@ -182,8 +182,8 @@
             up to 400 aa. ~30 s on A100-40GB once the 3B model is warm.
           </div>
 
-          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
-          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
           <button type="submit" class="btn-primary">Submit run</button>
         </form>
