@@ -49,6 +49,7 @@ MAX_FILL_SECONDS: int = 3600
 MIN_PURPOSE_CHARS: int = 30
 
 SIGNUP_TOKEN_SALT: str = "signup-form-render"
+RESET_TOKEN_SALT: str = "tools-hub-reset-v1"
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,46 @@ def consume_signup_token(token: str) -> Optional[int]:
         return None
     try:
         payload = _signup_serializer().loads(
+            token, max_age=MAX_FILL_SECONDS
+        )
+    except SignatureExpired:
+        return None
+    except BadSignature:
+        return None
+    issued_at = int(payload.get("t", 0)) if isinstance(payload, dict) else 0
+    if not issued_at:
+        return None
+    return max(0, int(time.time()) - issued_at)
+
+
+# ---------------------------------------------------------------------------
+# Reset-form timing token (mirrors signup pair, distinct salt so a signup
+# token cannot be replayed at /forgot-password or vice-versa)
+# ---------------------------------------------------------------------------
+
+
+def _reset_serializer() -> URLSafeTimedSerializer:
+    """Return a serializer keyed on the Flask session secret, reset salt."""
+    secret = os.environ.get("SESSION_SECRET_KEY", "dev-only-insecure-key")
+    return URLSafeTimedSerializer(secret, salt=RESET_TOKEN_SALT)
+
+
+def issue_reset_token() -> str:
+    """Return a fresh signed timestamp for the password-reset form."""
+    return _reset_serializer().dumps({"t": int(time.time())})
+
+
+def consume_reset_token(token: str) -> Optional[int]:
+    """Validate a reset_token and return how long the form was open.
+
+    Returns the elapsed seconds between form render and submit, or
+    None if the token is missing, tampered, or older than
+    MAX_FILL_SECONDS.
+    """
+    if not token:
+        return None
+    try:
+        payload = _reset_serializer().loads(
             token, max_age=MAX_FILL_SECONDS
         )
     except SignatureExpired:
@@ -136,6 +177,129 @@ class SignupResult:
     classification: Optional[str] = None
     signup_quality: Optional[str] = None
     purpose_stored: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Reset-attempt context (what /forgot-password hands to process_reset_request)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResetContext:
+    """Inputs gathered from the /forgot-password request, validated as a unit.
+
+    Mirrors SignupContext on the reset side. The /forgot-password route
+    assembles this from request.form and passes it to
+    process_reset_request, which runs the same honeypot / timing /
+    domain gauntlet as /signup before any Supabase recovery email is
+    sent.
+    """
+
+    email: str
+    reset_token: str
+    honeypot_value: str
+    now_unix: int
+
+
+@dataclass(frozen=True)
+class ResetResult:
+    """Outcome of a /forgot-password gauntlet pass.
+
+    Every failure path returns the same shape (ok=True,
+    should_send_email=False, error_message=None) so the route can
+    render an identical success message regardless of which check
+    failed. This denies the bot any signal about whether the email was
+    valid, disposable, or unregistered.
+    """
+
+    ok: bool
+    error_message: Optional[str] = None
+    should_send_email: bool = False
+
+
+def process_reset_request(
+    ctx: ResetContext,
+    supabase_admin_client,
+) -> ResetResult:
+    """Run the anti-bot gauntlet for a /forgot-password submission.
+
+    Order of checks (each silently drops on fail — no signal to caller):
+
+      1. honeypot       hidden field non-empty
+      2. timing         token missing / expired / submitted <2s after render
+      3. classify       INVALID or DISPOSABLE email
+      4. existence      no auth.users row for this email
+
+    On every fail path returns (ok=True, should_send_email=False) so
+    the route renders the same generic success copy a legit user sees.
+    Only the all-pass path returns should_send_email=True.
+
+    Args:
+        ctx: Form inputs + render-time stamp, see ``ResetContext``.
+        supabase_admin_client: Service-role Supabase client used to
+            check whether an account exists for the submitted email.
+            Passed in (rather than fetched here) so callers can inject
+            for tests.
+
+    Returns:
+        ResetResult. The route reads ``should_send_email`` to decide
+        whether to invoke ``reset_password``; ``ok`` is always True.
+    """
+    from shared.email_domain import (  # noqa: PLC0415
+        EmailClass,
+        classify_email,
+    )
+
+    drop = ResetResult(ok=True, should_send_email=False, error_message=None)
+
+    # ----- Layer 1: honeypot ------------------------------------------------
+    if ctx.honeypot_value:
+        return drop
+
+    # ----- Layer 2: timing token --------------------------------------------
+    elapsed = consume_reset_token(ctx.reset_token)
+    if elapsed is None:
+        return drop
+    if elapsed < MIN_FILL_SECONDS or elapsed > MAX_FILL_SECONDS:
+        return drop
+
+    # ----- Layer 3: classify -------------------------------------------------
+    email = (ctx.email or "").strip()
+    if not email:
+        return drop
+
+    classification = classify_email(email)
+    if classification in (EmailClass.INVALID, EmailClass.DISPOSABLE):
+        return drop
+
+    # ----- Layer 4: existence -----------------------------------------------
+    # user_profiles has no email column (keyed by user_id → auth.users.id),
+    # so we resolve via the admin auth list. Same pattern used by
+    # shared.credits._resolve_user_id and several other call sites.
+    if supabase_admin_client is None:
+        return drop
+    try:
+        page = supabase_admin_client.auth.admin.list_users()
+        users = getattr(page, "users", None) or page
+        target = email.lower()
+        for user in users:
+            candidate = getattr(user, "email", None) or (
+                user.get("email") if isinstance(user, dict) else None
+            )
+            if candidate and candidate.lower() == target:
+                return ResetResult(
+                    ok=True,
+                    error_message=None,
+                    should_send_email=True,
+                )
+    except Exception:
+        logger.warning(
+            "process_reset_request: auth admin.list_users failed",
+            exc_info=True,
+        )
+        return drop
+
+    return drop
 
 
 def verify_login(email: str, password: str) -> tuple:

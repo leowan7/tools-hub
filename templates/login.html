@@ -116,6 +116,18 @@
         </p>
 
         <form method="POST" action="{{ url_for('forgot_password') }}">
+          {# Signed timestamp + honeypot pair — same gauntlet as /signup.
+             Server silently drops submits whose timestamp arrives <2s
+             after render (bot speed) or >1h later (stale token), or
+             whose hidden honeypot field arrived non-empty. The form
+             always renders the same success copy regardless, so a bot
+             cannot enumerate valid recovery emails here. #}
+          <input type="hidden" name="reset_token" value="{{ reset_token or '' }}">
+          <div aria-hidden="true" style="position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden;">
+            <label for="reset-website">Leave this field blank</label>
+            <input type="text" id="reset-website" name="website" tabindex="-1" autocomplete="off" value="">
+          </div>
+
           <div class="field">
             <label for="reset-email">Email</label>
             <input type="email" id="reset-email" name="email" autocomplete="email" required value="{{ email or '' }}">

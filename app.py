@@ -688,8 +688,31 @@ def create_app() -> Flask:
 
     @flask_app.route("/forgot-password", methods=["GET", "POST"])
     def forgot_password():
-        """Handle password reset requests."""
-        from shared.auth import reset_password  # noqa: PLC0415
+        """Handle password reset requests.
+
+        On POST, the same anti-bot gauntlet that gates /signup runs
+        before any Supabase recovery email is sent: honeypot, signed
+        timing token, email-domain classification, and an existence
+        check against auth.users. Every failure path renders the same
+        generic success copy a legit user sees, so a bot cannot
+        enumerate valid recovery emails by probing here.
+        """
+        import time as _time  # noqa: PLC0415
+
+        from shared.auth import (  # noqa: PLC0415
+            ResetContext,
+            issue_reset_token,
+            process_reset_request,
+            reset_password,
+        )
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        # Single success-copy used by every outcome — bots and humans
+        # see identical text.
+        SUCCESS_COPY = (
+            "If an account exists for that email, a reset link has "
+            "been sent."
+        )
 
         if request.method == "GET":
             return render_template(
@@ -699,40 +722,43 @@ def create_app() -> Flask:
                 email=None,
                 next="/",
                 reset_success=None,
+                reset_token=issue_reset_token(),
             )
 
         email = request.form.get("email", "").strip()
-        # Send the recovery email's "click here" link to tools-hub's
-        # /reset-password route. Otherwise Supabase falls back to the
-        # project Site URL, which on the shared Scout/tools-hub project
-        # points at scout.
-        public_base = os.environ.get(
-            "PUBLIC_BASE_URL", "https://tools.ranomics.com"
-        ).rstrip("/")
-        success, error_msg = reset_password(
-            email, redirect_to=f"{public_base}/reset-password"
-        )
+        honeypot = request.form.get("website", "").strip()
+        token = request.form.get("reset_token", "")
 
-        if success:
-            return render_template(
-                "login.html",
-                mode="reset",
-                error=None,
-                email=email,
-                next="/",
-                reset_success=(
-                    "If an account exists with this email, you will "
-                    "receive a password reset link."
-                ),
+        ctx = ResetContext(
+            email=email,
+            reset_token=token,
+            honeypot_value=honeypot,
+            now_unix=int(_time.time()),
+        )
+        result = process_reset_request(ctx, get_service_client())
+
+        if result.should_send_email:
+            # Send the recovery email's "click here" link to tools-hub's
+            # /reset-password route. Otherwise Supabase falls back to
+            # the project Site URL, which on the shared Scout/tools-hub
+            # project points at scout.
+            public_base = os.environ.get(
+                "PUBLIC_BASE_URL", "https://tools.ranomics.com"
+            ).rstrip("/")
+            reset_password(
+                email, redirect_to=f"{public_base}/reset-password"
             )
 
+        # Always render the same success copy — gauntlet drops and real
+        # sends are indistinguishable to the caller.
         return render_template(
             "login.html",
             mode="reset",
-            error=error_msg,
+            error=None,
             email=email,
             next="/",
-            reset_success=None,
+            reset_success=SUCCESS_COPY,
+            reset_token=issue_reset_token(),
         )
 
     @flask_app.route("/reset-password", methods=["GET", "POST"])
