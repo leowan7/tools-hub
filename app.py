@@ -377,7 +377,7 @@ def _build_tools_catalog() -> list[dict]:
 
 
 def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
-    """Return a dict of wallet-estimate-relevant params from a Flask form.
+    """Return a dict of params relevant to the wallet estimator.
 
     The wallet estimate only looks at scaling parameters (num_designs,
     iters, target_length, etc.). We strip the form down to a flat dict
@@ -1453,8 +1453,8 @@ def create_app() -> Flask:
 
         Query parameters:
 
-        * ``tool`` (or ``tool_slug``) — the tool slug.
-        * ``params`` — optional JSON object of param values. Falls back
+        * ``tool`` (or ``tool_slug``): the tool slug.
+        * ``params``: optional JSON object of param values. Falls back
           to flat query params (``num_designs=100``) when omitted.
 
         Response shape::

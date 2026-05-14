@@ -671,7 +671,7 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
       its own bookkeeping, but covering it here is cheap and keeps the
       contract symmetric.
 
-    Idempotent — the SQL functions both no-op on a second call against
+    Idempotent. The SQL functions both no op on a second call against
     the same hold id.
     """
     ws_ctx = (job.inputs or {}).get("_wallet") or {}
@@ -749,13 +749,13 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         )
 
 
-# Mid-run progress monitoring interval. Modal pipelines emit a heartbeat
+# Mid run progress monitoring interval. Modal pipelines emit a heartbeat
 # roughly every 15 minutes; the monitor reads cumulative gpu_seconds from
 # the heartbeat payload and decides whether to issue a soft warning or
 # trigger a safety kill.
 MID_RUN_MONITOR_INTERVAL_MINUTES = 15
 
-# Ratios used by the mid-run monitor. The 1.5x warning is non-blocking;
+# Ratios used by the mid run monitor. The 1.5x warning is non blocking;
 # the 2.0x ratio triggers a hard kill so a catastrophically wrong estimate
 # does not run unbounded.
 _MID_RUN_WARN_RATIO = 1.5
@@ -766,7 +766,7 @@ def mid_run_monitor_check(
     job_id: str,
     cumulative_gpu_seconds: float,
     *,
-    modal_client=None,  # noqa: ANN001 — avoid circular import of gpu.modal_client
+    modal_client=None,  # noqa: ANN001 avoid circular import of gpu.modal_client
 ) -> Optional[str]:
     """Inspect a running job's cumulative cost and act on overrun ratios.
 
@@ -774,13 +774,14 @@ def mid_run_monitor_check(
     minutes for any still-running job that owns a wallet hold. Returns
     one of:
 
-    * ``None`` — no action taken (ratio under the warn threshold, or
+    * ``None``: no action taken (ratio under the warn threshold, or
       no hold on this job, or the job is no longer running).
-    * ``"warned"`` — soft warning email dispatched. Idempotent on the
+    * ``"warned"``: soft warning email dispatched. Idempotent on the
       stashed ``_wallet.overrun_warned`` flag in the job inputs.
-    * ``"killed"`` — projected cost exceeded the hard cap; the Modal
-      function call was cancelled (best-effort) and the job will settle
-      at the cap when its terminal webhook lands.
+    * ``"killed"``: projected cost exceeded the hard cap; the Modal
+      function call was cancelled and the job will settle at the cap
+      when its terminal webhook lands. Cancel is best effort: if Modal
+      flakes the local terminal status still wins.
 
     The monitor never directly settles the hold. Settlement is owned by
     ``complete_job`` so the terminal status + GPU time + email side
@@ -875,8 +876,8 @@ def mid_run_monitor_check(
                 error={
                     "bucket": "overrun_safety_kill",
                     "detail": (
-                        "projected cost exceeded the per-tool hard cap; "
-                        "job cancelled by the mid-run monitor"
+                        "projected cost exceeded the per tool hard cap; "
+                        "job cancelled by the mid run monitor"
                     ),
                 },
                 gpu_seconds_used=int(cumulative_gpu_seconds or 0),
@@ -887,8 +888,8 @@ def mid_run_monitor_check(
                 job_id, exc_info=True,
             )
         # Release the hold optimistically. settle_hold on the failure
-        # path will idempotently no-op if it lands after this; the
-        # safety-kill path otherwise leaves the hold lingering for the
+        # path will idempotently no op if it lands after this; the
+        # safety kill path otherwise leaves the hold lingering for the
         # tail end of the SQL settle path to clean up.
         try:
             release_hold(hold_tx_id, reason="overrun_safety_kill")
@@ -914,7 +915,7 @@ def _stash_wallet_flag(job: "ToolJob", key: str, value) -> None:  # noqa: ANN001
 def _send_overrun_warning(
     job: "ToolJob", cumulative_cost, estimate
 ) -> None:  # noqa: ANN001
-    """Send the 1.5x soft warning email; best-effort, never raises."""
+    """Send the 1.5x soft warning email; best effort, never raises."""
     user_email = _resolve_email_for_user(job.user_id)
     if not user_email:
         return
@@ -937,7 +938,7 @@ def _send_overrun_warning(
 def _send_overrun_kill_notice(
     job: "ToolJob", cumulative_cost, hard_cap
 ) -> None:  # noqa: ANN001
-    """Send the 2x safety-kill notice; best-effort, never raises."""
+    """Send the 2x safety kill notice; best effort, never raises."""
     user_email = _resolve_email_for_user(job.user_id)
     if not user_email:
         return

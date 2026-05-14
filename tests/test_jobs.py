@@ -70,7 +70,7 @@ def _wallet_row(**over) -> dict:
 
 
 # ===========================================================================
-# settle-on-completion
+# settle on completion
 # ===========================================================================
 
 
@@ -104,9 +104,10 @@ class TestSettleOnCompletion:
         assert "_wallet" not in kwargs["params"]
 
     def test_actual_below_hold_returns_surplus_via_settle(self):
-        """settle_hold itself routes surplus → hold_release. The job-level
-        hook just makes sure settle_hold is invoked with the real consumed
-        time so the SQL layer can compute the surplus."""
+        """settle_hold itself routes surplus into a hold_release. The
+        job level hook just makes sure settle_hold is invoked with
+        the real consumed time so the SQL layer can compute the
+        surplus."""
         job = ToolJob.from_row(
             _wallet_row(
                 status="succeeded",
@@ -156,13 +157,13 @@ class TestSettleOnCompletion:
 
 
 # ===========================================================================
-# release-on-failure
+# release on failure
 # ===========================================================================
 
 
 class TestReleaseOnFailure:
     def test_failed_with_no_gpu_time_releases_hold(self):
-        """System failure path: pipeline never ran → release the hold."""
+        """System failure path: pipeline never ran, so release the hold."""
         job = ToolJob.from_row(
             _wallet_row(
                 status="failed",
@@ -249,7 +250,7 @@ class TestReleaseOnFailure:
 
 @pytest.fixture
 def fake_job_store(monkeypatch):
-    """Patch get_job and update_inputs to read/write a single in-memory row."""
+    """Patch get_job and update_inputs to read/write a single in memory row."""
 
     rows: dict[str, dict] = {}
 
@@ -333,7 +334,7 @@ class TestMidRunMonitorWarn:
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
         ), patch("shared.email.send_job_capped_email") as cap_email:
             result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
-        # Already warned → no new dispatch and no return label.
+        # Already warned: no new dispatch and no return label.
         cap_email.assert_not_called()
         assert result is None
 
@@ -350,7 +351,7 @@ class TestMidRunMonitorKill:
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
         # 1.00 estimate; 2x = $2.00 well below $8 cap. 2000s on
         # A100-40GB at 0.001214/s with markup is ~$2.43: above 2x,
-        # still below cap → no kill.
+        # still below cap, so no kill.
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "1.00"
         modal = MagicMock()
         with patch.object(
@@ -367,11 +368,11 @@ class TestMidRunMonitorKill:
         """When cumulative cost exceeds both 2x estimate AND the cap,
         the monitor cancels Modal and flips the job to failed."""
         job_id = _seed_running(fake_job_store)
-        # baseline params → hard cap stays at $8 for bindcraft.
+        # baseline params: hard cap stays at $8 for bindcraft.
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
-        # 7000s on A100-40GB → ~$8.50 cumulative. Ratio is 170x; cost
-        # is over the $8 cap. Both kill conditions tripped.
+        # 7000s on A100-40GB gives ~$8.50 cumulative. Ratio is 170x;
+        # cost is over the $8 cap. Both kill conditions tripped.
         modal = MagicMock()
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
@@ -435,7 +436,7 @@ class TestMidRunMonitorNoOps:
 
 
 # ===========================================================================
-# complete_job → settle hook integration
+# complete_job invokes the settle hook
 # ===========================================================================
 
 

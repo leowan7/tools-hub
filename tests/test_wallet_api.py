@@ -2,17 +2,17 @@
 
 Covers:
 
-* ``GET /api/wallet/estimate`` — the inline Moment 1 cost preview
+* ``GET /api/wallet/estimate``: the inline Moment 1 cost preview
   used by every tool form.
-* ``requires_wallet`` decorator — gates a tool submit POST. Renders
+* ``requires_wallet`` decorator: gates a tool submit POST. Renders
   the 'Top up and run' page when the wallet cannot cover the
   estimate (Moment 2) or when the parameter scaled hard cap is
   exceeded (Moment 3). Allows the handler through and reserves the
   hold when the wallet covers the estimate.
-* ``GET /account/topup-complete`` — Stripe Checkout success_url
+* ``GET /account/topup-complete``: Stripe Checkout success_url
   landing. Validates a session_id and renders confirmation.
 
-Each test uses a per-test patch set so a missing service client in
+Each test uses its own patch set so a missing service client in
 one test never leaks into the next. The wallet preflight is
 exercised through public surfaces (HTTP routes) instead of unit
 calling the decorator, which gives the contract a real Flask
@@ -115,7 +115,7 @@ class TestEstimateEndpointShape:
         gow.assert_not_called()
 
     def test_uses_form_params_for_estimate_scaling(self, client):
-        """Pass num_designs=1000 → scaled estimate larger than baseline."""
+        """Pass num_designs=1000 and see a scaled estimate above baseline."""
         with patch("app.get_or_create_wallet", return_value=None):
             small = client.get(
                 "/api/wallet/estimate?tool=bindcraft&num_designs=100"
@@ -158,7 +158,7 @@ class TestEstimateEndpointShape:
             )
         assert resp.status_code == 200
         body = resp.get_json()
-        # 500 designs → estimate should be well above the 100 baseline.
+        # 500 designs: estimate should be well above the 100 baseline.
         assert Decimal(body["estimate_usd"]) > Decimal("4.40")
 
 
@@ -175,9 +175,10 @@ class TestEstimateAndCapFlags:
             )
         body = resp.get_json()
         # The hard cap of $500 for bindcraft caps the estimate at $500.
-        # At this scale the estimate equals the absolute cap → not
-        # over self serve ceiling. This is the documented behaviour.
-        # The flag fires only when estimate itself crosses the ceiling.
+        # At this scale the estimate equals the absolute cap so it is
+        # not over the self serve ceiling. This is the documented
+        # behaviour. The flag fires only when estimate crosses the
+        # ceiling.
         assert body["estimate_usd"] is not None
 
 
@@ -187,7 +188,7 @@ class TestEstimateAndCapFlags:
 
 
 class TestRequiresWalletPassesWhenBalanceCoversEstimate:
-    """Wallet covers the estimate → handler runs, hold is reserved."""
+    """Wallet covers the estimate: handler runs and hold is reserved."""
 
     def test_handler_invoked_when_balance_sufficient(self, client):
         from app import requires_wallet
@@ -552,14 +553,14 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"
             # Flask catches the handler exception and returns a 500.
-            # Either outcome (caught or re-raised) is acceptable here;
+            # Either outcome (caught or re raised) is acceptable here;
             # what matters is the decorator called release_hold first.
             try:
                 resp = c.post("/crash", data={"num_seq_per_target": "8"})
                 # If Flask caught the exception, response is 500.
                 assert resp.status_code == 500
             except RuntimeError:
-                # Some Flask versions re-raise in test mode.
+                # Some Flask versions re raise in test mode.
                 pass
         release.assert_called_once_with(
             "tx-xyz", reason="handler_exception"
