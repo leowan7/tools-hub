@@ -1,0 +1,55 @@
+{# Welcome plus $5 signup credit confirmation.
+   Sender: shared.email.send_signup_credit_email
+   Triggered first time a user_wallets row is created (idempotent).
+   Variables:
+     base_url       URL prefix for tools.ranomics.com (no trailing slash)
+     credit_usd     dollar amount of the signup credit (string, e.g. "5")
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">
+    Welcome to Ranomics tools
+  </h2>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Your account has been credited with ${{ credit_usd }} of compute. That is
+    enough for around 50 ProteinMPNN runs, a dozen AlphaFold folds, or one full
+    BindCraft pilot on a real target.
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Smoke runs on AF2, MPNN, ESMFold, and Epitope Scout are free forever and do
+    not touch your balance, so feel free to test before committing.
+  </p>
+
+  <p style="margin:1.5rem 0;">
+    <a href="{{ base_url }}"
+       style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+              color:#ffffff;text-decoration:none;border-radius:6px;
+              font-weight:600;">
+      Browse the catalog
+    </a>
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Top up when you are ready:
+    <a href="{{ base_url }}/account" style="color:#2B9E7E;">
+      {{ base_url }}/account
+    </a>
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Reply to this email if you get stuck.
+  </p>
+
+  <p style="margin:1.5rem 0 0 0;line-height:1.55;">
+    The Ranomics team
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:12px;color:#999;margin:0;">
+    Ranomics Tools.
+    <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+</div>

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -722,98 +722,756 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
     )
 
 
+# ===========================================================================
+# Wallet email senders (Wave 2)
+# ===========================================================================
+# Real Resend-backed implementations for the 11 user-facing senders that the
+# wallet machinery (``shared.wallet``, ``shared.wallet_funnel``, the Stripe
+# webhook handler) calls by name. Plus two internal Slack alerters.
+#
+# All senders accept their typed kwargs plus ``**_extra`` so the wallet code
+# can pass extras forward without TypeError. Returns ``True`` on confirmed
+# send, ``False`` on missing config or any failure. Best effort: failures are
+# logged but never raise to the caller.
 # ---------------------------------------------------------------------------
-# Wallet email senders (stubs)
+
+from decimal import Decimal
+from pathlib import Path
+
+import jinja2
+
+_TEMPLATES_ROOT = Path(__file__).resolve().parents[1] / "templates" / "email"
+_jinja_env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(str(_TEMPLATES_ROOT)),
+    autoescape=jinja2.select_autoescape(["html", "htm", "xml"]),
+    trim_blocks=False,
+    lstrip_blocks=False,
+)
+
+
 # ---------------------------------------------------------------------------
-# Wave 2 Agent G fills in the real Resend bodies. These stubs let
-# ``shared.wallet`` and ``shared.wallet_funnel`` import + call senders
-# without import-time failures. Each stub logs at WARNING so a missed
-# fill-in shows up in the log stream rather than failing silently.
+# Tool label table (mirrors _tool_label above but extended for the wallet
+# senders, which include tools not in the original job-complete map).
+# ---------------------------------------------------------------------------
+
+_WALLET_TOOL_LABELS = {
+    "bindcraft":    "BindCraft",
+    "rfantibody":   "RFantibody",
+    "rfdiffusion":  "RFdiffusion",
+    "boltzgen":     "BoltzGen",
+    "pxdesign":     "PXDesign",
+    "proteinmpnn":  "ProteinMPNN",
+    "mpnn":         "ProteinMPNN",
+    "af2":          "AlphaFold2",
+    "alphafold2":   "AlphaFold2",
+    "colabfold":    "ColabFold",
+    "esmfold":      "ESMFold",
+}
 
 
-def send_signup_credit_email(*args, **kwargs) -> bool:
-    """STUB. Welcome plus $5 signup credit confirmation."""
-    logger.warning("stub: send_signup_credit_email called with %r %r", args, kwargs)
-    return False
+def _label_for_tool(slug: Optional[str]) -> str:
+    """Return a human-readable tool label, falling back to the slug."""
+    if not slug:
+        return "tool"
+    return _WALLET_TOOL_LABELS.get(slug, slug)
 
 
-def send_topup_confirmation_email(*args, **kwargs) -> bool:
-    """STUB. Manual top-up succeeded confirmation."""
-    logger.warning("stub: send_topup_confirmation_email called with %r %r", args, kwargs)
-    return False
+# ---------------------------------------------------------------------------
+# Money formatting
+# ---------------------------------------------------------------------------
 
 
-def send_auto_reload_charged_email(*args, **kwargs) -> bool:
-    """STUB. Auto-reload succeeded confirmation."""
-    logger.warning("stub: send_auto_reload_charged_email called with %r %r", args, kwargs)
-    return False
+def _money(amount) -> str:
+    """Format any numeric type as a plain dollar amount string.
+
+    Returns the integer form when the value is whole (e.g. "5"), else two
+    decimals (e.g. "12.50"). Used in template variables so the rendered email
+    body says "$5" instead of "$5.00" for the signup credit case.
+    """
+    if amount is None:
+        return "0"
+    try:
+        d = Decimal(str(amount))
+    except Exception:
+        return str(amount)
+    if d == d.to_integral_value():
+        return str(int(d))
+    return f"{d:.2f}"
 
 
-def send_auto_reload_failed_email(*args, **kwargs) -> bool:
-    """STUB. Auto-reload PaymentIntent declined or no saved card."""
-    logger.warning("stub: send_auto_reload_failed_email called with %r %r", args, kwargs)
-    return False
+# ---------------------------------------------------------------------------
+# Template rendering
+# ---------------------------------------------------------------------------
 
 
-def send_auto_reload_rate_limited_email(*args, **kwargs) -> bool:
-    """STUB. Auto-reload skipped due to 24h count rate limit."""
-    logger.warning(
-        "stub: send_auto_reload_rate_limited_email called with %r %r", args, kwargs
+def _render_template(template_name: str, **context) -> str:
+    """Render a Jinja2 template from ``templates/email/`` with ``context``.
+
+    Uses a standalone Jinja2 environment so callers do not need a Flask
+    app context (these senders run from worker/cron paths as well as
+    request paths).
+    """
+    template = _jinja_env.get_template(template_name)
+    return template.render(**context)
+
+
+def _html_to_text(html: str) -> str:
+    """Strip HTML tags + Jinja comments + collapse whitespace for the text part.
+
+    Quick and deliberately dumb: replaces ``<br>``/``</p>`` with newlines,
+    drops every other tag. Email clients that prefer text/plain still get a
+    legible message even though the HTML version is the canonical body.
+    """
+    import re  # noqa: PLC0415
+
+    txt = re.sub(r"\{#.*?#\}", "", html, flags=re.S)
+    txt = re.sub(r"(?i)<br\s*/?>", "\n", txt)
+    txt = re.sub(r"(?i)</p>", "\n\n", txt)
+    txt = re.sub(r"(?i)</h[1-6]>", "\n\n", txt)
+    txt = re.sub(r"<[^>]+>", "", txt)
+    txt = re.sub(r"&nbsp;", " ", txt)
+    txt = re.sub(r"&amp;", "&", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt)
+    return txt.strip()
+
+
+# ---------------------------------------------------------------------------
+# Resend transport
+# ---------------------------------------------------------------------------
+
+
+def _from_address() -> str:
+    """Resolve the from-address.
+
+    The plan dispatch prompt referenced ``RESEND_FROM_TRANSACTIONAL``; the
+    existing codebase uses ``EMAIL_FROM``. Honour ``RESEND_FROM_TRANSACTIONAL``
+    when set, fall back to the existing ``EMAIL_FROM`` so we stay compatible
+    with the older senders in this module and the Railway env that is already
+    deployed.
+    """
+    override = os.environ.get("RESEND_FROM_TRANSACTIONAL", "").strip()
+    if override:
+        return override
+    return os.environ.get("EMAIL_FROM", DEFAULT_FROM)
+
+
+def _support_email() -> str:
+    return os.environ.get("SUPPORT_EMAIL", "support@ranomics.com").strip() or (
+        "support@ranomics.com"
     )
-    return False
 
 
-def send_auto_reload_monthly_cap_email(*args, **kwargs) -> bool:
-    """STUB. Auto-reload skipped due to monthly cap."""
-    logger.warning(
-        "stub: send_auto_reload_monthly_cap_email called with %r %r", args, kwargs
+def _base_url() -> str:
+    return os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+
+
+def _resolve_user_email(user_id: str) -> Optional[str]:
+    """Look up the auth.users email for ``user_id`` via the service-role client.
+
+    Mirrors ``shared.jobs._resolve_email_for_user`` so the wallet senders
+    can be invoked with just a ``user_id`` (which is what the wallet code
+    has on hand).
+    """
+    if not user_id:
+        return None
+    try:
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        if client is None:
+            return None
+        page = client.auth.admin.list_users()
+        users = getattr(page, "users", None) or page
+        for user in users:
+            uid = getattr(user, "id", None) or (
+                user.get("id") if isinstance(user, dict) else None
+            )
+            if uid == user_id:
+                email = getattr(user, "email", None) or (
+                    user.get("email") if isinstance(user, dict) else None
+                )
+                return email
+    except Exception:
+        logger.warning(
+            "wallet email: could not resolve email for user %s",
+            user_id, exc_info=True,
+        )
+    return None
+
+
+def _post_resend(
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: Optional[str] = None,
+    log_tag: str,
+) -> bool:
+    """POST one message to Resend; return True on confirmed send."""
+    api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    from_addr = _from_address()
+    if not api_key:
+        logger.info(
+            "EMAIL (no RESEND_API_KEY, skipping): %s to=%s subject=%r",
+            log_tag, to_email, subject,
+        )
+        return False
+    payload = {
+        "from": from_addr,
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body,
+        "text": text_body or _html_to_text(html_body),
+    }
+    try:
+        response = requests.post(
+            RESEND_ENDPOINT,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=10,
+        )
+    except Exception:
+        logger.warning("Resend POST failed for %s", log_tag, exc_info=True)
+        return False
+    if response.status_code >= 300:
+        logger.warning(
+            "Resend non-2xx for %s: HTTP %d body=%s",
+            log_tag, response.status_code, response.text[:200],
+        )
+        return False
+    try:
+        resend_id = (response.json() or {}).get("id")
+    except Exception:
+        resend_id = None
+    logger.info(
+        "Email sent: %s to=%s (resend id=%s)", log_tag, to_email, resend_id
     )
-    return False
+    return True
 
 
-def send_low_balance_email(*args, **kwargs) -> bool:
-    """STUB. Balance dropped below low-balance threshold."""
-    logger.warning("stub: send_low_balance_email called with %r %r", args, kwargs)
-    return False
+# ---------------------------------------------------------------------------
+# Wallet email senders. Signatures take typed kwargs plus **_extra so callers
+# (the wallet, the Stripe webhook, the funnel module) can pass any forward
+# compatible extras without TypeError. Existing call sites use kwargs only,
+# so this is fully backward compatible with the stubs they previously called.
+# ---------------------------------------------------------------------------
 
 
-def send_job_capped_email(*args, **kwargs) -> bool:
-    """STUB. Submission blocked by per-tool hard cap."""
-    logger.warning("stub: send_job_capped_email called with %r %r", args, kwargs)
-    return False
+def send_signup_credit_email(
+    *,
+    user_id: str,
+    **_extra: Any,
+) -> bool:
+    """Welcome plus signup credit confirmation.
+
+    Trigger: first time a ``user_wallets`` row is created. Caller dedupes.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_signup_credit_email: no email for user %s; skipping", user_id
+        )
+        return False
+    credit_usd = _money(
+        os.environ.get("WALLET_SIGNUP_CREDIT_USD", "5")
+    )
+    base_url = _base_url()
+    subject = (
+        f"${credit_usd} in compute credit added to your Ranomics tools account"
+    )
+    html = _render_template(
+        "send_signup_credit.html",
+        base_url=base_url,
+        credit_usd=credit_usd,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"signup_credit user={user_id}",
+    )
 
 
-def send_daily_cap_email(*args, **kwargs) -> bool:
-    """STUB. Submission blocked by daily spend cap."""
-    logger.warning("stub: send_daily_cap_email called with %r %r", args, kwargs)
-    return False
+def send_topup_confirmation_email(
+    *,
+    user_id: str,
+    amount_usd,
+    new_balance_usd=None,
+    **_extra: Any,
+) -> bool:
+    """Manual top up confirmation.
+
+    Trigger: ``checkout.session.completed`` webhook for ``kind=topup``.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_topup_confirmation_email: no email for user %s", user_id
+        )
+        return False
+    amt = _money(amount_usd)
+    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd)
+    base_url = _base_url()
+    subject = f"${amt} added to your Ranomics tools wallet"
+    html = _render_template(
+        "send_topup_confirmation.html",
+        base_url=base_url,
+        amount_usd=amt,
+        new_balance_usd=bal,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"topup_confirmation user={user_id}",
+    )
 
 
-def send_pilot_intro_email(*args, **kwargs) -> bool:
-    """STUB. 30-day spend crossed $1k threshold."""
-    logger.warning("stub: send_pilot_intro_email called with %r %r", args, kwargs)
-    return False
+def send_auto_reload_charged_email(
+    *,
+    user_id: str,
+    amount_usd,
+    new_balance_usd=None,
+    **_extra: Any,
+) -> bool:
+    """Auto reload succeeded confirmation.
+
+    Trigger: ``payment_intent.succeeded`` webhook for ``metadata.kind=auto_reload``.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_auto_reload_charged_email: no email for user %s", user_id
+        )
+        return False
+    amt = _money(amount_usd)
+    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd)
+    base_url = _base_url()
+    subject = f"Auto reload added ${amt} to your Ranomics tools wallet"
+    html = _render_template(
+        "send_auto_reload_charged.html",
+        base_url=base_url,
+        amount_usd=amt,
+        new_balance_usd=bal,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"auto_reload_charged user={user_id}",
+    )
 
 
-def send_wallet_frozen_email(*args, **kwargs) -> bool:
-    """STUB. Wallet frozen pending chargeback dispute."""
-    logger.warning("stub: send_wallet_frozen_email called with %r %r", args, kwargs)
-    return False
+_AUTO_RELOAD_REASON_LABELS = {
+    "no_payment_method":    "no saved card on file",
+    "no_amount_configured": "auto reload amount not set",
+    "card_declined":        "the card was declined",
+    "expired_card":         "the saved card is expired",
+    "insufficient_funds":   "insufficient funds on the saved card",
+}
 
 
-def alert_sales_slack(*args, **kwargs) -> bool:
-    """STUB. Internal Slack alert for sales-qualified spend."""
-    logger.warning("stub: alert_sales_slack called with %r %r", args, kwargs)
-    return False
+def send_auto_reload_failed_email(
+    *,
+    user_id: str,
+    reason: str = "",
+    **_extra: Any,
+) -> bool:
+    """Auto reload PaymentIntent declined or no saved card.
+
+    Trigger: ``payment_intent.payment_failed`` with ``kind=auto_reload``, OR
+    ``_maybe_auto_reload`` finds no payment method.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_auto_reload_failed_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    reason_label = _AUTO_RELOAD_REASON_LABELS.get(
+        reason, reason or "unknown reason"
+    )
+    subject = (
+        "Auto reload could not complete on your Ranomics tools account"
+    )
+    html = _render_template(
+        "send_auto_reload_failed.html",
+        base_url=base_url,
+        reason=reason_label,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"auto_reload_failed user={user_id}",
+    )
 
 
-def alert_sales_slack_high(*args, **kwargs) -> bool:
-    """STUB. Internal Slack alert for high-value spend."""
-    logger.warning("stub: alert_sales_slack_high called with %r %r", args, kwargs)
-    return False
+def send_auto_reload_rate_limited_email(
+    *,
+    user_id: str,
+    **_extra: Any,
+) -> bool:
+    """Auto reload skipped due to 24h count rate limit."""
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_auto_reload_rate_limited_email: no email for user %s",
+            user_id,
+        )
+        return False
+    base_url = _base_url()
+    subject = "Auto reload skipped on your Ranomics tools account"
+    html = _render_template(
+        "send_auto_reload_rate_limited.html",
+        base_url=base_url,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"auto_reload_rate_limited user={user_id}",
+    )
 
 
-def alert_ops_slack(*args, **kwargs) -> bool:
-    """STUB. Internal ops Slack alert (e.g. wallet freeze, reconciliation drift)."""
-    logger.warning("stub: alert_ops_slack called with %r %r", args, kwargs)
-    return False
+def send_auto_reload_monthly_cap_email(
+    *,
+    user_id: str,
+    total_usd,
+    cap_usd,
+    **_extra: Any,
+) -> bool:
+    """Auto reload paused: monthly cap reached."""
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_auto_reload_monthly_cap_email: no email for user %s",
+            user_id,
+        )
+        return False
+    base_url = _base_url()
+    subject = "Auto reload paused for this month on your Ranomics tools account"
+    html = _render_template(
+        "send_auto_reload_monthly_cap.html",
+        base_url=base_url,
+        total_usd=_money(total_usd),
+        cap_usd=_money(cap_usd),
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"auto_reload_monthly_cap user={user_id}",
+    )
+
+
+def send_low_balance_email(
+    *,
+    user_id: str,
+    balance_usd,
+    **_extra: Any,
+) -> bool:
+    """Balance dropped below low balance threshold.
+
+    Trigger: after any ``charge`` debit leaves ``balance_usd < $5``.
+    Caller throttles to one per 24 hours per user.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_low_balance_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    subject = "Your Ranomics tools wallet balance is low"
+    html = _render_template(
+        "send_low_balance.html",
+        base_url=base_url,
+        balance_usd=_money(balance_usd),
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"low_balance user={user_id}",
+    )
+
+
+def send_job_capped_email(
+    *,
+    user_id: str,
+    tool_slug: str = "",
+    attempted_usd=None,
+    cap_usd=None,
+    **_extra: Any,
+) -> bool:
+    """Submission blocked by per tool hard cap.
+
+    Trigger: ``wallet_preflight`` returns ``job_exceeds_per_tool_cap`` or
+    ``job_exceeds_self_serve_ceiling``.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_job_capped_email: no email for user %s", user_id
+        )
+        return False
+    label = _label_for_tool(tool_slug)
+    base_url = _base_url()
+    contact_url = (
+        "https://ranomics.com/ranomics-contact?service=binder-pilot"
+    )
+    subject = (
+        f"Your {label} run was blocked by the per job spend cap"
+    )
+    html = _render_template(
+        "send_job_capped.html",
+        base_url=base_url,
+        tool_label=label,
+        attempted_usd=_money(attempted_usd),
+        cap_usd=_money(cap_usd),
+        contact_url=contact_url,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"job_capped user={user_id} tool={tool_slug}",
+    )
+
+
+def send_daily_cap_email(
+    *,
+    user_id: str,
+    cap_usd,
+    **_extra: Any,
+) -> bool:
+    """Daily spend cap reached.
+
+    Trigger: ``wallet_preflight`` returns ``daily_cap_reached``. Caller
+    throttles to one per day per user.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_daily_cap_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    default_cap = _money(
+        os.environ.get("WALLET_DEFAULT_DAILY_CAP_USD", "200")
+    )
+    subject = "You hit your daily spend cap on Ranomics tools"
+    html = _render_template(
+        "send_daily_cap.html",
+        base_url=base_url,
+        cap_usd=_money(cap_usd),
+        default_cap=default_cap,
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"daily_cap user={user_id}",
+    )
+
+
+def send_pilot_intro_email(
+    *,
+    user_id: str,
+    spent_30d_usd,
+    **_extra: Any,
+) -> bool:
+    """Funnel: Binder Pilot intro.
+
+    Trigger: 30 day spend crosses $1,000 (one shot, dedup via funnel_alerts).
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_pilot_intro_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    subject = (
+        "You are doing real work on Ranomics tools. "
+        "Have you considered a Binder Pilot?"
+    )
+    html = _render_template(
+        "send_pilot_intro.html",
+        base_url=base_url,
+        spent_30d_usd=_money(spent_30d_usd),
+        pilot_url="https://ranomics.com/binder-pilot",
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"pilot_intro user={user_id}",
+    )
+
+
+def send_wallet_frozen_email(
+    *,
+    user_id: str,
+    dispute_id: str = "",
+    **_extra: Any,
+) -> bool:
+    """Wallet frozen pending chargeback dispute review."""
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_wallet_frozen_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    subject = (
+        "Your Ranomics tools wallet has been frozen pending dispute review"
+    )
+    html = _render_template(
+        "send_wallet_frozen.html",
+        base_url=base_url,
+        dispute_id=dispute_id or "unknown",
+        support_email=_support_email(),
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"wallet_frozen user={user_id} dispute={dispute_id}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Internal Slack alerters
+# ---------------------------------------------------------------------------
+# These do not have HTML templates because they post to Slack via incoming
+# webhook URLs. If the relevant env var is unset, the alerter logs the payload
+# and returns False without raising.
+
+
+def _post_slack(
+    *,
+    webhook_url: str,
+    payload: dict,
+    log_tag: str,
+) -> bool:
+    """POST a Slack incoming-webhook payload; return True on confirmed delivery.
+
+    On missing webhook URL, logs and returns False. Never raises.
+    """
+    if not webhook_url:
+        logger.info(
+            "SLACK (no webhook URL, skipping): %s payload=%r", log_tag, payload
+        )
+        return False
+    try:
+        response = requests.post(
+            webhook_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception:
+        logger.warning("Slack POST failed for %s", log_tag, exc_info=True)
+        return False
+    if response.status_code >= 300:
+        logger.warning(
+            "Slack non-2xx for %s: HTTP %d body=%s",
+            log_tag, response.status_code, response.text[:200],
+        )
+        return False
+    logger.info("Slack delivered: %s", log_tag)
+    return True
+
+
+def _sales_slack_webhook() -> str:
+    """Resolve the #sales-leads webhook URL.
+
+    Honours both ``SLACK_SALES_WEBHOOK_URL`` (per dispatch prompt) and
+    ``WALLET_FUNNEL_ALERT_SLACK_WEBHOOK_URL`` (per the plan's Railway env
+    table). Either works; the dispatch-prompt name takes precedence when
+    both are set.
+    """
+    return (
+        os.environ.get("SLACK_SALES_WEBHOOK_URL", "").strip()
+        or os.environ.get("WALLET_FUNNEL_ALERT_SLACK_WEBHOOK_URL", "").strip()
+    )
+
+
+def _ops_slack_webhook() -> str:
+    """Resolve the #ops webhook URL."""
+    return os.environ.get("SLACK_OPS_WEBHOOK_URL", "").strip()
+
+
+def alert_sales_slack(
+    *,
+    user_id: str,
+    spent_30d_usd,
+    **_extra: Any,
+) -> bool:
+    """Internal Slack alert: pilot qualified lead (30 day spend >= $5000)."""
+    email = _resolve_user_email(user_id) or "unknown"
+    spent = _money(spent_30d_usd)
+    text = (
+        ":fire: Pilot-qualified lead\n"
+        f"User: {email} ({user_id})\n"
+        f"30 day spend: ${spent}\n"
+        f"Internal link: {_base_url()}/admin/users/{user_id}\n"
+        "Outreach window: within 48h"
+    )
+    return _post_slack(
+        webhook_url=_sales_slack_webhook(),
+        payload={"text": text},
+        log_tag=f"sales_slack user={user_id}",
+    )
+
+
+def alert_sales_slack_high(
+    *,
+    user_id: str,
+    spent_30d_usd,
+    **_extra: Any,
+) -> bool:
+    """Internal Slack alert: high value spend (30 day spend >= $10000)."""
+    email = _resolve_user_email(user_id) or "unknown"
+    spent = _money(spent_30d_usd)
+    text = (
+        ":rotating_light: High value spend\n"
+        f"User: {email} ({user_id})\n"
+        f"30 day spend: ${spent}\n"
+        f"Internal link: {_base_url()}/admin/users/{user_id}\n"
+        "Outreach window: within 24h"
+    )
+    return _post_slack(
+        webhook_url=_sales_slack_webhook(),
+        payload={"text": text},
+        log_tag=f"sales_slack_high user={user_id}",
+    )
+
+
+def alert_ops_slack(
+    *,
+    event: str = "",
+    user_id: str = "",
+    dispute_id: str = "",
+    **_extra: Any,
+) -> bool:
+    """Internal ops Slack alert (wallet freeze, reconciliation drift, etc.)."""
+    parts = [f":warning: ops event: {event or 'unspecified'}"]
+    if user_id:
+        parts.append(f"user: {user_id}")
+    if dispute_id:
+        parts.append(f"dispute: {dispute_id}")
+    for k, v in (_extra or {}).items():
+        parts.append(f"{k}: {v}")
+    text = "\n".join(parts)
+    return _post_slack(
+        webhook_url=_ops_slack_webhook(),
+        payload={"text": text},
+        log_tag=f"ops_slack event={event} user={user_id}",
+    )

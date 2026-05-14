@@ -1,0 +1,51 @@
+{# Funnel: Binder Pilot intro.
+   Sender: shared.email.send_pilot_intro_email
+   Triggered when _maybe_trigger_funnel_alerts crosses $1,000 in 30 days.
+   Variables:
+     base_url           URL prefix (no trailing slash)
+     spent_30d_usd      30 day spend in USD (string)
+     pilot_url          ranomics.com Binder Pilot landing URL
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">
+    Have you considered a Binder Pilot?
+  </h2>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    You have spent <strong>${{ spent_30d_usd }}</strong> of compute on Ranomics
+    tools in the past 30 days, which usually means a real project is underway.
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    At this point a Binder Pilot engagement often makes sense. A Pilot is a
+    single round campaign with a fixed scope, where we run the design
+    pipelines for you, include wet lab handoff if you want it, and you skip
+    the setup work on your end. Most teams find a Pilot pays for itself in the
+    time saved on tool wrangling and target review.
+  </p>
+
+  <p style="margin:1.5rem 0;">
+    <a href="{{ pilot_url }}"
+       style="display:inline-block;padding:12px 22px;background:#2B9E7E;
+              color:#ffffff;text-decoration:none;border-radius:6px;
+              font-weight:600;">
+      Read about Binder Pilot
+    </a>
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Or reply to this email and we can scope a campaign with you directly.
+  </p>
+
+  <p style="margin:1.5rem 0 0 0;line-height:1.55;">
+    The Ranomics team
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:12px;color:#999;margin:0;">
+    Ranomics Tools.
+    <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+</div>
