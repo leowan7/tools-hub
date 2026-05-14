@@ -28,6 +28,9 @@
 
       <!-- Sign-in panel -->
       <div id="panel-signin" class="form-panel {% if mode != 'signup' and mode != 'reset' and mode != 'update_password' %}active{% endif %}">
+        <p class="auth-intro">
+          Sign in to your wallet. New accounts get $5 of compute credit.
+        </p>
         {% if success_msg %}
           <div class="success-box">{{ success_msg }}</div>
         {% endif %}
@@ -57,6 +60,10 @@
 
       <!-- Sign-up panel -->
       <div id="panel-signup" class="form-panel {% if mode == 'signup' %}active{% endif %}">
+        <p class="auth-intro">
+          Get $5 of compute credit on signup. Pay per second of compute,
+          no subscriptions.
+        </p>
         {% if error and mode == 'signup' %}
           <div class="error-box">{{ error }}</div>
         {% endif %}

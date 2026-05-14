@@ -935,6 +935,13 @@ body.auth-page {
   text-align: center;
 }
 
+.auth-intro {
+  margin: 0 0 1rem 0;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
 .tab-row {
   display: flex;
   border-bottom: 1px solid var(--border);
