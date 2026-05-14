@@ -460,6 +460,7 @@ def complete_job(
 
     _refund_unused_credits(fresh)
     _charge_workspace_for_completed_job(fresh)
+    _settle_wallet_hold_for_completed_job(fresh)
     _send_completion_email(fresh)
     return fresh
 
@@ -651,6 +652,309 @@ def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
         logger.warning(
             "Workspace cap-warning email failed for ws=%s job=%s",
             ws_after.id, job.id, exc_info=True,
+        )
+
+
+def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
+    """Close out the wallet hold for a job that has reached a terminal state.
+
+    Reads ``inputs._wallet_hold_tx_id`` (stashed at submission time by the
+    tools-hub route handler) and routes to one of:
+
+    * ``settle_hold`` for ``succeeded`` and ``failed`` jobs that ran any
+      GPU time. The SQL function releases surplus, charges variance up
+      to the parameter-scaled hard cap, or records absorbed_variance if
+      the wallet has no slack to cover the deficit.
+    * ``release_hold`` for ``failed`` jobs that consumed zero GPU time
+      (system-failure path) and for ``timeout`` / ``cancelled`` rows. The
+      cancel path already runs ``release_hold`` from ``cancel_job`` for
+      its own bookkeeping, but covering it here is cheap and keeps the
+      contract symmetric.
+
+    Idempotent — the SQL functions both no-op on a second call against
+    the same hold id.
+    """
+    ws_ctx = (job.inputs or {}).get("_wallet") or {}
+    if not isinstance(ws_ctx, dict):
+        return
+    hold_tx_id = ws_ctx.get("hold_tx_id")
+    if not hold_tx_id:
+        return
+
+    if job.status not in {"succeeded", "failed", "timeout", "cancelled"}:
+        return
+
+    gpu_seconds = float(job.gpu_seconds_used or 0)
+    gpu_class: Optional[str] = ws_ctx.get("gpu_class")
+    if isinstance(job.result, dict):
+        candidate = job.result.get("gpu_class") or job.result.get("gpu_sku")
+        if isinstance(candidate, str) and candidate:
+            gpu_class = candidate
+
+    # Params used for the parameter-scaled hard cap. Drop the private
+    # underscore keys we stashed at submit time so the cap math only
+    # sees real tool parameters.
+    params = {
+        k: v
+        for k, v in (job.inputs or {}).items()
+        if isinstance(k, str) and not k.startswith("_")
+    }
+
+    failure_reason: Optional[str] = None
+    if job.status == "failed":
+        if isinstance(job.error, dict):
+            bucket = job.error.get("bucket")
+            detail = job.error.get("detail")
+            failure_reason = bucket or detail or "failed"
+        else:
+            failure_reason = "failed"
+    elif job.status == "timeout":
+        failure_reason = "timeout"
+    elif job.status == "cancelled":
+        failure_reason = "cancelled"
+
+    try:
+        from shared.wallet import release_hold, settle_hold  # noqa: PLC0415
+    except Exception:
+        logger.warning(
+            "Wallet settle skipped for job %s: shared.wallet import failed.",
+            job.id, exc_info=True,
+        )
+        return
+
+    # No real GPU time consumed: release the hold without charging.
+    # Mirrors the system-failure refund path in _refund_unused_credits.
+    if gpu_seconds <= 0 and job.status in {"failed", "timeout", "cancelled"}:
+        try:
+            release_hold(hold_tx_id, reason=failure_reason or "no_compute")
+        except Exception:
+            logger.warning(
+                "release_hold raised for job %s hold=%s",
+                job.id, hold_tx_id, exc_info=True,
+            )
+        return
+
+    try:
+        settle_hold(
+            hold_tx_id,
+            gpu_seconds=gpu_seconds,
+            gpu_class=gpu_class,
+            params=params,
+            failure_reason=failure_reason,
+        )
+    except Exception:
+        logger.warning(
+            "settle_hold raised for job %s hold=%s",
+            job.id, hold_tx_id, exc_info=True,
+        )
+
+
+# Mid-run progress monitoring interval. Modal pipelines emit a heartbeat
+# roughly every 15 minutes; the monitor reads cumulative gpu_seconds from
+# the heartbeat payload and decides whether to issue a soft warning or
+# trigger a safety kill.
+MID_RUN_MONITOR_INTERVAL_MINUTES = 15
+
+# Ratios used by the mid-run monitor. The 1.5x warning is non-blocking;
+# the 2.0x ratio triggers a hard kill so a catastrophically wrong estimate
+# does not run unbounded.
+_MID_RUN_WARN_RATIO = 1.5
+_MID_RUN_KILL_RATIO = 2.0
+
+
+def mid_run_monitor_check(
+    job_id: str,
+    cumulative_gpu_seconds: float,
+    *,
+    modal_client=None,  # noqa: ANN001 — avoid circular import of gpu.modal_client
+) -> Optional[str]:
+    """Inspect a running job's cumulative cost and act on overrun ratios.
+
+    Called by the Modal heartbeat handler (or a scheduler) every 15
+    minutes for any still-running job that owns a wallet hold. Returns
+    one of:
+
+    * ``None`` — no action taken (ratio under the warn threshold, or
+      no hold on this job, or the job is no longer running).
+    * ``"warned"`` — soft warning email dispatched. Idempotent on the
+      stashed ``_wallet.overrun_warned`` flag in the job inputs.
+    * ``"killed"`` — projected cost exceeded the hard cap; the Modal
+      function call was cancelled (best-effort) and the job will settle
+      at the cap when its terminal webhook lands.
+
+    The monitor never directly settles the hold. Settlement is owned by
+    ``complete_job`` so the terminal status + GPU time + email side
+    effects all live behind one CAS guard.
+    """
+    job = get_job(job_id)
+    if job is None:
+        return None
+    if job.status not in {"pending", "running"}:
+        return None
+
+    ws_ctx = (job.inputs or {}).get("_wallet") or {}
+    if not isinstance(ws_ctx, dict):
+        return None
+    hold_tx_id = ws_ctx.get("hold_tx_id")
+    if not hold_tx_id:
+        return None
+    estimate_str = ws_ctx.get("estimate_usd")
+    if not estimate_str:
+        return None
+
+    from decimal import Decimal  # noqa: PLC0415
+
+    try:
+        estimate = Decimal(str(estimate_str))
+    except Exception:
+        return None
+    if estimate <= 0:
+        return None
+
+    try:
+        from shared.wallet import (  # noqa: PLC0415
+            compute_charge_usd, release_hold,
+        )
+        from shared.wallet_estimates import compute_hard_cap  # noqa: PLC0415
+    except Exception:
+        logger.warning(
+            "mid_run_monitor_check: wallet import failed for job %s",
+            job_id, exc_info=True,
+        )
+        return None
+
+    gpu_class: Optional[str] = ws_ctx.get("gpu_class")
+    cumulative_cost = compute_charge_usd(
+        cumulative_gpu_seconds or 0, gpu_class
+    )
+    if cumulative_cost <= 0:
+        return None
+
+    ratio = cumulative_cost / estimate
+
+    params = {
+        k: v
+        for k, v in (job.inputs or {}).items()
+        if isinstance(k, str) and not k.startswith("_")
+    }
+    hard_cap = compute_hard_cap(job.tool, params)
+
+    # Soft warning at 1.5x estimate. Fires once per job, gated by the
+    # overrun_warned flag.
+    already_warned = bool(ws_ctx.get("overrun_warned"))
+    if (
+        _MID_RUN_WARN_RATIO <= ratio < _MID_RUN_KILL_RATIO
+        and not already_warned
+    ):
+        _send_overrun_warning(job, cumulative_cost, estimate)
+        _stash_wallet_flag(job, "overrun_warned", True)
+        return "warned"
+
+    # Hard kill at 2x estimate. The kill is gated on the projected
+    # actual exceeding the parameter-scaled hard cap so legitimate
+    # tail-of-distribution runs are not aborted just for crossing the
+    # 2x bar. Without the cap gate, a $0.05 MPNN whose estimate is bad
+    # would be killed at $0.10 (still well below the $150 cap).
+    if ratio >= _MID_RUN_KILL_RATIO and cumulative_cost >= hard_cap:
+        _send_overrun_kill_notice(job, cumulative_cost, hard_cap)
+        if modal_client is not None and job.modal_function_call_id:
+            try:
+                modal_client.cancel(job.modal_function_call_id)
+            except Exception:
+                logger.warning(
+                    "mid_run_monitor_check: modal cancel raised for job %s",
+                    job_id, exc_info=True,
+                )
+        # Mark the job 'failed' with a known failure_reason so the
+        # terminal callback (or a follow-up call) settles the hold at
+        # the cap. We use CAS so a concurrent succeeded/failed webhook
+        # still wins.
+        try:
+            mark_failed(
+                job_id,
+                error={
+                    "bucket": "overrun_safety_kill",
+                    "detail": (
+                        "projected cost exceeded the per-tool hard cap; "
+                        "job cancelled by the mid-run monitor"
+                    ),
+                },
+                gpu_seconds_used=int(cumulative_gpu_seconds or 0),
+            )
+        except Exception:
+            logger.warning(
+                "mid_run_monitor_check: mark_failed raised for job %s",
+                job_id, exc_info=True,
+            )
+        # Release the hold optimistically. settle_hold on the failure
+        # path will idempotently no-op if it lands after this; the
+        # safety-kill path otherwise leaves the hold lingering for the
+        # tail end of the SQL settle path to clean up.
+        try:
+            release_hold(hold_tx_id, reason="overrun_safety_kill")
+        except Exception:
+            logger.warning(
+                "mid_run_monitor_check: release_hold raised for job %s",
+                job_id, exc_info=True,
+            )
+        return "killed"
+
+    return None
+
+
+def _stash_wallet_flag(job: "ToolJob", key: str, value) -> None:  # noqa: ANN001
+    """Merge a flag into ``inputs._wallet`` and persist."""
+    new_inputs = dict(job.inputs or {})
+    wallet_ctx = dict(new_inputs.get("_wallet") or {})
+    wallet_ctx[key] = value
+    new_inputs["_wallet"] = wallet_ctx
+    update_inputs(job.id, new_inputs)
+
+
+def _send_overrun_warning(
+    job: "ToolJob", cumulative_cost, estimate
+) -> None:  # noqa: ANN001
+    """Send the 1.5x soft warning email; best-effort, never raises."""
+    user_email = _resolve_email_for_user(job.user_id)
+    if not user_email:
+        return
+    try:
+        from shared.email import send_job_capped_email  # noqa: PLC0415
+        send_job_capped_email(
+            user_email=user_email,
+            tool_slug=job.tool,
+            attempted_usd=cumulative_cost,
+            cap_usd=estimate,
+            kind="overrun_warning",
+            job_id=job.id,
+        )
+    except Exception:
+        logger.warning(
+            "overrun warning email failed for job %s", job.id, exc_info=True
+        )
+
+
+def _send_overrun_kill_notice(
+    job: "ToolJob", cumulative_cost, hard_cap
+) -> None:  # noqa: ANN001
+    """Send the 2x safety-kill notice; best-effort, never raises."""
+    user_email = _resolve_email_for_user(job.user_id)
+    if not user_email:
+        return
+    try:
+        from shared.email import send_job_capped_email  # noqa: PLC0415
+        send_job_capped_email(
+            user_email=user_email,
+            tool_slug=job.tool,
+            attempted_usd=cumulative_cost,
+            cap_usd=hard_cap,
+            kind="overrun_kill",
+            job_id=job.id,
+        )
+    except Exception:
+        logger.warning(
+            "overrun kill notice email failed for job %s",
+            job.id, exc_info=True,
         )
 
 
