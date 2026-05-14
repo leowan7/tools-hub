@@ -1525,9 +1525,34 @@ def create_app() -> Flask:
             hard_cap = Decimal("0")
 
         balance = Decimal("0")
+        wallet = None
         if user_id:
             wallet = get_or_create_wallet(user_id)
             balance = Decimal(str((wallet or {}).get("balance_usd") or 0))
+
+        # Derived contract values consumed by templates/wallet/_partials.html.
+        # The Moment 1 estimate panel and the inline Moment 2 gate both
+        # read these flag fields to flip visibility.
+        deficit = estimate - balance
+        if deficit < 0:
+            deficit = Decimal("0")
+        rounded_topup = _round_up_topup_amount(deficit)
+
+        exceeds_self_serve = estimate > SELF_SERVE_CEILING_USD
+        exceeds_hard_cap = estimate > hard_cap
+        # Soft warning band: estimate has eaten 80% of the current
+        # balance without going under, so the user is close to a top up
+        # gate on the next click. Suppressed when a harder block trips.
+        soft_block = False
+        if balance > 0 and not exceeds_hard_cap and not exceeds_self_serve:
+            soft_block = estimate >= (balance * Decimal("0.8")) and (
+                estimate < balance
+            )
+        # Hard block: balance cannot cover the estimate at all. The
+        # gate inside the partial owns the visual; this flag is what
+        # the JS reads.
+        hard_block = balance < estimate
+        wallet_frozen = bool((wallet or {}).get("wallet_frozen"))
 
         return jsonify({
             "ok": True,
@@ -1537,8 +1562,18 @@ def create_app() -> Flask:
             "balance_usd": str(balance),
             "balance_after_usd": str(balance - estimate),
             "self_serve_ceiling_usd": str(SELF_SERVE_CEILING_USD),
-            "exceeds_hard_cap": estimate > hard_cap,
-            "exceeds_self_serve_ceiling": estimate > SELF_SERVE_CEILING_USD,
+            "exceeds_hard_cap": exceeds_hard_cap,
+            "exceeds_self_serve_ceiling": exceeds_self_serve,
+            # Wave 3 contract keys consumed by wallet/_partials.html JS.
+            # Names align with the partial's documented schema.
+            "deficit_usd": str(deficit),
+            "rounded_topup_usd": str(rounded_topup),
+            "scaled_hard_cap_usd": str(hard_cap),
+            "soft_block": soft_block,
+            "hard_block": hard_block,
+            "self_serve_block": exceeds_self_serve,
+            "confirm_band": exceeds_hard_cap,
+            "wallet_frozen": wallet_frozen,
         })
 
     @flask_app.route("/account/topup-complete", methods=["GET"])
