@@ -198,28 +198,21 @@
   {# ─── Cinematic hero ──────────────────────────────────────────────── #}
   <section class="landing-hero">
     <div class="landing-hero-inner">
-      <span class="landing-eyebrow">AI protein design · self-serve · per target</span>
+      <span class="landing-eyebrow">AI protein design · self-serve · pay as you go</span>
       <h1>Design binders against your target.</h1>
       <p class="landing-hero-lede">
-        Activate a Target Workspace, then run every pipeline &mdash; RFdiffusion,
-        BindCraft, RFantibody, BoltzGen, MPNN, AF2 &mdash; on the same target
-        for 30 days. <strong>$499 per target. No subscription. 7-day money-back
-        on your first Workspace.</strong>
+        Top up a USD wallet and run RFdiffusion, BindCraft, RFantibody,
+        BoltzGen, MPNN, and AF2 on the same target. <strong>New accounts
+        start with $5 of compute credit. No subscriptions, no seats,
+        no minimum monthly spend.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
-          {% if active_workspaces_count and active_workspaces_count > 0 %}
-            <a href="/workspaces" class="btn-primary-lg">
-              Open your Workspace{% if active_workspaces_count > 1 %}s{% endif %}
-            </a>
-            <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">+ Activate another target</a>
-          {% else %}
-            <a href="/pricing" class="btn-primary-lg">Activate a target — $499</a>
-            <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
-          {% endif %}
+          <a href="/account/wallet/topup" class="btn-primary-lg">Top up your wallet</a>
+          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% else %}
-          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start with Free Scout</a>
-          <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">See Workspace pricing</a>
+          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free with $5 of credit</a>
+          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% endif %}
       </div>
     </div>
@@ -244,10 +237,6 @@
                 <span>{{ job.preset }}</span>
                 <span>·</span>
                 <span>{{ job.status }}</span>
-                {% if job.credits_cost %}
-                  <span>·</span>
-                  <span>{{ job.credits_cost }} cr</span>
-                {% endif %}
               </div>
               <div class="home-recent-actions">
                 <a href="{{ url_for('job_detail', job_id=job.id) }}">Open →</a>
@@ -406,11 +395,11 @@
     <div class="pricing-teaser">
       <div class="pricing-teaser-text">
         <span class="section-eyebrow">Pricing</span>
-        <span class="pricing-teaser-title">Start free. Scale when you're ready.</span>
+        <span class="pricing-teaser-title">Pay for the compute you use.</span>
         <span class="pricing-teaser-body">
-          10 free credits on signup, enough to run an RFantibody preview
-          and a BoltzGen smoke. Monthly plans for scientists running
-          real targets. Custom pricing for labs and teams.
+          Top up a USD wallet, run jobs, see the cost. New accounts
+          start with $5 of compute credit on signup. No subscriptions,
+          no seats, no tiers, no minimum monthly spend.
         </span>
       </div>
       <a href="{{ url_for('pricing') }}" class="btn-primary-lg">See pricing</a>
