@@ -1658,6 +1658,340 @@ def create_app() -> Flask:
         )
 
     # ------------------------------------------------------------------
+    # Wallet UI routes
+    # ------------------------------------------------------------------
+    #
+    # Five routes back the wallet self serve surface:
+    #
+    #   GET  /account/wallet                -> overview dashboard
+    #   GET  /account/wallet/topup          -> top up form (standalone)
+    #   POST /account/wallet/checkout       -> create Stripe Checkout, 302
+    #   GET  /account/wallet/transactions   -> paginated ledger
+    #   POST /account/wallet/auto-reload    -> save auto reload settings
+    #
+    # The gate flow lives on the same /account/wallet/topup template via
+    # the requires_wallet decorator (see _render_topup_gate above); the
+    # standalone topup form below renders the same template with no
+    # deficit_usd context.
+
+    @flask_app.route("/account/wallet", methods=["GET"])
+    @login_required
+    def wallet_overview():
+        """Render the wallet overview dashboard.
+
+        Shows current balance, today plus 30 day spend, auto reload
+        status, the 10 most recent ledger rows, and a Binder Pilot
+        callout for users averaging >$1000 / 30d.
+        """
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        wallet = get_or_create_wallet(ctx.user_id) or {}
+
+        # Decorate the wallet with derived fields the template reads.
+        # _spent_today_usd is a private helper but the values it returns
+        # are stable; we shape the dict here rather than pushing the
+        # query into the template.
+        from shared.wallet import _spent_today_usd  # noqa: PLC0415
+
+        spent_today = _spent_today_usd(ctx.user_id)
+        try:
+            wallet["spent_today_usd"] = float(spent_today)
+        except Exception:  # pragma: no cover (defensive)
+            wallet["spent_today_usd"] = 0.0
+
+        # 30 day spend: charges plus absorbed variance over a rolling
+        # 30 day window. Mirrors _spent_today_usd but with a wider cutoff.
+        from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        spent_30d = Decimal("0")
+        recent_transactions: list = []
+        if client is not None:
+            cutoff_30d = (
+                datetime.now(timezone.utc) - timedelta(days=30)
+            ).isoformat()
+            try:
+                rows_30d = (
+                    client.table("wallet_transactions")
+                    .select("amount_usd")
+                    .eq("user_id", ctx.user_id)
+                    .in_("kind", ["charge", "absorbed_variance"])
+                    .gte("created_at", cutoff_30d)
+                    .execute()
+                )
+                for row in list(getattr(rows_30d, "data", None) or []):
+                    spent_30d += Decimal(
+                        str(row.get("amount_usd") or 0)
+                    ).copy_abs()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "wallet_overview: 30d spend lookup failed for %s",
+                    ctx.user_id, exc_info=True,
+                )
+            try:
+                tx_response = (
+                    client.table("wallet_transactions")
+                    .select("*")
+                    .eq("user_id", ctx.user_id)
+                    .order("created_at", desc=True)
+                    .limit(10)
+                    .execute()
+                )
+                recent_transactions = list(
+                    getattr(tx_response, "data", None) or []
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "wallet_overview: recent ledger lookup failed for %s",
+                    ctx.user_id, exc_info=True,
+                )
+
+        try:
+            wallet["spent_30d_usd"] = float(spent_30d)
+        except Exception:  # pragma: no cover
+            wallet["spent_30d_usd"] = 0.0
+
+        return render_template(
+            "wallet/overview.html",
+            wallet=wallet,
+            recent_transactions=recent_transactions,
+            user_email=session.get("user_email", ""),
+        )
+
+    @flask_app.route("/account/wallet/topup", methods=["GET"])
+    @login_required
+    def wallet_topup():
+        """Render the standalone wallet top up form.
+
+        The gate flow renders the same template with a ``deficit_usd``
+        and ``next_url`` set; this route renders it bare so the user can
+        top up manually without coming from a tool gate. ``topup_error``
+        is read from the query string so the POST handler can redirect
+        here with an inline error.
+        """
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        wallet = get_or_create_wallet(ctx.user_id) or {}
+        topup_error = (request.args.get("topup_error") or "").strip() or None
+        return render_template(
+            "wallet/topup.html",
+            wallet=wallet,
+            min_topup_usd=MIN_TOPUP_USD,
+            next_url=None,
+            topup_action_url="/account/wallet/checkout",
+            topup_error=topup_error,
+        )
+
+    @flask_app.route("/account/wallet/checkout", methods=["POST"])
+    @login_required
+    def wallet_checkout():
+        """Create a Stripe Checkout Session for a wallet top up.
+
+        Reads ``amount_usd`` from the form, hands off to
+        :func:`billing.checkout.create_topup_session`, and redirects to
+        the returned Stripe URL. Any error redirects back to
+        ``/account/wallet/topup?topup_error=<msg>`` so the user lands on
+        a form they can retry.
+        """
+        from billing.checkout import create_topup_session  # noqa: PLC0415
+        from urllib.parse import quote  # noqa: PLC0415
+
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        amount_raw = (request.form.get("amount_usd") or "").strip()
+        if not amount_raw:
+            return redirect(
+                "/account/wallet/topup?topup_error="
+                + quote("Pick an amount to top up.")
+            )
+
+        try:
+            amount = Decimal(amount_raw)
+        except (InvalidOperation, ValueError):
+            return redirect(
+                "/account/wallet/topup?topup_error="
+                + quote("Top up amount must be a number.")
+            )
+
+        # If the gate flow passed a return path through the form, preserve
+        # it on the session so /account/topup-complete can route back to
+        # the original tool form. The decorator already stashes
+        # wallet_gate_form, so we only set return_url if the form sent one
+        # and the session has not already captured it.
+        next_url = (request.form.get("next") or "").strip()
+        if next_url and not session.get("wallet_gate_form"):
+            session["wallet_gate_form"] = {"return_url": next_url}
+
+        result, err = create_topup_session(
+            ctx.user_id, ctx.email, amount
+        )
+        if err or not result:
+            return redirect(
+                "/account/wallet/topup?topup_error=" + quote(err or "Checkout failed.")
+            )
+
+        return redirect(result.get("url"))
+
+    @flask_app.route("/account/wallet/transactions", methods=["GET"])
+    @login_required
+    def wallet_transactions():
+        """Render the paginated ledger view.
+
+        ``page`` query param drives offset; 25 rows per page. ``kind``
+        query param optionally filters by ledger kind (signup_credit,
+        topup, charge, etc.).
+        """
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        wallet = get_or_create_wallet(ctx.user_id) or {}
+
+        try:
+            page = int((request.args.get("page") or "1").strip())
+        except ValueError:
+            page = 1
+        if page < 1:
+            page = 1
+        page_size = 25
+        offset = (page - 1) * page_size
+
+        filter_kind = (request.args.get("kind") or "").strip() or None
+
+        transactions: list = []
+        total_count = None
+        has_next = False
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        if client is not None:
+            try:
+                query = (
+                    client.table("wallet_transactions")
+                    .select("*", count="exact")
+                    .eq("user_id", ctx.user_id)
+                )
+                if filter_kind:
+                    query = query.eq("kind", filter_kind)
+                # Pull one extra row so we can tell whether a next page
+                # exists without a second count query.
+                response = (
+                    query.order("created_at", desc=True)
+                    .range(offset, offset + page_size)
+                    .execute()
+                )
+                rows = list(getattr(response, "data", None) or [])
+                if len(rows) > page_size:
+                    has_next = True
+                    rows = rows[:page_size]
+                transactions = rows
+                total_count = getattr(response, "count", None)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "wallet_transactions: ledger lookup failed for %s",
+                    ctx.user_id, exc_info=True,
+                )
+
+        return render_template(
+            "wallet/transactions.html",
+            wallet=wallet,
+            transactions=transactions,
+            filter_kind=filter_kind,
+            page=page,
+            page_size=page_size,
+            has_next=has_next,
+            has_prev=page > 1,
+            total_count=total_count,
+        )
+
+    @flask_app.route("/account/wallet/auto-reload", methods=["POST"])
+    @login_required
+    def wallet_auto_reload():
+        """Persist auto reload settings on the ``user_wallets`` row.
+
+        Reads ``auto_reload_enabled`` (on / off), ``threshold_usd``,
+        ``amount_usd``, and ``monthly_cap_usd`` from the form. Coerces
+        numeric fields and clamps them to safe ranges so a runaway form
+        post cannot set a 1 cent threshold or a million dollar cap.
+        """
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        # Form fields land under the input names defined in topup.html
+        # (auto_reload_enabled / _threshold_usd / _amount_usd /
+        # _monthly_cap_usd). Accept both the bare and the suffixed names
+        # so a future template rename does not silently break the route.
+        enabled_raw = (
+            request.form.get("auto_reload_enabled")
+            or request.form.get("enabled")
+            or ""
+        ).strip().lower()
+        enabled = enabled_raw in {"on", "true", "1", "yes"}
+
+        def _coerce(name_a: str, name_b: str, default: Decimal) -> Decimal:
+            raw = (
+                request.form.get(name_a)
+                or request.form.get(name_b)
+                or ""
+            ).strip()
+            if not raw:
+                return default
+            try:
+                return Decimal(raw)
+            except (InvalidOperation, ValueError):
+                return default
+
+        threshold = _coerce(
+            "auto_reload_threshold_usd", "threshold_usd", Decimal("10")
+        )
+        amount = _coerce(
+            "auto_reload_amount_usd", "amount_usd", Decimal("50")
+        )
+        monthly_cap = _coerce(
+            "auto_reload_monthly_cap_usd", "monthly_cap_usd", Decimal("1000")
+        )
+
+        # Clamp to plan documented safe bounds. Threshold must be at
+        # least $5 (below that auto reload runs constantly); amount must
+        # be at least the minimum top up; monthly cap must be at least
+        # $100 so a typo cannot disable the safety net entirely.
+        if threshold < Decimal("5"):
+            threshold = Decimal("5")
+        if amount < MIN_TOPUP_USD:
+            amount = MIN_TOPUP_USD
+        if monthly_cap < Decimal("100"):
+            monthly_cap = Decimal("100")
+
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        if client is not None:
+            try:
+                client.table("user_wallets").update(
+                    {
+                        "auto_reload_enabled": enabled,
+                        "auto_reload_threshold_usd": float(threshold),
+                        "auto_reload_amount_usd": float(amount),
+                        "auto_reload_monthly_cap_usd": float(monthly_cap),
+                    }
+                ).eq("user_id", ctx.user_id).execute()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "wallet_auto_reload: update failed for %s",
+                    ctx.user_id, exc_info=True,
+                )
+
+        return redirect("/account/wallet/topup#auto-reload")
+
+    # ------------------------------------------------------------------
     # Stub tool route — proves credits middleware + Modal client contract
     # work end-to-end without a real GPU call. Stream C/D tools follow
     # the same pattern: @login_required, @requires_credits, render a
