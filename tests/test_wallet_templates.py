@@ -141,6 +141,26 @@ class TestWalletOverviewTemplate:
             )
         assert "Wallet frozen" in html
 
+    def test_overview_renders_without_signup_credit_used_usd_key(self, app):
+        """The user_wallets schema does not have signup_credit_used_usd.
+
+        The Session 8 Pass 6 surfaced that overview.html was reading this
+        key directly and 500'ing on every real wallet because the column
+        does not exist on user_wallets. The route does not inject it
+        either. The template must tolerate the missing key.
+        """
+        wallet_no_signup_field = _wallet_fixture()
+        wallet_no_signup_field.pop("signup_credit_used_usd", None)
+        with app.test_request_context("/account/wallet"):
+            html = render_template(
+                "wallet/overview.html",
+                wallet=wallet_no_signup_field,
+                recent_transactions=[],
+                user_email="u@example.com",
+            )
+        assert "trial credit available" in html
+        assert "$5.00" in html
+
 
 # ---------------------------------------------------------------------------
 # wallet/topup.html (4 variants)

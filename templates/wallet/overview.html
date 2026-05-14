@@ -106,8 +106,12 @@
         </div>
         <div class="wallet-stat">
           <span class="wallet-stat-label">Signup credit used</span>
-          {% if wallet and wallet.signup_credit_used_usd is not none %}
-            <span class="wallet-stat-value">${{ '%.2f'|format(wallet.signup_credit_used_usd|float) }}</span>
+          {# Defensive: signup_credit_used_usd is not a column on user_wallets
+             and is not always injected by the route. Treat undefined and none
+             the same so the page does not 500. #}
+          {% set _signup_used = wallet.signup_credit_used_usd|default(none, true) if wallet else none %}
+          {% if _signup_used is not none %}
+            <span class="wallet-stat-value">${{ '%.2f'|format(_signup_used|float) }}</span>
             <span class="wallet-stat-foot">of $5.00 trial credit</span>
           {% else %}
             <span class="wallet-stat-value">$5.00</span>
