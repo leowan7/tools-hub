@@ -34,8 +34,13 @@ try:
 except ImportError:
     pass
 
+from decimal import Decimal, InvalidOperation
+from functools import wraps
+import json
+
 from flask import (
     Flask,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -52,6 +57,24 @@ from shared.credits import (
     record_spend,
     recent_ledger,
     requires_credits,
+)
+from shared.wallet import (
+    MIN_TOPUP_USD,
+    REASON_DAILY_CAP,
+    REASON_INSUFFICIENT,
+    REASON_OK,
+    REASON_PER_TOOL_CAP,
+    REASON_SELF_SERVE_CEILING,
+    REASON_WALLET_FROZEN,
+    SELF_SERVE_CEILING_USD,
+    get_or_create_wallet,
+    release_hold as wallet_release_hold,
+    reserve_hold as wallet_reserve_hold,
+    wallet_preflight,
+)
+from shared.wallet_estimates import (
+    compute_hard_cap,
+    estimated_cost_for_tool,
 )
 from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
@@ -351,6 +374,269 @@ def _build_tools_catalog() -> list[dict]:
         )
 
     return catalog
+
+
+def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
+    """Return a dict of wallet-estimate-relevant params from a Flask form.
+
+    The wallet estimate only looks at scaling parameters (num_designs,
+    iters, target_length, etc.). We strip the form down to a flat dict
+    and coerce numerics where possible so the estimator can read them.
+    """
+    params: dict[str, object] = {}
+    for key, value in form.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        # Cheap numeric coercion; the estimator falls back to defaults
+        # on unparseable inputs.
+        if isinstance(value, (int, float, Decimal)):
+            params[key] = value
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                continue
+            try:
+                params[key] = int(stripped)
+                continue
+            except ValueError:
+                pass
+            try:
+                params[key] = float(stripped)
+                continue
+            except ValueError:
+                pass
+            params[key] = stripped
+    return params
+
+
+def _round_up_topup_amount(deficit: Decimal) -> Decimal:
+    """Round the deficit up to the nearest $5, with a floor of MIN_TOPUP_USD.
+
+    Mirrors the formula in the plan's Moment 2 spec:
+    ``ceil((estimate - balance) / 5) * 5`` with a $20 minimum.
+    """
+    if deficit <= 0:
+        return MIN_TOPUP_USD
+    five = Decimal("5")
+    bumped = (deficit / five).to_integral_value(rounding="ROUND_CEILING") * five
+    return max(bumped, MIN_TOPUP_USD)
+
+
+def _render_topup_gate(
+    *,
+    tool_slug: str,
+    estimate: Decimal,
+    balance: Decimal,
+    deficit: Decimal,
+    reason: str,
+    hard_cap: Decimal,
+    form_snapshot: dict,
+):
+    """Render the 'Top up and run' gate.
+
+    Reuses ``templates/wallet/topup.html`` which already supports the
+    gate flow via ``next_url`` and ``deficit_usd`` (Agent H may swap
+    in a dedicated topup-and-run template later; the context here is
+    forward compatible with that swap).
+    """
+    suggested = _round_up_topup_amount(deficit)
+    # Stash the original form on the session so /account/topup-complete
+    # can return the user back to the form with values intact. The form
+    # snapshot is JSON serializable text only.
+    try:
+        session["wallet_gate_form"] = {
+            "tool": tool_slug,
+            "form": {
+                k: v for k, v in form_snapshot.items()
+                if isinstance(v, (str, int, float, bool))
+            },
+            "reason": reason,
+        }
+    except Exception:  # session writes are best effort
+        pass
+
+    next_url = url_for("tool_form", tool=tool_slug)
+    wallet = get_or_create_wallet(session.get("user_id") or "") or {}
+    return render_template(
+        "wallet/topup.html",
+        wallet=wallet,
+        deficit_usd=deficit,
+        estimate_usd=estimate,
+        balance_usd=balance,
+        hard_cap_usd=hard_cap,
+        suggested_amount=suggested,
+        min_topup_usd=MIN_TOPUP_USD,
+        next_url=next_url,
+        gate_reason=reason,
+        tool_slug=tool_slug,
+        self_serve_ceiling_usd=SELF_SERVE_CEILING_USD,
+    )
+
+
+def requires_wallet(view_func=None, *, tool_slug=None):
+    """Flask decorator that gates a tool submit POST on the wallet.
+
+    Two call shapes are supported:
+
+    * Bare decorator: ``@requires_wallet`` on a handler whose Flask
+      URL converter binds ``<tool>`` (the slug is read from ``kwargs``).
+    * Factory: ``@requires_wallet(tool_slug='example-gpu')`` on a route
+      whose URL is hardcoded to one tool.
+
+    Three phase contract:
+
+    1. Compute the estimate via ``estimated_cost_for_tool`` based on
+       the form params. Resolve the parameter scaled hard cap and the
+       user's current balance.
+    2. Block flow on any of these reasons by rendering the 'Top up and
+       run' gate (Moment 2 of the plan) or the per tool cap message
+       (Moment 3): wallet frozen, insufficient balance, per tool cap
+       exceeded, self serve ceiling exceeded, daily cap reached.
+    3. On allow, atomically reserve the hold via ``reserve_hold`` and
+       stash the hold_tx_id plus estimate on ``flask.g`` for the
+       handler. If the SQL hold returns null (lost a concurrent race),
+       render the gate too.
+
+    The wrapped handler is expected to read ``g.wallet_hold_tx_id`` and
+    persist it on the job row so the settle path in
+    :func:`shared.jobs.complete_job` can close out the hold later.
+    """
+
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):  # noqa: ANN002, ANN003
+            # Resolve the tool slug from the URL kwarg, the factory
+            # argument, or fall through if neither is present.
+            resolved_slug = (
+                tool_slug
+                or kwargs.get("tool")
+                or kwargs.get("tool_slug")
+                or ""
+            )
+            if not resolved_slug:
+                return f(*args, **kwargs)
+
+            # Resolve user_id from session first; fall back to
+            # load_user_context which reads the email and looks up
+            # auth.users for the id. Tests that only set user_email
+            # in the session take this branch.
+            user_id = session.get("user_id")
+            if not user_id:
+                try:
+                    ctx = load_user_context()
+                except Exception:
+                    ctx = None
+                user_id = ctx.user_id if ctx else None
+            if not user_id:
+                # No identifiable user. Fall through so the legacy
+                # @login_required / @requires_credits path handles
+                # the redirect. The wallet decorator never preempts
+                # auth.
+                g.wallet_estimate_usd = Decimal("0")
+                g.wallet_hold_tx_id = None
+                g.wallet_params = {}
+                g.wallet_tool_slug = resolved_slug
+                return f(*args, **kwargs)
+
+            params = _wallet_params_from_form(request.form)
+            try:
+                estimate = estimated_cost_for_tool(
+                    user_id, resolved_slug, params
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "requires_wallet: estimate failed for user=%s tool=%s",
+                    user_id, resolved_slug, exc_info=True,
+                )
+                estimate = Decimal("0")
+
+            # Smoke runs with a zero estimate skip the gate entirely.
+            # No hold row is placed; the handler simply proceeds.
+            if estimate <= Decimal("0"):
+                g.wallet_estimate_usd = Decimal("0")
+                g.wallet_hold_tx_id = None
+                g.wallet_params = params
+                g.wallet_tool_slug = resolved_slug
+                return f(*args, **kwargs)
+
+            # Detect a missing service client (tests, dev with no
+            # Supabase). When the wallet layer can not even resolve
+            # the user_wallets row, fall through to the legacy path
+            # instead of locking out every request behind the gate.
+            try:
+                wallet_row = get_or_create_wallet(user_id)
+            except Exception:  # noqa: BLE001
+                wallet_row = None
+            if wallet_row is None:
+                g.wallet_estimate_usd = estimate
+                g.wallet_hold_tx_id = None
+                g.wallet_params = params
+                g.wallet_tool_slug = resolved_slug
+                return f(*args, **kwargs)
+
+            pre = wallet_preflight(
+                user_id, resolved_slug, estimate, params
+            )
+            if not pre.allow:
+                return _render_topup_gate(
+                    tool_slug=resolved_slug,
+                    estimate=pre.estimated_cost_usd,
+                    balance=pre.balance_usd,
+                    deficit=pre.deficit_usd,
+                    reason=pre.reason,
+                    hard_cap=pre.hard_cap_usd,
+                    form_snapshot=request.form.to_dict() or {},
+                )
+
+            hold_tx_id = wallet_reserve_hold(
+                user_id, resolved_slug, None, estimate, params
+            )
+            if not hold_tx_id:
+                # Lost a concurrent race or fell foul of a SQL guard.
+                fresh = wallet_preflight(
+                    user_id, resolved_slug, estimate, params
+                )
+                return _render_topup_gate(
+                    tool_slug=resolved_slug,
+                    estimate=fresh.estimated_cost_usd,
+                    balance=fresh.balance_usd,
+                    deficit=fresh.deficit_usd,
+                    reason=fresh.reason or REASON_INSUFFICIENT,
+                    hard_cap=fresh.hard_cap_usd,
+                    form_snapshot=request.form.to_dict() or {},
+                )
+
+            g.wallet_estimate_usd = estimate
+            g.wallet_hold_tx_id = hold_tx_id
+            g.wallet_params = params
+            g.wallet_tool_slug = resolved_slug
+
+            try:
+                response = f(*args, **kwargs)
+            except Exception:
+                # Handler raised. Release the hold so the user is not
+                # left with a stranded reservation.
+                try:
+                    wallet_release_hold(
+                        hold_tx_id, reason="handler_exception"
+                    )
+                except Exception:
+                    logger.warning(
+                        "requires_wallet: release_hold on exception "
+                        "failed for hold=%s",
+                        hold_tx_id, exc_info=True,
+                    )
+                raise
+            return response
+
+        return wrapper
+
+    # Bare-decorator usage: @requires_wallet
+    if callable(view_func) and tool_slug is None:
+        return decorator(view_func)
+    # Factory usage: @requires_wallet(tool_slug='example-gpu')
+    return decorator
 
 
 def create_app() -> Flask:
@@ -1153,6 +1439,190 @@ def create_app() -> Flask:
         )
 
     # ------------------------------------------------------------------
+    # Wallet endpoints
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/api/wallet/estimate", methods=["GET"])
+    def api_wallet_estimate():
+        """Return the wallet estimate, hard cap, and current balance.
+
+        Used by every tool form for the inline Moment 1 display (live
+        update of "Estimated cost / Balance / Balance after"). The
+        endpoint is read only and idempotent; it never places a hold or
+        modifies the wallet.
+
+        Query parameters:
+
+        * ``tool`` (or ``tool_slug``) — the tool slug.
+        * ``params`` — optional JSON object of param values. Falls back
+          to flat query params (``num_designs=100``) when omitted.
+
+        Response shape::
+
+            {"estimate_usd": "0.0500",
+             "hard_cap_usd": "150.00",
+             "balance_usd": "5.0000",
+             "ok": true}
+
+        All money values are returned as JSON strings to preserve
+        Decimal precision through JSON's float coercion.
+        """
+        tool_slug = (
+            request.args.get("tool")
+            or request.args.get("tool_slug")
+            or ""
+        ).strip()
+        if not tool_slug:
+            return jsonify({"error": "missing_tool_slug"}), 400
+
+        user_id = session.get("user_id")
+        # Resolve params: prefer a JSON ``params`` blob, fall back to
+        # flat query args minus the meta keys.
+        params: dict[str, object] = {}
+        raw_params = request.args.get("params")
+        if raw_params:
+            try:
+                parsed = json.loads(raw_params)
+                if isinstance(parsed, dict):
+                    params = parsed
+            except (ValueError, TypeError):
+                pass
+        if not params:
+            for key, value in request.args.items():
+                if key in {"tool", "tool_slug", "params"}:
+                    continue
+                if not value:
+                    continue
+                # Coerce numerics so the estimator's scaling math works.
+                try:
+                    params[key] = int(value)
+                    continue
+                except ValueError:
+                    pass
+                try:
+                    params[key] = float(value)
+                    continue
+                except ValueError:
+                    pass
+                params[key] = value
+
+        try:
+            estimate = estimated_cost_for_tool(user_id, tool_slug, params)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "api_wallet_estimate: estimate failed for tool=%s",
+                tool_slug, exc_info=True,
+            )
+            return jsonify({"error": "estimate_failed"}), 500
+
+        try:
+            hard_cap = compute_hard_cap(tool_slug, params)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "api_wallet_estimate: hard cap failed for tool=%s",
+                tool_slug, exc_info=True,
+            )
+            hard_cap = Decimal("0")
+
+        balance = Decimal("0")
+        if user_id:
+            wallet = get_or_create_wallet(user_id)
+            balance = Decimal(str((wallet or {}).get("balance_usd") or 0))
+
+        return jsonify({
+            "ok": True,
+            "tool_slug": tool_slug,
+            "estimate_usd": str(estimate),
+            "hard_cap_usd": str(hard_cap),
+            "balance_usd": str(balance),
+            "balance_after_usd": str(balance - estimate),
+            "self_serve_ceiling_usd": str(SELF_SERVE_CEILING_USD),
+            "exceeds_hard_cap": estimate > hard_cap,
+            "exceeds_self_serve_ceiling": estimate > SELF_SERVE_CEILING_USD,
+        })
+
+    @flask_app.route("/account/topup-complete", methods=["GET"])
+    @login_required
+    def topup_complete():
+        """Stripe Checkout success_url landing page.
+
+        Validates the ``session_id`` query parameter against Stripe and
+        renders a confirmation. The webhook handler in
+        ``webhooks/stripe.py`` actually credits the wallet on the
+        ``checkout.session.completed`` event; this route is the user
+        visible confirmation while that webhook flies.
+
+        When the gate flow stashed an original tool form, the user can
+        click 'Return to <tool>' from the confirmation to land back on
+        the tool form with values preserved.
+        """
+        from billing.checkout import retrieve_topup_session  # noqa: PLC0415
+
+        ctx = load_user_context()
+        session_id = (request.args.get("session_id") or "").strip()
+        gate_payload = session.pop("wallet_gate_form", None) or {}
+        return_tool = (gate_payload or {}).get("tool")
+
+        if not session_id:
+            return render_template(
+                "wallet/topup.html",
+                topup_error=(
+                    "No Stripe session was provided. If you just paid, "
+                    "your wallet will update shortly. Refresh the "
+                    "Account page to see the balance."
+                ),
+                wallet=get_or_create_wallet(ctx.user_id) if ctx else None,
+                return_tool=return_tool,
+            )
+
+        stripe_session, err = retrieve_topup_session(session_id)
+        if err or not stripe_session:
+            logger.warning(
+                "topup_complete: could not retrieve session=%s err=%s",
+                session_id, err,
+            )
+            return render_template(
+                "wallet/topup.html",
+                topup_error=(
+                    "Could not validate the Stripe session. The webhook "
+                    "still credits the wallet when payment clears."
+                ),
+                wallet=get_or_create_wallet(ctx.user_id) if ctx else None,
+                return_tool=return_tool,
+            )
+
+        # Owner check: the session metadata.user_id must match the
+        # signed in user so a leaked session_id link does not expose
+        # another user's amount or status.
+        metadata = stripe_session.get("metadata") or {}
+        if ctx and metadata.get("user_id") and metadata["user_id"] != ctx.user_id:
+            logger.warning(
+                "topup_complete: session=%s user mismatch (session=%s viewer=%s)",
+                session_id, metadata.get("user_id"), ctx.user_id,
+            )
+            return render_template(
+                "wallet/topup.html",
+                topup_error=(
+                    "This Checkout session belongs to a different account."
+                ),
+                wallet=get_or_create_wallet(ctx.user_id),
+                return_tool=return_tool,
+            )
+
+        wallet = get_or_create_wallet(ctx.user_id) if ctx else None
+        return render_template(
+            "wallet/topup.html",
+            topup_success=True,
+            stripe_session=stripe_session,
+            wallet=wallet,
+            return_tool=return_tool,
+            return_tool_url=(
+                url_for("tool_form", tool=return_tool)
+                if return_tool else None
+            ),
+        )
+
+    # ------------------------------------------------------------------
     # Stub tool route — proves credits middleware + Modal client contract
     # work end-to-end without a real GPU call. Stream C/D tools follow
     # the same pattern: @login_required, @requires_credits, render a
@@ -1171,6 +1641,7 @@ def create_app() -> Flask:
     @requires_credits(
         1, tool="example-gpu", reason="example-gpu smoke submission"
     )
+    @requires_wallet(tool_slug="example-gpu")
     def example_gpu_submit():
         """Submit the stub job via ModalClient.
 
@@ -1494,6 +1965,7 @@ def create_app() -> Flask:
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
     @login_required
     @idempotent()
+    @requires_wallet
     def tool_submit(tool: str):
         """Validate, debit credits, upload PDB, spawn Modal, redirect to job detail."""
         adapter, err = _require_tool(tool)
@@ -1668,6 +2140,22 @@ def create_app() -> Flask:
         # right cap.
         ws_target = workspace_ctx["target_pdb_id"] if workspace_ctx else None
         ws_id = workspace_ctx["workspace_id"] if workspace_ctx else None
+        # Stash the wallet hold id (from the requires_wallet decorator)
+        # on the job's inputs so the settle path in shared.jobs can
+        # close it out on completion. None when the estimate was zero
+        # (smoke runs); the settle hook short circuits in that case.
+        hold_tx_id = getattr(g, "wallet_hold_tx_id", None)
+        wallet_estimate = getattr(g, "wallet_estimate_usd", None)
+        if hold_tx_id or wallet_estimate is not None:
+            inputs = dict(inputs)
+            wallet_ctx = dict(inputs.get("_wallet") or {})
+            if hold_tx_id:
+                wallet_ctx["hold_tx_id"] = hold_tx_id
+            if wallet_estimate is not None:
+                wallet_ctx["estimate_usd"] = str(wallet_estimate)
+            wallet_ctx["tool_slug"] = adapter.slug
+            inputs["_wallet"] = wallet_ctx
+
         job = create_job(
             user_id=ctx.user_id,
             tool=adapter.slug,
@@ -1678,11 +2166,23 @@ def create_app() -> Flask:
             workspace_id=ws_id,
         )
         if job is None:
+            # Release the hold so we don't leave a stranded reservation.
+            if hold_tx_id:
+                try:
+                    wallet_release_hold(
+                        hold_tx_id, reason="job_create_failed"
+                    )
+                except Exception:
+                    logger.warning(
+                        "tool_submit: release_hold after create_job "
+                        "failure raised for hold=%s",
+                        hold_tx_id, exc_info=True,
+                    )
             return render_template(
                 adapter.form_template,
                 adapter=adapter,
                 error=(
-                    "Could not create job record — Supabase is unreachable. "
+                    "Could not create job record. Supabase is unreachable. "
                     "Try again in a moment."
                 ),
                 pre_fill=inputs,
@@ -1759,6 +2259,17 @@ def create_app() -> Flask:
                     job.id,
                     error={"bucket": "storage", "detail": str(exc)},
                 )
+                if hold_tx_id:
+                    try:
+                        wallet_release_hold(
+                            hold_tx_id, reason="storage_failure"
+                        )
+                    except Exception:
+                        logger.warning(
+                            "tool_submit: release_hold on storage error "
+                            "raised for hold=%s",
+                            hold_tx_id, exc_info=True,
+                        )
                 return render_template(
                     adapter.form_template,
                     adapter=adapter,
@@ -1795,6 +2306,17 @@ def create_app() -> Flask:
                 job.id,
                 error={"bucket": "modal-submit", "detail": str(exc)},
             )
+            if hold_tx_id:
+                try:
+                    wallet_release_hold(
+                        hold_tx_id, reason="modal_submit_failure"
+                    )
+                except Exception:
+                    logger.warning(
+                        "tool_submit: release_hold on modal submit "
+                        "failure raised for hold=%s",
+                        hold_tx_id, exc_info=True,
+                    )
             return render_template(
                 adapter.form_template,
                 adapter=adapter,
