@@ -98,7 +98,11 @@
     </div>
   {% endif %}
 
-  {% set _min = (min_topup_usd|float) if min_topup_usd is not none else 20 %}
+  {# Defensive: not every route passes deficit_usd or min_topup_usd. Treat
+     undefined and none the same way. #}
+  {% set _min_raw = min_topup_usd|default(none, true) %}
+  {% set _min = (_min_raw|float) if _min_raw is not none else 20 %}
+  {% set _deficit_raw = deficit_usd|default(none, true) %}
   {% set _suggested = suggested_amounts or [
     {'value': 20,   'label': '$20',    'covers': 'About 40 ProteinMPNN runs. Good for first exploration after the trial credit.'},
     {'value': 50,   'label': '$50',    'covers': 'One small project. Tens of folds, a single round of MPNN sequence design.'},
@@ -106,7 +110,7 @@
     {'value': 500,  'label': '$500',   'covers': 'One full pilot campaign. Thousands of RFdiffusion backbones plus design and validation.'},
     {'value': 2500, 'label': '$2,500', 'covers': 'Production scale. At this level a Binder Pilot service engagement is often more efficient.'},
   ] %}
-  {% set _default_amount = (deficit_usd|float|round(0, 'ceil')) if deficit_usd is not none and (deficit_usd|float) > _min else _min %}
+  {% set _default_amount = (_deficit_raw|float|round(0, 'ceil')) if _deficit_raw is not none and (_deficit_raw|float) > _min else _min %}
   {% if _default_amount < _min %}{% set _default_amount = _min %}{% endif %}
 
   <div class="hero">
@@ -118,13 +122,13 @@
     </p>
   </div>
 
-  {% if deficit_usd is not none %}
+  {% if _deficit_raw is not none %}
     <div class="panel wallet-topup-gate-notice">
       <div class="panel-body">
         <p class="wallet-section-body">
           <strong>Top up and run.</strong> Your job estimate exceeds your
           current balance by
-          <strong>${{ '%.2f'|format(deficit_usd|float) }}</strong>. Add at
+          <strong>${{ '%.2f'|format(_deficit_raw|float) }}</strong>. Add at
           least that amount and we will pick up the job submission right
           where you left off.
         </p>
