@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+
+{# Top up page. Posts to the Stripe Checkout creator route Agent C is
+   building. Suggested amounts mirror the marketing site at
+   ranomics.com/tools/pricing.
+
+   Expected context (Agent E):
+     wallet                  current wallet dict (balance, auto_reload_*)
+     suggested_amounts       list of dicts {value, label, covers}
+                             (fallback to the constant below if absent)
+     min_topup_usd           usually Decimal("20.00")
+     next_url                optional return path; when present this is a
+                             "top up then run the job" gate from a tool form,
+                             so the form forwards it through Checkout
+     deficit_usd             optional Decimal; when present this is the
+                             gate flow and the suggested default is the
+                             rounded deficit, not the bare $20
+     topup_action_url        Agent C's POST endpoint; falls back to a
+                             placeholder data-route until Wave 3 wire up
+#}
+
+{% block title %}Top up wallet — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+
+  {% set _min = (min_topup_usd|float) if min_topup_usd is not none else 20 %}
+  {% set _suggested = suggested_amounts or [
+    {'value': 20,   'label': '$20',    'covers': 'About 40 ProteinMPNN runs. Good for first exploration after the trial credit.'},
+    {'value': 50,   'label': '$50',    'covers': 'One small project. Tens of folds, a single round of MPNN sequence design.'},
+    {'value': 200,  'label': '$200',   'covers': 'Multi target exploration. Several design loops across two or three targets.'},
+    {'value': 500,  'label': '$500',   'covers': 'One full pilot campaign. Thousands of RFdiffusion backbones plus design and validation.'},
+    {'value': 2500, 'label': '$2,500', 'covers': 'Production scale. At this level a Binder Pilot service engagement is often more efficient.'},
+  ] %}
+  {% set _default_amount = (deficit_usd|float|round(0, 'ceil')) if deficit_usd is not none and (deficit_usd|float) > _min else _min %}
+  {% if _default_amount < _min %}{% set _default_amount = _min %}{% endif %}
+
+  <div class="hero">
+    <h1>Top up your wallet</h1>
+    <p class="subtitle">
+      Minimum top up is ${{ '%.0f'|format(_min) }}. Tax is added at checkout
+      where applicable. Top ups are non refundable and unused balance does
+      not expire.
+    </p>
+  </div>
+
+  {% if deficit_usd is not none %}
+    <div class="panel wallet-topup-gate-notice">
+      <div class="panel-body">
+        <p class="wallet-section-body">
+          <strong>Top up and run.</strong> Your job estimate exceeds your
+          current balance by
+          <strong>${{ '%.2f'|format(deficit_usd|float) }}</strong>. Add at
+          least that amount and we will pick up the job submission right
+          where you left off.
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Pick an amount</span>
+      {% if wallet %}
+        <span class="nav-link">Balance ${{ '%.2f'|format(wallet.balance_usd|float if wallet.balance_usd is not none else 0) }}</span>
+      {% endif %}
+    </div>
+    <div class="panel-body">
+      <form method="POST"
+            action="{{ topup_action_url or '/account/wallet/checkout' }}"
+            data-topup-route="/account/wallet/checkout"
+            class="wallet-topup-form"
+            id="wallet-topup-form">
+        {% if next_url %}
+          <input type="hidden" name="next" value="{{ next_url }}">
+        {% endif %}
+
+        <div class="wallet-topup-suggested" role="radiogroup" aria-label="Suggested top up amounts">
+          {% for amt in _suggested %}
+            <label class="wallet-topup-suggested-item">
+              <input type="radio"
+                     name="amount_preset"
+                     value="{{ amt.value }}"
+                     {% if amt.value == _default_amount %}checked{% endif %}
+                     data-amount="{{ amt.value }}">
+              <span class="wallet-topup-suggested-label">{{ amt.label }}</span>
+              <span class="wallet-topup-suggested-covers">{{ amt.covers }}</span>
+            </label>
+          {% endfor %}
+        </div>
+
+        <div class="field-group" style="margin-top: 1.25rem;">
+          <label for="amount_usd" class="field-label">Custom amount (USD)</label>
+          <div class="wallet-topup-custom">
+            <span class="wallet-topup-custom-prefix">$</span>
+            <input type="number"
+                   id="amount_usd"
+                   name="amount_usd"
+                   class="field-input"
+                   min="{{ '%.0f'|format(_min) }}"
+                   step="1"
+                   value="{{ '%.0f'|format(_default_amount) }}"
+                   required>
+          </div>
+          <div class="field-helper">
+            Minimum ${{ '%.0f'|format(_min) }}. We round to whole dollars at
+            checkout. You can run any combination of jobs against this
+            balance.
+          </div>
+        </div>
+
+        <div class="wallet-topup-cta-row">
+          <button type="submit" class="btn-primary submit-cta">
+            {% if next_url %}Top up and run{% else %}Continue to checkout{% endif %}
+          </button>
+          {% if next_url %}
+            <a href="{{ next_url }}" class="btn-secondary">Back to the form</a>
+          {% else %}
+            <a href="/account/wallet" class="btn-secondary">Cancel</a>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {# Auto reload settings. Placed below the manual flow so the path of
+     least resistance is a one-off top up; auto reload is opt in. #}
+  <div class="panel" id="auto-reload">
+    <div class="panel-header">
+      <span class="panel-title">Auto reload</span>
+      {% if wallet and wallet.auto_reload_enabled %}
+        <span class="panel-badge">On</span>
+      {% else %}
+        <span class="panel-badge">Off</span>
+      {% endif %}
+    </div>
+    <div class="panel-body">
+      <p class="wallet-section-body" style="margin-bottom: 1rem;">
+        Save a card and we will top up automatically when your balance drops
+        below a threshold you set. Limited to one charge per 24 hours plus a
+        monthly cap, so a runaway loop cannot drain your card.
+      </p>
+
+      <form method="POST"
+            action="/account/wallet/auto-reload"
+            data-auto-reload-route="/account/wallet/auto-reload"
+            class="wallet-autoreload-form">
+        <div class="wallet-autoreload-grid">
+          <div class="field-group">
+            <label for="auto_reload_enabled" class="field-label">Enable auto reload</label>
+            <select id="auto_reload_enabled" name="auto_reload_enabled" class="field-input" style="max-width: 200px;">
+              <option value="off" {% if not (wallet and wallet.auto_reload_enabled) %}selected{% endif %}>Off</option>
+              <option value="on"  {% if wallet and wallet.auto_reload_enabled %}selected{% endif %}>On</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label for="auto_reload_threshold_usd" class="field-label">Trigger below ($)</label>
+            <input type="number" id="auto_reload_threshold_usd" name="auto_reload_threshold_usd"
+                   class="field-input" min="5" step="1" style="max-width: 200px;"
+                   value="{{ '%.0f'|format(wallet.auto_reload_threshold_usd|float if wallet and wallet.auto_reload_threshold_usd is not none else 10) }}">
+            <div class="field-helper">When balance drops below this, we charge.</div>
+          </div>
+          <div class="field-group">
+            <label for="auto_reload_amount_usd" class="field-label">Reload amount ($)</label>
+            <input type="number" id="auto_reload_amount_usd" name="auto_reload_amount_usd"
+                   class="field-input" min="{{ '%.0f'|format(_min) }}" step="1" style="max-width: 200px;"
+                   value="{{ '%.0f'|format(wallet.auto_reload_amount_usd|float if wallet and wallet.auto_reload_amount_usd is not none else 50) }}">
+            <div class="field-helper">How much we add per auto reload.</div>
+          </div>
+          <div class="field-group">
+            <label for="auto_reload_monthly_cap_usd" class="field-label">Monthly cap ($)</label>
+            <input type="number" id="auto_reload_monthly_cap_usd" name="auto_reload_monthly_cap_usd"
+                   class="field-input" min="100" step="50" style="max-width: 200px;"
+                   value="{{ '%.0f'|format(wallet.auto_reload_monthly_cap_usd|float if wallet and wallet.auto_reload_monthly_cap_usd is not none else 1000) }}">
+            <div class="field-helper">Hard ceiling on auto reload per calendar month.</div>
+          </div>
+        </div>
+        <div style="margin-top: 1rem;">
+          <button type="submit" class="btn-secondary">Save auto reload settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {# Sub explainer for the new user landing on /topup #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">What does this cost in practice?</span>
+      <a href="/pricing" class="nav-link">Full pricing &rarr;</a>
+    </div>
+    <div class="panel-body">
+      <table class="wallet-cost-table">
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th class="wallet-cost-table-time">Typical compute time</th>
+            <th class="wallet-cost-table-cost">Cost per run</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Epitope Scout</td><td>30 seconds</td><td>under $0.10</td></tr>
+          <tr><td>ProteinMPNN</td><td>1 minute (L4)</td><td>around $0.05</td></tr>
+          <tr><td>AlphaFold 2 (single fold)</td><td>5 minutes (A100)</td><td>around $0.50</td></tr>
+          <tr><td>ColabFold (MSA plus fold)</td><td>8 minutes (A100)</td><td>around $0.80</td></tr>
+          <tr><td>RFdiffusion pilot</td><td>20 minutes (A100)</td><td>around $1.60</td></tr>
+          <tr><td>BindCraft pilot</td><td>60 minutes (A100)</td><td>around $4.40</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var form = document.getElementById('wallet-topup-form');
+      if (!form) return;
+      var custom = form.querySelector('input[name="amount_usd"]');
+      var radios = form.querySelectorAll('input[name="amount_preset"]');
+      function sync(r) {
+        if (custom && r && r.dataset.amount) {
+          custom.value = r.dataset.amount;
+        }
+      }
+      radios.forEach(function (r) {
+        r.addEventListener('change', function () { sync(r); });
+      });
+      if (custom) {
+        custom.addEventListener('input', function () {
+          radios.forEach(function (r) { r.checked = false; });
+        });
+      }
+    })();
+  </script>
+
+{% endblock %}

@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+
+{# Wallet overview page. Mirrors the account dashboard pattern.
+
+   Expected context (provided by Agent E's route):
+     wallet                dict with balance_usd, daily_spend_cap_usd,
+                           auto_reload_enabled, auto_reload_threshold_usd,
+                           auto_reload_amount_usd, auto_reload_monthly_cap_usd,
+                           wallet_frozen, spent_today_usd, spent_30d_usd
+     recent_transactions   list of ledger rows (subset; see transactions.html
+                           for the full history view). Each row has keys:
+                             kind, amount_usd, balance_after_usd, created_at,
+                             tool_slug (optional), job_id (optional),
+                             note (optional)
+     user_email            session.user_email
+#}
+
+{% block title %}Wallet — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Wallet</h1>
+    <p class="subtitle">
+      Your USD balance funds every job on Ranomics Tools. Top up in any amount
+      from $20, run jobs, see the cost. No subscriptions, no seats, no tiers.
+    </p>
+  </div>
+
+  {% if request.args.get('topup_success') %}
+    <div class="success-box" style="margin-bottom: 1rem;">
+      Top up confirmed. Your balance has been updated.
+    </div>
+  {% endif %}
+
+  {% if request.args.get('topup_cancelled') %}
+    <div class="error-box" style="margin-bottom: 1rem;">
+      Checkout cancelled. Your wallet balance was not changed.
+    </div>
+  {% endif %}
+
+  {% if wallet and wallet.wallet_frozen %}
+    <div class="error-box" style="margin-bottom: 1rem;">
+      <strong>Wallet frozen.</strong> A dispute was opened on a recent payment.
+      New jobs and top ups are paused until the dispute is resolved. Reply to
+      leo@ranomics.com so we can sort it out.
+    </div>
+  {% endif %}
+
+  {# Balance + primary actions #}
+  <div class="panel wallet-balance-panel">
+    <div class="panel-body">
+      <div class="wallet-balance-row">
+        <div class="wallet-balance-headline">
+          <span class="wallet-balance-label">Current balance</span>
+          <span class="wallet-balance-value">${{ '%.2f'|format(wallet.balance_usd|float if wallet and wallet.balance_usd is not none else 0) }}</span>
+          {% if wallet and wallet.spent_30d_usd is not none %}
+            <span class="wallet-balance-sub">
+              ${{ '%.2f'|format(wallet.spent_30d_usd|float) }} spent in the last 30 days
+            </span>
+          {% endif %}
+        </div>
+        <div class="wallet-balance-actions">
+          <a href="{{ url_for('wallet_topup') if 'wallet_topup' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/topup' }}"
+             class="btn-primary"
+             data-topup-route="/account/wallet/topup">
+            Top up
+          </a>
+          <a href="{{ url_for('wallet_transactions') if 'wallet_transactions' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/transactions' }}"
+             class="btn-secondary">
+            Full history
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# Snapshot grid — three quick stats #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Today and this month</span>
+    </div>
+    <div class="panel-body">
+      <div class="wallet-stats-grid">
+        <div class="wallet-stat">
+          <span class="wallet-stat-label">Spent today</span>
+          <span class="wallet-stat-value">${{ '%.2f'|format(wallet.spent_today_usd|float if wallet and wallet.spent_today_usd is not none else 0) }}</span>
+          {% if wallet and wallet.daily_spend_cap_usd is not none %}
+            <span class="wallet-stat-foot">Daily cap ${{ '%.0f'|format(wallet.daily_spend_cap_usd|float) }}</span>
+          {% endif %}
+        </div>
+        <div class="wallet-stat">
+          <span class="wallet-stat-label">Auto reload</span>
+          {% if wallet and wallet.auto_reload_enabled %}
+            <span class="wallet-stat-value wallet-stat-value-on">On</span>
+            <span class="wallet-stat-foot">
+              Adds ${{ '%.0f'|format(wallet.auto_reload_amount_usd|float if wallet.auto_reload_amount_usd is not none else 50) }}
+              when balance drops below ${{ '%.0f'|format(wallet.auto_reload_threshold_usd|float if wallet.auto_reload_threshold_usd is not none else 10) }}
+            </span>
+          {% else %}
+            <span class="wallet-stat-value wallet-stat-value-off">Off</span>
+            <span class="wallet-stat-foot">No automatic charges</span>
+          {% endif %}
+        </div>
+        <div class="wallet-stat">
+          <span class="wallet-stat-label">Signup credit used</span>
+          {% if wallet and wallet.signup_credit_used_usd is not none %}
+            <span class="wallet-stat-value">${{ '%.2f'|format(wallet.signup_credit_used_usd|float) }}</span>
+            <span class="wallet-stat-foot">of $5.00 trial credit</span>
+          {% else %}
+            <span class="wallet-stat-value">$5.00</span>
+            <span class="wallet-stat-foot">trial credit available</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# Auto reload settings preview. Real form lives on the topup page so this
+     stays a quick summary. #}
+  {% if wallet %}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Auto reload</span>
+        <a href="/account/wallet/topup#auto-reload" class="nav-link">Adjust settings &rarr;</a>
+      </div>
+      <div class="panel-body">
+        {% if wallet.auto_reload_enabled %}
+          <p class="wallet-section-body">
+            Auto reload is on. When your balance drops below
+            <strong>${{ '%.2f'|format(wallet.auto_reload_threshold_usd|float if wallet.auto_reload_threshold_usd is not none else 10) }}</strong>
+            we charge your saved card
+            <strong>${{ '%.2f'|format(wallet.auto_reload_amount_usd|float if wallet.auto_reload_amount_usd is not none else 50) }}</strong>
+            and credit your wallet. Limited to one auto reload per 24 hours and
+            <strong>${{ '%.0f'|format(wallet.auto_reload_monthly_cap_usd|float if wallet.auto_reload_monthly_cap_usd is not none else 1000) }}</strong>
+            per calendar month.
+          </p>
+        {% else %}
+          <p class="wallet-section-body">
+            Auto reload is off. Your balance only changes when a job settles or
+            when you manually top up. Enable auto reload on the top up page if
+            you want to keep long campaigns running without checking the
+            balance manually.
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {# Recent activity preview #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Recent activity</span>
+      <a href="/account/wallet/transactions" class="nav-link">View all &rarr;</a>
+    </div>
+    <div class="panel-body">
+      {% if recent_transactions and recent_transactions|length > 0 %}
+        <table class="wallet-tx-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Kind</th>
+              <th>Detail</th>
+              <th class="wallet-tx-amount">Amount</th>
+              <th class="wallet-tx-amount">Balance after</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tx in recent_transactions %}
+              <tr>
+                <td class="wallet-tx-when">
+                  {% if tx.created_at %}
+                    {% if tx.created_at is string %}
+                      {{ tx.created_at[:16].replace('T', ' ') }}
+                    {% else %}
+                      {{ tx.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% endif %}
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="wallet-tx-kind wallet-tx-kind-{{ tx.kind }}">{{ tx.kind|replace('_', ' ') }}</span>
+                </td>
+                <td class="wallet-tx-detail">
+                  {% if tx.tool_slug %}
+                    <span class="wallet-tx-tool">{{ tx.tool_slug }}</span>
+                  {% endif %}
+                  {% if tx.note %}
+                    <span class="wallet-tx-note">{{ tx.note }}</span>
+                  {% endif %}
+                  {% if tx.job_id %}
+                    <a href="/jobs/{{ tx.job_id }}" class="wallet-tx-job-link">{{ tx.job_id[:8] }}</a>
+                  {% endif %}
+                </td>
+                <td class="wallet-tx-amount wallet-tx-amount-{{ 'pos' if (tx.amount_usd|float) > 0 else 'neg' }}">
+                  {% if (tx.amount_usd|float) > 0 %}+{% endif %}${{ '%.2f'|format(tx.amount_usd|float) }}
+                </td>
+                <td class="wallet-tx-amount">
+                  {% if tx.balance_after_usd is not none %}
+                    ${{ '%.2f'|format(tx.balance_after_usd|float) }}
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p class="wallet-section-body">
+          No activity yet. Sign up credit lands here first, then every top up
+          and every job appears as a ledger entry.
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Funnel callout for high spenders #}
+  {% if wallet and (wallet.spent_30d_usd|float if wallet.spent_30d_usd is not none else 0) >= 1000 %}
+    <div class="panel wallet-pilot-callout">
+      <div class="panel-header">
+        <span class="panel-title">Considering a Binder Pilot?</span>
+      </div>
+      <div class="panel-body">
+        <p class="wallet-section-body">
+          You have spent over $1,000 on self serve compute in the last 30 days.
+          At sustained spend above that level, a fixed scope Binder Pilot
+          engagement is usually more cost effective and removes the operational
+          overhead. Defined deliverable, optional wet lab handoff, single point
+          of contact.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary">
+            See the Binder Pilot program
+          </a>
+          <a href="/pricing" class="btn-secondary" style="margin-left: 0.5rem;">
+            How wallet billing works
+          </a>
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+{% endblock %}

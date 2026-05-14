@@ -1,0 +1,629 @@
+/* ==========================================================================
+   Wallet UI — pages, partials, and form gates.
+   Loaded after style.css from base.html; uses the same design tokens.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Wallet overview + transactions — page level
+   -------------------------------------------------------------------------- */
+.wallet-balance-panel {
+  border-left: 3px solid var(--accent);
+}
+
+.wallet-balance-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.wallet-balance-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.wallet-balance-label {
+  font-family: var(--font-body);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
+}
+.wallet-balance-value {
+  font-family: var(--font-display);
+  font-size: clamp(2.25rem, 4vw, 3rem);
+  font-weight: 500;
+  color: var(--warm-white);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.wallet-balance-sub {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-top: 0.45rem;
+}
+
+.wallet-balance-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* Snapshot stats grid */
+.wallet-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+.wallet-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.85rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.wallet-stat-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+.wallet-stat-value {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  color: var(--warm-white);
+}
+.wallet-stat-value-on { color: var(--accent-text); }
+.wallet-stat-value-off { color: var(--text-secondary); }
+.wallet-stat-foot {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.wallet-section-body {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  max-width: 64ch;
+}
+
+.wallet-pilot-callout {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(43, 158, 126, 0.05) 100%);
+}
+
+/* --------------------------------------------------------------------------
+   Transaction table
+   -------------------------------------------------------------------------- */
+.wallet-tx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.wallet-tx-table th,
+.wallet-tx-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+.wallet-tx-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+}
+.wallet-tx-table tbody tr:hover {
+  background: rgba(24, 40, 65, 0.4);
+}
+.wallet-tx-when {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-family: var(--font-mono);
+}
+.wallet-tx-amount {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+.wallet-tx-amount-pos { color: var(--accent-text); }
+.wallet-tx-amount-neg { color: var(--warm-cream); }
+.wallet-tx-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.wallet-tx-tool {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+.wallet-tx-note {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+.wallet-tx-job-link,
+.wallet-tx-stripe {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-tertiary);
+}
+.wallet-tx-job-link:hover { color: var(--accent-text); }
+
+/* Kind chips */
+.wallet-tx-kind {
+  display: inline-block;
+  padding: 0.12rem 0.5rem;
+  border-radius: var(--radius-full);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.wallet-tx-kind-signup_credit,
+.wallet-tx-kind-topup,
+.wallet-tx-kind-auto_reload,
+.wallet-tx-kind-promo {
+  background: var(--accent-glow);
+  color: var(--accent-text);
+  border-color: rgba(43, 158, 126, 0.3);
+}
+.wallet-tx-kind-charge,
+.wallet-tx-kind-refund,
+.wallet-tx-kind-absorbed_variance {
+  background: rgba(196, 91, 83, 0.08);
+  color: var(--warm-cream);
+  border-color: rgba(196, 91, 83, 0.3);
+}
+.wallet-tx-kind-hold {
+  background: rgba(196, 154, 58, 0.08);
+  color: var(--warning);
+  border-color: rgba(196, 154, 58, 0.3);
+}
+.wallet-tx-kind-hold_release {
+  background: rgba(43, 158, 126, 0.06);
+  color: var(--accent-text);
+  border-color: rgba(43, 158, 126, 0.2);
+}
+.wallet-tx-kind-adjustment {
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+}
+
+.wallet-tx-filter-form {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.wallet-tx-filter-count {
+  font-size: 0.8rem;
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
+
+.wallet-tx-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.wallet-tx-pagination-page {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.wallet-tx-legend {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.5rem 1rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.wallet-tx-legend dt { align-self: start; }
+.wallet-tx-legend dd { color: var(--text-secondary); }
+
+/* --------------------------------------------------------------------------
+   Top up form page
+   -------------------------------------------------------------------------- */
+.wallet-topup-gate-notice {
+  border-left: 3px solid var(--warning);
+  background: rgba(196, 154, 58, 0.05);
+}
+
+.wallet-topup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wallet-topup-suggested {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.wallet-topup-suggested-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.wallet-topup-suggested-item:hover {
+  border-color: var(--accent-dim);
+}
+.wallet-topup-suggested-item input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.wallet-topup-suggested-item:has(input[type="radio"]:checked) {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, var(--bg-elevated) 0%, rgba(43, 158, 126, 0.06) 100%);
+}
+.wallet-topup-suggested-label {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.wallet-topup-suggested-covers {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.wallet-topup-custom {
+  display: flex;
+  align-items: stretch;
+  max-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+.wallet-topup-custom:focus-within {
+  border-color: var(--accent);
+}
+.wallet-topup-custom-prefix {
+  display: flex;
+  align-items: center;
+  padding: 0 0.85rem;
+  background: var(--bg-deep);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  border-right: 1px solid var(--border);
+}
+.wallet-topup-custom input.field-input {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  flex: 1;
+}
+
+.wallet-topup-cta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.wallet-autoreload-form {
+  display: flex;
+  flex-direction: column;
+}
+.wallet-autoreload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.wallet-cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+.wallet-cost-table th,
+.wallet-cost-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wallet-cost-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+.wallet-cost-table-time { color: var(--text-secondary); }
+.wallet-cost-table-cost {
+  text-align: right;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+   Moment 1 — Estimate panel on tool forms
+   -------------------------------------------------------------------------- */
+.wallet-estimate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.85rem 1rem;
+  margin: 1rem 0 0.85rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+.wallet-estimate-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.wallet-estimate-label {
+  min-width: 12rem;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+}
+.wallet-estimate-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  color: var(--warm-white);
+  font-weight: 500;
+}
+.wallet-estimate-value-neg { color: var(--warning); }
+.wallet-estimate-helper {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+.wallet-estimate-warning {
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  border-left: 3px solid var(--warning);
+  background: rgba(196, 154, 58, 0.08);
+  color: var(--warm-cream);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  border-radius: var(--radius-sm);
+}
+
+.wallet-estimate-block {
+  margin-top: 0.5rem;
+  padding: 0.85rem 1rem;
+  border-left: 3px solid var(--error);
+  background: var(--error-bg);
+  color: var(--warm-cream);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  border-radius: var(--radius-sm);
+}
+.wallet-estimate-block-ceiling {
+  border-left-color: var(--accent);
+  background: linear-gradient(180deg, var(--bg-elevated) 0%, rgba(43, 158, 126, 0.08) 100%);
+  color: var(--text-primary);
+}
+.wallet-estimate-pilot-link {
+  display: inline-block;
+  margin-left: 0.4rem;
+  color: var(--accent-text);
+}
+.wallet-estimate-pilot-cta {
+  display: inline-block;
+  margin-top: 0.75rem;
+}
+
+/* --------------------------------------------------------------------------
+   Moment 2 — Top up and run gate on tool forms
+   -------------------------------------------------------------------------- */
+.wallet-topup-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1.15rem 1.25rem;
+  margin: 1rem 0 0.5rem;
+  border: 1px solid rgba(196, 154, 58, 0.35);
+  border-left: 3px solid var(--warning);
+  background: rgba(196, 154, 58, 0.06);
+  border-radius: var(--radius-md);
+}
+.wallet-topup-gate[hidden] { display: none; }
+
+.wallet-topup-gate-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.wallet-topup-gate-title {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  color: var(--warm-white);
+  font-weight: 500;
+}
+.wallet-topup-gate-sub {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.wallet-topup-gate-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+.wallet-topup-gate-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.wallet-topup-gate-figure dt {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.wallet-topup-gate-figure dd {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  color: var(--warm-white);
+}
+.wallet-topup-gate-figure-deficit dd {
+  color: var(--warning);
+}
+
+.wallet-topup-gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+.wallet-topup-gate-helper {
+  font-size: 0.78rem;
+  color: var(--text-tertiary);
+}
+
+/* --------------------------------------------------------------------------
+   Pricing page — shared with marketing aesthetic
+   -------------------------------------------------------------------------- */
+.pricing-hero {
+  margin-top: 1.5rem;
+  margin-bottom: 2rem;
+}
+.pricing-hero-title {
+  font-size: clamp(2rem, 4vw, 2.75rem);
+  line-height: 1.1;
+  margin-bottom: 0.85rem;
+}
+.pricing-hero-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1.5rem;
+}
+
+.pricing-cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.pricing-cost-table th,
+.pricing-cost-table td {
+  padding: 0.7rem 0.85rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.pricing-cost-table th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+  background: var(--bg-elevated);
+}
+.pricing-cost-table-cost {
+  text-align: right;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pricing-amounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+.pricing-amount-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1.5rem 1.25rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color 0.15s, transform 0.15s;
+}
+.pricing-amount-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+}
+.pricing-amount-value {
+  font-family: var(--font-display);
+  font-size: 2.25rem;
+  font-weight: 500;
+  color: var(--warm-white);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.pricing-amount-covers {
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.pricing-pilot-cta {
+  background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(43, 158, 126, 0.05) 100%);
+  border-color: rgba(43, 158, 126, 0.3);
+}
+.pricing-pilot-cta-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — collapse the wide tables on phones
+   -------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .wallet-tx-table th,
+  .wallet-tx-table td {
+    padding: 0.45rem 0.5rem;
+    font-size: 0.82rem;
+  }
+  .wallet-balance-value {
+    font-size: 2rem;
+  }
+  .wallet-estimate-label {
+    min-width: 0;
+  }
+  .pricing-cost-table th,
+  .pricing-cost-table td {
+    padding: 0.55rem 0.55rem;
+    font-size: 0.82rem;
+  }
+}

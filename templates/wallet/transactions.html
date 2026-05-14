@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{# Wallet transaction history page. Lists every ledger row for the
+   current user with filters and pagination hooks.
+
+   Expected context (Agent E):
+     wallet               current wallet dict (for header balance)
+     transactions         list of ledger rows for the current page
+     filter_kind          optional kind filter (one of the wallet_tx_kind
+                          enum values, or null for all)
+     page                 1 based page number
+     page_size            usually 50
+     has_next             bool
+     has_prev             bool
+     total_count          optional total count
+
+   Ledger rows have:
+     id, kind, amount_usd, balance_after_usd, created_at,
+     tool_slug (optional), job_id (optional), parent_tx_id (optional),
+     note (optional), stripe_event_id (optional)
+#}
+
+{% block title %}Transaction history — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Transaction history</h1>
+    <p class="subtitle">
+      Every ledger entry: signup credit, top ups, holds, charges, releases.
+      The balance after column shows what you had right after each entry
+      cleared.
+    </p>
+  </div>
+
+  {# Header strip — balance + back link #}
+  <div class="panel wallet-balance-panel">
+    <div class="panel-body">
+      <div class="wallet-balance-row">
+        <div class="wallet-balance-headline">
+          <span class="wallet-balance-label">Current balance</span>
+          <span class="wallet-balance-value">${{ '%.2f'|format(wallet.balance_usd|float if wallet and wallet.balance_usd is not none else 0) }}</span>
+        </div>
+        <div class="wallet-balance-actions">
+          <a href="/account/wallet" class="btn-secondary">Wallet overview</a>
+          <a href="/account/wallet/topup" class="btn-primary">Top up</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# Filter bar. Submits via GET; route reads the query string. #}
+  <div class="panel">
+    <div class="panel-body">
+      <form method="GET" action="/account/wallet/transactions" class="wallet-tx-filter-form">
+        <label for="kind" class="field-label" style="margin-right: 0.5rem;">Filter by kind</label>
+        <select id="kind" name="kind" class="field-input" style="max-width: 220px;" onchange="this.form.submit()">
+          <option value="" {% if not filter_kind %}selected{% endif %}>All entries</option>
+          <option value="signup_credit"     {% if filter_kind == 'signup_credit' %}selected{% endif %}>Signup credit</option>
+          <option value="topup"             {% if filter_kind == 'topup' %}selected{% endif %}>Top ups</option>
+          <option value="auto_reload"       {% if filter_kind == 'auto_reload' %}selected{% endif %}>Auto reloads</option>
+          <option value="hold"              {% if filter_kind == 'hold' %}selected{% endif %}>Holds</option>
+          <option value="hold_release"      {% if filter_kind == 'hold_release' %}selected{% endif %}>Hold releases</option>
+          <option value="charge"            {% if filter_kind == 'charge' %}selected{% endif %}>Charges</option>
+          <option value="absorbed_variance" {% if filter_kind == 'absorbed_variance' %}selected{% endif %}>Absorbed variance</option>
+          <option value="promo"             {% if filter_kind == 'promo' %}selected{% endif %}>Promo credits</option>
+          <option value="adjustment"        {% if filter_kind == 'adjustment' %}selected{% endif %}>Adjustments</option>
+          <option value="refund"            {% if filter_kind == 'refund' %}selected{% endif %}>Refunds</option>
+        </select>
+        {% if total_count is not none %}
+          <span class="wallet-tx-filter-count">{{ total_count }} entries</span>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+
+  {# Main ledger table #}
+  <div class="panel">
+    <div class="panel-body">
+      {% if transactions and transactions|length > 0 %}
+        <table class="wallet-tx-table">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Kind</th>
+              <th>Detail</th>
+              <th class="wallet-tx-amount">Amount</th>
+              <th class="wallet-tx-amount">Balance after</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for tx in transactions %}
+              <tr>
+                <td class="wallet-tx-when">
+                  {% if tx.created_at %}
+                    {% if tx.created_at is string %}
+                      {{ tx.created_at[:16].replace('T', ' ') }}
+                    {% else %}
+                      {{ tx.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% endif %}
+                  {% endif %}
+                </td>
+                <td>
+                  <span class="wallet-tx-kind wallet-tx-kind-{{ tx.kind }}">{{ tx.kind|replace('_', ' ') }}</span>
+                </td>
+                <td class="wallet-tx-detail">
+                  {% if tx.tool_slug %}
+                    <span class="wallet-tx-tool">{{ tx.tool_slug }}</span>
+                  {% endif %}
+                  {% if tx.note %}
+                    <span class="wallet-tx-note">{{ tx.note }}</span>
+                  {% endif %}
+                  {% if tx.job_id %}
+                    <a href="/jobs/{{ tx.job_id }}" class="wallet-tx-job-link">job {{ tx.job_id[:8] }}</a>
+                  {% endif %}
+                  {% if tx.stripe_event_id %}
+                    <span class="wallet-tx-stripe">stripe {{ tx.stripe_event_id[:14] }}</span>
+                  {% endif %}
+                </td>
+                <td class="wallet-tx-amount wallet-tx-amount-{{ 'pos' if (tx.amount_usd|float) > 0 else 'neg' }}">
+                  {% if (tx.amount_usd|float) > 0 %}+{% endif %}${{ '%.2f'|format(tx.amount_usd|float) }}
+                </td>
+                <td class="wallet-tx-amount">
+                  {% if tx.balance_after_usd is not none %}
+                    ${{ '%.2f'|format(tx.balance_after_usd|float) }}
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        {# Pagination — page param drives the route. #}
+        {% if has_next or has_prev %}
+          <div class="wallet-tx-pagination">
+            {% if has_prev %}
+              <a class="btn-secondary" href="?{% if filter_kind %}kind={{ filter_kind }}&{% endif %}page={{ page - 1 }}">&larr; Newer</a>
+            {% endif %}
+            <span class="wallet-tx-pagination-page">Page {{ page or 1 }}</span>
+            {% if has_next %}
+              <a class="btn-secondary" href="?{% if filter_kind %}kind={{ filter_kind }}&{% endif %}page={{ (page or 1) + 1 }}">Older &rarr;</a>
+            {% endif %}
+          </div>
+        {% endif %}
+      {% else %}
+        <p class="wallet-section-body">
+          No transactions match this filter. New users start with one
+          signup credit entry and the rest of the ledger fills as you run
+          jobs or top up.
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+  {# Legend explaining the kinds for first time users. #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">What the kinds mean</span>
+    </div>
+    <div class="panel-body">
+      <dl class="wallet-tx-legend">
+        <dt><span class="wallet-tx-kind wallet-tx-kind-signup_credit">signup credit</span></dt>
+        <dd>One time $5 trial credit on first account creation.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-topup">topup</span></dt>
+        <dd>Manual top up via Stripe Checkout. Net of Stripe fees and tax.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-auto_reload">auto reload</span></dt>
+        <dd>Off session charge to your saved card when balance dropped below your threshold.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-hold">hold</span></dt>
+        <dd>Pre authorization at the estimated cost of a job. Frees up if the job is cheaper than expected.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-hold_release">hold release</span></dt>
+        <dd>The surplus from a hold being returned to your wallet after settlement.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-charge">charge</span></dt>
+        <dd>Final debit for compute used by a job. References the hold above.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-absorbed_variance">absorbed variance</span></dt>
+        <dd>Ranomics absorbed cost when actual exceeded the hold and your wallet could not cover it. Tracked for transparency, never debited.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-promo">promo</span></dt>
+        <dd>Manually granted credit (campaign, support gesture, partner offer).</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-adjustment">adjustment</span></dt>
+        <dd>Manual correction by Ranomics ops. Used rarely, always accompanied by a note.</dd>
+
+        <dt><span class="wallet-tx-kind wallet-tx-kind-refund">refund</span></dt>
+        <dd>Stripe refund issued. Reduces wallet balance by the refunded amount.</dd>
+      </dl>
+    </div>
+  </div>
+
+{% endblock %}

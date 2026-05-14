@@ -1,0 +1,270 @@
+{# Shared wallet UI partials for tool submit forms.
+
+   Usage in a form template:
+
+       {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+       ...
+       {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=wallet.balance_usd) }}
+       {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=wallet.balance_usd) }}
+       ...
+       {{ wallet_partials_script() }}
+
+   The two panels live next to each other above the submit button. Only one
+   is visible at a time. The script flips visibility based on the live
+   estimate returned by GET /api/wallet/estimate (Agent E).
+
+   The estimate endpoint is expected to accept:
+
+       GET /api/wallet/estimate?tool=<slug>&<form params>
+
+   and return JSON of the shape:
+
+       {
+         "estimate_usd":            "0.0500",
+         "balance_usd":             "12.3400",
+         "balance_after_usd":       "12.2900",
+         "deficit_usd":             "0.0000",       # max(estimate - balance, 0)
+         "rounded_topup_usd":       "20.00",        # ceil(deficit/5)*5, min 20
+         "scaled_hard_cap_usd":     "8.0000",       # per parameters
+         "soft_block":              false,          # >= 0.8 * scaled cap
+         "hard_block":              false,          # > scaled cap
+         "self_serve_block":        false,          # > $1000 ceiling
+         "confirm_band":            "none",         # one of: none, small, medium, large, ceiling
+         "wallet_frozen":           false
+       }
+
+   If the contract changes during Wave 3 wire up, only this file moves.
+#}
+
+{# ---------------- Moment 1 — Estimate panel ---------------- #}
+
+{% macro wallet_estimate_panel(tool_slug, balance_usd=None, endpoint=None) -%}
+  <div class="wallet-estimate-panel"
+       id="wallet-estimate-panel"
+       data-tool-slug="{{ tool_slug }}"
+       data-estimate-endpoint="{{ endpoint or '/api/wallet/estimate' }}"
+       data-initial-balance-usd="{{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}"
+       aria-live="polite">
+    <div class="wallet-estimate-row">
+      <span class="wallet-estimate-label">Estimated cost</span>
+      <span class="wallet-estimate-value" data-estimate-cost>
+        ${{ '%.2f'|format(0) }}
+      </span>
+      <span class="wallet-estimate-helper" title="Estimated from your parameters and historical compute time.">
+        based on parameters and historical compute time
+      </span>
+    </div>
+    <div class="wallet-estimate-row">
+      <span class="wallet-estimate-label">Your balance</span>
+      <span class="wallet-estimate-value" data-estimate-balance>
+        ${{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}
+      </span>
+    </div>
+    <div class="wallet-estimate-row">
+      <span class="wallet-estimate-label">Balance after this job</span>
+      <span class="wallet-estimate-value" data-estimate-balance-after>
+        ${{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}
+      </span>
+    </div>
+
+    {# Soft warning band — visible when estimate is near the scaled hard cap. #}
+    <div class="wallet-estimate-warning" data-estimate-soft-warning hidden>
+      This run is near the per job cost ceiling for this tool. If compute
+      drifts past <span data-estimate-cap></span> the job is killed to
+      protect you from a runaway loop.
+    </div>
+
+    {# Hard block — scaled per tool cap exceeded. #}
+    <div class="wallet-estimate-block" data-estimate-hard-block hidden>
+      <strong>Estimate exceeds the per job ceiling for this tool.</strong>
+      Reduce the scale parameter or run this as a Binder Pilot engagement.
+      <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="wallet-estimate-pilot-link">
+        Talk about a Pilot &rarr;
+      </a>
+    </div>
+
+    {# Self serve ceiling — $1,000 absolute cap on any single submit. #}
+    <div class="wallet-estimate-block wallet-estimate-block-ceiling" data-estimate-ceiling-block hidden>
+      <strong>This estimate exceeds the $1,000 self serve ceiling.</strong>
+      For runs at this scale, a Binder Pilot engagement is the right path.
+      Fixed scope, single round, optional wet lab handoff.
+      <a href="https://ranomics.com/ranomics-contact?service=binder-pilot"
+         target="_blank" rel="noopener noreferrer"
+         class="btn-primary wallet-estimate-pilot-cta">
+        Start a Pilot conversation
+      </a>
+    </div>
+  </div>
+{%- endmacro %}
+
+{# ---------------- Moment 2 — Top up and run gate ---------------- #}
+
+{% macro wallet_topup_gate(tool_slug, balance_usd=None, topup_route=None) -%}
+  <div class="wallet-topup-gate"
+       id="wallet-topup-gate"
+       data-tool-slug="{{ tool_slug }}"
+       data-topup-route="{{ topup_route or '/account/wallet/topup' }}"
+       hidden>
+    <div class="wallet-topup-gate-head">
+      <span class="wallet-topup-gate-title">Top up to run this job</span>
+      <span class="wallet-topup-gate-sub">
+        The estimated cost is more than your wallet balance. Top up the
+        difference and we will pick up right where you left off.
+      </span>
+    </div>
+    <dl class="wallet-topup-gate-figures">
+      <div class="wallet-topup-gate-figure">
+        <dt>Estimated cost</dt>
+        <dd data-gate-estimate>$0.00</dd>
+      </div>
+      <div class="wallet-topup-gate-figure">
+        <dt>Your balance</dt>
+        <dd data-gate-balance>$0.00</dd>
+      </div>
+      <div class="wallet-topup-gate-figure wallet-topup-gate-figure-deficit">
+        <dt>Deficit</dt>
+        <dd data-gate-deficit>$0.00</dd>
+      </div>
+    </dl>
+    <div class="wallet-topup-gate-actions">
+      {# This button submits the same form to the same submit handler with
+         a hidden flag so the route can redirect to Stripe Checkout pre
+         filled with the rounded deficit. Wave 3 may move the click handler
+         to an XHR call instead. The data-topup-route attribute is the
+         contract surface for that. #}
+      <button type="submit"
+              name="_action"
+              value="topup_and_run"
+              class="btn-primary wallet-topup-gate-submit"
+              data-gate-button>
+        Top up <span data-gate-rounded-amount>$20</span> and run
+      </button>
+      <span class="wallet-topup-gate-helper">
+        Minimum top up $20. Tax added at checkout where applicable.
+      </span>
+    </div>
+  </div>
+{%- endmacro %}
+
+{# ---------------- Estimate updater script ---------------- #}
+
+{% macro wallet_partials_script() -%}
+  <script>
+    (function () {
+      var panel = document.getElementById('wallet-estimate-panel');
+      var gate = document.getElementById('wallet-topup-gate');
+      if (!panel) return;
+      var form = panel.closest('form');
+      if (!form) return;
+
+      var endpoint = panel.dataset.estimateEndpoint || '/api/wallet/estimate';
+      var toolSlug = panel.dataset.toolSlug || '';
+
+      var costEl = panel.querySelector('[data-estimate-cost]');
+      var balanceEl = panel.querySelector('[data-estimate-balance]');
+      var balanceAfterEl = panel.querySelector('[data-estimate-balance-after]');
+      var softWarnEl = panel.querySelector('[data-estimate-soft-warning]');
+      var softCapEl = panel.querySelector('[data-estimate-cap]');
+      var hardBlockEl = panel.querySelector('[data-estimate-hard-block]');
+      var ceilingBlockEl = panel.querySelector('[data-estimate-ceiling-block]');
+
+      var gateEstimateEl = gate && gate.querySelector('[data-gate-estimate]');
+      var gateBalanceEl = gate && gate.querySelector('[data-gate-balance]');
+      var gateDeficitEl = gate && gate.querySelector('[data-gate-deficit]');
+      var gateRoundedEl = gate && gate.querySelector('[data-gate-rounded-amount]');
+      var gateButton = gate && gate.querySelector('[data-gate-button]');
+
+      var submitBtn = form.querySelector('[data-submit-cta], button[type="submit"]:not([data-gate-button])');
+
+      function fmt(v) {
+        var n = parseFloat(v);
+        if (!isFinite(n)) n = 0;
+        return '$' + n.toFixed(2);
+      }
+
+      function setHidden(el, hidden) {
+        if (!el) return;
+        if (hidden) { el.setAttribute('hidden', ''); }
+        else { el.removeAttribute('hidden'); }
+      }
+
+      function applyState(data) {
+        if (!data) return;
+        var estimate = parseFloat(data.estimate_usd || 0);
+        var balance = parseFloat(data.balance_usd || 0);
+        var balanceAfter = parseFloat(data.balance_after_usd);
+        if (!isFinite(balanceAfter)) balanceAfter = balance - estimate;
+        var deficit = parseFloat(data.deficit_usd || 0);
+        var rounded = parseFloat(data.rounded_topup_usd || 20);
+        var cap = parseFloat(data.scaled_hard_cap_usd || 0);
+
+        if (costEl) costEl.textContent = fmt(estimate);
+        if (balanceEl) balanceEl.textContent = fmt(balance);
+        if (balanceAfterEl) {
+          balanceAfterEl.textContent = fmt(balanceAfter);
+          balanceAfterEl.classList.toggle('wallet-estimate-value-neg', balanceAfter < 0);
+        }
+
+        var ceiling = !!data.self_serve_block;
+        var hard = !!data.hard_block;
+        var soft = !!data.soft_block && !hard && !ceiling;
+        setHidden(ceilingBlockEl, !ceiling);
+        setHidden(hardBlockEl, !hard);
+        setHidden(softWarnEl, !soft);
+        if (softCapEl && cap) softCapEl.textContent = fmt(cap);
+
+        var insufficient = deficit > 0 && !ceiling && !hard;
+        setHidden(gate, !insufficient);
+        if (insufficient) {
+          if (gateEstimateEl) gateEstimateEl.textContent = fmt(estimate);
+          if (gateBalanceEl) gateBalanceEl.textContent = fmt(balance);
+          if (gateDeficitEl) gateDeficitEl.textContent = fmt(deficit);
+          if (gateRoundedEl) gateRoundedEl.textContent = fmt(rounded);
+        }
+
+        if (submitBtn) {
+          var blocked = ceiling || hard;
+          submitBtn.disabled = blocked;
+          if (insufficient && !blocked) {
+            submitBtn.setAttribute('hidden', '');
+          } else {
+            submitBtn.removeAttribute('hidden');
+          }
+        }
+      }
+
+      function fetchEstimate() {
+        var params = new URLSearchParams();
+        params.set('tool', toolSlug);
+        var fd = new FormData(form);
+        fd.forEach(function (value, key) {
+          if (key === 'target_pdb' || key === 'csrf_token') return;
+          if (typeof value === 'string') params.set(key, value);
+        });
+        fetch(endpoint + '?' + params.toString(), {
+          method: 'GET',
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' },
+        }).then(function (resp) {
+          if (!resp.ok) return null;
+          return resp.json();
+        }).then(function (data) {
+          applyState(data);
+        }).catch(function () {
+          // Network error — leave the panel showing its last known state.
+        });
+      }
+
+      var debounceHandle = null;
+      function debouncedFetch() {
+        if (debounceHandle) clearTimeout(debounceHandle);
+        debounceHandle = setTimeout(fetchEstimate, 250);
+      }
+
+      form.addEventListener('input', debouncedFetch);
+      form.addEventListener('change', debouncedFetch);
+      // First paint.
+      fetchEstimate();
+    })();
+  </script>
+{%- endmacro %}

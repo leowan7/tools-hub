@@ -1,139 +1,286 @@
 {% extends "base.html" %}
 
-{% block title %}Pricing — Ranomics Tools{% endblock %}
+{% block title %}Pricing | Pay as you go AI protein design{% endblock %}
 
-{% block description %}Per-target Workspace pricing for tools.ranomics.com. Activate a target, run unlimited design pipelines on it for 30 days. $499 for the standard Workspace, $2,499 for the XL tier with 5× the compute budget. 7-day money-back on your first Workspace.{% endblock %}
+{% block description %}USD wallet billing for Ranomics Tools. Start with $5 of compute credit on signup, top up in any amount from $20, pay per second of compute. No subscriptions, no seats, no tiers.{% endblock %}
 
 {% block content %}
 
-  <section class="section-head" style="margin-top: 1.5rem; margin-bottom: 2rem;">
+  {# ─── Hero ─────────────────────────────────────────────────────── #}
+  <section class="section-head pricing-hero">
     <span class="section-eyebrow">Pricing</span>
-    <h1 style="font-size: clamp(2rem, 4vw, 2.75rem); line-height: 1.1;">
-      Activate your target. Iterate freely for 30&nbsp;days.
-    </h1>
+    <h1 class="pricing-hero-title">Pay for the compute you use</h1>
     <p class="section-lede">
-      You buy one Workspace per target. Every design pipeline — RFdiffusion,
-      BindCraft, RFantibody, BoltzGen, ProteinMPNN, AF2, ColabFold — runs
-      inside that Workspace against a single Modal compute budget. No
-      monthly subscription. No metered credits. No surprise bills.
+      Top up a USD wallet, run jobs, see the cost. New accounts start with
+      $5 of compute credit on signup. No subscriptions, no seats, no tiers,
+      no minimum monthly spend.
     </p>
-  </section>
-
-  <section class="section">
-    <div class="pricing-grid">
-
-      {# ─── Free Scout ──────────────────────────────────────────────── #}
-      <article class="price-card">
-        <div>
-          <span class="price-tier-name">Free Scout</span>
-        </div>
-        <div class="price-amount">
-          <span class="price-amount-value">$0</span>
-          <span class="price-amount-unit">forever</span>
-        </div>
-        <p class="price-lede">
-          Score a target's feasibility before you commit to designing on it.
-        </p>
-        <ul class="price-features">
-          <li>Unlimited Epitope Scout, Developability Scout, Library Planner</li>
-          <li>View sample reports from validated Workspace runs</li>
-          <li>Pre-flight check for any target you're considering</li>
-          <li>Email support — reply from Leo, not a ticket bot</li>
-        </ul>
-        <div class="price-cta">
-          {% if session.get('user_email') %}
-            <a href="{{ url_for('index') }}" class="btn-secondary" style="width: 100%; justify-content: center;">You're signed in</a>
-          {% else %}
-            <a href="{{ url_for('signup') }}" class="btn-primary" style="width: 100%; justify-content: center;">Sign up free</a>
-          {% endif %}
-        </div>
-      </article>
-
-      {# ─── Target Workspace ────────────────────────────────────────── #}
-      <article class="price-card price-card-featured">
-        <span class="price-tier-badge">Most popular</span>
-        <div>
-          <span class="price-tier-name">Target Workspace</span>
-        </div>
-        <div class="price-amount">
-          <span class="price-amount-value">$499</span>
-          <span class="price-amount-unit">per target · 30 days</span>
-        </div>
-        <p class="price-lede">
-          One target, unlimited iterations across every design pipeline.
-        </p>
-        <ul class="price-features">
-          <li>All tools: RFdiffusion, BindCraft, RFantibody, BoltzGen, MPNN, AF2, ColabFold</li>
-          <li>~500–2,000 design candidates per Workspace</li>
-          <li>Iterate hotspots, parameters, batch sizes freely</li>
-          <li>Real ipTM, pLDDT, i_pAE, developability scores on every output</li>
-          <li>$100 Modal compute budget (cap visible in dashboard)</li>
-          <li><strong>7-day money-back</strong> on your first Workspace</li>
-        </ul>
-        <div class="price-cta">
-          {% if session.get('user_email') %}
-            <a href="/workspaces/new?sku=workspace_standard" class="btn-primary-lg" style="width: 100%; justify-content: center;">Activate a target</a>
-          {% else %}
-            <a href="{{ url_for('signup') }}?next=/workspaces/new?sku=workspace_standard" class="btn-primary-lg" style="width: 100%; justify-content: center;">Activate a target</a>
-          {% endif %}
-        </div>
-      </article>
-
-      {# ─── Target Workspace XL ─────────────────────────────────────── #}
-      <article class="price-card">
-        <div>
-          <span class="price-tier-name">Target Workspace XL</span>
-        </div>
-        <div class="price-amount">
-          <span class="price-amount-value">$2,499</span>
-          <span class="price-amount-unit">per target · 30 days</span>
-        </div>
-        <p class="price-lede">
-          Industrial-scale exploration on one target. 5× the compute budget.
-        </p>
-        <ul class="price-features">
-          <li>Everything in Target Workspace, plus:</li>
-          <li><strong>$500 Modal compute budget</strong> (~2,500–10,000+ designs)</li>
-          <li>Priority GPU queue (jumps Standard Workspaces)</li>
-          <li>30-min onboarding call with the team</li>
-          <li>Slack thread for the duration of the Workspace</li>
-        </ul>
-        <div class="price-cta">
-          {% if session.get('user_email') %}
-            <a href="/workspaces/new?sku=workspace_xl" class="btn-primary" style="width: 100%; justify-content: center;">Activate a target — XL</a>
-          {% else %}
-            <a href="{{ url_for('signup') }}?next=/workspaces/new?sku=workspace_xl" class="btn-primary" style="width: 100%; justify-content: center;">Activate a target — XL</a>
-          {% endif %}
-        </div>
-      </article>
-
+    <div class="pricing-hero-actions">
+      {% if session.get('user_email') %}
+        <a href="/account/wallet/topup" class="btn-primary-lg">Top up your wallet</a>
+        <a href="{{ url_for('index') }}" class="btn-secondary">Browse tools</a>
+      {% else %}
+        <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free with $5 of credit</a>
+        <a href="#how-billing-works" class="btn-secondary">How billing works</a>
+      {% endif %}
     </div>
+  </section>
 
-    <p class="price-footnote" style="margin-top: 1.5rem; text-align: center;">
-      One Workspace activates one target for 30&nbsp;days. Unused compute
-      does not roll over — but you can buy a new Workspace on the same
-      target if you need to keep iterating past the cap.
+  {# ─── How billing works ───────────────────────────────────────── #}
+  <section class="section" id="how-billing-works">
+    <div class="section-head">
+      <span class="section-eyebrow">How billing works</span>
+      <h2 class="section-title">A wallet, not a subscription</h2>
+      <p class="section-lede">
+        The model is the one you already use on Modal, OpenAI, and Anthropic.
+        You hold a USD balance, jobs debit it at the actual cost of the
+        compute they used, and you top up when it runs low. The whole
+        pricing surface is one number.
+      </p>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <h3 class="why-card-title">1. Sign up free</h3>
+        <p class="why-card-body">
+          Create an account at tools.ranomics.com. Get $5 of compute credit
+          immediately, plus unlimited zero cost smoke runs to verify any
+          tool works on your inputs.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">2. Top up in any amount</h3>
+        <p class="why-card-body">
+          Minimum $20. Suggested amounts at checkout are $20, $50, $200,
+          $500, and $2,500. No fixed packages. Tax is added at checkout
+          where applicable.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">3. Run jobs, see the cost</h3>
+        <p class="why-card-body">
+          Every tool form shows the estimated cost and your balance after
+          the job. Submit, run, see the actual debit on completion. If a
+          job ends up cheaper than estimated, the surplus returns to your
+          wallet automatically.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">4. Auto reload, optional</h3>
+        <p class="why-card-body">
+          Save a card to auto reload when balance drops below a threshold.
+          Default off. Limited to one auto reload per 24 hours plus a
+          monthly cap you set, so a runaway loop cannot drain your card.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── Example costs ───────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">What things cost</span>
+      <h2 class="section-title">Per run, at default parameters</h2>
+      <p class="section-lede">
+        Costs scale with the size of the run. A 5,000 design BindCraft
+        campaign on a real target lands around $440. A single ProteinMPNN
+        inference is closer to a nickel.
+      </p>
+    </div>
+    <div class="panel">
+      <div class="panel-body">
+        <table class="pricing-cost-table">
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Typical compute time</th>
+              <th class="pricing-cost-table-cost">Cost per run</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Epitope Scout</td>
+              <td>30 seconds</td>
+              <td class="pricing-cost-table-cost">under $0.10</td>
+            </tr>
+            <tr>
+              <td>ProteinMPNN</td>
+              <td>1 minute on L4</td>
+              <td class="pricing-cost-table-cost">around $0.05</td>
+            </tr>
+            <tr>
+              <td>AlphaFold 2 (single fold)</td>
+              <td>5 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $0.50</td>
+            </tr>
+            <tr>
+              <td>ColabFold (MSA plus fold)</td>
+              <td>8 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $0.80</td>
+            </tr>
+            <tr>
+              <td>RFdiffusion pilot</td>
+              <td>20 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $1.60</td>
+            </tr>
+            <tr>
+              <td>BindCraft pilot</td>
+              <td>60 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $4.40</td>
+            </tr>
+            <tr>
+              <td>RFAntibody pilot</td>
+              <td>60 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $4.40</td>
+            </tr>
+            <tr>
+              <td>BoltzGen pilot</td>
+              <td>30 minutes on A100</td>
+              <td class="pricing-cost-table-cost">around $3.20</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <p class="price-footnote" style="margin-top: 0.75rem;">
+      Every job displays an estimated cost before you submit. You confirm
+      or cancel. The estimate updates live as you change parameters.
     </p>
   </section>
 
-  {# ─── Wet-lab handoff reminder ─────────────────────────────────── #}
+  {# ─── Suggested top up amounts ────────────────────────────────── #}
   <section class="section">
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">Ready to put designs on cells?</span>
-      </div>
-      <div class="panel-body">
-        <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch;">
-          Every Workspace's results page hands off directly into a Ranomics
-          yeast display campaign. We review your shortlist, scope the
-          screen, and put binders on the surface of live cells. Wet-lab
-          pricing is separate and depends on target, library size, and
-          timeline.
+    <div class="section-head">
+      <span class="section-eyebrow">Suggested top up amounts</span>
+      <h2 class="section-title">Match the deposit to the scope of work</h2>
+    </div>
+    <div class="pricing-amounts-grid">
+      <article class="pricing-amount-card">
+        <span class="pricing-amount-value">$20</span>
+        <p class="pricing-amount-covers">
+          About 40 ProteinMPNN runs. Good for first exploration after the
+          trial credit.
         </p>
-        <div style="margin-top: 1rem;">
-          <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary">
-            See the Binder Pilot program
+      </article>
+      <article class="pricing-amount-card">
+        <span class="pricing-amount-value">$50</span>
+        <p class="pricing-amount-covers">
+          One small project. Tens of folds, a single round of MPNN sequence
+          design on a 100 backbone batch.
+        </p>
+      </article>
+      <article class="pricing-amount-card">
+        <span class="pricing-amount-value">$200</span>
+        <p class="pricing-amount-covers">
+          Multi target exploration. Run several design loops across two or
+          three targets.
+        </p>
+      </article>
+      <article class="pricing-amount-card">
+        <span class="pricing-amount-value">$500</span>
+        <p class="pricing-amount-covers">
+          One full pilot campaign. Thousands of RFdiffusion backbones,
+          sequence design, and structure validation on a single binder
+          target.
+        </p>
+      </article>
+      <article class="pricing-amount-card">
+        <span class="pricing-amount-value">$2,500</span>
+        <p class="pricing-amount-covers">
+          Production scale. At this level a Binder Pilot service engagement
+          is often more efficient. Talk to us.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── Billing safety ──────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Billing safety</span>
+      <h2 class="section-title">No surprise bills</h2>
+      <p class="section-lede">
+        The point of metered billing is transparency. The point of these
+        guardrails is making sure transparency does not turn into a runaway
+        charge while you are asleep.
+      </p>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <h3 class="why-card-title">Per tool hard caps</h3>
+        <p class="why-card-body">
+          Every tool has a maximum cost ceiling per job, scaled to the
+          parameters you pick. A BindCraft run is capped at $500 even at
+          full campaign scale. Above $1,000 estimated cost on a single job,
+          we route you to a Binder Pilot conversation.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Daily spend cap</h3>
+        <p class="why-card-body">
+          Your account has a daily spend cap, default $200, that you can
+          raise or remove. Jobs that would push you over the cap are blocked
+          until tomorrow.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Auto reload limits</h3>
+        <p class="why-card-body">
+          Auto reload, when enabled, is limited to one charge every 24 hours
+          plus a user set monthly cap (default $1,000). A compromised
+          account or runaway loop cannot drain your card.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Mid run safety</h3>
+        <p class="why-card-body">
+          Long running jobs report progress every 15 minutes. If the actual
+          cost runs more than 50 percent past the estimate, you get a
+          warning email. At 100 percent over the hold, the job is killed
+          to protect you from a bad input or an infinite loop.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Failed jobs</h3>
+        <p class="why-card-body">
+          You are charged for compute used even on failed jobs, because we
+          pay our compute provider for that time. Per tool hard caps limit
+          how much any single failure can cost.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">No refunds</h3>
+        <p class="why-card-body">
+          Top ups are final. Unused balance does not expire. Start with a
+          small top up to evaluate the platform if you are unsure.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── Pilot funnel CTA ────────────────────────────────────────── #}
+  <section class="section">
+    <div class="panel pricing-pilot-cta">
+      <div class="panel-body" style="text-align: center;">
+        <span class="section-eyebrow">When self serve does not fit</span>
+        <h2 class="section-title" style="margin-top: 0.5rem; margin-bottom: 0.85rem;">
+          Spending more than $1,000 a month? Talk to us about a Pilot.
+        </h2>
+        <p style="color: var(--text-secondary); font-size: 0.95rem; line-height: 1.6; max-width: 62ch; margin: 0 auto 1.25rem;">
+          At sustained spend above $1,000 a month, a fixed scope Binder
+          Pilot engagement is usually more cost effective and removes the
+          operational overhead. You get a defined deliverable, wet lab
+          handoff if you want it, and a single point of contact for the
+          campaign.
+        </p>
+        <div class="pricing-pilot-cta-actions">
+          <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary-lg">
+            See the Binder Pilot
           </a>
+          {% if not session.get('user_email') %}
+            <a href="{{ url_for('signup') }}" class="btn-secondary">Open the tools hub</a>
+          {% else %}
+            <a href="{{ url_for('index') }}" class="btn-secondary">Open the tools hub</a>
+          {% endif %}
         </div>
       </div>
     </div>
@@ -143,67 +290,59 @@
   <section class="section">
     <div class="section-head">
       <span class="section-eyebrow">Questions</span>
-      <h2 class="section-title">What a Workspace covers.</h2>
+      <h2 class="section-title">Pricing FAQ</h2>
     </div>
     <div class="why-grid">
       <article class="why-card">
-        <h3 class="why-card-title">What does a Workspace include?</h3>
+        <h3 class="why-card-title">How does Ranomics Tools billing work?</h3>
         <p class="why-card-body">
-          Activate one target PDB and run as many design jobs as you want
-          for 30 days, against a $100 (Standard) or $500 (XL) Modal compute
-          budget. All pipelines — RFdiffusion, BindCraft, RFantibody,
-          BoltzGen, MPNN, AF2, ColabFold — work on that target inside the
-          Workspace. Every result page shows the actual scores (ipTM,
-          pLDDT, i_pAE, developability) — no stubs.
+          You top up a USD wallet in any amount from $20. Each job debits
+          the actual cost of the compute it consumes. New accounts start
+          with $5 of compute credit. There is no subscription, no seat
+          license, and no fixed tier.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">What if I need more than 2,000 designs?</h3>
+        <h3 class="why-card-title">Can I be auto charged when my wallet runs low?</h3>
         <p class="why-card-body">
-          For most BindCraft / RFdiffusion campaigns, 500–2,000 in-silico
-          designs is more than enough — modern pipelines find nanomolar
-          binders from just 10–100 experimentally screened candidates
-          (Pacesa et al., Nature 2025). For industrial-scale sweeps with
-          10k+ designs, activate <strong>Workspace XL</strong> instead —
-          $500 Modal budget, priority GPU queue.
+          Yes. Auto reload is opt in and off by default. You set a balance
+          threshold and a reload amount. To protect against runaway billing,
+          auto reload is limited to one charge every 24 hours plus a
+          monthly cap you control.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">What if my target is hard?</h3>
+        <h3 class="why-card-title">What happens if a job fails?</h3>
         <p class="why-card-body">
-          Your <strong>first Workspace</strong> is covered by a 7-day
-          no-questions-asked money-back guarantee. Use Epitope Scout
-          (free) to score feasibility before you commit, and click the
-          refund button on the workspace dashboard within 7 days if the
-          output isn't what you needed.
+          You are charged for the compute the job consumed, even on failure.
+          Per tool hard caps limit how much any single job can cost in the
+          worst case. The hard cap also kills runs that drift far past the
+          estimate.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">Can I run multiple targets in one Workspace?</h3>
+        <h3 class="why-card-title">Are top ups refundable?</h3>
         <p class="why-card-body">
-          No — a Workspace is scoped to a single target so the compute
-          budget stays predictable. If you have several targets, activate
-          one Workspace per target. The Workspace dashboard tracks them
-          side-by-side.
+          No. Top ups are not refundable. Unused balance remains in your
+          wallet and does not expire. Start with a small top up if you want
+          to evaluate the platform.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">What happens after 30 days?</h3>
+        <h3 class="why-card-title">When does a Binder Pilot make more sense than self serve?</h3>
         <p class="why-card-body">
-          The Workspace expires and new submissions stop. All your finished
-          results and PDB downloads remain readable in your account — you
-          don't lose data. To keep iterating, activate a new Workspace on
-          the same target.
+          When a single job would exceed $1,000 of compute, or your monthly
+          spend exceeds $1,000 sustained. At that scale a fixed scope Pilot
+          engagement with wet lab handoff is usually more cost effective
+          and removes the operational overhead.
         </p>
       </article>
       <article class="why-card">
-        <h3 class="why-card-title">Can I run on my own GPUs?</h3>
+        <h3 class="why-card-title">What about Stripe fees and tax?</h3>
         <p class="why-card-body">
-          Not today. Every tool runs on Modal infrastructure we manage and
-          validate — that's the tradeoff for published audit logs and
-          predictable runtimes. For self-hosted workflows the underlying
-          models (RFdiffusion, BindCraft, RFantibody, BoltzGen, MPNN) are
-          all open source.
+          Stripe payment processing fees are absorbed by Ranomics. Tax is
+          added at checkout where applicable. Your wallet is credited with
+          the exact amount you topped up.
         </p>
       </article>
     </div>
