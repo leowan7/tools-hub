@@ -150,8 +150,8 @@ CREATE POLICY wallet_tx_self_read ON public.wallet_transactions
 CREATE OR REPLACE VIEW public.wallet_30d_spend
 WITH (security_invoker = on) AS
 SELECT user_id,
-       ABS(SUM(amount_usd)) FILTER (WHERE kind = 'charge')                                  AS spent_usd_30d,
-       ABS(SUM(amount_usd)) FILTER (WHERE kind = 'charge' AND tool_slug ILIKE '%bindcraft%') AS bindcraft_spent_usd_30d,
+       ABS(SUM(amount_usd) FILTER (WHERE kind = 'charge'))                                  AS spent_usd_30d,
+       ABS(SUM(amount_usd) FILTER (WHERE kind = 'charge' AND tool_slug ILIKE '%bindcraft%')) AS bindcraft_spent_usd_30d,
        COUNT(*) FILTER (WHERE kind = 'charge')                                              AS charges_30d,
        MAX(created_at) FILTER (WHERE kind = 'charge')                                       AS last_charge_at
 FROM public.wallet_transactions

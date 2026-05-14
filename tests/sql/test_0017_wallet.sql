@@ -73,11 +73,11 @@ SELECT user_c, 100.00 FROM _test_state
 ON CONFLICT (user_id) DO NOTHING;
 
 INSERT INTO public.wallet_transactions (user_id, kind, amount_usd, balance_after_usd, notes)
-SELECT user_a, 'signup_credit', 10.00, 10.00, 'test seed' FROM _test_state
+SELECT user_a, 'signup_credit'::public.wallet_tx_kind, 10.00, 10.00, 'test seed' FROM _test_state
 UNION ALL
-SELECT user_b, 'signup_credit',  2.00,  2.00, 'test seed' FROM _test_state
+SELECT user_b, 'signup_credit'::public.wallet_tx_kind,  2.00,  2.00, 'test seed' FROM _test_state
 UNION ALL
-SELECT user_c, 'signup_credit', 100.00, 100.00, 'test seed' FROM _test_state;
+SELECT user_c, 'signup_credit'::public.wallet_tx_kind, 100.00, 100.00, 'test seed' FROM _test_state;
 
 -- ---------------------------------------------------------------------------
 -- Test 1: schema is present
@@ -549,9 +549,13 @@ END $$;
 -- ---------------------------------------------------------------------------
 --
 -- The first-class invariant: for every user, SUM(amount_usd) over their
--- ledger rows equals user_wallets.balance_usd. The migration's hold and
--- settle functions update both halves atomically; this check catches any
--- regression in that pairing.
+-- balance-affecting ledger rows equals user_wallets.balance_usd. The
+-- migration's hold and settle functions update both halves atomically;
+-- this check catches any regression in that pairing.
+--
+-- absorbed_variance rows are excluded: they record cost the company eats
+-- when a job's actual exceeds what the wallet can cover. They are tracked
+-- in wallet_transactions for accounting but never move user balance.
 
 DO $$
 DECLARE
@@ -560,13 +564,13 @@ DECLARE
 BEGIN
     FOR bad_user IN
         SELECT w.user_id,
-               w.balance_usd                                  AS cached_balance,
-               COALESCE(SUM(t.amount_usd), 0)                 AS ledger_sum
+               w.balance_usd                                                                              AS cached_balance,
+               COALESCE(SUM(t.amount_usd) FILTER (WHERE t.kind <> 'absorbed_variance'), 0)                AS ledger_sum
           FROM public.user_wallets w
           LEFT JOIN public.wallet_transactions t
                  ON t.user_id = w.user_id
          GROUP BY w.user_id, w.balance_usd
-        HAVING w.balance_usd <> COALESCE(SUM(t.amount_usd), 0)
+        HAVING w.balance_usd <> COALESCE(SUM(t.amount_usd) FILTER (WHERE t.kind <> 'absorbed_variance'), 0)
     LOOP
         mismatch_count := mismatch_count + 1;
         RAISE WARNING 'test 12: user % cached_balance=% ledger_sum=%',
@@ -577,7 +581,7 @@ BEGIN
         RAISE EXCEPTION 'test 12: % wallet(s) drifted from ledger sum', mismatch_count;
     END IF;
 
-    RAISE NOTICE 'test 12: ledger sum equals user_wallets.balance_usd for every user';
+    RAISE NOTICE 'test 12: ledger sum equals user_wallets.balance_usd for every user (absorbed_variance excluded)';
 END $$;
 
 -- ---------------------------------------------------------------------------
