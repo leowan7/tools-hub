@@ -44,10 +44,12 @@ Required environment variables
 
     STRIPE_SECRET_KEY                Stripe API key (sk_test_ or sk_live_)
     STRIPE_WALLET_TOPUP_PRODUCT_ID   prod_... id for the wallet product
-    APP_BASE_URL                     base URL for success_url and cancel_url
+    PUBLIC_BASE_URL                  base URL for success_url and cancel_url
                                      (e.g. https://tools.ranomics.com).
-                                     Falls back to APP_URL and then to
-                                     localhost in dev.
+                                     Canonical name across the codebase.
+                                     Aliases honoured: APP_BASE_URL,
+                                     APP_URL. Falls back to localhost in
+                                     dev.
 
 Optional environment variables
 ------------------------------
@@ -130,13 +132,19 @@ def _default_max_topup_usd() -> Decimal:
 def _base_url() -> str:
     """Return the URL prefix for Checkout success and cancel redirects.
 
-    Prefers ``APP_BASE_URL`` (the new wallet pivot var name) and falls
-    back to ``APP_URL`` for the existing Railway environments. The fall
-    back to localhost is for local dev only and should never reach
-    production.
+    Reads in priority order:
+
+    1. ``PUBLIC_BASE_URL`` (canonical name across the codebase, used by
+       ``shared/email.py``, ``app.py``, and ``cron/daily_digest.py``).
+    2. ``APP_BASE_URL`` (legacy alias from the initial wallet pivot
+       draft).
+    3. ``APP_URL`` (older Railway env name).
+    4. ``http://localhost:5055`` (local dev fall back; never reaches
+       production).
     """
     candidate = (
-        os.environ.get("APP_BASE_URL", "").strip()
+        os.environ.get("PUBLIC_BASE_URL", "").strip()
+        or os.environ.get("APP_BASE_URL", "").strip()
         or os.environ.get("APP_URL", "").strip()
         or "http://localhost:5055"
     )
