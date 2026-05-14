@@ -2,9 +2,6 @@
    Consumes:
 
      session.user_email           - set by Flask login flow
-     active_workspaces_count      - injected by app.py context processor
-                                    (replaces ranomics_tier / ranomics_credits
-                                    badges from the legacy subscription model)
 #}
 <header class="navbar">
   <div class="navbar-inner">
@@ -22,18 +19,7 @@
       {% endif %}
       <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
       {% if session.get('user_email') %}
-        {% if active_workspaces_count and active_workspaces_count > 0 %}
-          <a href="/workspaces" class="nav-link-public nav-workspaces-link" title="Active Workspaces">
-            <span class="nav-workspaces-icon" aria-hidden="true">▣</span>
-            <span class="nav-workspaces-count">{{ active_workspaces_count }}</span>
-            <span class="nav-workspaces-label">{% if active_workspaces_count == 1 %}Workspace{% else %}Workspaces{% endif %}</span>
-          </a>
-        {% else %}
-          <a href="/pricing" class="nav-link-public" title="Activate a target">
-            <span style="color: var(--accent-text, #2B9E7E);">+ Activate target</span>
-          </a>
-        {% endif %}
-        <a href="{{ url_for('campaigns_dashboard') }}" class="nav-link-public">Campaigns</a>
+        <a href="{{ url_for('wallet_overview') }}" class="nav-link-public">Wallet</a>
         {% if is_staff %}
           <a href="/admin/users" class="nav-link-public"
              style="color: var(--accent-text, #2B9E7E); border: 1px solid var(--accent-text, #2B9E7E); padding: 0.2rem 0.6rem; border-radius: 4px;"
