@@ -1,0 +1,41 @@
+{# Mid run safety kill: cumulative cost above 2x estimate and tool cap.
+   Sender: shared.email.send_overrun_kill_email
+   Triggered after the Modal cancel completes.
+   Variables:
+     base_url        URL prefix (no trailing slash)
+     tool_label      human readable tool name (e.g. "BindCraft")
+     attempted_usd   cumulative compute cost at kill time (string)
+     cap_usd         per tool hard cap that triggered the kill (string)
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">
+    Your {{ tool_label }} run was stopped by the safety kill
+  </h2>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Your {{ tool_label }} job used
+    <strong>${{ attempted_usd }}</strong> of compute, above both twice the
+    original estimate and the <strong>${{ cap_usd }}</strong> per tool
+    safety cap. We stopped the job so a runaway loop could not drain your
+    wallet.
+  </p>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">
+    Your wallet was charged the per tool cap, not the actual usage. The
+    rest is absorbed by Ranomics. Reply to this email if you want to
+    discuss raising your cap or scoping the work as a Binder Pilot
+    engagement.
+  </p>
+
+  <p style="margin:1.5rem 0 0 0;line-height:1.55;">
+    The Ranomics team
+  </p>
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:12px;color:#999;margin:0;">
+    Ranomics Tools.
+    <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+</div>

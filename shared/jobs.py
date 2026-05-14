@@ -916,18 +916,17 @@ def _send_overrun_warning(
     job: "ToolJob", cumulative_cost, estimate
 ) -> None:  # noqa: ANN001
     """Send the 1.5x soft warning email; best effort, never raises."""
-    user_email = _resolve_email_for_user(job.user_id)
-    if not user_email:
+    # The sender resolves the email via the service role client; passing
+    # user_id keeps the call site decoupled from the auth.users lookup.
+    if not job.user_id:
         return
     try:
-        from shared.email import send_job_capped_email  # noqa: PLC0415
-        send_job_capped_email(
-            user_email=user_email,
+        from shared.email import send_overrun_warning_email  # noqa: PLC0415
+        send_overrun_warning_email(
+            user_id=job.user_id,
             tool_slug=job.tool,
             attempted_usd=cumulative_cost,
             cap_usd=estimate,
-            kind="overrun_warning",
-            job_id=job.id,
         )
     except Exception:
         logger.warning(
@@ -939,18 +938,15 @@ def _send_overrun_kill_notice(
     job: "ToolJob", cumulative_cost, hard_cap
 ) -> None:  # noqa: ANN001
     """Send the 2x safety kill notice; best effort, never raises."""
-    user_email = _resolve_email_for_user(job.user_id)
-    if not user_email:
+    if not job.user_id:
         return
     try:
-        from shared.email import send_job_capped_email  # noqa: PLC0415
-        send_job_capped_email(
-            user_email=user_email,
+        from shared.email import send_overrun_kill_email  # noqa: PLC0415
+        send_overrun_kill_email(
+            user_id=job.user_id,
             tool_slug=job.tool,
             attempted_usd=cumulative_cost,
             cap_usd=hard_cap,
-            kind="overrun_kill",
-            job_id=job.id,
         )
     except Exception:
         logger.warning(

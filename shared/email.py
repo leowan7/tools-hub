@@ -1244,6 +1244,87 @@ def send_job_capped_email(
     )
 
 
+def send_overrun_warning_email(
+    *,
+    user_id: str,
+    tool_slug: str = "",
+    attempted_usd=None,
+    cap_usd=None,
+    **_extra: Any,
+) -> bool:
+    """Mid run soft warning: cumulative cost exceeded 1.5x the estimate.
+
+    Trigger: ``mid_run_monitor_check`` in ``shared/jobs.py`` once per
+    job. The job keeps running but the user gets a heads up so a
+    runaway loop is visible before the hard kill threshold trips.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_overrun_warning_email: no email for user %s", user_id
+        )
+        return False
+    label = _label_for_tool(tool_slug)
+    base_url = _base_url()
+    subject = (
+        f"Your {label} run is running above estimate on Ranomics tools"
+    )
+    html = _render_template(
+        "send_overrun_warning.html",
+        base_url=base_url,
+        tool_label=label,
+        attempted_usd=_money(attempted_usd),
+        cap_usd=_money(cap_usd),
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"overrun_warning user={user_id} tool={tool_slug}",
+    )
+
+
+def send_overrun_kill_email(
+    *,
+    user_id: str,
+    tool_slug: str = "",
+    attempted_usd=None,
+    cap_usd=None,
+    **_extra: Any,
+) -> bool:
+    """Mid run safety kill: cumulative cost exceeded 2x estimate plus cap.
+
+    Trigger: ``mid_run_monitor_check`` decides to abort. Sent after the
+    Modal cancel is issued. The wallet hold is settled against the cap
+    and the user is notified so they can decide whether to retry with
+    different parameters.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_overrun_kill_email: no email for user %s", user_id
+        )
+        return False
+    label = _label_for_tool(tool_slug)
+    base_url = _base_url()
+    subject = (
+        f"Your {label} run was stopped by the safety kill on Ranomics tools"
+    )
+    html = _render_template(
+        "send_overrun_kill.html",
+        base_url=base_url,
+        tool_label=label,
+        attempted_usd=_money(attempted_usd),
+        cap_usd=_money(cap_usd),
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"overrun_kill user={user_id} tool={tool_slug}",
+    )
+
+
 def send_daily_cap_email(
     *,
     user_id: str,
