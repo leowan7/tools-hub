@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, prefill_script, workspace_hidden_inputs %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 
 {% block title %}{{ adapter.label }} - Ranomics Tools{% endblock %}
 
@@ -138,7 +139,7 @@
         <span class="panel-title">Fold inputs</span>
       </div>
       <div class="panel-body">
-        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
           <select name="preset" id="preset" required
@@ -180,6 +181,9 @@
             Standalone tier runs on your FASTA - single-chain monomer
             up to 400 aa. ~30 s on A100-40GB once the 3B model is warm.
           </div>
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
 
           <button type="submit" class="btn-primary">Submit run</button>
         </form>
@@ -227,4 +231,5 @@
     })();
   </script>
   {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
 {% endblock %}

@@ -4,6 +4,7 @@
 {% from "components/cost_preview.html" import cost_preview, cost_preview_script %}
 {% from "components/submit_cta.html" import submit_cta, submit_cta_script %}
 {% from "components/tool_form_layout.html" import tool_form_layout %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -53,7 +54,7 @@
         <span class="panel-title">Design inputs</span>
       </div>
       <div class="panel-body">
-        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <div class="field-group">
             <label for="preset" class="field-label">Preset</label>
@@ -132,6 +133,9 @@
             ~30-60 s on A10G-24GB.
           </div>
 
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.balance_usd if wallet is defined else None)) }}
+
           {{ submit_cta(label="Submit run") }}
         </form>
       </div>
@@ -171,6 +175,7 @@
   {{ cost_preview_script() }}
   {{ submit_cta_script(confirm_threshold=10) }}
   {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
 {% endblock %}
 
 {% block extra_scripts %}{% endblock %}

@@ -2322,6 +2322,12 @@ def create_app() -> Flask:
                     "token": f"handoff:{ho.id}",
                 }
 
+        # The wallet estimate partial reads balance_usd for first paint
+        # so the form lights up with the user's real balance even before
+        # the /api/wallet/estimate call returns. Falls back to 0 if the
+        # service client is misconfigured.
+        wallet_for_form = get_or_create_wallet(ctx.user_id) or {}
+
         return render_template(
             adapter.form_template,
             adapter=adapter,
@@ -2329,6 +2335,7 @@ def create_app() -> Flask:
             pre_fill=pre_fill,
             pdb_source=pdb_source,
             workspace_ctx=workspace_ctx,
+            wallet=wallet_for_form,
         )
 
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
