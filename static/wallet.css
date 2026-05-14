@@ -245,6 +245,16 @@
   background: rgba(196, 154, 58, 0.05);
 }
 
+.wallet-topup-success {
+  border-left: 3px solid var(--accent);
+  background: linear-gradient(180deg, var(--bg-elevated) 0%, rgba(43, 158, 126, 0.06) 100%);
+}
+
+.wallet-topup-error {
+  border-left: 3px solid var(--error);
+  background: var(--error-bg);
+}
+
 .wallet-topup-form {
   display: flex;
   flex-direction: column;

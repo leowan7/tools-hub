@@ -19,11 +19,84 @@
                              placeholder data-route until Wave 3 wire up
 #}
 
-{% block title %}Top up wallet: Ranomics Tools{% endblock %}
+{% block title %}{% if topup_success %}Top up complete: Ranomics Tools{% elif topup_error %}Top up error: Ranomics Tools{% else %}Top up wallet: Ranomics Tools{% endif %}{% endblock %}
 
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
+
+  {# Confirmation page after Stripe Checkout returns. The webhook credits
+     the wallet in the background; this page is the user visible receipt.
+     No form, no auto reload panel, no cost table; the user came here to
+     confirm a charge cleared. #}
+  {% if topup_success %}
+    <div class="hero">
+      <h1>Top up complete</h1>
+      <p class="subtitle">
+        Your payment cleared and your wallet has been credited.
+      </p>
+    </div>
+
+    <div class="panel wallet-topup-success">
+      <div class="panel-header">
+        <span class="panel-title">Payment received</span>
+        {% if wallet %}
+          <span class="nav-link">New balance ${{ '%.2f'|format(wallet.balance_usd|float if wallet.balance_usd is not none else 0) }}</span>
+        {% endif %}
+      </div>
+      <div class="panel-body">
+        <p class="wallet-section-body">
+          {% if stripe_session and stripe_session.amount_total %}
+            We charged
+            <strong>${{ '%.2f'|format((stripe_session.amount_total|int) / 100) }}</strong>
+            to your card. The wallet credit is the pre tax portion of that
+            charge. Tax, if any, was added on top at checkout.
+          {% else %}
+            Your wallet credit is being applied. If the balance does not
+            update in a few seconds, refresh the
+            <a href="/account/wallet">account page</a>.
+          {% endif %}
+        </p>
+        {% if stripe_session and stripe_session.id %}
+          <p class="field-helper" style="margin-top: 0.5rem;">
+            Receipt id: <code>{{ stripe_session.id }}</code>
+          </p>
+        {% endif %}
+        <div class="wallet-topup-cta-row" style="margin-top: 1.5rem;">
+          {% if return_tool_url %}
+            <a href="{{ return_tool_url }}" class="btn-primary">
+              Return to {{ return_tool|default('the tool') }}
+            </a>
+            <a href="/account/wallet" class="btn-secondary">View wallet</a>
+          {% else %}
+            <a href="/account/wallet" class="btn-primary">View wallet</a>
+            <a href="/tools" class="btn-secondary">Browse tools</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+  {% else %}
+
+  {# Error banner rendered above the normal top up form so the user can
+     retry. The form below is unchanged. #}
+  {% if topup_error %}
+    <div class="panel wallet-topup-error">
+      <div class="panel-header">
+        <span class="panel-title">Top up did not complete</span>
+      </div>
+      <div class="panel-body">
+        <p class="wallet-section-body">{{ topup_error }}</p>
+        {% if return_tool %}
+          <p class="field-helper" style="margin-top: 0.5rem;">
+            You came here from <strong>{{ return_tool }}</strong>. You can
+            retry the top up below, or
+            <a href="{{ url_for('tool_form', tool=return_tool) }}">go back to the tool form</a>.
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
 
   {% set _min = (min_topup_usd|float) if min_topup_usd is not none else 20 %}
   {% set _suggested = suggested_amounts or [
@@ -231,5 +304,7 @@
       }
     })();
   </script>
+
+  {% endif %}{# end topup_success / topup_error else branch #}
 
 {% endblock %}
