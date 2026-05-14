@@ -1,22 +1,40 @@
-"""Stripe webhook handler for tools-hub Workspace activations + refunds.
+"""Stripe webhook handler for the tools-hub USD wallet.
+
+Replaces the legacy Workspace activation handler. The wallet pivot
+narrows the surface to exactly four event types and routes each one
+through ``shared.wallet`` primitives.
+
+Subscribed events
+-----------------
+* ``checkout.session.completed``    a top up the user started via
+                                    Stripe Checkout. Routes to
+                                    ``shared.wallet.top_up_wallet`` with
+                                    ``kind=topup`` and dispatches the
+                                    top up confirmation email.
+* ``payment_intent.succeeded``      off session auto reload landed.
+                                    Routes to
+                                    ``shared.wallet.top_up_wallet`` with
+                                    ``kind=auto_reload`` and dispatches
+                                    the auto reload charged email.
+* ``payment_intent.payment_failed`` off session auto reload declined.
+                                    Flips ``auto_reload_enabled`` to
+                                    false on the wallet and dispatches
+                                    the auto reload failed email.
+* ``charge.dispute.created``        chargeback received on a top up.
+                                    Freezes the wallet via
+                                    ``shared.wallet.freeze_wallet_on_dispute``
+                                    so no new submissions can run.
 
 Responsibilities
 ----------------
-1. Verify ``Stripe-Signature`` via ``STRIPE_WEBHOOK_SECRET``.
-2. Idempotency gate on ``public.stripe_events.event_id`` (PRIMARY KEY).
-3. On ``checkout.session.completed``: read ``metadata.sku`` and
-   ``metadata.target_pdb_id`` and call
-   ``shared.workspaces.activate_workspace``.
-4. ``POST /webhooks/refund-request`` (auth required, called from the
-   workspace dashboard): verify first-Workspace + 7-day eligibility,
-   issue Stripe refund, flip workspace status to ``refunded``.
-
-History
--------
-Previously this handler flipped a monthly subscription tier and granted
-credits on ``checkout.session.completed`` / ``customer.subscription.*`` /
-``invoice.paid``. Replaced 2026-05-11 with one-time Workspace SKU
-activations.
+1. Verify ``Stripe-Signature`` against ``STRIPE_WEBHOOK_SECRET``.
+   Malformed signatures return 400.
+2. Idempotency gate on ``public.stripe_events.event_id`` (primary key,
+   already present from migration 0001). Replays return 200 so Stripe
+   stops retrying without touching the wallet a second time.
+3. Per event handler dispatch. Each handler is a small adapter that
+   pulls user_id and amount_usd out of the Stripe object metadata,
+   then calls the matching ``shared.wallet`` primitive.
 
 Registering
 -----------
@@ -30,30 +48,22 @@ from __future__ import annotations
 
 import logging
 import os
+from decimal import Decimal
 from typing import Any, Optional
 
-from flask import Flask, Response, jsonify, request, session
+from flask import Flask, Response, jsonify, request
 
-from billing.checkout import issue_workspace_refund
-from billing.tiers import lookup_sku
 from shared.credits import get_service_client
-from shared.workspaces import (
-    activate_workspace,
-    get_workspace,
-    request_refund,
-)
+from shared.wallet import freeze_wallet_on_dispute, top_up_wallet
 
 logger = logging.getLogger(__name__)
 
 
-# Only one-time-payment events. No subscription/invoice events — the
-# Workspace SKU is a one-shot purchase.
 HANDLED_EVENT_TYPES = {
     "checkout.session.completed",
-    # Stripe sends charge.refunded asynchronously after a refund is
-    # issued; we already flip workspace state when we issue the refund
-    # via /webhooks/refund-request, so this is informational only.
-    "charge.refunded",
+    "payment_intent.succeeded",
+    "payment_intent.payment_failed",
+    "charge.dispute.created",
 }
 
 
@@ -65,13 +75,18 @@ HANDLED_EVENT_TYPES = {
 def _verify_signature(payload: bytes, signature: str) -> Optional[dict]:
     """Verify the webhook signature and return the parsed event dict.
 
-    Returns None if verification fails or the Stripe SDK is unavailable.
+    Returns ``None`` if verification fails, the secret is missing, or
+    the Stripe SDK is unavailable. Callers must reject the request with
+    a 400 when this returns ``None``.
     """
     secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
     if not secret:
         logger.error(
-            "STRIPE_WEBHOOK_SECRET not set — rejecting all webhooks."
+            "STRIPE_WEBHOOK_SECRET not set; rejecting all webhooks."
         )
+        return None
+    if not signature:
+        logger.warning("Missing Stripe-Signature header.")
         return None
     try:
         import stripe  # noqa: PLC0415
@@ -94,17 +109,23 @@ def _verify_signature(payload: bytes, signature: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Idempotency + persistence
+# Idempotency persistence on stripe_events
 # ---------------------------------------------------------------------------
 
 
 def _insert_event_once(event: dict) -> bool:
-    """Insert the event into ``stripe_events``. Return False on duplicate.
+    """Insert the event id into ``stripe_events``. Return False on duplicate.
 
-    Uses the PRIMARY KEY on ``event_id`` as the idempotency gate.
+    The ``event_id`` primary key on ``stripe_events`` is the idempotency
+    key. A duplicate event id raises a unique constraint violation and
+    we treat that as a replay (return False so the route layer can short
+    circuit).
     """
     client = get_service_client()
     if client is None:
+        logger.error(
+            "stripe_events insert: service role client unavailable."
+        )
         return False
     row = {
         "event_id": event.get("id"),
@@ -115,8 +136,8 @@ def _insert_event_once(event: dict) -> bool:
         client.table("stripe_events").insert(row).execute()
         return True
     except Exception as exc:
-        # Could be unique-constraint violation (replay) or transient
-        # DB error. Log and treat as duplicate.
+        # Could be a unique constraint violation (replay) or a transient
+        # DB error. Either way, do not process again.
         logger.info(
             "stripe_events insert rejected (likely replay): %s", exc
         )
@@ -124,6 +145,7 @@ def _insert_event_once(event: dict) -> bool:
 
 
 def _mark_processed(event_id: str) -> None:
+    """Stamp ``processed_at`` on the stripe_events row. Best effort."""
     client = get_service_client()
     if client is None:
         return
@@ -138,214 +160,377 @@ def _mark_processed(event_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# User resolution
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-def _resolve_user_id_from_customer(
-    customer_id: Optional[str],
-    customer_email: Optional[str],
-) -> Optional[str]:
-    """Resolve a Supabase user_id from a Stripe customer id or email.
+def _amount_from_minor(value: Any) -> Decimal:
+    """Convert Stripe's integer minor units (cents) into a Decimal USD."""
+    try:
+        cents = int(value)
+    except (TypeError, ValueError):
+        return Decimal("0")
+    return (Decimal(cents) / Decimal("100")).quantize(Decimal("0.01"))
 
-    Preference order:
-      1. ``user_tier`` row matched on stripe_customer_id (legacy table —
-         still used to map repeat customers).
-      2. Supabase Auth lookup by email.
-    """
-    if not customer_id and not customer_email:
-        return None
-    client = get_service_client()
-    if client is None:
-        return None
-    if customer_id:
-        try:
-            response = (
-                client.table("user_tier")
-                .select("user_id")
-                .eq("stripe_customer_id", customer_id)
-                .limit(1)
-                .execute()
-            )
-            rows = getattr(response, "data", None) or []
-            if rows:
-                return rows[0].get("user_id")
-        except Exception:
-            logger.warning(
-                "Lookup by stripe_customer_id failed.", exc_info=True
-            )
-    if customer_email:
-        try:
-            page = client.auth.admin.list_users()
-            users = getattr(page, "users", None) or page
-            for user in users:
-                email = getattr(user, "email", None) or (
-                    user.get("email") if isinstance(user, dict) else None
-                )
-                if email and email.lower() == customer_email.lower():
-                    return getattr(user, "id", None) or user.get("id")
-        except Exception:
-            logger.warning(
-                "Lookup by Supabase email failed.", exc_info=True
-            )
+
+def _user_id_from_metadata(obj: dict) -> Optional[str]:
+    """Extract user_id from a Stripe object's metadata dict."""
+    metadata = obj.get("metadata") or {}
+    user_id = metadata.get("user_id")
+    if isinstance(user_id, str) and user_id.strip():
+        return user_id.strip()
     return None
 
 
-def _ensure_customer_mapping(
-    user_id: str, customer_id: Optional[str]
-) -> None:
-    """Stash stripe_customer_id on user_tier for repeat-purchase lookups.
+def _kind_from_metadata(obj: dict) -> Optional[str]:
+    """Extract the ``kind`` flag (topup, auto_reload, etc.) from metadata."""
+    metadata = obj.get("metadata") or {}
+    kind = metadata.get("kind")
+    if isinstance(kind, str) and kind.strip():
+        return kind.strip()
+    return None
 
-    Workspace SKUs are one-time payments but customers come back to buy
-    more. The user_tier table is reused as a customer ↔ Stripe map
-    (tier='free' for everyone; the Workspace state lives elsewhere).
+
+def _persist_payment_method_from_session(
+    session_obj: dict, payment_intent_id: Optional[str], user_id: str
+) -> None:
+    """When Checkout saved a payment method, stash it on user_wallets.
+
+    Only runs when the session metadata contains ``save_pm=true``. The
+    saved card enables future auto reload off session PaymentIntents.
+    Best effort: failures here do not block the credit.
     """
-    if not customer_id:
+    metadata = session_obj.get("metadata") or {}
+    if metadata.get("save_pm") != "true":
+        return
+    if not payment_intent_id:
+        return
+    try:
+        import stripe  # noqa: PLC0415
+        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+        pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+        payment_method = pi.get("payment_method")
+        customer_id = session_obj.get("customer")
+    except Exception:
+        logger.warning(
+            "Could not retrieve PaymentIntent %s for payment method capture.",
+            payment_intent_id, exc_info=True,
+        )
+        return
+    if not payment_method:
+        logger.info(
+            "PaymentIntent %s had no payment_method to persist.",
+            payment_intent_id,
+        )
         return
     client = get_service_client()
     if client is None:
         return
+    update_payload: dict[str, Any] = {
+        "stripe_payment_method_id": payment_method,
+    }
+    if customer_id:
+        update_payload["stripe_customer_id"] = customer_id
     try:
-        client.table("user_tier").upsert(
-            {
-                "user_id": user_id,
-                "tier": "free",  # legacy column; not used by Workspace flow
-                "stripe_customer_id": customer_id,
-            },
-            on_conflict="user_id",
-        ).execute()
+        client.table("user_wallets").update(
+            update_payload
+        ).eq("user_id", user_id).execute()
     except Exception:
         logger.warning(
-            "Could not stash stripe_customer_id for user %s",
+            "Could not persist payment method for user %s",
             user_id, exc_info=True,
         )
 
 
-# ---------------------------------------------------------------------------
-# Workspace activation handler
-# ---------------------------------------------------------------------------
+def _user_id_from_charge(charge_obj: dict) -> Optional[str]:
+    """Resolve user_id for a dispute by walking back to the charge then PI.
 
-
-def _apply_checkout_event(event: dict) -> dict:
-    """Activate a Workspace from a ``checkout.session.completed`` event.
-
-    Reads ``metadata.sku`` and ``metadata.target_pdb_id`` and delegates
-    to ``shared.workspaces.activate_workspace``. Returns a status dict
-    for logging.
+    Disputes carry a charge id. The charge's metadata usually inherits
+    from the PaymentIntent metadata, which our Checkout flow stamps with
+    ``user_id``. Falls back to retrieving the PI explicitly when the
+    charge metadata is bare.
     """
-    obj = event.get("data", {}).get("object", {}) or {}
-
-    # Defensive: only process paid sessions.
-    payment_status = obj.get("payment_status")
-    if payment_status not in (None, "paid", "no_payment_required"):
-        logger.info(
-            "checkout.session.completed with payment_status=%s — skipping",
-            payment_status,
-        )
-        return {"status": "skipped", "reason": f"payment_status_{payment_status}"}
-
-    metadata = obj.get("metadata") or {}
-    sku = (metadata.get("sku") or "").strip()
-    target_pdb_id = (metadata.get("target_pdb_id") or "").strip()
-    target_label = (metadata.get("target_label") or "").strip() or None
-
-    # Sanity-check the SKU is one we recognise. Don't trust the price-id
-    # alone — metadata is the contract with billing/checkout.py.
-    if not sku or sku not in {"workspace_standard", "workspace_xl"}:
-        # Fallback: try resolving via price id (single line item).
-        price_id = _line_item_price_id(obj)
-        sku_obj = lookup_sku(price_id) if price_id else None
-        if sku_obj is None:
-            logger.warning(
-                "checkout.session.completed missing/unknown sku metadata "
-                "(sku=%r price=%r event=%s)",
-                sku, price_id, event.get("id"),
-            )
-            return {"status": "skipped", "reason": "unknown_sku"}
-        sku = sku_obj.sku
-
-    if not target_pdb_id:
-        logger.warning(
-            "checkout.session.completed missing target_pdb_id metadata "
-            "(event=%s)", event.get("id"),
-        )
-        return {"status": "skipped", "reason": "missing_target_pdb_id"}
-
-    # Resolve user.
-    customer_id = obj.get("customer")
-    customer_email = (
-        obj.get("customer_email")
-        or (obj.get("customer_details") or {}).get("email")
-    )
-    user_id = _resolve_user_id_from_customer(customer_id, customer_email)
-    if not user_id:
-        logger.warning(
-            "Stripe event %s had no resolvable user (customer=%s email=%s)",
-            event.get("id"), customer_id, customer_email,
-        )
-        return {"status": "skipped", "reason": "user_not_found"}
-
-    _ensure_customer_mapping(user_id, customer_id)
-
-    # Stripe stores the PaymentIntent id on the session. We need it for
-    # later refund issuance.
-    payment_intent_id = obj.get("payment_intent")
-    if not isinstance(payment_intent_id, str) or not payment_intent_id:
-        # Stripe sometimes returns a PaymentIntent object dict; coerce.
-        if isinstance(payment_intent_id, dict):
-            payment_intent_id = payment_intent_id.get("id")
-        if not payment_intent_id:
-            logger.warning(
-                "checkout.session.completed missing payment_intent for event %s",
-                event.get("id"),
-            )
-
-    ws = activate_workspace(
-        user_id=user_id,
-        target_pdb_id=target_pdb_id,
-        sku=sku,
-        target_label=target_label,
-        stripe_payment_intent_id=payment_intent_id,
-        stripe_event_id=event.get("id"),
-    )
-    if ws is None:
-        return {"status": "error", "reason": "activation_failed"}
-    return {
-        "status": "ok",
-        "workspace_id": ws.id,
-        "sku": sku,
-        "target_pdb_id": target_pdb_id,
-    }
-
-
-def _line_item_price_id(obj: dict) -> Optional[str]:
-    """Best-effort: pull the single line-item price id from the session.
-
-    Stripe omits line_items from the default webhook payload (privacy); the
-    canonical pattern is to call ``stripe.checkout.Session.retrieve(
-    expand=["line_items"])``. We only need this as a fallback when the
-    metadata round-trip lost the sku, so do the retrieve here.
-    """
-    session_id = obj.get("id")
-    if not session_id:
+    user_id = _user_id_from_metadata(charge_obj)
+    if user_id:
+        return user_id
+    payment_intent_id = charge_obj.get("payment_intent")
+    if not payment_intent_id:
         return None
     try:
         import stripe  # noqa: PLC0415
         stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
-        full = stripe.checkout.Session.retrieve(
-            session_id, expand=["line_items"]
-        )
-        line_items = (full.get("line_items") or {}).get("data") or []
-        if line_items:
-            price = line_items[0].get("price") or {}
-            if price.get("id"):
-                return price["id"]
+        pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+        return _user_id_from_metadata(dict(pi))
     except Exception:
         logger.warning(
-            "Could not expand line_items for session %s.",
-            session_id, exc_info=True,
+            "Could not retrieve PaymentIntent %s while resolving dispute user.",
+            payment_intent_id, exc_info=True,
         )
-    return None
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Per event handlers
+# ---------------------------------------------------------------------------
+
+
+def _apply_checkout_session_completed(event: dict) -> dict:
+    """Top up that the user started via Stripe Checkout has landed.
+
+    Calls ``shared.wallet.top_up_wallet`` with the wallet's idempotent
+    credit path (the SQL function rejects a replay on stripe_event_id).
+    """
+    obj = event.get("data", {}).get("object", {}) or {}
+
+    payment_status = obj.get("payment_status")
+    if payment_status not in (None, "paid", "no_payment_required"):
+        logger.info(
+            "checkout.session.completed with payment_status=%s; skipping.",
+            payment_status,
+        )
+        return {"status": "skipped", "reason": f"payment_status_{payment_status}"}
+
+    kind = _kind_from_metadata(obj)
+    if kind != "topup":
+        # Workspace SKUs are archived. Any other kind is unknown and
+        # we deliberately ignore it so legacy stragglers do not bleed.
+        logger.info(
+            "checkout.session.completed kind=%r is not 'topup'; ignoring.",
+            kind,
+        )
+        return {"status": "ignored", "reason": "non_wallet_kind"}
+
+    user_id = _user_id_from_metadata(obj)
+    if not user_id:
+        logger.warning(
+            "checkout.session.completed event %s missing user_id metadata.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "missing_user_id"}
+
+    metadata = obj.get("metadata") or {}
+    amount_meta = metadata.get("amount_usd")
+    try:
+        amount_usd = Decimal(str(amount_meta)) if amount_meta is not None else None
+    except Exception:
+        amount_usd = None
+    if amount_usd is None or amount_usd <= 0:
+        # Fall back to amount_total (in cents).
+        amount_usd = _amount_from_minor(obj.get("amount_total"))
+    if amount_usd <= 0:
+        logger.warning(
+            "checkout.session.completed event %s had amount of zero or less.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "non_positive_amount"}
+
+    payment_intent_id = obj.get("payment_intent")
+    if isinstance(payment_intent_id, dict):
+        payment_intent_id = payment_intent_id.get("id")
+    if not isinstance(payment_intent_id, str) or not payment_intent_id:
+        # Top up still proceeds (event id alone is enough for idempotency
+        # on the credit), but warn for paper trail.
+        logger.warning(
+            "checkout.session.completed event %s missing payment_intent id.",
+            event.get("id"),
+        )
+        payment_intent_id = None
+
+    wallet = top_up_wallet(
+        user_id=user_id,
+        amount_usd=amount_usd,
+        stripe_payment_intent_id=payment_intent_id or "",
+        stripe_event_id=str(event.get("id")),
+        kind="topup",
+    )
+    if wallet is None:
+        return {"status": "error", "reason": "credit_wallet_failed"}
+
+    _persist_payment_method_from_session(obj, payment_intent_id, user_id)
+    _send_email_safe(
+        "send_topup_confirmation_email",
+        user_id=user_id,
+        amount_usd=amount_usd,
+    )
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "amount_usd": str(amount_usd),
+        "kind": "topup",
+    }
+
+
+def _apply_payment_intent_succeeded(event: dict) -> dict:
+    """Off session auto reload PaymentIntent landed.
+
+    Only credits when the PI metadata has ``kind=auto_reload``. Manual
+    top ups also produce a ``payment_intent.succeeded``, but those are
+    already credited via ``checkout.session.completed``; ignoring them
+    here keeps credit responsibility single sourced and avoids any risk
+    of a double credit if Stripe sends both events.
+    """
+    obj = event.get("data", {}).get("object", {}) or {}
+    kind = _kind_from_metadata(obj)
+    if kind != "auto_reload":
+        logger.info(
+            "payment_intent.succeeded kind=%r is not 'auto_reload'; ignoring.",
+            kind,
+        )
+        return {"status": "ignored", "reason": "non_auto_reload"}
+
+    user_id = _user_id_from_metadata(obj)
+    if not user_id:
+        logger.warning(
+            "payment_intent.succeeded event %s missing user_id metadata.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "missing_user_id"}
+
+    amount_usd = _amount_from_minor(obj.get("amount"))
+    if amount_usd <= 0:
+        logger.warning(
+            "payment_intent.succeeded event %s amount of zero or less.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "non_positive_amount"}
+
+    payment_intent_id = obj.get("id") or ""
+    wallet = top_up_wallet(
+        user_id=user_id,
+        amount_usd=amount_usd,
+        stripe_payment_intent_id=payment_intent_id,
+        stripe_event_id=str(event.get("id")),
+        kind="auto_reload",
+    )
+    if wallet is None:
+        return {"status": "error", "reason": "credit_wallet_failed"}
+
+    _send_email_safe(
+        "send_auto_reload_charged_email",
+        user_id=user_id,
+        amount_usd=amount_usd,
+    )
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "amount_usd": str(amount_usd),
+        "kind": "auto_reload",
+    }
+
+
+def _apply_payment_intent_failed(event: dict) -> dict:
+    """Off session auto reload PaymentIntent declined or 3DS failed.
+
+    Disables auto reload on the user's wallet so the system stops trying
+    until the user updates their card, and notifies the user.
+    """
+    obj = event.get("data", {}).get("object", {}) or {}
+    kind = _kind_from_metadata(obj)
+    if kind != "auto_reload":
+        logger.info(
+            "payment_intent.payment_failed kind=%r is not 'auto_reload'; ignoring.",
+            kind,
+        )
+        return {"status": "ignored", "reason": "non_auto_reload"}
+
+    user_id = _user_id_from_metadata(obj)
+    if not user_id:
+        logger.warning(
+            "payment_intent.payment_failed event %s missing user_id metadata.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "missing_user_id"}
+
+    reason = (
+        ((obj.get("last_payment_error") or {}).get("message"))
+        or "card_declined"
+    )
+
+    client = get_service_client()
+    if client is None:
+        logger.error(
+            "payment_intent.payment_failed: no service client to disable auto reload."
+        )
+        return {"status": "error", "reason": "missing_service_client"}
+    try:
+        client.table("user_wallets").update(
+            {"auto_reload_enabled": False}
+        ).eq("user_id", user_id).execute()
+    except Exception:
+        logger.error(
+            "payment_intent.payment_failed: could not disable auto reload for %s",
+            user_id, exc_info=True,
+        )
+        return {"status": "error", "reason": "disable_failed"}
+
+    _send_email_safe(
+        "send_auto_reload_failed_email",
+        user_id=user_id,
+        reason=reason,
+    )
+    return {"status": "ok", "user_id": user_id, "reason": reason}
+
+
+def _apply_charge_dispute_created(event: dict) -> dict:
+    """Chargeback received. Freeze the wallet so the user cannot drain it.
+
+    The dispute object carries a ``charge`` id. The charge inherits
+    metadata from the PaymentIntent, which our Checkout flow stamps
+    with ``user_id``. If the charge metadata is bare we retrieve the
+    PaymentIntent directly via the Stripe API.
+    """
+    dispute = event.get("data", {}).get("object", {}) or {}
+    dispute_id = str(dispute.get("id") or "")
+    if not dispute_id:
+        logger.warning(
+            "charge.dispute.created event %s missing dispute id.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "missing_dispute_id"}
+
+    charge_id = dispute.get("charge")
+    if isinstance(charge_id, dict):
+        charge_id = charge_id.get("id")
+    if not charge_id:
+        logger.warning(
+            "charge.dispute.created event %s missing charge id.",
+            event.get("id"),
+        )
+        return {"status": "skipped", "reason": "missing_charge_id"}
+
+    charge_obj: dict
+    try:
+        import stripe  # noqa: PLC0415
+        stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+        charge_obj = dict(stripe.Charge.retrieve(charge_id))
+    except Exception:
+        logger.error(
+            "charge.dispute.created: could not retrieve charge %s",
+            charge_id, exc_info=True,
+        )
+        return {"status": "error", "reason": "charge_retrieve_failed"}
+
+    user_id = _user_id_from_charge(charge_obj)
+    if not user_id:
+        logger.warning(
+            "charge.dispute.created event %s could not resolve user_id from charge %s.",
+            event.get("id"), charge_id,
+        )
+        return {"status": "skipped", "reason": "user_not_found"}
+
+    frozen = freeze_wallet_on_dispute(user_id=user_id, dispute_id=dispute_id)
+    if not frozen:
+        return {"status": "error", "reason": "freeze_failed"}
+    return {"status": "ok", "user_id": user_id, "dispute_id": dispute_id}
+
+
+# Mapping from Stripe event type to handler.
+_HANDLERS = {
+    "checkout.session.completed":    _apply_checkout_session_completed,
+    "payment_intent.succeeded":      _apply_payment_intent_succeeded,
+    "payment_intent.payment_failed": _apply_payment_intent_failed,
+    "charge.dispute.created":        _apply_charge_dispute_created,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -354,10 +539,10 @@ def _line_item_price_id(obj: dict) -> Optional[str]:
 
 
 def register_stripe_webhook(flask_app: Flask) -> None:
-    """Attach Stripe webhook + refund-request routes to the given app."""
+    """Attach the ``/webhooks/stripe`` route to ``flask_app``."""
 
     @flask_app.route("/webhooks/stripe", methods=["POST"])
-    def stripe_webhook() -> Any:  # noqa: ANN401 — Flask route return
+    def stripe_webhook() -> Any:  # noqa: ANN401
         signature = request.headers.get("Stripe-Signature", "")
         payload = request.get_data()
 
@@ -370,125 +555,79 @@ def register_stripe_webhook(flask_app: Flask) -> None:
         if not event_id or not event_type:
             return Response("malformed event", status=400)
 
-        # Idempotency gate. Duplicate event id returns 200 so Stripe stops
-        # retrying.
+        if event_type not in HANDLED_EVENT_TYPES:
+            # Stripe should never send anything else if the dashboard is
+            # configured correctly, but log + 200 so retries stop.
+            logger.info(
+                "Stripe event %s type=%s not in HANDLED_EVENT_TYPES; ignoring.",
+                event_id, event_type,
+            )
+            _observe(event_type, "ignored")
+            return jsonify({"status": "ignored", "event_id": event_id})
+
+        # Idempotency gate. A duplicate event id returns 200 with status
+        # 'already_processed' so Stripe stops retrying.
         if not _insert_event_once(event):
             _observe(event_type, "duplicate")
             return jsonify(
                 {"status": "already_processed", "event_id": event_id}
             )
 
-        result: dict = {"status": "ignored", "event_type": event_type}
-        outcome = "ignored"
-        if event_type == "checkout.session.completed":
-            try:
-                result = _apply_checkout_event(event)
-                outcome = str(result.get("status") or "ok")
-            except Exception:
-                logger.exception(
-                    "Error applying Stripe checkout event %s", event_id
-                )
-                result = {"status": "error"}
-                outcome = "error"
-        elif event_type == "charge.refunded":
-            # Informational only — we already flipped state on the
-            # refund-request endpoint when the refund was issued.
-            result = {"status": "noted", "event_type": event_type}
-            outcome = "noted"
+        handler = _HANDLERS[event_type]
+        try:
+            result = handler(event)
+            outcome = str(result.get("status") or "ok")
+        except Exception:
+            logger.exception(
+                "Error applying Stripe event %s type=%s",
+                event_id, event_type,
+            )
+            result = {"status": "error"}
+            outcome = "error"
 
         _mark_processed(event_id)
         _observe(event_type, outcome)
         result["event_id"] = event_id
+        result["event_type"] = event_type
         return jsonify(result)
 
-    @flask_app.route("/webhooks/refund-request", methods=["POST"])
-    def refund_request() -> Any:  # noqa: ANN401
-        """Customer-initiated refund button on the workspace dashboard.
 
-        Auth required (Flask session). Verifies eligibility, issues
-        Stripe refund, flips workspace status to ``refunded``.
+# ---------------------------------------------------------------------------
+# Side effect helpers (email + metrics)
+# ---------------------------------------------------------------------------
 
-        Body (form-encoded or JSON):
-            workspace_id: str  (required)
-        """
-        # Auth check.
-        user_email = session.get("user_email")
-        user_id = session.get("user_id")
-        if not user_email or not user_id:
-            return jsonify({"error": "not signed in"}), 401
 
-        # Extract workspace_id from JSON body or form.
-        workspace_id = None
-        if request.is_json:
-            body = request.get_json(silent=True) or {}
-            workspace_id = (body.get("workspace_id") or "").strip()
-        if not workspace_id:
-            workspace_id = (request.form.get("workspace_id") or "").strip()
-        if not workspace_id:
-            return jsonify({"error": "missing workspace_id"}), 400
+def _send_email_safe(func_name: str, **kwargs: Any) -> None:
+    """Lazy lookup + invoke an email sender; never raises.
 
-        ws = get_workspace(workspace_id)
-        if ws is None:
-            return jsonify({"error": "workspace not found"}), 404
-        if ws.user_id != user_id:
+    Email is best effort. Webhook bookkeeping must never break on a
+    transient Resend or template error. Agent G replaces the stub bodies
+    in ``shared.email`` while keeping signatures stable, so calls here
+    stay valid through that swap.
+    """
+    try:
+        from shared import email as email_module  # noqa: PLC0415
+
+        sender = getattr(email_module, func_name, None)
+        if sender is None:
             logger.warning(
-                "Refund attempted by non-owner: user=%s ws.user=%s ws=%s",
-                user_id, ws.user_id, workspace_id,
+                "webhook email helper missing: %s (kwargs=%r)",
+                func_name, kwargs,
             )
-            return jsonify({"error": "not authorized"}), 403
-        if not ws.refund_eligible_now:
-            return jsonify({
-                "error": "not refund eligible",
-                "reason": (
-                    "Refund window expired or this is not your first Workspace."
-                ),
-            }), 409
-        if ws.refunded_at is not None:
-            return jsonify({"error": "already refunded"}), 409
-        if not ws.stripe_payment_intent_id:
-            logger.error(
-                "Workspace %s has no payment_intent_id — cannot refund",
-                workspace_id,
-            )
-            return jsonify({
-                "error": "no payment intent on record",
-                "reason": "Contact support — your purchase wasn't fully recorded.",
-            }), 500
-
-        # Issue the Stripe refund.
-        refund_id, err = issue_workspace_refund(
-            workspace_id, ws.stripe_payment_intent_id
+            return
+        sender(**kwargs)
+    except Exception:  # pragma: no cover (email is best effort)
+        logger.warning(
+            "webhook email dispatch failed: %s (kwargs=%r)",
+            func_name, kwargs, exc_info=True,
         )
-        if not refund_id:
-            return jsonify({"error": err or "refund failed"}), 502
-
-        # Flip workspace state.
-        updated = request_refund(
-            workspace_id, stripe_refund_id=refund_id
-        )
-        if updated is None:
-            # Stripe issued the refund but DB update failed — log loudly.
-            logger.error(
-                "DB update failed AFTER Stripe refund issued: ws=%s refund=%s",
-                workspace_id, refund_id,
-            )
-            return jsonify({
-                "error": "refund issued but workspace state update failed",
-                "stripe_refund_id": refund_id,
-                "reason": "Contact support to reconcile.",
-            }), 500
-
-        return jsonify({
-            "status": "refunded",
-            "workspace_id": workspace_id,
-            "stripe_refund_id": refund_id,
-        })
 
 
 def _observe(event_type: str, outcome: str) -> None:
-    """Lazy-imported metrics hook. Never raises."""
+    """Lazy metrics hook (imported on demand). Never raises."""
     try:
         from shared.metrics import observe_stripe_event  # noqa: PLC0415
+
         observe_stripe_event(event_type, outcome)
     except Exception:  # pragma: no cover
         pass
