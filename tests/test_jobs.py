@@ -317,10 +317,10 @@ class TestMidRunMonitorWarn:
         # To hit 1.5x = $6.60 we need ~5436 gpu_seconds.
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_job_capped_email") as cap_email:
+        ), patch("shared.email.send_overrun_warning_email") as warn_email:
             result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
         assert result == "warned"
-        cap_email.assert_called_once()
+        warn_email.assert_called_once()
         # The warning persists the overrun_warned flag so a second
         # heartbeat at the same ratio does not re-dispatch.
         row = fake_job_store[job_id]
@@ -332,10 +332,10 @@ class TestMidRunMonitorWarn:
         fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] = True
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_job_capped_email") as cap_email:
+        ), patch("shared.email.send_overrun_warning_email") as warn_email:
             result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
         # Already warned: no new dispatch and no return label.
-        cap_email.assert_not_called()
+        warn_email.assert_not_called()
         assert result is None
 
 
@@ -356,7 +356,9 @@ class TestMidRunMonitorKill:
         modal = MagicMock()
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_job_capped_email"):
+        ), patch("shared.email.send_overrun_warning_email"), patch(
+            "shared.email.send_overrun_kill_email"
+        ):
             result = jobs_mod.mid_run_monitor_check(
                 job_id, 2000.0, modal_client=modal,
             )
@@ -376,7 +378,7 @@ class TestMidRunMonitorKill:
         modal = MagicMock()
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_job_capped_email") as cap_email, patch(
+        ), patch("shared.email.send_overrun_kill_email") as kill_email, patch(
             "shared.wallet.release_hold"
         ) as release:
             result = jobs_mod.mid_run_monitor_check(
@@ -387,7 +389,7 @@ class TestMidRunMonitorKill:
         release.assert_called_once_with(
             "tx-running", reason="overrun_safety_kill"
         )
-        cap_email.assert_called_once()
+        kill_email.assert_called_once()
         # Job row flipped to failed with the safety-kill bucket.
         assert fake_job_store[job_id]["status"] == "failed"
         assert (
@@ -402,7 +404,7 @@ class TestMidRunMonitorKill:
         modal = MagicMock()
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_job_capped_email"), patch(
+        ), patch("shared.email.send_overrun_kill_email"), patch(
             "shared.wallet.release_hold"
         ):
             result = jobs_mod.mid_run_monitor_check(

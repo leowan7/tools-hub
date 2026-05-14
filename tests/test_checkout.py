@@ -156,7 +156,9 @@ def _wallet_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_BASE_URL", BASE_URL)
     monkeypatch.setenv("WALLET_MIN_TOPUP_USD", "20")
     monkeypatch.setenv("WALLET_MAX_TOPUP_USD", "5000")
-    # Make sure the legacy APP_URL never wins over APP_BASE_URL.
+    # Ensure the alias hierarchy in _base_url resolves to APP_BASE_URL.
+    # PUBLIC_BASE_URL wins if set; APP_URL is the legacy fallback.
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("APP_URL", raising=False)
 
 
