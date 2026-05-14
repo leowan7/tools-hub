@@ -611,6 +611,15 @@ def requires_wallet(view_func=None, *, tool_slug=None):
             g.wallet_hold_tx_id = hold_tx_id
             g.wallet_params = params
             g.wallet_tool_slug = resolved_slug
+            # The wrapped view sets this to True once create_job has run
+            # and stashed the hold_tx_id on the job inputs. Any early
+            # return before that (form validation, PDB validation,
+            # workspace gate, etc.) leaves the flag False and triggers
+            # an automatic release in the finally block below. Without
+            # this guard, a user who submits with a missing PDB has the
+            # estimate deducted from their wallet with no job to settle
+            # it, and the only recovery is a manual SQL release.
+            g.wallet_hold_consumed = False
 
             try:
                 response = f(*args, **kwargs)
@@ -628,6 +637,21 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                         hold_tx_id, exc_info=True,
                     )
                 raise
+
+            # Early-return path (no exception, but the view returned
+            # without writing a tool_jobs row, e.g. a form-with-error
+            # render). Release so the hold does not leak.
+            if not getattr(g, "wallet_hold_consumed", False):
+                try:
+                    wallet_release_hold(
+                        hold_tx_id, reason="view_early_return"
+                    )
+                except Exception:
+                    logger.warning(
+                        "requires_wallet: release_hold on early return "
+                        "failed for hold=%s",
+                        hold_tx_id, exc_info=True,
+                    )
             return response
 
         return wrapper
@@ -2565,6 +2589,16 @@ def create_app() -> Flask:
                 pdb_source=None,
                 workspace_ctx=workspace_ctx,
             )
+
+        # create_job succeeded and the hold_tx_id is now stashed on
+        # inputs._wallet. shared.jobs._settle_wallet_hold_for_completed_job
+        # owns the hold lifecycle from here on. Tell the requires_wallet
+        # decorator not to fire its auto-release: if the storage upload
+        # or the Modal submit fails below, those paths release the hold
+        # explicitly (release_hold is idempotent, so a follow-up
+        # auto-release would no-op, but mark it consumed anyway for
+        # clarity).
+        g.wallet_hold_consumed = True
 
         presigned_url = ""
         staged_path = ""
