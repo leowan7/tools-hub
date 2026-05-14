@@ -542,7 +542,15 @@ def reserve_hold(
                 user_id, tool_slug, estimated_cost_usd,
             )
             return None
-        hold_id = data if isinstance(data, str) else data[0] if isinstance(data, list) else data.get("hold_tx_id")
+        # try_hold_for_job RETURNS bigint, which PostgREST passes through
+        # as a JSON int. Older callers may see a list/dict wrapper from the
+        # supabase-py driver depending on its version, so handle all three.
+        if isinstance(data, list):
+            hold_id = data[0] if data else None
+        elif isinstance(data, dict):
+            hold_id = data.get("hold_tx_id")
+        else:
+            hold_id = data
         return str(hold_id) if hold_id is not None else None
     except Exception:
         logger.error(
