@@ -1853,8 +1853,16 @@ def create_app() -> Flask:
         if next_url and not session.get("wallet_gate_form"):
             session["wallet_gate_form"] = {"return_url": next_url}
 
+        save_pm_raw = (
+            request.form.get("save_payment_method") or ""
+        ).strip().lower()
+        save_payment_method = save_pm_raw in {"on", "true", "1", "yes"}
+
         result, err = create_topup_session(
-            ctx.user_id, ctx.email, amount
+            ctx.user_id,
+            ctx.email,
+            amount,
+            save_payment_method=save_payment_method,
         )
         if err or not result:
             return redirect(

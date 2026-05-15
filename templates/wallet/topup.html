@@ -187,6 +187,26 @@
           </div>
         </div>
 
+        <div class="field-group" style="margin-top: 1rem;">
+          <label for="save_payment_method"
+                 style="display: flex; gap: 0.5rem; align-items: flex-start; cursor: pointer;">
+            <input type="checkbox"
+                   id="save_payment_method"
+                   name="save_payment_method"
+                   value="on"
+                   {% if wallet and wallet.auto_reload_enabled %}checked{% endif %}
+                   style="margin-top: 0.25rem;">
+            <span>
+              <span class="field-label" style="display: block;">Save card for auto reload</span>
+              <span class="field-helper">
+                Required if you want auto reload to actually fire. We store
+                the card with Stripe and charge it off session when balance
+                drops below your threshold.
+              </span>
+            </span>
+          </label>
+        </div>
+
         <div class="wallet-topup-cta-row">
           <button type="submit" class="btn-primary submit-cta">
             {% if next_url %}Top up and run{% else %}Continue to checkout{% endif %}
