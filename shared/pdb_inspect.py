@@ -31,7 +31,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from Bio.PDB import PDBParser, MMCIFParser
+from Bio.PDB import PDBParser, MMCIFParser, PDBIO
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +230,50 @@ def inspect_pdb_bytes(
         return report
 
     return report
+
+
+class CifConversionError(Exception):
+    """Raised when CIF -> PDB conversion fails. Message is user-facing."""
+
+
+def convert_cif_to_pdb_bytes(data: bytes, filename: str = "input.cif") -> bytes:
+    """Convert mmCIF bytes to PDB bytes via Biopython.
+
+    ProteinMPNN's parser (and several Kendrew docker pipelines) is
+    PDB-column-strict and cannot parse CIF text. This converter runs
+    server-side after ``inspect_pdb_bytes`` has already validated that
+    the structure has protein content, so the parse is expected to
+    succeed in the common case.
+
+    Raises ``CifConversionError`` with a user-facing message on parse or
+    write failure. The caller surfaces the message via the form's
+    error render path.
+    """
+    if not data:
+        raise CifConversionError("Empty file passed to CIF converter.")
+    try:
+        parser = MMCIFParser(QUIET=True)
+        handle = io.StringIO(data.decode("utf-8", errors="replace"))
+        structure = parser.get_structure("upload", handle)
+    except Exception as exc:
+        logger.info("cif_convert parse failed: %s", exc, exc_info=True)
+        raise CifConversionError(
+            f"Could not parse {filename} as mmCIF for PDB conversion "
+            f"({type(exc).__name__})."
+        ) from exc
+    out = io.StringIO()
+    try:
+        io_writer = PDBIO()
+        io_writer.set_structure(structure)
+        io_writer.save(out)
+    except Exception as exc:
+        logger.info("cif_convert write failed: %s", exc, exc_info=True)
+        raise CifConversionError(
+            f"Could not write {filename} as PDB. The structure may have "
+            f"multi-character chain IDs or more than 99,999 atoms, which "
+            f"the legacy PDB format cannot represent."
+        ) from exc
+    return out.getvalue().encode("utf-8")
 
 
 def validate_target_chain(

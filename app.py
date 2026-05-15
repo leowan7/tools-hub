@@ -93,6 +93,8 @@ from shared.jobs import (
 )
 from shared.metrics import register_metrics
 from shared.pdb_inspect import (
+    CifConversionError,
+    convert_cif_to_pdb_bytes,
     inspect_pdb_bytes,
     summarize_for_log,
     validate_hotspots,
@@ -2495,6 +2497,7 @@ def create_app() -> Flask:
         # below so we don't need to seek the file pointer back.
         pdb_bytes: bytes | None = None
         inspection = None
+        converted_filename: str | None = None
         if needs_pdb and uploaded is not None and uploaded.filename:
             pdb_bytes = uploaded.read()
             inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
@@ -2539,6 +2542,38 @@ def create_app() -> Flask:
                             pre_fill=inputs, pdb_source=None,
                             workspace_ctx=workspace_ctx,
                         )
+
+            # ---- CIF -> PDB conversion (fleet-wide fix for
+            # MPNN/RFdiff/BindCraft/RFantibody) ----
+            # ProteinMPNN's parser and the rfdiffusion / bindcraft /
+            # rfantibody docker pipelines are PDB-column-strict and
+            # crash on CIF text (ValueError on byte-slice float
+            # conversion). Convert here, before storage upload, so
+            # Modal workers always see real PDB content. Pxdesign and
+            # Boltzgen accept PDB just as well as CIF, so this is
+            # universally safe across the tool set.
+            fname_lower = uploaded.filename.lower()
+            if fname_lower.endswith(".cif") or fname_lower.endswith(".mmcif"):
+                try:
+                    pdb_bytes = convert_cif_to_pdb_bytes(
+                        pdb_bytes, uploaded.filename,
+                    )
+                except CifConversionError as exc:
+                    return render_template(
+                        adapter.form_template, adapter=adapter,
+                        error=str(exc), pre_fill=inputs, pdb_source=None,
+                        workspace_ctx=workspace_ctx,
+                    )
+                converted_filename = (
+                    uploaded.filename.rsplit(".", 1)[0] + ".pdb"
+                )
+                logger.info(
+                    "cif_convert %s/%s: %s -> %s (%d bytes)",
+                    adapter.slug, preset.slug,
+                    uploaded.filename, converted_filename, len(pdb_bytes),
+                )
+            else:
+                converted_filename = uploaded.filename
 
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
@@ -2614,16 +2649,21 @@ def create_app() -> Flask:
         if needs_pdb:
             try:
                 if uploaded is not None and uploaded.filename:
-                    staged_filename = uploaded.filename
-                    # pdb_bytes was read during pre-flight inspection above;
-                    # reuse it instead of double-reading the upload.
+                    # converted_filename is the original name with a .pdb
+                    # extension after CIF conversion (set above), or the
+                    # original .pdb filename unchanged. Storage + Modal
+                    # always see .pdb because pdb_bytes is always PDB by
+                    # the time we get here.
+                    staged_filename = converted_filename or uploaded.filename
+                    # pdb_bytes was read (and possibly converted) during
+                    # pre-flight; reuse instead of double-reading.
                     file_data = pdb_bytes if pdb_bytes is not None else uploaded.read()
                     staged_path = upload_input(
                         user_id=ctx.user_id,
                         job_id=job.id,
-                        filename=uploaded.filename,
+                        filename=staged_filename,
                         data=file_data,
-                        content_type=uploaded.mimetype or "chemical/x-pdb",
+                        content_type="chemical/x-pdb",
                     )
                 elif reuse_token.startswith("job:"):
                     # Wave 3A clone: copy PDB from the original job's prefix.
