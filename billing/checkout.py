@@ -320,7 +320,12 @@ def create_topup_session(
     }
     if save_payment_method:
         # Tag the underlying PaymentIntent so the webhook knows to
-        # persist stripe_payment_method_id on the wallet row.
+        # persist stripe_payment_method_id on the wallet row. The
+        # ``customer_creation`` flag tells Stripe to attach the PM to
+        # a Customer object even though this is a one-off mode=payment
+        # Session; without it, off-session PaymentIntents have nothing
+        # to charge against and auto-reload fails.
+        session_args["customer_creation"] = "always"
         session_args["payment_intent_data"] = {
             "setup_future_usage": "off_session",
             "metadata": {
@@ -403,6 +408,78 @@ def retrieve_topup_session(session_id: str) -> Tuple[Optional[dict], Optional[st
         },
         None,
     )
+
+
+def create_off_session_payment_intent(
+    *,
+    stripe_customer_id: Optional[str],
+    payment_method_id: Optional[str],
+    amount_usd,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Create + confirm an off-session PaymentIntent for auto-reload.
+
+    Stripe requires a Customer to be attached to a PaymentMethod for
+    off-session reuse, so both ``stripe_customer_id`` and
+    ``payment_method_id`` must be set. ``metadata`` is passed through
+    to the PI so the ``payment_intent.succeeded`` webhook handler can
+    route the credit (looks for ``kind=auto_reload`` and ``user_id``).
+
+    Returns the Stripe PaymentIntent dict on success. Raises:
+    * ``ValueError`` for missing inputs.
+    * ``RuntimeError`` for Stripe-level failure (declines, 3DS-required
+      off-session, network errors). Caller surfaces.
+    """
+    if not stripe_customer_id:
+        raise ValueError(
+            "stripe_customer_id is required for off-session "
+            "PaymentIntent. The wallet has no saved Stripe customer."
+        )
+    if not payment_method_id:
+        raise ValueError(
+            "payment_method_id is required for off-session "
+            "PaymentIntent. The wallet has no saved Stripe PM."
+        )
+    amount = _coerce_amount(amount_usd)
+    if amount is None or amount <= 0:
+        raise ValueError("amount_usd must be a positive number.")
+
+    stripe = _stripe_client()
+    if stripe is None:
+        raise RuntimeError("Stripe is not configured.")
+
+    unit_amount_cents = int(amount * 100)
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=unit_amount_cents,
+            currency="usd",
+            customer=stripe_customer_id,
+            payment_method=payment_method_id,
+            off_session=True,
+            confirm=True,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        # Stripe SDK raises stripe.error.CardError for declines and
+        # AuthenticationRequired for 3DS-only cards. We treat all as
+        # RuntimeError so the caller can decide how to surface; the
+        # webhook handler for payment_intent.payment_failed also
+        # auto-disables auto_reload on the wallet row.
+        logger.warning(
+            "Off-session PI dispatch failed customer=%s pm=%s amount=%s: %s",
+            stripe_customer_id, payment_method_id, amount, exc,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            f"Off-session PaymentIntent failed: {exc}"
+        ) from exc
+
+    logger.info(
+        "Off-session PI created customer=%s pm=%s amount=%s id=%s",
+        stripe_customer_id, payment_method_id, amount,
+        _attr(intent, "id"),
+    )
+    return intent if isinstance(intent, dict) else intent.to_dict_recursive()
 
 
 def create_portal_session(
