@@ -711,3 +711,80 @@ class TestTopupCompleteInvalid:
         resp = client.get("/account/topup-complete?session_id=cs_anon")
         # Redirected (302) to login, never reaches the handler.
         assert resp.status_code in (301, 302)
+
+
+# ===========================================================================
+# /account/wallet/topup (GET) and /account/wallet/checkout (POST) frozen guard
+# ===========================================================================
+
+
+class TestWalletTopupFrozenGuard:
+    """When wallet_frozen is True the topup form and checkout must bounce.
+
+    wallet_preflight already blocks tool submits on a frozen wallet, but
+    the topup routes used to let a frozen user keep adding funds they
+    could not spend. Both the GET form and the POST checkout creator
+    must redirect to /account/wallet?wallet_frozen=1 so the overview's
+    existing frozen banner is the user's landing point.
+    """
+
+    @staticmethod
+    def _wallet(frozen=True):
+        # Shape matches shared/wallet.py get_or_create_wallet so the GET
+        # branch can fall through to the template render without Jinja
+        # tripping on a missing auto_reload_* key.
+        return {
+            "user_id": "u-wallet",
+            "balance_usd": 10.0,
+            "daily_spend_cap_usd": 200.0,
+            "auto_reload_enabled": False,
+            "auto_reload_threshold_usd": 10.0,
+            "auto_reload_amount_usd": 50.0,
+            "auto_reload_monthly_cap_usd": 1000.0,
+            "wallet_frozen": frozen,
+            "spent_today_usd": 0.0,
+            "spent_30d_usd": 0.0,
+            "stripe_customer_id": None,
+        }
+
+    def test_get_topup_redirects_when_wallet_frozen(self, client):
+        with patch(
+            "app.load_user_context", return_value=_ctx()
+        ), patch(
+            "app.get_or_create_wallet", return_value=self._wallet(frozen=True),
+        ):
+            _login(client)
+            resp = client.get("/account/wallet/topup")
+        assert resp.status_code in (301, 302)
+        assert "/account/wallet" in resp.headers["Location"]
+        assert "wallet_frozen=1" in resp.headers["Location"]
+
+    def test_get_topup_renders_form_when_wallet_not_frozen(self, client):
+        with patch(
+            "app.load_user_context", return_value=_ctx()
+        ), patch(
+            "app.get_or_create_wallet", return_value=self._wallet(frozen=False),
+        ):
+            _login(client)
+            resp = client.get("/account/wallet/topup")
+        # Falls through to the template render, not a redirect.
+        assert resp.status_code == 200
+
+    def test_post_checkout_redirects_when_wallet_frozen(self, client):
+        with patch(
+            "app.load_user_context", return_value=_ctx()
+        ), patch(
+            "app.get_or_create_wallet", return_value=self._wallet(frozen=True),
+        ), patch(
+            "billing.checkout.create_topup_session"
+        ) as create_session:
+            _login(client)
+            resp = client.post(
+                "/account/wallet/checkout",
+                data={"amount_usd": "50"},
+            )
+        assert resp.status_code in (301, 302)
+        assert "/account/wallet" in resp.headers["Location"]
+        assert "wallet_frozen=1" in resp.headers["Location"]
+        # Stripe must not be called when the wallet is frozen.
+        create_session.assert_not_called()

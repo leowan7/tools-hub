@@ -1803,6 +1803,8 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
 
         wallet = get_or_create_wallet(ctx.user_id) or {}
+        if wallet.get("wallet_frozen"):
+            return redirect(url_for("wallet_overview") + "?wallet_frozen=1")
         topup_error = (request.args.get("topup_error") or "").strip() or None
         return render_template(
             "wallet/topup.html",
@@ -1830,6 +1832,10 @@ def create_app() -> Flask:
         ctx = load_user_context()
         if ctx is None:
             return redirect(url_for("login"))
+
+        wallet = get_or_create_wallet(ctx.user_id) or {}
+        if wallet.get("wallet_frozen"):
+            return redirect(url_for("wallet_overview") + "?wallet_frozen=1")
 
         amount_raw = (request.form.get("amount_usd") or "").strip()
         if not amount_raw:
