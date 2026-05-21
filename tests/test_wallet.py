@@ -691,18 +691,56 @@ def test_preflight_blocks_when_daily_cap_reached(store):
         balance=Decimal("1000.00"),
         daily_cap=Decimal("10.00"),
     )
-    # Seed prior charge today
+    # Seed a prior hold today (a job submitted earlier today).
     store.tables["wallet_transactions"].append({
         "id": store.fresh_id(),
         "user_id": USER_A,
-        "kind": "charge",
-        "amount_usd": 9.50,
+        "kind": "hold",
+        "amount_usd": -9.50,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     # Use bindcraft so the per-tool cap does not trip first.
     pre = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
     assert pre.allow is False
     assert pre.reason == REASON_DAILY_CAP
+
+
+def test_spent_today_counts_holds_not_charges(store):
+    """Daily-cap spend is read from hold rows, not charge rows.
+
+    Hold rows are the per-job debit; charge rows exist only for cost
+    overruns. Summing charges left the cap inert for normal jobs.
+    """
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("1000.00"),
+        daily_cap=Decimal("10.00"),
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    # Two jobs held $9 total today.
+    for amount in (-5.00, -4.00):
+        store.tables["wallet_transactions"].append({
+            "id": store.fresh_id(),
+            "user_id": USER_A,
+            "kind": "hold",
+            "amount_usd": amount,
+            "created_at": now,
+        })
+    # A charge row must not, on its own, count toward today's spend.
+    store.tables["wallet_transactions"].append({
+        "id": store.fresh_id(),
+        "user_id": USER_A,
+        "kind": "charge",
+        "amount_usd": -50.00,
+        "created_at": now,
+    })
+    # $9 held + $2 estimate exceeds the $10 cap.
+    blocked = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
+    assert blocked.allow is False
+    assert blocked.reason == REASON_DAILY_CAP
+    # $9 held + $0.50 estimate stays under: the $50 charge was ignored.
+    allowed = wallet_preflight(USER_A, "bindcraft", Decimal("0.50"), {})
+    assert allowed.allow is True
 
 
 # --- reserve_hold ----------------------------------------------------------
@@ -1097,8 +1135,8 @@ def test_preflight_email_fires_on_daily_cap_block(store, email_log):
     store.tables["wallet_transactions"].append({
         "id": store.fresh_id(),
         "user_id": USER_A,
-        "kind": "charge",
-        "amount_usd": 4.50,
+        "kind": "hold",
+        "amount_usd": -4.50,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     # Use bindcraft so the per-tool cap does not trip first.

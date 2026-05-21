@@ -501,9 +501,12 @@ def reserve_hold(
     """Atomically reserve ``estimated_cost_usd`` from the user wallet.
 
     Returns the ``hold_tx_id`` on success, ``None`` if the hold cannot
-    be placed (frozen wallet, insufficient balance, cap exceeded, daily
-    cap reached, etc.). All blocking checks run again inside the SQL
-    function so this is safe under concurrent submission.
+    be placed. The SQL function re-checks wallet-frozen state, the
+    parameter-scaled hard cap, and sufficient balance under a row lock,
+    so those three are race-safe. The daily spend cap and self-serve
+    ceiling are enforced only by :func:`wallet_preflight` in Python, so
+    a concurrent submission could slip a job past the daily cap; the
+    balance check still bounds total exposure.
 
     The route layer should also call :func:`wallet_preflight` first to
     surface a friendly reason for the user. ``reserve_hold`` is the
@@ -874,7 +877,17 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
 
 
 def _spent_today_usd(user_id: str) -> Decimal:
-    """Sum of ``charge`` and ``absorbed_variance`` rows since UTC midnight."""
+    """USD committed to jobs since UTC midnight.
+
+    Sums ``hold`` rows: the per-job pre-authorization debit, which is
+    where job spend lands in the ledger. ``charge`` and
+    ``absorbed_variance`` rows are written only for cost overruns, so
+    they are not a measure of job spend.
+
+    Runs slightly conservative — a job settling under its estimate is
+    refunded a surplus this figure does not net out — which is the safe
+    direction for the daily spend cap that consumes it.
+    """
     client = get_service_client()
     if client is None:
         return Decimal("0")
@@ -886,7 +899,7 @@ def _spent_today_usd(user_id: str) -> Decimal:
             client.table("wallet_transactions")
             .select("amount_usd")
             .eq("user_id", user_id)
-            .in_("kind", ["charge", "absorbed_variance"])
+            .eq("kind", "hold")
             .gte("created_at", start_of_day.isoformat())
             .execute()
         )

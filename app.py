@@ -1727,8 +1727,8 @@ def create_app() -> Flask:
         except Exception:  # pragma: no cover (defensive)
             wallet["spent_today_usd"] = 0.0
 
-        # 30 day spend: charges plus absorbed variance over a rolling
-        # 30 day window. Mirrors _spent_today_usd but with a wider cutoff.
+        # 30 day spend: hold rows over a rolling 30 day window.
+        # Mirrors _spent_today_usd but with a wider cutoff.
         from datetime import datetime, timezone, timedelta  # noqa: PLC0415
         from shared.credits import get_service_client  # noqa: PLC0415
 
@@ -1744,7 +1744,7 @@ def create_app() -> Flask:
                     client.table("wallet_transactions")
                     .select("amount_usd")
                     .eq("user_id", ctx.user_id)
-                    .in_("kind", ["charge", "absorbed_variance"])
+                    .eq("kind", "hold")
                     .gte("created_at", cutoff_30d)
                     .execute()
                 )
