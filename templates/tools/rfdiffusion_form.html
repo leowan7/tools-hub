@@ -79,16 +79,6 @@
       vertical-align: top;
     }
     .rfdiffusion-runtime-table tr:last-child td { border-bottom: none; }
-    .rfdiffusion-cost-preview {
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: var(--accent-text);
-      margin: -0.75rem 0 1.25rem;
-      padding: 0.5rem 0.75rem;
-      border-left: 2px solid var(--accent-dim);
-      background: var(--accent-glow);
-      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-    }
     .rfdiffusion-binder-length {
       display: flex;
       gap: 0.5rem;
@@ -200,15 +190,6 @@
     </div>
   {% endif %}
 
-  {# Preset runtime map mirrors tools/rfdiffusion/meta.py::preset_runtime_rows.
-     Kept here so the <option> data-attrs can be read without round-tripping
-     through app.py. Update both files together. #}
-  {% set preset_minutes = {
-    'smoke': '2',
-    'mini_pilot': '7',
-    'pilot': '15-30',
-  } %}
-
   <div class="rfdiffusion-layout">
     <div class="panel">
       <div class="panel-header">
@@ -222,15 +203,12 @@
                   style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
             {% for preset in adapter.presets %}
               <option value="{{ preset.slug }}"
-                      data-credits="{{ preset.credits_cost }}"
-                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
                       {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
                 {{ preset.label }}
               </option>
             {% endfor %}
           </select>
-          <div id="preset-cost-preview" class="rfdiffusion-cost-preview" aria-live="polite"></div>
-          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: 0.25rem 0 1.25rem;" id="preset-description"></div>
 
           <div id="pilot-fields" style="display: none;">
             {{ pdb_source_banner(pdb_source) }}
@@ -321,7 +299,6 @@
       var form = document.querySelector('form');
       var presetSelect = document.getElementById('preset');
       var pilotFields = document.getElementById('pilot-fields');
-      var costPreview = document.getElementById('preset-cost-preview');
       var descEl = document.getElementById('preset-description');
       if (!form || !presetSelect) return;
 
@@ -344,13 +321,6 @@
         if (fileInput) {
           var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');
           fileInput.required = isPilot && !hasReuse;
-        }
-        if (costPreview) {
-          var opt = presetSelect.options[presetSelect.selectedIndex];
-          if (opt) {
-            var minutes = opt.getAttribute('data-minutes');
-            costPreview.textContent = '~' + minutes + ' min . refunded if shorter';
-          }
         }
         if (descEl) {
           descEl.textContent = descriptions[value] || '';

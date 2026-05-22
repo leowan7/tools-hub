@@ -181,7 +181,7 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="smoke",
-            label="Smoke - ubiquitin demo, 0 credits",
+            label="Smoke - ubiquitin demo",
             credits_cost=0,
             description=(
                 "Runs against a baked 76 aa ubiquitin fixture. "
@@ -191,7 +191,7 @@ adapter = ToolAdapter(
         ),
         Preset(
             slug="standalone",
-            label="Standalone - your FASTA, 1 credit",
+            label="Standalone - your FASTA",
             credits_cost=1,
             description=(
                 "Paste a single-chain FASTA (10-400 aa monomer) and get "

@@ -276,7 +276,7 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="smoke",
-            label="Smoke — BPTI demo, 0 credits",
+            label="Smoke — BPTI demo",
             credits_cost=0,
             description=(
                 "Runs against a baked BPTI (58 aa) monomer with 1 recycle "
@@ -286,7 +286,7 @@ adapter = ToolAdapter(
         ),
         Preset(
             slug="standalone",
-            label="Standalone — your FASTA, 2 credits",
+            label="Standalone — your FASTA",
             credits_cost=2,
             description=(
                 "Paste or upload FASTA (single chain or multimer). "

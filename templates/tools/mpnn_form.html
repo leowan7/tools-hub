@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% from "tools/_prefill.html" import pre_value, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
 {% from "components/about_panel.html" import about_panel %}
-{% from "components/cost_preview.html" import cost_preview, cost_preview_script %}
 {% from "components/submit_cta.html" import submit_cta, submit_cta_script %}
 {% from "components/tool_form_layout.html" import tool_form_layout %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
@@ -26,14 +25,6 @@
       <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
     </div>
   {% endif %}
-
-  {# Preset runtime map mirrors tools/mpnn/meta.py::PRESET_RUNTIME. The
-     <option data-credits/data-minutes> attrs feed the shared
-     cost_preview macro. #}
-  {% set preset_minutes = {
-    'smoke': '1',
-    'standalone': '1',
-  } %}
 
   {# The shared ``from_job``/``handoff`` route in app.py sets
      ``pre_fill["preset"] = "pilot"`` for every tool. The four binder
@@ -61,16 +52,12 @@
             <select name="preset" id="preset" required class="field-input" style="max-width: 420px;">
               {% for preset in adapter.presets %}
                 <option value="{{ preset.slug }}"
-                        data-credits="{{ preset.credits_cost }}"
-                        data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
-                        data-description="{{ preset.description }}"
                         {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
                   {{ preset.label }}
                 </option>
               {% endfor %}
             </select>
           </div>
-          {{ cost_preview() }}
 
           {# Re-using #pilot-fields id so ``prefill_script()`` from
              _prefill.html toggles visibility when a clone/handoff lands
@@ -172,7 +159,6 @@
       syncFields();
     })();
   </script>
-  {{ cost_preview_script() }}
   {{ submit_cta_script(confirm_threshold=10) }}
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}

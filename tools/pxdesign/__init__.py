@@ -168,7 +168,7 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="smoke",
-            label="Smoke — 1 design, 8 credits",
+            label="Smoke — 1 design",
             credits_cost=8,
             description=(
                 "~17 min, 1 candidate against PD-L1 reference "

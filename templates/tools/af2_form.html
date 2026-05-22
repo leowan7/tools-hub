@@ -80,16 +80,6 @@
       vertical-align: top;
     }
     .af2-runtime-table tr:last-child td { border-bottom: none; }
-    .af2-cost-preview {
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: var(--accent-text);
-      margin: -0.75rem 0 1.25rem;
-      padding: 0.5rem 0.75rem;
-      border-left: 2px solid var(--accent-dim);
-      background: var(--accent-glow);
-      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-    }
     .af2-fasta-textarea {
       width: 100%;
       max-width: 620px;
@@ -118,14 +108,6 @@
     </div>
   {% endif %}
 
-  {# Preset runtime map mirrors tools/af2/meta.py::PRESET_RUNTIME. Kept
-     in the template so the <option> data-attrs can be read without
-     round-tripping through app.py. Update both files together. #}
-  {% set preset_minutes = {
-    'smoke': '2',
-    'standalone': '5-10',
-  } %}
-
   {# Cross-tool ``from_job``/``handoff`` routes set
      pre_fill["preset"]="pilot" for every tool. AF2 has no ``pilot``
      preset; remap to the equivalent real-target tier so a handoff
@@ -149,15 +131,12 @@
                   style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
             {% for preset in adapter.presets %}
               <option value="{{ preset.slug }}"
-                      data-credits="{{ preset.credits_cost }}"
-                      data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
                       {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
                 {{ preset.label }}
               </option>
             {% endfor %}
           </select>
-          <div id="preset-cost-preview" class="af2-cost-preview" aria-live="polite"></div>
-          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: -0.5rem 0 1.25rem;" id="preset-description"></div>
+          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: 0.25rem 0 1.25rem;" id="preset-description"></div>
 
           {# Re-using #pilot-fields id so ``prefill_script()`` from
              _prefill.html toggles visibility when a clone/handoff lands
@@ -242,7 +221,6 @@
       var form = document.querySelector('form');
       var presetSelect = document.getElementById('preset');
       var pilotFields = document.getElementById('pilot-fields');
-      var costPreview = document.getElementById('preset-cost-preview');
       var descEl = document.getElementById('preset-description');
       if (!form || !presetSelect) return;
 
@@ -256,13 +234,6 @@
         var value = presetSelect.value;
         if (pilotFields) {
           pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
-        }
-        if (costPreview) {
-          var opt = presetSelect.options[presetSelect.selectedIndex];
-          if (opt) {
-            var minutes = opt.getAttribute('data-minutes');
-            costPreview.textContent = '~' + minutes + ' min \u00b7 refunded if shorter';
-          }
         }
         if (descEl) {
           descEl.textContent = descriptions[value] || '';

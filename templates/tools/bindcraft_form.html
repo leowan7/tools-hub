@@ -13,7 +13,6 @@
      live here (prefixed .bindcraft-) so we don't touch the shared
      stylesheet. Copy is kept in sync with tools/bindcraft/meta.py by
      hand. #}
-  {% set preset_minutes = {"pilot": "45"} %}
   {% set preset_runtime_rows = [
     {"slug": "pilot", "credits": "20", "runtime": "~45 min", "target": "Your uploaded target"}
   ] %}
@@ -75,18 +74,6 @@
       font-family: var(--font-mono);
       font-size: 0.78rem;
     }
-    .bindcraft-cost-preview {
-      display: block;
-      margin: 0.35rem 0 1.25rem 0;
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: var(--bg-elevated);
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-    }
-    .bindcraft-cost-preview[data-empty="true"] { color: var(--text-tertiary); }
 
     /* Hotspot picker — dark editorial, matches BindCraft panel aesthetic. */
     .hotspot-picker {
@@ -198,19 +185,12 @@
             {% for preset in adapter.presets %}
               <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
                 <input type="radio" name="preset" value="{{ preset.slug }}"
-                       data-credits="{{ preset.credits_cost }}"
-                       data-minutes="{{ preset_minutes.get(preset.slug, '') }}"
                        {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
                 <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
                 <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
               </label>
             {% endfor %}
           </fieldset>
-
-          {# Cost preview — updates on preset change via vanilla JS. #}
-          <div id="bindcraft-cost-preview" class="bindcraft-cost-preview" data-empty="true">
-            Select a preset to see cost and runtime.
-          </div>
 
           {{ pdb_source_banner(pdb_source) }}
           <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
@@ -283,35 +263,6 @@
     {# ---------- RIGHT: About BindCraft (driven by tools/bindcraft/meta.py:about) ---------- #}
     {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
-
-  <script>
-    (function () {
-      var costPreview = document.getElementById('bindcraft-cost-preview');
-      var radios = document.querySelectorAll('input[type="radio"][name="preset"]');
-
-      function updateCostPreview(selected) {
-        if (!costPreview) return;
-        if (!selected) {
-          costPreview.textContent = 'Select a preset to see cost and runtime.';
-          costPreview.setAttribute('data-empty', 'true');
-          return;
-        }
-        var minutes = selected.getAttribute('data-minutes') || '?';
-        costPreview.textContent = '~' + minutes + ' min \u00b7 refunded if shorter';
-        costPreview.setAttribute('data-empty', 'false');
-      }
-
-      function onChange() {
-        var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
-        updateCostPreview(selected);
-      }
-
-      for (var i = 0; i < radios.length; i++) {
-        radios[i].addEventListener('change', onChange);
-      }
-      onChange();
-    })();
-  </script>
 
   {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
      production. The picker JS degrades gracefully if NGL fails to load —

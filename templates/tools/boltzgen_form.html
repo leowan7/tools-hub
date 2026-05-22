@@ -78,16 +78,6 @@
       vertical-align: top;
     }
     .boltzgen-runtime-table tr:last-child td { border-bottom: none; }
-    .boltzgen-cost-preview {
-      font-family: var(--font-mono);
-      font-size: 0.8rem;
-      color: var(--accent-text);
-      margin: 0.25rem 0 1rem;
-      padding: 0.5rem 0.75rem;
-      border-left: 2px solid var(--accent-dim);
-      background: var(--accent-glow);
-      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-    }
 
     /* Hotspot picker — dark editorial, matches BoltzGen panel aesthetic. */
     .hotspot-picker {
@@ -178,15 +168,6 @@
     </div>
   {% endif %}
 
-  {# Preset runtime map mirrors tools/boltzgen/meta.py::PRESET_RUNTIME.
-     Kept in the template so the radio data-attrs can be read without
-     round-tripping through app.py. Update both files together. #}
-  {% set preset_minutes = {
-    'smoke': '5',
-    'mini_pilot': '10',
-    'pilot': '15-60',
-  } %}
-
   <div class="boltzgen-layout">
     <div class="panel">
       <div class="panel-header">
@@ -200,16 +181,12 @@
             {% for preset in adapter.presets %}
               <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
                 <input type="radio" name="preset" value="{{ preset.slug }}"
-                       data-credits="{{ preset.credits_cost }}"
-                       data-minutes="{{ preset_minutes.get(preset.slug, '?') }}"
                        {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
                 <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
                 <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
               </label>
             {% endfor %}
           </fieldset>
-
-          <div id="preset-cost-preview" class="boltzgen-cost-preview" aria-live="polite"></div>
 
           <div style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem;">
             <div style="flex: 1; min-width: 150px;">
@@ -310,7 +287,6 @@
     (function () {
       var pilotFields = document.getElementById('pilot-fields');
       var presetRadios = document.querySelectorAll('input[name="preset"]');
-      var costPreview = document.getElementById('preset-cost-preview');
 
       function sync() {
         var selected = document.querySelector('input[name="preset"]:checked');
@@ -326,12 +302,6 @@
         if (fileInput) {
           var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');
           fileInput.required = isPilot && !hasReuse;
-        }
-        if (costPreview && selected) {
-          var minutes = selected.getAttribute('data-minutes');
-          if (minutes) {
-            costPreview.textContent = '~' + minutes + ' min · refunded if shorter';
-          }
         }
       }
 

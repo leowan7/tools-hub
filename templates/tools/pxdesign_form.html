@@ -13,7 +13,6 @@
      generic tool_form route in app.py is out of scope for this phase
      and does not inject per-tool meta into the template context. Keep
      the two in sync when either changes. #}
-  {% set preset_minutes = {"smoke": 17, "mini_pilot": 35, "pilot": 45} %}
   {% set preset_runtime_rows = [
     {"slug": "smoke",      "credits": "8",  "runtime": "~17 min",  "target": "PD-L1 IgV reference (baked)"},
     {"slug": "mini_pilot", "credits": "16", "runtime": "~35 min",  "target": "PD-L1 IgV reference (baked)"},
@@ -77,18 +76,6 @@
       font-family: var(--font-mono);
       font-size: 0.78rem;
     }
-    .pxdesign-cost-preview {
-      display: block;
-      margin: 0.35rem 0 1.25rem 0;
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--border);
-      border-radius: var(--radius-md);
-      background: var(--bg-elevated);
-      color: var(--text-primary);
-      font-family: var(--font-mono);
-      font-size: 0.82rem;
-    }
-    .pxdesign-cost-preview[data-empty="true"] { color: var(--text-tertiary); }
 
     /* Hotspot picker — dark editorial, matches PXDesign panel aesthetic. */
     .hotspot-picker {
@@ -202,8 +189,6 @@
             {% for preset in adapter.presets %}
               <label style="display: block; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 0.5rem; cursor: pointer;">
                 <input type="radio" name="preset" value="{{ preset.slug }}"
-                       data-credits="{{ preset.credits_cost }}"
-                       data-minutes="{{ preset_minutes.get(preset.slug, '') }}"
                        {{ pre_checked(pre_fill, "preset", preset.slug, loop.first) }} required>
                 <strong style="margin-left: 0.5rem;">{{ preset.label }}</strong>
                 <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; margin-left: 1.65rem;">{{ preset.description }}</div>
@@ -218,11 +203,6 @@
               emailed (~30–60 min on A100-80GB).
             </div>
           </fieldset>
-
-          {# Cost preview — updates on preset change via vanilla JS. #}
-          <div id="pxdesign-cost-preview" class="pxdesign-cost-preview" data-empty="true">
-            Select a preset to see cost and runtime.
-          </div>
 
           <label for="binder_length" class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
           <input type="number" name="binder_length" id="binder_length"
@@ -299,7 +279,6 @@
   <script>
     (function () {
       var pilotFields = document.getElementById('pilot-fields');
-      var costPreview = document.getElementById('pxdesign-cost-preview');
       var radios = document.querySelectorAll('input[type="radio"][name="preset"]');
 
       function togglePilotFields(selected) {
@@ -317,22 +296,9 @@
         }
       }
 
-      function updateCostPreview(selected) {
-        if (!costPreview) return;
-        if (!selected) {
-          costPreview.textContent = 'Select a preset to see runtime.';
-          costPreview.setAttribute('data-empty', 'true');
-          return;
-        }
-        var minutes = selected.getAttribute('data-minutes') || '?';
-        costPreview.textContent = '~' + minutes + ' min \u00b7 refunded if shorter';
-        costPreview.setAttribute('data-empty', 'false');
-      }
-
       function onChange() {
         var selected = document.querySelector('input[type="radio"][name="preset"]:checked');
         togglePilotFields(selected);
-        updateCostPreview(selected);
       }
 
       for (var i = 0; i < radios.length; i++) {

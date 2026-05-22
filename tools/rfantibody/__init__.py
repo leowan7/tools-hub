@@ -132,7 +132,7 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="smoke",
-            label="Smoke — 1 design, 2 credits",
+            label="Smoke — 1 design",
             credits_cost=2,
             description=(
                 "One candidate against PD-L1 reference target (~3 min). "
@@ -142,7 +142,7 @@ adapter = ToolAdapter(
         ),
         Preset(
             slug="mini_pilot",
-            label="Preview — 2 designs, 8 credits",
+            label="Preview — 2 designs",
             credits_cost=8,
             description=(
                 "Two ranked candidates against PD-L1 reference target "
