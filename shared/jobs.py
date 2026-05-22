@@ -281,7 +281,7 @@ def cancel_job(
     user_id: str,
     modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
 ) -> tuple[Optional["ToolJob"], Optional[str]]:
-    """Cancel a pending/running job. Owner-scoped; refunds only what was spent.
+    """Cancel a pending/running job. Owner-scoped; releases the wallet hold.
 
     Flow:
       1. Owner-scope fetch; reject if missing or already terminal.
@@ -289,9 +289,8 @@ def cancel_job(
          the tool_jobs row is the authoritative state and a stray Modal
          run terminates harmlessly once the tools-hub side is terminal).
       3. Mark the job 'cancelled' with an error bucket of the same name.
-      4. Refund the actual spend recorded on the ledger (NOT
-         ``credits_cost``). Orphaned rows where ``record_spend`` never ran
-         refund 0; live rows refund the full debit.
+      4. Release the wallet hold so the user is billed nothing for the
+         cancelled run. Idempotent and a no-op for jobs with no hold.
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
     refusal. Safe to call repeatedly — once the row is terminal, the
@@ -315,58 +314,29 @@ def cancel_job(
 
     # Compare-and-swap the terminal transition. If this returns False the
     # Modal webhook (or an inline-poll writer) wrote a terminal status
-    # between our SELECT and this UPDATE. Skip the refund — it is the
-    # winner's responsibility (for cancel, this caller is always the one
-    # issuing a refund; for succeeded/failed/timeout the prorated refund
-    # path inside complete_job has already run or is about to).
+    # between our SELECT and this UPDATE. Skip the hold release — it is
+    # the winner's responsibility (for succeeded/failed/timeout the
+    # wallet settle inside complete_job has already run or is about to).
     transitioned = mark_cancelled(job_id, allowed_current=_NON_TERMINAL)
     if not transitioned:
         fresh = get_job(job_id, user_id=user_id)
         current = fresh.status if fresh else "unknown"
         logger.info(
-            "cancel_job: CAS lost for job %s; already %s, skipping refund.",
+            "cancel_job: CAS lost for job %s; already %s, skipping "
+            "hold release.",
             job_id,
             current,
         )
         return None, f"already_{current}"
 
-    # Refund only the credits actually debited on the ledger. Without this
-    # guard an orphaned row (where ``record_spend`` never ran because the
-    # submit handler short-circuited after ``create_job``) would still
-    # refund ``credits_cost`` and mint free credits. Production incident
-    # 2026-04-30: a pxdesign submission with no PDB attached created an
-    # orphan row, the user cancelled it, and got 15 cr that were never
-    # debited.
-    if job.credits_cost > 0:
-        try:
-            from shared.credits import (  # noqa: PLC0415
-                get_spent_for_job, record_refund,
-            )
-            spent = get_spent_for_job(job.id)
-            if spent <= 0:
-                logger.info(
-                    "cancel_job: no spend ledger entry for job %s; "
-                    "skipping refund (credits_cost=%d, but ledger reports 0).",
-                    job.id, job.credits_cost,
-                )
-            else:
-                record_refund(
-                    job.user_id,
-                    spent,
-                    tool=job.tool,
-                    reason=f"{job.tool} {job.preset} cancelled by user",
-                    job_id=job.id,
-                    metadata={"cancelled_from_status": job.status},
-                )
-        except Exception:
-            logger.warning(
-                "Cancel refund failed for job %s (credits=%d)",
-                job.id,
-                job.credits_cost,
-                exc_info=True,
-            )
-
+    # Release the wallet hold placed at submit time. A user cancel bills
+    # nothing: _settle_wallet_hold_for_completed_job reads
+    # inputs._wallet.hold_tx_id and, for a cancelled row with no GPU
+    # time, calls release_hold. It is idempotent and a no-op for jobs
+    # that never carried a hold (smoke runs, pre-wallet rows).
     fresh = get_job(job_id, user_id=user_id)
+    if fresh is not None:
+        _settle_wallet_hold_for_completed_job(fresh)
     return fresh, None
 
 
@@ -384,8 +354,8 @@ def complete_job(
     gpu_seconds_used: Optional[int] = None,
 ) -> Optional["ToolJob"]:
     """Move a job to its terminal state and run the post-completion side
-    effects: prorated credit refund (if the actual GPU time came in
-    under the preset cap) and the job-complete email.
+    effects: the workspace cap charge, the wallet hold settle, and the
+    job-complete email.
 
     Idempotent — calling this on a job that's already terminal is a
     no-op (returns the existing row). Webhook + AJAX-poll callers can
@@ -458,102 +428,10 @@ def complete_job(
         )
         return fresh
 
-    _refund_unused_credits(fresh)
     _charge_workspace_for_completed_job(fresh)
     _settle_wallet_hold_for_completed_job(fresh)
     _send_completion_email(fresh)
     return fresh
-
-
-def _refund_unused_credits(job: "ToolJob") -> None:
-    """Refund credits for partially-used or never-started runs.
-
-    Pre-authorisation: ``credits_cost`` was debited on submit. Two refund
-    paths:
-
-    * ``succeeded`` with ``gpu_seconds_used`` under the preset cap →
-      prorated refund of the unused fraction.
-    * ``failed`` with no ``gpu_seconds_used`` → full refund. The pipeline
-      crashed before doing real work (e.g. early input-parse failure or
-      webhook-delivery failure) so the customer should not be charged.
-
-    Other failure modes (real GPU work that crashed late, where
-    ``gpu_seconds_used`` is set) and ``timeout`` keep the credits — the
-    GPU time was actually consumed.
-    """
-    if job.credits_cost <= 0:
-        return
-
-    if job.status == "failed":
-        if job.gpu_seconds_used and job.gpu_seconds_used > 0:
-            return
-        try:
-            from shared.credits import record_refund  # noqa: PLC0415
-            record_refund(
-                job.user_id,
-                job.credits_cost,
-                tool=job.tool,
-                reason=(
-                    f"{job.tool} {job.preset} system-failure refund: "
-                    "pipeline produced no result"
-                ),
-                job_id=job.id,
-                metadata={"refund_kind": "system_failure"},
-            )
-            logger.info(
-                "Full-refunded %d credit(s) for failed job %s (no GPU time)",
-                job.credits_cost,
-                job.id,
-            )
-        except Exception:
-            logger.warning(
-                "System-failure refund failed for job %s", job.id, exc_info=True
-            )
-        return
-
-    if job.status != "succeeded":
-        return
-    if not job.gpu_seconds_used or job.gpu_seconds_used <= 0:
-        return
-
-    from gpu.modal_client import preset_gpu_seconds  # noqa: PLC0415
-    cap_seconds = preset_gpu_seconds(job.tool, job.preset)
-    if cap_seconds <= 0:
-        return
-
-    used_fraction = min(1.0, job.gpu_seconds_used / cap_seconds)
-    used_credits = max(1, int(round(job.credits_cost * used_fraction)))
-    refund_credits = job.credits_cost - used_credits
-    if refund_credits <= 0:
-        return
-
-    try:
-        from shared.credits import record_refund  # noqa: PLC0415
-        record_refund(
-            job.user_id,
-            refund_credits,
-            tool=job.tool,
-            reason=(
-                f"{job.tool} {job.preset} prorated refund: "
-                f"{job.gpu_seconds_used}s of {cap_seconds}s"
-            ),
-            job_id=job.id,
-            metadata={
-                "preset_cap_seconds": cap_seconds,
-                "used_seconds": job.gpu_seconds_used,
-            },
-        )
-        logger.info(
-            "Refunded %d credit(s) for job %s (used %ds / %ds cap)",
-            refund_credits,
-            job.id,
-            job.gpu_seconds_used,
-            cap_seconds,
-        )
-    except Exception:
-        logger.warning(
-            "Prorated refund failed for job %s", job.id, exc_info=True
-        )
 
 
 def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
@@ -563,8 +441,8 @@ def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
     Workspace context (``target_pdb_id``, optional ``gpu_sku``) is read
     from ``inputs._workspace`` — stashed at submission time by
     ``create_job``. Legacy/orphan jobs without that context are skipped;
-    the credits-ledger refund path in ``_refund_unused_credits`` runs
-    independently for both cases.
+    the wallet hold settle in ``_settle_wallet_hold_for_completed_job``
+    runs independently for both cases.
 
     On crossing the 80% cap warning threshold, dispatches the
     ``send_workspace_cap_warning`` email best-effort. Email and charge
@@ -723,7 +601,6 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         return
 
     # No real GPU time consumed: release the hold without charging.
-    # Mirrors the system-failure refund path in _refund_unused_credits.
     if gpu_seconds <= 0 and job.status in {"failed", "timeout", "cancelled"}:
         try:
             release_hold(hold_tx_id, reason=failure_reason or "no_compute")

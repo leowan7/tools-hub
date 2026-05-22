@@ -28,7 +28,6 @@
               <th style="padding: 0.5rem 0.4rem;">Tool</th>
               <th style="padding: 0.5rem 0.4rem;">Preset</th>
               <th style="padding: 0.5rem 0.4rem;">Status</th>
-              <th style="padding: 0.5rem 0.4rem;">Credits</th>
               <th style="padding: 0.5rem 0.4rem;">Submitted</th>
             </tr>
           </thead>
@@ -46,7 +45,6 @@
                 <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
                 <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
                 <td style="padding: 0.55rem 0.4rem;">{{ status_badge(job.status) }}</td>
-                <td style="padding: 0.55rem 0.4rem;">{{ job.credits_cost }}</td>
                 <td style="padding: 0.55rem 0.4rem; color: var(--text-secondary);">{{ job.created_at[:19] if job.created_at else '—' }}</td>
               </tr>
             {% endfor %}
@@ -84,7 +82,7 @@
             <circle cx="62" cy="46" r="2.5" fill="var(--border)"/>
           </svg>
           <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">Run your first job to see it here.</h2>
-          <p class="subtitle" style="margin: 0 0 1.25rem 0;">Every GPU tool shares the same job list and credit ledger.</p>
+          <p class="subtitle" style="margin: 0 0 1.25rem 0;">Every GPU tool shares the same job list.</p>
           <a href="{{ url_for('index') }}" class="btn-primary">Browse tools</a>
         </div>
       {% endif %}

@@ -8,12 +8,12 @@ paths can both transition a running job to a terminal status:
 
 Before the guard, whichever UPDATE committed last won, which allowed:
 
-  * A late webhook overwriting a user cancel (and the refund still fired,
-    yielding a "succeeded" row with the user refunded — free GPU run).
+  * A late webhook overwriting a user cancel (and the hold release still
+    fired, yielding a "succeeded" row with the hold released — free GPU run).
   * A successful webhook being silently clobbered by a race-losing cancel,
-    handing the user a refund for work that actually completed.
+    releasing the wallet hold for work that actually completed.
   * Concurrent cancels each passing a SELECT-status!='terminal' check and
-    both issuing refunds — double refund.
+    both releasing the hold — double release.
 
 These tests simulate each race by interleaving calls against the same
 in-memory fake store the rest of Phase 4 uses.
@@ -153,41 +153,40 @@ def patched_service_client(store):
 class TestCancelBeatsLateWebhook:
     """User cancels, THEN a late Modal webhook arrives with COMPLETED.
 
-    Expected: row stays ``cancelled``, exactly one refund on the ledger,
-    ``complete_job`` reports CAS loss → webhook handler returns
-    ``already_terminal``.
+    Expected: row stays ``cancelled``, exactly one wallet hold release,
+    ``complete_job`` short-circuits on the already-terminal row.
     """
 
     def test_late_webhook_is_noop_after_cancel(
         self, patched_service_client, store
     ):
-        row = _row(status="running", credits_cost=22)
+        row = _row(
+            status="running",
+            inputs={"_wallet": {"hold_tx_id": "hold-race-1"}},
+        )
         store.rows[row["id"]] = row
         fake_modal = MagicMock()
         fake_modal.cancel.return_value = {"ok": True, "error": None}
 
-        # Stage 1: user cancel lands first. Full refund + row cancelled.
-        # ``get_spent_for_job`` is patched to mirror the production case
-        # where ``record_spend`` already debited the user — cancel refunds
-        # what the ledger reports, not the row's ``credits_cost`` field.
-        with patch("shared.credits.record_refund") as refund, patch(
-            "shared.credits.get_spent_for_job", return_value=22
-        ):
-            refund.return_value = True
+        # Stage 1: user cancel lands first. The submit-time wallet hold is
+        # released and the row is marked cancelled — a cancelled run bills
+        # nothing.
+        with patch("shared.wallet.release_hold") as release:
             job_after_cancel, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )
         assert err is None
         assert job_after_cancel is not None
         assert job_after_cancel.status == "cancelled"
-        cancel_refund_calls = refund.call_count
-        assert cancel_refund_calls == 1
-        assert refund.call_args.args[1] == 22  # full-cost refund
+        assert release.call_count == 1
+        assert release.call_args.args[0] == "hold-race-1"
 
         # Stage 2: late Modal webhook arrives with COMPLETED. complete_job
-        # must be a no-op because the CAS guard rejects a transition out
-        # of 'cancelled'. No second refund, no success overwrite.
-        with patch("shared.credits.record_refund") as refund_again, patch.object(
+        # must be a no-op because the row is already terminal ('cancelled')
+        # — no settle, no release, no success overwrite.
+        with patch("shared.wallet.settle_hold") as settle_again, patch(
+            "shared.wallet.release_hold"
+        ) as release_again, patch.object(
             jobs_mod, "_send_completion_email", lambda _j: None
         ):
             fresh = jobs_mod.complete_job(
@@ -198,7 +197,8 @@ class TestCancelBeatsLateWebhook:
             )
         assert fresh is not None
         assert fresh.status == "cancelled"
-        assert refund_again.call_count == 0
+        assert settle_again.call_count == 0
+        assert release_again.call_count == 0
         # Row should still be the cancel payload: no succeeded overwrite.
         assert store.rows[row["id"]]["status"] == "cancelled"
         assert store.rows[row["id"]]["result"] is None
@@ -213,20 +213,22 @@ class TestWebhookBeatsCancel:
     """Modal webhook lands COMPLETED first, then the user clicks cancel.
 
     Expected: ``cancel_job`` returns ``(None, 'already_succeeded')`` and
-    does NOT issue a refund (complete_job already ran the prorated
-    refund path on the successful row).
+    does NOT touch the wallet (complete_job already settled the hold on
+    the successful row).
     """
 
     def test_cancel_after_success_is_rejected(
         self, patched_service_client, store
     ):
-        row = _row(status="running", credits_cost=22)
+        row = _row(status="running")
         store.rows[row["id"]] = row
         fake_modal = MagicMock()
         fake_modal.cancel.return_value = {"ok": True, "error": None}
 
         # Stage 1: webhook wins — complete_job transitions row to succeeded.
-        with patch("shared.credits.record_refund") as success_refund, patch.object(
+        with patch("shared.wallet.settle_hold") as success_settle, patch(
+            "shared.wallet.release_hold"
+        ), patch.object(
             jobs_mod, "_send_completion_email", lambda _j: None
         ):
             fresh = jobs_mod.complete_job(
@@ -236,28 +238,29 @@ class TestWebhookBeatsCancel:
             )
         assert fresh is not None
         assert fresh.status == "succeeded"
-        # No prorated refund in this fixture because gpu_seconds_used is
-        # still None on the row (we passed no runtime_seconds), so the
-        # _refund_unused_credits short-circuits. That is fine — the test
-        # is about the CAS race, not about the prorated refund math.
-        success_refund_count = success_refund.call_count
+        # The row carries no wallet hold (empty inputs), so the settle
+        # hook short-circuits. That is fine — this test is about the CAS
+        # race, not the settle math.
+        success_settle_count = success_settle.call_count
 
         # Stage 2: user clicks cancel. The ``cancel_job`` preflight sees
         # a terminal status and returns the already_succeeded error
-        # without calling Modal or writing a refund.
-        with patch("shared.credits.record_refund") as cancel_refund:
+        # without calling Modal or touching the wallet.
+        with patch("shared.wallet.settle_hold") as cancel_settle, patch(
+            "shared.wallet.release_hold"
+        ) as cancel_release:
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )
         assert job is None
         assert err == "already_succeeded"
         fake_modal.cancel.assert_not_called()
-        assert cancel_refund.call_count == 0
+        assert cancel_settle.call_count == 0
+        assert cancel_release.call_count == 0
 
-        # Row state is unchanged — still succeeded, no new ledger writes
-        # beyond whatever complete_job produced in stage 1.
+        # Row state is unchanged — still succeeded.
         assert store.rows[row["id"]]["status"] == "succeeded"
-        assert success_refund.call_count == success_refund_count
+        assert success_settle.call_count == success_settle_count
 
 
 # ---------------------------------------------------------------------------
@@ -270,13 +273,16 @@ class TestCancelCasLostRefundSkipped:
     """Simulates the actual race window: ``cancel_job`` reads status='running',
     then BEFORE ``mark_cancelled`` emits its UPDATE the webhook runs and
     flips the row to 'succeeded'. The cancel's CAS UPDATE returns 0 rows
-    and the refund path must be skipped.
+    and the hold-release path must be skipped.
     """
 
     def test_refund_not_issued_when_cas_loses(
         self, patched_service_client, store
     ):
-        row = _row(status="running", credits_cost=22)
+        row = _row(
+            status="running",
+            inputs={"_wallet": {"hold_tx_id": "hold-cas-loss"}},
+        )
         store.rows[row["id"]] = row
         fake_modal = MagicMock()
         fake_modal.cancel.return_value = {"ok": True, "error": None}
@@ -294,7 +300,7 @@ class TestCancelCasLostRefundSkipped:
             store.rows[job_id]["status"] = "succeeded"
             return real_mark_cancelled(job_id, **kwargs)
 
-        with patch("shared.credits.record_refund") as refund, patch.object(
+        with patch("shared.wallet.release_hold") as release, patch.object(
             jobs_mod, "mark_cancelled", racing_mark_cancelled
         ):
             job, err = jobs_mod.cancel_job(
@@ -302,10 +308,10 @@ class TestCancelCasLostRefundSkipped:
             )
 
         # The cancel caller should see already_succeeded — and critically
-        # no refund should have been recorded.
+        # the wallet hold must NOT be released (the winner owns settlement).
         assert job is None
         assert err == "already_succeeded"
-        assert refund.call_count == 0
+        assert release.call_count == 0
         assert store.rows[row["id"]]["status"] == "succeeded"
 
 

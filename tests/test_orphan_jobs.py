@@ -141,7 +141,6 @@ class TestPxdesignMissingPdbDoesNotOrphan:
              patch("app.presigned_input_url", return_value="https://u/x.pdb"), \
              patch("app.update_inputs"), \
              patch("app.set_modal_call"), \
-             patch("app.record_spend"), \
              patch("gpu.modal_client.ModalClient.submit") as modal_submit:
             modal_submit.return_value = {
                 "function_call_id": "fc-test", "gpu_seconds_cap": 3600,
@@ -172,9 +171,9 @@ class TestPxdesignMissingPdbDoesNotOrphan:
 
 
 class TestGetSpentForJob:
-    """``shared.credits.get_spent_for_job`` is the contract that
-    ``cancel_job`` now uses to size its refund. Lock the math: spend
-    deltas are stored negative, the helper returns positive."""
+    """``shared.credits.get_spent_for_job`` sums the spend ledger for a
+    job. Lock the math: spend deltas are stored negative, the helper
+    returns positive."""
 
     def _client(self, ledger_rows):
         client = MagicMock()

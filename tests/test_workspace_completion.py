@@ -530,9 +530,7 @@ class TestCompleteJobIntegration:
         ws_after = _ws(user_id=user_id, spent=0.6168)
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="lab@example.com"
-        ), patch("shared.email.send_job_complete_email"), patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ), patch(
+        ), patch("shared.email.send_job_complete_email"), patch(
             "shared.workspaces.get_active_workspace", return_value=ws_before
         ), patch(
             "shared.workspaces.charge_for_job", return_value=ws_after
@@ -553,9 +551,9 @@ class TestCompleteJobIntegration:
         row = self._prime(store, inputs={})
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="lab@example.com"
-        ), patch("shared.email.send_job_complete_email"), patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ), patch("shared.workspaces.charge_for_job") as charge:
+        ), patch("shared.email.send_job_complete_email"), patch(
+            "shared.workspaces.charge_for_job"
+        ) as charge:
             jobs_mod.complete_job(
                 row["id"],
                 terminal_status="succeeded",

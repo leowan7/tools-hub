@@ -168,7 +168,7 @@ def _apply_terminal(
     result: Any,
     error: Any,
 ) -> ToolJob | None:
-    """Move a job to its terminal state, refund unused credits, send email.
+    """Move a job to its terminal state, settle the wallet hold, send email.
 
     Returns the post-transition ToolJob row. complete_job is CAS-guarded,
     so if a concurrent writer (user cancel, inline poll) terminalised the

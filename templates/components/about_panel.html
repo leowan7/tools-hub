@@ -66,12 +66,11 @@ Usage:
       {% endif %}
 
       {% if about.runtime_table %}
-        <h3>Runtime &amp; cost</h3>
+        <h3>Runtime</h3>
         <table class="about-runtime-table">
           <thead>
             <tr>
               <th>Preset</th>
-              <th>Credits</th>
               <th>Typical min</th>
             </tr>
           </thead>
@@ -79,7 +78,6 @@ Usage:
             {% for row in about.runtime_table %}
               <tr>
                 <td>{{ row.preset }}</td>
-                <td>{{ row.credits }}</td>
                 <td>{{ row.typical }}</td>
               </tr>
             {% endfor %}

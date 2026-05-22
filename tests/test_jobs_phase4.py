@@ -4,7 +4,7 @@ Verifies the three behaviours Phase 4 introduced:
 
 1. ``complete_job`` calls ``send_job_complete_email`` for succeeded and
    failed terminal states, and skips it for timeout/cancelled.
-2. ``cancel_job`` refunds the full credit cost, marks the row
+2. ``cancel_job`` releases the wallet hold, marks the row
    ``cancelled``, and is a no-op on already-terminal rows.
 3. ``list_jobs_paginated`` returns (rows, total) with correct slicing.
 
@@ -22,7 +22,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from shared import jobs as jobs_mod
-from shared.jobs import ToolJob
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +162,7 @@ class TestCompletionEmail:
         row = self._prime(store)
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send, patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ):
+        ), patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(
                 row["id"], terminal_status="succeeded", result={"candidates": []}
             )
@@ -176,9 +173,7 @@ class TestCompletionEmail:
         row = self._prime(store)
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send, patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ):
+        ), patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(
                 row["id"],
                 terminal_status="failed",
@@ -190,9 +185,7 @@ class TestCompletionEmail:
         row = self._prime(store)
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send, patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ):
+        ), patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(row["id"], terminal_status="timeout")
         assert send.call_count == 0
 
@@ -201,9 +194,7 @@ class TestCompletionEmail:
         row = self._prime(store, status="succeeded", completed_at="2026-04-24T00:00:00Z")
         with patch.object(
             jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send, patch.object(
-            jobs_mod, "_refund_unused_credits", lambda _job: None
-        ):
+        ), patch("shared.email.send_job_complete_email") as send:
             out = jobs_mod.complete_job(row["id"], terminal_status="succeeded")
         assert send.call_count == 0
         assert out is not None
@@ -211,80 +202,7 @@ class TestCompletionEmail:
 
 
 # ---------------------------------------------------------------------------
-# 1b. _refund_unused_credits: full refund on no-work failures, prorated on
-#     under-budget successes, no refund when real GPU time was consumed.
-# ---------------------------------------------------------------------------
-
-
-class TestRefundUnusedCredits:
-    def _job(self, **over) -> ToolJob:
-        return ToolJob.from_row(_row(**over))
-
-    def test_failed_with_no_gpu_time_full_refund(self):
-        """Pipeline crashed before doing real work — refund full pre-auth."""
-        job = self._job(
-            status="failed", credits_cost=10, gpu_seconds_used=None, tool="boltzgen"
-        )
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_called_once()
-        assert refund.call_args.args[1] == 10
-        assert refund.call_args.kwargs["tool"] == "boltzgen"
-        assert refund.call_args.kwargs["metadata"]["refund_kind"] == "system_failure"
-
-    def test_failed_with_zero_gpu_time_full_refund(self):
-        """gpu_seconds_used=0 is the same signal as None — refund."""
-        job = self._job(status="failed", credits_cost=15, gpu_seconds_used=0)
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_called_once()
-        assert refund.call_args.args[1] == 15
-
-    def test_failed_with_real_gpu_time_no_refund(self):
-        """Real GPU consumed before failure — keep the credits."""
-        job = self._job(status="failed", credits_cost=10, gpu_seconds_used=420)
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_not_called()
-
-    def test_timeout_no_refund(self):
-        """Timeout means GPU ran the full preset cap — no refund."""
-        job = self._job(status="timeout", credits_cost=10, gpu_seconds_used=None)
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_not_called()
-
-    def test_succeeded_under_cap_prorated_refund(self):
-        """Used a quarter of the cap — refund three quarters."""
-        job = self._job(
-            status="succeeded", credits_cost=20, gpu_seconds_used=60, tool="bindcraft",
-            preset="pilot",
-        )
-        with patch("shared.credits.record_refund") as refund, patch(
-            "gpu.modal_client.preset_gpu_seconds", return_value=240
-        ):
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_called_once()
-        # 60/240 used = 25% kept = 5 credits used, 15 refunded.
-        assert refund.call_args.args[1] == 15
-
-    def test_succeeded_no_gpu_time_no_refund(self):
-        """No gpu_seconds_used recorded — cannot prorate, keep credits."""
-        job = self._job(status="succeeded", credits_cost=20, gpu_seconds_used=None)
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_not_called()
-
-    def test_zero_credits_cost_no_refund(self):
-        """No pre-auth was debited (e.g. internal smoke tier) — nothing to refund."""
-        job = self._job(status="failed", credits_cost=0, gpu_seconds_used=None)
-        with patch("shared.credits.record_refund") as refund:
-            jobs_mod._refund_unused_credits(job)
-        refund.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# 2. cancel_job refunds full credits + marks cancelled + idempotent
+# 2. cancel_job releases the wallet hold + marks cancelled + idempotent
 # ---------------------------------------------------------------------------
 
 
@@ -294,16 +212,17 @@ class TestCancelJob:
         store.rows[row["id"]] = row
         return row
 
-    def test_cancel_running_job_refunds_and_marks(
+    def test_cancel_running_job_releases_hold_and_marks(
         self, patched_service_client, store
     ):
-        row = self._prime(store, status="running", credits_cost=22)
+        row = self._prime(
+            store,
+            status="running",
+            inputs={"_wallet": {"hold_tx_id": "hold-abc"}},
+        )
         fake_modal = MagicMock()
         fake_modal.cancel.return_value = {"ok": True, "error": None}
-        with patch("shared.credits.record_refund") as refund, patch(
-            "shared.credits.get_spent_for_job", return_value=22
-        ):
-            refund.return_value = True
+        with patch("shared.wallet.release_hold") as release:
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )
@@ -311,85 +230,51 @@ class TestCancelJob:
         assert job is not None
         assert job.status == "cancelled"
         fake_modal.cancel.assert_called_once_with(row["modal_function_call_id"])
-        refund.assert_called_once()
-        refund_kwargs = refund.call_args.kwargs
-        assert refund_kwargs["tool"] == "bindcraft"
-        assert refund.call_args.args[1] == 22  # full refund matches spend
+        # A cancelled run bills nothing — the submit-time hold is released.
+        release.assert_called_once()
+        assert release.call_args.args[0] == "hold-abc"
 
-    def test_cancel_orphaned_row_skips_refund(
+    def test_cancel_holdless_row_skips_release(
         self, patched_service_client, store
     ):
-        """Orphaned rows have credits_cost set but no ledger ``spend`` entry.
-
-        Production incident 2026-04-30: a pxdesign submit with no PDB
-        attached wrote a ``pending`` row, the upload check failed,
-        ``record_spend`` never ran. User cancelled the orphan and got 15
-        free credits. ``cancel_job`` must check the ledger before
-        refunding, not blindly trust ``credits_cost``.
-        """
-        row = self._prime(store, status="pending", credits_cost=15,
-                          modal_function_call_id=None)
+        """A row with no wallet hold (smoke run, pre-wallet job) cancels
+        cleanly and never calls release_hold."""
+        row = self._prime(
+            store, status="pending", inputs={}, modal_function_call_id=None
+        )
         fake_modal = MagicMock()
-        with patch("shared.credits.record_refund") as refund, patch(
-            "shared.credits.get_spent_for_job", return_value=0
-        ):
+        with patch("shared.wallet.release_hold") as release:
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )
         assert err is None
         assert job is not None
         assert job.status == "cancelled"
-        # The whole point: no refund minted because nothing was spent.
-        refund.assert_not_called()
-
-    def test_cancel_partial_spend_refunds_only_what_was_spent(
-        self, patched_service_client, store
-    ):
-        """Defensive: if a future code path ever debits less than
-        ``credits_cost`` (e.g. partial pre-auth), the refund must still
-        match what the ledger reports — not the row's nominal cost.
-        """
-        row = self._prime(store, status="running", credits_cost=15)
-        fake_modal = MagicMock()
-        fake_modal.cancel.return_value = {"ok": True, "error": None}
-        with patch("shared.credits.record_refund") as refund, patch(
-            "shared.credits.get_spent_for_job", return_value=8
-        ):
-            refund.return_value = True
-            job, err = jobs_mod.cancel_job(
-                row["id"], user_id=row["user_id"], modal_client=fake_modal
-            )
-        assert err is None
-        assert job.status == "cancelled"
-        refund.assert_called_once()
-        # Refund the actual spend (8), not the nominal credits_cost (15).
-        assert refund.call_args.args[1] == 8
+        # No hold on the row, so nothing to release.
+        release.assert_not_called()
 
     def test_cancel_already_terminal_is_refused(
         self, patched_service_client, store
     ):
         row = self._prime(store, status="succeeded")
         fake_modal = MagicMock()
-        with patch("shared.credits.record_refund") as refund:
+        with patch("shared.wallet.release_hold") as release:
             job, err = jobs_mod.cancel_job(
                 row["id"], user_id=row["user_id"], modal_client=fake_modal
             )
         assert job is None
         assert err == "already_succeeded"
         fake_modal.cancel.assert_not_called()
-        refund.assert_not_called()
+        release.assert_not_called()
 
     def test_cancel_without_modal_fc_still_marks_cancelled(
         self, patched_service_client, store
     ):
         row = self._prime(store, modal_function_call_id=None)
         fake_modal = MagicMock()
-        with patch("shared.credits.record_refund"), patch(
-            "shared.credits.get_spent_for_job", return_value=0
-        ):
-            job, err = jobs_mod.cancel_job(
-                row["id"], user_id=row["user_id"], modal_client=fake_modal
-            )
+        job, err = jobs_mod.cancel_job(
+            row["id"], user_id=row["user_id"], modal_client=fake_modal
+        )
         assert err is None
         assert job is not None
         assert job.status == "cancelled"

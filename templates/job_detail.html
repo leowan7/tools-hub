@@ -55,7 +55,7 @@
   <div class="hero">
     <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
     <p class="subtitle">
-      Preset <strong>{{ job.preset }}</strong> · {{ job.credits_cost }} credits ·
+      Preset <strong>{{ job.preset }}</strong> ·
       submitted {{ job.created_at[:19] if job.created_at else '—' }}
     </p>
   </div>
@@ -121,7 +121,7 @@
           </p>
         {% elif job.status == 'cancelled' %}
           <p class="subtitle" style="color: var(--text-secondary);">
-            Cancelled. {{ job.credits_cost }} credit{{ 's' if job.credits_cost != 1 else '' }} refunded to your ledger.
+            Cancelled. Your wallet was not charged for this run.
           </p>
         {% endif %}
       </div>
@@ -168,7 +168,7 @@
         if (!btn) return;
         var statusNote = document.getElementById('cancel-status');
         btn.addEventListener('click', function () {
-          if (!window.confirm('Cancel this run? Credits will be refunded in full.')) return;
+          if (!window.confirm('Cancel this run? Your wallet will not be charged for it.')) return;
           btn.disabled = true;
           statusNote.textContent = 'Cancelling...';
           fetch('/jobs/' + btn.dataset.jobId + '/cancel', {
@@ -179,7 +179,7 @@
             .then(function (r) { return r.json().then(function (b) { return [r.ok, b]; }); })
             .then(function (pair) {
               if (pair[0]) {
-                statusNote.textContent = 'Cancelled. Refunded ' + pair[1].credits_refunded + ' credit(s). Reloading...';
+                statusNote.textContent = 'Cancelled. Reloading...';
                 setTimeout(function () { window.location.reload(); }, 800);
               } else {
                 statusNote.textContent = 'Could not cancel: ' + (pair[1].error || 'unknown');

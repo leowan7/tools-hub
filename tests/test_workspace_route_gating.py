@@ -152,7 +152,7 @@ class TestSubmitWithActiveWorkspace:
             "shared.workspaces.workspace_preflight", preflight_mock
         ), patch("app.create_job", create_job_mock), patch(
             "gpu.modal_client.ModalClient.submit", modal_submit_mock
-        ), patch("app.set_modal_call"), patch("app.record_spend"):
+        ), patch("app.set_modal_call"):
             client = app_with_colabfold.test_client()
             _login(client)
             client.post(
@@ -309,7 +309,7 @@ class TestSubmitLegacyPath:
             "shared.workspaces.workspace_preflight", preflight_mock
         ), patch("app.create_job", create_job_mock), patch(
             "gpu.modal_client.ModalClient.submit", modal_submit_mock
-        ), patch("app.set_modal_call"), patch("app.record_spend"):
+        ), patch("app.set_modal_call"):
             client = app_with_colabfold.test_client()
             _login(client)
             client.post(

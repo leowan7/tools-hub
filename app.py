@@ -54,9 +54,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from gpu.modal_client import ModalClient
 from shared.credits import (
     load_user_context,
-    record_spend,
     recent_ledger,
-    requires_credits,
 )
 from shared.wallet import (
     MIN_TOPUP_USD,
@@ -531,10 +529,9 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                     ctx = None
                 user_id = ctx.user_id if ctx else None
             if not user_id:
-                # No identifiable user. Fall through so the legacy
-                # @login_required / @requires_credits path handles
-                # the redirect. The wallet decorator never preempts
-                # auth.
+                # No identifiable user. Fall through so the
+                # @login_required path handles the redirect. The wallet
+                # decorator never preempts auth.
                 g.wallet_estimate_usd = Decimal("0")
                 g.wallet_hold_tx_id = None
                 g.wallet_params = {}
@@ -2015,10 +2012,8 @@ def create_app() -> Flask:
         return redirect("/account/wallet/topup#auto-reload")
 
     # ------------------------------------------------------------------
-    # Stub tool route — proves credits middleware + Modal client contract
-    # work end-to-end without a real GPU call. Stream C/D tools follow
-    # the same pattern: @login_required, @requires_credits, render a
-    # response, let the decorator debit on success.
+    # Stub tool route — proves the Modal client contract works end-to-end
+    # without a real GPU call.
     # ------------------------------------------------------------------
 
     @flask_app.route("/tools/example-gpu", methods=["GET"])
@@ -2030,15 +2025,11 @@ def create_app() -> Flask:
     @flask_app.route("/tools/example-gpu/submit", methods=["POST"])
     @login_required
     @idempotent()
-    @requires_credits(
-        1, tool="example-gpu", reason="example-gpu smoke submission"
-    )
     @requires_wallet(tool_slug="example-gpu")
     def example_gpu_submit():
         """Submit the stub job via ModalClient.
 
-        Returns the fake FunctionCall id from the Wave-0 stub so we can
-        verify the credits decorator debits the user on success.
+        Returns the fake FunctionCall id from the Wave-0 stub.
         """
         preset = request.form.get("preset", "smoke")
         submission = modal_client.submit(
@@ -2366,7 +2357,7 @@ def create_app() -> Flask:
     @idempotent()
     @requires_wallet
     def tool_submit(tool: str):
-        """Validate, debit credits, upload PDB, spawn Modal, redirect to job detail."""
+        """Validate, place a wallet hold, upload PDB, spawn Modal, redirect to job detail."""
         adapter, err = _require_tool(tool)
         if err:
             return err
@@ -2418,11 +2409,8 @@ def create_app() -> Flask:
         # Workspace gate (when context present). Rejects expired,
         # refunded, or cap-exhausted workspaces BEFORE the job row is
         # written, BEFORE PDB upload, BEFORE the Modal call. Submissions
-        # without workspace context fall through to the legacy credits
-        # gate below — that path remains during transition; once Phase 4
-        # validation is clean and all entry points (Scout handoff,
-        # direct URLs) route through Workspace activation, this fall-
-        # through can be flipped to a hard reject.
+        # without workspace context are gated by the wallet alone — the
+        # requires_wallet decorator placed a hold before this handler ran.
         if workspace_ctx is not None:
             from shared.workspaces import workspace_preflight  # noqa: PLC0415
             preflight = workspace_preflight(
@@ -2445,9 +2433,6 @@ def create_app() -> Flask:
             # for charge attribution; preflight already confirmed an
             # active workspace exists for this user+target.
             workspace_ctx["workspace_id"] = preflight.workspace.id
-
-        if ctx.balance < preset.credits_cost:
-            return redirect(url_for("account", insufficient_credits=1))
 
         # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
         # smoke / preview do not. Falls back to the adapter-level flag for
@@ -2480,7 +2465,7 @@ def create_app() -> Flask:
         # Run a fast Biopython inspection on freshly-uploaded files so we
         # can reject obvious garbage (no protein, no ATOM records, malformed
         # parse) and validate user-typed target_chain + hotspots BEFORE
-        # debiting credits or spinning up Modal. Reuse-token paths are not
+        # spinning up Modal. Reuse-token paths are not
         # re-inspected (the source job's PDB has already passed this gate).
         # Bytes are read here ONCE; we pass them through to upload_input
         # below so we don't need to seek the file pointer back.
@@ -2566,8 +2551,7 @@ def create_app() -> Flask:
 
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
-        # raises. Credits debit happens only on successful Modal submit.
-        # Workspace IDs (when present) are stashed in inputs._workspace
+        # raises. Workspace IDs (when present) are stashed in inputs._workspace
         # so the completion-side ``charge_for_job`` (item #6) bills the
         # right cap.
         ws_target = workspace_ctx["target_pdb_id"] if workspace_ctx else None
@@ -2768,8 +2752,8 @@ def create_app() -> Flask:
                 adapter.form_template,
                 adapter=adapter,
                 error=(
-                    "Could not submit to the GPU pool. No credits were "
-                    "charged. Try again or contact support."
+                    "Could not submit to the GPU pool. Your wallet was "
+                    "not charged. Try again or contact support."
                 ),
                 pre_fill=inputs,
                 pdb_source=None,
@@ -2777,18 +2761,6 @@ def create_app() -> Flask:
             )
 
         set_modal_call(job.id, submit_result["function_call_id"])
-        # Smoke / preview presets cost 0 credits — skip the ledger write,
-        # which otherwise raises ValueError (record_spend rejects amount<=0)
-        # and 500s the redirect even though the Modal job is already running.
-        if preset.credits_cost > 0:
-            record_spend(
-                ctx.user_id,
-                preset.credits_cost,
-                tool=adapter.slug,
-                reason=f"{adapter.slug} {preset.slug}",
-                job_id=job.id,
-            )
-
         return redirect(url_for("job_detail", job_id=job.id))
 
     @flask_app.route("/jobs", methods=["GET"])
@@ -2951,7 +2923,7 @@ def create_app() -> Flask:
     def job_cancel(job_id: str):
         """User-initiated cancel of a pending/running job.
 
-        Best-effort Modal cancel, full credit refund, row transitions
+        Best-effort Modal cancel, wallet hold released, row transitions
         to status='cancelled'. Safe to call repeatedly — terminal jobs
         return an error_code without mutating state.
         """
@@ -2968,7 +2940,6 @@ def create_app() -> Flask:
             {
                 "id": job.id,
                 "status": job.status,
-                "credits_refunded": job.credits_cost,
             }
         )
 

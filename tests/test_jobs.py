@@ -468,9 +468,6 @@ class TestCompleteJobInvokesSettle:
         monkeypatch.setattr(jobs_mod, "get_job", fake_get_job)
         monkeypatch.setattr(jobs_mod, "mark_succeeded", fake_mark_succeeded)
         monkeypatch.setattr(
-            jobs_mod, "_refund_unused_credits", lambda j: None
-        )
-        monkeypatch.setattr(
             jobs_mod, "_charge_workspace_for_completed_job", lambda j: None
         )
         monkeypatch.setattr(
@@ -513,9 +510,6 @@ class TestCompleteJobInvokesSettle:
         monkeypatch.setattr(jobs_mod, "get_job", fake_get_job)
         monkeypatch.setattr(jobs_mod, "mark_failed", fake_mark_failed)
         monkeypatch.setattr(
-            jobs_mod, "_refund_unused_credits", lambda j: None
-        )
-        monkeypatch.setattr(
             jobs_mod, "_charge_workspace_for_completed_job", lambda j: None
         )
         monkeypatch.setattr(
@@ -547,9 +541,6 @@ class TestCompleteJobInvokesSettle:
             return ToolJob.from_row(r) if r else None
 
         monkeypatch.setattr(jobs_mod, "get_job", fake_get_job)
-        monkeypatch.setattr(
-            jobs_mod, "_refund_unused_credits", lambda j: None
-        )
         monkeypatch.setattr(
             jobs_mod, "_charge_workspace_for_completed_job", lambda j: None
         )
