@@ -270,27 +270,26 @@ Then the `wallet-credits-cutover` branch can be merged to `main` (which deploys)
 
 ---
 
-## Discovered during Task 6/7 — decide before merge
+## Discovered during Task 6/7 — both fixed
 
-Two surfaces still carry credits-era content that the cutover's source-edit
-pass did not enumerate. Neither breaks the test suite; both are user-facing and
-were left for a decision rather than changed autonomously.
+The cutover's source-edit pass missed two surfaces that still carried
+credits-era content. Both were flagged for a decision, both have now been
+fixed on this branch.
 
-1. **`shared/email.py` `_result_summary` (failed-job completion email).** For a
-   failed job that consumed no GPU time it still emits "your N credits were
-   refunded". Post-cutover that job's wallet hold is *released* (user billed
-   nothing) — the economics are right but the wording is wrong. The copy is
-   locked by `tests/test_email_failure_copy.py` (asserts
-   `"10 credits were refunded"`), so fixing the copy means updating that test
-   too. Recommend: reword to wallet language (mirror job_detail.html's "your
-   wallet was not charged") before merge.
-2. **`templates/components/submit_cta.html` cost-confirm modal.** The
-   `submit_cta_script` macro reads each preset's `data-credits` attribute and
-   pops a "this run will cost up to N credits" confirm dialog. The Task 5 form
-   cleanup removed `data-credits` from the preset `<option>`s, so the modal now
-   always reads 0 and never fires — dead code, not a crash. Recommend: delete
-   the credits-confirm modal (the USD wallet has its own topup/confirm flow) or
-   convert it to a USD figure.
+1. **`shared/email.py` `_result_summary` (failed-job completion email).** Was
+   emitting "your N credits were refunded" for failed jobs with no GPU time.
+   Now emits "your wallet was not charged", gated on the actual wallet hold
+   (`inputs._wallet.hold_tx_id`) instead of `credits_cost`. Paired test
+   updates renamed `TestFailureSummaryMentionsRefund` to
+   `TestFailureSummaryMentionsNoCharge` and dropped
+   `test_singular_credit_grammar` (no more N-based grammar). Commit `3d6da18`.
+2. **`templates/components/submit_cta.html` credits-confirm modal.** The
+   `submit_cta_script` macro popped a credits-themed `window.confirm` when
+   `data-credits >= 10`. The Task 5 form cleanup had removed `data-credits`
+   from preset `<option>`s so the modal silently never fired. The credits
+   modal is now gone; the double-submit button-disable guard (Bug B closer)
+   stays and now applies to every submit, not just expensive ones.
+   `mpnn_form.html` was the only caller. Commit `c2320d0`.
 
 ---
 
