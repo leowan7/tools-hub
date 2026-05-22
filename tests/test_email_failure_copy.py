@@ -5,7 +5,7 @@ Locks the copy that customers see when a tool run fails:
 * Subject line says "failed" (not "ready").
 * HTML headline + plain-text headline say "failed" (not "is ready").
 * CTA is the muted/grey "View job details" button (not the green "View results").
-* Summary mentions the credit refund when the pipeline produced no work.
+* Summary tells the user the wallet was not charged when the pipeline produced no work.
 
 Email *delivery* is not exercised here — only rendering.
 """
@@ -83,30 +83,38 @@ class TestFailureCTA:
         assert "View results" not in text
 
 
-class TestFailureSummaryMentionsRefund:
-    def test_no_gpu_time_summary_mentions_refund(self):
-        """When complete_job will full-refund, the summary must say so."""
-        summary = email_mod._result_summary(_job(credits_cost=10), tone="failed")
-        assert "10 credits were refunded" in summary
+class TestFailureSummaryMentionsNoCharge:
+    def test_no_gpu_time_summary_says_wallet_not_charged(self):
+        """When the wallet hold is released, the summary tells the user
+        no charge was made."""
+        summary = email_mod._result_summary(
+            _job(inputs={"_wallet": {"hold_tx_id": "tx-hold-stub"}}),
+            tone="failed",
+        )
+        assert "wallet was not charged" in summary
         assert "run_pipeline exited 1" in summary
 
-    def test_singular_credit_grammar(self):
-        summary = email_mod._result_summary(_job(credits_cost=1), tone="failed")
-        assert "1 credit was refunded" in summary
-
-    def test_real_gpu_time_summary_skips_refund_claim(self):
-        """When GPU time was consumed (no refund), don't claim one happened."""
+    def test_real_gpu_time_summary_skips_no_charge_claim(self):
+        """When GPU time was consumed (charge applies), don't claim no
+        charge was made."""
         summary = email_mod._result_summary(
-            _job(gpu_seconds_used=420), tone="failed"
+            _job(
+                inputs={"_wallet": {"hold_tx_id": "tx-hold-stub"}},
+                gpu_seconds_used=420,
+            ),
+            tone="failed",
         )
-        assert "refunded" not in summary
+        assert "wallet was not charged" not in summary
         assert "did not complete" in summary
 
-    def test_zero_credit_cost_skips_refund_claim(self):
+    def test_no_wallet_hold_skips_no_charge_claim(self):
+        """Free smoke tier (no wallet hold) is gated out of the no-charge
+        reassurance since no charge was ever possible."""
         summary = email_mod._result_summary(
-            _job(credits_cost=0), tone="failed"
+            _job(inputs={}),
+            tone="failed",
         )
-        assert "refunded" not in summary
+        assert "wallet was not charged" not in summary
 
 
 # ---------------------------------------------------------------------------

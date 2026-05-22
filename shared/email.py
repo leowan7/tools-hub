@@ -651,20 +651,20 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
             detail = err.get("detail") or err.get("message") or "see job page for details"
         else:
             detail = str(err)
-        # complete_job → _refund_unused_credits issues a full refund when a
-        # failed job consumed no GPU time. Mirror that condition here so we
-        # don't claim a refund happened when one didn't.
-        is_full_refund = (
+        # Failed jobs that consumed no GPU time get their wallet hold
+        # released, billing the user nothing. Surface that reassurance in
+        # the email body for jobs that actually carried a hold; free smoke
+        # runs skip the message since no charge was ever possible.
+        wallet_ctx = (job.inputs or {}).get("_wallet") or {}
+        has_hold = isinstance(wallet_ctx, dict) and bool(wallet_ctx.get("hold_tx_id"))
+        no_charge = (
             job.status == "failed"
             and not job.gpu_seconds_used
-            and (job.credits_cost or 0) > 0
+            and has_hold
         )
-        if is_full_refund:
-            n = job.credits_cost
-            unit = "credit" if n == 1 else "credits"
-            verb = "was" if n == 1 else "were"
+        if no_charge:
             return (
-                f"The run did not complete and your {n} {unit} {verb} refunded. "
+                f"The run did not complete; your wallet was not charged. "
                 f"Detail: {detail}"
             )
         return f"The run did not complete: {detail}"
