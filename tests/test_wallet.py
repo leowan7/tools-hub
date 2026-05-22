@@ -705,11 +705,12 @@ def test_preflight_blocks_when_daily_cap_reached(store):
     assert pre.reason == REASON_DAILY_CAP
 
 
-def test_spent_today_counts_holds_not_charges(store):
-    """Daily-cap spend is read from hold rows, not charge rows.
+def test_spent_today_nets_holds_releases_and_charges(store):
+    """Daily-cap spend nets each job's settlement against its hold.
 
-    Hold rows are the per-job debit; charge rows exist only for cost
-    overruns. Summing charges left the cap inert for normal jobs.
+    Spend = |holds| - |releases| + |charges|. A job that settles under
+    estimate is refunded a surplus the figure nets out; an overrun adds
+    a charge.
     """
     _seed_wallet(
         store, USER_A,
@@ -717,30 +718,55 @@ def test_spent_today_counts_holds_not_charges(store):
         daily_cap=Decimal("10.00"),
     )
     now = datetime.now(timezone.utc).isoformat()
-    # Two jobs held $9 total today.
-    for amount in (-5.00, -4.00):
+
+    def _add(kind, amount):
         store.tables["wallet_transactions"].append({
             "id": store.fresh_id(),
             "user_id": USER_A,
-            "kind": "hold",
+            "kind": kind,
             "amount_usd": amount,
             "created_at": now,
         })
-    # A charge row must not, on its own, count toward today's spend.
-    store.tables["wallet_transactions"].append({
-        "id": store.fresh_id(),
-        "user_id": USER_A,
-        "kind": "charge",
-        "amount_usd": -50.00,
-        "created_at": now,
-    })
-    # $9 held + $2 estimate exceeds the $10 cap.
-    blocked = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
+
+    # Job 1 held $5, settled at $3: hold -5, release +2 -> net $3.
+    _add("hold", -5.00)
+    _add("hold_release", 2.00)
+    # Job 2 held $3, overran to $4: hold -3, charge -1 -> net $4.
+    _add("hold", -3.00)
+    _add("charge", -1.00)
+    # Net spend today is $3 + $4 = $7.
+
+    # $7 + $2 estimate stays under the $10 cap.
+    allowed = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
+    assert allowed.allow is True
+    # $7 + $4 estimate exceeds the $10 cap.
+    blocked = wallet_preflight(USER_A, "bindcraft", Decimal("4.00"), {})
     assert blocked.allow is False
     assert blocked.reason == REASON_DAILY_CAP
-    # $9 held + $0.50 estimate stays under: the $50 charge was ignored.
-    allowed = wallet_preflight(USER_A, "bindcraft", Decimal("0.50"), {})
-    assert allowed.allow is True
+
+
+def test_net_spend_usd_nets_and_excludes_non_job_rows(store):
+    """_net_spend_usd nets holds/releases/charges, ignores other kinds."""
+    from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
+    from shared.wallet import _net_spend_usd  # noqa: PLC0415
+
+    now = datetime.now(timezone.utc).isoformat()
+    for kind, amount in [
+        ("hold", -5.00), ("hold_release", 2.00), ("charge", -1.50),
+        ("hold", -3.00), ("absorbed_variance", -9.00),
+        ("topup", 100.00), ("signup_credit", 5.00),
+    ]:
+        store.tables["wallet_transactions"].append({
+            "id": store.fresh_id(),
+            "user_id": USER_A,
+            "kind": kind,
+            "amount_usd": amount,
+            "created_at": now,
+        })
+    since = _dt(2026, 1, 1, tzinfo=_tz.utc)
+    # holds |5|+|3|=8, releases |2|=2, charges |1.5|=1.5 -> 8 - 2 + 1.5.
+    # absorbed_variance, topup, signup_credit are excluded.
+    assert _net_spend_usd(USER_A, since) == Decimal("7.5")
 
 
 # --- reserve_hold ----------------------------------------------------------
@@ -997,8 +1023,13 @@ def test_auto_reload_triggers_when_eligible(store):
         auto_reload_amount=Decimal("50.00"),
         auto_reload_monthly_cap=Decimal("1000.00"),
     )
-    # No stripe helper yet, but the function should still return "triggered".
-    result = auto_reload_if_needed(USER_A)
+    # The off-session charge succeeds; the webhook (not this call) credits
+    # the wallet, so "triggered" just means the PaymentIntent went out.
+    with patch(
+        "billing.checkout.create_off_session_payment_intent",
+        return_value={"id": "pi_fake"},
+    ):
+        result = auto_reload_if_needed(USER_A)
     assert result == "triggered"
 
 
@@ -1012,6 +1043,108 @@ def test_auto_reload_amount_zero_disables(store, email_log):
     )
     result = auto_reload_if_needed(USER_A)
     assert result == "no_amount_configured"
+
+
+def test_auto_reload_no_customer_disables(store, email_log):
+    """A saved card with no Stripe customer cannot be charged off-session;
+    auto-reload is disabled instead of failing on every settle."""
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        customer=None,
+    )
+    assert auto_reload_if_needed(USER_A) == "no_payment_method"
+    wallet_row = next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+    assert wallet_row["auto_reload_enabled"] is False
+
+
+def test_auto_reload_disables_on_permanent_stripe_failure(store, email_log):
+    """A declined or unusable card disables auto-reload and emails the user."""
+    from billing.checkout import OffSessionChargeError  # noqa: PLC0415
+
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+    )
+
+    def _boom(**_kwargs):
+        raise OffSessionChargeError(
+            "declined", retryable=False, reason="expired_card"
+        )
+
+    with patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=_boom,
+    ):
+        assert auto_reload_if_needed(USER_A) == "stripe_error"
+    wallet_row = next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+    assert wallet_row["auto_reload_enabled"] is False
+    failed = [
+        kw for name, kw in email_log
+        if name == "send_auto_reload_failed_email"
+    ]
+    assert failed and failed[0].get("reason") == "expired_card"
+
+
+def test_auto_reload_stays_enabled_on_retryable_stripe_failure(store, email_log):
+    """A transient Stripe outage leaves auto-reload on for the next settle."""
+    from billing.checkout import OffSessionChargeError  # noqa: PLC0415
+
+    _seed_wallet(
+        store, USER_A,
+        balance=Decimal("5.00"),
+        auto_reload_enabled=True,
+        auto_reload_threshold=Decimal("20.00"),
+        auto_reload_amount=Decimal("50.00"),
+    )
+
+    def _boom(**_kwargs):
+        raise OffSessionChargeError(
+            "stripe down", retryable=True, reason="card_declined"
+        )
+
+    with patch(
+        "billing.checkout.create_off_session_payment_intent",
+        side_effect=_boom,
+    ):
+        assert auto_reload_if_needed(USER_A) == "stripe_error"
+    wallet_row = next(
+        r for r in store.tables["user_wallets"] if r["user_id"] == USER_A
+    )
+    assert wallet_row["auto_reload_enabled"] is True
+    assert not any(
+        name == "send_auto_reload_failed_email" for name, _ in email_log
+    )
+
+
+def test_classify_off_session_error_retryable_vs_permanent():
+    """billing.checkout._classify_off_session_error sorts Stripe errors."""
+    from billing.checkout import _classify_off_session_error  # noqa: PLC0415
+
+    class CardError(Exception):
+        code = "expired_card"
+
+    class InvalidRequestError(Exception):
+        pass
+
+    class APIConnectionError(Exception):
+        pass
+
+    retryable, reason = _classify_off_session_error(CardError())
+    assert retryable is False and reason == "expired_card"
+    retryable, reason = _classify_off_session_error(InvalidRequestError())
+    assert retryable is False and reason == "no_payment_method"
+    retryable, _ = _classify_off_session_error(APIConnectionError())
+    assert retryable is True
 
 
 # --- Freeze ---------------------------------------------------------------

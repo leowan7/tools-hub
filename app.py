@@ -1727,36 +1727,19 @@ def create_app() -> Flask:
         except Exception:  # pragma: no cover (defensive)
             wallet["spent_today_usd"] = 0.0
 
-        # 30 day spend: hold rows over a rolling 30 day window.
-        # Mirrors _spent_today_usd but with a wider cutoff.
+        # 30-day spend: net of holds, releases, and charges over a
+        # rolling 30-day window. Same canonical formula as the daily
+        # figure (shared.wallet._net_spend_usd), just a wider cutoff.
         from datetime import datetime, timezone, timedelta  # noqa: PLC0415
         from shared.credits import get_service_client  # noqa: PLC0415
+        from shared.wallet import _net_spend_usd  # noqa: PLC0415
+
+        cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+        spent_30d = _net_spend_usd(ctx.user_id, cutoff_30d)
 
         client = get_service_client()
-        spent_30d = Decimal("0")
         recent_transactions: list = []
         if client is not None:
-            cutoff_30d = (
-                datetime.now(timezone.utc) - timedelta(days=30)
-            ).isoformat()
-            try:
-                rows_30d = (
-                    client.table("wallet_transactions")
-                    .select("amount_usd")
-                    .eq("user_id", ctx.user_id)
-                    .eq("kind", "hold")
-                    .gte("created_at", cutoff_30d)
-                    .execute()
-                )
-                for row in list(getattr(rows_30d, "data", None) or []):
-                    spent_30d += Decimal(
-                        str(row.get("amount_usd") or 0)
-                    ).copy_abs()
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "wallet_overview: 30d spend lookup failed for %s",
-                    ctx.user_id, exc_info=True,
-                )
             try:
                 tx_response = (
                     client.table("wallet_transactions")

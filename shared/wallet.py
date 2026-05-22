@@ -676,11 +676,15 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
 
     * ``"not_enabled"`` (user has not opted in)
     * ``"above_threshold"`` (balance still above auto-reload threshold)
-    * ``"no_payment_method"`` (no saved card; auto-reload disabled)
+    * ``"no_payment_method"`` (no saved card or Stripe customer;
+      auto-reload disabled)
+    * ``"no_amount_configured"`` (reload amount unset; auto-reload disabled)
     * ``"rate_limited"`` (already reloaded once in the last 24h)
     * ``"monthly_cap"`` (current-month total plus reload would exceed cap)
-    * ``"triggered"`` (off-session PaymentIntent dispatched, with the
-      Stripe call implemented in :mod:`billing.checkout` by Agent E)
+    * ``"triggered"`` (off-session PaymentIntent dispatched)
+    * ``"stripe_error"`` (the off-session charge failed; on a permanent
+      failure such as a declined or unusable card, auto-reload is
+      disabled and the user is emailed)
     * ``"missing_service_client"`` (no service-role client available)
     """
     client = get_service_client()
@@ -695,7 +699,13 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     balance = Decimal(str(wallet.get("balance_usd") or 0))
     if balance >= threshold:
         return "above_threshold"
-    if not wallet.get("stripe_payment_method_id"):
+    if not wallet.get("stripe_payment_method_id") or not wallet.get(
+        "stripe_customer_id"
+    ):
+        # An off-session charge needs both a saved card and the Stripe
+        # customer it is attached to. Missing either means auto-reload
+        # can never succeed, so disable it rather than fail on every
+        # settle.
         try:
             client.table("user_wallets").update(
                 {"auto_reload_enabled": False}
@@ -761,11 +771,34 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
             amount_usd=reload_amount,
             metadata={"user_id": user_id, "kind": "auto_reload"},
         )
-    except Exception:
+    except Exception as exc:
+        # An off-session charge failure does not heal itself between
+        # job settles. If it is permanent (declined or unusable card,
+        # invalid Stripe customer) disable auto-reload so it stops
+        # firing on every settle, and email the user so they can fix
+        # the card and re-enable. Retryable failures (Stripe outage,
+        # our API key missing) leave auto-reload on for the next settle.
+        retryable = bool(getattr(exc, "retryable", False))
+        reason = getattr(exc, "reason", "card_declined")
         logger.error(
-            "auto_reload_if_needed: Stripe PI dispatch failed for %s",
-            user_id, exc_info=True,
+            "auto_reload_if_needed: Stripe PI dispatch failed for %s "
+            "(retryable=%s reason=%s)",
+            user_id, retryable, reason, exc_info=True,
         )
+        if not retryable:
+            try:
+                client.table("user_wallets").update(
+                    {"auto_reload_enabled": False}
+                ).eq("user_id", user_id).execute()
+            except Exception:
+                logger.warning(
+                    "auto_reload_if_needed: could not disable auto-reload "
+                    "after Stripe failure for %s", user_id, exc_info=True,
+                )
+            _send_email_safe(
+                "send_auto_reload_failed_email",
+                user_id=user_id, reason=reason,
+            )
         return "stripe_error"
     return "triggered"
 
@@ -876,40 +909,63 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
 # ---------------------------------------------------------------------------
 
 
-def _spent_today_usd(user_id: str) -> Decimal:
-    """USD committed to jobs since UTC midnight.
+def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
+    """USD a user has actually spent on jobs since ``since``.
 
-    Sums ``hold`` rows: the per-job pre-authorization debit, which is
-    where job spend lands in the ledger. ``charge`` and
-    ``absorbed_variance`` rows are written only for cost overruns, so
-    they are not a measure of job spend.
+    Net spend nets each job's settlement against its hold::
 
-    Runs slightly conservative — a job settling under its estimate is
-    refunded a surplus this figure does not net out — which is the safe
-    direction for the daily spend cap that consumes it.
+        spend = sum(|hold|) - sum(|hold_release|) + sum(|charge|)
+
+    ``hold`` rows commit the per-job estimate; ``hold_release`` rows
+    return surplus (or the whole hold on a cancel-before-run);
+    ``charge`` rows debit a true-up overrun. ``absorbed_variance`` is
+    excluded because Ranomics, not the user, paid it.
+
+    Absolute values are used so the figure is correct regardless of the
+    sign a row was written with (the SQL ledger stores holds negative).
+    Clamped at zero so a stray release without an in-window hold cannot
+    produce a negative spend.
+
+    This is the one canonical spend definition; the daily-cap check, the
+    wallet overview, and the sales funnel all consume it.
     """
     client = get_service_client()
     if client is None:
         return Decimal("0")
-    start_of_day = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
     try:
         response = (
             client.table("wallet_transactions")
-            .select("amount_usd")
+            .select("kind,amount_usd")
             .eq("user_id", user_id)
-            .eq("kind", "hold")
-            .gte("created_at", start_of_day.isoformat())
+            .in_("kind", ["hold", "hold_release", "charge"])
+            .gte("created_at", since.isoformat())
             .execute()
         )
         rows = list(getattr(response, "data", None) or [])
-        total = sum(Decimal(str(r.get("amount_usd") or 0)).copy_abs() for r in rows)
-        return total
     except Exception:
-        logger.warning("spent_today_usd lookup failed for %s",
-                       user_id, exc_info=True)
+        logger.warning(
+            "net_spend_usd lookup failed for %s", user_id, exc_info=True
+        )
         return Decimal("0")
+    holds = releases = charges = Decimal("0")
+    for r in rows:
+        amount = Decimal(str(r.get("amount_usd") or 0)).copy_abs()
+        kind = r.get("kind")
+        if kind == "hold":
+            holds += amount
+        elif kind == "hold_release":
+            releases += amount
+        elif kind == "charge":
+            charges += amount
+    return max(Decimal("0"), holds - releases + charges)
+
+
+def _spent_today_usd(user_id: str) -> Decimal:
+    """Net USD spent on jobs since UTC midnight (feeds the daily cap)."""
+    start_of_day = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return _net_spend_usd(user_id, start_of_day)
 
 
 def _auto_reload_count_24h(user_id: str) -> int:

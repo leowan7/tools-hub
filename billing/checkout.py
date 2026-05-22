@@ -85,6 +85,68 @@ logger = logging.getLogger(__name__)
 _CENTS_PER_DOLLAR = Decimal("100")
 
 
+class OffSessionChargeError(RuntimeError):
+    """An auto-reload off-session PaymentIntent could not be charged.
+
+    Subclasses ``RuntimeError`` so existing ``except RuntimeError``
+    callers keep working. Carries two extra fields the auto-reload
+    logic in :mod:`shared.wallet` reads:
+
+    * ``retryable`` -- ``True`` when the failure is transient or on the
+      Ranomics side (Stripe outage, missing API key). The caller leaves
+      auto-reload enabled and tries again on the next settle. ``False``
+      when the failure is the customer's saved card or Stripe customer
+      (declined, expired, "no such customer"); the caller disables
+      auto-reload and emails the user.
+    * ``reason`` -- a key into ``shared.email._AUTO_RELOAD_REASON_LABELS``
+      so the failure email can name the cause.
+    """
+
+    def __init__(self, message: str, *, retryable: bool, reason: str) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.reason = reason
+
+
+# Stripe exception class names that are transient or Ranomics-side
+# rather than a problem with the customer's saved card. Auto-reload
+# stays enabled for these; everything else disables it.
+_RETRYABLE_STRIPE_ERRORS = frozenset({
+    "APIConnectionError",
+    "RateLimitError",
+    "AuthenticationError",
+    "APIError",
+})
+
+# Stripe CardError decline codes that map to a known email reason label.
+_KNOWN_DECLINE_REASONS = frozenset({
+    "card_declined",
+    "expired_card",
+    "insufficient_funds",
+})
+
+
+def _classify_off_session_error(exc: Exception) -> Tuple[bool, str]:
+    """Return ``(retryable, reason)`` for an off-session charge failure.
+
+    Classifies by exception class name so it does not depend on a
+    particular ``stripe`` SDK version's module layout.
+    """
+    name = type(exc).__name__
+    if name in _RETRYABLE_STRIPE_ERRORS:
+        return True, "card_declined"
+    if name == "CardError":
+        code = str(getattr(exc, "code", "") or "")
+        reason = code if code in _KNOWN_DECLINE_REASONS else "card_declined"
+        return False, reason
+    if name == "InvalidRequestError":
+        # Bad customer or payment-method id: the saved card is unusable.
+        return False, "no_payment_method"
+    # Unknown failure: treat as permanent so auto-reload stops retrying
+    # silently. A false positive just means the user re-enables it.
+    return False, "card_declined"
+
+
 def _default_min_topup_usd() -> Decimal:
     """Return the configured floor for a single top up, in USD.
 
@@ -427,8 +489,9 @@ def create_off_session_payment_intent(
 
     Returns the Stripe PaymentIntent dict on success. Raises:
     * ``ValueError`` for missing inputs.
-    * ``RuntimeError`` for Stripe-level failure (declines, 3DS-required
-      off-session, network errors). Caller surfaces.
+    * ``OffSessionChargeError`` (a ``RuntimeError`` subclass) for any
+      Stripe-level failure. Its ``retryable`` flag tells the caller
+      whether to keep auto-reload enabled.
     """
     if not stripe_customer_id:
         raise ValueError(
@@ -446,7 +509,11 @@ def create_off_session_payment_intent(
 
     stripe = _stripe_client()
     if stripe is None:
-        raise RuntimeError("Stripe is not configured.")
+        # Missing API key is a Ranomics-side config problem, not the
+        # customer's card. Retryable so auto-reload is not disabled.
+        raise OffSessionChargeError(
+            "Stripe is not configured.", retryable=True, reason="card_declined"
+        )
 
     unit_amount_cents = int(amount * 100)
     try:
@@ -460,18 +527,17 @@ def create_off_session_payment_intent(
             metadata=metadata or {},
         )
     except Exception as exc:
-        # Stripe SDK raises stripe.error.CardError for declines and
-        # AuthenticationRequired for 3DS-only cards. We treat all as
-        # RuntimeError so the caller can decide how to surface; the
-        # webhook handler for payment_intent.payment_failed also
-        # auto-disables auto_reload on the wallet row.
+        # Classify so the caller (shared.wallet.auto_reload_if_needed)
+        # can tell a bad saved card from a transient Stripe outage.
         logger.warning(
             "Off-session PI dispatch failed customer=%s pm=%s amount=%s: %s",
             stripe_customer_id, payment_method_id, amount, exc,
             exc_info=True,
         )
-        raise RuntimeError(
-            f"Off-session PaymentIntent failed: {exc}"
+        retryable, reason = _classify_off_session_error(exc)
+        raise OffSessionChargeError(
+            f"Off-session PaymentIntent failed: {exc}",
+            retryable=retryable, reason=reason,
         ) from exc
 
     logger.info(

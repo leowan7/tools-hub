@@ -141,30 +141,18 @@ def _is_step_up(last_tier: Optional[str], next_tier: str) -> bool:
 
 
 def _wallet_30d_spend_usd(user_id: str) -> Decimal:
-    """Sum of ``charge`` and ``absorbed_variance`` over the last 30 days."""
-    client = get_service_client()
-    if client is None:
-        return Decimal("0")
+    """Net USD a user spent on jobs over the last 30 days.
+
+    Delegates to the canonical net-spend formula in
+    :func:`shared.wallet._net_spend_usd` so the funnel tiers, the daily
+    cap, and the wallet overview all measure spend the same way. The
+    previous ``charge`` + ``absorbed_variance`` sum effectively never
+    crossed a tier: job spend lands in ``hold`` rows, not ``charge``.
+    """
+    from shared.wallet import _net_spend_usd  # noqa: PLC0415
+
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-    try:
-        response = (
-            client.table("wallet_transactions")
-            .select("amount_usd")
-            .eq("user_id", user_id)
-            .in_("kind", ["charge", "absorbed_variance"])
-            .gte("created_at", cutoff.isoformat())
-            .execute()
-        )
-        rows = list(getattr(response, "data", None) or [])
-        return sum(
-            Decimal(str(r.get("amount_usd") or 0)).copy_abs() for r in rows
-        )
-    except Exception:
-        logger.warning(
-            "wallet_30d_spend_usd lookup failed for %s",
-            user_id, exc_info=True,
-        )
-        return Decimal("0")
+    return _net_spend_usd(user_id, cutoff)
 
 
 def _last_funnel_tier(user_id: str) -> Optional[str]:

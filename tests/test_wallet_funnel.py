@@ -111,8 +111,15 @@ def client():
 
 @pytest.fixture(autouse=True)
 def patch_client(client):
+    # wallet_funnel delegates 30-day spend to shared.wallet._net_spend_usd,
+    # so the wallet (and credits) service-client lookups must point at the
+    # same fake, not just wallet_funnel's own.
     with patch(
         "shared.wallet_funnel.get_service_client", return_value=client
+    ), patch(
+        "shared.wallet.get_service_client", return_value=client
+    ), patch(
+        "shared.credits.get_service_client", return_value=client
     ):
         yield client
 
@@ -141,11 +148,17 @@ def email_log():
 USER = "00000000-0000-0000-0000-0000000000aa"
 
 
-def _add_charge(client: _FakeClient, amount_usd: float, created_at: str = "2026-05-12T00:00:00+00:00") -> None:
+def _add_spend(client: _FakeClient, amount_usd: float, created_at: str = "2026-05-12T00:00:00+00:00") -> None:
+    """Seed a job's hold row -- where job spend lands in the ledger.
+
+    The funnel reads net spend via shared.wallet._net_spend_usd, which
+    sums holds (net of releases and charges); a bare charge row is not a
+    realistic stand-in for job spend.
+    """
     client.store["wallet_transactions"].append(
         {
             "user_id": USER,
-            "kind": "charge",
+            "kind": "hold",
             "amount_usd": float(amount_usd),
             "created_at": created_at,
         }
@@ -195,7 +208,7 @@ def test_step_up_allows_higher_tier():
 
 
 def test_no_alert_when_spend_below_active_threshold(client, email_log):
-    _add_charge(client, 100)
+    _add_spend(client, 100)
     tier = _maybe_trigger_funnel_alerts(USER)
     assert tier is None
     assert email_log == []
@@ -203,7 +216,7 @@ def test_no_alert_when_spend_below_active_threshold(client, email_log):
 
 
 def test_active_project_threshold_fires(client, email_log):
-    _add_charge(client, 1200)
+    _add_spend(client, 1200)
     tier = _maybe_trigger_funnel_alerts(USER)
     assert tier == "active_project"
     assert email_log[0][0] == "send_pilot_intro_email"
@@ -211,21 +224,21 @@ def test_active_project_threshold_fires(client, email_log):
 
 
 def test_sales_qualified_threshold_fires(client, email_log):
-    _add_charge(client, 6000)
+    _add_spend(client, 6000)
     tier = _maybe_trigger_funnel_alerts(USER)
     assert tier == "sales_qualified"
     assert email_log[0][0] == "alert_sales_slack"
 
 
 def test_high_value_threshold_fires(client, email_log):
-    _add_charge(client, 12000)
+    _add_spend(client, 12000)
     tier = _maybe_trigger_funnel_alerts(USER)
     assert tier == "high_value"
     assert email_log[0][0] == "alert_sales_slack_high"
 
 
 def test_dedup_blocks_repeat_alert_at_same_tier(client, email_log):
-    _add_charge(client, 1500)
+    _add_spend(client, 1500)
     first = _maybe_trigger_funnel_alerts(USER)
     second = _maybe_trigger_funnel_alerts(USER)
     assert first == "active_project"
@@ -235,10 +248,10 @@ def test_dedup_blocks_repeat_alert_at_same_tier(client, email_log):
 
 
 def test_step_up_from_active_to_sales(client, email_log):
-    _add_charge(client, 1500)
+    _add_spend(client, 1500)
     first = _maybe_trigger_funnel_alerts(USER)
     assert first == "active_project"
-    _add_charge(client, 5500)  # now total spend is 7000
+    _add_spend(client, 5500)  # now total spend is 7000
     second = _maybe_trigger_funnel_alerts(USER)
     assert second == "sales_qualified"
     assert [e[0] for e in email_log] == [
@@ -251,7 +264,7 @@ def test_step_up_skips_intermediate_tier_when_user_spends_big(
     client, email_log
 ):
     """A first-time user crossing all three thresholds at once fires the top."""
-    _add_charge(client, 15000)
+    _add_spend(client, 15000)
     tier = _maybe_trigger_funnel_alerts(USER)
     assert tier == "high_value"
     assert email_log[0][0] == "alert_sales_slack_high"
@@ -259,7 +272,7 @@ def test_step_up_skips_intermediate_tier_when_user_spends_big(
 
 def test_handler_missing_does_not_crash(client):
     """When :func:`_resolve_handler` returns None we log and skip."""
-    _add_charge(client, 1500)
+    _add_spend(client, 1500)
     with patch.object(wallet_funnel, "_resolve_handler", return_value=None):
         tier = _maybe_trigger_funnel_alerts(USER)
     assert tier is None
