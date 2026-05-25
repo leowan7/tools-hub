@@ -164,7 +164,7 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
       <p style="font-size:13px;color:#666;">
         Job <code>{job.id}</code> · preset <code>{job.preset}</code> ·
-        {job.credits_cost} credits · submitted {(job.created_at or '')[:19]}
+        submitted {(job.created_at or '')[:19]}
       </p>
       <p style="font-size:12px;color:#999;">
         Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">tools.ranomics.com</a>
@@ -187,7 +187,7 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
         f"{summary}\n\n"
         f"{link_label}: {job_url}\n\n"
         f"Job {job.id} · preset {job.preset} · "
-        f"{job.credits_cost} credits · submitted {(job.created_at or '')[:19]}\n\n"
+        f"submitted {(job.created_at or '')[:19]}\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
 
