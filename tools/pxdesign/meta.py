@@ -54,21 +54,18 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
         "slug": "smoke",
         "label": "Smoke",
-        "credits": "8",
         "runtime": "~17 min",
         "target": "PD-L1 IgV reference (baked)",
     },
     {
         "slug": "mini_pilot",
         "label": "Preview",
-        "credits": "16",
         "runtime": "~35 min",
         "target": "PD-L1 IgV reference (baked)",
     },
     {
         "slug": "pilot",
         "label": "Pilot",
-        "credits": "15",
         "runtime": "30–60 min",
         "target": "Your uploaded target",
     },
@@ -115,14 +112,14 @@ about: dict = {
             "name": "Number of designs",
             "explanation": (
                 "How many candidates to score. Higher counts increase "
-                "credits and runtime linearly."
+                "cost and runtime linearly."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "credits": 8, "typical": "~17 min"},
-        {"preset": "mini_pilot", "credits": 16, "typical": "~35 min"},
-        {"preset": "pilot", "credits": 15, "typical": "30&ndash;60 min"},
+        {"preset": "smoke", "typical": "~17 min"},
+        {"preset": "mini_pilot", "typical": "~35 min"},
+        {"preset": "pilot", "typical": "30&ndash;60 min"},
     ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, pAE, and downloadable PDBs. "

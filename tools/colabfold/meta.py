@@ -7,7 +7,7 @@ Parallel to ``tools/mpnn/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"credits": int, "typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
     paper_citation    — short inline citation.
     paper_url         — Nature Methods / bioRxiv permalink.
     github_url        — upstream ColabFold repository.
@@ -19,11 +19,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Credits + typical wall-clock. Source of truth for the credit counts is
-# the ``Preset.credits_cost`` values in ``__init__.py`` — keep in sync.
+# Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "smoke": {"credits": 0, "typical_minutes": "1-2"},
-    "standalone": {"credits": 2, "typical_minutes": "1-2"},
+    "smoke": {"typical_minutes": "1-2"},
+    "standalone": {"typical_minutes": "1-2"},
 }
 
 paper_citation: str = "Mirdita et al., Nature Methods 2022"
@@ -73,8 +72,8 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "credits": 0, "typical": "1&ndash;2 min"},
-        {"preset": "standalone", "credits": 2, "typical": "1&ndash;2 min"},
+        {"preset": "smoke", "typical": "1&ndash;2 min"},
+        {"preset": "standalone", "typical": "1&ndash;2 min"},
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT and PAE. Download as "

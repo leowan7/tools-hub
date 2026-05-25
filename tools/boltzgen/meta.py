@@ -7,7 +7,7 @@ contract.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"credits": int, "typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
                          ``typical_minutes`` is a human-readable range
                          (e.g. ``"15-60"``).
     paper_citation    — short inline citation.
@@ -23,9 +23,9 @@ from __future__ import annotations
 from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "smoke": {"credits": 3, "typical_minutes": "5"},
-    "mini_pilot": {"credits": 10, "typical_minutes": "10"},
-    "pilot": {"credits": 10, "typical_minutes": "15-60"},
+    "smoke": {"typical_minutes": "5"},
+    "mini_pilot": {"typical_minutes": "10"},
+    "pilot": {"typical_minutes": "15-60"},
 }
 
 paper_citation: str = "Wohlwend et al., MIT (2024)"
@@ -78,14 +78,14 @@ about: dict = {
             "name": "Budget (designs)",
             "explanation": (
                 "Number of designs Boltz-2 generates and ranks. Higher "
-                "budgets cost more credits and run longer."
+                "budgets cost more and run longer."
             ),
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "credits": 3, "typical": "~5 min"},
-        {"preset": "mini_pilot", "credits": 10, "typical": "~10 min"},
-        {"preset": "pilot", "credits": 10, "typical": "15&ndash;60 min"},
+        {"preset": "smoke", "typical": "~5 min"},
+        {"preset": "mini_pilot", "typical": "~10 min"},
+        {"preset": "pilot", "typical": "15&ndash;60 min"},
     ],
     "output_summary": (
         "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, "

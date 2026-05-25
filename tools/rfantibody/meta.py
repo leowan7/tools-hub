@@ -8,7 +8,7 @@ own ``meta.py`` alongside this one.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"credits": int, "typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
                          ``typical_minutes`` is a human-readable range (e.g.
                          ``"15-60"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
@@ -25,13 +25,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Credits and typical wall-clock for each preset. Source of truth for the
-# credit counts is the ``Preset.credits_cost`` values in ``__init__.py`` —
-# keep in sync by eye when either file changes.
+# Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "smoke": {"credits": 2, "typical_minutes": "3"},
-    "mini_pilot": {"credits": 8, "typical_minutes": "7"},
-    "pilot": {"credits": 15, "typical_minutes": "15-60"},
+    "smoke": {"typical_minutes": "3"},
+    "mini_pilot": {"typical_minutes": "7"},
+    "pilot": {"typical_minutes": "15-60"},
 }
 
 paper_citation: str = "Bennett et al., bioRxiv 2024"
@@ -91,9 +89,9 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "credits": 2, "typical": "~3 min"},
-        {"preset": "mini_pilot", "credits": 8, "typical": "~7 min"},
-        {"preset": "pilot", "credits": 15, "typical": "15&ndash;60 min"},
+        {"preset": "smoke", "typical": "~3 min"},
+        {"preset": "mini_pilot", "typical": "~7 min"},
+        {"preset": "pilot", "typical": "15&ndash;60 min"},
     ],
     "output_summary": (
         "Ranked antibody candidates with pAE, pLDDT, ipAE, and "

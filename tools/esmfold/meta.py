@@ -7,7 +7,7 @@ Parallel to ``tools/colabfold/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    - {preset_slug: {"credits": int, "typical_minutes": str}}.
+    PRESET_RUNTIME    - {preset_slug: {"typical_minutes": str}}.
     paper_citation    - short inline citation.
     paper_url         - Science / bioRxiv permalink.
     github_url        - upstream ESM repository.
@@ -19,11 +19,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Credits + typical wall-clock. Source of truth for the credit counts is
-# the ``Preset.credits_cost`` values in ``__init__.py`` - keep in sync.
+# Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "smoke": {"credits": 0, "typical_minutes": "0.5-1"},
-    "standalone": {"credits": 1, "typical_minutes": "0.5-1"},
+    "smoke": {"typical_minutes": "0.5-1"},
+    "standalone": {"typical_minutes": "0.5-1"},
 }
 
 paper_citation: str = "Lin et al., Science 2023"
@@ -66,8 +65,8 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "credits": 0, "typical": "~30 s"},
-        {"preset": "standalone", "credits": 1, "typical": "~30 s"},
+        {"preset": "smoke", "typical": "~30 s"},
+        {"preset": "standalone", "typical": "~30 s"},
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT. No PAE (single-sequence "

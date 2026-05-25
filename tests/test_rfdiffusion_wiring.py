@@ -35,18 +35,6 @@ def test_preset_slugs_and_count():
     assert slugs == ["smoke", "mini_pilot", "pilot"]
 
 
-def test_preset_credits_match_meta_table():
-    """Credit costs in adapter must match meta.preset_runtime_rows."""
-    by_slug = {p.slug: p for p in adapter_mod.adapter.presets}
-    for row in adapter_meta.preset_runtime_rows:
-        slug = row["slug"]
-        expected_credits = int(row["credits"])
-        assert by_slug[slug].credits_cost == expected_credits, (
-            f"Mismatch for {slug}: adapter has {by_slug[slug].credits_cost}, "
-            f"meta has {expected_credits}"
-        )
-
-
 def test_pilot_preset_marked_long_running_and_requires_pdb():
     """Pilot must trigger the email-on-complete UX and PDB upload field."""
     pilot = next(p for p in adapter_mod.adapter.presets if p.slug == "pilot")

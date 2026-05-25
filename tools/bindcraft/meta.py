@@ -7,7 +7,7 @@ contract. Parallel to ``tools/rfantibody/meta.py``.
 
 Shapes
 ------
-    PRESET_RUNTIME    — {preset_slug: {"credits": int, "typical_minutes": str}}.
+    PRESET_RUNTIME    — {preset_slug: {"typical_minutes": str}}.
                          ``typical_minutes`` is a human-readable range (e.g.
                          ``"45"``) pulled straight from adapter copy.
     paper_citation    — short inline citation.
@@ -24,13 +24,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Credits and typical wall-clock for each preset. Source of truth for the
-# credit counts is the ``Preset.credits_cost`` values in ``__init__.py`` —
-# keep in sync by eye when either file changes. BindCraft only ships a
-# single ``pilot`` preset today; smoke / mini_pilot are intentionally not
-# offered because the pipeline cost floor is ~45 min on A100-80GB.
+# Typical wall-clock per preset. BindCraft only ships a single ``pilot``
+# preset today; smoke / mini_pilot are intentionally not offered because
+# the pipeline cost floor is ~45 min on A100-80GB.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"credits": 20, "typical_minutes": "45"},
+    "pilot": {"typical_minutes": "45"},
 }
 
 paper_citation: str = "Pacesa et al., bioRxiv 2024"
@@ -91,7 +89,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "credits": 20, "typical": "~45 min"},
+        {"preset": "pilot", "typical": "~45 min"},
     ],
     "output_summary": (
         "Filtered candidate binders with ipTM, pLDDT, shape complementarity, "
