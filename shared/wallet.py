@@ -693,6 +693,11 @@ def auto_reload_if_needed(user_id: str) -> Optional[str]:
     wallet = _wallet(user_id)
     if not wallet:
         return "missing_service_client"
+    if wallet.get("wallet_frozen"):
+        # A frozen wallet (chargeback dispute) must not auto-reload, even
+        # if a settle from a job that submitted just before the freeze
+        # lands afterwards.
+        return "wallet_frozen"
     if not wallet.get("auto_reload_enabled"):
         return "not_enabled"
     threshold = Decimal(str(wallet.get("auto_reload_threshold_usd") or 0))
