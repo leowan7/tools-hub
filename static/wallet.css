@@ -637,3 +637,23 @@
     font-size: 0.82rem;
   }
 }
+
+/* Navbar wallet chip — shown in the global header for logged-in users.
+   Default state reads like a quiet inline balance; below-$5 state turns
+   the chip warning-toned and exposes a paired Top-up link. */
+.nav-wallet-chip {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  font-weight: 500;
+}
+.nav-wallet-low {
+  color: #D4A14B;
+}
+.nav-wallet-topup {
+  color: var(--accent-text, #2B9E7E);
+  border: 1px solid var(--accent-text, #2B9E7E);
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+

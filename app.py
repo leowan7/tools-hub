@@ -661,6 +661,7 @@ def create_app() -> Flask:
     def inject_workspace_context():
         from datetime import datetime, timezone  # noqa: PLC0415
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.credits import get_service_client  # noqa: PLC0415
         from shared.workspaces import active_workspaces_count  # noqa: PLC0415
 
         email = session.get("user_email") or ""
@@ -669,6 +670,7 @@ def create_app() -> Flask:
             "active_workspaces_count": 0,
             "ranomics_user_id": None,
             "is_staff": email in STAFF_EMAILS,
+            "nav_wallet_usd": None,
         }
         if not email:
             return base
@@ -677,6 +679,28 @@ def create_app() -> Flask:
             return base
         base["active_workspaces_count"] = active_workspaces_count(ctx.user_id)
         base["ranomics_user_id"] = ctx.user_id
+
+        # Wallet balance for the navbar chip. Best-effort: a Supabase
+        # hiccup must not break header rendering, so we swallow failures
+        # and leave the chip absent.
+        try:
+            client = get_service_client()
+            if client is not None:
+                resp = (
+                    client.table("user_wallets")
+                    .select("balance_usd")
+                    .eq("user_id", ctx.user_id)
+                    .maybe_single()
+                    .execute()
+                )
+                row = getattr(resp, "data", None) or {}
+                if row.get("balance_usd") is not None:
+                    base["nav_wallet_usd"] = float(row["balance_usd"])
+        except Exception:
+            logger.debug(
+                "nav wallet read failed for %s", ctx.user_id, exc_info=True
+            )
+
         return base
 
     # Stripe webhook — mounted at /webhooks/stripe. Signature verification
