@@ -252,6 +252,23 @@ def mark_timeout(
     )
 
 
+def timeout_stuck_job(job_id: str) -> bool:
+    """CAS-timeout a stuck job and release its wallet hold.
+
+    Bundles ``mark_timeout`` with ``_settle_wallet_hold_for_completed_job``
+    so the cron sweeper does not reach into private internals. Returns
+    True iff this caller actually moved the row — a concurrent webhook
+    or user cancel that lands first leaves the wallet path to that
+    writer (it is CAS-guarded the same way ``cancel_job`` is).
+    """
+    if not mark_timeout(job_id):
+        return False
+    fresh = get_job(job_id)
+    if fresh is not None:
+        _settle_wallet_hold_for_completed_job(fresh)
+    return True
+
+
 def mark_cancelled(
     job_id: str,
     *,

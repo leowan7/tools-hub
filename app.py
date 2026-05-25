@@ -3671,6 +3671,30 @@ def create_app() -> Flask:
         # Use stdout so Railway cron logs show the outcome line.
         print(f"digest:send {click_msg}", flush=True)
 
+    @flask_app.cli.command("jobs:sweep-stuck")
+    def cli_sweep_stuck():
+        """Terminalise stuck pending/running jobs and release their holds.
+
+        Usage::
+
+            flask jobs:sweep-stuck
+
+        Override the age thresholds with STUCK_PENDING_AGE_MINUTES
+        (default 30) and STUCK_RUNNING_AGE_HOURS (default 6).
+        """
+        from cron.sweep_stuck_jobs import sweep_stuck_jobs  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = sweep_stuck_jobs()
+        print(
+            f"jobs:sweep-stuck pending={summary['pending_swept']} "
+            f"running={summary['running_swept']} "
+            f"errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
     return flask_app
 
 
