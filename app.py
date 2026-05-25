@@ -855,26 +855,10 @@ def create_app() -> Flask:
                 next="/",
             )
 
-        # Grant 10 signup-bonus credits immediately. The row lands
-        # even if Supabase requires email confirmation before sign-in;
-        # the balance is waiting when the user first logs in.
-        if result.user_id:
-            from shared.credits import record_grant  # noqa: PLC0415
-            try:
-                record_grant(
-                    result.user_id,
-                    10,
-                    reason="signup bonus",
-                    metadata={
-                        "source": "signup",
-                        "signup_quality": result.signup_quality,
-                    },
-                )
-            except Exception:
-                logger.warning(
-                    "Signup-bonus grant failed for %s", email,
-                    exc_info=True,
-                )
+        # Wallet signup credit ($5 by default) is granted lazily when the
+        # user_wallets row is first created on sign-in
+        # (shared.wallet._create_wallet_with_signup_credit). No legacy
+        # credits-ledger grant on this path.
 
         log_event(
             event_type="signup_completed",
@@ -896,7 +880,7 @@ def create_app() -> Flask:
             email=email,
             next="/",
             success_msg=(
-                "Account created with 10 free credits. "
+                "Account created with $5 of compute credit. "
                 "Sign in to get started."
             ),
         )
