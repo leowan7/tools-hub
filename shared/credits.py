@@ -1,40 +1,29 @@
-"""Credits middleware for the Ranomics tools hub.
+"""Internal margin-accounting ledger for the Ranomics tools hub.
 
-Wave-0 Stream A contract. Every GPU tool route wraps its handler with
-``@requires_credits(n)``. The decorator:
+This module used to be the customer-facing credits middleware. After
+the wallet pivot, the USD wallet (``shared.wallet``) is the sole money
+path: every GPU job places a wallet hold and the wallet settles it on
+completion. The credits ledger no longer gates anything user-visible.
 
-1. Resolves the current user via the Flask session + Supabase Auth.
-2. Reads the user's credit balance from ``public.credits_balance`` (a view
-   over the append-only ``public.credits_ledger``).
-3. If the balance is below ``n``, short-circuits with HTTP 402 and a
-   friendly redirect to ``/account`` so the user can top up.
-4. Otherwise runs the handler. If the handler returns successfully, a
-   ``spend`` entry is recorded on the ledger (negative delta).
+What remains here is the **internal accounting ledger** consumed by
+``shared.workspaces``: workspace activations write a ``grant`` row sized
+to the Modal compute cap purchased, and per-job workspace charges write
+a ``spend`` row, so the ledger continues to reflect total compute
+purchased vs. consumed for margin reporting. Customers do not see any
+of this — the wallet is what they top up and spend against.
 
-The ledger is append-only and double-entry; we never mutate existing rows.
-Refunds land as a separate ``refund`` row with a positive delta. Balance is
-always ``SUM(delta)`` over the ledger — single source of truth.
-
-Design notes
-------------
-* Writes go through the *service-role* Supabase client so RLS does not block
-  them. Balance reads can also use the service role since we filter by
-  ``user_id`` in Python.
-* No pre-auth hold yet. Wave-2 adds a reserve/commit pattern when Modal
-  submissions go live; for Wave-0 we spend on handler success, which is
-  enough to prove the plumbing end-to-end.
-* ``NotImplementedError`` is not caught — a tool that actually calls Modal
-  should raise a typed error, not return success.
-
-Usage
------
-    from shared.credits import requires_credits
-
-    @app.route("/tools/example-gpu", methods=["POST"])
-    @login_required
-    @requires_credits(1, tool="example-gpu", reason="example-gpu pilot")
-    def submit_example():
-        ...
+Public surface still in use
+---------------------------
+* ``get_service_client`` — service-role Supabase client. Shared with
+  ``shared.email``, ``shared.jobs``, ``shared.workspaces`` for any
+  ledger / table read that needs to bypass RLS.
+* ``UserContext`` + ``load_user_context`` — session-bound user resolution
+  (id, email, tier). The customer-facing balance now lives in the wallet
+  and is read separately.
+* ``record_grant`` / ``record_spend`` — workspace internal-margin writes.
+* ``recent_ledger`` — admin user-detail view.
+* ``get_tier`` — tier-label read used by admin views and
+  ``load_user_context``.
 """
 
 from __future__ import annotations
@@ -42,10 +31,9 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from functools import wraps
-from typing import Any, Callable, Optional
+from typing import Optional
 
-from flask import redirect, session, url_for
+from flask import session
 
 from shared.supabase_client import get_supabase_client
 
@@ -85,7 +73,7 @@ def get_service_client():
 
 
 # ---------------------------------------------------------------------------
-# User + balance helpers
+# User context helpers
 # ---------------------------------------------------------------------------
 
 
@@ -96,7 +84,6 @@ class UserContext:
     user_id: str
     email: str
     tier: str
-    balance: int
 
 
 def _resolve_user_id(email: str) -> Optional[str]:
@@ -124,34 +111,6 @@ def _resolve_user_id(email: str) -> Optional[str]:
     return None
 
 
-def get_balance(user_id: str) -> int:
-    """Return the current credit balance for the given user id.
-
-    Reads the ``credits_balance`` view so the math stays in one place.
-    Returns 0 if the user has no ledger entries yet, or on read failure
-    (fail-closed — we would rather block a job than over-serve credits).
-    """
-    client = get_service_client()
-    if client is None:
-        return 0
-    try:
-        response = (
-            client.table("credits_balance")
-            .select("balance")
-            .eq("user_id", user_id)
-            .maybe_single()
-            .execute()
-        )
-        data = getattr(response, "data", None)
-        if data and "balance" in data:
-            return int(data["balance"] or 0)
-    except Exception:
-        logger.warning(
-            "Could not read credit balance for user %s", user_id, exc_info=True
-        )
-    return 0
-
-
 def get_tier(user_id: str) -> str:
     """Return the current tier label for the user ('free' if none)."""
     client = get_service_client()
@@ -176,7 +135,7 @@ def get_tier(user_id: str) -> str:
 
 
 def load_user_context() -> Optional[UserContext]:
-    """Resolve the current signed-in user's id, tier, and balance.
+    """Resolve the current signed-in user's id, tier, and email.
 
     Returns None if no user is signed in or if Supabase is misconfigured.
     """
@@ -184,8 +143,7 @@ def load_user_context() -> Optional[UserContext]:
     if not email:
         return None
     # Login route stashes user_id at sign-in time; using it here avoids a
-    # paginated admin.list_users() round-trip on every authenticated render
-    # (which silently returned None and made the navbar show 0 credits).
+    # paginated admin.list_users() round-trip on every authenticated render.
     user_id = session.get("user_id") or _resolve_user_id(email)
     if not user_id:
         logger.warning(
@@ -197,12 +155,11 @@ def load_user_context() -> Optional[UserContext]:
         user_id=user_id,
         email=email,
         tier=get_tier(user_id),
-        balance=get_balance(user_id),
     )
 
 
 # ---------------------------------------------------------------------------
-# Ledger writers
+# Internal margin-accounting ledger writers (used by shared.workspaces)
 # ---------------------------------------------------------------------------
 
 
@@ -215,10 +172,12 @@ def record_spend(
     job_id: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> bool:
-    """Record a ``spend`` entry on the ledger.
+    """Record a ``spend`` entry on the internal credits_ledger.
 
-    ``amount`` is the positive credit count; we store it as ``-amount`` to
-    match the ``kind='spend' AND delta<0`` CHECK constraint.
+    ``amount`` is the positive credit count; stored as ``-amount`` to match
+    the ``kind='spend' AND delta<0`` CHECK constraint. Used by
+    ``shared.workspaces`` to track per-job compute consumed against a
+    workspace's purchased Modal cap, for margin reporting.
     """
     if amount <= 0:
         raise ValueError("Spend amount must be positive.")
@@ -254,7 +213,11 @@ def record_grant(
     stripe_event_id: Optional[str] = None,
     metadata: Optional[dict] = None,
 ) -> bool:
-    """Record a ``grant`` entry on the ledger (positive delta)."""
+    """Record a ``grant`` entry on the internal credits_ledger.
+
+    Used by ``shared.workspaces`` on workspace activation to log the
+    Modal compute cap purchased (1 credit per USD), for margin reporting.
+    """
     if amount <= 0:
         raise ValueError("Grant amount must be positive.")
     client = get_service_client()
@@ -279,74 +242,8 @@ def record_grant(
         return False
 
 
-def record_refund(
-    user_id: str,
-    amount: int,
-    *,
-    tool: str,
-    reason: str,
-    job_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> bool:
-    """Record a ``refund`` entry (positive delta) tied to a tool run."""
-    if amount <= 0:
-        raise ValueError("Refund amount must be positive.")
-    client = get_service_client()
-    if client is None:
-        return False
-    row = {
-        "user_id": user_id,
-        "kind": "refund",
-        "delta": amount,
-        "reason": reason,
-        "tool": tool,
-        "job_id": job_id,
-        "metadata": metadata or {},
-    }
-    try:
-        client.table("credits_ledger").insert(row).execute()
-        return True
-    except Exception:
-        logger.error(
-            "Failed to record refund for user %s", user_id, exc_info=True
-        )
-        return False
-
-
-def get_spent_for_job(job_id: str) -> int:
-    """Sum the ``spend`` ledger entries for a single job; returns positive int.
-
-    Used by ``cancel_job`` to refund only the credits the user was actually
-    debited. Without this guard, an orphaned ``tool_jobs`` row (created by
-    a submit handler that crashed before ``record_spend`` ran) would still
-    refund ``credits_cost`` on cancel, minting credits for free.
-
-    Returns 0 when the ledger has no spend entry for ``job_id``.
-    """
-    if not job_id:
-        return 0
-    client = get_service_client()
-    if client is None:
-        return 0
-    try:
-        response = (
-            client.table("credits_ledger")
-            .select("delta")
-            .eq("job_id", job_id)
-            .eq("kind", "spend")
-            .execute()
-        )
-        rows = list(getattr(response, "data", None) or [])
-        return -sum(int(r["delta"]) for r in rows)
-    except Exception:
-        logger.warning(
-            "Failed to query spend ledger for job %s", job_id, exc_info=True
-        )
-        return 0
-
-
 def recent_ledger(user_id: str, limit: int = 20) -> list[dict]:
-    """Return the most recent ledger entries for a user."""
+    """Return the most recent ledger entries for a user. Admin view only."""
     client = get_service_client()
     if client is None:
         return []
@@ -367,62 +264,6 @@ def recent_ledger(user_id: str, limit: int = 20) -> list[dict]:
             exc_info=True,
         )
         return []
-
-
-# ---------------------------------------------------------------------------
-# Decorator
-# ---------------------------------------------------------------------------
-
-
-def requires_credits(
-    amount: int,
-    *,
-    tool: str = "unknown",
-    reason: Optional[str] = None,
-) -> Callable:
-    """Flask decorator — block the route if the user cannot afford ``amount``.
-
-    On success, record a matching ``spend`` entry. On insufficient balance,
-    redirect to ``/account`` (which will render the credits ledger + billing
-    link). If the wrapped handler raises, we do NOT charge — the spend is
-    recorded only when the handler returns a truthy response.
-    """
-    if amount <= 0:
-        raise ValueError("requires_credits amount must be positive.")
-
-    def decorator(f: Callable) -> Callable:
-        @wraps(f)
-        def wrapped(*args: Any, **kwargs: Any):
-            ctx = load_user_context()
-            if ctx is None:
-                # login_required should have caught this; be defensive.
-                return redirect(url_for("login"))
-
-            if ctx.balance < amount:
-                logger.info(
-                    "Insufficient credits: user=%s need=%d have=%d tool=%s",
-                    ctx.user_id,
-                    amount,
-                    ctx.balance,
-                    tool,
-                )
-                return redirect(url_for("account", insufficient_credits=1))
-
-            response = f(*args, **kwargs)
-
-            # Only charge on handler success. A handler that raises will
-            # bubble up before we record the spend.
-            record_spend(
-                ctx.user_id,
-                amount,
-                tool=tool,
-                reason=reason or f"{tool} run",
-            )
-            return response
-
-        return wrapped
-
-    return decorator
 
 
 # ---------------------------------------------------------------------------

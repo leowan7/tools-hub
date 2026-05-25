@@ -207,8 +207,8 @@ def idempotent(
 ) -> Callable:
     """Flask decorator — dedup replays of a mutating route.
 
-    Place ABOVE ``@requires_credits`` so cached replays do not burn
-    additional credits. The first request records the spend; subsequent
+    Place ABOVE ``@requires_wallet`` so cached replays do not place a
+    second wallet hold. The first request places the hold; subsequent
     replays return the stored response untouched.
     """
 
