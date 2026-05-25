@@ -1550,6 +1550,27 @@ def create_app() -> Flask:
             "wallet_frozen": wallet_frozen,
         })
 
+    @flask_app.route("/api/wallet/balance", methods=["GET"])
+    def api_wallet_balance():
+        """Return the current wallet balance for the logged-in user.
+
+        Used by the nav-chip JS to refresh after a top-up redirect or
+        window-focus without forcing a full page reload. Read-only and
+        idempotent. Returns 401 if no session.
+
+        Response shape::
+
+            {"balance_usd": "5.0000", "wallet_frozen": false}
+        """
+        user_id = session.get("user_id")
+        if not user_id:
+            return jsonify({"error": "unauthorized"}), 401
+        wallet = get_or_create_wallet(user_id) or {}
+        return jsonify({
+            "balance_usd": str(Decimal(str(wallet.get("balance_usd") or 0))),
+            "wallet_frozen": bool(wallet.get("wallet_frozen")),
+        })
+
     @flask_app.route("/account/topup-complete", methods=["GET"])
     @login_required
     def topup_complete():
@@ -1619,6 +1640,9 @@ def create_app() -> Flask:
             )
 
         wallet = get_or_create_wallet(ctx.user_id) if ctx else None
+        # Pass ?topup=success on the return URL so wallet-nav.js polls the
+        # balance while the Stripe webhook lands — the user can otherwise
+        # see a stale chip for a few seconds after redirect.
         return render_template(
             "wallet/topup.html",
             topup_success=True,
@@ -1626,7 +1650,7 @@ def create_app() -> Flask:
             wallet=wallet,
             return_tool=return_tool,
             return_tool_url=(
-                url_for("tool_form", tool=return_tool)
+                url_for("tool_form", tool=return_tool) + "?topup=success"
                 if return_tool else None
             ),
         )

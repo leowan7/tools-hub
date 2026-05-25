@@ -635,9 +635,11 @@ class TestTopupCompleteValid:
             )
         kwargs = render.call_args.kwargs
         # The decorator forwards the original tool slug so the success
-        # page can offer 'Return to <tool>'.
+        # page can offer 'Return to <tool>'. The ?topup=success query
+        # tail is appended so wallet-nav.js polls the balance until the
+        # Stripe webhook lands.
         assert kwargs["return_tool"] == "bindcraft"
-        assert kwargs["return_tool_url"] == "/tools/bindcraft"
+        assert kwargs["return_tool_url"] == "/tools/bindcraft?topup=success"
 
 
 class TestTopupCompleteInvalid:
