@@ -35,7 +35,7 @@
             <th style="padding:.5rem .75rem;">Quality</th>
             <th style="padding:.5rem .75rem;">Purpose</th>
             <th style="padding:.5rem .75rem;">Signed up</th>
-            <th style="padding:.5rem .75rem;text-align:right;">Balance</th>
+            <th style="padding:.5rem .75rem;text-align:right;">Wallet</th>
             <th style="padding:.5rem .75rem;text-align:right;">Runs 30d</th>
             <th style="padding:.5rem .75rem;text-align:right;">Events 30d</th>
             <th style="padding:.5rem .75rem;">Last activity</th>
@@ -55,7 +55,7 @@
               <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">
                 {{ u.created_at[:10] if u.created_at else '—' }}
               </td>
-              <td style="padding:.5rem .75rem;text-align:right;">{{ u.balance }}</td>
+              <td style="padding:.5rem .75rem;text-align:right;">${{ '%.2f'|format(u.wallet_usd or 0) }}</td>
               <td style="padding:.5rem .75rem;text-align:right;">{{ u.runs_30d }}</td>
               <td style="padding:.5rem .75rem;text-align:right;">{{ u.events_30d }}</td>
               <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">

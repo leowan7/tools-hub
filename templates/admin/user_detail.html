@@ -7,7 +7,7 @@
   <h1>{{ target.email or target.user_id }}</h1>
   <p class="subtitle">
     Signed up {{ target.created_at[:10] if target.created_at else '—' }} ·
-    {{ target.balance }} credits ·
+    ${{ '%.2f'|format(target.wallet_usd or 0) }} wallet ·
     quality <strong>{{ target.profile.signup_quality or 'legacy' }}</strong>
     {% if target.profile.domain_class %}· domain {{ target.profile.domain_class }}{% endif %}
   </p>
@@ -56,8 +56,10 @@
                   <span style="color:#7B61FF;">event</span>
                 {% elif entry.kind == 'run' %}
                   <span style="color:#2B9E7E;">run</span>
-                {% elif entry.kind == 'credit' %}
-                  <span style="color:#D4A14B;">credit</span>
+                {% elif entry.kind == 'wallet' %}
+                  <span style="color:#D4A14B;">wallet</span>
+                {% elif entry.kind == 'ledger' %}
+                  <span style="color:var(--text-secondary);" title="Internal margin-accounting ledger — not customer-facing">ledger</span>
                 {% else %}{{ entry.kind }}{% endif %}
               </td>
               <td style="padding:.4rem .75rem;font-weight:500;">

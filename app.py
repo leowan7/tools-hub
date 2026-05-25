@@ -3339,13 +3339,16 @@ def create_app() -> Flask:
                 profiles_by_id = {r["user_id"]: r for r in profile_rows}
 
                 balance_rows = (
-                    client.table("credits_balance")
-                    .select("user_id,balance")
+                    client.table("user_wallets")
+                    .select("user_id,balance_usd")
                     .execute()
                     .data
                     or []
                 )
-                balance_by_id = {r["user_id"]: r.get("balance", 0) for r in balance_rows}
+                balance_by_id = {
+                    r["user_id"]: float(r.get("balance_usd") or 0)
+                    for r in balance_rows
+                }
 
                 event_rows = (
                     client.table("user_events")
@@ -3411,7 +3414,7 @@ def create_app() -> Flask:
                         "signup_quality": profile.get("signup_quality") or "legacy",
                         "domain_class": profile.get("domain_class") or "",
                         "purpose": profile.get("purpose"),
-                        "balance": balance_by_id.get(uid, 0),
+                        "wallet_usd": balance_by_id.get(uid, 0.0),
                         "runs_30d": run_count.get(uid, 0),
                         "events_30d": event_count.get(uid, 0),
                         "last_activity": str(last_activity)[:19] if last_activity else "",
@@ -3440,7 +3443,7 @@ def create_app() -> Flask:
             "email": None,
             "created_at": "",
             "profile": {},
-            "balance": 0,
+            "wallet_usd": 0.0,
             "timeline": [],
         }
         if client is None:
@@ -3471,16 +3474,16 @@ def create_app() -> Flask:
 
         try:
             bal = (
-                client.table("credits_balance")
-                .select("balance")
+                client.table("user_wallets")
+                .select("balance_usd")
                 .eq("user_id", user_id)
                 .maybe_single()
                 .execute()
             )
             data = getattr(bal, "data", None) or {}
-            target["balance"] = int(data.get("balance") or 0)
+            target["wallet_usd"] = float(data.get("balance_usd") or 0)
         except Exception:
-            target["balance"] = 0
+            target["wallet_usd"] = 0.0
 
         # Build a unified timeline by interleaving three sources.
         timeline: list[dict] = []
@@ -3508,7 +3511,7 @@ def create_app() -> Flask:
         try:
             runs = (
                 client.table("tool_jobs")
-                .select("id,tool,preset,status,credits_cost,created_at")
+                .select("id,tool,preset,status,gpu_seconds_used,created_at")
                 .eq("user_id", user_id)
                 .order("created_at", desc=True)
                 .limit(100)
@@ -3517,15 +3520,43 @@ def create_app() -> Flask:
                 or []
             )
             for r in runs:
+                gpu_s = r.get("gpu_seconds_used") or 0
                 timeline.append({
                     "kind": "run",
                     "label": f"{r.get('tool')} run · {r.get('status')}",
-                    "detail": f"preset={r.get('preset')} · {r.get('credits_cost')} credits",
+                    "detail": (
+                        f"preset={r.get('preset')}"
+                        + (f" · {gpu_s} gpu-sec" if gpu_s else "")
+                    ),
                     "job_id": r.get("id"),
                     "created_at": r.get("created_at"),
                 })
         except Exception:
             logger.warning("tool_jobs query failed", exc_info=True)
+        try:
+            wallet_rows = (
+                client.table("wallet_transactions")
+                .select("kind,amount_usd,job_id,gpu_seconds,created_at")
+                .eq("user_id", user_id)
+                .order("created_at", desc=True)
+                .limit(100)
+                .execute()
+                .data
+                or []
+            )
+            for w in wallet_rows:
+                amount = w.get("amount_usd") or 0
+                bits = [f"${float(amount):+.4f}"]
+                if w.get("gpu_seconds"):
+                    bits.append(f"{w.get('gpu_seconds')} gpu-sec")
+                timeline.append({
+                    "kind": "wallet",
+                    "label": f"{w.get('kind')}",
+                    "detail": " · ".join(bits),
+                    "created_at": w.get("created_at"),
+                })
+        except Exception:
+            logger.warning("wallet_transactions query failed", exc_info=True)
         try:
             ledger = (
                 client.table("credits_ledger")
@@ -3538,8 +3569,10 @@ def create_app() -> Flask:
                 or []
             )
             for l in ledger:
+                # Internal margin-accounting ledger — kept for audit but
+                # not the customer-facing money path (that's wallet_*).
                 timeline.append({
-                    "kind": "credit",
+                    "kind": "ledger",
                     "label": f"{l.get('kind')} ({l.get('delta')})",
                     "detail": l.get("reason") or "",
                     "tool": l.get("tool"),
