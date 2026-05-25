@@ -125,8 +125,7 @@ logger = logging.getLogger(__name__)
 
 # Static taglines for the hardcoded (non-adapter) tools. These three tools
 # are not part of the GPU tool_base registry, so they are added to the
-# catalog directly. Pricing strings are shown verbatim as the credit_band
-# in tile renders.
+# catalog directly.
 _HARDCODED_TOOLS: tuple[dict, ...] = (
     {
         "slug": "epitope-scout",
@@ -142,11 +141,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "category": "Scope the target",
         "smoke_runtime": "~30 s",
         "pilot_runtime": "—",
-        "smoke_credits": "Free",
-        "pilot_credits": "Free",
-        "credit_band": "Free",
         "runtime_band": "~30 s",
-        "is_free": True,
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
@@ -169,11 +164,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "category": "Check developability",
         "smoke_runtime": "<5 s",
         "pilot_runtime": "—",
-        "smoke_credits": "Free",
-        "pilot_credits": "Free",
-        "credit_band": "Free",
         "runtime_band": "<5 s",
-        "is_free": True,
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
@@ -196,11 +187,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "category": "Scope the target",
         "smoke_runtime": "<5 s",
         "pilot_runtime": "—",
-        "smoke_credits": "Free",
-        "pilot_credits": "Free",
-        "credit_band": "Free",
         "runtime_band": "<5 s",
-        "is_free": True,
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
@@ -235,9 +222,8 @@ def _build_tools_catalog() -> list[dict]:
     and the ``/tools`` discovery page.
 
     Each entry includes display name, tagline, category, route, and
-    runtime / credit bands so a single template can render the tile
-    layout, the comparison matrix, and the homepage cards from one
-    source of truth. Hardcoded tools (Epitope Scout, Developability,
+    runtime bands so a single template can render the tile layout, the
+    comparison matrix, and the homepage cards from one source of truth. Hardcoded tools (Epitope Scout, Developability,
     Library Planner) are included regardless of feature flags;
     GPU adapters are filtered through ``tool_enabled`` so a flag-off
     tool stays invisible to the catalog.
@@ -288,45 +274,6 @@ def _build_tools_catalog() -> list[dict]:
                     if legacy.get("slug") == "pilot" and legacy.get("runtime"):
                         pilot_runtime = legacy["runtime"]
 
-        # Smoke / pilot are the conventional preset slugs for composite
-        # tools. Atomic primitives (MPNN, AF2, ColabFold, ESMFold) use
-        # ``smoke`` + ``standalone`` instead. Compute the band by looking
-        # at every preset on the adapter so the catalog stays correct
-        # regardless of preset naming.
-        smoke_preset = adapter.preset_for("smoke")
-        pilot_preset = adapter.preset_for("pilot")
-        smoke_credits_int = smoke_preset.credits_cost if smoke_preset else None
-        pilot_credits_int = pilot_preset.credits_cost if pilot_preset else None
-        smoke_credits = (
-            "Free" if smoke_credits_int == 0
-            else (str(smoke_credits_int) if smoke_credits_int is not None else "—")
-        )
-        pilot_credits = (
-            str(pilot_credits_int) if pilot_credits_int is not None else "—"
-        )
-
-        all_costs = [
-            p.credits_cost for p in adapter.presets
-            if p.credits_cost is not None
-        ]
-        non_zero_costs = [c for c in all_costs if c > 0]
-        has_free_tier = any(c == 0 for c in all_costs)
-        if non_zero_costs:
-            min_cost = min(non_zero_costs)
-            max_cost = max(non_zero_costs)
-            if has_free_tier and min_cost == max_cost:
-                credit_band = f"Free or {max_cost} cr"
-            elif has_free_tier:
-                credit_band = f"Free · {min_cost}–{max_cost} cr"
-            elif min_cost == max_cost:
-                credit_band = f"{max_cost} cr"
-            else:
-                credit_band = f"{min_cost}–{max_cost} cr"
-        elif has_free_tier:
-            credit_band = "Free"
-        else:
-            credit_band = "—"
-
         if smoke_runtime != "—" and pilot_runtime != "—" and smoke_runtime != pilot_runtime:
             runtime_band = f"{smoke_runtime} – {pilot_runtime}"
         elif pilot_runtime != "—":
@@ -353,11 +300,7 @@ def _build_tools_catalog() -> list[dict]:
                 "category": _TOOL_CATEGORIES.get(adapter.slug, "Other"),
                 "smoke_runtime": smoke_runtime,
                 "pilot_runtime": pilot_runtime,
-                "smoke_credits": smoke_credits,
-                "pilot_credits": pilot_credits,
                 "runtime_band": runtime_band,
-                "credit_band": credit_band,
-                "is_free": smoke_credits_int == 0,
                 "paper_citation": getattr(
                     meta, "paper_citation", "—"
                 ) if meta is not None else "—",

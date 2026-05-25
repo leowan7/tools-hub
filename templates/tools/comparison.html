@@ -103,18 +103,6 @@
       font-size: 1rem;
       line-height: 1.25;
     }
-    .catalog-card-pill {
-      font-size: 0.7rem;
-      padding: 0.18rem 0.5rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      white-space: nowrap;
-    }
-    .catalog-card-pill-free {
-      color: var(--accent);
-      border-color: var(--accent);
-    }
     .catalog-card-tagline {
       color: var(--text-secondary);
       font-size: 0.88rem;
@@ -224,7 +212,7 @@
     <h1>The Ranomics protein-design tool catalog.</h1>
     <p class="subtitle">
       Run feasibility scoring, generative binder design, structure
-      prediction, and library planning on the same credit ledger. Every
+      prediction, and library planning from a single USD wallet. Every
       pipeline lands ranked candidates with downloadable PDBs and hands
       off cleanly into Ranomics' yeast display CRO when a design is
       worth validating.
@@ -289,7 +277,6 @@
             {% endif %}
               <div class="catalog-card-head">
                 <span class="catalog-card-name">{{ tool.name }}</span>
-                <span class="catalog-card-pill {% if tool.is_free %}catalog-card-pill-free{% endif %}">{{ tool.credit_band }}</span>
               </div>
               <p class="catalog-card-tagline">{{ tool.tagline }}</p>
               <div class="catalog-card-meta">
@@ -322,7 +309,7 @@
     <section class="catalog-comparison">
       <div class="catalog-section-head">
         <span class="catalog-section-title">Side-by-side comparison</span>
-        <span class="catalog-section-count">runtime · cost · paper</span>
+        <span class="catalog-section-count">runtime · paper</span>
       </div>
       <div class="comparison-wrap">
         <table class="comparison-table">
@@ -331,7 +318,6 @@
               <th>Tool</th>
               <th>Best for</th>
               <th>Typical runtime</th>
-              <th>Credit cost (smoke / pilot)</th>
               <th>Paper / Repo</th>
             </tr>
           </thead>
@@ -346,10 +332,6 @@
                 <td>
                   <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_runtime }}</strong></div>
                   <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_runtime }}</strong></div>
-                </td>
-                <td>
-                  <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_credits }}</strong>{% if row.smoke_credits not in ['—', 'Free'] %} credits{% endif %}</div>
-                  <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_credits }}</strong>{% if row.pilot_credits not in ['—', 'Free'] %} credits{% endif %}</div>
                 </td>
                 <td class="comparison-links">
                   {% if row.paper_url %}

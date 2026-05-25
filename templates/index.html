@@ -153,18 +153,6 @@
       color: var(--text-primary);
       font-size: 1rem;
     }
-    .home-catalog-card-pill {
-      font-size: 0.7rem;
-      padding: 0.18rem 0.5rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      color: var(--text-secondary);
-      white-space: nowrap;
-    }
-    .home-catalog-card-pill-free {
-      color: var(--accent);
-      border-color: var(--accent);
-    }
     .home-catalog-card-tagline {
       color: var(--text-secondary);
       font-size: 0.88rem;
@@ -280,7 +268,6 @@
               {% endif %}
                 <div class="home-catalog-card-head">
                   <span class="home-catalog-card-name">{{ tool.name }}</span>
-                  <span class="home-catalog-card-pill {% if tool.is_free %}home-catalog-card-pill-free{% endif %}">{{ tool.credit_band }}</span>
                 </div>
                 <p class="home-catalog-card-tagline">{{ tool.tagline }}</p>
                 {% if tool.runtime_band and tool.runtime_band != '—' %}
@@ -328,9 +315,10 @@
         </span>
         <h3 class="why-card-title">Prorated billing</h3>
         <p class="why-card-body">
-          Credits are a pre-authorization against a GPU-seconds cap.
-          Jobs that finish early refund the unused time automatically.
-          You pay for compute consumed, not compute reserved.
+          Every job places a wallet hold against an estimated cost.
+          Jobs that finish early release the unused balance back to your
+          wallet automatically. You pay for compute consumed, not compute
+          reserved.
         </p>
       </article>
       <article class="why-card">
