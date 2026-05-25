@@ -6,19 +6,18 @@ re-running the handler — no double-charges, no duplicate GPU jobs.
 
 Usage
 -----
-    from shared.credits import requires_credits
     from shared.idempotency import idempotent
 
-    @flask_app.route("/tools/example-gpu/submit", methods=["POST"])
+    @flask_app.route("/tools/mpnn/submit", methods=["POST"])
     @login_required
     @idempotent(ttl_seconds=60)
-    @requires_credits(1, tool="example-gpu")
-    def example_gpu_submit():
+    @requires_wallet(tool_slug="mpnn")
+    def mpnn_submit():
         ...
 
 Decorator order matters: ``@idempotent`` is placed ABOVE
-``@requires_credits`` so a replay short-circuits without touching the
-credits ledger. The first request pays; cached replays do not.
+``@requires_wallet`` so a replay short-circuits without touching the
+wallet ledger. The first request pays; cached replays do not.
 
 Key scheme
 ----------

@@ -118,8 +118,6 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("rfdiffusion", "mini_pilot"):  1800,
     ("rfdiffusion", "pilot"):       1800,
     ("rfdiffusion", "full"):        3600,
-    # Wave-0 plumbing fixture.
-    ("example-gpu", "smoke"):       60,
 }
 
 

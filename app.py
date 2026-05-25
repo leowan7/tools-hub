@@ -424,7 +424,7 @@ def requires_wallet(view_func=None, *, tool_slug=None):
 
     * Bare decorator: ``@requires_wallet`` on a handler whose Flask
       URL converter binds ``<tool>`` (the slug is read from ``kwargs``).
-    * Factory: ``@requires_wallet(tool_slug='example-gpu')`` on a route
+    * Factory: ``@requires_wallet(tool_slug='mpnn')`` on a route
       whose URL is hardcoded to one tool.
 
     Three phase contract:
@@ -601,7 +601,7 @@ def requires_wallet(view_func=None, *, tool_slug=None):
     # Bare-decorator usage: @requires_wallet
     if callable(view_func) and tool_slug is None:
         return decorator(view_func)
-    # Factory usage: @requires_wallet(tool_slug='example-gpu')
+    # Factory usage: @requires_wallet(tool_slug='mpnn')
     return decorator
 
 
@@ -1953,37 +1953,6 @@ def create_app() -> Flask:
                 )
 
         return redirect("/account/wallet/topup#auto-reload")
-
-    # ------------------------------------------------------------------
-    # Stub tool route — proves the Modal client contract works end-to-end
-    # without a real GPU call.
-    # ------------------------------------------------------------------
-
-    @flask_app.route("/tools/example-gpu", methods=["GET"])
-    @login_required
-    def example_gpu():
-        """Render the example-gpu form."""
-        return render_template("example_gpu.html", submission=None)
-
-    @flask_app.route("/tools/example-gpu/submit", methods=["POST"])
-    @login_required
-    @idempotent()
-    @requires_wallet(tool_slug="example-gpu")
-    def example_gpu_submit():
-        """Submit the stub job via ModalClient.
-
-        Returns the fake FunctionCall id from the Wave-0 stub.
-        """
-        preset = request.form.get("preset", "smoke")
-        submission = modal_client.submit(
-            tool="example-gpu",
-            preset=preset,
-            inputs={"_wave0_stub": True},
-        )
-        submission["preset"] = preset
-        return render_template(
-            "example_gpu.html", submission=submission
-        )
 
     @flask_app.route("/developability", methods=["GET"])
     @login_required
