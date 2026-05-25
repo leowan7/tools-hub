@@ -28,18 +28,18 @@
       <span class="panel-title">Profile</span>
     </div>
     <div class="panel-body">
-      <div class="credits-summary">
-        <div class="credits-summary-item">
-          <span class="credits-summary-label">Email</span>
-          <span class="credits-summary-value" style="font-family: var(--font-body); font-size: 0.9rem;">{{ user_email }}</span>
+      <div class="account-summary">
+        <div class="account-summary-item">
+          <span class="account-summary-label">Email</span>
+          <span class="account-summary-value" style="font-family: var(--font-body); font-size: 0.9rem;">{{ user_email }}</span>
         </div>
-        <div class="credits-summary-item">
-          <span class="credits-summary-label">Active Workspaces</span>
-          <span class="credits-summary-value">{{ active_workspaces|length if active_workspaces else 0 }}</span>
+        <div class="account-summary-item">
+          <span class="account-summary-label">Active Workspaces</span>
+          <span class="account-summary-value">{{ active_workspaces|length if active_workspaces else 0 }}</span>
         </div>
-        <div class="credits-summary-item">
-          <span class="credits-summary-label">Total Workspaces</span>
-          <span class="credits-summary-value">{{ workspace_history|length if workspace_history else 0 }}</span>
+        <div class="account-summary-item">
+          <span class="account-summary-label">Total Workspaces</span>
+          <span class="account-summary-value">{{ workspace_history|length if workspace_history else 0 }}</span>
         </div>
       </div>
 

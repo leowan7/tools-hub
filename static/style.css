@@ -819,8 +819,8 @@ main {
   padding: 0.75rem 0;
 }
 
-/* Credits summary block at the top of the account panel. */
-.credits-summary {
+/* Summary block at the top of the account panel. */
+.account-summary {
   display: flex;
   gap: 1.5rem;
   flex-wrap: wrap;
@@ -828,15 +828,15 @@ main {
   border-bottom: 1px solid var(--border-subtle);
   margin-bottom: 1rem;
 }
-.credits-summary-item { display: flex; flex-direction: column; gap: 0.2rem; }
-.credits-summary-label {
+.account-summary-item { display: flex; flex-direction: column; gap: 0.2rem; }
+.account-summary-label {
   font-size: 0.6rem;
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-tertiary);
 }
-.credits-summary-value {
+.account-summary-value {
   font-family: var(--font-mono);
   font-size: 1.15rem;
   color: var(--warm-white);
