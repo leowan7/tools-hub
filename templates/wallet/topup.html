@@ -104,7 +104,7 @@
   {% set _min = (_min_raw|float) if _min_raw is not none else 20 %}
   {% set _deficit_raw = deficit_usd|default(none, true) %}
   {% set _suggested = suggested_amounts or [
-    {'value': 20,   'label': '$20',    'covers': 'About 40 ProteinMPNN runs. Good for first exploration after the trial credit.'},
+    {'value': 20,   'label': '$20',    'covers': 'About 40 ProteinMPNN runs. Good for first exploration after the signup balance.'},
     {'value': 50,   'label': '$50',    'covers': 'One small project. Tens of folds, a single round of MPNN sequence design.'},
     {'value': 200,  'label': '$200',   'covers': 'Multi target exploration. Several design loops across two or three targets.'},
     {'value': 500,  'label': '$500',   'covers': 'One full pilot campaign. Thousands of RFdiffusion backbones plus design and validation.'},

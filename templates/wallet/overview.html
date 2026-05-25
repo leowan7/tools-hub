@@ -112,10 +112,10 @@
           {% set _signup_used = wallet.signup_credit_used_usd|default(none, true) if wallet else none %}
           {% if _signup_used is not none %}
             <span class="wallet-stat-value">${{ '%.2f'|format(_signup_used|float) }}</span>
-            <span class="wallet-stat-foot">of $5.00 trial credit</span>
+            <span class="wallet-stat-foot">of $5.00 signup balance</span>
           {% else %}
             <span class="wallet-stat-value">$5.00</span>
-            <span class="wallet-stat-foot">trial credit available</span>
+            <span class="wallet-stat-foot">signup balance available</span>
           {% endif %}
         </div>
       </div>
