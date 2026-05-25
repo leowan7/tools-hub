@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
@@ -71,6 +72,7 @@ from shared.jobs import (
     complete_job,
     get_job,
     mark_running,
+    mid_run_monitor_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -199,6 +201,11 @@ def _handle_heartbeat() -> Any:
     Heartbeats are fire-and-forget telemetry — we always return 200 so
     the pipeline does not waste GPU time on retries. If the body is
     malformed or the job is unknown we log and move on.
+
+    The heartbeat also drives the mid-run cost-overrun safety check. If
+    cumulative GPU cost passes 1.5x the estimate we email a soft
+    warning; past 2x AND the per-tool hard cap we cancel the Modal call
+    and mark the job failed (the hold is then released at zero compute).
     """
     body = request.get_json(silent=True) or {}
     job_id = str(body.get("job_id") or "")
@@ -211,8 +218,12 @@ def _handle_heartbeat() -> Any:
 
     # On the first heartbeat, transition pending -> running so the UI
     # knows the pipeline is actually executing (vs. queued in Modal).
+    # Re-fetch so started_at is populated for the overrun monitor below.
     if job.status == "pending":
         mark_running(job.id)
+        fresh = get_job(job_id)
+        if fresh is not None:
+            job = fresh
 
     # Persist the latest stage string in the inputs jsonb so the status
     # page can render a progress line. We avoid a dedicated column to
@@ -223,7 +234,56 @@ def _handle_heartbeat() -> Any:
         designs_completed=int(body.get("designs_completed") or 0),
         designs_total=int(body.get("designs_total") or 0),
     )
+
+    # Cost-overrun safety. Kendrew heartbeats do not currently carry an
+    # explicit cumulative_gpu_seconds figure, so we fall back to
+    # wall-clock since started_at. Modal bills wall-clock on the GPU
+    # container, so this is a fair approximation for the warn/kill bands.
+    cumulative_secs = float(body.get("cumulative_gpu_seconds") or 0)
+    if cumulative_secs <= 0:
+        cumulative_secs = _elapsed_running_seconds(job)
+    if cumulative_secs > 0:
+        _run_overrun_check(job_id, cumulative_secs)
+
     return jsonify({"status": "ok"})
+
+
+def _elapsed_running_seconds(job: ToolJob) -> float:
+    """Wall-clock seconds since the job entered the running state."""
+    started_raw = getattr(job, "started_at", None)
+    if not started_raw:
+        return 0.0
+    try:
+        started = datetime.fromisoformat(
+            str(started_raw).replace("Z", "+00:00")
+        )
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _run_overrun_check(job_id: str, cumulative_gpu_seconds: float) -> None:
+    """Fire mid_run_monitor_check with a lazily-built ModalClient.
+
+    Lazy import keeps gpu.modal_client out of the module-import cycle and
+    means a missing modal package does not break heartbeats — the monitor
+    will just skip the cancel step.
+    """
+    try:
+        from gpu.modal_client import ModalClient  # noqa: PLC0415
+        client = ModalClient()
+    except Exception:
+        client = None
+    try:
+        mid_run_monitor_check(
+            job_id, cumulative_gpu_seconds, modal_client=client,
+        )
+    except Exception:
+        logger.warning(
+            "Mid-run monitor check raised for job %s", job_id, exc_info=True,
+        )
 
 
 def _append_heartbeat_state(
