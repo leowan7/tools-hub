@@ -140,6 +140,7 @@ def _tool_label(slug: str) -> str:
 def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     """Plain HTML — no template engine to keep this email worker-portable."""
     summary = _result_summary(job, tone=tone)
+    cost_line = _cost_breakdown_line(job, tone=tone)
     tool = _tool_label(job.tool)
     headline = {
         "success": f"Your {tool} run is ready",
@@ -155,11 +156,16 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
         f"{cta_label}"
         "</a>"
     )
+    cost_block = (
+        f'<p style="font-size:13px;color:#666;margin:8px 0 0 0;">{cost_line}</p>'
+        if cost_line else ""
+    )
     return f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
       <h2 style="margin-top:0;">{headline}</h2>
       <p>{summary}</p>
+      {cost_block}
       <p style="margin:24px 0;">{cta}</p>
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
       <p style="font-size:13px;color:#666;">
@@ -175,6 +181,7 @@ def _render_html(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
 
 def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
     summary = _result_summary(job, tone=tone)
+    cost_line = _cost_breakdown_line(job, tone=tone)
     tool = _tool_label(job.tool)
     headline = {
         "success": f"Your {tool} run is ready.",
@@ -182,14 +189,67 @@ def _render_text(*, job, job_url: str, tone: str) -> str:  # noqa: ANN001
         "failed":  f"Your {tool} run failed.",
     }[tone]
     link_label = "View results" if tone == "success" else "View job details"
+    cost_block = f"{cost_line}\n\n" if cost_line else ""
     return (
         f"{headline}\n\n"
         f"{summary}\n\n"
+        f"{cost_block}"
         f"{link_label}: {job_url}\n\n"
         f"Job {job.id} · preset {job.preset} · "
         f"submitted {(job.created_at or '')[:19]}\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
+
+
+def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
+    """One-line cost summary for the completion email. Empty if no wallet ctx.
+
+    Returns strings like ``"Estimated $0.45, charged $0.52 (95 GPU-sec on L4)."``.
+    The "charged" figure is capped at the per-tool hard cap so absorbed
+    variance does not surface here — the user only sees what their wallet
+    actually paid.
+    """
+    if tone == "failed":
+        # _result_summary already says "wallet was not charged" when
+        # applicable; suppress to avoid contradiction.
+        return ""
+    wallet_ctx = (job.inputs or {}).get("_wallet") or {}
+    if not isinstance(wallet_ctx, dict):
+        return ""
+    if not wallet_ctx.get("hold_tx_id"):
+        return ""
+    gpu_seconds = job.gpu_seconds_used or 0
+    if gpu_seconds <= 0:
+        return ""
+    gpu_class = wallet_ctx.get("gpu_class") or "GPU"
+    estimate_raw = wallet_ctx.get("estimate_usd")
+    try:
+        from decimal import Decimal  # noqa: PLC0415
+
+        from shared.wallet import compute_charge_usd  # noqa: PLC0415
+        from shared.wallet_estimates import compute_hard_cap  # noqa: PLC0415
+    except Exception:
+        return ""
+    params = {
+        k: v
+        for k, v in (job.inputs or {}).items()
+        if isinstance(k, str) and not k.startswith("_")
+    }
+    actual = compute_charge_usd(gpu_seconds, gpu_class)
+    try:
+        hard_cap = compute_hard_cap(job.tool, params)
+        if actual > hard_cap:
+            actual = hard_cap
+    except Exception:
+        pass
+    bits = []
+    if estimate_raw:
+        try:
+            bits.append(f"Estimated ${float(Decimal(str(estimate_raw))):.2f}")
+        except Exception:
+            pass
+    bits.append(f"charged ${float(actual):.2f}")
+    return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class})."
 
 
 def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
