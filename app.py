@@ -3228,6 +3228,19 @@ def create_app() -> Flask:
     @flask_app.route("/jobs/<job_id>/export.zip", methods=["GET"])
     @login_required
     def export_zip(job_id: str):
+        """Bundle every candidate PDB into a ZIP.
+
+        Two resolution paths per candidate, mirroring the per-design
+        endpoint (Step 4 of the pilot-tier transport fix):
+
+        1. Inline ``pdb_content_b64`` — decoded and written directly.
+        2. ``tool-outputs`` Storage — bytes fetched server-side and
+           written. Used when the pipeline POSTed to the upload-URLs
+           endpoint rather than emitting b64 in the result row.
+
+        Candidates that resolve via neither path are silently skipped
+        (rather than failing the whole archive).
+        """
         import base64   # noqa: PLC0415
         import io       # noqa: PLC0415
         import zipfile  # noqa: PLC0415
@@ -3238,18 +3251,40 @@ def create_app() -> Flask:
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
             return render_template("404.html"), 404
-        candidates = (job.result or {}).get("candidates", [])
+        candidates = (job.result or {}).get("candidates", []) or []
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for i, cand in enumerate(candidates):
-                encoded = cand.get("pdb_content_b64")
-                if not encoded:
-                    continue
-                try:
-                    data = base64.b64decode(encoded)
-                except Exception:
+                if not isinstance(cand, dict):
                     continue
                 filename = cand.get("pdb_key") or f"candidate_{i + 1}.pdb"
+                data = None
+
+                # Path 1: inline b64.
+                encoded = cand.get("pdb_content_b64")
+                if encoded:
+                    try:
+                        data = base64.b64decode(encoded)
+                    except Exception:
+                        data = None
+
+                # Path 2: tool-outputs Storage.
+                if data is None and cand.get("pdb_key"):
+                    try:
+                        data = download_output(
+                            user_id=ctx.user_id,
+                            job_id=job_id,
+                            filename=cand["pdb_key"],
+                        )
+                    except StorageError:
+                        logger.warning(
+                            "export_zip: storage miss for %s/%s",
+                            job_id, filename, exc_info=True,
+                        )
+                        data = None
+
+                if data is None:
+                    continue
                 zf.writestr(filename, data)
         buf.seek(0)
         return Response(

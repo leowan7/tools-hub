@@ -130,8 +130,13 @@
       var opening = viewerRow.style.display === 'none';
       viewerRow.style.display = opening ? '' : 'none';
       btn.textContent = opening ? 'Hide 3D' : 'View 3D';
-      if (opening && window.initMolViewer) {
-        window.initMolViewer('mol-viewer-' + idx, btn.dataset.pdb64 || '');
+      if (opening) {
+        var viewerId = 'mol-viewer-' + idx;
+        if (btn.dataset.pdb64 && window.initMolViewer) {
+          window.initMolViewer(viewerId, btn.dataset.pdb64);
+        } else if (btn.dataset.pdbUrl && window.initMolViewerFromUrl) {
+          window.initMolViewerFromUrl(viewerId, btn.dataset.pdbUrl);
+        }
       }
     });
 

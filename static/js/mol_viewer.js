@@ -3,8 +3,15 @@
  * target div.  The first call triggers the CDN load; subsequent calls
  * fire immediately after the script resolves.
  *
- * Usage:
- *   window.initMolViewer('mol-viewer-0', '<base64-encoded PDB string>');
+ * Two entry points:
+ *   window.initMolViewer(containerId, pdbBase64)
+ *     — render an inline base64-encoded PDB string. Used for legacy /
+ *       webhook-tier jobs that embed the PDB in tool_jobs.result.
+ *
+ *   window.initMolViewerFromUrl(containerId, url)
+ *     — fetch the PDB text from a same-origin URL and render. Used by
+ *       the resolver path that serves /api/jobs/<id>/pdb/<filename>
+ *       (Storage-backed or inline-b64 fallback, both transparent here).
  */
 (function () {
   var MOLSTAR_JS  = 'https://cdn.jsdelivr.net/npm/molstar@4.9.0/build/viewer/molstar.js';
@@ -40,29 +47,25 @@
     document.head.appendChild(script);
   }
 
-  window.initMolViewer = function (containerId, pdbBase64) {
-    var container = document.getElementById(containerId);
-    if (!container) return;
-    if (container.dataset.initialized) return;
-    container.dataset.initialized = 'true';
-    container.style.position = 'relative';
-
-    // Show a loading indicator while the CDN script fetches.
+  function showLoading(container) {
     container.innerHTML =
       '<div style="display:flex;align-items:center;justify-content:center;' +
       'height:100%;color:#6b7280;font-size:.85rem;">Loading 3D viewer…</div>';
+  }
 
+  function prepareContainer(containerId) {
+    var container = document.getElementById(containerId);
+    if (!container) return null;
+    if (container.dataset.initialized) return null;
+    container.dataset.initialized = 'true';
+    container.style.position = 'relative';
+    showLoading(container);
+    return container;
+  }
+
+  function renderPdbText(container, pdbString) {
     loadMolstar(function () {
       container.innerHTML = '';
-      var pdbString = '';
-      try {
-        pdbString = atob(pdbBase64);
-      } catch (e) {
-        container.innerHTML =
-          '<p style="color:#f87171;padding:1rem;">Could not decode PDB data.</p>';
-        return;
-      }
-
       molstar.Viewer.create(container, {
         layoutIsExpanded:       false,
         layoutShowControls:     false,
@@ -81,5 +84,37 @@
           '<p style="color:#f87171;padding:1rem;">Viewer failed to initialise.</p>';
       });
     });
+  }
+
+  window.initMolViewer = function (containerId, pdbBase64) {
+    var container = prepareContainer(containerId);
+    if (!container) return;
+    var pdbString = '';
+    try {
+      pdbString = atob(pdbBase64);
+    } catch (e) {
+      container.innerHTML =
+        '<p style="color:#f87171;padding:1rem;">Could not decode PDB data.</p>';
+      return;
+    }
+    renderPdbText(container, pdbString);
+  };
+
+  window.initMolViewerFromUrl = function (containerId, url) {
+    var container = prepareContainer(containerId);
+    if (!container) return;
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      })
+      .then(function (pdbString) {
+        renderPdbText(container, pdbString);
+      })
+      .catch(function (err) {
+        console.error('[mol_viewer] PDB fetch failed for ' + url + ':', err);
+        container.innerHTML =
+          '<p style="color:#f87171;padding:1rem;">Could not load PDB from server.</p>';
+      });
   };
 })();

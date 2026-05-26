@@ -164,31 +164,6 @@
 .shortlist-review { margin: .35rem 0 0 1.2rem; padding: 0; font-size: .88rem; color: var(--text-secondary); }
 </style>
 
-{# Pilot-tier transport gap: pipelines emit pdb_key (label) but not
-   pdb_content_b64 (inlined bytes). When that happens the 3D and PDB
-   cells render em-dashes despite the pipeline having completed cleanly.
-   Surface a single banner explaining the state rather than leave a row
-   of unexplained dashes. Tracking: see VALIDATION-LOG.md 2026-05-26
-   pxdesign pilot row + the Kendrew-side fix for pilot-tier b64 emission
-   in each tool's docker/<tool>/run_pipeline.py. #}
-{% set ns_b64 = namespace(missing=0) %}
-{% for cand in candidates %}
-  {% if cand.get('pdb_key') and not cand.get('pdb_content_b64') %}
-    {% set ns_b64.missing = ns_b64.missing + 1 %}
-  {% endif %}
-{% endfor %}
-{% if ns_b64.missing > 0 %}
-<div style="background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
-  <p class="subtitle" style="margin:0;">
-    <strong>{{ ns_b64.missing }} of {{ candidates|length }} candidate{{ 's' if candidates|length != 1 else '' }} {{ 'are' if ns_b64.missing != 1 else 'is' }} missing inlined PDB bytes.</strong>
-    The pipeline ran cleanly and produced the designs on the GPU side,
-    but pilot-tier results don&apos;t yet copy the PDB into this row. The
-    3D viewer and PDB download columns are blank for those candidates
-    until a queued pipeline patch lands. Scores above are real.
-  </p>
-</div>
-{% endif %}
-
 {# ── Action bar ────────────────────────────────────────────────── #}
 <div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}">
   <div class="cand-export-btns">
@@ -231,10 +206,20 @@
     </thead>
     <tbody>
       {% for cand in candidates %}
-        {% set scores  = cand.get('scores', {}) %}
-        {% set idx     = loop.index0 %}
-        {% set pdb_key = cand.get('pdb_key', 'design_' ~ (idx + 1) ~ '.pdb') %}
-        {% set has_pdb = cand.get('pdb_content_b64') %}
+        {% set scores      = cand.get('scores', {}) %}
+        {% set idx         = loop.index0 %}
+        {% set raw_pdb_key = cand.get('pdb_key') %}
+        {% set pdb_key     = raw_pdb_key or 'design_' ~ (idx + 1) ~ '.pdb' %}
+        {% set has_b64     = cand.get('pdb_content_b64') %}
+        {# Use the /api/jobs/<id>/pdb/<filename> endpoint when the row has a
+           pdb_key — it resolves Storage objects (Step 1 + 3 of the pilot-tier
+           output transport) and falls back to inline b64 server-side. Only
+           jobs that emit pdb_content_b64 WITHOUT a pdb_key fall through to
+           the inline data: URL. That path is legacy; modern adapters always
+           set pdb_key. #}
+        {% set use_url     = raw_pdb_key %}
+        {% set pdb_url     = '/api/jobs/' ~ job_id ~ '/pdb/' ~ (pdb_key | urlencode) %}
+        {% set has_pdb     = use_url or has_b64 %}
 
         <tr class="cand-row" data-idx="{{ idx }}">
           <td>{{ cand.get('rank', loop.index) }}</td>
@@ -273,17 +258,24 @@
               <button class="view3d-btn btn-secondary"
                       style="padding:.2rem .5rem;font-size:.8rem;"
                       data-idx="{{ idx }}"
-                      data-pdb64="{{ cand.pdb_content_b64 }}">View 3D</button>
+                      {% if use_url %}data-pdb-url="{{ pdb_url }}"{% else %}data-pdb64="{{ cand.pdb_content_b64 }}"{% endif %}>View 3D</button>
             {% else %}
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
           </td>
           <td>
             {% if has_pdb %}
+              {% if use_url %}
+              <a href="{{ pdb_url }}"
+                 download="{{ pdb_key }}"
+                 class="btn-secondary"
+                 style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+              {% else %}
               <a href="data:chemical/x-pdb;base64,{{ cand.pdb_content_b64 }}"
                  download="{{ pdb_key }}"
                  class="btn-secondary"
                  style="padding:.2rem .5rem;font-size:.8rem;">.pdb</a>
+              {% endif %}
             {% else %}
               <span style="color:var(--text-secondary);">—</span>
             {% endif %}
