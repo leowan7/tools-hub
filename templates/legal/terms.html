@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Terms of Service — Ranomics Tools{% endblock %}
+{% block description %}Terms of Service for Ranomics Tools (tools.ranomics.com) — account, payments, GPU job execution, data retention, and acceptable use.{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<article class="legal-doc" style="max-width:720px;margin:0 auto;padding:2rem 0;line-height:1.65;">
+  <p style="opacity:0.6;font-size:0.85rem;margin-bottom:2rem;">
+    Boilerplate placeholder — to be replaced with a custom-drafted version.
+  </p>
+
+  <h1>Terms of Service</h1>
+  <p><strong>Effective date:</strong> 2026-05-26</p>
+
+  <p>
+    These Terms govern your use of the Ranomics Tools service operated at
+    <a href="https://tools.ranomics.com">tools.ranomics.com</a>
+    ("Service"). By creating an account or using the Service you agree to
+    these Terms. The Service is operated by Ranomics, a company based in
+    Toronto, Ontario, Canada ("Ranomics", "we", "us").
+  </p>
+
+  <h2>1. Accounts</h2>
+  <p>
+    You must be at least 18 years old to create an account. You agree to
+    provide an accurate email address and to keep your password secure.
+    You are responsible for all activity on your account.
+  </p>
+
+  <h2>2. Payments and wallet balance</h2>
+  <p>
+    The Service uses a USD prepaid wallet. New accounts receive a one-time
+    starting balance of $5 USD as a courtesy; this credit has no cash value
+    and may be revoked at our discretion in cases of abuse. You may add
+    funds to your wallet via Stripe Checkout. Wallet balance is denominated
+    in USD and is consumed when you run GPU jobs.
+  </p>
+  <p>
+    <strong>No refunds.</strong> Wallet top-ups are non-refundable except
+    where required by law. GPU jobs that fail before any compute is
+    consumed are not charged; jobs that fail mid-run are charged for actual
+    compute time used. Disputed charges should be raised with us at
+    <a href="mailto:hello@ranomics.com">hello@ranomics.com</a> before
+    contacting your card issuer.
+  </p>
+
+  <h2>3. GPU jobs, results, and artifacts</h2>
+  <p>
+    When you submit a job, you grant us a non-exclusive license to execute
+    the job on third-party GPU infrastructure (currently Modal) and to
+    store the inputs and resulting artifacts on object storage for
+    delivery to you. You retain ownership of your inputs and of any
+    designs, structures, or other outputs the Service generates from
+    them.
+  </p>
+  <p>
+    <strong>Artifact retention.</strong> Job inputs and outputs are
+    retained for ninety (90) days after the job completes, after which
+    they may be permanently deleted. You should download anything you
+    need to keep before then.
+  </p>
+
+  <h2>4. Acceptable use</h2>
+  <p>You agree not to use the Service to:</p>
+  <ul>
+    <li>Design biological agents intended to cause harm.</li>
+    <li>Submit inputs you do not have the right to use.</li>
+    <li>Attempt to reverse-engineer, scrape, or overload the Service.</li>
+    <li>Share account credentials or resell access without permission.</li>
+  </ul>
+
+  <h2>5. Research-tool disclaimer</h2>
+  <p>
+    The Service is a research tool. Outputs are computational predictions,
+    not validated reagents. You are solely responsible for any downstream
+    wet-lab validation, regulatory compliance, or therapeutic application.
+  </p>
+
+  <h2>6. Termination</h2>
+  <p>
+    You may close your account at any time by contacting us. We may
+    suspend or terminate your account for breach of these Terms or for
+    abuse of the Service. Wallet balance at the time of termination for
+    cause is forfeit.
+  </p>
+
+  <h2>7. Disclaimers and limitation of liability</h2>
+  <p>
+    THE SERVICE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. TO THE
+    MAXIMUM EXTENT PERMITTED BY LAW, RANOMICS' TOTAL LIABILITY FOR ANY
+    CLAIM ARISING FROM THE SERVICE IS LIMITED TO THE AMOUNT YOU PAID US
+    IN THE TWELVE MONTHS PRECEDING THE CLAIM.
+  </p>
+
+  <h2>8. Changes</h2>
+  <p>
+    We may update these Terms from time to time. Continued use of the
+    Service after a change constitutes acceptance.
+  </p>
+
+  <h2>9. Governing law</h2>
+  <p>
+    These Terms are governed by the laws of the Province of Ontario,
+    Canada, without regard to conflict-of-laws principles.
+  </p>
+
+  <h2>10. Contact</h2>
+  <p>
+    Questions about these Terms can be sent to
+    <a href="mailto:hello@ranomics.com">hello@ranomics.com</a>.
+  </p>
+</article>
+{% endblock %}

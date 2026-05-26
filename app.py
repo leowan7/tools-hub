@@ -801,6 +801,7 @@ def create_app() -> Flask:
                 error=None,
                 signup_email=None,
                 signup_purpose=None,
+                signup_terms=False,
                 signup_token=issue_signup_token(),
                 next="/",
             )
@@ -811,6 +812,7 @@ def create_app() -> Flask:
         purpose = request.form.get("purpose", "").strip()
         honeypot = request.form.get("website", "").strip()
         token = request.form.get("signup_token", "")
+        terms_accepted = request.form.get("terms_accepted") == "on"
         client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
                      or request.remote_addr)
         user_agent = request.headers.get("User-Agent")
@@ -826,6 +828,7 @@ def create_app() -> Flask:
                 error="Passwords do not match.",
                 signup_email=email,
                 signup_purpose=purpose,
+                signup_terms=terms_accepted,
                 signup_token=issue_signup_token(),
                 next="/",
             )
@@ -836,6 +839,18 @@ def create_app() -> Flask:
                 error="Password must be at least 8 characters.",
                 signup_email=email,
                 signup_purpose=purpose,
+                signup_terms=terms_accepted,
+                signup_token=issue_signup_token(),
+                next="/",
+            )
+        if not terms_accepted:
+            return render_template(
+                "login.html",
+                mode="signup",
+                error="You must accept the Terms of Service and Privacy Policy to create an account.",
+                signup_email=email,
+                signup_purpose=purpose,
+                signup_terms=False,
                 signup_token=issue_signup_token(),
                 next="/",
             )
@@ -875,6 +890,7 @@ def create_app() -> Flask:
                 error=result.error_message,
                 signup_email=email,
                 signup_purpose=purpose,
+                signup_terms=terms_accepted,
                 signup_token=issue_signup_token(),
                 next="/",
             )
@@ -1184,6 +1200,14 @@ def create_app() -> Flask:
     def pricing():
         """Public pricing page — logged-out visitors can reach it."""
         return render_template("pricing.html")
+
+    @flask_app.route("/terms", methods=["GET"])
+    def terms():
+        return render_template("legal/terms.html")
+
+    @flask_app.route("/privacy", methods=["GET"])
+    def privacy():
+        return render_template("legal/privacy.html")
 
     @flask_app.route("/billing/checkout", methods=["GET"])
     @login_required
