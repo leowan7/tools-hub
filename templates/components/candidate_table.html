@@ -164,6 +164,31 @@
 .shortlist-review { margin: .35rem 0 0 1.2rem; padding: 0; font-size: .88rem; color: var(--text-secondary); }
 </style>
 
+{# Pilot-tier transport gap: pipelines emit pdb_key (label) but not
+   pdb_content_b64 (inlined bytes). When that happens the 3D and PDB
+   cells render em-dashes despite the pipeline having completed cleanly.
+   Surface a single banner explaining the state rather than leave a row
+   of unexplained dashes. Tracking: see VALIDATION-LOG.md 2026-05-26
+   pxdesign pilot row + the Kendrew-side fix for pilot-tier b64 emission
+   in each tool's docker/<tool>/run_pipeline.py. #}
+{% set ns_b64 = namespace(missing=0) %}
+{% for cand in candidates %}
+  {% if cand.get('pdb_key') and not cand.get('pdb_content_b64') %}
+    {% set ns_b64.missing = ns_b64.missing + 1 %}
+  {% endif %}
+{% endfor %}
+{% if ns_b64.missing > 0 %}
+<div style="background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
+  <p class="subtitle" style="margin:0;">
+    <strong>{{ ns_b64.missing }} of {{ candidates|length }} candidate{{ 's' if candidates|length != 1 else '' }} {{ 'are' if ns_b64.missing != 1 else 'is' }} missing inlined PDB bytes.</strong>
+    The pipeline ran cleanly and produced the designs on the GPU side,
+    but pilot-tier results don&apos;t yet copy the PDB into this row. The
+    3D viewer and PDB download columns are blank for those candidates
+    until a queued pipeline patch lands. Scores above are real.
+  </p>
+</div>
+{% endif %}
+
 {# ── Action bar ────────────────────────────────────────────────── #}
 <div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}">
   <div class="cand-export-btns">
