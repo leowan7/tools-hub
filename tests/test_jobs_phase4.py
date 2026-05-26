@@ -40,7 +40,6 @@ def _row(**over) -> dict:
         "inputs": {},
         "result": None,
         "error": None,
-        "credits_cost": 22,
         "modal_function_call_id": "fc-stub-bindcraft-pilot-abc",
         "job_token": "t" * 64,
         "gpu_seconds_used": None,

@@ -1,7 +1,6 @@
 """Route-level tests for the Workspace gate on `/tools/<tool>/submit`.
 
 Uses ColabFold as the test vehicle because:
-  * Smoke preset has credits_cost=0 (no balance check trips).
   * No PDB requirement (no upload paths to mock).
   * The standard tool_form / tool_submit flow applies.
 

@@ -52,7 +52,6 @@ class ToolJob:
     inputs: dict
     result: Optional[dict]
     error: Optional[dict]
-    credits_cost: int
     modal_function_call_id: Optional[str]
     job_token: str
     gpu_seconds_used: Optional[int]
@@ -71,7 +70,6 @@ class ToolJob:
             inputs=row.get("inputs") or {},
             result=row.get("result"),
             error=row.get("error"),
-            credits_cost=int(row.get("credits_cost") or 0),
             modal_function_call_id=row.get("modal_function_call_id"),
             job_token=row["job_token"],
             gpu_seconds_used=row.get("gpu_seconds_used"),
@@ -86,7 +84,6 @@ class ToolJob:
             "tool": self.tool,
             "preset": self.preset,
             "status": self.status,
-            "credits_cost": self.credits_cost,
             "result": self.result,
             "error": self.error,
             "gpu_seconds_used": self.gpu_seconds_used,
@@ -107,7 +104,6 @@ def create_job(
     tool: str,
     preset: str,
     inputs: dict,
-    credits_cost: int,
     target_pdb_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Optional[ToolJob]:
@@ -139,7 +135,10 @@ def create_job(
         "preset": preset,
         "status": "pending",
         "inputs": inputs,
-        "credits_cost": credits_cost,
+        # Dead column kept at 0 to satisfy NOT NULL on `tool_jobs.credits_cost`
+        # (migration 0005). The Preset.credits_cost field was retired with the
+        # wallet pivot; pricing lives in shared/wallet_estimates.py now.
+        "credits_cost": 0,
         "job_token": generate_job_token(),
     }
     try:

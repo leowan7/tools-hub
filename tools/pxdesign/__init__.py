@@ -169,7 +169,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke — 1 design",
-            credits_cost=8,
             description=(
                 "~17 min, 1 candidate against PD-L1 reference "
                 "(baked target), real AF2-IG scores."
@@ -180,7 +179,6 @@ adapter = ToolAdapter(
         Preset(
             slug="pilot",
             label="Pilot — your target, ~45 min",
-            credits_cost=15,
             description=(
                 "Real PXDesign run against your uploaded target with "
                 "AF2-IG validation. 1-2 candidates with real ipTM/pLDDT/pAE "

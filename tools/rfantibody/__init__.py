@@ -133,7 +133,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke — 1 design",
-            credits_cost=2,
             description=(
                 "One candidate against PD-L1 reference target (~3 min). "
                 "Same pipeline, smallest preset. Good for verifying "
@@ -143,7 +142,6 @@ adapter = ToolAdapter(
         Preset(
             slug="mini_pilot",
             label="Preview — 2 designs",
-            credits_cost=8,
             description=(
                 "Two ranked candidates against PD-L1 reference target "
                 "(~7 min). Real diffusion steps + RF2 validation."
@@ -152,7 +150,6 @@ adapter = ToolAdapter(
         Preset(
             slug="pilot",
             label="Pilot — your target, ~30 min",
-            credits_cost=15,
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
                 "1-2 final candidates; results emailed when run completes "

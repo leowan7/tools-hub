@@ -28,7 +28,6 @@ def _job(**over) -> ToolJob:
         "inputs": {},
         "result": None,
         "error": {"bucket": "pipeline", "detail": "run_pipeline exited 1 (CIF parse)"},
-        "credits_cost": 10,
         "modal_function_call_id": "fc-stub-x",
         "job_token": "t" * 64,
         "gpu_seconds_used": None,

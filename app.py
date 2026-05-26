@@ -2545,7 +2545,6 @@ def create_app() -> Flask:
             tool=adapter.slug,
             preset=preset.slug,
             inputs=inputs,
-            credits_cost=preset.credits_cost,
             target_pdb_id=ws_target,
             workspace_id=ws_id,
         )

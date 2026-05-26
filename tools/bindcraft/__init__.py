@@ -112,7 +112,6 @@ adapter = ToolAdapter(
         Preset(
             slug="pilot",
             label="Pilot — your target, ~45 min",
-            credits_cost=20,
             description=(
                 "~45 min on A100-80GB, 1-5 final designs (you choose), "
                 "results emailed on completion."

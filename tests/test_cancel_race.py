@@ -46,7 +46,6 @@ def _row(**over) -> dict:
         "inputs": {},
         "result": None,
         "error": None,
-        "credits_cost": 22,
         "modal_function_call_id": "fc-stub-bindcraft-pilot-abc",
         "job_token": "t" * 64,
         "gpu_seconds_used": None,
@@ -329,7 +328,7 @@ class TestWebhookHandlerAlreadyTerminal:
         self, patched_service_client, store
     ):
         from flask import Flask
-        row = _row(status="cancelled", credits_cost=22)
+        row = _row(status="cancelled")
         store.rows[row["id"]] = row
 
         app = Flask(__name__)

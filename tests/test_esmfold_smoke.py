@@ -47,14 +47,6 @@ class TestAdapterRegistration:
         slugs = [p.slug for p in adapter.presets]
         assert slugs == ["smoke", "standalone"]
 
-    def test_credit_costs_match_atomic_spec(self):
-        """ATOMIC-TOOLS.md D4 + PRODUCT-PLAN.md: smoke=0, standalone=1."""
-        adapter = get_adapter("esmfold")
-        smoke = adapter.preset_for("smoke")
-        standalone = adapter.preset_for("standalone")
-        assert smoke.credits_cost == 0
-        assert standalone.credits_cost == 1
-
     def test_neither_preset_requires_pdb(self):
         """ESMFold takes FASTA text, never a PDB upload."""
         adapter = get_adapter("esmfold")

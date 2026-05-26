@@ -184,7 +184,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke — 1 design",
-            credits_cost=3,
             description=(
                 "~5 min, 1 candidate against PD-L1 reference (baked "
                 "target), real refolding + ipTM scores."
@@ -193,7 +192,6 @@ adapter = ToolAdapter(
         Preset(
             slug="mini_pilot",
             label="Preview — 2 designs",
-            credits_cost=10,
             description=(
                 "~10 min, 2 candidates against PD-L1 reference, full "
                 "scoring pipeline."
@@ -202,7 +200,6 @@ adapter = ToolAdapter(
         Preset(
             slug="pilot",
             label="Pilot — your target, ~30 min",
-            credits_cost=10,
             description=(
                 "Real BoltzGen run against your uploaded target. 5 "
                 "final candidates with refolding RMSD + ipTM scores; "

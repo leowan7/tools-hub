@@ -226,7 +226,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke — ubiquitin demo",
-            credits_cost=0,
             description=(
                 "Runs against a baked 76 aa ubiquitin fixture. "
                 "Same pipeline, smallest preset — verifies the tool works "
@@ -236,7 +235,6 @@ adapter = ToolAdapter(
         Preset(
             slug="standalone",
             label="Standalone — your FASTA",
-            credits_cost=2,
             description=(
                 "Paste a FASTA (monomer or multimer up to 600 aa total) "
                 "and get pLDDT + PAE + pTM/ipTM. ~1-2 min on A100-40GB. "

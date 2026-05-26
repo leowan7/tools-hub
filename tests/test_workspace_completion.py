@@ -44,7 +44,6 @@ def _row(**over) -> dict:
         "inputs": {},
         "result": None,
         "error": None,
-        "credits_cost": 22,
         "modal_function_call_id": "fc-stub-rfdiffusion-pilot-abc",
         "job_token": "t" * 64,
         "gpu_seconds_used": None,
@@ -208,7 +207,6 @@ class TestCreateJobWorkspaceContext:
             tool="rfdiffusion",
             preset="pilot",
             inputs=original,
-            credits_cost=10,
             target_pdb_id="4Z18",
         )
         assert job is not None
@@ -225,7 +223,6 @@ class TestCreateJobWorkspaceContext:
             tool="rfdiffusion",
             preset="pilot",
             inputs={},
-            credits_cost=10,
             target_pdb_id="4Z18",
             workspace_id="ws-abc-123",
         )
@@ -243,7 +240,6 @@ class TestCreateJobWorkspaceContext:
             tool="rfdiffusion",
             preset="pilot",
             inputs={"x": 1},
-            credits_cost=10,
         )
         assert job is not None
         assert "_workspace" not in job.inputs
@@ -257,7 +253,6 @@ class TestCreateJobWorkspaceContext:
             tool="rfdiffusion",
             preset="pilot",
             inputs={"_workspace": {"gpu_sku": "A100-80GB"}},
-            credits_cost=10,
             target_pdb_id="4Z18",
         )
         assert job is not None

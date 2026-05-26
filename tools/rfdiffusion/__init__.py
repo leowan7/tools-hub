@@ -176,7 +176,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke -- 1 design",
-            credits_cost=2,
             description=(
                 "Pipeline-shape check (~2 min). 1 candidate against PD-L1 "
                 "reference, AF2 stubbed -- proves RFdiffusion + MPNN run, "
@@ -186,7 +185,6 @@ adapter = ToolAdapter(
         Preset(
             slug="mini_pilot",
             label="Preview -- 2 designs",
-            credits_cost=8,
             description=(
                 "Two ranked candidates against PD-L1 reference (~7 min). "
                 "Full composite with real AF2 multimer scoring "
@@ -196,7 +194,6 @@ adapter = ToolAdapter(
         Preset(
             slug="pilot",
             label="Pilot -- your target, ~30 min",
-            credits_cost=15,
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
                 "with AF2 multimer validation. 1-5 candidates with real "

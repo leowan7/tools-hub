@@ -131,7 +131,6 @@ class TestPxdesignMissingPdbDoesNotOrphan:
             user_id="u-test",
             tool="pxdesign",
             preset="pilot",
-            credits_cost=15,
             job_token="t" * 64,
             inputs={},
         )
@@ -188,7 +187,6 @@ class TestNonPdbToolNotAffected:
             user_id="u-test",
             tool="af2",
             preset="smoke",
-            credits_cost=0,
             job_token="t" * 64,
             inputs={},
         )

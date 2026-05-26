@@ -45,14 +45,6 @@ class TestAdapterRegistration:
         slugs = [p.slug for p in adapter.presets]
         assert slugs == ["smoke", "standalone"]
 
-    def test_credit_costs_match_atomic_spec(self):
-        """ATOMIC-TOOLS.md D1: smoke=0 credits, standalone=1 credit."""
-        adapter = get_adapter("mpnn")
-        smoke = adapter.preset_for("smoke")
-        standalone = adapter.preset_for("standalone")
-        assert smoke.credits_cost == 0
-        assert standalone.credits_cost == 1
-
     def test_standalone_requires_pdb(self):
         """Per-preset requires_pdb: only standalone needs an upload."""
         adapter = get_adapter("mpnn")

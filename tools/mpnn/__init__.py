@@ -158,7 +158,6 @@ adapter = ToolAdapter(
         Preset(
             slug="smoke",
             label="Smoke — 2 sequences",
-            credits_cost=0,
             description=(
                 "Runs against a baked 1HEW lysozyme target (chain A, "
                 "~130 aa). Same pipeline, smallest preset — verifies the "
@@ -168,7 +167,6 @@ adapter = ToolAdapter(
         Preset(
             slug="standalone",
             label="Standalone — your backbone",
-            credits_cost=1,
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
                 "up to 20 candidate sequences. ~30-60 s on A10G-24GB."
