@@ -101,6 +101,8 @@ from shared.pdb_inspect import (
 from shared.storage import (
     StorageError,
     copy_input,
+    download_output,
+    output_exists,
     presigned_input_url,
     stage_campaign_candidates,
     upload_input,
@@ -119,6 +121,7 @@ import tools.rfdiffusion # noqa: F401 — import to register adapter
 from scout import scout_bp
 from webhooks.modal import register_modal_webhooks
 from webhooks.stripe import register_stripe_webhook
+from webhooks.uploads import register_upload_urls
 
 logger = logging.getLogger(__name__)
 
@@ -713,6 +716,11 @@ def create_app() -> Flask:
 
     # Modal pipeline callbacks — /webhooks/modal/<job_id>/<token> + /webhooks/heartbeat.
     register_modal_webhooks(flask_app)
+
+    # Modal-facing upload-URL minter — /api/upload-urls/<job_id>/<token>.
+    # Pipelines call this to obtain presigned PUT URLs for candidate PDBs,
+    # which they then write into the tool-outputs Storage bucket directly.
+    register_upload_urls(flask_app)
 
     # Scout (free tier) blueprint — everything under /scout.
     from pathlib import Path as _Path  # noqa: PLC0415
@@ -2684,6 +2692,12 @@ def create_app() -> Flask:
             job_token=job.job_token,
             _external=True,
         )
+        upload_urls_endpoint = url_for(
+            "upload_urls",
+            job_id=job.id,
+            job_token=job.job_token,
+            _external=True,
+        )
 
         try:
             submit_result = modal_client.submit(
@@ -2693,6 +2707,7 @@ def create_app() -> Flask:
                     **job_spec,
                     "_input_pdb_url": presigned_url,
                     "_input_presigned_url": presigned_url,
+                    "_upload_urls_endpoint": upload_urls_endpoint,
                 },
                 job_id=job.id,
                 job_token=job.job_token,
@@ -3037,6 +3052,92 @@ def create_app() -> Flask:
             "\n".join(lines) + "\n",
             mimetype="text/plain",
             headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
+        )
+
+    @flask_app.route("/api/jobs/<job_id>/pdb/<path:filename>", methods=["GET"])
+    @login_required
+    def job_candidate_pdb(job_id: str, filename: str):
+        """Serve a candidate PDB by filename — Storage first, inline b64 fallback.
+
+        Two resolution paths, owner-scoped via ``get_job(user_id=...)``:
+
+        1. ``tool-outputs/{user_id}/{job_id}/designs/<filename>`` — bytes
+           served from Storage (server-side proxy, not 302, to keep the
+           3D viewer's JS fetch on a same-origin URL).
+        2. Inline ``tool_jobs.result.candidates[?].pdb_content_b64`` — scan
+           candidates for one whose ``pdb_key`` matches and return the
+           decoded bytes.
+
+        Returns 404 with a plain-text body when neither resolves. The
+        ``Content-Disposition`` header lets ``<a download="...">`` render
+        the right filename on save.
+        """
+        import base64  # noqa: PLC0415
+        from flask import Response  # noqa: PLC0415
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return render_template("404.html"), 404
+
+        # Path 1: tool-outputs Storage.
+        try:
+            if output_exists(
+                user_id=ctx.user_id, job_id=job_id, filename=filename
+            ):
+                data = download_output(
+                    user_id=ctx.user_id,
+                    job_id=job_id,
+                    filename=filename,
+                )
+                return Response(
+                    data,
+                    mimetype="chemical/x-pdb",
+                    headers={
+                        "Content-Disposition": (
+                            f'attachment; filename="{filename}"'
+                        )
+                    },
+                )
+        except StorageError:
+            logger.warning(
+                "Storage resolve failed for %s/%s; falling back to inline.",
+                job_id, filename, exc_info=True,
+            )
+
+        # Path 2: inline pdb_content_b64 fallback (legacy / boltzgen path).
+        candidates = (job.result or {}).get("candidates", []) or []
+        for cand in candidates:
+            if not isinstance(cand, dict):
+                continue
+            if cand.get("pdb_key") != filename:
+                continue
+            encoded = cand.get("pdb_content_b64")
+            if not encoded:
+                break
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except Exception:
+                return Response(
+                    "# Malformed PDB payload.\n",
+                    mimetype="text/plain",
+                    status=500,
+                )
+            return Response(
+                data,
+                mimetype="chemical/x-pdb",
+                headers={
+                    "Content-Disposition": (
+                        f'attachment; filename="{filename}"'
+                    )
+                },
+            )
+
+        return Response(
+            "# Candidate PDB not found.\n",
+            mimetype="text/plain",
+            status=404,
         )
 
     @flask_app.route("/jobs/<job_id>/af2.pdb", methods=["GET"])
