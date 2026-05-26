@@ -240,6 +240,153 @@ def stage_campaign_candidates(
     return written
 
 
+OUTPUT_BUCKET = "tool-outputs"
+
+# Default TTLs for output-side signed URLs.
+#   PUT — Modal pilot wallclock caps near 4 hours, so the URL needs to
+#   outlive a long-running run. Bumped slightly past that to absorb
+#   container startup + late-pipeline writes.
+#   GET — browser fetches each PDB on demand (3D viewer expand,
+#   download click). Short TTL since the route mints fresh URLs on
+#   every request.
+OUTPUT_PUT_TTL = 6 * 3600    # 6 hours
+OUTPUT_GET_TTL = 15 * 60     # 15 minutes
+
+
+def _output_object_path(user_id: str, job_id: str, filename: str) -> str:
+    """Return the canonical storage path for a candidate PDB.
+
+    Centralised so the upload-URL endpoint and the download path agree
+    on layout. Filename gets ``_safe_filename`` treatment to match what
+    other Storage helpers store.
+    """
+    return f"{user_id}/{job_id}/designs/{_safe_filename(filename)}"
+
+
+def _extract_signed_url(result: object) -> Optional[str]:
+    """Pull a signed URL out of supabase-py's response dict.
+
+    storage3 has shifted key casing between releases (signedURL /
+    signedUrl / signed_url / url). Be defensive across all four.
+    """
+    if isinstance(result, dict):
+        for key in ("signedURL", "signedUrl", "signed_url", "url"):
+            value = result.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def presigned_output_put_url(
+    *,
+    user_id: str,
+    job_id: str,
+    filename: str,
+) -> str:
+    """Mint a presigned PUT URL for a candidate PDB.
+
+    The Modal pipeline calls ``/api/upload-urls/<job_id>`` to obtain
+    these and then HTTP-PUTs each design's PDB bytes to the returned
+    URL. The URL itself carries the upload auth — no Supabase session
+    is needed on the Modal side.
+    """
+    path = _output_object_path(user_id, job_id, filename)
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(OUTPUT_BUCKET)
+        result = bucket.create_signed_upload_url(path)
+    except Exception as exc:
+        logger.error("Signed upload URL failed for %s", path, exc_info=True)
+        raise StorageError(f"signed upload URL failed: {exc}") from exc
+    url = _extract_signed_url(result)
+    if url:
+        return url
+    raise StorageError(f"unexpected signed upload URL response: {result!r}")
+
+
+def presigned_output_get_url(
+    *,
+    user_id: str,
+    job_id: str,
+    filename: str,
+    expires_seconds: int = OUTPUT_GET_TTL,
+) -> str:
+    """Mint a presigned GET URL for a candidate PDB.
+
+    Used by the browser-facing download / 3D viewer route. Short TTL
+    because the route mints a fresh URL each request — the link is
+    never persisted client-side.
+    """
+    path = _output_object_path(user_id, job_id, filename)
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(OUTPUT_BUCKET)
+        result = bucket.create_signed_url(path, expires_seconds)
+    except Exception as exc:
+        logger.error("Signed download URL failed for %s", path, exc_info=True)
+        raise StorageError(f"signed download URL failed: {exc}") from exc
+    url = _extract_signed_url(result)
+    if url:
+        return url
+    raise StorageError(f"unexpected signed download URL response: {result!r}")
+
+
+def download_output(
+    *,
+    user_id: str,
+    job_id: str,
+    filename: str,
+) -> bytes:
+    """Server-side download of a candidate PDB. Used by ZIP export."""
+    path = _output_object_path(user_id, job_id, filename)
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(OUTPUT_BUCKET)
+        data = bucket.download(path)
+    except Exception as exc:
+        logger.error("Storage download failed for %s", path, exc_info=True)
+        raise StorageError(f"download failed: {exc}") from exc
+    if not data:
+        raise StorageError(f"empty object at {path}")
+    return data
+
+
+def output_exists(
+    *,
+    user_id: str,
+    job_id: str,
+    filename: str,
+) -> bool:
+    """Cheap existence check used by the resolver to decide whether to
+    serve a Storage object or fall back to inline ``pdb_content_b64``.
+
+    Returns False on any failure rather than raising — the fallback
+    path is correctness-equivalent for jobs that still emit inline b64.
+    """
+    safe = _safe_filename(filename)
+    prefix = f"{user_id}/{job_id}/designs"
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        bucket = client.storage.from_(OUTPUT_BUCKET)
+        listing = bucket.list(path=prefix, options={"search": safe})
+    except Exception:
+        return False
+    if not isinstance(listing, list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("name") == safe
+        for item in listing
+    )
+
+
 def _safe_filename(name: str) -> str:
     """Strip path components and dangerous characters from a filename.
 
