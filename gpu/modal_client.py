@@ -72,7 +72,8 @@ CONTRACT_VERSION = "2.0.0"
 PRESET_CAPS: Dict[tuple[str, str], int] = {
     # Atomic primitives.
     # D1 MPNN: slug "mpnn" matches the tools-hub adapter; the Modal app
-    # lives at ``ranomics-mpnn-prod`` (see ``APP_NAME_OVERRIDES`` below).
+    # is named ``ranomics-mpnn-prod`` per the ``ranomics-<slug>-prod``
+    # convention in ``modal_app_name``.
     ("mpnn", "smoke"):             120,
     ("mpnn", "standalone"):        360,
     ("proteinmpnn", "standalone"): 360,  # legacy alias — pre-D1 planning
