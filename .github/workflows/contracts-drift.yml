@@ -1,0 +1,30 @@
+name: Contracts drift guard
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/contracts-drift.yml'
+  push:
+    branches:
+      - main
+      - master
+      - 'refactor/**'
+    paths:
+      - 'contracts/**'
+      - '.github/workflows/contracts-drift.yml'
+
+jobs:
+  verify-contracts-sha:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify contracts SHA256
+        run: |
+          set -euo pipefail
+          cd contracts
+          # Verifies that rpc.py and upload_urls.py are byte-identical to the
+          # sibling llm-proteinDesigner repo. If either hash drifts, this job
+          # fails and the maintainer must update BOTH repos in lock-step,
+          # then refresh CONTRACTS_SHA256.lock in both.
+          sha256sum -c CONTRACTS_SHA256.lock
