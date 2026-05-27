@@ -116,7 +116,7 @@ def run_tool(payload: Any) -> dict:
     # run_pipeline.py crashes before writing a fresh file (e.g. early
     # import error, OOM, sys.exit from preflight with a write failure),
     # this wrapper would read the previous job's result and
-    # ``gpu.modal_client._interpret_kendrew_return()`` would mark the
+    # ``gpu.modal_client._interpret_pipeline_return()`` would mark the
     # new job succeeded with another run's output. Mirrors D3 ColabFold
     # modal_app.py:123-128 (Codex P1 fix; AF2 was missing it).
     try:

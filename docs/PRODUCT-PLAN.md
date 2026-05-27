@@ -137,7 +137,7 @@ Also in space: Chai Discovery, 310.ai, Profluent, BioLM, Ginkgo Model API, NVIDI
 | [`tools-hub/`](../) | Flask + Supabase on Railway, shared auth with Scout | 🟢 hub live, tools stubbed | **v1 hub shell** |
 | [`tools-hub-prototype/`](../../tools-hub-prototype/) Developability Scout | 70% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |
 | [`tools-hub-prototype/`](../../tools-hub-prototype/) Library Planner | 60% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |
-| Protein-design pipelines repo **Kendrew Modal apps** | 5 Modal apps deployed, shared `base_image.py`, smoke/mini_pilot tier contract | See next rows per tool | **v1+v2 paid GPU tools** |
+| Protein-design pipelines repo **Composite-pipeline Modal apps** | 5 Modal apps deployed, shared `base_image.py`, smoke/mini_pilot tier contract | See next rows per tool | **v1+v2 paid GPU tools** |
 | ↳ BindCraft (`bindcraft_app.py`) | A100-80GB; full `pilot_preset()`, 4h timeout | 🟢 **GREEN** — validated end-to-end, no blockers | **Wave 2** |
 | ↳ RFdiffusion (`rfdiffusion_app.py`) | A100-40GB; smoke + mini_pilot presets | 🟡 **YELLOW** — smoke passes; mini_pilot blocked by JAX XLA JIT cold-start. Commits `064266f` + `97ec005` may have resolved it — re-validate. See `blocker-rfdiffusion.md` in the protein-design pipelines repo. | Wave 2 smoke-tier; Wave 3 full |
 | ↳ RFantibody (`rfantibody_app.py`) | A100-40GB; full presets, Dockerfile Layer-1 checks validate RF2+RFdiff+MPNN | 🟢 **GREEN** — commit `64c4ab0` verifies 2× consecutive smoke (210s, 62s) + 2× consecutive mini_pilot (264s, 166s) with real pAE/ipAE/pLDDT floats and ~3600-ATOM PDBs. | **Wave 2** |

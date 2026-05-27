@@ -118,7 +118,7 @@ def run_tool(payload: Any) -> dict:
     # run_pipeline.py crashes before writing a fresh file (e.g. early
     # import error, OOM, sys.exit from preflight with a write failure),
     # this wrapper would read the previous job's result and
-    # ``gpu.modal_client._interpret_kendrew_return()`` would mark the
+    # ``gpu.modal_client._interpret_pipeline_return()`` would mark the
     # new job succeeded with another run's output. Codex P1.
     try:
         os.remove("/tmp/smoke_results.json")

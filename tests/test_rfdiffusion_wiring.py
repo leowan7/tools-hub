@@ -42,16 +42,14 @@ def test_pilot_preset_marked_long_running_and_requires_pdb():
     assert pilot.requires_pdb is True
 
 
-def test_modal_app_name_resolves_to_kendrew_default():
-    """gpu.modal_client must dispatch to kendrew-rfdiffusion-prod by default."""
+def test_modal_app_name_resolves_to_ranomics_default():
+    """gpu.modal_client must dispatch to ranomics-rfdiffusion-prod by default."""
     from gpu import modal_client
 
-    # The default resolver maps slug -> kendrew-<slug>-prod for composite
-    # tools (BindCraft, BoltzGen, RFantibody, PXDesign, RFdiffusion).
-    # Atomic tools (MPNN, AF2, COLABFOLD, ESMFOLD) override to
-    # ranomics-<slug>-prod.
+    # The default resolver maps slug -> ranomics-<slug>-prod for every tool
+    # (atomic + composite) post-Wave 1.
     app_name = modal_client.modal_app_name("rfdiffusion")
-    assert app_name == "kendrew-rfdiffusion-prod"
+    assert app_name == "ranomics-rfdiffusion-prod"
 
 
 def test_preset_caps_present_for_all_tiers():
