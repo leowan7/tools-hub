@@ -1,0 +1,5 @@
+
+# Contracts must stay LF on every platform so the SHA256 drift guard
+# computes a consistent hash on Linux CI and on local Windows checkouts.
+contracts/CONTRACTS_SHA256.lock text eol=lf
+contracts/*.py text eol=lf
