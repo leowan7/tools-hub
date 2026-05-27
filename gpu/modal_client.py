@@ -127,25 +127,16 @@ def preset_gpu_seconds(tool: str, preset: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Modal app-name overrides
+# Modal app names
 # ---------------------------------------------------------------------------
-# Default is ``kendrew-<tool>-prod`` (composite pipelines — BindCraft,
-# BoltzGen, RFantibody, PXDesign) because those apps live in the Kendrew
-# Modal project. Atomic primitives (D1..D9 per ATOMIC-TOOLS.md) deploy
-# under the ``ranomics-<tool>-prod`` namespace because they are
-# standalone. Keep this table tiny — one row per atomic tool.
-
-APP_NAME_OVERRIDES: Dict[str, str] = {
-    "mpnn":      "ranomics-mpnn-prod",
-    "af2":       "ranomics-af2-prod",
-    "colabfold": "ranomics-colabfold-prod",
-    "esmfold":   "ranomics-esmfold-prod",
-}
+# All Modal apps follow the ``ranomics-<tool>-prod`` naming convention,
+# including both composite pipelines (BindCraft, BoltzGen, RFantibody,
+# PXDesign, RFdiffusion) and atomic primitives (D1..D9 per ATOMIC-TOOLS.md).
 
 
 def modal_app_name(tool: str) -> str:
     """Return the Modal app name to resolve for a given tool slug."""
-    return APP_NAME_OVERRIDES.get(tool, f"kendrew-{tool}-prod")
+    return f"ranomics-{tool}-prod"
 
 
 @dataclass(frozen=True)
