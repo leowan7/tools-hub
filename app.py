@@ -3107,11 +3107,16 @@ def create_app() -> Flask:
             )
 
         # Path 2: inline pdb_content_b64 fallback (legacy / boltzgen path).
+        # Compare on basename so a pdb_key of "designs/design_0.pdb" matches
+        # a request URL of either "designs/design_0.pdb" or "design_0.pdb".
+        import posixpath  # noqa: PLC0415
+        target_basename = posixpath.basename(filename) or filename
         candidates = (job.result or {}).get("candidates", []) or []
         for cand in candidates:
             if not isinstance(cand, dict):
                 continue
-            if cand.get("pdb_key") != filename:
+            cand_basename = posixpath.basename(cand.get("pdb_key") or "")
+            if cand_basename != target_basename:
                 continue
             encoded = cand.get("pdb_content_b64")
             if not encoded:

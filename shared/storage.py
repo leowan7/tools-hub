@@ -257,10 +257,16 @@ def _output_object_path(user_id: str, job_id: str, filename: str) -> str:
     """Return the canonical storage path for a candidate PDB.
 
     Centralised so the upload-URL endpoint and the download path agree
-    on layout. Filename gets ``_safe_filename`` treatment to match what
-    other Storage helpers store.
+    on layout. Filename is reduced to its basename — different pipelines
+    emit ``pdb_key`` as either ``"design_0.pdb"`` (basename only) or
+    ``"designs/design_0.pdb"`` (with subfolder prefix). Both must land
+    at the same storage path so the round-trip works either way. After
+    basename extraction, ``_safe_filename`` strips any remaining
+    dangerous characters.
     """
-    return f"{user_id}/{job_id}/designs/{_safe_filename(filename)}"
+    import posixpath  # noqa: PLC0415
+    basename = posixpath.basename(filename) or filename
+    return f"{user_id}/{job_id}/designs/{_safe_filename(basename)}"
 
 
 def _extract_signed_url(result: object) -> Optional[str]:
@@ -369,7 +375,8 @@ def output_exists(
     Returns False on any failure rather than raising — the fallback
     path is correctness-equivalent for jobs that still emit inline b64.
     """
-    safe = _safe_filename(filename)
+    import posixpath  # noqa: PLC0415
+    safe = _safe_filename(posixpath.basename(filename) or filename)
     prefix = f"{user_id}/{job_id}/designs"
     client = get_service_client()
     if client is None:

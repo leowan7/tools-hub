@@ -160,6 +160,53 @@ class TestInlineFallback:
         assert resp.status_code == 404
 
 
+class TestPdbKeyPrefix:
+    """Pipelines emit pdb_key as either ``"design_0.pdb"`` or
+    ``"designs/design_0.pdb"`` — both must route to the same Storage
+    path and match inline-fallback rows on basename."""
+
+    def test_inline_match_with_designs_prefix(self, client, monkeypatch):
+        user_id = str(uuid.uuid4())
+        _login(client, user_id)
+        _patch_user_ctx(monkeypatch, user_id)
+
+        pdb_text = b"ATOM      1  N   ALA A   1\n"
+        b64 = base64.b64encode(pdb_text).decode()
+        job = _job(
+            user_id=user_id,
+            candidates=[_candidate("designs/design_0.pdb", b64=b64)],
+        )
+        _patch_job(monkeypatch, job)
+        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+
+        # URL request preserves the same "designs/" prefix that the
+        # template emits via {{ pdb_key | urlencode }}.
+        resp = client.get(f"/api/jobs/{job.id}/pdb/designs/design_0.pdb")
+        assert resp.status_code == 200
+        assert resp.data == pdb_text
+
+    def test_inline_match_when_request_is_basename_but_key_has_prefix(
+        self, client, monkeypatch
+    ):
+        user_id = str(uuid.uuid4())
+        _login(client, user_id)
+        _patch_user_ctx(monkeypatch, user_id)
+
+        pdb_text = b"ATOM      1  N   ALA A   1\n"
+        b64 = base64.b64encode(pdb_text).decode()
+        job = _job(
+            user_id=user_id,
+            candidates=[_candidate("designs/design_0.pdb", b64=b64)],
+        )
+        _patch_job(monkeypatch, job)
+        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+
+        # Hypothetical client that strips the prefix should still match.
+        resp = client.get(f"/api/jobs/{job.id}/pdb/design_0.pdb")
+        assert resp.status_code == 200
+        assert resp.data == pdb_text
+
+
 class TestStorageErrorFallthrough:
     """StorageError on the Storage path falls through to inline rather than 500."""
 
