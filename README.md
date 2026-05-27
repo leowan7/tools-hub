@@ -1,8 +1,8 @@
 # Ranomics Tools Hub
 
-Flask app that hosts Ranomics' free scientific tools as lead magnets under
-`tools.ranomics.com`. The hub itself is lightweight: auth, a landing page,
-and per-tool routes. Each tool lives in its own package under `tools/` and
+Flask app that hosts Ranomics' scientific tools under `tools.ranomics.com`.
+The hub itself stays lightweight: auth, a landing page, a USD wallet, and
+per-tool routes. Each tool lives in its own package under `tools/` and
 exposes a small stable API that `app.py` imports lazily.
 
 ## Tools
@@ -10,8 +10,72 @@ exposes a small stable API that `app.py` imports lazily.
 | Tool | Status | Route |
 |------|--------|-------|
 | Epitope Scout | Live | external link to `https://scout.ranomics.com` |
+| AlphaFold2 (AF2) | Live | `/tools/af2` |
+| ColabFold | Live | `/tools/colabfold` |
+| ESMFold | Live | `/tools/esmfold` |
+| ProteinMPNN | Live | `/tools/mpnn` |
+| RFdiffusion | Live | `/tools/rfdiffusion` |
+| BindCraft | Live | `/tools/bindcraft` |
+| BoltzGen | Live | `/tools/boltzgen` |
+| RFantibody | Live | `/tools/rfantibody` |
+| PXDesign | Live | `/tools/pxdesign` |
 | Binder Developability Scout | Coming soon | `/developability` |
 | Yeast Display Library Planner | Coming soon | `/library-planner` |
+
+## Architecture
+
+The hub is the orchestrator. Atomic and composite GPU pipelines run on
+Modal, but the Modal app code (image build, Function definitions, weight
+provisioning) lives in the sibling `llm-proteinDesigner` repo under
+`infrastructure/modal/`. That repo's CI deploys the Modal apps under the
+`ranomics-*-prod` namespace (for example `ranomics-mpnn-prod`,
+`ranomics-bindcraft-prod`, `ranomics-pxdesign-prod`).
+
+tools-hub never invokes `modal deploy`. It calls already-deployed Modal
+Functions over the RPC contract defined in `contracts/` and consumed via
+`shared/modal_client.py`. Outputs land in the `tool-outputs` Supabase
+storage bucket and are served back through `app.py` resolver endpoints.
+
+See `docs/ATOMIC-TOOLS.md` for the current tool catalog and
+`docs/PRODUCT-PLAN.md` for tiering and pricing context.
+
+## Contracts (shared boundary)
+
+`contracts/` holds the pydantic v2 models that define the request and
+response payloads exchanged with Modal. It is vendored byte-identical
+into the sibling `llm-proteinDesigner` repo, which mounts the directory
+into each composite Modal image at `/opt/contracts` via
+`modal.Image.add_local_dir(...)`.
+
+Two rules:
+
+1. Any edit to `rpc.py` or `upload_urls.py` must land in BOTH repos in
+   the same release. Bump `CONTRACT_VERSION` in `contracts/__init__.py`
+   and log the change in `docs/ORCH-LOG.md`.
+2. Refresh `contracts/CONTRACTS_SHA256.lock` in BOTH repos. The CI guard
+   at `.github/workflows/contracts-drift.yml` runs `sha256sum -c` against
+   that lockfile on every PR touching `contracts/` and fails if the
+   hashes drift. `__init__.py` is excluded from the lockfile because
+   each repo carries a per-repo sync-source comment in that file.
+
+## Wallet (USD wallet is the sole money path)
+
+Wallet code lives in `shared/wallet.py` (ledger), `shared/wallet_estimates.py`
+(cost projections), and `billing/checkout.py` (Stripe). Settlement is a
+two-row hold + partial-release pattern on `wallet_transactions`; see
+the `docs/HANDOFF-WALLET-PIVOT-SESSION-*.md` series for the ledger shape
+and migration history.
+
+- Minimum top-up: `$20` (`MIN_TOPUP_USD` in `shared/wallet.py`). Smaller
+  amounts are rejected at the form and the server.
+- Stripe is the payment provider; live keys are read from environment.
+- Backing tables live in the shared Supabase project: `wallets`,
+  `wallet_transactions`, `tool_jobs` (whose `inputs._wallet.hold_tx_id`
+  pivots back to the wallet ledger).
+- Credits are fully retired. There is no longer a credits balance or a
+  per-tool credit price; every job debits in USD.
+
+Env vars for wallet/billing live in `docs/WALLET-ENV-VARS.md`.
 
 ## Auth
 
@@ -52,6 +116,9 @@ venv\Scripts\python.exe app.py
 | `SESSION_SECRET_KEY` | yes | Flask session signing secret (any long random string) |
 | `PORT` | no | Port for local dev; defaults to 5000. Platform-provided in production. |
 
+Wallet/Stripe/Modal variables are documented in `docs/WALLET-ENV-VARS.md`
+and `.env.example`.
+
 ## Deployment
 
 Designed for Railway via Nixpacks. The build spec is in
@@ -63,6 +130,9 @@ the port scanner can verify the app without credentials.
 
 Python version pinned in `runtime.txt` (currently 3.13.0) matches Epitope
 Scout for consistency.
+
+Modal apps are deployed by the sibling `llm-proteinDesigner` repo's CI,
+not by this repo.
 
 ## Adding a tool
 
@@ -82,17 +152,23 @@ Scout for consistency.
 3. Add the tool to the `tools` list in the `index()` route so it shows
    up on the hub landing page.
 
+If the tool runs on Modal, define the Modal app in the sibling
+`llm-proteinDesigner` repo and call it through `shared/modal_client.py`
+using the `contracts/` payload models.
+
 ## Project layout
 
 ```
 tools-hub/
   app.py                 Flask application
-  shared/                Auth + Supabase client
+  contracts/             Vendored RPC contract (shared with llm-proteinDesigner)
+  billing/               Stripe checkout + webhooks
+  shared/                Auth, wallet, jobs, storage, Modal client
   tools/                 Per-tool packages
-    developability/      Placeholder for Binder Developability Scout
-    library_planner/     Placeholder for Yeast Display Library Planner
-  templates/             Jinja2 templates (base, index, auth, account, coming_soon)
+  templates/             Jinja2 templates
   static/                Logo + CSS
+  docs/                  Architecture, handoffs, validation log, ORCH-LOG
+  .github/workflows/     CI (contracts drift guard, etc.)
   requirements.txt       Pinned deps
   Procfile               Gunicorn start command
   gunicorn.conf.py       Gunicorn config (preload, logging)
