@@ -60,7 +60,7 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 **4. Stub-score rejection** — the smoke preset's result parser must detect and reject the "silent stub" failure mode. PXDesign's ipTM=0.08 / pLDDT=0.96 incident (see [VALIDATION-LOG.md](VALIDATION-LOG.md)) is the cautionary tale. Add an assertion that rejects exact-repeat scores or implausible ranges; any hit writes FAILED to `/tmp/smoke_results.json`.
 
-**5. Modal wrapper tier contract** (`infrastructure/modal/<name>_app.py`) — follow the same pattern as [`bindcraft_app.py`](../../llm-proteinDesigner/infrastructure/modal/bindcraft_app.py):
+**5. Modal wrapper tier contract** (`infrastructure/modal/<name>_app.py`) — follow the same pattern as the per-tool Modal app file (e.g. `bindcraft_app.py`) in the protein-design pipelines repo:
 - `tier: "smoke"` → use `smoke_preset()`, return results inline via `/tmp/smoke_results.json`.
 - `tier: "standalone"` (atomic default) → use `standalone_preset()`, return results inline.
 - Heartbeats every 60s to `/webhooks/heartbeat`.
@@ -77,7 +77,7 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 **Purpose:** user uploads backbone PDB + chain labels → receives N candidate sequences with MPNN scores and pLDDT. 1-credit loss leader.
 
-**Dependency source:** copy the install recipe from [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal) (MPNN is already installed there to serve the RFdiffusion → MPNN pipeline step). Strip everything else (no RFdiffusion weights, no ColabFold, no AF2).
+**Dependency source:** copy the install recipe from the corresponding `Dockerfile.modal` in the protein-design pipelines repo (MPNN is already installed there to serve the RFdiffusion → MPNN pipeline step). Strip everything else (no RFdiffusion weights, no ColabFold, no AF2).
 
 **Modal app:** `ranomics-mpnn-prod`. GPU: **A10G-24GB** (MPNN runs happily on a small GPU — do not pay A100 prices).
 
@@ -166,7 +166,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` 
 
 **Purpose:** user uploads FASTA (single chain or multimer) → receives predicted structure + pLDDT + PAE. 2-credit tool.
 
-**Dependency source:** JAX AF2 from [`docker/bindcraft/Dockerfile.modal`](../../llm-proteinDesigner/docker/bindcraft/Dockerfile.modal) (BindCraft uses FreeBindCraft which bundles AF2). MSA retrieval from the ColabFold MMseqs2 public server (free tier; cache on Modal Volume).
+**Dependency source:** JAX AF2 from the BindCraft `Dockerfile.modal` in the protein-design pipelines repo (BindCraft uses FreeBindCraft which bundles AF2). MSA retrieval from the ColabFold MMseqs2 public server (free tier; cache on Modal Volume).
 
 **Modal app:** `ranomics-af2-prod`. GPU: **A100-80GB** (AF2-multimer on sequences > ~400 AA needs the 80GB).
 
@@ -201,7 +201,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` 
 
 **Purpose:** user uploads FASTA → receives fast prediction with minimal MSA. Speed tier, complements AF2 standalone.
 
-**Dependency source:** ColabFold is already installed in [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal). Strip to minimal image.
+**Dependency source:** ColabFold is already installed in the RFdiffusion `Dockerfile.modal` in the protein-design pipelines repo. Strip to minimal image.
 
 **Modal app:** `ranomics-colabfold-prod`. GPU: **A100-40GB**.
 
@@ -374,7 +374,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** antibody-specific folding. Lower volume than AF2 but higher quality for Fv/scFv.
 
-**Dependency source:** RF2 from [`docker/rfantibody/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfantibody/Dockerfile.modal).
+**Dependency source:** RF2 from the rfantibody `Dockerfile.modal` in the protein-design pipelines repo.
 
 **Modal app:** `ranomics-rf2-prod`. GPU: **A100-40GB**.
 
@@ -390,7 +390,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** backbone-only diffusion. Separates design (D) from sequence (MPNN) and validation (AF2) — useful for users iterating on just the backbone step.
 
-**Dependency source:** RFdiffusion from [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal), strip MPNN + AF2.
+**Dependency source:** RFdiffusion from the RFdiffusion `Dockerfile.modal` in the protein-design pipelines repo, strip MPNN + AF2.
 
 **Modal app:** `ranomics-rfdiff-prod`. GPU: **A100-40GB**.
 

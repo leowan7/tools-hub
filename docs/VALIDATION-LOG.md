@@ -27,14 +27,14 @@ Append-only audit trail of smoke and mini_pilot runs for every GPU tool on `tool
 
 ## BindCraft
 
-GPU: A100-80GB. App: `kendrew-bindcraft-prod`. Timeout: 4 h. Pipeline file: [backend/pipelines/bindcraft.py](../../llm-proteinDesigner/backend/pipelines/bindcraft.py).
+GPU: A100-80GB. App: `kendrew-bindcraft-prod`. Timeout: 4 h. Pipeline file: `backend/pipelines/bindcraft.py` in the protein-design pipelines repo.
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
 | 2026-04-28 | bindcraft | code-check | — | a0dbcf1..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log a0dbcf1..HEAD -- backend/pipelines/bindcraft.py docker/bindcraft/ infrastructure/modal/bindcraft_app.py` returns 0 commits. Pipeline path unchanged from the pilot-E2E green at `a0dbcf1`. |
 | 2026-04-22 | bindcraft | pilot | main | `a0dbcf1` | (not captured) | **PASS** | Leo (kendrew-commit `a0dbcf1`) | **Pilot-tier E2E with caller-uploaded PDB 4Z18.** Internal job `f1f08a62`. 2 candidates with real Leo-attested scores: ipTM=0.82, pLDDT=0.90, pTM=0.79, i_pAE=0.08, Binder_RMSD=0.45, Hotspot_RMSD=4.14, Target_RMSD=0.66. Source: Kendrew commit `a0dbcf1` ("fix(bindcraft): populate real scores + add pilot submission helper") — fixed parser CSV-key + metric-name + filename-suffix bugs; this is the first BindCraft pilot E2E that produced real-scored output. Submit helper: `backend/scripts/submit_pilot.py 4Z18 bindcraft`. **Strongest attested validation of any composite tool — only composite with a caller-PDB pilot E2E on record.** |
 | 2026-04-22 | bindcraft | code-check | — | d421117..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | Zero drift in `infrastructure/modal/bindcraft_app.py`, `docker/bindcraft/**`, `backend/pipelines/bindcraft.py` since last BindCraft-touching commit `d421117` (container v7 bug fixes). All intervening commits land on other pipelines. Pre-audit green path unchanged. |
-| _seed_ | bindcraft | smoke | main | (pre-audit) | — | **PASS** | Leo | Referenced in [infrastructure/modal/README.md](../../llm-proteinDesigner/infrastructure/modal/README.md) and `scratch/modal_spike/bindcraft_spike.py`. Re-validate on staging before Wave 2 ship. |
+| _seed_ | bindcraft | smoke | main | (pre-audit) | — | **PASS** | Leo | Referenced in `infrastructure/modal/README.md` in the protein-design pipelines repo and `scratch/modal_spike/bindcraft_spike.py`. Re-validate on staging before Wave 2 ship. |
 | _seed_ | bindcraft | mini_pilot | main | (pre-audit) | — | **PASS** | Leo | Same as above. Re-validate on staging. |
 
 **Ship gate (Wave 2):** code-check current HEAD against the pre-audit green path — passes (drift-zero confirmation row above). Pilot-tier E2E on 4Z18 strengthens the gate further. `FLAG_TOOL_BINDCRAFT=on` justified.
@@ -43,7 +43,7 @@ GPU: A100-80GB. App: `kendrew-bindcraft-prod`. Timeout: 4 h. Pipeline file: [bac
 
 ## RFantibody
 
-GPU: A100-40GB. App: `kendrew-rfantibody-prod`. Timeout: 1 h. Pipeline file: [backend/pipelines/rfantibody.py](../../llm-proteinDesigner/backend/pipelines/rfantibody.py).
+GPU: A100-40GB. App: `kendrew-rfantibody-prod`. Timeout: 1 h. Pipeline file: `backend/pipelines/rfantibody.py` in the protein-design pipelines repo.
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -60,7 +60,7 @@ GPU: A100-40GB. App: `kendrew-rfantibody-prod`. Timeout: 1 h. Pipeline file: [ba
 
 ## BoltzGen
 
-GPU: A100-40GB. App: `kendrew-boltzgen-prod`. Timeout: 2 h. Pipeline file: [backend/pipelines/boltzgen.py](../../llm-proteinDesigner/backend/pipelines/boltzgen.py).
+GPU: A100-40GB. App: `kendrew-boltzgen-prod`. Timeout: 2 h. Pipeline file: `backend/pipelines/boltzgen.py` in the protein-design pipelines repo.
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -77,7 +77,7 @@ GPU: A100-40GB. App: `kendrew-boltzgen-prod`. Timeout: 2 h. Pipeline file: [back
 
 ## RFdiffusion
 
-GPU: A100-40GB. App: `kendrew-rfdiffusion-prod`. Timeout: ~1 h. Pipeline file: [backend/pipelines/rfdiffusion.py](../../llm-proteinDesigner/backend/pipelines/rfdiffusion.py). Blocker: [docs/blocker-rfdiffusion.md](../../llm-proteinDesigner/docs/blocker-rfdiffusion.md).
+GPU: A100-40GB. App: `kendrew-rfdiffusion-prod`. Timeout: ~1 h. Pipeline file: `backend/pipelines/rfdiffusion.py` in the protein-design pipelines repo. Blocker: `docs/blocker-rfdiffusion.md` in the protein-design pipelines repo.
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
@@ -96,7 +96,7 @@ GPU: A100-40GB. App: `kendrew-rfdiffusion-prod`. Timeout: ~1 h. Pipeline file: [
 
 ## PXDesign
 
-GPU: A100-80GB. App: `kendrew-pxdesign-prod`. Timeout: 2 h. Pipeline file: [backend/pipelines/pxdesign.py](../../llm-proteinDesigner/backend/pipelines/pxdesign.py). Blocker: [docs/blocker-pxdesign.md](../../llm-proteinDesigner/docs/blocker-pxdesign.md).
+GPU: A100-80GB. App: `kendrew-pxdesign-prod`. Timeout: 2 h. Pipeline file: `backend/pipelines/pxdesign.py` in the protein-design pipelines repo. Blocker: `docs/blocker-pxdesign.md` in the protein-design pipelines repo.
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
