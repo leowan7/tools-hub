@@ -53,6 +53,8 @@ import secrets
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from contracts.rpc import ToolPayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -348,19 +350,23 @@ class ModalClient:
         Mirrors the webhook-roundtrip shape Kendrew's run_pipeline.py
         expects. Keys not used by a given tier are simply ignored on the
         Kendrew side, so one shape fits all presets.
+
+        The dict is constructed via ``ToolPayload`` from the shared
+        contracts module so both sides validate against the same schema.
         """
-        return {
-            "job_id": job_id,
-            "job_token": job_token,
-            "job_tier": preset,
-            "tier": preset,
-            "job_spec": inputs,
-            "webhook_url": webhook_url,
-            "input_presigned_url": inputs.get("_input_presigned_url", ""),
-            "input_pdb_url": inputs.get("_input_pdb_url", ""),
-            "upload_urls_endpoint": inputs.get("_upload_urls_endpoint", ""),
-            "total_budget_hours": inputs.get("_total_budget_hours", 4),
-        }
+        payload = ToolPayload(
+            job_id=job_id,
+            job_token=job_token,
+            job_tier=preset,
+            tier=preset,
+            job_spec=inputs,
+            webhook_url=webhook_url,
+            input_presigned_url=inputs.get("_input_presigned_url", ""),
+            input_pdb_url=inputs.get("_input_pdb_url", ""),
+            upload_urls_endpoint=inputs.get("_upload_urls_endpoint", ""),
+            total_budget_hours=inputs.get("_total_budget_hours", 4),
+        )
+        return payload.model_dump()
 
 
 def _import_modal():
