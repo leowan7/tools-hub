@@ -1,0 +1,89 @@
+name: Deploy Modal apps
+
+# Auto-deploys the four atomic tools-hub Modal apps on push to main.
+#
+# Apps (one Modal deploy per matrix job):
+#   - mpnn      (tools/mpnn/modal_app.py)
+#   - af2       (tools/af2/modal_app.py)
+#   - colabfold (tools/colabfold/modal_app.py)
+#   - esmfold   (tools/esmfold/modal_app.py)
+#
+# Prerequisites:
+#   - Repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set.
+#   - Each tools/<tool>/modal_app.py exists at HEAD.
+#
+# Matrix strategy: one job per app so a single-app failure does not abort the
+# other three. `fail-fast: false` is required so prod deploys are attempted
+# independently.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - '.github/workflows/deploy-modal.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-modal-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - mpnn
+          - af2
+          - colabfold
+          - esmfold
+
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Modal client
+        run: |
+          python -m pip install --upgrade pip
+          # Pin to a known-working Modal client version; bump deliberately.
+          pip install 'modal>=1.4,<2'
+
+      - name: Verify Modal auth
+        run: |
+          modal app list >/dev/null
+
+      - name: Deploy ${{ matrix.app }}
+        id: deploy
+        run: |
+          set -euo pipefail
+          app_file="tools/${{ matrix.app }}/modal_app.py"
+          if [ ! -f "$app_file" ]; then
+            echo "::error::$app_file not found"
+            exit 1
+          fi
+          echo "Deploying $app_file"
+          modal deploy "$app_file" | tee "deploy-${{ matrix.app }}.log"
+
+      - name: Upload deploy log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modal-deploy-log-${{ matrix.app }}
+          path: deploy-${{ matrix.app }}.log
+          if-no-files-found: warn

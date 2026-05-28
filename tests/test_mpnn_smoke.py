@@ -465,8 +465,8 @@ class TestSmokePresetShape:
         from gpu.modal_client import modal_app_name
 
         assert modal_app_name("mpnn") == "ranomics-mpnn-prod"
-        # Non-overridden tools keep the kendrew- prefix.
-        assert modal_app_name("bindcraft") == "kendrew-bindcraft-prod"
+        # All tools resolve under the ranomics-*-prod namespace post-Wave 1.
+        assert modal_app_name("bindcraft") == "ranomics-bindcraft-prod"
 
     def test_preset_gpu_seconds_caps_registered(self):
         """Both MPNN presets have an entry in PRESET_CAPS — the generic

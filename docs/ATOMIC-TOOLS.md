@@ -1,9 +1,10 @@
 # Atomic Tools — Build Spec
 
 > **Note (2026-04-23):** This spec was written for D1..D9 atomic primitives.
-> Wave-2 also exposes **pilot tiers** on the four composite Kendrew
-> pipelines (BindCraft, RFantibody, BoltzGen, PXDesign). Those pilot
-> tiers reuse the existing Kendrew Modal apps + the
+> Wave-2 also exposes **pilot tiers** on the four composite pipelines
+> (BindCraft, RFantibody, BoltzGen, PXDesign) that live in the sibling
+> `llm-proteinDesigner` repo (originally named Kendrew). Those pilot
+> tiers reuse the existing `ranomics-*-prod` Modal apps + the
 > `tools-hub/tools/<name>/` adapter pattern; they are NOT atomic tools
 > in the D-series sense. See `PRODUCT-PLAN.md` "Iterative binder design
 > platform" for how the pilot tiers fit the iterative workflow.
@@ -60,7 +61,7 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 **4. Stub-score rejection** — the smoke preset's result parser must detect and reject the "silent stub" failure mode. PXDesign's ipTM=0.08 / pLDDT=0.96 incident (see [VALIDATION-LOG.md](VALIDATION-LOG.md)) is the cautionary tale. Add an assertion that rejects exact-repeat scores or implausible ranges; any hit writes FAILED to `/tmp/smoke_results.json`.
 
-**5. Modal wrapper tier contract** (`infrastructure/modal/<name>_app.py`) — follow the same pattern as [`bindcraft_app.py`](../../llm-proteinDesigner/infrastructure/modal/bindcraft_app.py):
+**5. Modal wrapper tier contract** (`infrastructure/modal/<name>_app.py`) — follow the same pattern as the per-tool Modal app file (e.g. `bindcraft_app.py`) in the protein-design pipelines repo:
 - `tier: "smoke"` → use `smoke_preset()`, return results inline via `/tmp/smoke_results.json`.
 - `tier: "standalone"` (atomic default) → use `standalone_preset()`, return results inline.
 - Heartbeats every 60s to `/webhooks/heartbeat`.
@@ -77,7 +78,7 @@ On any failure, write `{"status":"FAILED","error":{"bucket":"preflight","check":
 
 **Purpose:** user uploads backbone PDB + chain labels → receives N candidate sequences with MPNN scores and pLDDT. 1-credit loss leader.
 
-**Dependency source:** copy the install recipe from [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal) (MPNN is already installed there to serve the RFdiffusion → MPNN pipeline step). Strip everything else (no RFdiffusion weights, no ColabFold, no AF2).
+**Dependency source:** copy the install recipe from the corresponding `Dockerfile.modal` in the protein-design pipelines repo (MPNN is already installed there to serve the RFdiffusion → MPNN pipeline step). Strip everything else (no RFdiffusion weights, no ColabFold, no AF2).
 
 **Modal app:** `ranomics-mpnn-prod`. GPU: **A10G-24GB** (MPNN runs happily on a small GPU — do not pay A100 prices).
 
@@ -118,12 +119,12 @@ Post-validation Codex-review fixes also landed (commits `80270d9` `54f0cc7` `aa6
 Shipped this commit:
 - `tools-hub/tools/mpnn/Dockerfile.modal` — image derived from `docker/rfdiffusion/Dockerfile.modal` with everything but PyTorch + MPNN + weights stripped. Bakes `static/example/1HEW.pdb` as the smoke fixture. Layer-1 build-time validation in the final `RUN` block fails `modal deploy` if the MPNN repo, weights, or helper scripts are missing.
 - `tools-hub/tools/mpnn/run_pipeline.py` — `preflight()` (GPU + MPNN + weights + /tmp writable) + `main()` that invokes `protein_mpnn_run.py`, parses the FASTA output into the atomic-tool sequence schema, and writes `/tmp/smoke_results.json`. Stub rejection rejects all-identical sequences and the MPNN equivalent of the PXDesign silent-stub (identical score+recovery across >= 3 samples).
-- `tools-hub/tools/mpnn/modal_app.py` — Modal wrapper (`ranomics-mpnn-prod`, `A10G`, 10-min timeout). Self-contained per the Kendrew portability pattern.
+- `tools-hub/tools/mpnn/modal_app.py` — Modal wrapper (`ranomics-mpnn-prod`, `A10G`, 10-min timeout). Self-contained per the llm-proteinDesigner portability pattern.
 - `tools-hub/tools/mpnn/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked 1HEW target) and `standalone` (1 credit, caller-uploaded PDB). Per-preset `requires_pdb` flag.
 - `tools-hub/tools/mpnn/meta.py` — citation, repo link, runtime table.
 - `tools-hub/templates/tools/mpnn_form.html` — dark-design-system form, preset picker, chain/num_seq/temp fields, About panel. Matches the RFantibody two-panel layout.
 - `tools-hub/templates/tools/mpnn_results.html` — sequence table (no composite `candidates` shape because MPNN returns sequences directly). FASTA export link reuses `/jobs/<id>/export.fasta`.
-- `tools-hub/gpu/modal_client.py` — `PRESET_CAPS` entries for `("mpnn","smoke")=120` and `("mpnn","standalone")=360`, plus a new `APP_NAME_OVERRIDES` map and `modal_app_name(tool)` helper that routes `"mpnn"` → `ranomics-mpnn-prod` while leaving every composite tool pointing at `kendrew-<tool>-prod`.
+- `tools-hub/gpu/modal_client.py` — `PRESET_CAPS` entries for `("mpnn","smoke")=120` and `("mpnn","standalone")=360`, plus the `modal_app_name(tool)` helper that routes `"mpnn"` → `ranomics-mpnn-prod`. (As of the Wave-1 rename, every composite tool also points at `ranomics-<tool>-prod`; the `APP_NAME_OVERRIDES` map originally added here has been removed since the namespace converged.)
 - `tools-hub/app.py` — `import tools.mpnn` added to the adapter-registration block.
 - `tools-hub/tests/test_mpnn_smoke.py` — 32 offline tests covering adapter registration, validate/build_payload shape, form render (flag on → 200, flag off → 404), Modal payload shape (via offline-stub path), webhook roundtrip (accept COMPLETED + reject unknown-job / bad-token / replay), FASTA parser, stub rejection.
 
@@ -135,7 +136,7 @@ Shipped this commit:
 **Definition-of-Done checklist (from top of this doc):**
 - [x] `Dockerfile.modal` — Layer-1 checks wired.
 - [x] `run_pipeline.py` — `preflight()` + `main()` + stub rejection.
-- [x] `backend/pipelines/mpnn.py` — **NOT shipped**; D1 is self-contained under `tools-hub/tools/mpnn/` rather than mirroring the Kendrew `docker/ + infrastructure/ + backend/pipelines/` three-directory split. The spec in ATOMIC-TOOLS.md "Common shape" was written for tools that live in the Kendrew repo; D1 lives in tools-hub because it is its own Modal app, not a Kendrew composite. The fields `backend/pipelines/*.py` exposes (`smoke_preset`, `standalone_preset`, `gpu_sku`, `execution_timeout_ms`) are instead expressed in `tools/mpnn/__init__.py` (presets) + `tools/mpnn/modal_app.py` (gpu_sku=A10G, timeout=600 s).
+- [x] `backend/pipelines/mpnn.py` — **NOT shipped**; D1 is self-contained under `tools-hub/tools/mpnn/` rather than mirroring the `docker/ + infrastructure/ + backend/pipelines/` three-directory split used in the sibling `llm-proteinDesigner` repo (originally named Kendrew). The spec in ATOMIC-TOOLS.md "Common shape" was written for tools that live in the Modal pipelines repo; D1 lives in tools-hub because it is its own Modal app, not a composite. The fields `backend/pipelines/*.py` exposes (`smoke_preset`, `standalone_preset`, `gpu_sku`, `execution_timeout_ms`) are instead expressed in `tools/mpnn/__init__.py` (presets) + `tools/mpnn/modal_app.py` (gpu_sku=A10G, timeout=600 s).
 - [x] `infrastructure/modal/<name>_app.py` → `tools-hub/tools/mpnn/modal_app.py` (see deviation above). Registers `ranomics-mpnn-prod` with GPU A10G.
 - [x] Two consecutive staging smoke passes — `smoke-1777047396` (cold, 25.4 s) + `smoke-1777047431` (warm, 5.3 s) on commit `cdc9e3a`. Both PASS. See VALIDATION-LOG.md.
 - [x] `tools-hub/tools/mpnn/` form + results template behind `FLAG_TOOL_MPNN=off`.
@@ -166,7 +167,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` 
 
 **Purpose:** user uploads FASTA (single chain or multimer) → receives predicted structure + pLDDT + PAE. 2-credit tool.
 
-**Dependency source:** JAX AF2 from [`docker/bindcraft/Dockerfile.modal`](../../llm-proteinDesigner/docker/bindcraft/Dockerfile.modal) (BindCraft uses FreeBindCraft which bundles AF2). MSA retrieval from the ColabFold MMseqs2 public server (free tier; cache on Modal Volume).
+**Dependency source:** JAX AF2 from the BindCraft `Dockerfile.modal` in the protein-design pipelines repo (BindCraft uses FreeBindCraft which bundles AF2). MSA retrieval from the ColabFold MMseqs2 public server (free tier; cache on Modal Volume).
 
 **Modal app:** `ranomics-af2-prod`. GPU: **A100-80GB** (AF2-multimer on sequences > ~400 AA needs the 80GB).
 
@@ -201,7 +202,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.sequences` 
 
 **Purpose:** user uploads FASTA → receives fast prediction with minimal MSA. Speed tier, complements AF2 standalone.
 
-**Dependency source:** ColabFold is already installed in [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal). Strip to minimal image.
+**Dependency source:** ColabFold is already installed in the RFdiffusion `Dockerfile.modal` in the protein-design pipelines repo. Strip to minimal image.
 
 **Modal app:** `ranomics-colabfold-prod`. GPU: **A100-40GB**.
 
@@ -218,7 +219,7 @@ Schema as D2 but faster defaults, no templates by default. Stub rejection same.
 Shipped this commit:
 - `tools-hub/tools/colabfold/Dockerfile.modal` — image derived from `docker/rfdiffusion/Dockerfile.modal` with RFdiffusion / SE3Transformer / DGL / MPNN stripped. Bakes `static/example/ubiquitin.fasta` (human ubiquitin, 76 aa monomer, UniProt P0CG47) as the smoke fixture. Layer-1 build-time validation fails `modal deploy` if ColabFold, AF2 weights, or the smoke fixture are missing.
 - `tools-hub/tools/colabfold/run_pipeline.py` — `preflight()` (GPU + jax + colabfold + weights + /tmp writable) + `main()` that invokes `colabfold_batch --msa-mode single_sequence --num-recycle 1 --num-models 1 --rank iptm`, parses `*_scores_rank_001_*.json` for pLDDT + ptm + iptm + PAE, b64-encodes the matching `*_unrelaxed_rank_001_*.pdb`, and packs PAE as npz-compressed float16. Stub rejection catches uniform pLDDT, NaN pLDDT, implausible mean pLDDT, and zero ipTM (PXDesign's historical silent-stub signatures).
-- `tools-hub/tools/colabfold/modal_app.py` — Modal wrapper (`ranomics-colabfold-prod`, A100-40GB, 600 s timeout). Self-contained per the Kendrew portability pattern. `run_tool` payload annotated `Any` so `modal run --payload` works.
+- `tools-hub/tools/colabfold/modal_app.py` — Modal wrapper (`ranomics-colabfold-prod`, A100-40GB, 600 s timeout). Self-contained per the llm-proteinDesigner portability pattern. `run_tool` payload annotated `Any` so `modal run --payload` works.
 - `tools-hub/tools/colabfold/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked ubiquitin fixture) and `standalone` (2 credits, inline FASTA text — no file upload, since FASTAs are tiny). Validates the canonical 20 aa + X alphabet, min 10 aa / max 600 aa per chain, 600 aa total complex cap.
 - `tools-hub/tools/colabfold/meta.py` — citation, repo link, runtime table.
 - `tools-hub/templates/tools/colabfold_form.html` — dark-design-system form, preset picker, FASTA textarea, recycles + templates controls, About panel. Includes the `pilot->standalone` handoff remap from the MPNN Codex P1 fix.
@@ -254,7 +255,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** fastest single-sequence fold. No MSA, no JIT bottleneck.
 
-**Dependency source:** fresh `pip install esm` (no Kendrew image to reuse).
+**Dependency source:** fresh `pip install esm` (no existing image in the Modal pipelines repo to reuse).
 
 **Modal app:** `ranomics-esmfold-prod`. GPU: **A100-40GB** (ESMFold's 3B model needs ~40GB for sequences > 500 AA).
 
@@ -274,9 +275,9 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 **CODE-COMPLETE on `feat/esmfold-standalone`.** Mirrors the D3 ColabFold pattern, with monomer-only validation and a ``ptm=None`` tolerant results template. Awaits `modal deploy` + 2x consecutive staging smoke on `ranomics-esmfold-prod` before the operator flips `FLAG_TOOL_ESMFOLD=on`.
 
 Shipped this commit:
-- `tools-hub/tools/esmfold/Dockerfile.modal` — fresh image (no Kendrew image to reuse): PyTorch 2.1 CUDA 11.8 + HF transformers 4.35 + openfold helpers. Bakes ~15 GB ``facebook/esmfold_v1`` weights + the same 76 aa ubiquitin smoke fixture D3 uses. Layer-1 build-time validation fails `modal deploy` if transformers, the baked weights, or the smoke fixture are missing.
+- `tools-hub/tools/esmfold/Dockerfile.modal` — fresh image (no existing image in the Modal pipelines repo to reuse): PyTorch 2.1 CUDA 11.8 + HF transformers 4.35 + openfold helpers. Bakes ~15 GB ``facebook/esmfold_v1`` weights + the same 76 aa ubiquitin smoke fixture D3 uses. Layer-1 build-time validation fails `modal deploy` if transformers, the baked weights, or the smoke fixture are missing.
 - `tools-hub/tools/esmfold/run_pipeline.py` — `preflight()` (GPU + HF cache + /tmp writable + ESMFold snapshot present) + `main()` that loads `EsmForProteinFolding` from HF, runs one forward pass, extracts per-residue pLDDT (handles both `(B, L, 37)` and `(B, L)` output shapes across transformers versions), generates PDB via `model.output_to_pdb`, and handles `ptm`/`pae` being `None` cleanly. Stub rejection catches uniform pLDDT, NaN pLDDT, implausible mean pLDDT, empty/degenerate PDB, and all-zero coordinates — but does NOT reject `ptm==0.0` because ESMFold v1 legitimately omits the pTM head on some checkpoints.
-- `tools-hub/tools/esmfold/modal_app.py` — Modal wrapper (`ranomics-esmfold-prod`, A100-40GB, 600 s timeout). Self-contained per the Kendrew portability pattern. Stale `smoke_results.json` cleanup lifted from the D3 Codex P1 fix. `run_tool` payload annotated `Any` so `modal run --payload` works.
+- `tools-hub/tools/esmfold/modal_app.py` — Modal wrapper (`ranomics-esmfold-prod`, A100-40GB, 600 s timeout). Self-contained per the llm-proteinDesigner portability pattern. Stale `smoke_results.json` cleanup lifted from the D3 Codex P1 fix. `run_tool` payload annotated `Any` so `modal run --payload` works.
 - `tools-hub/tools/esmfold/__init__.py` — `ToolAdapter` with two presets: `smoke` (0 credits, baked ubiquitin fixture) and `standalone` (1 credit, inline FASTA text). Validates the canonical 20 aa + X alphabet, 10-400 aa per sequence. **ESMFold v1 is monomer-only**, so the validator rejects (a) multi-record FASTA and (b) any `:` chain-separator in the sequence — both paths surface a pointed error suggesting ColabFold (D3) or AF2 (D2) for multimer work.
 - `tools-hub/tools/esmfold/meta.py` — citation (Lin et al., Science 2023), repo link, runtime table.
 - `tools-hub/templates/tools/esmfold_form.html` — dark-design-system form, preset picker, monomer-only FASTA textarea, About panel. Includes the `pilot->standalone` handoff remap from the MPNN/ColabFold Codex P1 fix.
@@ -358,7 +359,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** ligand-aware sequence design. Premium atomic.
 
-**Dependency source:** fresh build — not installed in any Kendrew image.
+**Dependency source:** fresh build — not installed in any existing image in the Modal pipelines repo.
 
 **Modal app:** `ranomics-ligandmpnn-prod`. GPU: **A100-40GB**.
 
@@ -374,7 +375,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** antibody-specific folding. Lower volume than AF2 but higher quality for Fv/scFv.
 
-**Dependency source:** RF2 from [`docker/rfantibody/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfantibody/Dockerfile.modal).
+**Dependency source:** RF2 from the rfantibody `Dockerfile.modal` in the protein-design pipelines repo.
 
 **Modal app:** `ranomics-rf2-prod`. GPU: **A100-40GB**.
 
@@ -390,7 +391,7 @@ Expected return: `smoke_result.status == "COMPLETED"`, `smoke_result.plddt_per_r
 
 **Purpose:** backbone-only diffusion. Separates design (D) from sequence (MPNN) and validation (AF2) — useful for users iterating on just the backbone step.
 
-**Dependency source:** RFdiffusion from [`docker/rfdiffusion/Dockerfile.modal`](../../llm-proteinDesigner/docker/rfdiffusion/Dockerfile.modal), strip MPNN + AF2.
+**Dependency source:** RFdiffusion from the RFdiffusion `Dockerfile.modal` in the protein-design pipelines repo, strip MPNN + AF2.
 
 **Modal app:** `ranomics-rfdiff-prod`. GPU: **A100-40GB**.
 

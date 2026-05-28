@@ -1,4 +1,4 @@
-"""Modal client — submit + poll Kendrew GPU pipeline functions.
+"""Modal client — submit + poll external Modal app GPU pipeline functions.
 
 The contract is the interface every tool package depends on. Wave-0 was
 a stub; this is the real implementation for Wave-2 launch (Stream C).
@@ -14,14 +14,14 @@ in ORCH-LOG.md):
     ModalClient.poll(function_call_id) -> dict:
         status           : Literal["pending", "running", "succeeded",
                                    "failed", "timeout", "error"]
-        result           : dict | None    inline Kendrew smoke_result payload
+        result           : dict | None    inline GPU pipeline smoke_result payload
         gpu_seconds_used : int | None
         error            : str | None
 
 Behaviour
 ---------
-Submit calls ``modal.Function.from_name("kendrew-<tool>-prod",
-"run_tool").spawn(payload)`` with the Kendrew webhook-roundtrip payload
+Submit calls ``modal.Function.from_name("ranomics-<tool>-prod",
+"run_tool").spawn(payload)`` with the GPU pipeline webhook-roundtrip payload
 shape. For smoke and mini_pilot tiers the Modal function returns results
 inline via a ``smoke_result`` key, so tools-hub can poll the FunctionCall
 rather than wait for the webhook. For pilot and full tiers the Modal
@@ -34,7 +34,7 @@ means "still running"; anything else propagates as an error dict.
 Offline degradation
 -------------------
 When the ``modal`` package is not importable (local dev without the
-Kendrew environment), submit returns a stub FunctionCall id and poll
+external Modal environment), submit returns a stub FunctionCall id and poll
 returns a deterministic "running" forever. This matches the Wave-0
 behaviour so unit tests and contributors without Modal access still
 work.
@@ -53,6 +53,8 @@ import secrets
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from contracts.rpc import ToolPayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,7 +72,8 @@ CONTRACT_VERSION = "2.0.0"
 PRESET_CAPS: Dict[tuple[str, str], int] = {
     # Atomic primitives.
     # D1 MPNN: slug "mpnn" matches the tools-hub adapter; the Modal app
-    # lives at ``ranomics-mpnn-prod`` (see ``APP_NAME_OVERRIDES`` below).
+    # is named ``ranomics-mpnn-prod`` per the ``ranomics-<slug>-prod``
+    # convention in ``modal_app_name``.
     ("mpnn", "smoke"):             120,
     ("mpnn", "standalone"):        360,
     ("proteinmpnn", "standalone"): 360,  # legacy alias — pre-D1 planning
@@ -127,25 +130,16 @@ def preset_gpu_seconds(tool: str, preset: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Modal app-name overrides
+# Modal app names
 # ---------------------------------------------------------------------------
-# Default is ``kendrew-<tool>-prod`` (composite pipelines — BindCraft,
-# BoltzGen, RFantibody, PXDesign) because those apps live in the Kendrew
-# Modal project. Atomic primitives (D1..D9 per ATOMIC-TOOLS.md) deploy
-# under the ``ranomics-<tool>-prod`` namespace because they are
-# standalone. Keep this table tiny — one row per atomic tool.
-
-APP_NAME_OVERRIDES: Dict[str, str] = {
-    "mpnn":      "ranomics-mpnn-prod",
-    "af2":       "ranomics-af2-prod",
-    "colabfold": "ranomics-colabfold-prod",
-    "esmfold":   "ranomics-esmfold-prod",
-}
+# All Modal apps follow the ``ranomics-<tool>-prod`` naming convention,
+# including both composite pipelines (BindCraft, BoltzGen, RFantibody,
+# PXDesign, RFdiffusion) and atomic primitives (D1..D9 per ATOMIC-TOOLS.md).
 
 
 def modal_app_name(tool: str) -> str:
     """Return the Modal app name to resolve for a given tool slug."""
-    return APP_NAME_OVERRIDES.get(tool, f"kendrew-{tool}-prod")
+    return f"ranomics-{tool}-prod"
 
 
 @dataclass(frozen=True)
@@ -191,10 +185,10 @@ class ModalClient:
         job_token: str,
         webhook_url: str = "",
     ) -> Dict[str, Any]:
-        """Submit a GPU job to the Kendrew Modal app for ``tool``.
+        """Submit a GPU job to the external Modal app for ``tool``.
 
         ``inputs`` is the tool-specific payload (e.g. target_chain,
-        parameters) that maps onto the Kendrew ``job_spec`` shape. The
+        parameters) that maps onto the GPU pipeline ``job_spec`` shape. The
         caller is responsible for pre-uploading any large input files
         (PDB, FASTA, etc.) and passing a reachable URL — this client
         does not stage file uploads.
@@ -264,7 +258,7 @@ class ModalClient:
         Returns:
             dict with ``status`` in
             ``{"running","succeeded","failed","error"}``, plus ``result``
-            (the inline Kendrew return dict when succeeded) and
+            (the inline GPU pipeline return dict when succeeded) and
             ``error`` (string on error).
         """
         if function_call_id.startswith("fc-stub-"):
@@ -309,9 +303,9 @@ class ModalClient:
                 "error": str(exc),
             }
 
-        # Kendrew apps return a dict with "smoke_result" (inline payload on
+        # GPU pipeline apps return a dict with "smoke_result" (inline payload on
         # smoke/mini_pilot tiers) + "exit_code" + "provider_job_id".
-        return _interpret_kendrew_return(raw_result)
+        return _interpret_pipeline_return(raw_result)
 
     # -- cancel -----------------------------------------------------------
 
@@ -354,22 +348,26 @@ class ModalClient:
     ) -> Dict[str, Any]:
         """Assemble the dict passed to ``run_tool.spawn``.
 
-        Mirrors the webhook-roundtrip shape Kendrew's run_pipeline.py
+        Mirrors the webhook-roundtrip shape the GPU pipeline's run_pipeline.py
         expects. Keys not used by a given tier are simply ignored on the
-        Kendrew side, so one shape fits all presets.
+        GPU pipeline side, so one shape fits all presets.
+
+        The dict is constructed via ``ToolPayload`` from the shared
+        contracts module so both sides validate against the same schema.
         """
-        return {
-            "job_id": job_id,
-            "job_token": job_token,
-            "job_tier": preset,
-            "tier": preset,
-            "job_spec": inputs,
-            "webhook_url": webhook_url,
-            "input_presigned_url": inputs.get("_input_presigned_url", ""),
-            "input_pdb_url": inputs.get("_input_pdb_url", ""),
-            "upload_urls_endpoint": inputs.get("_upload_urls_endpoint", ""),
-            "total_budget_hours": inputs.get("_total_budget_hours", 4),
-        }
+        payload = ToolPayload(
+            job_id=job_id,
+            job_token=job_token,
+            job_tier=preset,
+            tier=preset,
+            job_spec=inputs,
+            webhook_url=webhook_url,
+            input_presigned_url=inputs.get("_input_presigned_url", ""),
+            input_pdb_url=inputs.get("_input_pdb_url", ""),
+            upload_urls_endpoint=inputs.get("_upload_urls_endpoint", ""),
+            total_budget_hours=inputs.get("_total_budget_hours", 4),
+        )
+        return payload.model_dump()
 
 
 def _import_modal():
@@ -381,10 +379,10 @@ def _import_modal():
         return None
 
 
-def _interpret_kendrew_return(raw_result: Any) -> Dict[str, Any]:
-    """Translate a Kendrew Modal function return into poll() shape.
+def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
+    """Translate an external Modal app function return into poll() shape.
 
-    Kendrew apps return::
+    GPU pipeline apps return::
         {
             "exit_code": int,
             "smoke_result": dict | None,
@@ -459,7 +457,7 @@ def _interpret_kendrew_return(raw_result: Any) -> Dict[str, Any]:
 
 
 def _stringify_error(err: Any) -> str:
-    """Best-effort flattening of the Kendrew error dict into a string."""
+    """Best-effort flattening of the GPU pipeline error dict into a string."""
     if isinstance(err, dict):
         bucket = err.get("bucket", "unknown")
         check = err.get("check", "")
