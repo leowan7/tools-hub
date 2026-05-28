@@ -1,6 +1,6 @@
 """RFdiffusion tool adapter.
 
-Kendrew Modal app: ``kendrew-rfdiffusion-prod``. GPU: A100-40GB.
+Modal app: ``ranomics-rfdiffusion-prod``. GPU: A100-40GB.
 
 Composite pipeline: RFdiffusion backbone generation + ProteinMPNN
 sequence design + JAX AF2 multimer validation. Candidates carry real

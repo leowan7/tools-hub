@@ -1,6 +1,6 @@
 """PXDesign tool adapter.
 
-Kendrew Modal app: ``kendrew-pxdesign-prod``. GPU: A100-80GB.
+Modal app: ``ranomics-pxdesign-prod``. GPU: A100-80GB.
 PXDesign generates binders and validates them with JAX AF2 Initial
 Guess (AF2-IG) — real ipTM / pLDDT / pAE scores from the AF2 monomer
 model run in initial-guess mode against the target.

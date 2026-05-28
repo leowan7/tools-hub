@@ -1,6 +1,6 @@
 """RFantibody tool adapter.
 
-Kendrew Modal app: ``kendrew-rfantibody-prod``. GPU: A100-40GB.
+Modal app: ``ranomics-rfantibody-prod``. GPU: A100-40GB.
 Validation: 2x smoke + 2x mini_pilot green on commit 64c4ab0 + code-check
 PASS on HEAD (VALIDATION-LOG.md).
 
