@@ -171,7 +171,12 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
     "boltzgen": ToolSpec(
         slug="boltzgen",
         gpu_class="A100-80GB",
-        expected_gpu_seconds=1800.0,
+        # 2026-05-28 recal: the first prod pilot (job 758c45e5) used 4944
+        # GPU-s / $8.64. The prior 1800 under-reserved by ~2.7x, so overrun
+        # runs took a true-up 'charge' on settle. 5000 ~= a typical pilot
+        # (estimate ~$8.74, just over observed actual); historical p90
+        # supersedes this bootstrap once >=20 runs land.
+        expected_gpu_seconds=5000.0,
         designs_per_run_baseline=2,
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("10.00"),
