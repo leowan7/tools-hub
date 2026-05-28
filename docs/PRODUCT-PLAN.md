@@ -562,7 +562,7 @@ Only if Phase 1 has revenue signal:
 4. Run ProteinMPNN standalone (1 credit) → results in <2 min
 5. Upgrade to Lab ($299 test) → 150 credits + GPU pipelines unlock
 6. Submit BindCraft pilot against PD-L1 IgV fixture
-7. Modal app logs show kendrew-bindcraft-prod running
+7. Modal app logs show ranomics-bindcraft-prod running
 8. Webhook delivers results; credits debited 22, prorated refund applied
 9. Results page renders ranked designs + PDB download + "Validate in our lab" CTA
 ```
