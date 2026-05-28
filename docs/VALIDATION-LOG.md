@@ -67,6 +67,7 @@ GPU: A100-40GB. App: `ranomics-boltzgen-prod`. Timeout: 2 h. Pipeline file: `bac
 
 | When | Tool | Tier | Env | Commit | GPU-s | Verdict | Operator | Notes |
 |---|---|---|---|---|---|---|---|---|
+| 2026-05-28 | boltzgen | pilot | production | v2 2026-05-28 13:51 (commit 3fa0b77) | 4944 | **PASS** | leo (browser pilot) | **First pilot-tier run via the production web flow; job_id fix verified.** Job `758c45e5-3a88-4e9c-b213-3e8395210bf7` (4ZQK PD-L1, chain A, hotspots 54,56,115, budget=5). Clean end-to-end in ~82 min (18:32:07 to 19:54:31). 5/5 real non-stub `.cif` designs (ipTM 0.54-0.65, pLDDT 69-78, refolding_rmsd 0.51-1.77; all below the 0.7 ipTM threshold but verifiably real and varied per-design). Dual transport: 5 Storage objects (`designs/design_001..005.cif`) plus b64 on all 5, `deliverable_bytes=YES`. **Billing correct:** hold $3.1457 + true-up overrun charge $5.4944 = $8.6401 net = metered actual (4944 GPU-s at ~$0.001748/s, matching rfdiffusion's rate); `balance==sum` invariant holds. **CAVEAT:** hold estimate undersized ~2.7x ($3.1457 pre-auth vs $8.6401 actual), and ~82 min runtime is the heaviest of the four tools. |
 | 2026-04-28 | boltzgen | code-check | — | 4e9eaa1..HEAD (current) | 0 | **PASS** | leo (kendrew-port) | **Drift-zero confirmation 2026-04-28.** `git log 4e9eaa1..HEAD -- backend/pipelines/boltzgen.py docker/boltzgen/ infrastructure/modal/boltzgen_app.py` returns 0 commits. Pipeline unchanged from the 2× smoke + 2× mini_pilot greens recorded below. Leo-attested numbers in commit `4e9eaa1` are the canonical source: smoke (~270s × 2, ~4.5 min/run), mini_pilot (~360s × 2, ~6 min/run), real ipTM/pLDDT floats. |
 | 2026-04-22 | boltzgen | code-check | — | 4e9eaa1..HEAD (5f22eec) | 0 | **PASS** | Leo-orchestrator | Zero drift in `infrastructure/modal/boltzgen_app.py`, `docker/boltzgen/**`, `backend/pipelines/boltzgen.py` since `4e9eaa1`. No intervening commits touched these paths. Parser, preset, Dockerfile, entrypoint unchanged. |
 | 2026-04-22 (from commit) | boltzgen | mini_pilot | main | `4e9eaa1` | ~360 | **PASS** | Leo | Real ipTM/pLDDT floats. |
@@ -74,7 +75,7 @@ GPU: A100-40GB. App: `ranomics-boltzgen-prod`. Timeout: 2 h. Pipeline file: `bac
 | 2026-04-22 (from commit) | boltzgen | smoke | main | `4e9eaa1` | ~270 | **PASS** | Leo | From commit message `fix(boltzgen): wire smoke/mini_pilot tiers with Layer 1-3 checks`. |
 | 2026-04-22 (from commit) | boltzgen | smoke | main | `4e9eaa1` | ~270 | **PASS** | Leo | Second consecutive green. |
 
-**Ship gate (Wave 2):** code-check current HEAD vs `4e9eaa1` path; no fresh GPU run needed unless code materially changed. Flip `FLAG_TOOL_BOLTZGEN=on` once code-check clears.
+**Ship gate (Wave 2): 🟢 GREEN on pipeline integrity (2026-05-28).** Live pilot `758c45e5` ran clean end-to-end through the production web flow with 5 real non-stub designs, dual-transport delivery, and correct metered billing, validating the repo-separation `job_id` fix (commit `3fa0b77`). **Before flipping `FLAG_TOOL_BOLTZGEN=on`, recalibrate the undersized hold estimate:** pre-auth $3.15 vs $8.64 actual under-reserves and can leak revenue via `absorbed_variance` for low-balance customers, and it under-sets customer cost expectations. The ~82 min runtime sits within the 2 h Modal timeout but is a UX consideration. Prior code-check vs `4e9eaa1` remains clean.
 
 ---
 
