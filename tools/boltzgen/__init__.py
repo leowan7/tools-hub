@@ -1,6 +1,6 @@
 """BoltzGen tool adapter.
 
-Kendrew Modal app: ``kendrew-boltzgen-prod``. GPU: A100-40GB.
+Modal app: ``ranomics-boltzgen-prod``. GPU: A100-40GB.
 
 BoltzGen uses the Boltz-2 model to generate binder backbones against a
 reference target, then scores each candidate for refolding RMSD, ipTM,

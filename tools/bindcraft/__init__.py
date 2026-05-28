@@ -1,6 +1,6 @@
 """BindCraft tool adapter.
 
-Kendrew Modal app: ``kendrew-bindcraft-prod``. GPU: A100-80GB.
+Modal app: ``ranomics-bindcraft-prod``. GPU: A100-80GB.
 4-hour max session — pilot tier uses the webhook-only flow so the
 caller can close the tab and receive the final results by email.
 
