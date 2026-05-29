@@ -48,6 +48,60 @@
     @media (prefers-reduced-motion: reduce) {
       .jobdetail-skel-cell { animation: none; }
     }
+
+    /* ── Live partial-results table (running state) ──────────────── */
+    .jobdetail-live-wrap { margin-top: 1.25rem; display: none; }
+    .jobdetail-live-summary {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+    }
+    .jobdetail-live-eta {
+      font-size: 0.82rem;
+      color: var(--text-tertiary, var(--text-secondary));
+      margin-bottom: 0.7rem;
+    }
+    .jobdetail-live-scroll { overflow-x: auto; }
+    .jobdetail-live-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    .jobdetail-live-table thead th {
+      padding: 0.4rem 0.5rem;
+      text-align: left;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .jobdetail-live-table tbody td {
+      padding: 0.45rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+    }
+    .jobdetail-live-table .live-viewer-row td { padding: 0; background: var(--bg-deep); }
+    .jobdetail-live-viewer { height: 420px; width: 100%; position: relative; }
+    .jobdetail-pass {
+      color: var(--success, #4ade80);
+      font-family: var(--font-mono);
+    }
+    .jobdetail-fail {
+      color: var(--danger, #f87171);
+      font-family: var(--font-mono);
+    }
+    .jobdetail-indeterminate {
+      animation: jobdetail-indeterminate-slide 1.4s ease-in-out infinite;
+    }
+    @keyframes jobdetail-indeterminate-slide {
+      0%   { margin-left: 0;   width: 30%; }
+      50%  { margin-left: 70%; width: 30%; }
+      100% { margin-left: 0;   width: 30%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .jobdetail-indeterminate { animation: none; width: 100%; }
+    }
   </style>
 {% endblock %}
 
@@ -86,7 +140,7 @@
             </div>
           {% endif %}
 
-          <div class="jobdetail-skel-wrap" aria-hidden="true">
+          <div id="jobdetail-skel" class="jobdetail-skel-wrap" aria-hidden="true">
             <div class="jobdetail-skel-caption">Scores loading</div>
             <div class="jobdetail-skel-row">
               <div class="jobdetail-skel-cell"></div>
@@ -105,6 +159,29 @@
               <div class="jobdetail-skel-cell"></div>
               <div class="jobdetail-skel-cell"></div>
               <div class="jobdetail-skel-cell"></div>
+            </div>
+          </div>
+
+          {# Live partial-results table. Populated client-side from
+             status.json.partial_candidates as the run streams designs.
+             Hidden until the first candidate arrives. #}
+          <div id="jobdetail-live" class="jobdetail-live-wrap">
+            <p id="jobdetail-live-summary" class="jobdetail-live-summary"></p>
+            <p id="jobdetail-live-eta" class="jobdetail-live-eta"></p>
+            <div class="jobdetail-live-scroll">
+              <table class="jobdetail-live-table">
+                <thead>
+                  <tr>
+                    <th style="width:2.5rem;">#</th>
+                    <th>ipTM</th>
+                    <th>pLDDT</th>
+                    <th>i_pAE</th>
+                    <th>Filter</th>
+                    <th style="width:4.5rem;">3D</th>
+                  </tr>
+                </thead>
+                <tbody id="jobdetail-live-body"></tbody>
+              </table>
             </div>
           </div>
         {% elif job.status == 'succeeded' %}
@@ -196,6 +273,11 @@
   {% endif %}
 
   {% if job.status in ('pending', 'running') %}
+    {# mol_viewer.js exposes window.initMolViewerFromUrl. The candidate
+       table macro loads it on the succeeded page, but during the running
+       state that macro is not rendered, so load it here for the live
+       table's per-row 3D viewers. #}
+    <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
     <script>
       (function () {
         var jobId = document.getElementById('job-status-panel').dataset.jobId;
@@ -203,18 +285,201 @@
         var stageText = document.getElementById('stage-text');
         var progressText = document.getElementById('progress-text');
         var progressBar = document.getElementById('progress-bar');
+        var skelEl = document.getElementById('jobdetail-skel');
+        var liveWrap = document.getElementById('jobdetail-live');
+        var liveBody = document.getElementById('jobdetail-live-body');
+        var liveSummary = document.getElementById('jobdetail-live-summary');
+        var liveEta = document.getElementById('jobdetail-live-eta');
         var pollIntervalMs = 5000;
         var stopped = false;
+        var indeterminate = false;
+        var renderedRanks = Object.create(null); // rank -> data row element
 
+        // ── null-safe formatting ────────────────────────────────────
+        function fmt(v, digits) {
+          if (v === null || v === undefined || v === '') return '—';
+          var n = Number(v);
+          if (isNaN(n)) return '—';
+          return n.toFixed(digits);
+        }
+
+        function filterCell(status) {
+          if (!status) return '<span>—</span>';
+          var cls = String(status).toLowerCase() === 'pass'
+            ? 'jobdetail-pass' : 'jobdetail-fail';
+          // textContent-equivalent: status comes from our own backend,
+          // but escape defensively since it lands in innerHTML.
+          var safe = String(status).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;',
+                     '"': '&quot;', "'": '&#39;' }[c];
+          });
+          return '<span class="' + cls + '">' + safe + '</span>';
+        }
+
+        // ── live candidate table (idempotent, diffed by rank) ────────
+        function renderCandidates(cands) {
+          if (!Array.isArray(cands) || cands.length === 0) return;
+
+          // First candidates arrived: swap skeleton for the live table.
+          if (skelEl) skelEl.style.display = 'none';
+          if (liveWrap) liveWrap.style.display = 'block';
+
+          cands.forEach(function (c) {
+            if (!c || c.rank === null || c.rank === undefined) return;
+            var rank = Number(c.rank);
+            if (!Number.isFinite(rank)) return;
+            var existing = renderedRanks[rank];
+
+            var dataCells =
+              '<td>' + rank + '</td>' +
+              '<td>' + fmt(c.iptm, 3) + '</td>' +
+              '<td>' + fmt(c.plddt, 1) + '</td>' +
+              '<td>' + fmt(c.i_pae, 2) + '</td>' +
+              '<td>' + filterCell(c.filter_status) + '</td>';
+
+            var pdbKey = c.pdb_key;
+            var btnCell;
+            if (pdbKey) {
+              btnCell = '<td><button type="button" class="btn-secondary live-view3d-btn" ' +
+                'style="padding:.2rem .5rem;font-size:.8rem;" ' +
+                'data-rank="' + rank + '" ' +
+                'data-pdb-key="' + encodeURIComponent(pdbKey) + '">View 3D</button></td>';
+            } else {
+              btnCell = '<td><span style="color:var(--text-secondary);">—</span></td>';
+            }
+
+            if (existing) {
+              // Update scores in place; preserve an already-open viewer row
+              // and keep its "Hide 3D" label across polls.
+              var vrow = document.getElementById('live-viewer-row-' + rank);
+              var isOpen = vrow && vrow.style.display !== 'none';
+              existing.innerHTML = dataCells + btnCell;
+              if (isOpen) {
+                var ob = existing.querySelector('.live-view3d-btn');
+                if (ob) ob.textContent = 'Hide 3D';
+              }
+            } else {
+              var dataRow = document.createElement('tr');
+              dataRow.className = 'live-cand-row';
+              dataRow.setAttribute('data-rank', String(rank));
+              dataRow.innerHTML = dataCells + btnCell;
+
+              var viewerRow = document.createElement('tr');
+              viewerRow.className = 'live-viewer-row';
+              viewerRow.id = 'live-viewer-row-' + rank;
+              viewerRow.style.display = 'none';
+              viewerRow.innerHTML =
+                '<td colspan="6"><div id="mol-viewer-live-' + rank +
+                '" class="jobdetail-live-viewer"></div></td>';
+
+              liveBody.appendChild(dataRow);
+              liveBody.appendChild(viewerRow);
+              renderedRanks[rank] = dataRow;
+            }
+          });
+        }
+
+        // ── View 3D expand (event delegation, deferred init) ─────────
+        if (liveBody) {
+          liveBody.addEventListener('click', function (e) {
+            var btn = e.target.closest('.live-view3d-btn');
+            if (!btn) return;
+            var rank = btn.dataset.rank;
+            var viewerRow = document.getElementById('live-viewer-row-' + rank);
+            if (!viewerRow) return;
+            var opening = viewerRow.style.display === 'none';
+            viewerRow.style.display = opening ? '' : 'none';
+            btn.textContent = opening ? 'Hide 3D' : 'View 3D';
+            if (opening && window.initMolViewerFromUrl) {
+              var viewerId = 'mol-viewer-live-' + rank;
+              var pdbKey = btn.dataset.pdbKey; // already URL-encoded
+              var url = '/api/jobs/' + jobId + '/pdb/' + pdbKey;
+              // Defer a frame so the unhidden row is laid out before
+              // Mol* measures (same fix as the results-page table).
+              requestAnimationFrame(function () {
+                window.initMolViewerFromUrl(viewerId, url);
+              });
+            }
+          });
+        }
+
+        // ── summary + ETA ────────────────────────────────────────────
+        function renderSummary(data) {
+          if (!liveSummary) return;
+          var prog = data.progress || {};
+          var done = Number(prog.designs_completed) || 0;
+          var total = Number(prog.designs_total) || 0;
+          var passed = (data.passed_count === null || data.passed_count === undefined)
+            ? null : Number(data.passed_count);
+
+          if (total > 0) {
+            var line = done + ' of ' + total + ' designs complete';
+            if (passed !== null && !isNaN(passed)) {
+              line += ', ' + passed + ' passed filter so far';
+            }
+            liveSummary.textContent = line;
+          } else if (done > 0) {
+            liveSummary.textContent = done + ' designs complete so far';
+          } else {
+            liveSummary.textContent = 'Starting run';
+          }
+        }
+
+        function renderEta(data) {
+          if (!liveEta) return;
+          var prog = data.progress || {};
+          var done = Number(prog.designs_completed) || 0;
+          var total = Number(prog.designs_total) || 0;
+          var startMs = data.started_at ? Date.parse(data.started_at) : NaN;
+
+          if (!(done > 0) || !(total > 0) || isNaN(startMs)) {
+            liveEta.textContent = 'Estimating time remaining';
+            return;
+          }
+          if (done >= total) {
+            liveEta.textContent = 'Finishing up';
+            return;
+          }
+          var elapsed = Date.now() - startMs;
+          if (!(elapsed > 0)) {
+            liveEta.textContent = 'Estimating time remaining';
+            return;
+          }
+          var etaSec = (elapsed / done) * (total - done) / 1000;
+          var mins = Math.max(1, Math.round(etaSec / 60));
+          liveEta.textContent = 'About ' + mins + 'm remaining';
+        }
+
+        // ── progress bar + stage (existing behaviour, extended) ──────
         function renderProgress(data) {
           statusBadge.textContent = data.status;
-          if (data.progress) {
-            stageText.textContent = data.progress.stage || 'Running';
-            if (data.progress.designs_total > 0) {
-              progressText.textContent = '(' + data.progress.designs_completed + '/' + data.progress.designs_total + ')';
-              progressBar.style.width = Math.min(100, (data.progress.designs_completed / data.progress.designs_total) * 100) + '%';
+          var prog = data.progress || {};
+          stageText.textContent = prog.stage || 'Running';
+
+          var total = Number(prog.designs_total) || 0;
+          var done = Number(prog.designs_completed) || 0;
+
+          if (total > 0) {
+            if (indeterminate) {
+              progressBar.classList.remove('jobdetail-indeterminate');
+              indeterminate = false;
             }
+            progressText.textContent = '(' + done + '/' + total + ')';
+            progressBar.style.width = Math.min(100, (done / total) * 100) + '%';
+          } else {
+            // designs_total unknown yet — show an indeterminate bar
+            // rather than a misleading 0%.
+            if (!indeterminate) {
+              progressBar.classList.add('jobdetail-indeterminate');
+              progressBar.style.width = '30%';
+              indeterminate = true;
+            }
+            progressText.textContent = '';
           }
+
+          renderCandidates(data.partial_candidates);
+          renderSummary(data);
+          renderEta(data);
         }
 
         function poll() {

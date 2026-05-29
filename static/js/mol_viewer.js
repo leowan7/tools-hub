@@ -63,6 +63,36 @@
     return container;
   }
 
+  // Force Mol* to re-measure its canvas. The viewer's own handleResize()
+  // pushes a layout-updated event (the canonical remeasure path in
+  // molstar 4.9). If a future build drops it, fall back to a window
+  // resize event, which Mol*'s canvas3d also subscribes to.
+  function resizeViewer(viewer) {
+    if (!viewer) return;
+    try {
+      if (typeof viewer.handleResize === 'function') {
+        viewer.handleResize();
+        return;
+      }
+    } catch (e) { /* fall through to window resize */ }
+    try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+  }
+
+  function attachResizeHandlers(container, viewer) {
+    // Mirror hotspot_picker.js: a viewer constructed while its container
+    // was hidden (or resized later by responsive layout / panel collapse)
+    // keeps a stale 0x0 canvas unless told to re-measure. Re-measure on
+    // both window resize and container resize.
+    var onResize = function () { resizeViewer(viewer); };
+    window.addEventListener('resize', onResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      try {
+        var ro = new ResizeObserver(function () { resizeViewer(viewer); });
+        ro.observe(container);
+      } catch (e) { /* ResizeObserver unavailable or threw — degrade silently */ }
+    }
+  }
+
   function renderPdbText(container, pdbString) {
     loadMolstar(function () {
       container.innerHTML = '';
@@ -77,7 +107,13 @@
         viewportShowSelectionMode: false,
         viewportShowAnimation:  false,
       }).then(function (viewer) {
-        viewer.loadStructureFromData(pdbString, 'pdb', false);
+        // loadStructureFromData resolves once the structure is in the
+        // scene. Re-measure THEN so the canvas matches the (now visible,
+        // explicitly sized) container, and keep it correct on later
+        // layout changes.
+        attachResizeHandlers(container, viewer);
+        return viewer.loadStructureFromData(pdbString, 'pdb', false)
+          .then(function () { resizeViewer(viewer); });
       }).catch(function (err) {
         console.error('[mol_viewer] Viewer creation failed:', err);
         container.innerHTML =

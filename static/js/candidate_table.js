@@ -132,11 +132,16 @@
       btn.textContent = opening ? 'Hide 3D' : 'View 3D';
       if (opening) {
         var viewerId = 'mol-viewer-' + idx;
-        if (btn.dataset.pdb64 && window.initMolViewer) {
-          window.initMolViewer(viewerId, btn.dataset.pdb64);
-        } else if (btn.dataset.pdbUrl && window.initMolViewerFromUrl) {
-          window.initMolViewerFromUrl(viewerId, btn.dataset.pdbUrl);
-        }
+        // Defer one frame so the just-unhidden row has been laid out
+        // before Mol* measures its container. Constructing against a
+        // 0x0 (still-collapsing) container yields a blank canvas.
+        requestAnimationFrame(function () {
+          if (btn.dataset.pdb64 && window.initMolViewer) {
+            window.initMolViewer(viewerId, btn.dataset.pdb64);
+          } else if (btn.dataset.pdbUrl && window.initMolViewerFromUrl) {
+            window.initMolViewerFromUrl(viewerId, btn.dataset.pdbUrl);
+          }
+        });
       }
     });
 

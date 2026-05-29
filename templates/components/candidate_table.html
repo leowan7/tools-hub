@@ -117,7 +117,10 @@
 
 /* 3D viewer row */
 .viewer-row td { padding: 0; background: var(--bg-deep); }
-.mol-viewer-container { height: 400px; width: 100%; }
+/* Explicit non-zero size so Mol* measures a real viewport when the row
+   is un-hidden. position:relative anchors Mol*'s absolutely-positioned
+   canvas to this box. */
+.mol-viewer-container { height: 420px; width: 100%; position: relative; }
 
 /* Modal */
 .modal-overlay {
