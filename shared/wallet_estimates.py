@@ -6,13 +6,17 @@ numbers drive the route gate, the form UI, and the mid-run safety kill.
 
 Estimate sources, in priority order:
 
-1. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
+1. A fixed tiny estimate for the smoke tier so the wallet UX shows a
+   non-zero number even when there is no cost.
+2. A per-tier ``gpu_seconds`` override (``ToolSpec.tier_gpu_seconds``)
+   for cheap preview tiers like ``mini_pilot``. Takes precedence over
+   p90 because the p90 view is tool-wide, not tier-aware, and is
+   dominated by the heavy pilot runs.
+3. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
    the tool has at least ``MIN_HISTORICAL_RUNS`` completed runs on
    record.
-2. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`.
-   Used for new tools without enough history.
-3. A fixed tiny estimate for the smoke tier so the wallet UX shows a
-   non-zero number even when there is no cost.
+4. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
+   (the pilot-tier default). Used for new tools without enough history.
 
 Parameter scaling: when the submitted ``params`` include a scaling
 parameter (``num_designs`` and friends), the base ``gpu_seconds`` is
@@ -32,7 +36,7 @@ handled by :mod:`shared.wallet`.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping, Optional
 
@@ -81,6 +85,14 @@ class ToolSpec:
     ``base_hard_cap_usd`` is the ceiling at default parameters. The
     scaled cap grows with the scaling parameter and saturates at
     ``absolute_cap_usd``.
+
+    ``expected_gpu_seconds`` is the default (pilot-tier) bootstrap.
+    ``tier_gpu_seconds`` overrides it for cheaper preview tiers keyed by
+    preset slug (e.g. ``{"mini_pilot": 450}``). A preview tier runs a
+    fixed tiny job on the baked target, so it costs a small, stable
+    fraction of a pilot run; without a per-tier value it would inherit
+    the pilot-calibrated ``expected_gpu_seconds`` and over-reserve. The
+    smoke tier never reads this (it short-circuits to a fixed nominal).
     """
 
     slug: str
@@ -90,6 +102,7 @@ class ToolSpec:
     scaling_param: Optional[str]
     base_hard_cap_usd: Decimal
     absolute_cap_usd: Decimal
+    tier_gpu_seconds: Mapping[str, float] = field(default_factory=dict)
 
 
 # Per-tool spec table. Mirrors the absolute caps in
@@ -140,6 +153,10 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("5.00"),
         absolute_cap_usd=Decimal("500.00"),
+        # mini_pilot ran 246-352 GPU-s in validation (VALIDATION-LOG.md);
+        # bootstrap just above observed so the preview tier stops
+        # inheriting the 1200s pilot default.
+        tier_gpu_seconds={"mini_pilot": 450.0},
     ),
     "rfantibody": ToolSpec(
         slug="rfantibody",
@@ -149,6 +166,10 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("13.00"),
         absolute_cap_usd=Decimal("500.00"),
+        # mini_pilot ran 166-264 GPU-s in validation (VALIDATION-LOG.md);
+        # bootstrap just above observed so the preview tier stops
+        # inheriting the 3600s pilot default.
+        tier_gpu_seconds={"mini_pilot": 350.0},
     ),
     "bindcraft": ToolSpec(
         slug="bindcraft",
@@ -181,6 +202,10 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("10.00"),
         absolute_cap_usd=Decimal("300.00"),
+        # The 5000s default is the pilot bootstrap; mini_pilot ran
+        # ~360 GPU-s in validation (VALIDATION-LOG.md). Without this the
+        # cheap preview tier reserved ~$8.74 and released the surplus.
+        tier_gpu_seconds={"mini_pilot": 450.0},
     ),
 }
 
@@ -203,9 +228,10 @@ def estimated_cost_for_tool(
     """Return the USD estimate for one job, rounded to 4 decimal places.
 
     Looks up the per-tool spec, picks the best ``gpu_seconds`` source
-    (historical p90, falling back to spec.expected_gpu_seconds), applies
-    parameter scaling, converts to USD via the GPU rate card and
-    ``WALLET_MARKUP``, and clamps to the parameter-scaled hard cap.
+    (per-tier override for preview tiers, else historical p90, falling
+    back to spec.expected_gpu_seconds), applies parameter scaling,
+    converts to USD via the GPU rate card and ``WALLET_MARKUP``, and
+    clamps to the parameter-scaled hard cap.
 
     ``user_id`` is accepted so future implementations can use per-user
     historical data. The current implementation ignores it.
@@ -230,9 +256,17 @@ def estimated_cost_for_tool(
         raw = Decimal("60") * Decimal(str(DEFAULT_USD_PER_SECOND))
         return _quantize_usd(raw * WALLET_MARKUP)
 
-    base_seconds = _historical_p90_seconds(tool_slug)
-    if base_seconds is None:
-        base_seconds = float(spec.expected_gpu_seconds)
+    # Per-tier bootstrap overrides take precedence for cheap preview
+    # tiers: the historical p90 view is tool-wide (not tier-aware) and is
+    # dominated by heavy pilot runs, so using it for mini_pilot would
+    # reintroduce the over-reservation the override exists to prevent.
+    tier_override = spec.tier_gpu_seconds.get(preset)
+    if tier_override is not None:
+        base_seconds = float(tier_override)
+    else:
+        base_seconds = _historical_p90_seconds(tool_slug)
+        if base_seconds is None:
+            base_seconds = float(spec.expected_gpu_seconds)
 
     scaled_seconds = _scale_seconds(base_seconds, spec, params)
     rate = Decimal(str(GPU_USD_PER_SECOND.get(spec.gpu_class, DEFAULT_USD_PER_SECOND)))
