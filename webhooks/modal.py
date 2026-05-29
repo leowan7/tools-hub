@@ -20,7 +20,12 @@ The main webhook body shape (from
 
 The heartbeat body shape::
 
-    {"job_id": ..., "stage": "...", "designs_completed": N, "designs_total": M}
+    {"job_id": ..., "stage": "...", "designs_completed": N, "designs_total": M,
+     # optional live partial result; only accepted when job_token matches:
+     "job_token": "<shared secret>",
+     "new_candidate": {"rank": 1, "pdb_key": "design_0.pdb",
+                       "iptm": 0.74, "plddt": 0.83, "i_pae": 0.27,
+                       "filter_status": "pass"}}
 
 Authentication
 --------------
@@ -225,14 +230,40 @@ def _handle_heartbeat() -> Any:
         if fresh is not None:
             job = fresh
 
-    # Persist the latest stage string in the inputs jsonb so the status
-    # page can render a progress line. We avoid a dedicated column to
+    # Optional per-design candidate carried by the heartbeat (live
+    # partial-results streaming). Unlike the stage string, candidate data
+    # is rendered back to the user, so it is gated behind the job_token
+    # shared secret to stop a spoofed heartbeat injecting fake results.
+    new_candidate = body.get("new_candidate")
+    if isinstance(new_candidate, dict):
+        stored_token = job.job_token or ""
+        token = str(body.get("job_token") or "")
+        # An empty stored token must never match: hmac.compare_digest("", "")
+        # returns True, so guard it explicitly before the constant-time check.
+        if not stored_token or not hmac.compare_digest(stored_token, token):
+            logger.warning(
+                "Heartbeat candidate token mismatch for job %s; dropping it",
+                job_id,
+            )
+            new_candidate = None
+        else:
+            # Project to a fixed, bounded schema so a spoofed or buggy
+            # pipeline cannot bloat the inputs jsonb or smuggle markup into
+            # the status page.
+            new_candidate = _sanitize_candidate(new_candidate)
+    else:
+        new_candidate = None
+
+    # Persist the latest stage string (and any verified new candidate) in
+    # the inputs jsonb so the status page can render a progress line and
+    # stream candidates as they complete. We avoid a dedicated column to
     # keep the schema small; the jsonb append is cheap.
     _append_heartbeat_state(
         job_id=job_id,
         stage=str(body.get("stage") or ""),
-        designs_completed=int(body.get("designs_completed") or 0),
-        designs_total=int(body.get("designs_total") or 0),
+        designs_completed=_safe_int(body.get("designs_completed")),
+        designs_total=_safe_int(body.get("designs_total")),
+        new_candidate=new_candidate,
     )
 
     # Cost-overrun safety. Kendrew heartbeats do not currently carry an
@@ -286,18 +317,64 @@ def _run_overrun_check(job_id: str, cumulative_gpu_seconds: float) -> None:
         )
 
 
+def _safe_int(value: Any) -> int:
+    """Coerce a heartbeat count to int, defaulting to 0 on bad input.
+
+    Heartbeats are fire-and-forget telemetry; a malformed count must not
+    turn the always-200 endpoint into a 500.
+    """
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sanitize_candidate(cand: dict) -> dict | None:
+    """Project a heartbeat candidate to a fixed, bounded schema.
+
+    Drops unknown keys and caps string lengths so a spoofed or buggy
+    pipeline cannot bloat the inputs jsonb or smuggle markup into the
+    status page. Returns None when there is no usable integer rank.
+    """
+    try:
+        rank = int(cand.get("rank"))
+    except (TypeError, ValueError):
+        return None
+
+    def _num(value: Any) -> float | None:
+        try:
+            return round(float(value), 4)
+        except (TypeError, ValueError):
+            return None
+
+    pdb_key = cand.get("pdb_key")
+    filter_status = cand.get("filter_status")
+    return {
+        "rank": rank,
+        "pdb_key": str(pdb_key)[:256] if pdb_key else None,
+        "iptm": _num(cand.get("iptm")),
+        "plddt": _num(cand.get("plddt")),
+        "i_pae": _num(cand.get("i_pae")),
+        "filter_status": str(filter_status)[:64] if filter_status else None,
+    }
+
+
 def _append_heartbeat_state(
     *,
     job_id: str,
     stage: str,
     designs_completed: int,
     designs_total: int,
+    new_candidate: dict | None = None,
 ) -> None:
-    """Merge the latest heartbeat into the job row's inputs.progress key.
+    """Merge the latest heartbeat into the job row's inputs jsonb.
 
-    Keeping progress inside the inputs blob avoids a schema change while
-    still giving the UI a single place to render "Running BindCraft
-    (2/10)" progress lines.
+    Always writes ``inputs._progress`` (stage + design counts). When the
+    heartbeat carries a token-verified ``new_candidate`` dict, appends it
+    to ``inputs._partial_candidates`` so the status page can stream
+    results as each design completes. Keeping both inside the inputs blob
+    avoids a schema change, and a single read-modify-write means progress
+    and candidate appends never clobber each other.
     """
     client = get_service_client()
     if client is None:
@@ -319,6 +396,24 @@ def _append_heartbeat_state(
         "designs_completed": designs_completed,
         "designs_total": designs_total,
     }
+
+    if isinstance(new_candidate, dict):
+        partials = current_inputs.get("_partial_candidates")
+        if not isinstance(partials, list):
+            partials = []
+
+        def _cand_key(cand: Any) -> Any:
+            if not isinstance(cand, dict):
+                return None
+            return cand.get("pdb_key") or cand.get("rank")
+
+        # Dedup by pdb_key (fallback rank) so a heartbeat retry does not
+        # duplicate a candidate row in the live table. Cap as a safety bound.
+        seen = {_cand_key(c) for c in partials}
+        if _cand_key(new_candidate) not in seen:
+            partials.append(new_candidate)
+        current_inputs["_partial_candidates"] = partials[:1000]
+
     try:
         client.table("tool_jobs").update({"inputs": current_inputs}).eq(
             "id", job_id

@@ -330,8 +330,11 @@
                 </td>
                 <td class="comparison-one-liner">{{ row.comparison_one_liner }}</td>
                 <td>
-                  <div class="comparison-cost-line">smoke: <strong>{{ row.smoke_runtime }}</strong></div>
-                  <div class="comparison-cost-line">pilot: <strong>{{ row.pilot_runtime }}</strong></div>
+                  {% if row.runtime_band and row.runtime_band != '—' %}
+                    <div class="comparison-cost-line">runtime: <strong>{{ row.runtime_band }}</strong></div>
+                  {% else %}
+                    <div class="comparison-cost-line">—</div>
+                  {% endif %}
                 </td>
                 <td class="comparison-links">
                   {% if row.paper_url %}

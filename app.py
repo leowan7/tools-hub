@@ -11,7 +11,8 @@ Hosts Ranomics' free scientific tools as lead magnets under
     /health               — unauthenticated health check
     /developability       — Binder Developability Scout (form)
     /developability/score — Binder Developability Scout (results)
-    /library-planner      — coming-soon placeholder
+    /library-planner      — Yeast Display Library Planner (form)
+    /library-planner/plan — Yeast Display Library Planner (results)
 
 Auth helpers live in ``shared.auth``. Tool modules live under
 ``tools/<name>/`` — each one exposes a small stable API that the hub
@@ -258,33 +259,32 @@ def _build_tools_catalog() -> list[dict]:
         except ImportError:
             pass
 
-        smoke_runtime = "—"
-        pilot_runtime = "—"
+        # Build the runtime band from whatever presets the adapter exposes
+        # (smoke was removed 2026-05-29; atomic tools now have a single
+        # standalone preset, composites have mini_pilot + pilot). Show the
+        # fastest preset's runtime through the slowest as a band.
+        runtime_band = "—"
         if meta is not None:
-            runtime_map = getattr(meta, "PRESET_RUNTIME", None)
-            if runtime_map:
-                smoke_entry = runtime_map.get("smoke") or {}
-                pilot_entry = runtime_map.get("pilot") or {}
-                if smoke_entry.get("typical_minutes"):
-                    smoke_runtime = f"{smoke_entry['typical_minutes']} min"
-                if pilot_entry.get("typical_minutes"):
-                    pilot_runtime = f"{pilot_entry['typical_minutes']} min"
-            else:
-                legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
-                for legacy in legacy_rows:
-                    if legacy.get("slug") == "smoke" and legacy.get("runtime"):
-                        smoke_runtime = legacy["runtime"]
-                    if legacy.get("slug") == "pilot" and legacy.get("runtime"):
-                        pilot_runtime = legacy["runtime"]
-
-        if smoke_runtime != "—" and pilot_runtime != "—" and smoke_runtime != pilot_runtime:
-            runtime_band = f"{smoke_runtime} – {pilot_runtime}"
-        elif pilot_runtime != "—":
-            runtime_band = pilot_runtime
-        elif smoke_runtime != "—":
-            runtime_band = smoke_runtime
-        else:
-            runtime_band = "—"
+            runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
+            legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
+            legacy_by_slug = {
+                r.get("slug"): r.get("runtime")
+                for r in legacy_rows
+                if r.get("slug") and r.get("runtime")
+            }
+            runtimes: list[str] = []
+            for preset in adapter.presets:
+                entry = runtime_map.get(preset.slug) or {}
+                if entry.get("typical_minutes"):
+                    rt = f"{entry['typical_minutes']} min"
+                else:
+                    rt = legacy_by_slug.get(preset.slug)
+                if rt and rt not in runtimes:
+                    runtimes.append(rt)
+            if len(runtimes) >= 2:
+                runtime_band = f"{runtimes[0]} to {runtimes[-1]}"
+            elif len(runtimes) == 1:
+                runtime_band = runtimes[0]
 
         display_name = adapter.label.split("—")[0].strip() or adapter.label
         try:
@@ -301,8 +301,6 @@ def _build_tools_catalog() -> list[dict]:
                     meta, "comparison_one_liner", "—"
                 ) if meta is not None else "—",
                 "category": _TOOL_CATEGORIES.get(adapter.slug, "Other"),
-                "smoke_runtime": smoke_runtime,
-                "pilot_runtime": pilot_runtime,
                 "runtime_band": runtime_band,
                 "paper_citation": getattr(
                     meta, "paper_citation", "—"
@@ -674,6 +672,10 @@ def create_app() -> Flask:
             "ranomics_user_id": None,
             "is_staff": email in STAFF_EMAILS,
             "nav_wallet_usd": None,
+            "support_email": (
+                os.environ.get("SUPPORT_EMAIL", "info@ranomics.com").strip()
+                or "info@ranomics.com"
+            ),
         }
         if not email:
             return base
@@ -2201,6 +2203,43 @@ def create_app() -> Flask:
             return None, (render_template("coming_soon.html"), 404)
         return adapter, None
 
+    # ------------------------------------------------------------------
+    # Help / docs hub — public (no login required).
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/help", methods=["GET"])
+    def help_index():
+        """Docs hub: getting started, per-tool guides, FAQ, troubleshooting."""
+        return render_template(
+            "help/index.html", adapters=tool_base.all_adapters()
+        )
+
+    @flask_app.route("/help/getting-started", methods=["GET"])
+    def help_getting_started():
+        return render_template("help/getting_started.html")
+
+    @flask_app.route("/help/tools/<tool>", methods=["GET"])
+    def help_tool_guide(tool: str):
+        adapter = tool_base.get(tool)
+        if adapter is None:
+            return render_template("404.html"), 404
+        import importlib  # noqa: PLC0415
+        try:
+            meta = importlib.import_module(f"tools.{tool}.meta")
+        except ImportError:
+            meta = None
+        return render_template(
+            "help/tool_guide.html", tool=tool, adapter=adapter, meta=meta
+        )
+
+    @flask_app.route("/help/faq", methods=["GET"])
+    def help_faq():
+        return render_template("help/faq.html")
+
+    @flask_app.route("/help/troubleshooting", methods=["GET"])
+    def help_troubleshooting():
+        return render_template("help/troubleshooting.html")
+
     @flask_app.route("/tools/<tool>", methods=["GET"])
     @login_required
     def tool_form(tool: str):
@@ -2735,7 +2774,12 @@ def create_app() -> Flask:
                 adapter=adapter,
                 error=(
                     "Could not submit to the GPU pool. Your wallet was "
-                    "not charged. Try again or contact support."
+                    "not charged. Try again or contact support at "
+                    + (
+                        os.environ.get("SUPPORT_EMAIL", "info@ranomics.com").strip()
+                        or "info@ranomics.com"
+                    )
+                    + "."
                 ),
                 pre_fill=inputs,
                 pdb_source=None,
@@ -2888,14 +2932,28 @@ def create_app() -> Flask:
                 mark_running(job.id)
                 job = get_job(job_id, user_id=ctx.user_id)
 
+        inputs = job.inputs or {}
+        partials = inputs.get("_partial_candidates") or []
+        if not isinstance(partials, list):
+            partials = []
+        passed = 0
+        for cand in partials:
+            if not isinstance(cand, dict):
+                continue
+            fs = str(cand.get("filter_status") or "").strip().lower()
+            if fs == "pass":
+                passed += 1
         return jsonify(
             {
                 "id": job.id,
                 "status": job.status,
                 "tool": job.tool,
                 "preset": job.preset,
-                "progress": (job.inputs or {}).get("_progress") or {},
+                "progress": inputs.get("_progress") or {},
+                "partial_candidates": partials,
+                "passed_count": passed,
                 "gpu_seconds_used": job.gpu_seconds_used,
+                "started_at": getattr(job, "started_at", None),
             }
         )
 
@@ -3860,6 +3918,11 @@ def create_app() -> Flask:
     def not_found(_):
         """Render the branded 404 page for unknown routes."""
         return render_template("404.html"), 404
+
+    @flask_app.errorhandler(500)
+    def server_error(_):
+        """Render the branded 500 page for unhandled exceptions."""
+        return render_template("500.html"), 500
 
     # ------------------------------------------------------------------
     # CLI commands — invoked by Railway cron or local `flask` runner
