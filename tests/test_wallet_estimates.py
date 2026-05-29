@@ -8,8 +8,7 @@ Covers the four sources the spec calls out:
 * parameter scaling on the cost estimate
 * hard cap clamping when the scaled estimate exceeds the per-tool cap
 
-Plus the explicit smoke-tier short-circuit and the per-tool absolute
-ceiling on :func:`compute_hard_cap`.
+Plus the per-tool absolute ceiling on :func:`compute_hard_cap`.
 """
 
 from __future__ import annotations
@@ -24,7 +23,6 @@ from shared import wallet_estimates as we
 from shared.wallet_estimates import (
     GPU_USD_PER_SECOND,
     MIN_HISTORICAL_RUNS,
-    SMOKE_TIER_ESTIMATE_USD,
     TOOL_SPECS,
     WALLET_MARKUP,
     compute_hard_cap,
@@ -94,23 +92,6 @@ def patched_client():
     yield _set
     for p in patches:
         p.stop()
-
-
-# ---------------------------------------------------------------------------
-# Smoke tier
-# ---------------------------------------------------------------------------
-
-
-def test_smoke_tier_short_circuits(patched_client):
-    patched_client(None)
-    estimate = estimated_cost_for_tool(None, "mpnn", {"preset": "smoke"})
-    assert estimate == SMOKE_TIER_ESTIMATE_USD
-
-
-def test_smoke_tier_case_insensitive(patched_client):
-    patched_client(None)
-    estimate = estimated_cost_for_tool(None, "alphafold2", {"preset": "SMOKE"})
-    assert estimate == SMOKE_TIER_ESTIMATE_USD
 
 
 # ---------------------------------------------------------------------------

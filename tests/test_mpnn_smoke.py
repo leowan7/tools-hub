@@ -43,15 +43,17 @@ class TestAdapterRegistration:
     def test_presets_shape(self):
         adapter = get_adapter("mpnn")
         slugs = [p.slug for p in adapter.presets]
-        assert slugs == ["smoke", "standalone"]
+        assert slugs == ["standalone"]
 
     def test_standalone_requires_pdb(self):
-        """Per-preset requires_pdb: only standalone needs an upload."""
+        """The single standalone tier requires a backbone PDB upload, at
+        the preset level AND at the adapter level (the form always shows
+        the upload field)."""
         adapter = get_adapter("mpnn")
-        smoke = adapter.preset_for("smoke")
         standalone = adapter.preset_for("standalone")
-        assert smoke.requires_pdb is False
+        assert standalone is not None
         assert standalone.requires_pdb is True
+        assert adapter.requires_pdb is True
 
     def test_templates_point_at_mpnn_partials(self):
         adapter = get_adapter("mpnn")
@@ -65,22 +67,20 @@ class TestAdapterRegistration:
 
 
 class TestValidate:
-    def test_rejects_empty_preset(self):
+    def test_blank_preset_resolves_to_standalone(self):
+        """A missing/blank preset is now treated as ``standalone`` (the
+        sole tier). With no other fields the form still validates because
+        ``chains_to_design`` defaults to ``A``, confirming the blank
+        preset was accepted as standalone rather than rejected."""
         inputs, err = mpnn_mod.validate({}, {})
-        assert inputs is None
-        assert "preset" in (err or "").lower()
+        assert err is None, err
+        assert inputs["preset"] == "standalone"
+        # chains_to_design defaults to "A" on the standalone tier.
+        assert inputs["target_chain"] == "A"
 
     def test_rejects_unknown_preset(self):
         inputs, err = mpnn_mod.validate({"preset": "full"}, {})
         assert inputs is None
-
-    def test_smoke_preset_happy_path(self):
-        inputs, err = mpnn_mod.validate({"preset": "smoke"}, {})
-        assert err is None
-        assert inputs["preset"] == "smoke"
-        assert inputs["target_chain"] == "A"
-        assert inputs["num_seq_per_target"] == 2
-        assert inputs["sampling_temp"] == 0.1
 
     def test_standalone_happy_path_basic(self):
         form = {
@@ -116,12 +116,22 @@ class TestValidate:
         assert err is not None
 
     def test_standalone_rejects_num_seq_over_cap(self):
-        form = {
+        """Cap is now 200: 200 is accepted, 201 is rejected."""
+        ok_form = {
             "preset": "standalone",
             "chains_to_design": "A",
-            "num_seq_per_target": "100",
+            "num_seq_per_target": "200",
         }
-        inputs, err = mpnn_mod.validate(form, {})
+        inputs_ok, err_ok = mpnn_mod.validate(ok_form, {})
+        assert err_ok is None, err_ok
+        assert inputs_ok["num_seq_per_target"] == 200
+
+        over_form = {
+            "preset": "standalone",
+            "chains_to_design": "A",
+            "num_seq_per_target": "201",
+        }
+        inputs, err = mpnn_mod.validate(over_form, {})
         assert inputs is None
         assert "num_seq_per_target" in (err or "")
 
@@ -156,13 +166,6 @@ class TestValidate:
 
 
 class TestBuildPayload:
-    def test_smoke_payload_shape(self):
-        inputs, _ = mpnn_mod.validate({"preset": "smoke"}, {})
-        payload = mpnn_mod.build_payload(inputs, presigned_url="")
-        assert payload["target_chain"] == "A"
-        assert payload["parameters"]["num_seq_per_target"] == 2
-        assert payload["parameters"]["sampling_temp"] == 0.1
-
     def test_standalone_payload_shape(self):
         inputs, _ = mpnn_mod.validate(
             {
@@ -228,8 +231,12 @@ def test_form_renders_when_flag_on(app_with_mpnn_flag, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "ProteinMPNN" in body
-    assert "Smoke" in body
-    assert "Standalone" in body
+    # Single standalone tier: preset is a hidden field, not a <select>.
+    assert '<input type="hidden" name="preset" value="standalone">' in body
+    assert '<option value="smoke"' not in body
+    # The standalone inputs (backbone PDB + chains) render unconditionally.
+    assert 'name="target_pdb"' in body
+    assert 'name="chains_to_design"' in body
 
 
 def test_form_404s_when_flag_off(app_with_mpnn_flag, monkeypatch):
@@ -322,15 +329,15 @@ def test_export_fasta_serializes_mpnn_sequence_schema(
     assert "recovery=0.71" in body
 
 
-def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
+def test_handoff_pilot_preset_runs_standalone_not_smoke(
     app_with_mpnn_flag, monkeypatch
 ):
     """Cross-tool ``from_job`` handoff sets pre_fill['preset']='pilot'.
-    MPNN has no 'pilot' option. Template must remap to 'standalone' so
-    the user's backbone is actually used — otherwise ``loop.first``
-    silently selects 'smoke', which runs the baked 1HEW fixture and
-    burns a credit on the wrong target (Codex P1)."""
-    import re
+    MPNN has no 'pilot' option, and the smoke tier is gone, so the form now
+    pins a single hidden ``standalone`` preset. The handoff must therefore
+    design the user's backbone on the standalone tier, never the (now
+    removed) baked-fixture smoke tier. We assert the hidden preset is
+    standalone and no smoke option survives anywhere in the form."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -358,14 +365,14 @@ def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
     resp = client.get("/tools/mpnn?from_job=src-job-abc")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    smoke_opt = re.search(r'<option value="smoke"[^>]*>', body)
-    standalone_opt = re.search(r'<option value="standalone"[^>]*>', body)
-    assert smoke_opt and standalone_opt, "expected both preset options rendered"
-    assert "selected" in standalone_opt.group(0), (
-        "pilot->standalone remap failed: standalone option was not selected"
+    assert '<input type="hidden" name="preset" value="standalone">' in body, (
+        "form must pin the standalone preset on a handoff"
     )
-    assert "selected" not in smoke_opt.group(0), (
-        "smoke option should not be selected on a handoff (would run wrong PDB)"
+    assert '<option value="smoke"' not in body, (
+        "smoke option must not survive (the smoke tier was removed)"
+    )
+    assert 'value="smoke"' not in body, (
+        "no smoke preset anywhere on a handoff (would run wrong PDB)"
     )
 
 
@@ -475,27 +482,6 @@ class TestSmokePresetShape:
 
         assert preset_gpu_seconds("mpnn", "smoke") == 120
         assert preset_gpu_seconds("mpnn", "standalone") == 360
-
-    def test_modal_payload_for_smoke_offline_stub(self, monkeypatch):
-        """With modal patched to None, submit returns the deterministic stub.
-        Matches the Wave-0 contract that contributors without GPU access still
-        get a usable FunctionCall id."""
-        from gpu import modal_client as mc
-
-        monkeypatch.setattr(mc, "_import_modal", lambda: None)
-        client = mc.ModalClient(environment="main")
-        inputs, _ = mpnn_mod.validate({"preset": "smoke"}, {})
-        payload = mpnn_mod.build_payload(inputs, presigned_url="")
-        result = client.submit(
-            "mpnn",
-            "smoke",
-            inputs={**payload, "_input_presigned_url": ""},
-            job_id="job-xyz",
-            job_token="tok",
-            webhook_url="",
-        )
-        assert result["function_call_id"].startswith("fc-stub-mpnn-smoke-")
-        assert result["gpu_seconds_cap"] == 120
 
     def test_modal_payload_for_standalone_offline_stub(self, monkeypatch):
         from gpu import modal_client as mc

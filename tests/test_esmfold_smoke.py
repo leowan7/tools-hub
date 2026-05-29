@@ -45,7 +45,7 @@ class TestAdapterRegistration:
     def test_presets_shape(self):
         adapter = get_adapter("esmfold")
         slugs = [p.slug for p in adapter.presets]
-        assert slugs == ["smoke", "standalone"]
+        assert slugs == ["standalone"]
 
     def test_neither_preset_requires_pdb(self):
         """ESMFold takes FASTA text, never a PDB upload."""
@@ -69,20 +69,23 @@ UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTL
 
 
 class TestValidate:
-    def test_rejects_empty_preset(self):
+    def test_blank_preset_resolves_to_standalone(self):
+        """A missing/blank preset is now treated as ``standalone`` (the
+        sole tier). The empty form still fails (but on the missing FASTA,
+        not on the preset), confirming the blank preset was accepted."""
         inputs, err = esm_mod.validate({}, {})
         assert inputs is None
-        assert "preset" in (err or "").lower()
+        # Rejected for the missing FASTA, NOT for the preset.
+        assert "fasta" in (err or "").lower()
+        assert "pick a preset" not in (err or "").lower()
+        # A blank-preset form with a valid FASTA validates as standalone.
+        inputs2, err2 = esm_mod.validate({"fasta_text": f">x\n{UBIQUITIN}"}, {})
+        assert err2 is None, err2
+        assert inputs2["preset"] == "standalone"
 
     def test_rejects_unknown_preset(self):
         inputs, err = esm_mod.validate({"preset": "full"}, {})
         assert inputs is None
-
-    def test_smoke_preset_happy_path(self):
-        inputs, err = esm_mod.validate({"preset": "smoke"}, {})
-        assert err is None
-        assert inputs["preset"] == "smoke"
-        assert inputs["fasta_text"] == ""
 
     def test_standalone_happy_path_with_header(self):
         form = {
@@ -167,13 +170,6 @@ class TestValidate:
 
 
 class TestBuildPayload:
-    def test_smoke_payload_shape(self):
-        inputs, _ = esm_mod.validate({"preset": "smoke"}, {})
-        payload = esm_mod.build_payload(inputs, presigned_url="")
-        assert payload["fasta_text"] == ""
-        # ESMFold has no tunable parameters - parameters dict is empty.
-        assert payload["parameters"] == {}
-
     def test_standalone_payload_shape(self):
         inputs, _ = esm_mod.validate(
             {
@@ -229,8 +225,11 @@ def test_form_renders_when_flag_on(app_with_esmfold_flag, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "ESMFold" in body
-    assert "Smoke" in body
-    assert "Standalone" in body
+    # Single standalone tier - preset is a hidden field, not a <select>.
+    assert '<input type="hidden" name="preset" value="standalone">' in body
+    assert '<option value="smoke"' not in body
+    # The standalone FASTA input renders unconditionally.
+    assert 'name="fasta_text"' in body
 
 
 def test_form_404s_when_flag_off(app_with_esmfold_flag, monkeypatch):
@@ -271,15 +270,15 @@ def test_submit_rejects_unknown_preset(app_with_esmfold_flag, monkeypatch):
     assert "preset" in body.lower()
 
 
-def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
+def test_handoff_pilot_preset_runs_standalone_not_smoke(
     app_with_esmfold_flag, monkeypatch
 ):
     """Cross-tool ``from_job`` handoff sets pre_fill['preset']='pilot'.
-    ESMFold has no 'pilot' option. Template must remap to 'standalone'
-    so the incoming sequence is actually used - otherwise ``loop.first``
-    silently selects 'smoke' and folds the baked ubiquitin fixture
-    instead of the caller's sequence."""
-    import re
+    ESMFold has no 'pilot' option, and the smoke tier is gone - the form
+    now pins a single hidden ``standalone`` preset. The handoff must
+    therefore fold the caller's sequence on the standalone tier, never the
+    (now removed) baked-fixture smoke tier. We assert the hidden preset is
+    standalone and no smoke option survives anywhere in the form."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -302,15 +301,13 @@ def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
     resp = client.get("/tools/esmfold?from_job=src-job-abc")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    smoke_opt = re.search(r'<option value="smoke"[^>]*>', body)
-    standalone_opt = re.search(r'<option value="standalone"[^>]*>', body)
-    assert smoke_opt and standalone_opt, "expected both preset options rendered"
-    assert "selected" in standalone_opt.group(0), (
-        "pilot->standalone remap failed: standalone option not selected"
+    assert '<input type="hidden" name="preset" value="standalone">' in body, (
+        "form must pin the standalone preset on a handoff"
     )
-    assert "selected" not in smoke_opt.group(0), (
-        "smoke option should not be selected on a handoff"
+    assert '<option value="smoke"' not in body, (
+        "smoke option must not survive - the smoke tier was removed"
     )
+    assert 'value="smoke"' not in body, "no smoke preset anywhere on a handoff"
 
 
 # ---------------------------------------------------------------------------
@@ -423,27 +420,6 @@ class TestSmokePresetShape:
         from gpu.modal_client import preset_gpu_seconds
 
         assert preset_gpu_seconds("esmfold", "fast") == 360
-
-    def test_modal_payload_for_smoke_offline_stub(self, monkeypatch):
-        """With modal patched to None, submit returns the deterministic stub."""
-        from gpu import modal_client as mc
-
-        monkeypatch.setattr(mc, "_import_modal", lambda: None)
-        client = mc.ModalClient(environment="main")
-        inputs, _ = esm_mod.validate({"preset": "smoke"}, {})
-        payload = esm_mod.build_payload(inputs, presigned_url="")
-        result = client.submit(
-            "esmfold",
-            "smoke",
-            inputs={**payload, "_input_presigned_url": ""},
-            job_id="job-xyz",
-            job_token="tok",
-            webhook_url="",
-        )
-        assert result["function_call_id"].startswith(
-            "fc-stub-esmfold-smoke-"
-        )
-        assert result["gpu_seconds_cap"] == 90
 
     def test_modal_payload_for_standalone_offline_stub(self, monkeypatch):
         from gpu import modal_client as mc

@@ -48,14 +48,14 @@ class TestAdapterRegistration:
     def test_presets_shape(self):
         adapter = get_adapter("af2")
         slugs = [p.slug for p in adapter.presets]
-        assert slugs == ["smoke", "standalone"]
+        assert slugs == ["standalone"]
 
-    def test_neither_preset_requires_pdb(self):
-        """AF2 takes FASTA inline — no PDB upload on any tier."""
+    def test_standalone_preset_requires_no_pdb(self):
+        """AF2 takes FASTA inline; the single standalone tier needs no
+        PDB upload."""
         adapter = get_adapter("af2")
-        smoke = adapter.preset_for("smoke")
         standalone = adapter.preset_for("standalone")
-        assert smoke.requires_pdb is False
+        assert standalone is not None
         assert standalone.requires_pdb is False
 
     def test_templates_point_at_af2_partials(self):
@@ -70,25 +70,23 @@ class TestAdapterRegistration:
 
 
 class TestValidate:
-    def test_rejects_empty_preset(self):
+    def test_blank_preset_resolves_to_standalone(self):
+        """A missing/blank preset is now treated as ``standalone`` (the
+        sole tier). The empty form still fails (but on the missing FASTA,
+        not on the preset), confirming the blank preset was accepted."""
         inputs, err = af2_mod.validate({}, {})
         assert inputs is None
-        assert "preset" in (err or "").lower()
+        # Rejected for the missing FASTA, NOT for the preset.
+        assert "fasta" in (err or "").lower()
+        assert "preset" not in (err or "").lower()
+        # A blank-preset form with a valid FASTA validates as standalone.
+        inputs2, err2 = af2_mod.validate({"fasta": ">x\nMKWVTFISLL\n"}, {})
+        assert err2 is None, err2
+        assert inputs2["preset"] == "standalone"
 
     def test_rejects_unknown_preset(self):
         inputs, err = af2_mod.validate({"preset": "full"}, {})
         assert inputs is None
-
-    def test_smoke_preset_happy_path(self):
-        inputs, err = af2_mod.validate({"preset": "smoke"}, {})
-        assert err is None
-        assert inputs["preset"] == "smoke"
-        assert inputs["model_preset"] == "monomer"
-        assert inputs["num_recycles"] == 1
-        assert inputs["use_templates"] is False
-        # Baked BPTI fixture
-        assert len(inputs["fasta_records"]) == 1
-        assert len(inputs["fasta_records"][0]["sequence"]) == 58
 
     def test_standalone_happy_path_monomer(self):
         form = {
@@ -188,14 +186,6 @@ class TestValidate:
 
 
 class TestBuildPayload:
-    def test_smoke_payload_shape(self):
-        inputs, _ = af2_mod.validate({"preset": "smoke"}, {})
-        payload = af2_mod.build_payload(inputs, presigned_url="")
-        assert "fasta_records" in payload
-        assert payload["parameters"]["model_preset"] == "monomer"
-        assert payload["parameters"]["num_recycles"] == 1
-        assert payload["parameters"]["use_templates"] is False
-
     def test_standalone_payload_shape(self):
         inputs, _ = af2_mod.validate(
             {
@@ -256,8 +246,11 @@ def test_form_renders_when_flag_on(app_with_af2_flag, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "AlphaFold" in body
-    assert "Smoke" in body
-    assert "Standalone" in body
+    # Single standalone tier: preset is a hidden field, not a <select>.
+    assert '<input type="hidden" name="preset" value="standalone">' in body
+    assert '<option value="smoke"' not in body
+    # The standalone FASTA input renders unconditionally.
+    assert 'name="fasta"' in body
 
 
 def test_form_404s_when_flag_off(app_with_af2_flag, monkeypatch):
@@ -298,15 +291,15 @@ def test_submit_rejects_unknown_preset(app_with_af2_flag, monkeypatch):
     assert "preset" in body.lower()
 
 
-def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
+def test_handoff_pilot_preset_runs_standalone_not_smoke(
     app_with_af2_flag, monkeypatch
 ):
     """Cross-tool ``from_job`` handoff sets pre_fill['preset']='pilot'.
-    AF2 has no 'pilot' option. Template must remap to 'standalone' so
-    the user's target is actually used — otherwise ``loop.first``
-    silently selects 'smoke', which runs the baked BPTI fixture and
-    burns credits on the wrong sequence (mirrors the D1 MPNN Codex P1)."""
-    import re
+    AF2 has no 'pilot' option, and the smoke tier is gone, so the form now
+    pins a single hidden ``standalone`` preset. The handoff must therefore
+    run the user's target on the standalone tier, never the (now removed)
+    baked-fixture smoke tier. We assert the hidden preset is standalone
+    and no smoke option survives anywhere in the form."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -331,15 +324,13 @@ def test_handoff_pilot_preset_maps_to_standalone_not_smoke(
     resp = client.get("/tools/af2?from_job=src-job-abc")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    smoke_opt = re.search(r'<option value="smoke"[^>]*>', body)
-    standalone_opt = re.search(r'<option value="standalone"[^>]*>', body)
-    assert smoke_opt and standalone_opt, "expected both preset options rendered"
-    assert "selected" in standalone_opt.group(0), (
-        "pilot->standalone remap failed: standalone option was not selected"
+    assert '<input type="hidden" name="preset" value="standalone">' in body, (
+        "form must pin the standalone preset on a handoff"
     )
-    assert "selected" not in smoke_opt.group(0), (
-        "smoke option should not be selected on a handoff"
+    assert '<option value="smoke"' not in body, (
+        "smoke option must not survive (the smoke tier was removed)"
     )
+    assert 'value="smoke"' not in body, "no smoke preset anywhere on a handoff"
 
 
 def test_clone_reconstructs_fasta_textarea_from_fasta_records(
@@ -586,24 +577,6 @@ class TestSmokePresetShape:
 
         assert preset_gpu_seconds("af2", "smoke") == 180
         assert preset_gpu_seconds("af2", "standalone") == 1200
-
-    def test_modal_payload_for_smoke_offline_stub(self, monkeypatch):
-        from gpu import modal_client as mc
-
-        monkeypatch.setattr(mc, "_import_modal", lambda: None)
-        client = mc.ModalClient(environment="main")
-        inputs, _ = af2_mod.validate({"preset": "smoke"}, {})
-        payload = af2_mod.build_payload(inputs, presigned_url="")
-        result = client.submit(
-            "af2",
-            "smoke",
-            inputs={**payload, "_input_presigned_url": ""},
-            job_id="job-xyz",
-            job_token="tok",
-            webhook_url="",
-        )
-        assert result["function_call_id"].startswith("fc-stub-af2-smoke-")
-        assert result["gpu_seconds_cap"] == 180
 
     def test_modal_payload_for_standalone_offline_stub(self, monkeypatch):
         from gpu import modal_client as mc

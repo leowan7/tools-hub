@@ -29,10 +29,10 @@ def test_adapter_registered():
 
 
 def test_preset_slugs_and_count():
-    """Three presets: smoke, mini_pilot, pilot."""
+    """Two presets: mini_pilot, pilot. The smoke tier was removed."""
     a = adapter_mod.adapter
     slugs = [p.slug for p in a.presets]
-    assert slugs == ["smoke", "mini_pilot", "pilot"]
+    assert slugs == ["mini_pilot", "pilot"]
 
 
 def test_pilot_preset_marked_long_running_and_requires_pdb():
@@ -74,13 +74,6 @@ def test_validate_rejects_missing_preset():
     assert inputs is None
     assert err is not None
     assert "preset" in err.lower()
-
-
-def test_validate_smoke_returns_baked_target():
-    inputs, err = adapter_mod.validate({"preset": "smoke"}, {})
-    assert err is None
-    assert inputs["preset"] == "smoke"
-    assert "PD-L1" in inputs["target"]
 
 
 def test_validate_mini_pilot_returns_baked_target():
@@ -146,31 +139,26 @@ def test_validate_pilot_rejects_bad_binder_length_range():
 
 
 def test_validate_pilot_clamps_num_designs():
-    """num_designs must be 1-5; 6 is rejected."""
-    form = {
+    """num_designs must be 1-200: 200 is accepted, 201 is rejected."""
+    base = {
         "preset": "pilot",
         "target_chain": "A",
         "hotspot_residues": "54,56,115",
         "binder_length_min": "55",
         "binder_length_max": "65",
-        "num_designs": "6",
     }
-    inputs, err = adapter_mod.validate(form, {})
+    inputs_ok, err_ok = adapter_mod.validate({**base, "num_designs": "200"}, {})
+    assert err_ok is None, err_ok
+    assert inputs_ok["num_designs"] == 200
+
+    inputs, err = adapter_mod.validate({**base, "num_designs": "201"}, {})
     assert inputs is None
-    assert "1 and 5" in err
+    assert "1 and 200" in err
 
 
 # ---------------------------------------------------------------------------
 # build_payload shape (matches Kendrew job_spec)
 # ---------------------------------------------------------------------------
-
-
-def test_build_payload_smoke_sets_skip_af2_true():
-    inputs = {"preset": "smoke", "target": "(baked)"}
-    payload = adapter_mod.build_payload(inputs, presigned_url="")
-    assert payload["target_chain"] == "A"
-    assert payload["parameters"]["skip_af2"] is True
-    assert payload["parameters"]["num_designs"] == 1
 
 
 def test_build_payload_mini_pilot_sets_skip_af2_false():

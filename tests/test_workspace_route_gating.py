@@ -28,6 +28,17 @@ import pytest
 from shared.workspaces import PreflightResult, Workspace
 
 
+# A valid ColabFold standalone FASTA (ubiquitin, 76 aa, canonical AA).
+# The smoke preset was removed, so every submit must carry a real
+# standalone payload that passes ``tools.colabfold.validate``. Otherwise
+# the route rejects at form validation and the workspace gate under test
+# is never reached.
+_VALID_FASTA = (
+    ">ubiquitin\n"
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures (mirror tests/test_colabfold_smoke.py)
 # ---------------------------------------------------------------------------
@@ -157,7 +168,8 @@ class TestSubmitWithActiveWorkspace:
             client.post(
                 "/tools/colabfold/submit",
                 data={
-                    "preset": "smoke",
+                    "preset": "standalone",
+                    "fasta_text": _VALID_FASTA,
                     "workspace_id": "ws-active-1",
                     "target_pdb_id": "path/to/4Z18.pdb",
                 },
@@ -200,7 +212,8 @@ class TestSubmitNoWorkspace:
             resp = client.post(
                 "/tools/colabfold/submit",
                 data={
-                    "preset": "smoke",
+                    "preset": "standalone",
+                    "fasta_text": _VALID_FASTA,
                     "workspace_id": "ws-stale",
                     "target_pdb_id": "path/to/missing.pdb",
                 },
@@ -237,7 +250,8 @@ class TestSubmitCapExhausted:
             resp = client.post(
                 "/tools/colabfold/submit",
                 data={
-                    "preset": "smoke",
+                    "preset": "standalone",
+                    "fasta_text": _VALID_FASTA,
                     "workspace_id": "ws-full-1",
                     "target_pdb_id": "path/to/4Z18.pdb",
                 },
@@ -267,7 +281,8 @@ class TestSubmitCapExhausted:
             resp = client.post(
                 "/tools/colabfold/submit",
                 data={
-                    "preset": "smoke",
+                    "preset": "standalone",
+                    "fasta_text": _VALID_FASTA,
                     "workspace_id": "ws-expired-1",
                     "target_pdb_id": "path/to/4Z18.pdb",
                 },
@@ -313,7 +328,8 @@ class TestSubmitLegacyPath:
             _login(client)
             client.post(
                 "/tools/colabfold/submit",
-                data={"preset": "smoke"},  # no workspace_* fields
+                # no workspace_* fields (legacy credits path)
+                data={"preset": "standalone", "fasta_text": _VALID_FASTA},
             )
 
         preflight_mock.assert_not_called()
