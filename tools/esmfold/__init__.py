@@ -10,13 +10,10 @@ The user pastes a FASTA (single chain only), and receives a predicted
 structure (PDB b64) plus per-residue pLDDT. 1-credit tool per
 PRODUCT-PLAN.md "Credit rates" table.
 
-Two tiers follow the D1/D3 pattern:
-
-- ``smoke`` — baked 76 aa ubiquitin fixture. No FASTA input needed.
-  0 credits. Demo-before-you-spend.
-- ``standalone`` — caller-supplied FASTA (inline text field, no file
-  upload required). 1 credit. Single-chain monomers 10-400 aa
-  (ESMFold's 3B model fits comfortably on A100-40GB at this length).
+A single ``standalone`` tier takes a caller-supplied FASTA (inline text
+field, no file upload required). 1 credit. Single-chain monomers
+10-400 aa (ESMFold's 3B model fits comfortably on A100-40GB at this
+length).
 """
 
 from __future__ import annotations
@@ -78,26 +75,16 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the ESMFold job_spec shape.
 
-    Branches on preset:
-      - ``smoke``: baked 76 aa ubiquitin. No user input needed.
-      - ``standalone``: caller-supplied single-chain FASTA. Monomer only
-        — we reject multimer inputs (multiple ``>`` records OR a ``:``
-        chain separator inside a single record) because ESMFold v1 does
-        not support multimers.
+    The single ``standalone`` tier takes a caller-supplied single-chain
+    FASTA. Monomer only — we reject multimer inputs (multiple ``>``
+    records OR a ``:`` chain separator inside a single record) because
+    ESMFold v1 does not support multimers. A missing or blank preset is
+    treated as ``standalone`` so the form's hidden preset field is
+    robust.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "standalone"}:
+    preset = (form.get("preset") or "standalone").strip() or "standalone"
+    if preset != "standalone":
         return None, "Pick a preset."
-
-    if preset == "smoke":
-        return (
-            {
-                "preset": preset,
-                "fasta_text": "",  # empty — pipeline loads the baked fixture
-                "target": "Ubiquitin (76 aa monomer, UniProt P0CG47)",
-            },
-            None,
-        )
 
     # standalone tier — caller-supplied FASTA.
     fasta_text = (form.get("fasta_text") or "").strip()
@@ -179,15 +166,6 @@ adapter = ToolAdapter(
         "ESM-2 language-model fold, monomer-only — ~30 s per run."
     ),
     presets=(
-        Preset(
-            slug="smoke",
-            label="Smoke - ubiquitin demo",
-            description=(
-                "Runs against a baked 76 aa ubiquitin fixture. "
-                "Same pipeline, smallest preset - verifies the tool works "
-                "before you spend credits."
-            ),
-        ),
         Preset(
             slug="standalone",
             label="Standalone - your FASTA",

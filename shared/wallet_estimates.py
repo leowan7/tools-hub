@@ -6,16 +6,14 @@ numbers drive the route gate, the form UI, and the mid-run safety kill.
 
 Estimate sources, in priority order:
 
-1. A fixed tiny estimate for the smoke tier so the wallet UX shows a
-   non-zero number even when there is no cost.
-2. A per-tier ``gpu_seconds`` override (``ToolSpec.tier_gpu_seconds``)
+1. A per-tier ``gpu_seconds`` override (``ToolSpec.tier_gpu_seconds``)
    for cheap preview tiers like ``mini_pilot``. Takes precedence over
    p90 because the p90 view is tool-wide, not tier-aware, and is
    dominated by the heavy pilot runs.
-3. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
+2. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
    the tool has at least ``MIN_HISTORICAL_RUNS`` completed runs on
    record.
-4. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
+3. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
    (the pilot-tier default). Used for new tools without enough history.
 
 Parameter scaling: when the submitted ``params`` include a scaling
@@ -62,10 +60,6 @@ GPU_USD_PER_SECOND: Mapping[str, float] = {
 
 DEFAULT_USD_PER_SECOND = 0.001028  # A100-80GB rate.
 
-# Smoke tier is a fixed nominal estimate so the wallet UI shows a
-# non-zero number even though smoke runs are free.
-SMOKE_TIER_ESTIMATE_USD = Decimal("0.10")
-
 # Minimum number of historical rows before we trust per-tool p90.
 MIN_HISTORICAL_RUNS = 20
 
@@ -91,8 +85,7 @@ class ToolSpec:
     preset slug (e.g. ``{"mini_pilot": 450}``). A preview tier runs a
     fixed tiny job on the baked target, so it costs a small, stable
     fraction of a pilot run; without a per-tier value it would inherit
-    the pilot-calibrated ``expected_gpu_seconds`` and over-reserve. The
-    smoke tier never reads this (it short-circuits to a fixed nominal).
+    the pilot-calibrated ``expected_gpu_seconds`` and over-reserve.
     """
 
     slug: str
@@ -235,18 +228,10 @@ def estimated_cost_for_tool(
 
     ``user_id`` is accepted so future implementations can use per-user
     historical data. The current implementation ignores it.
-
-    Returns :data:`SMOKE_TIER_ESTIMATE_USD` for smoke-tier presets, which
-    are free at the GPU layer but appear in the wallet ledger as a
-    near-zero hold for symmetry with paid runs.
     """
     params = dict(params or {})
     spec = TOOL_SPECS.get(tool_slug)
-
-    # Smoke tier short-circuits to the fixed minimal estimate.
     preset = str(params.get("preset") or "").lower()
-    if preset == "smoke":
-        return SMOKE_TIER_ESTIMATE_USD
 
     if spec is None:
         # Conservative default: pretend the tool is one default A100-80GB minute.

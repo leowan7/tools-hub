@@ -9,17 +9,9 @@ scalar pTM / ipTM confidence metrics. 2-credit tool (4 credits above
 1500 AA total per PRODUCT-PLAN.md; we cap at 1500 AA in the validate
 branch for the atomic launch).
 
-Unlike the composite pipelines, D2 exposes two tiers:
-
-- ``smoke`` — baked ~58-residue BPTI monomer. No FASTA upload. 1 recycle,
-  single-sequence mode (no MSA fetch). Demos the output shape before the
-  user spends real compute.
-- ``standalone`` — caller-supplied FASTA. Default 3 recycles, ColabFold
-  MMseqs2 MSA. 2 credits.
-
-Both tiers use the same Modal function (``ranomics-af2-prod::run_tool``)
-and the same ``run_pipeline.py``; tier selection only changes which
-FASTA is used and the recycle / MSA defaults.
+D2 exposes a single ``standalone`` tier: caller-supplied FASTA, default
+3 recycles, ColabFold MMseqs2 MSA. It runs on the Modal function
+(``ranomics-af2-prod::run_tool``) and ``run_pipeline.py``.
 """
 
 from __future__ import annotations
@@ -139,41 +131,18 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the AF2 job_spec shape.
 
-    Branches on preset:
-      - ``smoke``: baked ~58 aa BPTI monomer, 1 recycle, no MSA. Credits-
-        free demo.
-      - ``standalone``: caller-supplied FASTA + ``num_recycles`` +
-        ``use_templates`` + implicit ``model_preset`` (monomer vs
-        multimer inferred from record count).
+    The single ``standalone`` tier takes a caller-supplied FASTA plus
+    ``num_recycles`` + ``use_templates`` + implicit ``model_preset``
+    (monomer vs multimer inferred from record count). A missing or blank
+    preset is treated as ``standalone`` so the form's hidden preset
+    field is robust.
 
     The shape returned is consumed by ``build_payload`` below and is
     also the ``inputs`` blob persisted on the ``tool_jobs`` row.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "standalone"}:
+    preset = (form.get("preset") or "standalone").strip() or "standalone"
+    if preset != "standalone":
         return None, "Pick a preset."
-
-    if preset == "smoke":
-        return (
-            {
-                "preset": preset,
-                "fasta_records": [
-                    {
-                        "header": "BPTI_smoke",
-                        "sequence": (
-                            "RPDFCLEPPYTGPCKARIIRYFYNAKAGLCQTFVYGGCRAKRNNFKS"
-                            "AEDCMRTCGGA"
-                        ),
-                    }
-                ],
-                "model_preset": "monomer",
-                "num_recycles": 1,
-                "use_templates": False,
-                # Pass-through metadata for the results page.
-                "target": "BPTI (58 aa monomer)",
-            },
-            None,
-        )
 
     # standalone tier — caller target.
     # FASTA arrives either via textarea (``fasta`` form field) or
@@ -275,15 +244,6 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="smoke",
-            label="Smoke — BPTI demo",
-            description=(
-                "Runs against a baked BPTI (58 aa) monomer with 1 recycle "
-                "and no MSA. Same pipeline, smallest preset — verifies "
-                "the tool works before you spend compute on a real target."
-            ),
-        ),
-        Preset(
             slug="standalone",
             label="Standalone — your FASTA",
             description=(
@@ -292,7 +252,7 @@ adapter = ToolAdapter(
                 "chains. ~5-10 min on A100-80GB."
             ),
             # FASTA ships inline in the payload, not via PDB upload —
-            # leave requires_pdb False on both presets.
+            # leave requires_pdb False.
             requires_pdb=False,
         ),
     ),

@@ -9,17 +9,12 @@ ipTM / pLDDT / i_pAE statistics from the AF2 model.
 Known-good on commit ``d83335c`` (Bug 8 unblock). Mini_pilot wallclock
 ~6 min on warm cache, ~17 min cold.
 
-Smoke / mini_pilot tiers use the baked ``/opt/smoke_target.pdb`` (PD-L1
-IgV) and ignore caller-supplied PDBs -- the form presents this as a
+The mini_pilot tier uses the baked ``/opt/smoke_target.pdb`` (PD-L1
+IgV) and ignores caller-supplied PDBs -- the form presents this as a
 "reference-target demo" with no PDB upload. Pilot tier accepts a
 caller-supplied target PDB plus hotspots and runs on the webhook flow
-(~15-30 min on A100-40GB).
-
-Note: at smoke tier the Kendrew pipeline sets ``skip_af2=True`` and
-returns stub scores (``filter_status="stub (smoke)"``) -- the algorithm
-runs end-to-end through RFdiffusion + ProteinMPNN but no real AF2
-statistics are produced. The ``mini_pilot`` and ``pilot`` tiers run
-the full composite with real AF2 multimer scoring.
+(~15-30 min on A100-40GB). Both tiers run the full composite with real
+AF2 multimer scoring.
 """
 
 from __future__ import annotations
@@ -63,17 +58,17 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the Kendrew RFdiffusion job_spec shape.
 
-    Smoke / mini_pilot tiers ignore the caller's job_spec at the pipeline
-    level (the Kendrew ``smoke_preset`` / ``mini_pilot_preset`` overrides
-    everything), but the form still accepts ``binder_length`` so the
-    cosmetic field appears in results metadata. Pilot tier requires the
-    caller PDB, target chain, and hotspot residues.
+    The mini_pilot tier ignores the caller's job_spec at the pipeline
+    level (the Kendrew ``mini_pilot_preset`` overrides everything), but
+    the form still accepts ``binder_length`` so the cosmetic field
+    appears in results metadata. Pilot tier requires the caller PDB,
+    target chain, and hotspot residues.
     """
     preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "mini_pilot", "pilot"}:
+    if preset not in {"mini_pilot", "pilot"}:
         return None, "Pick a preset."
 
-    if preset in {"smoke", "mini_pilot"}:
+    if preset == "mini_pilot":
         return (
             {
                 "preset": preset,
@@ -105,13 +100,13 @@ def validate(
     if err:
         return None, err
 
-    raw_num_designs = (form.get("num_designs") or "2").strip()
+    raw_num_designs = (form.get("num_designs") or "8").strip()
     try:
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 5:
-        return None, "Number of designs must be between 1 and 5."
+    if num_designs < 1 or num_designs > 200:
+        return None, "Number of designs must be between 1 and 200."
 
     return (
         {
@@ -129,23 +124,23 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec that RFdiffusion's run_pipeline.py expects.
 
-    Smoke / mini_pilot use the baked PD-L1 fixture; the pipeline ignores
-    these caller fields and applies its own preset. The shape is sent
-    anyway for forward-compat with future tier-aware handling. Pilot
-    tier sends the caller target chain, hotspots, binder length range,
-    and num_designs -- the presigned URL is forwarded separately by the
+    Mini_pilot uses the baked PD-L1 fixture; the pipeline ignores these
+    caller fields and applies its own preset. The shape is sent anyway
+    for forward-compat with future tier-aware handling. Pilot tier sends
+    the caller target chain, hotspots, binder length range, and
+    num_designs -- the presigned URL is forwarded separately by the
     generic submit route via ``input_pdb_url`` on the top-level payload.
     """
     preset = inputs["preset"]
 
-    if preset in {"smoke", "mini_pilot"}:
+    if preset == "mini_pilot":
         return {
             "target_chain": "A",
             "hotspot_residues": [],
             "parameters": {
-                "num_designs": 1 if preset == "smoke" else 2,
+                "num_designs": 2,
                 "diffusion_steps": 50,
-                "skip_af2": preset == "smoke",
+                "skip_af2": False,
                 "binder_length": {"min": 55, "max": 65},
             },
         }
@@ -174,15 +169,6 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="smoke",
-            label="Smoke -- 1 design",
-            description=(
-                "Pipeline-shape check (~2 min). 1 candidate against PD-L1 "
-                "reference, AF2 stubbed -- proves RFdiffusion + MPNN run, "
-                "scores are placeholders."
-            ),
-        ),
-        Preset(
             slug="mini_pilot",
             label="Preview -- 2 designs",
             description=(
@@ -196,7 +182,7 @@ adapter = ToolAdapter(
             label="Pilot -- your target, ~30 min",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
-                "with AF2 multimer validation. 1-5 candidates with real "
+                "with AF2 multimer validation. Up to 200 candidates with real "
                 "scores; results emailed when complete (~15-30 min on "
                 "A100-40GB)."
             ),

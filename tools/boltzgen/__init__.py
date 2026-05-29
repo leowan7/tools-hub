@@ -4,9 +4,9 @@ Modal app: ``ranomics-boltzgen-prod``. GPU: A100-40GB.
 
 BoltzGen uses the Boltz-2 model to generate binder backbones against a
 reference target, then scores each candidate for refolding RMSD, ipTM,
-and pLDDT. Smoke / mini_pilot tiers use the baked
+and pLDDT. The mini_pilot tier uses the baked
 ``/opt/smoke_target.pdb`` (PD-L1 IgV, chain A, residues 18-132) and
-ignore caller-supplied PDBs. The pilot tier accepts a caller-supplied
+ignores caller-supplied PDBs. The pilot tier accepts a caller-supplied
 target PDB, optional hotspot residues, and configurable binder-length
 window; it runs ~15-60 min on A100-40GB and emails results on
 completion.
@@ -35,18 +35,16 @@ def validate(
     """Coerce form fields into the Kendrew BoltzGen job_spec shape.
 
     Branches on preset:
-      - ``smoke`` / ``mini_pilot``: baked PD-L1 target, default binder length.
+      - ``mini_pilot``: baked PD-L1 target, default binder length.
       - ``pilot``: caller-supplied target PDB + hotspots + binder length.
     """
     preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "mini_pilot", "pilot"}:
+    if preset not in {"mini_pilot", "pilot"}:
         return None, "Pick a preset."
 
-    if preset in {"smoke", "mini_pilot"}:
-        default_min = 30 if preset == "smoke" else 50
-        default_max = 40 if preset == "smoke" else 70
-        binder_length_min = _parse_int(form.get("binder_length_min"), default_min)
-        binder_length_max = _parse_int(form.get("binder_length_max"), default_max)
+    if preset == "mini_pilot":
+        binder_length_min = _parse_int(form.get("binder_length_min"), 50)
+        binder_length_max = _parse_int(form.get("binder_length_max"), 70)
 
         if binder_length_min < 1 or binder_length_max < 1:
             return None, "Binder length must be a positive integer."
@@ -98,9 +96,9 @@ def validate(
     if binder_length_min > binder_length_max:
         return None, "binder_length_min must be <= binder_length_max."
 
-    budget = _parse_int(form.get("budget"), 5)
-    if budget < 1 or budget > 20:
-        return None, "budget must be between 1 and 20."
+    budget = _parse_int(form.get("budget"), 8)
+    if budget < 1 or budget > 24:
+        return None, "budget must be between 1 and 24."
 
     return (
         {
@@ -119,9 +117,9 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec BoltzGen's run_pipeline.py expects.
 
     Branches on preset:
-      - ``smoke`` / ``mini_pilot``: baked target shape (hard-coded preset
-        inside run_pipeline.py overrides most fields, but we send the
-        full shape anyway for forwards-compat).
+      - ``mini_pilot``: baked target shape (hard-coded preset inside
+        run_pipeline.py overrides most fields, but we send the full
+        shape anyway for forwards-compat).
       - ``pilot``: caller target; presigned URL is forwarded by the
         generic submit route, not embedded here.
     """
@@ -132,8 +130,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     # job_spec.get("job_tier")) still resolve the tier correctly. This is what
     # gates the pilot fallback that emits top-N designs when none pass the
     # strict ipTM/pLDDT/RMSD thresholds.
-    if preset in {"smoke", "mini_pilot"}:
-        is_smoke = preset == "smoke"
+    if preset == "mini_pilot":
         return {
             "job_tier": preset,
             "target_chain": "A",
@@ -142,11 +139,11 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
                     "min": inputs["binder_length_min"],
                     "max": inputs["binder_length_max"],
                 },
-                "num_designs": 1 if is_smoke else 2,
-                "budget": 1 if is_smoke else 2,
+                "num_designs": 2,
+                "budget": 2,
                 "protocol": inputs["protocol"],
             },
-            # Smoke / mini_pilot ignore hotspots but the pipeline validates shape.
+            # Mini_pilot ignores hotspots but the pipeline validates shape.
             "hotspot_residues": [],
         }
 
@@ -182,14 +179,6 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="smoke",
-            label="Smoke — 1 design",
-            description=(
-                "~5 min, 1 candidate against PD-L1 reference (baked "
-                "target), real refolding + ipTM scores."
-            ),
-        ),
-        Preset(
             slug="mini_pilot",
             label="Preview — 2 designs",
             description=(
@@ -201,7 +190,7 @@ adapter = ToolAdapter(
             slug="pilot",
             label="Pilot — your target, ~30 min",
             description=(
-                "Real BoltzGen run against your uploaded target. 5 "
+                "Real BoltzGen run against your uploaded target. Up to 24 "
                 "final candidates with refolding RMSD + ipTM scores; "
                 "results emailed when complete (~15-60 min on A100-40GB)."
             ),

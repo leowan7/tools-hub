@@ -108,16 +108,6 @@
     </div>
   {% endif %}
 
-  {# Cross-tool ``from_job``/``handoff`` routes set
-     pre_fill["preset"]="pilot" for every tool. AF2 has no ``pilot``
-     preset; remap to the equivalent real-target tier so a handoff
-     does not silently fall through to the smoke fixture. Mirrors the
-     D1 MPNN fix (Codex P1 there). #}
-  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
-  {% if _incoming_preset == 'pilot' %}
-    {% set _incoming_preset = 'standalone' %}
-  {% endif %}
-
   <div class="af2-layout">
     <div class="panel">
       <div class="panel-header">
@@ -126,22 +116,10 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
-          <select name="preset" id="preset" required
-                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
-            {% for preset in adapter.presets %}
-              <option value="{{ preset.slug }}"
-                      {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
-                {{ preset.label }}
-              </option>
-            {% endfor %}
-          </select>
-          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: 0.25rem 0 1.25rem;" id="preset-description"></div>
+          {# Single standalone tier — preset is fixed via a hidden field. #}
+          <input type="hidden" name="preset" value="standalone">
 
-          {# Re-using #pilot-fields id so ``prefill_script()`` from
-             _prefill.html toggles visibility when a clone/handoff lands
-             the user here with preset=standalone preselected. #}
-          <div id="pilot-fields" style="display: none;">
+          <div id="pilot-fields">
             {# Reconstruct the textarea value from whichever pre_fill
                shape is available. Fresh POST with a validation error
                resubmits the raw ``fasta`` string; a ``clone_from``
@@ -196,12 +174,8 @@
             </div>
           </div>
 
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Smoke tier runs against our baked BPTI (58 aa) monomer with 1
-            recycle and no MSA; no FASTA upload needed.
-          </div>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Standalone tier runs on your FASTA with ColabFold MMseqs2 MSA.
+            Paste or upload your FASTA. ColabFold MMseqs2 MSA + AF2.
             ~5-10 min on A100-80GB.
           </div>
 
@@ -216,34 +190,6 @@
     {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
-  <script>
-    (function () {
-      var form = document.querySelector('form');
-      var presetSelect = document.getElementById('preset');
-      var pilotFields = document.getElementById('pilot-fields');
-      var descEl = document.getElementById('preset-description');
-      if (!form || !presetSelect) return;
-
-      var descriptions = {
-        {% for preset in adapter.presets %}
-          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      };
-
-      function sync() {
-        var value = presetSelect.value;
-        if (pilotFields) {
-          pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
-        }
-        if (descEl) {
-          descEl.textContent = descriptions[value] || '';
-        }
-      }
-
-      presetSelect.addEventListener('change', sync);
-      sync();
-    })();
-  </script>
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}
 {% endblock %}

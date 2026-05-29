@@ -14,7 +14,6 @@
      and does not inject per-tool meta into the template context. Keep
      the two in sync when either changes. #}
   {% set preset_runtime_rows = [
-    {"slug": "smoke",      "runtime": "~17 min",  "target": "PD-L1 IgV reference (baked)"},
     {"slug": "mini_pilot", "runtime": "~35 min",  "target": "PD-L1 IgV reference (baked)"},
     {"slug": "pilot",      "runtime": "30\u201360 min", "target": "Your uploaded target"}
   ] %}
@@ -169,7 +168,7 @@
   <div class="panel" style="background: rgba(250, 204, 21, 0.08); border-color: rgba(250, 204, 21, 0.3);">
     <div class="panel-body">
       <strong>Heads-up — long-running job.</strong>
-      PXDesign runs ~17 min (smoke), ~35 min (preview), or ~30–60 min (pilot) on A100-80GB.
+      PXDesign pilot runs ~30–60 min on A100-80GB.
       Stay on this page or return via <a href="{{ url_for('jobs_list') }}">/jobs</a>
       to check status; results auto-refresh when done.
     </div>
@@ -195,12 +194,9 @@
               </label>
             {% endfor %}
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-top: 0.5rem;">
-              Smoke runs the pipeline without the post-design filter —
-              fastest path to a scored candidate. Preview (mini_pilot)
-              adds the post-filter pass, so scores reflect what the pilot
-              tier would return. Pilot tier runs against your own target —
-              upload PDB, pick hotspots, set binder length. Results
-              emailed (~30–60 min on A100-80GB).
+              Pilot tier runs against your own target — upload PDB, pick
+              hotspots, set binder length. Results emailed
+              (~30–60 min on A100-80GB).
             </div>
           </fieldset>
 
@@ -213,9 +209,9 @@
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
             {# Required (server-render) when the form has no staged source.
-               JS togglePilotFields below also flips this dynamically when
-               the user switches between smoke / pilot — keeps the browser
-               from blocking smoke submissions on a hidden empty input. #}
+               JS togglePilotFields below also flips this dynamically with
+               the pilot-fields visibility — keeps the browser from
+               blocking non-pilot submissions on a hidden empty input. #}
             <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
                    {% if not pdb_source %}required{% endif %}
                    style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
@@ -256,8 +252,11 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "2") }} min="1" max="5"
-                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+            <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "8") }} min="1" max="24"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+            </div>
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
@@ -286,8 +285,8 @@
         var isPilot = selected.value === 'pilot';
         pilotFields.style.display = isPilot ? 'block' : 'none';
         // Sync the file input's required attribute with visibility so
-        // smoke/preview submissions don't trip browser validation on
-        // the hidden file input, and pilot submissions can't sneak past
+        // non-pilot submissions don't trip browser validation on the
+        // hidden file input, and pilot submissions can't sneak past
         // a missing-PDB check (the orphan-row bug from 2026-04-30).
         var fileInput = document.getElementById('target_pdb');
         if (fileInput) {

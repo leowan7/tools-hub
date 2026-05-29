@@ -52,12 +52,6 @@ example_output_id: str | None = None
 # ``GPU_TIMEOUT`` map in ``gpu/modal_client.py``.
 preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
-        "slug": "smoke",
-        "label": "Smoke",
-        "runtime": "~17 min",
-        "target": "PD-L1 IgV reference (baked)",
-    },
-    {
         "slug": "mini_pilot",
         "label": "Preview",
         "runtime": "~35 min",
@@ -117,7 +111,6 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "typical": "~17 min"},
         {"preset": "mini_pilot", "typical": "~35 min"},
         {"preset": "pilot", "typical": "30&ndash;60 min"},
     ],

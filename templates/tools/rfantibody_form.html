@@ -249,15 +249,18 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" min="1" max="5" {{ pre_value(pre_fill, "num_designs", "2") }}
+            <input type="number" name="num_designs" id="num_designs" min="1" max="24" {{ pre_value(pre_fill, "num_designs", "8") }}
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              How many candidates to design (1 to 24). Each is independently folded and scored by RoseTTAFold-2 (pLDDT, pAE, ipAE).
+            </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              How many candidates to design (1-5). Each is independently folded and scored by RoseTTAFold-2 (pLDDT, pAE, ipAE).
+              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
             </div>
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Smoke / preview tier uses our reference PD-L1 IgV
+            Preview tier uses our reference PD-L1 IgV
             (residues 18–132, chain A); no PDB upload needed.
           </div>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
@@ -300,10 +303,10 @@
         if (pilotFields) {
           pilotFields.style.display = isPilot ? 'block' : 'none';
         }
-        // Mirror pxdesign: toggle ``required`` on the file input so smoke
-        // submissions don't trip browser validation on a hidden empty
-        // input, and pilot submissions catch the missing-PDB case before
-        // the server-side gate (orphan-row prevention 2026-04-30).
+        // Mirror pxdesign: toggle ``required`` on the file input so
+        // non-pilot submissions don't trip browser validation on a hidden
+        // empty input, and pilot submissions catch the missing-PDB case
+        // before the server-side gate (orphan-row prevention 2026-04-30).
         var fileInput = document.getElementById('target_pdb');
         if (fileInput) {
           var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');

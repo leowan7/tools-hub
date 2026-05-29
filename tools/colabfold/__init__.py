@@ -10,13 +10,9 @@ predicted structure (PDB b64) plus pLDDT, PAE matrix (npz-b64), and
 pTM / ipTM scores. 2-credit tool per PRODUCT-PLAN.md "Credit rates"
 table.
 
-Two tiers follow the D1 pattern:
-
-- ``smoke`` — baked 76 aa ubiquitin monomer, num_recycles=1, no
-  templates. No FASTA input needed. 0 credits. Demo-before-you-spend.
-- ``standalone`` — caller-supplied FASTA (inline text field, no file
-  upload required). 2 credits. Monomers up to 600 aa, multimers up
-  to 600 aa total length.
+A single ``standalone`` tier takes a caller-supplied FASTA (inline text
+field, no file upload required). 2 credits. Monomers up to 600 aa,
+multimers up to 600 aa total length.
 """
 
 from __future__ import annotations
@@ -98,26 +94,14 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the ColabFold job_spec shape.
 
-    Branches on preset:
-      - ``smoke``: baked 76 aa ubiquitin, 1 recycle, no templates.
-      - ``standalone``: caller-supplied FASTA text + num_recycles +
-        use_templates.
+    The single ``standalone`` tier takes a caller-supplied FASTA text
+    plus num_recycles + use_templates. A missing or blank preset is
+    treated as ``standalone`` so the form's hidden preset field is
+    robust.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "standalone"}:
+    preset = (form.get("preset") or "standalone").strip() or "standalone"
+    if preset != "standalone":
         return None, "Pick a preset."
-
-    if preset == "smoke":
-        return (
-            {
-                "preset": preset,
-                "fasta_text": "",  # empty — pipeline loads the baked fixture
-                "num_recycles": 1,
-                "use_templates": False,
-                "target": "Ubiquitin (76 aa monomer, UniProt P0CG47)",
-            },
-            None,
-        )
 
     # standalone tier — caller-supplied FASTA.
     fasta_text = (form.get("fasta_text") or "").strip()
@@ -223,15 +207,6 @@ adapter = ToolAdapter(
         "No-MSA speed tier — ~1-2 min per run."
     ),
     presets=(
-        Preset(
-            slug="smoke",
-            label="Smoke — ubiquitin demo",
-            description=(
-                "Runs against a baked 76 aa ubiquitin fixture. "
-                "Same pipeline, smallest preset — verifies the tool works "
-                "before you spend credits."
-            ),
-        ),
         Preset(
             slug="standalone",
             label="Standalone — your FASTA",

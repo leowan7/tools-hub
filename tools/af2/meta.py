@@ -21,9 +21,6 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    # Smoke: 58-AA monomer, 1 recycle, no MSA. Expected ~1-2 min cold,
-    # <30 s warm on A100-80GB.
-    "smoke": {"typical_minutes": "2"},
     # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
     # dominates for short sequences; fold time scales with length.
     "standalone": {"typical_minutes": "5-10"},
@@ -78,7 +75,6 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "typical": "~2 min"},
         {"preset": "standalone", "typical": "5&ndash;10 min"},
     ],
     "output_summary": (

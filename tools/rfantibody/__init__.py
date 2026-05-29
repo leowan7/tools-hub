@@ -1,11 +1,11 @@
 """RFantibody tool adapter.
 
 Modal app: ``ranomics-rfantibody-prod``. GPU: A100-40GB.
-Validation: 2x smoke + 2x mini_pilot green on commit 64c4ab0 + code-check
-PASS on HEAD (VALIDATION-LOG.md).
+Validation: 2x mini_pilot green on commit 64c4ab0 + code-check PASS on
+HEAD (VALIDATION-LOG.md).
 
-Smoke / mini_pilot tiers use the baked ``/opt/smoke_target.pdb`` (PD-L1
-IgV, chain A, residues 18-132) and ignore caller-supplied PDBs -- the
+The mini_pilot tier uses the baked ``/opt/smoke_target.pdb`` (PD-L1
+IgV, chain A, residues 18-132) and ignores caller-supplied PDBs -- the
 form presents this as a "reference-target demo" and the form has no
 PDB upload. Pilot tier accepts a caller-uploaded target PDB plus
 hotspots and runs on the webhook flow (~15-60 min on A100-40GB).
@@ -23,16 +23,16 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the Kendrew RFantibody job_spec shape.
 
-    At smoke / mini_pilot tier the pipeline ignores the caller's
-    job_spec and runs the baked target; we still accept a few fields so
-    the form feels like a real form. At pilot tier the caller supplies
-    the target PDB, chain, hotspots, framework, and CDR lengths.
+    At mini_pilot tier the pipeline ignores the caller's job_spec and
+    runs the baked target; we still accept a few fields so the form
+    feels like a real form. At pilot tier the caller supplies the target
+    PDB, chain, hotspots, framework, and CDR lengths.
     """
     preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "mini_pilot", "pilot"}:
+    if preset not in {"mini_pilot", "pilot"}:
         return None, "Pick a preset."
 
-    if preset in {"smoke", "mini_pilot"}:
+    if preset == "mini_pilot":
         framework = (form.get("framework") or "VHH").strip().upper()
         if framework not in {"VHH", "SCFV"}:
             return None, "Framework must be VHH or scFv."
@@ -73,13 +73,13 @@ def validate(
 
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
 
-    raw_num_designs = (form.get("num_designs") or "2").strip()
+    raw_num_designs = (form.get("num_designs") or "8").strip()
     try:
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 5:
-        return None, "Number of designs must be between 1 and 5."
+    if num_designs < 1 or num_designs > 24:
+        return None, "Number of designs must be between 1 and 24."
 
     return (
         {
@@ -98,23 +98,22 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec RFantibody's run_pipeline.py expects.
 
-    At smoke/mini_pilot the hard-coded preset inside run_pipeline.py
-    overrides these fields, but we send the full shape anyway for
-    forwards-compat. At pilot tier the presigned_url is forwarded by
-    the generic submit route via ``_input_pdb_url`` -- this function
-    does not embed it in the returned dict.
+    At mini_pilot the hard-coded preset inside run_pipeline.py overrides
+    these fields, but we send the full shape anyway for forwards-compat.
+    At pilot tier the presigned_url is forwarded by the generic submit
+    route via ``_input_pdb_url`` -- this function does not embed it in
+    the returned dict.
     """
     preset = inputs.get("preset", "")
-    if preset in {"smoke", "mini_pilot"}:
+    if preset == "mini_pilot":
         return {
             "target_chain": "A",
             "parameters": {
                 "framework": inputs.get("framework", "VHH"),
-                "cdr_lengths": "H1:8,H2:7,H3:10" if preset == "smoke"
-                               else "H1:8,H2:7,H3:10-13",
-                "num_designs": 1 if preset == "smoke" else 2,
+                "cdr_lengths": "H1:8,H2:7,H3:10-13",
+                "num_designs": 2,
             },
-            # Smoke/mini_pilot ignore hotspots but the pipeline validates shape.
+            # Mini_pilot ignores hotspots but the pipeline validates shape.
             "hotspot_residues": [54, 56, 115],
         }
 
@@ -140,15 +139,6 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="smoke",
-            label="Smoke — 1 design",
-            description=(
-                "One candidate against PD-L1 reference target (~3 min). "
-                "Same pipeline, smallest preset. Good for verifying "
-                "the tool works for your workflow."
-            ),
-        ),
-        Preset(
             slug="mini_pilot",
             label="Preview — 2 designs",
             description=(
@@ -161,7 +151,7 @@ adapter = ToolAdapter(
             label="Pilot — your target, ~30 min",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
-                "1-5 final candidates (your choice); results emailed when "
+                "up to 24 final candidates (your choice); results emailed when "
                 "run completes (~15-60 min on A100-40GB)."
             ),
             requires_pdb=True,

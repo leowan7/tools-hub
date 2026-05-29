@@ -107,16 +107,6 @@
     </div>
   {% endif %}
 
-  {# Handoff remap: shared ``from_job``/``handoff`` route sets
-     ``pre_fill["preset"] = "pilot"``. ESMFold has no ``pilot``
-     option - fall through to ``standalone`` so the incoming sequence
-     is actually used instead of silently loading the baked ubiquitin
-     fixture. Copied from the MPNN/ColabFold form's Codex P1 fix. #}
-  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
-  {% if _incoming_preset == 'pilot' %}
-    {% set _incoming_preset = 'standalone' %}
-  {% endif %}
-
   <div class="esmfold-layout">
     <div class="panel">
       <div class="panel-header">
@@ -125,22 +115,10 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
-          <select name="preset" id="preset" required
-                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
-            {% for preset in adapter.presets %}
-              <option value="{{ preset.slug }}"
-                      {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
-                {{ preset.label }}
-              </option>
-            {% endfor %}
-          </select>
-          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: 0.25rem 0 1.25rem;" id="preset-description"></div>
+          {# Single standalone tier — preset is fixed via a hidden field. #}
+          <input type="hidden" name="preset" value="standalone">
 
-          {# Re-using #pilot-fields id so ``prefill_script()`` from
-             _prefill.html toggles visibility when a clone/handoff lands
-             the user here with preset=standalone preselected. #}
-          <div id="pilot-fields" style="display: none;">
+          <div id="pilot-fields">
             <label for="fasta_text" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA (single chain)</label>
             <textarea name="fasta_text" id="fasta_text" class="esmfold-fasta"
                       placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."
@@ -154,13 +132,9 @@
             </div>
           </div>
 
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Smoke tier runs against our baked 76 aa ubiquitin fixture;
-            no FASTA input needed.
-          </div>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Standalone tier runs on your FASTA - single-chain monomer
-            up to 400 aa. ~30 s on A100-40GB once the 3B model is warm.
+            Paste your FASTA - single-chain monomer up to 400 aa.
+            ~30 s on A100-40GB once the 3B model is warm.
           </div>
 
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
@@ -174,34 +148,6 @@
     {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
 
-  <script>
-    (function () {
-      var form = document.querySelector('form');
-      var presetSelect = document.getElementById('preset');
-      var pilotFields = document.getElementById('pilot-fields');
-      var descEl = document.getElementById('preset-description');
-      if (!form || !presetSelect) return;
-
-      var descriptions = {
-        {% for preset in adapter.presets %}
-          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      };
-
-      function sync() {
-        var value = presetSelect.value;
-        if (pilotFields) {
-          pilotFields.style.display = (value === 'standalone') ? 'block' : 'none';
-        }
-        if (descEl) {
-          descEl.textContent = descriptions[value] || '';
-        }
-      }
-
-      presetSelect.addEventListener('change', sync);
-      sync();
-    })();
-  </script>
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}
 {% endblock %}

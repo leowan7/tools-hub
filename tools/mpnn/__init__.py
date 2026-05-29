@@ -7,17 +7,9 @@ The user uploads a backbone PDB + picks chain(s) to design, and receives
 ``num_seq_per_target`` candidate sequences with MPNN scores and per-
 sequence recovery. 1-credit loss leader on the pilot tier.
 
-Unlike the composite pipelines (BindCraft, RFantibody, BoltzGen,
-PXDesign), D1 exposes two tiers:
-
-- ``smoke`` — baked ~130-residue target (1HEW). No PDB upload. 2
-  sequences. Demos the output shape before the user spends a real PDB.
-- ``standalone`` — caller-supplied PDB. Up to 20 sequences. 1 credit
-  (capped at 2 credits above 20 per ATOMIC-TOOLS.md D1 pricing).
-
-Both tiers use the same Modal function (``ranomics-mpnn-prod::run_tool``)
-and the same ``run_pipeline.py``; tier selection only changes which PDB
-is used and the default sample count.
+D1 exposes a single ``standalone`` tier: caller-supplied PDB, up to 200
+candidate sequences. It runs on the Modal function
+(``ranomics-mpnn-prod::run_tool``) and ``run_pipeline.py``.
 """
 
 from __future__ import annotations
@@ -32,7 +24,7 @@ from tools.base import Preset, ToolAdapter, register
 # ---------------------------------------------------------------------------
 
 NUM_SEQ_MIN = 1
-NUM_SEQ_MAX = 20
+NUM_SEQ_MAX = 200
 TEMP_MIN = 0.01
 TEMP_MAX = 1.0
 
@@ -62,30 +54,17 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the MPNN job_spec shape.
 
-    Branches on preset:
-      - ``smoke``: baked ~130 aa target, fixed chain A, 2 sequences.
-      - ``standalone``: caller-supplied PDB, user-picked chain(s) +
-        ``num_seq_per_target`` + ``sampling_temp``.
+    The single ``standalone`` tier takes a caller-supplied PDB, the
+    user-picked chain(s), ``num_seq_per_target``, and ``sampling_temp``.
+    A missing or blank preset is treated as ``standalone`` so the form's
+    hidden preset field is robust.
 
     The shape returned is consumed by ``build_payload`` below and is
     also the ``inputs`` blob persisted on the ``tool_jobs`` row.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"smoke", "standalone"}:
+    preset = (form.get("preset") or "standalone").strip() or "standalone"
+    if preset != "standalone":
         return None, "Pick a preset."
-
-    if preset == "smoke":
-        return (
-            {
-                "preset": preset,
-                "target_chain": "A",
-                "num_seq_per_target": 2,
-                "sampling_temp": 0.1,
-                # Pass-through metadata for the results page.
-                "target": "1HEW (lysozyme, ~130 aa, chain A)",
-            },
-            None,
-        )
 
     # standalone tier — caller target.
     chains_to_design = (form.get("chains_to_design") or "A").strip()
@@ -105,7 +84,7 @@ def validate(
         if len(chain) > 4:
             return None, f"chain ID {chain!r} is too long (max 4 characters)."
 
-    num_seq_per_target = _parse_int(form.get("num_seq_per_target"), 5)
+    num_seq_per_target = _parse_int(form.get("num_seq_per_target"), 50)
     if num_seq_per_target < NUM_SEQ_MIN or num_seq_per_target > NUM_SEQ_MAX:
         return (
             None,
@@ -136,7 +115,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
     The presigned URL is forwarded by the generic submit route via
     ``_input_presigned_url`` — this function does not embed it in the
-    dict. Smoke tier ignores the URL entirely (baked target).
+    dict.
     """
     return {
         "target_chain": inputs["target_chain"],
@@ -156,27 +135,18 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="smoke",
-            label="Smoke — 2 sequences",
-            description=(
-                "Runs against a baked 1HEW lysozyme target (chain A, "
-                "~130 aa). Same pipeline, smallest preset — verifies the "
-                "tool works before you spend a PDB."
-            ),
-        ),
-        Preset(
             slug="standalone",
             label="Standalone — your backbone",
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
-                "up to 20 candidate sequences. ~30-60 s on A10G-24GB."
+                "up to 200 candidate sequences. ~30-60 s on A10G-24GB."
             ),
             requires_pdb=True,
         ),
     ),
     validate=validate,
     build_payload=build_payload,
-    requires_pdb=False,  # smoke tier does not need a PDB; per-preset flag owns this
+    requires_pdb=True,
     form_template="tools/mpnn_form.html",
     results_partial="tools/mpnn_results.html",
 )

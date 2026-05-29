@@ -5,13 +5,7 @@ PXDesign generates binders and validates them with JAX AF2 Initial
 Guess (AF2-IG) — real ipTM / pLDDT / pAE scores from the AF2 monomer
 model run in initial-guess mode against the target.
 
-Known-good on commit ``5f22eec`` (the cuDNN 9 upgrade). Historical
-smoke runs land around 17 min; mini_pilot (preview tier, post-filter
-enabled) lands around 30–40 min.
-
-Smoke / mini_pilot tiers use the baked ``/opt/smoke_target.pdb``
-(PD-L1 IgV) and ignore caller-supplied PDBs — the form presents this
-as a "reference-target demo" and has no PDB upload. The pilot tier
+Known-good on commit ``5f22eec`` (the cuDNN 9 upgrade). The pilot tier
 accepts a caller-supplied target PDB with hotspot residues and runs
 real-target binder design (~30–60 min on A100-80GB).
 """
@@ -38,39 +32,17 @@ def validate(
     """Coerce form fields into the Kendrew PXDesign job_spec shape.
 
     The Kendrew PXDesign pipeline rejects ``preset="basic"`` — only
-    ``preview`` is a valid ``parameters.preset`` value. We translate
-    our UI tiers (smoke / mini_pilot / pilot) into ``preview`` on the
-    payload side and use ``post_filter`` as the smoke-vs-mini-pilot
-    knob for the reference-target tiers.
+    ``preview`` is a valid ``parameters.preset`` value, so the pilot
+    tier translates to ``preview`` on the payload side.
     """
     preset = (form.get("preset") or "").strip()
-    # mini_pilot is hidden from the form pending Kendrew pipeline fixes
-    # (see tools-hub/docs/VALIDATION-LOG.md: 2026-04-28 mini_pilot FAIL —
-    # subprocess hung at 78.5% inside AF2-IG Protenix DDIM sampler;
-    # root cause is Kendrew docker/pxdesign/run_pipeline.py:1001 inner
-    # 4500s subprocess timeout + unpinned upstream ColabDesign/PXDesign).
-    # Reject any direct POST that tries to slip mini_pilot through.
-    if preset not in {"smoke", "pilot"}:
+    # PXDesign ships pilot only. mini_pilot stays hidden pending Kendrew
+    # pipeline fixes (see tools-hub/docs/VALIDATION-LOG.md: 2026-04-28
+    # mini_pilot FAIL — subprocess hung at 78.5% inside AF2-IG Protenix
+    # DDIM sampler; root cause is Kendrew docker/pxdesign/run_pipeline.py:1001
+    # inner 4500s subprocess timeout + unpinned upstream ColabDesign/PXDesign).
+    if preset != "pilot":
         return None, "Pick a preset."
-
-    if preset in {"smoke", "mini_pilot"}:
-        raw_length = (form.get("binder_length") or "80").strip()
-        try:
-            binder_length = int(raw_length)
-        except (TypeError, ValueError):
-            return None, "Binder length must be an integer."
-        if binder_length < 40 or binder_length > 150:
-            return None, "Binder length must be between 40 and 150 residues."
-
-        return (
-            {
-                "preset": preset,
-                "binder_length": binder_length,
-                # Pass-through metadata for the results page.
-                "target": "PD-L1 IgV (residues 18-132, chain A)",
-            },
-            None,
-        )
 
     # pilot tier — real user target + hotspots.
     target_chain = (form.get("target_chain") or "A").strip()
@@ -99,13 +71,13 @@ def validate(
     if binder_length < 40 or binder_length > 150:
         return None, "Binder length must be between 40 and 150 residues."
 
-    raw_num_designs = (form.get("num_designs") or "2").strip()
+    raw_num_designs = (form.get("num_designs") or "8").strip()
     try:
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 5:
-        return None, "Number of designs must be between 1 and 5."
+    if num_designs < 1 or num_designs > 24:
+        return None, "Number of designs must be between 1 and 24."
 
     return (
         {
@@ -123,26 +95,10 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec that PXDesign's run_pipeline.py expects.
 
     ``parameters.preset`` MUST be ``"preview"`` — the pipeline rejects
-    ``"basic"``. For smoke / mini_pilot, ``post_filter`` is what
-    differentiates them at the pipeline level (smoke skips,
-    mini_pilot adds the post-design filtering pass). The pilot tier
-    runs against a caller-supplied target — the presigned URL is
-    forwarded separately by the generic submit route.
+    ``"basic"``. The pilot tier runs against a caller-supplied target —
+    the presigned URL is forwarded separately by the generic submit
+    route.
     """
-    preset = inputs["preset"]
-
-    if preset in {"smoke", "mini_pilot"}:
-        return {
-            "target_chain": "A",
-            "hotspot_residues": [],
-            "parameters": {
-                "num_designs": 1,
-                "preset": "preview",
-                "binder_length": inputs["binder_length"],
-                "post_filter": preset == "mini_pilot",
-            },
-        }
-
     # pilot
     return {
         "target_chain": inputs["target_chain"],
@@ -162,18 +118,9 @@ adapter = ToolAdapter(
     blurb=(
         "Binder design with JAX AF2 Initial Guess validation — real "
         "ipTM / pLDDT / pAE from the AF2 monomer model run in "
-        "initial-guess mode against the target. Smoke ~17 min, "
-        "mini_pilot ~30–40 min, pilot ~30–60 min."
+        "initial-guess mode against the target. Pilot ~30–60 min."
     ),
     presets=(
-        Preset(
-            slug="smoke",
-            label="Smoke — 1 design",
-            description=(
-                "~17 min, 1 candidate against PD-L1 reference "
-                "(baked target), real AF2-IG scores."
-            ),
-        ),
         # mini_pilot tier hidden 2026-04-29 pending Kendrew pipeline fixes.
         # Re-introduce once VALIDATION-LOG mini_pilot streak hits 2x GREEN.
         Preset(
@@ -181,7 +128,7 @@ adapter = ToolAdapter(
             label="Pilot — your target, ~45 min",
             description=(
                 "Real PXDesign run against your uploaded target with "
-                "AF2-IG validation. 1-2 candidates with real ipTM/pLDDT/pAE "
+                "AF2-IG validation. Up to 24 candidates with real ipTM/pLDDT/pAE "
                 "scores; results emailed when complete (~30-60 min on A100-80GB)."
             ),
             requires_pdb=True,

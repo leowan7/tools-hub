@@ -26,19 +26,6 @@
     </div>
   {% endif %}
 
-  {# The shared ``from_job``/``handoff`` route in app.py sets
-     ``pre_fill["preset"] = "pilot"`` for every tool. The four binder
-     design tools actually have a preset slug ``pilot``; MPNN does not
-     (``smoke`` + ``standalone`` only). Without remapping, the template
-     fell through to ``loop.first`` and silently selected ``smoke``,
-     which runs against the baked 1HEW fixture — a handoff would burn
-     a credit on the wrong backbone. ``standalone`` is the correct
-     real-target equivalent for MPNN. #}
-  {% set _incoming_preset = pre_fill.get('preset') if pre_fill else None %}
-  {% if _incoming_preset == 'pilot' %}
-    {% set _incoming_preset = 'standalone' %}
-  {% endif %}
-
   {% call tool_form_layout() %}
     <div class="panel">
       <div class="panel-header">
@@ -47,30 +34,15 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          <div class="field-group">
-            <label for="preset" class="field-label">Preset</label>
-            <select name="preset" id="preset" required class="field-input" style="max-width: 420px;">
-              {% for preset in adapter.presets %}
-                <option value="{{ preset.slug }}"
-                        {% if _incoming_preset == preset.slug %}selected{% elif loop.first and not _incoming_preset %}selected{% endif %}>
-                  {{ preset.label }}
-                </option>
-              {% endfor %}
-            </select>
-          </div>
+          {# Single standalone tier — preset is fixed via a hidden field. #}
+          <input type="hidden" name="preset" value="standalone">
 
-          {# Re-using #pilot-fields id so ``prefill_script()`` from
-             _prefill.html toggles visibility when a clone/handoff lands
-             the user here with preset=standalone preselected. #}
-          <div id="pilot-fields" style="display: none;">
+          <div id="pilot-fields">
             {{ pdb_source_banner(pdb_source) }}
             <div class="field-group">
               <label for="target_pdb" class="field-label">Backbone PDB</label>
-              {# Required (server-render) when no staged source. The
-                 preset-change JS toggles ``required`` so smoke submissions
-                 aren't blocked by a hidden empty file input
-                 (orphan-row prevention 2026-04-30). MPNN's pilot equivalent
-                 is ``standalone`` — sync uses that slug below. #}
+              {# Required (server-render) unless a staged source already
+                 covers the upload via reuse_pdb_token. #}
               <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
                      {% if not pdb_source %}required{% endif %}
                      class="field-input" style="max-width: 520px;">
@@ -93,10 +65,10 @@
 
             <div class="field-group">
               <label for="num_seq_per_target" class="field-label">Number of sequences</label>
-              <input type="number" name="num_seq_per_target" id="num_seq_per_target" {{ pre_value(pre_fill, "num_seq_per_target", "5") }} min="1" max="20"
+              <input type="number" name="num_seq_per_target" id="num_seq_per_target" {{ pre_value(pre_fill, "num_seq_per_target", "50") }} min="1" max="200"
                      class="field-input" style="max-width: 160px;">
               <div class="field-helper">
-                How many candidate sequences to sample (1&ndash;20).
+                How many candidate sequences to sample (1 to 200).
               </div>
             </div>
 
@@ -111,12 +83,8 @@
             </div>
           </div>
 
-          <div class="field-helper" style="margin-bottom: 0.75rem;">
-            Smoke tier runs against our baked 1HEW lysozyme target (~130 aa,
-            chain A); no PDB upload needed.
-          </div>
           <div class="field-helper" style="margin-bottom: 1rem;">
-            Standalone tier runs on your own backbone — upload PDB, pick chain(s).
+            Upload your backbone PDB and pick chain(s) to redesign.
             ~30-60 s on A10G-24GB.
           </div>
 
@@ -131,34 +99,6 @@
     {{ about_panel(adapter, tool_about(adapter)) }}
   {% endcall %}
 
-  <script>
-    (function () {
-      var presetSelect = document.getElementById('preset');
-      var pilotFields = document.getElementById('pilot-fields');
-      if (!presetSelect) return;
-
-      function syncFields() {
-        var value = presetSelect.value;
-        // MPNN's PDB-required tier is ``standalone``; smoke uses the
-        // baked fixture and needs no upload.
-        var needsPdb = value === 'standalone';
-        if (pilotFields) {
-          pilotFields.style.display = needsPdb ? 'block' : 'none';
-        }
-        // Toggle ``required`` on the file input so smoke submissions
-        // aren't blocked by a hidden empty file input
-        // (orphan-row prevention 2026-04-30).
-        var fileInput = document.getElementById('target_pdb');
-        if (fileInput) {
-          var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');
-          fileInput.required = needsPdb && !hasReuse;
-        }
-      }
-
-      presetSelect.addEventListener('change', syncFields);
-      syncFields();
-    })();
-  </script>
   {{ submit_cta_script() }}
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}

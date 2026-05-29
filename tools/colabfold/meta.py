@@ -21,7 +21,6 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "smoke": {"typical_minutes": "1-2"},
     "standalone": {"typical_minutes": "1-2"},
 }
 
@@ -72,7 +71,6 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "smoke", "typical": "1&ndash;2 min"},
         {"preset": "standalone", "typical": "1&ndash;2 min"},
     ],
     "output_summary": (
