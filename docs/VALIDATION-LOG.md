@@ -119,7 +119,8 @@ GPU: A100-80GB. App: `ranomics-pxdesign-prod`. Timeout: 2 h. Pipeline file: `bac
 | 2026-04-22 (from commit) | pxdesign | mini_pilot | main | `5f22eec` | 918 | **PASS** | Leo | Cold run: ipTM=0.75, pLDDT=94.0, pAE=6.21, filter=pass. 1243-ATOM parseable PDB. From commit `5f22eec` (`fix(pxdesign): mini_pilot N=2 -> N=1 for wall-clock-bound verify`), stacked on `f41e17e` cuDNN 9 fix. |
 | — | pxdesign | smoke | main | (pre-`f41e17e`) | — | **FAIL** | Leo | Smoke ran but AF2-IG (JAX) failed "Unable to load cuDNN"; pipeline silently fell back to stub scores ipTM=0.08 / pLDDT=0.96. **Exit-zero lie — counts as FAIL.** Superseded by `f41e17e` + `5f22eec` above. |
 
-**Status:** 🟡 **SPLIT** on Kendrew `e497a09` (UPDATED 2026-04-29 post-smoke-run-4) — smoke tier GREEN with score-drop caveat, mini_pilot tier BLOCKED + hidden:
+**Status:** 🟢 **GREEN (pilot tier)** (UPDATED 2026-05-27). The pilot-tier web-UI run on caller PDB passed (job `816fc4a9`, see table row above), closing the Wave 4 gate that justifies `FLAG_TOOL_PXDESIGN=on` (now on in prod). Tier breakdown below: pilot GREEN, smoke GREEN (score-drop caveat), mini_pilot still BLOCKED and hidden:
+- **Pilot**: 🟢 **PASS (2026-05-27).** Job `816fc4a9` on caller PDB 4ZQK (PD-L1). 2 candidates via pilot fallback, dual-transport delivery (Storage `.cif` plus b64), `pdb_key` round-trips 200. First pilot-tier PASS in the section; supersedes the 2026-05-26 FLAG on `79228f03`. This is the launch-justifying gate.
 - **Smoke**: 🟢 **3× PASS streak.** Run 2 (2026-04-22, 993 GPU-s, ipTM=0.79 @ `5f22eec`) + run 3 (2026-04-28, 1006 GPU-s, ipTM=0.81 @ `96efc3d`) + run 4 (2026-04-29, 1051 GPU-s, **ipTM=0.12** @ `e497a09`). All three pipeline-integrity PASS. Run 4 ipTM dropped to 0.12 (caveat above) but no stubs; the 78% hang regression is fixed. Tier mechanically ready to flip on for paying customers; functional quality validated at pilot tier instead.
 - **Mini_pilot**: 🔴 **Streak still 0; tier hidden in form.** 1× PASS at `5f22eec` (2026-04-22, 918 GPU-s) followed by 1× FAIL at `96efc3d` (2026-04-28, 4517 GPU-s, hung at 78.5%). Hidden in `tools/pxdesign/__init__.py` 2026-04-29 — re-introduce only after a separate 2× re-validation. Web-UI pilot-tier campaign-validation does NOT unblock mini_pilot.
 
@@ -127,7 +128,7 @@ GPU: A100-80GB. App: `ranomics-pxdesign-prod`. Timeout: 2 h. Pipeline file: `bac
 - ✅ Code-check `f41e17e` + `5f22eec` against HEAD: drift-zero confirmation 2026-04-28 (1 comment-only commit).
 - ✅ Smoke 3× streak closed 2026-04-29 (pipeline-integrity PASS on all three runs). Smoke tier mechanically ready.
 - ⏸ Mini_pilot 2× re-validation deferred — superseded by web-UI pilot-tier campaign validation (see Decision 2026-04-29). Mini_pilot preset hidden in `tools/pxdesign/__init__.py` until separately re-validated.
-- 🔜 PXDesign pilot-tier web-UI run on caller PDB pending — single run at num_designs=5 covers caller-PDB upload, presigned URL, upload_urls_endpoint callback, num_designs>1, hotspots, post_filter, frontend→submit→worker→GPU integration, email notification, Stripe payment gate. This is the gate that justifies `FLAG_TOOL_PXDESIGN=on`.
+- ✅ PXDesign pilot-tier web-UI run on caller PDB **closed 2026-05-27** (job `816fc4a9` on 4ZQK): caller-PDB upload, presigned URL, upload_urls_endpoint callback, num_designs>1, hotspots, post_filter, frontend→submit→worker→GPU integration, email notification, and Stripe payment gate all exercised. This was the gate that justified `FLAG_TOOL_PXDESIGN=on`, now flipped on in prod.
 
 ### Decision 2026-04-29 — Pivot from mini_pilot harness gate → web-UI pilot-tier campaign validation
 
