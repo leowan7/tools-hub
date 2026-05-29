@@ -82,8 +82,30 @@
             <circle cx="62" cy="46" r="2.5" fill="var(--border)"/>
           </svg>
           <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">Run your first job to see it here.</h2>
-          <p class="subtitle" style="margin: 0 0 1.25rem 0;">Every GPU tool shares the same job list.</p>
-          <a href="{{ url_for('index') }}" class="btn-primary">Browse tools</a>
+          <p class="subtitle" style="margin: 0 0 1.75rem 0;">Three steps to your first set of designs.</p>
+
+          <ol style="list-style: none; counter-reset: start-step; padding: 0; margin: 0 0 1.75rem 0; text-align: left; width: 100%; max-width: 32rem; display: flex; flex-direction: column; gap: 0.75rem;">
+            <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
+              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">1</span>
+              <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Add funds</strong>
+              <span style="color: var(--text-secondary); font-size: 0.9rem;">Top up your USD wallet. The minimum top-up is $20.</span>
+              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
+            </li>
+            <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
+              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">2</span>
+              <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Pick a tool</strong>
+              <span style="color: var(--text-secondary); font-size: 0.9rem;">Browse the catalog and choose the model that fits your target.</span>
+              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('tools_comparison') }}" style="color: var(--accent-text);">Browse all tools</a></span>
+            </li>
+            <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
+              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">3</span>
+              <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Submit a run</strong>
+              <span style="color: var(--text-secondary); font-size: 0.9rem;">Upload your inputs, confirm the cost, and watch live progress here.</span>
+              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('help_getting_started') }}" style="color: var(--accent-text);">Read the getting started guide</a></span>
+            </li>
+          </ol>
+
+          <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Browse tools</a>
         </div>
       {% endif %}
     </div>

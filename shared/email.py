@@ -916,8 +916,8 @@ def _from_address() -> str:
 
 
 def _support_email() -> str:
-    return os.environ.get("SUPPORT_EMAIL", "support@ranomics.com").strip() or (
-        "support@ranomics.com"
+    return os.environ.get("SUPPORT_EMAIL", "info@ranomics.com").strip() or (
+        "info@ranomics.com"
     )
 
 

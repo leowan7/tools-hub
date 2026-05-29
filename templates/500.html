@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Something went wrong — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+{% block content %}
+  <div class="hero">
+    <h1>Something went wrong on our end.</h1>
+    <p class="subtitle">
+      This one is on us, not you. The error has been logged and your work is
+      safe. Try the page again in a moment, or head back to your tools.
+    </p>
+  </div>
+
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+    <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
+    <a href="{{ url_for('jobs_list') }}" class="btn-secondary">My runs</a>
+  </div>
+
+  <p style="margin-top: 1.25rem; color: var(--text-secondary); font-size: 0.92rem;">
+    Still seeing this? <a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Contact support</a>
+    and tell us what you were doing.
+  </p>
+{% endblock %}

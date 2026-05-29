@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Getting started — Ranomics Tools{% endblock %}
+{% block description %}Step by step guide to running your first protein design on Ranomics Tools. Create an account, add funds, pick a tool, submit a run, and read the results.{% endblock %}
+
+{% block head_extra %}
+  <style>
+    .help-steps { list-style: none; counter-reset: help-step; padding: 0; margin: 0; }
+    .help-steps > li {
+      position: relative;
+      counter-increment: help-step;
+      padding: 1.1rem 1.25rem 1.1rem 3.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      margin-bottom: 0.85rem;
+    }
+    .help-steps > li::before {
+      content: counter(help-step);
+      position: absolute;
+      left: 1.1rem;
+      top: 1.1rem;
+      width: 1.85rem;
+      height: 1.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid var(--accent);
+      color: var(--accent-text);
+      font-family: var(--font-mono, monospace);
+      font-size: 0.92rem;
+      font-weight: 600;
+    }
+    .help-step-title {
+      margin: 0 0 0.35rem 0;
+      font-size: 1.02rem;
+      color: var(--text-primary);
+    }
+    .help-step-body { margin: 0; color: var(--text-secondary); line-height: 1.6; }
+    .help-step-body a { color: var(--accent-text); }
+  </style>
+{% endblock %}
+
+{% block content %}
+  {% include "help/_help_nav.html" with context %}
+
+  <div class="hero">
+    <h1>Getting started</h1>
+    <p class="subtitle">
+      One full run, from signup to a shortlist worth taking into the lab.
+    </p>
+  </div>
+
+  <section class="section">
+    <ol class="help-steps">
+      <li>
+        <h2 class="help-step-title">Create an account</h2>
+        <p class="help-step-body">
+          Sign up with your email at tools.ranomics.com. New accounts start
+          with a small wallet balance so you can try a tool right away.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Add funds to your wallet</h2>
+        <p class="help-step-body">
+          Top up a USD wallet from your account. The minimum top-up is $20.
+          Each job debits the actual cost of the compute it uses, so there
+          is no subscription and no monthly minimum.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Pick a tool</h2>
+        <p class="help-step-body">
+          Browse the
+          <a href="{{ url_for('tools_comparison') }}">tool catalog</a>
+          and choose the model that fits your target. Each tool lists what
+          it is built for and a typical runtime.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Upload a PDB or pick chains</h2>
+        <p class="help-step-body">
+          Upload your target structure as a PDB or mmCIF file, then mark the
+          chain and hotspot residues the design should engage. Sequence
+          tools instead ask which chains to redesign.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Submit a run</h2>
+        <p class="help-step-body">
+          The form shows an estimated cost and your balance after the job
+          before you confirm. Submit when the parameters look right. A
+          wallet hold is placed against the estimate while the job runs.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Watch live progress and read results</h2>
+        <p class="help-step-body">
+          The job page streams progress while the GPU works. When it
+          finishes you get ranked candidates with their scores, and the
+          final charge settles against the hold.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Open the 3D viewer and export</h2>
+        <p class="help-step-body">
+          Inspect any candidate in the built-in 3D viewer, then export the
+          results as CSV for the score table or FASTA for the sequences.
+        </p>
+      </li>
+      <li>
+        <h2 class="help-step-title">Star the best candidates and send the shortlist to the wet lab</h2>
+        <p class="help-step-body">
+          Star the designs worth pursuing to build a shortlist, then hand it
+          off to a
+          <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer">Binder Pilot</a>
+          or
+          <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer">AI Binder Sprint</a>
+          for wet-lab validation.
+        </p>
+      </li>
+    </ol>
+
+    <div class="panel" style="margin-top: 1.25rem;">
+      <div class="panel-body">
+        <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">
+          A pilot of about 8 designs gives a real first signal, because
+          roughly 1 in 5 designs passes the in-silico filter on a tractable
+          target. Start small, read the scores, then scale the run up once
+          you trust the setup.
+        </p>
+      </div>
+    </div>
+
+    <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+      <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Pick a tool</a>
+      <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+    </div>
+  </section>
+
+{% endblock %}

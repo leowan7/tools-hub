@@ -18,6 +18,7 @@
         <a href="{{ url_for('jobs_list') }}" class="nav-link-public">My runs</a>
       {% endif %}
       <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
+      <a href="{{ url_for('help_index') }}" class="nav-link-public">Help</a>
       {% if session.get('user_email') %}
         {% if nav_wallet_usd is not none %}
           {% set _low = nav_wallet_usd < 5 %}

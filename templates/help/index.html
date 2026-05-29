@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Help and docs — Ranomics Tools{% endblock %}
+{% block description %}Help center for Ranomics Tools. Getting started, per-tool guides, billing FAQ, and troubleshooting for the GPU protein design hub.{% endblock %}
+
+{% block content %}
+  {% include "help/_help_nav.html" with context %}
+
+  <div class="hero">
+    <h1>Help and docs</h1>
+    <p class="subtitle">
+      Everything you need to run a binder design on Ranomics Tools, from
+      first signup to sending a shortlist to the wet lab.
+    </p>
+  </div>
+
+  {# ─── Start here ─────────────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Start here</span>
+      <h2 class="section-title">New to the platform</h2>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <h3 class="why-card-title">Getting started</h3>
+        <p class="why-card-body">
+          Create an account, add funds, pick a tool, and read your first
+          set of results. A step by step walkthrough of one full run.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="{{ url_for('help_getting_started') }}" class="btn-secondary">Read the guide</a>
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Pricing and billing</h3>
+        <p class="why-card-body">
+          You top up a USD wallet and pay per second of compute. No
+          subscriptions, no seats. See how holds and final charges work.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="{{ url_for('pricing') }}" class="btn-secondary">See pricing</a>
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Compare the tools</h3>
+        <p class="why-card-body">
+          Not sure which model fits your target. Browse all tools side by
+          side with typical runtimes and what each one is built for.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="{{ url_for('tools_comparison') }}" class="btn-secondary">All tools</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
+  {# ─── Per-tool guides ────────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Per-tool guides</span>
+      <h2 class="section-title">Guides for each tool</h2>
+      <p class="section-lede">
+        What every tool is for, the inputs it needs, and how to read the
+        scores it returns.
+      </p>
+    </div>
+    {% set tool_labels = [
+      ('mpnn', 'ProteinMPNN', 'Sequence design for an existing backbone.'),
+      ('af2', 'AlphaFold 2', 'Single-chain and complex structure prediction.'),
+      ('colabfold', 'ColabFold', 'AlphaFold with a fast MSA search step.'),
+      ('esmfold', 'ESMFold', 'Fast single-sequence structure prediction.'),
+      ('rfdiffusion', 'RFdiffusion', 'De novo binder backbones scored by AF2.'),
+      ('rfantibody', 'RFantibody', 'Antibody and nanobody scaffold design.'),
+      ('bindcraft', 'BindCraft', 'Hallucination-driven de novo binders.'),
+      ('boltzgen', 'BoltzGen', 'Generative binder design with co-folding.'),
+      ('pxdesign', 'PXDesign', 'AF2 initial-guess binder scoring.')
+    ] %}
+    <div class="why-grid">
+      {% for slug, label, blurb in tool_labels %}
+        <article class="why-card">
+          <h3 class="why-card-title">{{ label }}</h3>
+          <p class="why-card-body">{{ blurb }}</p>
+          <p style="margin-top: 0.85rem;">
+            <a href="{{ url_for('help_tool_guide', tool=slug) }}" class="btn-secondary">Open guide</a>
+          </p>
+        </article>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ─── Reference ──────────────────────────────────────────────────── #}
+  <section class="section">
+    <div class="section-head">
+      <span class="section-eyebrow">Reference</span>
+      <h2 class="section-title">FAQ and fixes</h2>
+    </div>
+    <div class="why-grid">
+      <article class="why-card">
+        <h3 class="why-card-title">FAQ</h3>
+        <p class="why-card-body">
+          Billing, accounts, data and privacy, run times, what a design is,
+          and what the scores mean.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Troubleshooting</h3>
+        <p class="why-card-body">
+          Common problems and how to fix them, from PDB validation errors
+          to a blank 3D viewer.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="{{ url_for('help_troubleshooting') }}" class="btn-secondary">See fixes</a>
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">Contact support</h3>
+        <p class="why-card-body">
+          Still stuck or have a question the docs do not answer. Email the
+          team and we will help.
+        </p>
+        <p style="margin-top: 0.85rem;">
+          <a href="mailto:{{ support_email }}" class="btn-secondary">Email support</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
+{% endblock %}

@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block title %}Troubleshooting — Ranomics Tools{% endblock %}
+{% block description %}Fixes for common Ranomics Tools problems: PDB validation errors, chains not found, failed or timed out jobs, a blank 3D viewer, and a low wallet balance.{% endblock %}
+
+{% block content %}
+  {% include "help/_help_nav.html" with context %}
+
+  <div class="hero">
+    <h1>Troubleshooting</h1>
+    <p class="subtitle">
+      Common problems and how to fix them. If a fix does not work, email
+      support and we will look at the job with you.
+    </p>
+  </div>
+
+  <section class="section">
+    <div class="panel">
+      <div class="panel-body">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.92rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+              <th style="padding: 0.6rem 0.5rem; width: 30%;">Problem</th>
+              <th style="padding: 0.6rem 0.5rem;">Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">PDB validation failed or no atoms found</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                The uploaded file is not a parseable structure or has no atom
+                records. Re-export a clean PDB or mmCIF from your viewer, make
+                sure it contains ATOM lines, and upload the structure rather
+                than a header-only or truncated file.
+                <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Chain not found</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                The chain ID you entered is not in the file. Open the structure
+                and check the exact chain labels, which are case sensitive, then
+                enter one that exists. If your file has a single unnamed chain,
+                rename it before upload.
+                <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Job failed or pipeline error</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                Run a smoke run of the same tool first to confirm your inputs
+                are accepted, then reduce the scale and resubmit. If a smoke run
+                also fails, the inputs are the likely cause. Send us the job ID
+                and we will check the logs.
+                <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Job timed out</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                The run exceeded its time budget, usually from too large a
+                design count or an oversized target. Lower the number of
+                designs or trim the input to the relevant chains, then resubmit
+                at a smaller scale.
+                <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">3D viewer blank</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                Reload the job page and let the viewer finish loading before you
+                interact with it. If it stays blank, try a different browser or
+                disable extensions that block WebGL, since the viewer needs
+                hardware acceleration.
+                <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Wallet balance too low</td>
+              <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
+                The estimated cost of the job is above your available balance.
+                Top up your wallet, the minimum top-up is $20, then resubmit.
+                You can also pick a smaller preset to lower the estimate.
+                <br><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a>
+                &middot;
+                <a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
+      <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+      <a href="mailto:{{ support_email }}" class="btn-secondary">Contact support</a>
+    </div>
+  </section>
+
+{% endblock %}

@@ -1,0 +1,20 @@
+{# Compact cross-nav for the help section. Included at the top of each
+   help page. `help_active` (string) optionally marks the current page so
+   its link is rendered as plain text rather than a clickable link. #}
+<nav class="help-nav" aria-label="Help navigation"
+     style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem;">
+  {% set _pages = [
+    ('help_index', 'Overview'),
+    ('help_getting_started', 'Getting started'),
+    ('help_faq', 'FAQ'),
+    ('help_troubleshooting', 'Troubleshooting')
+  ] %}
+  {% for endpoint, label in _pages %}
+    {% if help_active == endpoint %}
+      <span class="btn-secondary" aria-current="page"
+            style="opacity: 0.6; pointer-events: none;">{{ label }}</span>
+    {% else %}
+      <a class="btn-secondary" href="{{ url_for(endpoint) }}">{{ label }}</a>
+    {% endif %}
+  {% endfor %}
+</nav>
