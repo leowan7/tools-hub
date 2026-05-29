@@ -73,6 +73,14 @@ def validate(
 
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
 
+    raw_num_designs = (form.get("num_designs") or "2").strip()
+    try:
+        num_designs = int(raw_num_designs)
+    except (TypeError, ValueError):
+        return None, "Number of designs must be an integer."
+    if num_designs < 1 or num_designs > 5:
+        return None, "Number of designs must be between 1 and 5."
+
     return (
         {
             "preset": preset,
@@ -80,6 +88,7 @@ def validate(
             "hotspot_residues": hotspot_residues,
             "framework": framework,
             "cdr_lengths": cdr_lengths,
+            "num_designs": num_designs,
             "target": f"Your uploaded PDB (chain {target_chain})",
         },
         None,
@@ -116,7 +125,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
         "parameters": {
             "framework": inputs["framework"],
             "cdr_lengths": inputs["cdr_lengths"],
-            "num_designs": 2,
+            "num_designs": inputs["num_designs"],
         },
     }
 
@@ -152,8 +161,8 @@ adapter = ToolAdapter(
             label="Pilot — your target, ~30 min",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
-                "1-2 final candidates; results emailed when run completes "
-                "(~15-60 min on A100-40GB)."
+                "1-5 final candidates (your choice); results emailed when "
+                "run completes (~15-60 min on A100-40GB)."
             ),
             requires_pdb=True,
             long_running=True,

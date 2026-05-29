@@ -247,6 +247,13 @@
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               CDR length spec (e.g. <code>H1:8,H2:7,H3:10-16</code>). Ranges allowed on H3.
             </div>
+
+            <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+            <input type="number" name="num_designs" id="num_designs" min="1" max="5" {{ pre_value(pre_fill, "num_designs", "2") }}
+                   style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              How many candidates to design (1-5). Each is independently folded and scored by RoseTTAFold-2 (pLDDT, pAE, ipAE).
+            </div>
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
