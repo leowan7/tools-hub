@@ -6,15 +6,9 @@ Composite pipeline: RFdiffusion backbone generation + ProteinMPNN
 sequence design + JAX AF2 multimer validation. Candidates carry real
 ipTM / pLDDT / i_pAE statistics from the AF2 model.
 
-Known-good on commit ``d83335c`` (Bug 8 unblock). Mini_pilot wallclock
-~6 min on warm cache, ~17 min cold.
-
-The mini_pilot tier uses the baked ``/opt/smoke_target.pdb`` (PD-L1
-IgV) and ignores caller-supplied PDBs -- the form presents this as a
-"reference-target demo" with no PDB upload. Pilot tier accepts a
+Known-good on commit ``d83335c`` (Bug 8 unblock). Pilot tier accepts a
 caller-supplied target PDB plus hotspots and runs on the webhook flow
-(~15-30 min on A100-40GB). Both tiers run the full composite with real
-AF2 multimer scoring.
+(~15-30 min on A100-40GB).
 """
 
 from __future__ import annotations
@@ -36,8 +30,8 @@ preset_runtime_rows = _meta.preset_runtime_rows
 def _parse_binder_length(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[str]]:
     """Coerce binder_length_min / binder_length_max into a {min, max} dict.
 
-    Defaults to {min: 55, max: 65} -- mirrors the Kendrew mini_pilot_preset.
-    Range bounds: 30-150 residues, min <= max.
+    Defaults to {min: 55, max: 65}. Range bounds: 30-150 residues,
+    min <= max.
     """
     raw_min = (form.get("binder_length_min") or "55").strip()
     raw_max = (form.get("binder_length_max") or "65").strip()
@@ -58,26 +52,13 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the Kendrew RFdiffusion job_spec shape.
 
-    The mini_pilot tier ignores the caller's job_spec at the pipeline
-    level (the Kendrew ``mini_pilot_preset`` overrides everything), but
-    the form still accepts ``binder_length`` so the cosmetic field
-    appears in results metadata. Pilot tier requires the caller PDB,
-    target chain, and hotspot residues.
+    Pilot tier requires the caller PDB, target chain, and hotspot
+    residues.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"mini_pilot", "pilot"}:
+    preset = (form.get("preset") or "pilot").strip() or "pilot"
+    if preset != "pilot":
         return None, "Pick a preset."
 
-    if preset == "mini_pilot":
-        return (
-            {
-                "preset": preset,
-                "target": "PD-L1 IgV (residues 18-132, chain A)",
-            },
-            None,
-        )
-
-    # pilot tier -- real target supplied by caller
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
@@ -124,28 +105,11 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec that RFdiffusion's run_pipeline.py expects.
 
-    Mini_pilot uses the baked PD-L1 fixture; the pipeline ignores these
-    caller fields and applies its own preset. The shape is sent anyway
-    for forward-compat with future tier-aware handling. Pilot tier sends
-    the caller target chain, hotspots, binder length range, and
-    num_designs -- the presigned URL is forwarded separately by the
-    generic submit route via ``input_pdb_url`` on the top-level payload.
+    Pilot tier sends the caller target chain, hotspots, binder length
+    range, and num_designs -- the presigned URL is forwarded separately
+    by the generic submit route via ``input_pdb_url`` on the top-level
+    payload.
     """
-    preset = inputs["preset"]
-
-    if preset == "mini_pilot":
-        return {
-            "target_chain": "A",
-            "hotspot_residues": [],
-            "parameters": {
-                "num_designs": 2,
-                "diffusion_steps": 50,
-                "skip_af2": False,
-                "binder_length": {"min": 55, "max": 65},
-            },
-        }
-
-    # pilot tier
     return {
         "target_chain": inputs["target_chain"],
         "hotspot_residues": inputs["hotspot_residues"],
@@ -164,19 +128,9 @@ adapter = ToolAdapter(
     blurb=(
         "Composite binder design: RFdiffusion backbones + ProteinMPNN "
         "sequences + AF2 multimer validation. Candidates carry real "
-        "ipTM / pLDDT / i_pAE scores. Mini_pilot ~7 min warm; "
-        "pilot ~15-30 min on caller targets."
+        "ipTM / pLDDT / i_pAE scores. Pilot ~15-30 min on caller targets."
     ),
     presets=(
-        Preset(
-            slug="mini_pilot",
-            label="Preview -- 2 designs",
-            description=(
-                "Two ranked candidates against PD-L1 reference (~7 min). "
-                "Full composite with real AF2 multimer scoring "
-                "(ipTM / pLDDT / i_pAE)."
-            ),
-        ),
         Preset(
             slug="pilot",
             label="Pilot -- your target, ~30 min",
@@ -192,7 +146,7 @@ adapter = ToolAdapter(
     ),
     validate=validate,
     build_payload=build_payload,
-    requires_pdb=False,
+    requires_pdb=True,
     form_template="tools/rfdiffusion_form.html",
     results_partial="tools/rfdiffusion_results.html",
 )

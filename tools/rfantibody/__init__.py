@@ -1,14 +1,11 @@
 """RFantibody tool adapter.
 
 Modal app: ``ranomics-rfantibody-prod``. GPU: A100-40GB.
-Validation: 2x mini_pilot green on commit 64c4ab0 + code-check PASS on
-HEAD (VALIDATION-LOG.md).
 
-The mini_pilot tier uses the baked ``/opt/smoke_target.pdb`` (PD-L1
-IgV, chain A, residues 18-132) and ignores caller-supplied PDBs -- the
-form presents this as a "reference-target demo" and the form has no
-PDB upload. Pilot tier accepts a caller-uploaded target PDB plus
-hotspots and runs on the webhook flow (~15-60 min on A100-40GB).
+Pilot tier accepts a caller-uploaded target PDB plus hotspots and runs
+on the webhook flow (~15-60 min on A100-40GB). Only VHH (single-domain
+heavy-chain antibody) scaffolds are supported -- ProteinMPNN below
+only redesigns heavy-chain CDRs.
 """
 
 from __future__ import annotations
@@ -23,30 +20,14 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the Kendrew RFantibody job_spec shape.
 
-    At mini_pilot tier the pipeline ignores the caller's job_spec and
-    runs the baked target; we still accept a few fields so the form
-    feels like a real form. At pilot tier the caller supplies the target
-    PDB, chain, hotspots, framework, and CDR lengths.
+    The caller supplies the target PDB, chain, hotspots, and CDR
+    lengths. Framework is fixed to VHH (single-domain heavy-chain
+    antibody).
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"mini_pilot", "pilot"}:
+    preset = (form.get("preset") or "pilot").strip() or "pilot"
+    if preset != "pilot":
         return None, "Pick a preset."
 
-    if preset == "mini_pilot":
-        framework = (form.get("framework") or "VHH").strip().upper()
-        if framework not in {"VHH", "SCFV"}:
-            return None, "Framework must be VHH or scFv."
-        return (
-            {
-                "preset": preset,
-                "framework": framework,
-                # Pass-through metadata the results page can display.
-                "target": "PD-L1 IgV (residues 18-132, chain A)",
-            },
-            None,
-        )
-
-    # pilot tier -- real target supplied by caller
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
@@ -65,12 +46,6 @@ def validate(
     if not hotspot_residues:
         return None, "At least one hotspot residue is required."
 
-    framework_raw = (form.get("framework") or "VHH").strip()
-    framework_upper = framework_raw.upper()
-    if framework_upper not in {"VHH", "SCFV"}:
-        return None, "Framework must be VHH or scFv."
-    framework = "VHH" if framework_upper == "VHH" else "scFv"
-
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
 
     raw_num_designs = (form.get("num_designs") or "8").strip()
@@ -86,7 +61,6 @@ def validate(
             "preset": preset,
             "target_chain": target_chain,
             "hotspot_residues": hotspot_residues,
-            "framework": framework,
             "cdr_lengths": cdr_lengths,
             "num_designs": num_designs,
             "target": f"Your uploaded PDB (chain {target_chain})",
@@ -98,31 +72,15 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec RFantibody's run_pipeline.py expects.
 
-    At mini_pilot the hard-coded preset inside run_pipeline.py overrides
-    these fields, but we send the full shape anyway for forwards-compat.
-    At pilot tier the presigned_url is forwarded by the generic submit
-    route via ``_input_pdb_url`` -- this function does not embed it in
-    the returned dict.
+    The presigned_url is forwarded by the generic submit route via
+    ``_input_pdb_url`` -- this function does not embed it in the
+    returned dict.
     """
-    preset = inputs.get("preset", "")
-    if preset == "mini_pilot":
-        return {
-            "target_chain": "A",
-            "parameters": {
-                "framework": inputs.get("framework", "VHH"),
-                "cdr_lengths": "H1:8,H2:7,H3:10-13",
-                "num_designs": 2,
-            },
-            # Mini_pilot ignores hotspots but the pipeline validates shape.
-            "hotspot_residues": [54, 56, 115],
-        }
-
-    # pilot tier
     return {
         "target_chain": inputs["target_chain"],
         "hotspot_residues": inputs["hotspot_residues"],
         "parameters": {
-            "framework": inputs["framework"],
+            "framework": "VHH",
             "cdr_lengths": inputs["cdr_lengths"],
             "num_designs": inputs["num_designs"],
         },
@@ -131,28 +89,20 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="rfantibody",
-    label="RFantibody — VHH / scFv design",
+    label="RFantibody — VHH (nanobody) design",
     blurb=(
-        "Structure-based antibody binder design. Generates nanobody (VHH) "
-        "or scFv candidates against a target epitope, then validates the "
-        "fold with RoseTTAFold-2."
+        "Structure-based VHH (nanobody) binder design. Generates "
+        "single-domain antibody candidates against a target epitope, "
+        "then validates the fold with RoseTTAFold-2."
     ),
     presets=(
-        Preset(
-            slug="mini_pilot",
-            label="Preview — 2 designs",
-            description=(
-                "Two ranked candidates against PD-L1 reference target "
-                "(~7 min). Real diffusion steps + RF2 validation."
-            ),
-        ),
         Preset(
             slug="pilot",
             label="Pilot — your target, ~30 min",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
-                "up to 24 final candidates (your choice); results emailed when "
-                "run completes (~15-60 min on A100-40GB)."
+                "Up to 24 final VHH candidates (your choice); results "
+                "emailed when run completes (~15-60 min on A100-40GB)."
             ),
             requires_pdb=True,
             long_running=True,
@@ -160,7 +110,7 @@ adapter = ToolAdapter(
     ),
     validate=validate,
     build_payload=build_payload,
-    requires_pdb=False,
+    requires_pdb=True,
     form_template="tools/rfantibody_form.html",
     results_partial="tools/rfantibody_results.html",
 )

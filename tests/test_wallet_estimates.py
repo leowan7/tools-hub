@@ -172,61 +172,21 @@ def test_historical_path_respects_lookback_filter(patched_client):
 
 
 # ---------------------------------------------------------------------------
-# Per-tier override (cheap preview tiers)
+# Per-tier override (retained as a forward-compat hook; today every shipped
+# tier has an empty tier_gpu_seconds map, so this just asserts the fall-
+# through path keeps working.)
 # ---------------------------------------------------------------------------
 
 
-def test_mini_pilot_uses_tier_override(patched_client):
-    """A preview tier with a per-tier override ignores the pilot default."""
-    patched_client(None)
-    spec = TOOL_SPECS["boltzgen"]
-    override = spec.tier_gpu_seconds["mini_pilot"]
-    expected_raw = Decimal(str(override)) * Decimal(
-        str(GPU_USD_PER_SECOND[spec.gpu_class])
-    )
-    expected = (expected_raw * WALLET_MARKUP).quantize(Decimal("0.0001"))
-    estimate = estimated_cost_for_tool(None, "boltzgen", {"preset": "mini_pilot"})
-    assert estimate == expected
-    # And it must sit far below the pilot estimate — the over-reservation
-    # this override exists to prevent.
-    pilot = estimated_cost_for_tool(None, "boltzgen", {"preset": "pilot"})
-    assert estimate < pilot
-
-
-def test_mini_pilot_override_beats_tool_wide_p90(patched_client):
-    """Tool-wide p90 must not override the per-tier preview estimate.
-
-    The p90 view is not tier-aware and is dominated by heavy pilot runs,
-    so for a preview tier the per-tier bootstrap wins even when a large
-    p90 sample exists.
-    """
-    patched_client(
-        {
-            "tool_slug": "boltzgen",
-            "lookback_days": 30,
-            "p90_gpu_seconds": 5000.0,
-            "sample_size": 100,
-        }
-    )
-    spec = TOOL_SPECS["boltzgen"]
-    override = spec.tier_gpu_seconds["mini_pilot"]
-    expected_raw = Decimal(str(override)) * Decimal(
-        str(GPU_USD_PER_SECOND[spec.gpu_class])
-    )
-    expected = (expected_raw * WALLET_MARKUP).quantize(Decimal("0.0001"))
-    estimate = estimated_cost_for_tool(None, "boltzgen", {"preset": "mini_pilot"})
-    assert estimate == expected
-
-
 def test_tier_without_override_falls_through_to_default(patched_client):
-    """A preset with no per-tier override still uses p90/expected_gpu_seconds."""
+    """A preset with no per-tier override uses p90/expected_gpu_seconds."""
     patched_client(None)
     spec = TOOL_SPECS["mpnn"]  # no tier_gpu_seconds entries
     expected_raw = Decimal(str(spec.expected_gpu_seconds)) * Decimal(
         str(GPU_USD_PER_SECOND[spec.gpu_class])
     )
     expected = (expected_raw * WALLET_MARKUP).quantize(Decimal("0.0001"))
-    estimate = estimated_cost_for_tool(None, "mpnn", {"preset": "mini_pilot"})
+    estimate = estimated_cost_for_tool(None, "mpnn", {"preset": "pilot"})
     assert estimate == expected
 
 

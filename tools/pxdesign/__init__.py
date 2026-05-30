@@ -35,12 +35,7 @@ def validate(
     ``preview`` is a valid ``parameters.preset`` value, so the pilot
     tier translates to ``preview`` on the payload side.
     """
-    preset = (form.get("preset") or "").strip()
-    # PXDesign ships pilot only. mini_pilot stays hidden pending Kendrew
-    # pipeline fixes (see tools-hub/docs/VALIDATION-LOG.md: 2026-04-28
-    # mini_pilot FAIL — subprocess hung at 78.5% inside AF2-IG Protenix
-    # DDIM sampler; root cause is Kendrew docker/pxdesign/run_pipeline.py:1001
-    # inner 4500s subprocess timeout + unpinned upstream ColabDesign/PXDesign).
+    preset = (form.get("preset") or "pilot").strip() or "pilot"
     if preset != "pilot":
         return None, "Pick a preset."
 
@@ -121,8 +116,6 @@ adapter = ToolAdapter(
         "initial-guess mode against the target. Pilot ~30–60 min."
     ),
     presets=(
-        # mini_pilot tier hidden 2026-04-29 pending Kendrew pipeline fixes.
-        # Re-introduce once VALIDATION-LOG mini_pilot streak hits 2x GREEN.
         Preset(
             slug="pilot",
             label="Pilot — your target, ~45 min",
@@ -137,7 +130,7 @@ adapter = ToolAdapter(
     ),
     validate=validate,
     build_payload=build_payload,
-    requires_pdb=False,
+    requires_pdb=True,
     form_template="tools/pxdesign_form.html",
     results_partial="tools/pxdesign_results.html",
 )

@@ -38,8 +38,8 @@ from typing import Any, Callable, Mapping, Optional
 class Preset:
     """One selectable preset on a tool form."""
 
-    slug: str                    # ``smoke`` / ``mini_pilot`` / ``pilot`` / ``full``
-    label: str                   # e.g. "Smoke — your target, ~3 min"
+    slug: str                    # ``standalone`` / ``pilot`` / ``full``
+    label: str                   # e.g. "Pilot — your target, ~30 min"
     description: str             # subtitle shown under the option
     requires_pdb: bool = False   # if True, this preset needs a PDB upload + hotspots
     long_running: bool = False   # if True, render "we'll email you" UX (>5 min jobs)

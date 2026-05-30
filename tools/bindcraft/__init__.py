@@ -5,12 +5,10 @@ Modal app: ``ranomics-bindcraft-prod``. GPU: A100-80GB.
 caller can close the tab and receive the final results by email.
 
 BindCraft is structure-based de novo binder design built on
-JAX + AlphaFold2 multimer + ColabDesign. Unlike RFantibody, there
-is no baked reference target — every run requires a caller-supplied
-target PDB (``requires_pdb=True``). The only preset shipped today is
-``pilot`` (caller-controlled ``num_designs`` 1-24, default 8);
-mini_pilot is intentionally not offered because the BindCraft pipeline
-cost floor is ~45 min on A100-80GB regardless of design count.
+JAX + AlphaFold2 multimer + ColabDesign. Every run requires a
+caller-supplied target PDB (``requires_pdb=True``). The only preset
+shipped is ``pilot`` (caller-controlled ``num_designs`` 1-24,
+default 8).
 """
 
 from __future__ import annotations

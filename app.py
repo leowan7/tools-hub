@@ -260,9 +260,10 @@ def _build_tools_catalog() -> list[dict]:
             pass
 
         # Build the runtime band from whatever presets the adapter exposes
-        # (smoke was removed 2026-05-29; atomic tools now have a single
-        # standalone preset, composites have mini_pilot + pilot). Show the
-        # fastest preset's runtime through the slowest as a band.
+        # (smoke + mini_pilot tiers were removed 2026-05-29; atomic tools
+        # now have a single standalone preset, composites have pilot
+        # only). Show the fastest preset's runtime through the slowest
+        # as a band.
         runtime_band = "—"
         if meta is not None:
             runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}

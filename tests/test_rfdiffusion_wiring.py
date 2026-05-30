@@ -29,10 +29,10 @@ def test_adapter_registered():
 
 
 def test_preset_slugs_and_count():
-    """Two presets: mini_pilot, pilot. The smoke tier was removed."""
+    """One preset: pilot. Smoke + mini_pilot were removed 2026-05-29."""
     a = adapter_mod.adapter
     slugs = [p.slug for p in a.presets]
-    assert slugs == ["mini_pilot", "pilot"]
+    assert slugs == ["pilot"]
 
 
 def test_pilot_preset_marked_long_running_and_requires_pdb():
@@ -69,17 +69,11 @@ def test_preset_caps_present_for_all_tiers():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_rejects_missing_preset():
+def test_validate_rejects_empty_form():
+    """No preset / no hotspots — pilot tier rejects the empty submit."""
     inputs, err = adapter_mod.validate({}, {})
     assert inputs is None
     assert err is not None
-    assert "preset" in err.lower()
-
-
-def test_validate_mini_pilot_returns_baked_target():
-    inputs, err = adapter_mod.validate({"preset": "mini_pilot"}, {})
-    assert err is None
-    assert inputs["preset"] == "mini_pilot"
 
 
 def test_validate_pilot_requires_hotspots():
@@ -159,13 +153,6 @@ def test_validate_pilot_clamps_num_designs():
 # ---------------------------------------------------------------------------
 # build_payload shape (matches Kendrew job_spec)
 # ---------------------------------------------------------------------------
-
-
-def test_build_payload_mini_pilot_sets_skip_af2_false():
-    inputs = {"preset": "mini_pilot", "target": "(baked)"}
-    payload = adapter_mod.build_payload(inputs, presigned_url="")
-    assert payload["parameters"]["skip_af2"] is False
-    assert payload["parameters"]["num_designs"] == 2
 
 
 def test_build_payload_pilot_forwards_caller_fields():

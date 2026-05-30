@@ -3,13 +3,10 @@
 Modal app: ``ranomics-boltzgen-prod``. GPU: A100-40GB.
 
 BoltzGen uses the Boltz-2 model to generate binder backbones against a
-reference target, then scores each candidate for refolding RMSD, ipTM,
-and pLDDT. The mini_pilot tier uses the baked
-``/opt/smoke_target.pdb`` (PD-L1 IgV, chain A, residues 18-132) and
-ignores caller-supplied PDBs. The pilot tier accepts a caller-supplied
-target PDB, optional hotspot residues, and configurable binder-length
-window; it runs ~15-60 min on A100-40GB and emails results on
-completion.
+target, then scores each candidate for refolding RMSD, ipTM, and
+pLDDT. The pilot tier accepts a caller-supplied target PDB, optional
+hotspot residues, and configurable binder-length window; it runs
+~15-60 min on A100-40GB and emails results on completion.
 """
 
 from __future__ import annotations
@@ -34,40 +31,13 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the Kendrew BoltzGen job_spec shape.
 
-    Branches on preset:
-      - ``mini_pilot``: baked PD-L1 target, default binder length.
-      - ``pilot``: caller-supplied target PDB + hotspots + binder length.
+    Pilot tier requires caller-supplied target PDB + hotspots + binder
+    length.
     """
-    preset = (form.get("preset") or "").strip()
-    if preset not in {"mini_pilot", "pilot"}:
+    preset = (form.get("preset") or "pilot").strip() or "pilot"
+    if preset != "pilot":
         return None, "Pick a preset."
 
-    if preset == "mini_pilot":
-        binder_length_min = _parse_int(form.get("binder_length_min"), 50)
-        binder_length_max = _parse_int(form.get("binder_length_max"), 70)
-
-        if binder_length_min < 1 or binder_length_max < 1:
-            return None, "Binder length must be a positive integer."
-        if binder_length_min > binder_length_max:
-            return None, "Binder length min must be less than or equal to max."
-
-        protocol = (form.get("protocol") or "protein-anything").strip()
-        if protocol not in {"protein-anything"}:
-            return None, "Protocol must be protein-anything."
-
-        return (
-            {
-                "preset": preset,
-                "binder_length_min": binder_length_min,
-                "binder_length_max": binder_length_max,
-                "protocol": protocol,
-                # Pass-through metadata the results page can display.
-                "target": "PD-L1 IgV (residues 18-132, chain A)",
-            },
-            None,
-        )
-
-    # Pilot tier — real target.
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
@@ -116,36 +86,14 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the Kendrew job_spec BoltzGen's run_pipeline.py expects.
 
-    Branches on preset:
-      - ``mini_pilot``: baked target shape (hard-coded preset inside
-        run_pipeline.py overrides most fields, but we send the full
-        shape anyway for forwards-compat).
-      - ``pilot``: caller target; presigned URL is forwarded by the
-        generic submit route, not embedded here.
+    Caller target; presigned URL is forwarded by the generic submit
+    route, not embedded here.
     """
-    preset = inputs["preset"]
-
     # job_tier is also set at the wrapper level by gpu/modal_client.py, but we
     # echo it inside job_spec so older run_pipeline.py builds (which read
     # job_spec.get("job_tier")) still resolve the tier correctly. This is what
     # gates the pilot fallback that emits top-N designs when none pass the
     # strict ipTM/pLDDT/RMSD thresholds.
-    if preset == "mini_pilot":
-        return {
-            "job_tier": preset,
-            "target_chain": "A",
-            "parameters": {
-                "binder_length": {
-                    "min": inputs["binder_length_min"],
-                    "max": inputs["binder_length_max"],
-                },
-                "num_designs": 2,
-                "budget": 2,
-                "protocol": inputs["protocol"],
-            },
-            # Mini_pilot ignores hotspots but the pipeline validates shape.
-            "hotspot_residues": [],
-        }
 
     # Pilot tier. num_designs is the candidate population BoltzGen generates
     # and refolds (budget then selects the top-N to return). 1000 was the
@@ -179,14 +127,6 @@ adapter = ToolAdapter(
     ),
     presets=(
         Preset(
-            slug="mini_pilot",
-            label="Preview — 2 designs",
-            description=(
-                "~10 min, 2 candidates against PD-L1 reference, full "
-                "scoring pipeline."
-            ),
-        ),
-        Preset(
             slug="pilot",
             label="Pilot — your target, ~30 min",
             description=(
@@ -200,7 +140,7 @@ adapter = ToolAdapter(
     ),
     validate=validate,
     build_payload=build_payload,
-    requires_pdb=False,
+    requires_pdb=True,
     form_template="tools/boltzgen_form.html",
     results_partial="tools/boltzgen_results.html",
 )

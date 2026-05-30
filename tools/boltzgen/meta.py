@@ -23,7 +23,6 @@ from __future__ import annotations
 from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "mini_pilot": {"typical_minutes": "10"},
     "pilot": {"typical_minutes": "15-60"},
 }
 
@@ -82,7 +81,6 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "mini_pilot", "typical": "~10 min"},
         {"preset": "pilot", "typical": "15&ndash;60 min"},
     ],
     "output_summary": (

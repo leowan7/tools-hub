@@ -20,16 +20,8 @@
     <p class="subtitle" style="margin:0;">
       <strong>Zero candidates returned.</strong>
       PXDesign can return zero candidates when every generated backbone
-      fails the AF2-IG post-filter.
-      {% if tier_now in ('smoke', 'mini_pilot') %}
-        Try escalating to pilot tier for the full validator pipeline,
-        widening the binder length range, or refining hotspots for your
-        target.
-      {% else %}
-        Try widening the binder length range, refining hotspots for your
-        target, or running the smoke preset to bypass the post-filter and
-        confirm the pipeline reaches output stage.
-      {% endif %}
+      fails the AF2-IG post-filter. Try widening the binder length range
+      or refining hotspots for your target.
     </p>
   </div>
 {% endcall %}

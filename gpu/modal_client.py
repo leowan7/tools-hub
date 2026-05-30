@@ -22,9 +22,9 @@ Behaviour
 ---------
 Submit calls ``modal.Function.from_name("ranomics-<tool>-prod",
 "run_tool").spawn(payload)`` with the GPU pipeline webhook-roundtrip payload
-shape. For smoke and mini_pilot tiers the Modal function returns results
-inline via a ``smoke_result`` key, so tools-hub can poll the FunctionCall
-rather than wait for the webhook. For pilot and full tiers the Modal
+shape. Atomic tools return results inline via a ``smoke_result`` key, so
+tools-hub can poll the FunctionCall rather than wait for the webhook.
+For pilot and full tiers the Modal
 function POSTs to ``webhook_url`` — poll() still reports "running" but
 the webhook handler updates tool_jobs independently.
 
@@ -101,24 +101,16 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("esmfold", "standalone"):     360,
     ("esmfold", "fast"):           360,   # legacy alias — pre-D4 planning
     ("af2_ig", "standard"):        720,
-    # Composite pipelines — smoke tier (inline return, small preset).
-    ("bindcraft", "smoke"):         600,    # ~5-10 min on A100-80GB
-    ("bindcraft", "mini_pilot"):    1800,
+    # Composite pipelines. smoke + mini_pilot tiers were removed
+    # 2026-05-29; pilot is the only user-facing tier and full is reserved
+    # for AI Binder Sprint runs that go through the webhook flow.
     ("bindcraft", "pilot"):         7200,
     ("bindcraft", "full"):          14400,
-    ("rfantibody", "smoke"):        600,
-    ("rfantibody", "mini_pilot"):   900,
     ("rfantibody", "pilot"):        1800,
     ("rfantibody", "full"):         3600,
-    ("boltzgen", "smoke"):          900,
-    ("boltzgen", "mini_pilot"):     1200,
     ("boltzgen", "pilot"):          3600,
     ("boltzgen", "full"):           7200,
-    ("pxdesign", "smoke"):          1800,
-    ("pxdesign", "mini_pilot"):     5400,   # observed 35-40 min; 1800 was tight against outer timeout
     ("pxdesign", "pilot"):          3600,
-    ("rfdiffusion", "smoke"):       600,
-    ("rfdiffusion", "mini_pilot"):  1800,
     ("rfdiffusion", "pilot"):       1800,
     ("rfdiffusion", "full"):        3600,
 }

@@ -6,15 +6,15 @@ numbers drive the route gate, the form UI, and the mid-run safety kill.
 
 Estimate sources, in priority order:
 
-1. A per-tier ``gpu_seconds`` override (``ToolSpec.tier_gpu_seconds``)
-   for cheap preview tiers like ``mini_pilot``. Takes precedence over
-   p90 because the p90 view is tool-wide, not tier-aware, and is
-   dominated by the heavy pilot runs.
-2. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
+1. Per-tool historical p90 ``gpu_seconds`` over the last 30 days, when
    the tool has at least ``MIN_HISTORICAL_RUNS`` completed runs on
    record.
-3. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
+2. Tool author ``expected_gpu_seconds`` registered in :data:`TOOL_SPECS`
    (the pilot-tier default). Used for new tools without enough history.
+
+(``ToolSpec.tier_gpu_seconds`` remains in the dataclass for forward-
+compat with future cheap tiers; today every shipped tier falls through
+to historical p90 or the pilot default.)
 
 Parameter scaling: when the submitted ``params`` include a scaling
 parameter (``num_designs`` and friends), the base ``gpu_seconds`` is
@@ -81,11 +81,8 @@ class ToolSpec:
     ``absolute_cap_usd``.
 
     ``expected_gpu_seconds`` is the default (pilot-tier) bootstrap.
-    ``tier_gpu_seconds`` overrides it for cheaper preview tiers keyed by
-    preset slug (e.g. ``{"mini_pilot": 450}``). A preview tier runs a
-    fixed tiny job on the baked target, so it costs a small, stable
-    fraction of a pilot run; without a per-tier value it would inherit
-    the pilot-calibrated ``expected_gpu_seconds`` and over-reserve.
+    ``tier_gpu_seconds`` is retained as an empty override map for
+    forward-compat with future cheap tiers; today no tier uses it.
     """
 
     slug: str
@@ -146,10 +143,6 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("5.00"),
         absolute_cap_usd=Decimal("500.00"),
-        # mini_pilot ran 246-352 GPU-s in validation (VALIDATION-LOG.md);
-        # bootstrap just above observed so the preview tier stops
-        # inheriting the 1200s pilot default.
-        tier_gpu_seconds={"mini_pilot": 450.0},
     ),
     "rfantibody": ToolSpec(
         slug="rfantibody",
@@ -159,10 +152,6 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("13.00"),
         absolute_cap_usd=Decimal("500.00"),
-        # mini_pilot ran 166-264 GPU-s in validation (VALIDATION-LOG.md);
-        # bootstrap just above observed so the preview tier stops
-        # inheriting the 3600s pilot default.
-        tier_gpu_seconds={"mini_pilot": 350.0},
     ),
     "bindcraft": ToolSpec(
         slug="bindcraft",
@@ -195,10 +184,6 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("10.00"),
         absolute_cap_usd=Decimal("300.00"),
-        # The 5000s default is the pilot bootstrap; mini_pilot ran
-        # ~360 GPU-s in validation (VALIDATION-LOG.md). Without this the
-        # cheap preview tier reserved ~$8.74 and released the surplus.
-        tier_gpu_seconds={"mini_pilot": 450.0},
     ),
 }
 
@@ -241,10 +226,9 @@ def estimated_cost_for_tool(
         raw = Decimal("60") * Decimal(str(DEFAULT_USD_PER_SECOND))
         return _quantize_usd(raw * WALLET_MARKUP)
 
-    # Per-tier bootstrap overrides take precedence for cheap preview
-    # tiers: the historical p90 view is tool-wide (not tier-aware) and is
-    # dominated by heavy pilot runs, so using it for mini_pilot would
-    # reintroduce the over-reservation the override exists to prevent.
+    # Per-tier bootstrap overrides retained for forward-compat with future
+    # cheap tiers; today no tier sets one and we fall straight through to
+    # the historical p90 lookup.
     tier_override = spec.tier_gpu_seconds.get(preset)
     if tier_override is not None:
         base_seconds = float(tier_override)

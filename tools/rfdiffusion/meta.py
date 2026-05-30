@@ -46,12 +46,6 @@ example_output_id: str | None = None
 # ``PRESET_CAPS`` map in ``gpu/modal_client.py``.
 preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
-        "slug": "mini_pilot",
-        "label": "Preview",
-        "runtime": "~7 min",
-        "target": "PD-L1 IgV reference (baked)",
-    },
-    {
         "slug": "pilot",
         "label": "Pilot",
         "runtime": "15-30 min",
@@ -105,7 +99,6 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "mini_pilot", "typical": "~7 min"},
         {"preset": "pilot", "typical": "15&ndash;30 min"},
     ],
     "output_summary": (

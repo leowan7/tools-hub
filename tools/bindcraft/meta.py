@@ -24,9 +24,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Typical wall-clock per preset. BindCraft only ships a single ``pilot``
-# preset today; mini_pilot is intentionally not offered because the
-# pipeline cost floor is ~45 min on A100-80GB.
+# Typical wall-clock per preset. BindCraft ships only the ``pilot``
+# preset; the pipeline cost floor is ~45 min on A100-80GB.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "pilot": {"typical_minutes": "45"},
 }

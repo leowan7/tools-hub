@@ -27,7 +27,6 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "mini_pilot": {"typical_minutes": "7"},
     "pilot": {"typical_minutes": "15-60"},
 }
 
@@ -35,10 +34,9 @@ paper_citation: str = "Bennett et al., bioRxiv 2024"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.03.14.585103v2"
 github_url: str = "https://github.com/RosettaCommons/RFantibody"
 comparison_one_liner: str = (
-    "Pick RFantibody when you need an antibody scaffold (VHH or scFv) "
-    "against a target PDB. For de novo non-antibody binders, use "
-    "BindCraft. For designs involving modified residues or glycans, use "
-    "BoltzGen."
+    "Pick RFantibody when you need a VHH (nanobody) scaffold against a "
+    "target PDB. For de novo non-antibody binders, use BindCraft. For "
+    "designs involving modified residues or glycans, use BoltzGen."
 )
 example_output_id: Optional[str] = None
 
@@ -48,12 +46,12 @@ example_output_id: Optional[str] = None
 about: dict = {
     "what_it_is": (
         "RFantibody (Bennett et al., bioRxiv 2024). RoseTTAFold-derived "
-        "diffusion model that generates VHH (single-domain) and scFv "
-        "antibody scaffolds against a target. Outputs are scored with "
+        "diffusion model that generates VHH (single-domain heavy-chain "
+        "antibody) scaffolds against a target. Outputs are scored with "
         "AF2 re-prediction (pAE, pLDDT, ipAE)."
     ),
     "when_to_use": [
-        "You want an antibody scaffold (VHH or scFv) rather than a de novo mini-protein.",
+        "You want a VHH (nanobody) scaffold rather than a de novo mini-protein.",
         "Your downstream validation uses yeast display, mammalian display, or hybridoma workflows.",
         "Your target is a standard protein epitope without heavy glycosylation.",
     ],
@@ -63,15 +61,6 @@ about: dict = {
         "At least one hotspot residue defining the epitope face.",
     ],
     "inputs": [
-        {
-            "name": "Scaffold",
-            "explanation": (
-                "VHH (single-domain heavy-chain antibody) or scFv "
-                "(single-chain Fv with linked VH and VL). VHH is "
-                "smaller, easier to express; scFv has higher avidity "
-                "potential."
-            ),
-        },
         {
             "name": "Hotspot residues",
             "explanation": (
@@ -88,11 +77,10 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "mini_pilot", "typical": "~7 min"},
         {"preset": "pilot", "typical": "15&ndash;60 min"},
     ],
     "output_summary": (
-        "Ranked antibody candidates with pAE, pLDDT, ipAE, and "
+        "Ranked VHH candidates with pAE, pLDDT, ipAE, and "
         "downloadable PDBs. Filter at pAE &le; 5 / ipAE &le; 6 for "
         "downstream wet-lab work."
     ),

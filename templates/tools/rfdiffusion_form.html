@@ -198,19 +198,9 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          <label for="preset" class="label" style="display:block; padding: 0 0 0.4rem 0;">Preset</label>
-          <select name="preset" id="preset" required
-                  style="width: 100%; max-width: 420px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.6rem;">
-            {% for preset in adapter.presets %}
-              <option value="{{ preset.slug }}"
-                      {% if pre_fill and pre_fill.get('preset') == preset.slug %}selected{% elif loop.first and not (pre_fill and pre_fill.get('preset')) %}selected{% endif %}>
-                {{ preset.label }}
-              </option>
-            {% endfor %}
-          </select>
-          <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 58ch; margin: 0.25rem 0 1.25rem;" id="preset-description"></div>
+          <input type="hidden" name="preset" value="pilot">
 
-          <div id="pilot-fields" style="display: none;">
+          <div id="pilot-fields">
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
             {# Required (server-render) when no staged source. Toggled by
@@ -264,8 +254,8 @@
                      min="30" max="150" value="65" placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Range RFdiffusion samples within. Defaults match the Kendrew
-              mini_pilot preset (55-65 residues). 30-150 allowed.
+              Range RFdiffusion samples within. Default 55-65 residues
+              is a sane starting window for compact binders; 30-150 allowed.
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
@@ -279,11 +269,8 @@
             </div>
           </div>
 
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Preview tier uses our reference PD-L1 IgV (residues 18-132, chain A); no PDB upload needed.
-          </div>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Pilot tier runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed (~15-30 min on A100-40GB).
+            Runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed (~15-30 min on A100-40GB).
           </div>
 
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
@@ -296,44 +283,6 @@
 
     {{ about_panel(adapter, tool_about(adapter)) }}
   </div>
-
-  <script>
-    (function () {
-      var form = document.querySelector('form');
-      var presetSelect = document.getElementById('preset');
-      var pilotFields = document.getElementById('pilot-fields');
-      var descEl = document.getElementById('preset-description');
-      if (!form || !presetSelect) return;
-
-      var descriptions = {
-        {% for preset in adapter.presets %}
-          "{{ preset.slug }}": {{ preset.description|tojson }}{% if not loop.last %},{% endif %}
-        {% endfor %}
-      };
-
-      function sync() {
-        var value = presetSelect.value;
-        var isPilot = value === 'pilot';
-        if (pilotFields) {
-          pilotFields.style.display = isPilot ? 'block' : 'none';
-        }
-        // Toggle ``required`` on the file input so non-pilot submissions
-        // don't trip browser validation on a hidden empty input
-        // (orphan-row prevention 2026-04-30).
-        var fileInput = document.getElementById('target_pdb');
-        if (fileInput) {
-          var hasReuse = !!document.querySelector('input[name="reuse_pdb_token"]');
-          fileInput.required = isPilot && !hasReuse;
-        }
-        if (descEl) {
-          descEl.textContent = descriptions[value] || '';
-        }
-      }
-
-      presetSelect.addEventListener('change', sync);
-      sync();
-    })();
-  </script>
 
   {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
      production. The picker JS degrades gracefully if NGL fails to load --
