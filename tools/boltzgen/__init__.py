@@ -5,7 +5,8 @@ Modal app: ``ranomics-boltzgen-prod``. GPU: A100-40GB.
 BoltzGen uses the Boltz-2 model to generate binder backbones against a
 target, then scores each candidate for refolding RMSD, ipTM, and
 pLDDT. The pilot tier accepts a caller-supplied target PDB, optional
-hotspot residues, and configurable binder-length window; it runs
+hotspot residues, a configurable binder-length window, and a Boltz-2
+design protocol (mini-protein, nanobody, antibody, or peptide). Runs
 ~15-60 min on A100-40GB and emails results on completion.
 """
 
@@ -14,6 +15,17 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional
 
 from tools.base import Preset, ToolAdapter, register
+
+
+# Boltz-2 design protocols the wrapper forwards via ``--protocol``.
+# Mirrors the upstream BoltzGen CLI; protein-small_molecule is omitted
+# because the form does not yet collect a ligand input.
+ALLOWED_PROTOCOLS: frozenset[str] = frozenset({
+    "protein-anything",
+    "nanobody-anything",
+    "antibody-anything",
+    "peptide-anything",
+})
 
 
 def _parse_int(value: Any, default: int) -> int:
@@ -59,16 +71,26 @@ def validate(
     binder_length_min = _parse_int(form.get("binder_length_min"), 50)
     binder_length_max = _parse_int(form.get("binder_length_max"), 100)
 
-    if binder_length_min < 20 or binder_length_min > 200:
-        return None, "binder_length_min must be between 20 and 200."
-    if binder_length_max < 20 or binder_length_max > 200:
-        return None, "binder_length_max must be between 20 and 200."
+    # Lower floor of 10 leaves headroom for peptide-anything (typical
+    # 5-30 aa); upper bound of 200 covers nanobody and antibody-anything.
+    if binder_length_min < 10 or binder_length_min > 200:
+        return None, "binder_length_min must be between 10 and 200."
+    if binder_length_max < 10 or binder_length_max > 200:
+        return None, "binder_length_max must be between 10 and 200."
     if binder_length_min > binder_length_max:
         return None, "binder_length_min must be <= binder_length_max."
 
     budget = _parse_int(form.get("budget"), 8)
     if budget < 1 or budget > 24:
         return None, "budget must be between 1 and 24."
+
+    protocol = (form.get("protocol") or "protein-anything").strip()
+    if protocol not in ALLOWED_PROTOCOLS:
+        return None, (
+            "Protocol must be one of: "
+            + ", ".join(sorted(ALLOWED_PROTOCOLS))
+            + "."
+        )
 
     return (
         {
@@ -78,6 +100,7 @@ def validate(
             "binder_length_min": binder_length_min,
             "binder_length_max": binder_length_max,
             "budget": budget,
+            "protocol": protocol,
         },
         None,
     )
@@ -112,7 +135,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
             },
             "num_designs": 200,
             "budget": inputs["budget"],
-            "protocol": "protein-anything",
+            "protocol": inputs["protocol"],
         },
     }
 
@@ -121,9 +144,9 @@ adapter = ToolAdapter(
     slug="boltzgen",
     label="BoltzGen — structure + affinity design",
     blurb=(
-        "Boltz-2 binder design. Generates a binder backbone against a "
-        "target, refolds each candidate, and scores affinity via ipTM "
-        "and pLDDT."
+        "Boltz-2 binder design. Generates mini-protein, nanobody, "
+        "antibody, or peptide backbones against a target, refolds each "
+        "candidate, and scores affinity via ipTM and pLDDT."
     ),
     presets=(
         Preset(

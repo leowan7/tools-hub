@@ -30,9 +30,10 @@ paper_citation: str = "Wohlwend et al., MIT (2024)"
 paper_url: str = "https://github.com/jwohlwend/boltz"
 github_url: str = "https://github.com/jwohlwend/boltz"
 comparison_one_liner: str = (
-    "Pick BoltzGen when your target involves glycans, post-translational "
-    "modifications, or non-canonical residues. For standard protein-only "
-    "targets, BindCraft or RFantibody are faster and cheaper."
+    "Pick BoltzGen when you want one model that can design "
+    "mini-proteins, nanobodies, antibodies, or peptides against the "
+    "same target, or when your target involves glycans, "
+    "post-translational modifications, or non-canonical residues."
 )
 example_output_id: Optional[str] = None
 
@@ -44,10 +45,13 @@ about: dict = {
         "BoltzGen (Wohlwend et al., MIT 2024). Boltz-2 binder design "
         "&mdash; jointly generates a binder backbone against a target, "
         "refolds each candidate end-to-end, and scores affinity via "
-        "ipTM and pLDDT. Handles glycans, post-translational "
-        "modifications, and non-canonical residues natively."
+        "ipTM and pLDDT. Ships four design protocols (mini-protein, "
+        "nanobody, antibody, peptide) and handles glycans, "
+        "post-translational modifications, and non-canonical residues "
+        "natively."
     ),
     "when_to_use": [
+        "You want one model that can target the same epitope with mini-proteins, nanobodies, antibodies, or peptides.",
         "Your target has glycans, PTMs, modified residues, or non-canonical chemistry.",
         "You want refolding RMSD as a self-consistency signal alongside ipTM and pLDDT.",
         "You need ~5 to 60 min per run and a budget-tunable number of candidates.",
@@ -59,6 +63,17 @@ about: dict = {
     ],
     "inputs": [
         {
+            "name": "Protocol",
+            "explanation": (
+                "Boltz-2 design protocol. <code>protein-anything</code> "
+                "for general mini-protein binders, "
+                "<code>nanobody-anything</code> for VHH scaffolds, "
+                "<code>antibody-anything</code> for antibody scaffolds, "
+                "<code>peptide-anything</code> for short cyclic or "
+                "linear peptides."
+            ),
+        },
+        {
             "name": "Hotspot residues",
             "explanation": (
                 "Comma-separated target-chain residue indices the binder "
@@ -68,8 +83,10 @@ about: dict = {
         {
             "name": "Binder length (min/max)",
             "explanation": (
-                "Residue-count window for the generated binder. Default "
-                "55&ndash;65 is a good starting range for compact binders."
+                "Residue-count window for the generated binder. Typical "
+                "starting ranges: mini-protein 50&ndash;100, nanobody "
+                "110&ndash;130, antibody 110&ndash;200, peptide "
+                "5&ndash;30."
             ),
         },
         {
