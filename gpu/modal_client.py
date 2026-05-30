@@ -413,10 +413,23 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
     if isinstance(smoke, dict):
         status_raw = str(smoke.get("status") or "").upper()
         if status_raw == "COMPLETED":
+            # Unwrap smoke["output"] so job.result has the same flat shape
+            # as the webhook path (which already passes payload["output"]
+            # straight through). Without this, mini_pilot results were
+            # stored as {"status": "COMPLETED", "output": {"candidates": [...]}},
+            # and every results template doing job.result.get("candidates")
+            # saw nothing. Merge tier and gpu_seconds in so the templates
+            # that read those off output still see them.
+            output = smoke.get("output") or {}
+            if not isinstance(output, dict):
+                output = {}
+            for key in ("tier", "gpu_seconds", "runtime_seconds"):
+                if key in smoke and key not in output:
+                    output[key] = smoke[key]
             return {
                 "status": "succeeded",
-                "result": smoke,
-                "gpu_seconds_used": smoke.get("runtime_seconds"),
+                "result": output,
+                "gpu_seconds_used": smoke.get("runtime_seconds") or smoke.get("gpu_seconds"),
                 "error": None,
             }
         if status_raw == "FAILED":
