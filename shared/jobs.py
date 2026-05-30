@@ -40,6 +40,34 @@ TERMINAL_STATUSES = frozenset(
 )
 
 
+def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
+    """Unwrap the legacy smoke/mini_pilot result wrapper at read time.
+
+    The inline smoke/mini_pilot path returned a `{"status": "COMPLETED",
+    "output": {"candidates": [...]}, "tier": ..., "gpu_seconds": ...}`
+    dict, and the old `_interpret_pipeline_return` stored it raw as
+    `tool_jobs.result`. Every template and helper that reads
+    `job.result.get("candidates")` then saw nothing because candidates
+    were nested under `result.output.candidates`. `_interpret_pipeline_return`
+    now unwraps for new jobs, but rows persisted before that fix still
+    have the wrapped shape. Normalize on read so every consumer (template
+    render, PDB resolver, CSV/FASTA export, completion email) sees the
+    flat shape regardless of when the row was written.
+    """
+    if not isinstance(result, dict):
+        return result
+    if result.get("candidates"):
+        return result
+    nested = result.get("output")
+    if not isinstance(nested, dict) or not nested.get("candidates"):
+        return result
+    merged = dict(nested)
+    for key in ("tier", "gpu_seconds", "runtime_seconds"):
+        if key in result and key not in merged:
+            merged[key] = result[key]
+    return merged
+
+
 @dataclass(frozen=True)
 class ToolJob:
     """Immutable view of a tool_jobs row. Use ``to_dict()`` for templates."""
@@ -68,7 +96,7 @@ class ToolJob:
             preset=row["preset"],
             status=row["status"],
             inputs=row.get("inputs") or {},
-            result=row.get("result"),
+            result=_normalize_result_shape(row.get("result")),
             error=row.get("error"),
             modal_function_call_id=row.get("modal_function_call_id"),
             job_token=row["job_token"],

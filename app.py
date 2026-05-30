@@ -2851,29 +2851,6 @@ def create_app() -> Flask:
         job = get_job(job_id, user_id=ctx.user_id)
         if job is None:
             return render_template("404.html"), 404
-
-        # Normalize the legacy smoke/mini_pilot result shape so the per-tool
-        # results templates always see job.result.candidates at the top
-        # level. Older inline returns nested candidates under
-        # result.output.candidates (a bug in _interpret_pipeline_return now
-        # fixed for new jobs, but existing succeeded rows still have the
-        # wrapped shape). Merge tier/gpu_seconds back in so the templates
-        # that read those off output still see them.
-        if (
-            job.status == "succeeded"
-            and isinstance(job.result, dict)
-            and not job.result.get("candidates")
-            and isinstance(job.result.get("output"), dict)
-            and job.result["output"].get("candidates")
-        ):
-            import dataclasses  # noqa: PLC0415
-            nested = job.result["output"]
-            merged = dict(nested)
-            for key in ("tier", "gpu_seconds", "runtime_seconds"):
-                if key in job.result and key not in merged:
-                    merged[key] = job.result[key]
-            job = dataclasses.replace(job, result=merged)
-
         adapter = tool_base.get(job.tool)
         preset_obj = adapter.preset_for(job.preset) if adapter else None
 
