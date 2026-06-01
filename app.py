@@ -41,11 +41,13 @@ import json
 
 from flask import (
     Flask,
+    Response,
     g,
     jsonify,
     redirect,
     render_template,
     request,
+    send_from_directory,
     session,
     url_for,
 )
@@ -677,6 +679,19 @@ def create_app() -> Flask:
                 os.environ.get("SUPPORT_EMAIL", "info@ranomics.com").strip()
                 or "info@ranomics.com"
             ),
+            # Analytics keys for templates/base.html. Empty in dev/staging
+            # so the snippets render no-ops unless the env vars are set.
+            "posthog_key": os.environ.get("POSTHOG_KEY", "").strip(),
+            "posthog_host": os.environ.get(
+                "POSTHOG_HOST", "https://us.i.posthog.com"
+            ).strip(),
+            "ga4_measurement_id": os.environ.get(
+                "GA4_MEASUREMENT_ID", ""
+            ).strip(),
+            # Per-page canonical URL override. Routes that need a non-default
+            # canonical (e.g. a paginated index canonicalized to page 1) can
+            # pass canonical_url=... in render_template kwargs.
+            "canonical_url": None,
         }
         if not email:
             return base
@@ -1223,6 +1238,80 @@ def create_app() -> Flask:
     @flask_app.route("/privacy", methods=["GET"])
     def privacy():
         return render_template("legal/privacy.html")
+
+    @flask_app.route("/robots.txt", methods=["GET"])
+    def robots_txt():
+        """Serve the static robots.txt from /static/ at the URL root.
+
+        Search engines fetch /robots.txt, not /static/robots.txt, so we
+        need an explicit route that maps one to the other.
+        """
+        return send_from_directory(
+            flask_app.static_folder, "robots.txt", mimetype="text/plain"
+        )
+
+    @flask_app.route("/sitemap.xml", methods=["GET"])
+    def sitemap_xml():
+        """Emit a sitemap listing every public, crawlable URL.
+
+        Sources of truth:
+          * Static URLs are enumerated below in ``_static_paths``.
+          * Per-tool help pages are pulled from ``tool_base.all_adapters()``
+            so newly enabled tools appear automatically.
+        Tool run forms (``/tools/<slug>``) are NOT listed because they
+        currently require login and serve a redirect to crawlers.
+        """
+        from datetime import datetime, timezone  # noqa: PLC0415
+
+        base = request.url_root.rstrip("/")
+        today = datetime.now(timezone.utc).date().isoformat()
+
+        _static_paths = [
+            "/",
+            "/tools",
+            "/pricing",
+            "/help",
+            "/help/getting-started",
+            "/help/faq",
+            "/help/troubleshooting",
+            "/scout",
+            "/terms",
+            "/privacy",
+        ]
+
+        urls: list[tuple[str, str, str]] = []
+        # (loc, changefreq, priority)
+        for path in _static_paths:
+            priority = "1.0" if path == "/" else "0.7"
+            urls.append((f"{base}{path}", "weekly", priority))
+
+        # Per-tool help guides.
+        try:
+            for adapter in tool_base.all_adapters():
+                if not tool_enabled(adapter.slug):
+                    continue
+                urls.append(
+                    (f"{base}/help/tools/{adapter.slug}", "monthly", "0.6")
+                )
+        except Exception:
+            logger.warning("sitemap: failed to enumerate tool adapters", exc_info=True)
+
+        # Render manually — Flask's jsonify + render_template are overkill
+        # for a fixed XML shape and the templating cost isn't worth it.
+        lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        ]
+        for loc, freq, priority in urls:
+            lines.append("  <url>")
+            lines.append(f"    <loc>{loc}</loc>")
+            lines.append(f"    <lastmod>{today}</lastmod>")
+            lines.append(f"    <changefreq>{freq}</changefreq>")
+            lines.append(f"    <priority>{priority}</priority>")
+            lines.append("  </url>")
+        lines.append("</urlset>")
+
+        return Response("\n".join(lines), mimetype="application/xml")
 
     @flask_app.route("/billing/checkout", methods=["GET"])
     @login_required

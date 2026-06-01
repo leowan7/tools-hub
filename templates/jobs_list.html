@@ -72,6 +72,7 @@
           </nav>
         {% endif %}
       {% else %}
+        {% set _has_starter_credit = nav_wallet_usd is not none and nav_wallet_usd > 0 %}
         <div style="display: flex; flex-direction: column; align-items: center; text-align: center; padding: 2.5rem 1rem;">
           <svg width="100" height="100" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="margin-bottom: 1.25rem;">
             <ellipse cx="50" cy="58" rx="38" ry="10" stroke="var(--border)" stroke-width="1.5" fill="none"/>
@@ -81,27 +82,39 @@
             <circle cx="54" cy="52" r="2" fill="var(--border)"/>
             <circle cx="62" cy="46" r="2.5" fill="var(--border)"/>
           </svg>
-          <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">Run your first job to see it here.</h2>
-          <p class="subtitle" style="margin: 0 0 1.75rem 0;">Three steps to your first set of designs.</p>
+
+          {% if _has_starter_credit %}
+            <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">You have ${{ '%.2f'|format(nav_wallet_usd) }} in your wallet. Pick a tool to run your first design.</h2>
+            <p class="subtitle" style="margin: 0 0 1.75rem 0;">Free tools (Epitope Scout, Developability Scout, Library Planner) cost nothing. GPU tools start from a few cents per run.</p>
+          {% else %}
+            <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">Run your first job to see it here.</h2>
+            <p class="subtitle" style="margin: 0 0 1.75rem 0;">Three steps to your first set of designs.</p>
+          {% endif %}
 
           <ol style="list-style: none; counter-reset: start-step; padding: 0; margin: 0 0 1.75rem 0; text-align: left; width: 100%; max-width: 32rem; display: flex; flex-direction: column; gap: 0.75rem;">
             <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
               <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">1</span>
-              <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Add funds</strong>
-              <span style="color: var(--text-secondary); font-size: 0.9rem;">Top up your USD wallet. The minimum top-up is $20.</span>
-              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
-            </li>
-            <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
-              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">2</span>
               <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Pick a tool</strong>
               <span style="color: var(--text-secondary); font-size: 0.9rem;">Browse the catalog and choose the model that fits your target.</span>
               <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('tools_comparison') }}" style="color: var(--accent-text);">Browse all tools</a></span>
             </li>
             <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
-              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">3</span>
+              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">2</span>
               <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Submit a run</strong>
               <span style="color: var(--text-secondary); font-size: 0.9rem;">Upload your inputs, confirm the cost, and watch live progress here.</span>
               <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('help_getting_started') }}" style="color: var(--accent-text);">Read the getting started guide</a></span>
+            </li>
+            <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
+              <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">3</span>
+              {% if _has_starter_credit %}
+                <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Top up when you need more</strong>
+                <span style="color: var(--text-secondary); font-size: 0.9rem;">Add funds once your free credit runs low. Minimum top-up is $20.</span>
+                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
+              {% else %}
+                <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Add funds</strong>
+                <span style="color: var(--text-secondary); font-size: 0.9rem;">Top up your USD wallet. The minimum top-up is $20.</span>
+                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
+              {% endif %}
             </li>
           </ol>
 

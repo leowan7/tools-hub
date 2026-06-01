@@ -1,0 +1,35 @@
+# Ranomics Tools (tools.ranomics.com) — crawl directives
+#
+# Public surfaces (homepage, comparison page, pricing, help guides,
+# Epitope Scout) are open to crawlers. User-state and auth surfaces
+# are blocked because they're per-user and behind login redirects.
+
+User-agent: *
+Allow: /
+Allow: /tools
+Allow: /pricing
+Allow: /help
+Allow: /help/
+Allow: /scout
+Allow: /terms
+Allow: /privacy
+
+Disallow: /account
+Disallow: /account/
+Disallow: /workspaces
+Disallow: /workspaces/
+Disallow: /jobs
+Disallow: /jobs/
+Disallow: /campaigns
+Disallow: /campaigns/
+Disallow: /admin
+Disallow: /admin/
+Disallow: /login
+Disallow: /signup
+Disallow: /logout
+Disallow: /forgot-password
+Disallow: /reset-password
+Disallow: /billing/
+Disallow: /api/
+
+Sitemap: https://tools.ranomics.com/sitemap.xml
