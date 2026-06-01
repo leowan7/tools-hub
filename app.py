@@ -202,22 +202,22 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
 )
 
 
-# Maps each GPU tool slug to a workflow-stage category. The four
-# categories track the iteration loop scientists actually walk through:
-# scope a target, design binders against it, predict structures to
-# validate in silico, then check developability before ordering.
-# A flat 12-tile grid was visually noisy; grouping by stage makes the
-# workflow visible at a glance.
+# Maps each GPU tool slug to a workflow-stage category. The buckets
+# describe what each tool actually designs so a scientist scanning the
+# catalog can find the right scaffold class at a glance. The earlier
+# single "Design binders" bucket lumped six tools doing different jobs
+# (de novo minibinders vs antibody scaffolds vs sequence-on-backbone)
+# and forced readers to open each card to disambiguate.
 _TOOL_CATEGORIES: dict[str, str] = {
-    "mpnn": "Design binders",
-    "bindcraft": "Design binders",
-    "rfantibody": "Design binders",
-    "rfdiffusion": "Design binders",
-    "boltzgen": "Design binders",
-    "pxdesign": "Design binders",
-    "af2": "Predict structures",
-    "colabfold": "Predict structures",
-    "esmfold": "Predict structures",
+    "rfdiffusion": "De novo minibinders",
+    "bindcraft": "De novo minibinders",
+    "pxdesign": "De novo minibinders",
+    "rfantibody": "Antibodies (VHH)",
+    "boltzgen": "Dual capabilities (minibinder + antibody scaffolds)",
+    "mpnn": "Sequence on a backbone",
+    "af2": "Structure prediction",
+    "colabfold": "Structure prediction",
+    "esmfold": "Structure prediction",
 }
 
 
@@ -1173,11 +1173,15 @@ def create_app() -> Flask:
 
         # Match the grouped layout used by /tools — same categories,
         # same order, just rendered as wide tile sections instead of a
-        # comparison matrix.
+        # comparison matrix. Ordering walks the iteration loop:
+        # scope → design (4 scaffold-class buckets) → predict → QC.
         category_order = (
             "Scope the target",
-            "Design binders",
-            "Predict structures",
+            "De novo minibinders",
+            "Antibodies (VHH)",
+            "Dual capabilities (minibinder + antibody scaffolds)",
+            "Sequence on a backbone",
+            "Structure prediction",
             "Check developability",
             "Other",
         )
@@ -3001,11 +3005,15 @@ def create_app() -> Flask:
         catalog = _build_tools_catalog()
 
         # Group catalog into workflow-stage sections in a stable order.
-        # The order mirrors the iteration loop a scientist walks through.
+        # The order mirrors the iteration loop a scientist walks through:
+        # scope → design (4 scaffold-class buckets) → predict → QC.
         category_order = (
             "Scope the target",
-            "Design binders",
-            "Predict structures",
+            "De novo minibinders",
+            "Antibodies (VHH)",
+            "Dual capabilities (minibinder + antibody scaffolds)",
+            "Sequence on a backbone",
+            "Structure prediction",
             "Check developability",
             "Other",
         )

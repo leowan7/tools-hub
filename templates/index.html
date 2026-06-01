@@ -273,7 +273,7 @@
                 <div class="home-catalog-card-head">
                   <span class="home-catalog-card-name">{{ tool.name }}</span>
                 </div>
-                <p class="home-catalog-card-tagline">{{ tool.tagline }}</p>
+                <p class="home-catalog-card-tagline">{{ tool.comparison_one_liner if tool.comparison_one_liner and tool.comparison_one_liner != '—' else tool.tagline }}</p>
                 {% if tool.runtime_band and tool.runtime_band != '—' %}
                   <span class="home-catalog-card-meta">Runtime <strong>{{ tool.runtime_band }}</strong></span>
                 {% endif %}
