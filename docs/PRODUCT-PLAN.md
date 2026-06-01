@@ -13,7 +13,7 @@ Companion docs in this directory:
 
 Supplement Ranomics CRO income with self-serve computational tools — Tamarind Bio / Rowan / Ariax-style SaaS. Five findings shape the plan:
 
-1. **CPU tools are shippable now.** [`epitope-scout/`](../../epitope-scout/) is live at scout.ranomics.com (CPU, no paywall). [`tools-hub/`](../) is a Flask+Supabase scaffold already running on Railway via `Procfile`+`nixpacks.toml`. [`tools-hub-prototype/`](../../tools-hub-prototype/) contains a Binder Developability Scout (~70%) and Yeast Display Library Planner (~60%) — both CPU scoring engines a form away from shipping.
+1. **CPU tools are shippable now.** [`epitope-scout/`](../../epitope-scout/) is live at scout.ranomics.com (CPU, no paywall). [`tools-hub/`](../) is a Flask+Supabase scaffold already running on Railway via `Procfile`+`nixpacks.toml`. the Binder Developability Scout and Yeast Display Library Planner — both CPU scoring engines — have since shipped in `tools-hub/` with web forms, live at `/developability` and `/library-planner`.
 2. **Kendrew's Modal GPU layer is stronger than the README alone suggested.** Code + git-log audit: BindCraft, RFantibody, BoltzGen, and PXDesign are all GREEN with 2× consecutive passes on record. RFdiffusion is smoke-only pending JAX-cache remediation (`064266f` + `97ec005` landed; fresh mini_pilot run required because execution path changed). PXDesign is GREEN on `5f22eec` (cuDNN 9 fix + N=1 mini_pilot tweak) with real non-stub AF2-IG scores. **Re-validation for already-green pipelines means code-check against HEAD, not fresh GPU runs** — fresh runs are only owed where the execution path materially changed. Full verdicts in "Asset audit" below.
 3. **Users want primitives, not just pipelines.** A big chunk of Tamarind/Neurosnap revenue is standalone AF2, standalone ProteinMPNN, standalone ColabFold, standalone Boltz-2. None of these is a standalone Modal endpoint today — they are *installed* inside Kendrew's BindCraft / RFdiffusion / RFantibody images but have never been invoked alone. Each atomic tool is real engineering work: its own Dockerfile.modal, its own `run_pipeline.py` with preflight + smoke contract, its own Modal app, and its own staging validation. 1–2 days per primitive, not half a day. Dependencies are a solved problem because they already install and run inside the pipeline images.
 4. **The pricing gap is real** — $49–$599/mo sits empty between Neurosnap ($7–$80) and Tamarind ($50k+/yr).
@@ -134,9 +134,9 @@ Also in space: Chai Discovery, 310.ai, Profluent, BioLM, Ginkgo Model API, NVIDI
 | Asset | State | Validation | Revenue role |
 |---|---|---|---|
 | [`epitope-scout/`](../../epitope-scout/) | Live on Railway at scout.ranomics.com, CPU, free | 🟢 in production | **v1 subscription tool** |
-| [`tools-hub/`](../) | Flask + Supabase on Railway, shared auth with Scout | 🟢 hub live, tools stubbed | **v1 hub shell** |
-| [`tools-hub-prototype/`](../../tools-hub-prototype/) Developability Scout | 70% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |
-| [`tools-hub-prototype/`](../../tools-hub-prototype/) Library Planner | 60% scoring engine, CPU, CLI only | 🟢 algorithm works, no UI yet | **v1 free CPU tool** |
+| [`tools-hub/`](../) | Flask + Supabase on Railway, shared auth with Scout | 🟢 hub live, tools live | **v1 hub shell** |
+| [`tools-hub/tools/developability/`](../tools/developability/) Developability Scout | CPU scoring engine + web form | 🟢 live at `/developability` | **v1 free CPU tool** |
+| [`tools-hub/tools/library_planner/`](../tools/library_planner/) Library Planner | CPU scoring engine + web form | 🟢 live at `/library-planner` | **v1 free CPU tool** |
 | Protein-design pipelines repo **Composite-pipeline Modal apps** | 5 Modal apps deployed, shared `base_image.py`, smoke/mini_pilot tier contract | See next rows per tool | **v1+v2 paid GPU tools** |
 | ↳ BindCraft (`bindcraft_app.py`) | A100-80GB; full `pilot_preset()`, 4h timeout | 🟢 **GREEN** — validated end-to-end, no blockers | **Wave 2** |
 | ↳ RFdiffusion (`rfdiffusion_app.py`) | A100-40GB; smoke + mini_pilot presets | 🟡 **YELLOW** — smoke passes; mini_pilot blocked by JAX XLA JIT cold-start. Commits `064266f` + `97ec005` may have resolved it — re-validate. See `blocker-rfdiffusion.md` in the protein-design pipelines repo. | Wave 2 smoke-tier; Wave 3 full |

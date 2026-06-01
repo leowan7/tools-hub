@@ -19,8 +19,8 @@ exposes a small stable API that `app.py` imports lazily.
 | BoltzGen | Live | `/tools/boltzgen` |
 | RFantibody | Live | `/tools/rfantibody` |
 | PXDesign | Live | `/tools/pxdesign` |
-| Binder Developability Scout | Coming soon | `/developability` |
-| Yeast Display Library Planner | Coming soon | `/library-planner` |
+| Binder Developability Scout | Live | `/developability` |
+| Yeast Display Library Planner | Live | `/library-planner` |
 
 ## Architecture
 
