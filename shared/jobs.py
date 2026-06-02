@@ -185,15 +185,42 @@ def create_job(
         # wallet pivot; pricing lives in shared/wallet_estimates.py now.
         "credits_cost": 0,
         "job_token": generate_job_token(),
-        "campaign_label": label,
     }
+    # Only include campaign_label when the user actually set one. The
+    # column ships in migration 0022; older databases that have not yet
+    # had that migration applied 400 on any row that includes the key.
+    # When ``label`` is None the column default (NULL) applies once 0022
+    # lands, so skipping the key is semantically identical.
+    if label is not None:
+        row["campaign_label"] = label
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
         if not rows:
             return None
         return ToolJob.from_row(rows[0])
-    except Exception:
+    except Exception as exc:
+        # 0022 schema gap: if the row carries campaign_label but the column
+        # is missing in prod, retry without it so labeled submissions still
+        # land (just under the "Uncategorized" group on /jobs) until the
+        # migration runs. PGRST204 / 42703 are the matching error codes.
+        msg = repr(exc)
+        if "campaign_label" in msg and "label" in row:
+            logger.warning(
+                "tool_jobs.campaign_label missing in prod schema — "
+                "retrying insert without it (migration 0022 pending)."
+            )
+            row.pop("campaign_label", None)
+            try:
+                response = client.table(_TABLE).insert(row).execute()
+                rows = list(getattr(response, "data", None) or [])
+                if rows:
+                    return ToolJob.from_row(rows[0])
+            except Exception:
+                logger.error(
+                    "Failed to insert tool_jobs row on retry.", exc_info=True,
+                )
+                return None
         logger.error("Failed to insert tool_jobs row.", exc_info=True)
         return None
 
