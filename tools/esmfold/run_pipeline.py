@@ -441,21 +441,14 @@ def validate_fasta(fasta_path: Path) -> dict[str, Any]:
 # ===========================================================================
 
 
-def run_esmfold(sequence: str) -> dict[str, Any]:
-    """Load ESMFold-3B and fold the single-sequence input.
+def load_esmfold() -> tuple[Any, Any]:
+    """Load the ESMFold-3B tokenizer + model once and return both.
 
-    Returns a dict with:
-      pdb_text: str             # PDB ATOM records as text
-      plddt_per_residue: list[float]  # floats in [0, 100]
-      ptm: float | None         # pTM score if exposed by this checkpoint
-      pae: list[list[float]] | None   # pAE matrix if exposed (often None)
-
-    Uses the HuggingFace ``EsmForProteinFolding.infer_pdb`` helper which
-    returns the model's output PDB string directly. Per-residue pLDDT is
-    read from the model's forward-pass output (``output.plddt``), which
-    is on 0-100 scale already.
+    Hoisted out of ``run_esmfold`` so the batch path can reuse a single
+    loaded model across N folds — model + tokenizer load is ~30 s cold
+    and dominates per-fold wall-clock at small sequence lengths.
     """
-    import torch  # noqa: PLC0415
+    import torch  # noqa: PLC0415, F401  (CUDA bind imported lazily)
     from transformers import AutoTokenizer, EsmForProteinFolding  # noqa: PLC0415
 
     logger.info("loading ESMFold tokenizer + model from %s", ESMFOLD_MODEL_ID)
@@ -465,9 +458,21 @@ def run_esmfold(sequence: str) -> dict[str, Any]:
     )
     # ``.eval()`` first to switch off dropout etc., then move to GPU.
     model = model.eval().cuda()
+    return tokenizer, model
+
+
+def fold_with_loaded(tokenizer: Any, model: Any, sequence: str) -> dict[str, Any]:
+    """Run one forward pass against an already-loaded ESMFold model.
+
+    Returns the same shape ``run_esmfold`` did pre-split: pdb_text,
+    plddt_per_residue, ptm, pae. Pure inference — no model construction
+    cost. The caller owns the model lifetime.
+    """
+    import torch  # noqa: PLC0415
+
     # ESMFold's structure module benefits from fp16 on the ESM-2 trunk
     # for longer sequences. Leave default chunk size (None) for <= 400 aa.
-    logger.info("ESMFold loaded; running forward on %d aa", len(sequence))
+    logger.info("ESMFold running forward on %d aa", len(sequence))
 
     tokenized = tokenizer(
         [sequence],
@@ -551,6 +556,17 @@ def run_esmfold(sequence: str) -> dict[str, Any]:
         "ptm": ptm_val,
         "pae": pae_list,
     }
+
+
+def run_esmfold(sequence: str) -> dict[str, Any]:
+    """Single-shot fold — load model + fold + tear down.
+
+    Kept for the standalone path's backward compatibility. The batch
+    path calls ``load_esmfold`` once and ``fold_with_loaded`` per
+    record to skip the ~30 s reload tax.
+    """
+    tokenizer, model = load_esmfold()
+    return fold_with_loaded(tokenizer, model, sequence)
 
 
 # ===========================================================================
@@ -725,15 +741,18 @@ def _validate_record_inline(name: str, seq: str) -> str:
     return seq
 
 
-def _fold_record(name: str, seq: str) -> dict[str, Any]:
-    """Fold one record and shape the result into a per-design dict.
+def _fold_record(
+    tokenizer: Any, model: Any, name: str, seq: str
+) -> dict[str, Any]:
+    """Fold one record against a pre-loaded ESMFold model.
 
     Returns the candidate-table-friendly shape (``rank`` and ``pdb_key``
-    are set by the caller after the upload). Raises ``ValueError`` if
-    stub-rejection flags the output, so the batch loop can mark this
-    record as a failure and move on without aborting the run.
+    are set by the caller after the upload). Raises ``SystemExit`` via
+    ``reject_stub``/``_fail`` if the output is degenerate, so the batch
+    loop can mark this record as a failure and move on without aborting
+    the run.
     """
-    raw_output = run_esmfold(seq)
+    raw_output = fold_with_loaded(tokenizer, model, seq)
     parsed = shape_output(raw_output)
     reject_stub(parsed)
     plddt = parsed.get("plddt_per_residue") or []
@@ -814,6 +833,12 @@ def _run_batch(
         designs_total=designs_total,
     )
 
+    # Load ESMFold-3B ONCE for the whole batch. Without this hoist, the
+    # per-record fold path would re-read weights + tokenizer (~30 s
+    # each) which dominates wall-clock at the small per-fold inference
+    # cost and blows the Modal session budget on large batches.
+    tokenizer, model = load_esmfold()
+
     designs_out: list[dict] = []
     n_failures = 0
     send_heartbeat(
@@ -838,7 +863,7 @@ def _run_batch(
             i + 1, designs_total, name, len(seq),
         )
         try:
-            folded = _fold_record(name, seq)
+            folded = _fold_record(tokenizer, model, name, seq)
         except SystemExit:
             # reject_stub() calls _fail() which writes a FAILED smoke
             # result + sys.exit(1). For batch we want to keep going.

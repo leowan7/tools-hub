@@ -246,8 +246,13 @@
               <label for="sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Fold targets (FASTA or one per line)</label>
               <textarea name="sequences" id="sequences" class="af2-batch-textarea"
                         placeholder=">target_0&#10;MKLIVAINVMG...&#10;>complex_a:b&#10;EVQLVES...:GSHMLNCIV..."
-                        spellcheck="false"
-                        oninput="(function(t){var n=(t.value||'').split(/\r?\n/).filter(function(l){return l.trim();}).filter(function(l){return !l.startsWith('>');}).length; document.getElementById('batch-count').textContent=n;})(this)">{{ (pre_fill.get('sequences') if pre_fill else '') or '' }}</textarea>
+                        spellcheck="false">{{ (pre_fill.get('sequences') if pre_fill else '') or '' }}</textarea>
+              {# Hidden ``n_designs_total`` lets the wallet preflight scale
+                 the hold linearly with the batch size. Kept in lockstep
+                 with the textarea via the script at the bottom of the
+                 form; cleared when the standalone preset is active so
+                 single-fold runs are not over-billed. #}
+              <input type="hidden" name="n_designs_total" id="batch-n-designs" value="">
               <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.0rem;">
                 Up to <strong>50</strong> independent fold targets per
                 submit. Each record is one fold; up to 1500 AA total per
@@ -298,4 +303,30 @@
 
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}
+
+  <script>
+    // Batch counter + wallet n_designs_total wiring. See
+    // tools/esmfold_form.html for the contract — identical shape.
+    (function () {
+      var ta = document.getElementById('sequences');
+      var hidden = document.getElementById('batch-n-designs');
+      var counter = document.getElementById('batch-count');
+      if (!ta || !hidden || !counter) return;
+
+      function recount() {
+        var lines = (ta.value || '').split(/\r?\n/).filter(function (l) { return l.trim(); });
+        var n = lines.filter(function (l) { return !l.startsWith('>'); }).length;
+        counter.textContent = n;
+        var checked = document.querySelector('input[name="preset"]:checked');
+        var preset = checked ? checked.value : 'standalone';
+        hidden.value = (preset === 'batch') ? String(Math.max(1, n)) : '';
+      }
+
+      ta.addEventListener('input', recount);
+      document.querySelectorAll('input[name="preset"]').forEach(function (r) {
+        r.addEventListener('change', recount);
+      });
+      recount();
+    })();
+  </script>
 {% endblock %}
