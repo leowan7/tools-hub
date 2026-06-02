@@ -134,35 +134,41 @@ about: dict = {
 # fields via the ``?example=<id>`` prefill path; the bundled PDB is fed
 # in via the ``example:`` pdb_source token resolved at submit time.
 #
-# The strict-pass scFv below is design index 1 from the
-# ``S3_3B9K_yts156xE4_consistent_loops`` round-2 cell, picked because
-# the prior research-tier validation showed all-7-hotspots contacted
-# with complex_pLDDT=0.916, ipTM=0.870 (see
-# scratch/scfv-designs/round2/validation/S3_3B9K_yts156xE4_consistent_loops_boltz_sseq.json
-# entry index 1). Reproducing those numbers through the production
-# pipeline is the canonical smoke test.
-_STRICT_PASS_SCFV = (
-    "QVRLQESGPGLVQPSQTLSLTCSVSGFSLTSDSVHWVRQPPGKGLEWMGGIWADGDTEYNSALKSRLSIS"
-    "RDTSKSQGFLKMNSLQTDDTAIYFCTSNRGSYYFDYWGQGTMVTVSSGGGGSGGGGSGGGGSDIKMTQSP"
-    "ASLSASLGDKVTITCKASQNIDKYMAWYQQKPGKAPRQLIHYTSTLVSGTPSRFSGSGSGRDYTFSISSV"
-    "ESEDIASYYCLQYDNLYTFGAGTKLELK"
+# All inputs are public-domain crystal structures so the demo carries no
+# proprietary information:
+#   - Antigen ubiquitin (PDB 1UBQ, Vijay-Kumar et al., J Mol Biol 1987)
+#     is the canonical small monomer used by every fold tool's demo.
+#   - The binder is the UBA1 domain of human HHR23A (PDB 1WR1 chain B,
+#     Mueller et al., Nat Struct Biol 2004), a natural ubiquitin-binding
+#     domain. Crystallized binding to the Ile44 hydrophobic patch on
+#     ubiquitin, the same surface most UBA / UIM / CUE / NZF / ZnF
+#     ubiquitin-binding domains target.
+#   - Hotspot residues 8, 44, 68, 70 are the canonical Ile44 patch
+#     (Beal et al., PNAS 1996), so the contact count answers a real
+#     biological question: does Boltz-2 place the UBA where the crystal
+#     puts it? On a successful prediction expect strict_pass with all
+#     four hotspots contacted.
+_HHR23A_UBA1 = (
+    "PGISGGGGGILDPEERYEHQLRQLNDMGFFDFDRNVAALRRSGGSVQGALDSLLNGDV"
 )
 
 examples: list[dict] = [
     {
-        "id": "cd8a-strict-pass",
-        "label": "CD8a + strict-pass scFv",
+        "id": "ubiquitin-hhr23a-uba1",
+        "label": "Ubiquitin + HHR23A UBA1",
         "description": (
-            "117-aa CD8a antigen + a strict-pass scFv from the S3xE4 "
-            "round-2 design campaign. Reproduces complex_pLDDT ~0.92, "
-            "ipTM ~0.87, all 7 hotspot contacts in <1 min."
+            "Ubiquitin (PDB 1UBQ, 76 aa) + the UBA1 domain of human "
+            "HHR23A (PDB 1WR1 chain B, 58 aa). Natural ubiquitin-binding "
+            "complex. Hotspots target the canonical Ile44 hydrophobic "
+            "patch — a healthy Boltz-2 fold places all four within "
+            "5 Å of the UBA."
         ),
-        "filename": "antigen_cd8a.pdb",
+        "filename": "ubiquitin_1ubq.pdb",
         "params": {
             "preset": "standalone",
             "target_chain": "A",
-            "hotspot_residues": "55,56,57,71,72,73,74",
-            "binder_sequences": f">strict_pass_S3xE4_1\n{_STRICT_PASS_SCFV}",
+            "hotspot_residues": "8,44,68,70",
+            "binder_sequences": f">HHR23A_UBA1\n{_HHR23A_UBA1}",
         },
     },
 ]
