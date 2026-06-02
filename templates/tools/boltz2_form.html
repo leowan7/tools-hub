@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/examples_chip_group.html" import examples_chip_group %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# Boltz-2 form uses the same two-panel layout as BindCraft: existing
+     form on the left, "About Boltz-2" reference panel on the right.
+     Scoped styles prefixed .boltz2- so the shared stylesheet stays
+     untouched. Hotspot picker styles mirror BindCraft / BoltzGen so the
+     visual rhythm matches the other PDB-input tools. #}
+
+  <style>
+    .boltz2-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .boltz2-layout { grid-template-columns: 1fr; }
+    }
+    .boltz2-preset-group {
+      display: grid;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .boltz2-preset-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .boltz2-preset-option:hover { border-color: var(--accent-dim); }
+    .boltz2-preset-option input[type="radio"] {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+    }
+    .boltz2-preset-option .preset-title {
+      display: block;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.92rem;
+      margin-bottom: 0.15rem;
+    }
+    .boltz2-preset-option .preset-desc {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .boltz2-binder-textarea {
+      width: 100%;
+      min-height: 9rem;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin-bottom: 0.35rem;
+    }
+
+    /* Hotspot picker — mirrors BindCraft's panel aesthetic. */
+    .hotspot-picker {
+      margin-bottom: 1.25rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      overflow: hidden;
+    }
+    .hotspot-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+    .hotspot-picker-header .label {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      margin: 0;
+    }
+    .hotspot-picker-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      font-family: var(--font-body);
+    }
+    .hotspot-picker-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .hotspot-picker-clear:hover {
+      color: var(--text-primary);
+      border-color: var(--accent-dim);
+    }
+    .hotspot-viewer {
+      width: 100%;
+      height: 320px;
+      background: var(--bg-deep);
+      position: relative;
+      display: none;
+    }
+    .hotspot-viewer-empty {
+      padding: 1.75rem 1rem;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 0.82rem;
+      font-family: var(--font-body);
+    }
+    .hotspot-viewer-empty code {
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+    .hotspot-viewer-error {
+      padding: 1rem;
+      color: #f87171;
+      font-size: 0.85rem;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="boltz2-layout">
+    {# ---------- LEFT: existing form ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Validate binders</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+
+          {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
+          {{ pdb_source_banner(pdb_source) }}
+
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Preset</label>
+          <div class="boltz2-preset-group">
+            <label class="boltz2-preset-option">
+              <input type="radio" name="preset" value="standalone"
+                     {{ pre_checked(pre_fill, 'preset', 'standalone', is_first=True) }}>
+              <span>
+                <span class="preset-title">Single-sequence (default, fast)</span>
+                <span class="preset-desc">
+                  YAML <code>msa: empty</code> per chain. ~&lt;1 min/design.
+                  The right choice for designed sequences (MPNN, RFantibody,
+                  BindCraft, BoltzGen, RFdiffusion, PXDesign outputs).
+                </span>
+              </span>
+            </label>
+            <label class="boltz2-preset-option">
+              <input type="radio" name="preset" value="msa_server"
+                     {{ pre_checked(pre_fill, 'preset', 'msa_server', is_first=False) }}>
+              <span>
+                <span class="preset-title">With MSA (slower, natural sequences)</span>
+                <span class="preset-desc">
+                  Boltz fetches MSAs from the public ColabFold MMseqs2 server
+                  at runtime. ~3 min/design. Better for natural / near-native
+                  sequences; for designed binders the result usually matches
+                  single-sequence.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Antigen PDB</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                 {% if not pdb_source %}required{% endif %}
+                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Upload the target structure as .pdb, .cif, or .mmcif. The
+            antigen folds as one chain; binders fold as separate chains.
+          </div>
+
+          <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Antigen chain</label>
+          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+
+          <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues <span style="color: var(--text-tertiary); font-weight:normal;">(optional)</span></label>
+          <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="55,56,57,71,72,73,74" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                 style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
+            Comma-separated 1-indexed residue positions on the antigen
+            chain. The pipeline reports how many of these the binder
+            contacts (heavy atom within 5&nbsp;&Aring;). Leave blank to
+            skip the contact analysis. Click residues in the 3D viewer
+            below to toggle them.
+          </div>
+
+          {# 3D hotspot picker — same component as BindCraft / BoltzGen. #}
+          <div class="hotspot-picker" data-hotspot-picker>
+            <div class="hotspot-picker-header">
+              <span class="label">3D residue picker</span>
+              <div class="hotspot-picker-controls">
+                <label>
+                  <input type="checkbox" id="hotspot-surface-toggle"> Surface
+                </label>
+                <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+              </div>
+            </div>
+            <div id="hotspot-empty" class="hotspot-viewer-empty">
+              Upload an antigen PDB above to enable click-to-pick. Typed
+              entry in the <code>Hotspot residues</code> field above also works.
+            </div>
+            <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+          </div>
+
+          <label for="binder_sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Binder sequences</label>
+          <textarea name="binder_sequences" id="binder_sequences" required
+                    placeholder=">design_0&#10;QVRLQESGPGLVQPSQTLSLTC...&#10;>design_1&#10;EVQLQESGGGLVQPGGSLRLSC..."
+                    class="boltz2-binder-textarea">{{ pre_fill.binder_sequences if pre_fill else '' }}</textarea>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            One sequence per line, or FASTA with <code>&gt;name</code>
+            headers. Each sequence folds independently against the antigen.
+            20-400&nbsp;aa per binder, up to 50 binders per run.
+          </div>
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          <button type="submit" class="btn-primary">Validate binders</button>
+        </form>
+      </div>
+    </div>
+
+    {# ---------- RIGHT: About Boltz-2 ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
+     production. The picker JS degrades gracefully if NGL fails to load
+     — the typed hotspot field keeps working either way. #}
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (typeof window.initHotspotPicker !== 'function') return;
+      window.initHotspotPicker({
+        pdbInputId: 'target_pdb',
+        hotspotInputId: 'hotspot_residues',
+        chainInputId: 'target_chain',
+        viewerId: 'hotspot-viewer',
+        emptyMessageId: 'hotspot-empty',
+        surfaceToggleId: 'hotspot-surface-toggle',
+        clearBtnId: 'hotspot-clear-btn',
+      });
+    });
+
+    // Live wallet estimate: count binder records in the textarea and feed
+    // n_designs_total to the wallet panel JS so the cost preview updates
+    // as the user pastes. Counts non-empty non-header lines OR ``>``
+    // records, whichever yields more — matches the adapter's parser.
+    (function () {
+      var textarea = document.getElementById('binder_sequences');
+      if (!textarea) return;
+      function recount() {
+        var raw = (textarea.value || '').split(/\r?\n/);
+        var hdrs = 0;
+        var seqs = 0;
+        for (var i = 0; i < raw.length; i++) {
+          var ln = raw[i].trim();
+          if (!ln) continue;
+          if (ln.charAt(0) === '>') hdrs += 1;
+          else seqs += 1;
+        }
+        var n = hdrs > 0 ? hdrs : seqs;
+        if (n < 1) n = 1;
+        var hidden = document.querySelector('input[name="n_designs_total"]');
+        if (!hidden) {
+          hidden = document.createElement('input');
+          hidden.type = 'hidden';
+          hidden.name = 'n_designs_total';
+          textarea.form.appendChild(hidden);
+        }
+        hidden.value = String(n);
+        if (typeof window.refreshWalletEstimate === 'function') {
+          window.refreshWalletEstimate();
+        }
+      }
+      textarea.addEventListener('input', recount);
+      textarea.addEventListener('change', recount);
+      recount();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+{% endblock %}

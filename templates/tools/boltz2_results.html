@@ -1,0 +1,169 @@
+{# Boltz-2 results partial — included by job_detail.html on status=succeeded.
+
+   Reshapes the Boltz-2 ``smoke_result`` schema into the candidate_table
+   contract: each design becomes one row with scores keyed by the
+   metric_glossary tokens (ipTM, pTM, pLDDT, n_hotspot_contacts,
+   filter_status). complex_pLDDT is multiplied by 100 to match the
+   AF2-convention 0–100 scale that pLDDT renders with. #}
+
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output             = job.result or {} %}
+{% set raw_designs        = output.get('designs', []) %}
+{% set hotspots_requested = output.get('hotspots_requested', []) %}
+{% set antigen_length     = output.get('antigen_length') %}
+{% set tier               = output.get('tier') %}
+{% set runtime_seconds    = output.get('runtime_seconds') %}
+{% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
+{% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
+{% set n_failures         = output.get('n_failures') or 0 %}
+{% set clone_url          = url_for('tool_form', tool='boltz2', clone_from=job.id) %}
+
+{# Reshape designs → candidate_table schema. Sort by ipTM desc so the
+   top-scoring designs land at the top. #}
+{% set candidates = [] %}
+{% for d in raw_designs %}
+  {% set _plddt = d.get('complex_plddt') %}
+  {% set _plddt_pct = (_plddt * 100) if _plddt is not none else none %}
+  {% set _ = candidates.append({
+      'rank': d.get('rank'),
+      'name': d.get('name'),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {
+        'ipTM': d.get('iptm'),
+        'pTM': d.get('ptm'),
+        'pLDDT': _plddt_pct,
+        'n_hotspot_contacts': d.get('n_hotspot_contacts'),
+        'filter_status': d.get('filter_status'),
+      },
+      'contacted_residues': d.get('contacted_residues') or [],
+      'n_hotspots': d.get('n_hotspots'),
+      'antigen_chain': d.get('antigen_chain'),
+  }) %}
+{% endfor %}
+
+{# Stable sort by ipTM desc, falling back to ranks already assigned by
+   the pipeline. Python's sorted() is stable, so designs with equal ipTM
+   keep their submission order. #}
+{% set candidates = candidates | sort(attribute='scores.ipTM', reverse=True) %}
+
+{% set columns = ['ipTM', 'pTM', 'pLDDT', 'n_hotspot_contacts', 'filter_status'] %}
+
+{# Top summary panel: antigen + hotspots + run-level counters. #}
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Boltz-2 cofold</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Designs folded</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ designs_completed }} / {{ designs_total }}
+          {% if n_failures %}
+            <span style="color: #fca5a5; font-size: 0.8rem;">({{ n_failures }} fail)</span>
+          {% endif %}
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Antigen length</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ antigen_length or '—' }} aa
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Hotspots requested</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.92rem;">
+          {% if hotspots_requested %}
+            {{ hotspots_requested | join(', ') }}
+          {% else %}
+            <span style="color: var(--text-tertiary);">none — contact analysis skipped</span>
+          {% endif %}
+        </div>
+      </div>
+      {% if runtime_seconds %}
+        <div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Runtime</div>
+          <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+            {{ runtime_seconds }} s
+          </div>
+        </div>
+      {% endif %}
+    </div>
+    <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
+      Boltz-2 is antibody-trained and uses a calibrated confidence head.
+      Strict-pass designs (complex_pLDDT&nbsp;&gt;&nbsp;85, ipTM&nbsp;&gt;&nbsp;0.7,
+      hotspot hits&nbsp;&gt;&nbsp;4) are the closest equivalent to AF2-multimer
+      "high confidence". Use the agreement / disagreement with your AF2
+      score as the orthogonal signal.
+    </div>
+  </div>
+</div>
+
+{# Per-design candidate table — pdb_key resolves to /api/jobs/<id>/pdb/<filename>
+   via the shared candidate_table macro. NGL viewer per row, .pdb download per row. #}
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='boltz2',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=tier,
+    gpu_seconds=runtime_seconds,
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    Boltz-2 returned no designs. Double-check the antigen chain ID and
+    binder sequence inputs, then re-submit. If the issue persists the
+    Modal logs (<code>modal app logs ranomics-boltz2-prod</code>) carry
+    the stdout from each fold attempt.
+  </p>
+{% endcall %}
+
+{# Hotspot contact breakdown — per-design which residues got hit. Only
+   renders if hotspots were requested. Cap at the first 12 designs so
+   the table stays readable; users can sort the main table to see the
+   rest. #}
+{% if hotspots_requested and candidates %}
+  {% set contact_rows = candidates[:12] %}
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header">
+      <span class="panel-title">Hotspot contacts (top {{ contact_rows | length }} designs by ipTM)</span>
+    </div>
+    <div class="panel-body" style="overflow-x: auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="text-align:left; color:var(--text-tertiary); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;">
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Design</th>
+            {% for h in hotspots_requested %}
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center; font-family:var(--font-mono);">{{ h }}</th>
+            {% endfor %}
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:right;">Hits</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in contact_rows %}
+            <tr>
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono); font-size:0.82rem;">
+                {{ c.name or ('design_' ~ c.rank) }}
+              </td>
+              {% for h in hotspots_requested %}
+                {% set hit = h in (c.contacted_residues or []) %}
+                <td style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center;">
+                  {% if hit %}
+                    <span style="display:inline-block; width:0.85rem; height:0.85rem; border-radius:50%; background: var(--accent);"></span>
+                  {% else %}
+                    <span style="display:inline-block; width:0.85rem; height:0.85rem; border-radius:50%; background: transparent; border:1px solid var(--border);"></span>
+                  {% endif %}
+                </td>
+              {% endfor %}
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary); text-align:right; font-family:var(--font-mono);">
+                {{ c.scores.n_hotspot_contacts or 0 }} / {{ c.n_hotspots or (hotspots_requested | length) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
