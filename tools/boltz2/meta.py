@@ -159,13 +159,15 @@ examples: list[dict] = [
         "description": (
             "Ubiquitin (PDB 1UBQ, 76 aa) + the UBA1 domain of human "
             "HHR23A (PDB 1WR1 chain B, 58 aa). Natural ubiquitin-binding "
-            "complex. Hotspots target the canonical Ile44 hydrophobic "
-            "patch — a healthy Boltz-2 fold places all four within "
-            "5 Å of the UBA."
+            "complex; hotspots target the canonical Ile44 hydrophobic "
+            "patch. Defaults to the MSA preset because the small UBA "
+            "interface needs the evolutionary signal — expect "
+            "strict_pass with ipTM ~0.89, complex_pLDDT ~0.93, and all "
+            "four hotspots contacted in ~3 min."
         ),
         "filename": "ubiquitin_1ubq.pdb",
         "params": {
-            "preset": "standalone",
+            "preset": "msa_server",
             "target_chain": "A",
             "hotspot_residues": "8,44,68,70",
             "binder_sequences": f">HHR23A_UBA1\n{_HHR23A_UBA1}",
