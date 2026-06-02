@@ -1,0 +1,24 @@
+# Boltz-2 (MIT, Wohlwend et al.) — antibody-trained cofold validator.
+#
+# Strategy: start from an official pytorch base image (torch + CUDA pinned for us)
+# then pip install boltz. Boltz pulls its own model weights at first run; we mount
+# /root/.boltz as a Volume so weights cache and persist across runs.
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Boltz install. The [cuda] extra pulls cuequivariance_torch, which Boltz-2 v2.2.1+
+# requires for the fused triangle-multiplicative kernel (use_kernels defaults to True;
+# import-time failure without it). We pass --no_kernels at predict time so we never
+# touch that path, but pulling [cuda] keeps the image build stable across Boltz patch
+# releases that tighten the import gate.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "boltz[cuda]" requests
+
+WORKDIR /opt
