@@ -250,7 +250,8 @@
           <label for="binder_sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Binder sequences</label>
           <textarea name="binder_sequences" id="binder_sequences" required
                     placeholder=">design_0&#10;QVRLQESGPGLVQPSQTLSLTC...&#10;>design_1&#10;EVQLQESGGGLVQPGGSLRLSC..."
-                    class="boltz2-binder-textarea">{{ pre_fill.binder_sequences if pre_fill else '' }}</textarea>
+                    spellcheck="false"
+                    class="boltz2-binder-textarea">{{ (pre_fill.get('binder_sequences') if pre_fill else '') or '' }}</textarea>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
             One sequence per line, or FASTA with <code>&gt;name</code>
             headers. Each sequence folds independently against the antigen.
