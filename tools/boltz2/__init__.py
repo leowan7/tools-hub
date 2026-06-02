@@ -204,7 +204,8 @@ adapter = ToolAdapter(
     label="Boltz-2 — cofold validation",
     blurb=(
         "Validate designed binders against your antigen with an "
-        "antibody-trained cofold model. ~15 s per design (single-sequence)."
+        "antibody-trained cofold model — ~15 s per design "
+        "(single-sequence)."
     ),
     presets=(
         Preset(

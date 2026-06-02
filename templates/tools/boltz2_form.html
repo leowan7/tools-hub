@@ -167,7 +167,7 @@
     {# ---------- LEFT: existing form ---------- #}
     <div class="panel">
       <div class="panel-header">
-        <span class="panel-title">Validate binders</span>
+        <span class="panel-title">Validation inputs</span>
       </div>
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
@@ -262,7 +262,7 @@
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
-          <button type="submit" class="btn-primary">Validate binders</button>
+          <button type="submit" class="btn-primary">Submit run</button>
         </form>
       </div>
     </div>
