@@ -146,6 +146,10 @@
       {% if pdb_b64 %}
         <a href="{{ url_for('af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
         <a href="{{ url_for('af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (.npy)</a>
+        <a href="{{ url_for('tool_form', tool='mpnn') }}?resample_from={{ job.id }}" class="btn-secondary" style="margin-left:0.5rem;"
+           title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">
+          Resample sequence with MPNN
+        </a>
       {% endif %}
     </div>
 

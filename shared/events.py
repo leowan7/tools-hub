@@ -163,6 +163,7 @@ class EVENTS:
     SHARE_CLICKED = "share_clicked"
     EXAMPLE_LOADED = "example_loaded"
     REFOLD_SPAWNED = "refold_spawned"
+    RESAMPLE_LOADED = "resample_loaded"
 
 
 # PostHog server-side capture endpoint. The legacy /capture/ path is

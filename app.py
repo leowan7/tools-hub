@@ -113,6 +113,7 @@ from shared.storage import (
 )
 from shared import category_glyphs as _category_glyphs
 from shared import metric_glossary as _metric_glossary
+from shared import resample as _resample
 from shared import score_legends as _score_legends
 from tools import base as tool_base
 import tools.af2         # noqa: F401 — import to register adapter (D2 atomic)
@@ -2943,6 +2944,49 @@ def create_app() -> Flask:
                     },
                 )
 
+        # AF2-resample chain: when the user lands on the MPNN form via a
+        # "Resample with MPNN" button on an AF2 / ColabFold / ESMFold
+        # result page, prefill the MPNN form with the source job's
+        # predicted PDB and sensible diversification defaults
+        # (sampling_temp=0.5, num_seq_per_target=16). The PDB itself is
+        # not staged here — that happens at submit time when the
+        # ``resample:<job_id>`` token is resolved (the submit-side
+        # branch decodes pdb_b64 from the source job's result and
+        # uploads it like a fresh PDB).
+        resample_from = request.args.get("resample_from", "").strip()
+        if (
+            resample_from
+            and adapter.slug == _resample.RESAMPLE_DESTINATION
+            and not pre_fill
+        ):
+            src = get_job(resample_from, user_id=ctx.user_id)
+            if (
+                src is not None
+                and _resample.can_resample(src.tool)
+                and src.status == "succeeded"
+                and ((src.result or {}).get("pdb_b64") or "").strip()
+            ):
+                for k, v in _resample.RESAMPLE_MPNN_DEFAULTS.items():
+                    pre_fill[k] = v
+                pdb_source = {
+                    "label": (
+                        f"Predicted PDB from {src.tool} job {src.id[:8]}"
+                    ),
+                    "filename": (
+                        f"predicted-{src.tool}-{src.id[:8]}.pdb"
+                    ),
+                    "token": f"resample:{src.id}",
+                }
+                from shared.events import EVENTS, emit  # noqa: PLC0415
+                emit(
+                    EVENTS.RESAMPLE_LOADED,
+                    user_id=ctx.user_id,
+                    properties={
+                        "source_tool": src.tool,
+                        "source_job_id": src.id,
+                    },
+                )
+
         # The wallet estimate partial reads balance_usd for first paint
         # so the form lights up with the user's real balance even before
         # the /api/wallet/estimate call returns. Falls back to 0 if the
@@ -3062,6 +3106,7 @@ def create_app() -> Flask:
             or reuse_token.startswith("job:")
             or reuse_token.startswith("handoff:")
             or reuse_token.startswith("example:")
+            or reuse_token.startswith("resample:")
         ):
             return render_template(
                 adapter.form_template,
@@ -3312,6 +3357,47 @@ def create_app() -> Flask:
                         job_id=job.id,
                         filename=staged_filename,
                         data=example_bytes,
+                        content_type="chemical/x-pdb",
+                    )
+                elif reuse_token.startswith("resample:"):
+                    # AF2-resample chain: decode the source fold job's
+                    # predicted PDB (stored as base64 in
+                    # ``result.pdb_b64`` across AF2/ColabFold/ESMFold)
+                    # and stage it as a fresh MPNN input PDB. The
+                    # source-tool gate prevents stuffing a non-fold
+                    # job id into the token to read its result blob.
+                    import base64  # noqa: PLC0415
+                    src_job_id = reuse_token.split(":", 1)[1]
+                    src = get_job(src_job_id, user_id=ctx.user_id)
+                    if src is None:
+                        raise StorageError("source fold job not found")
+                    if not _resample.can_resample(src.tool):
+                        raise StorageError(
+                            "source job is not a fold predictor"
+                        )
+                    src_pdb_b64 = (
+                        (src.result or {}).get("pdb_b64") or ""
+                    ).strip()
+                    if not src_pdb_b64:
+                        raise StorageError(
+                            "source job has no predicted PDB"
+                        )
+                    try:
+                        src_pdb_bytes = base64.b64decode(
+                            src_pdb_b64, validate=True
+                        )
+                    except Exception as exc:
+                        raise StorageError(
+                            f"predicted PDB decode failed: {exc}"
+                        )
+                    staged_filename = (
+                        f"predicted-{src.tool}-{src.id[:8]}.pdb"
+                    )
+                    staged_path = upload_input(
+                        user_id=ctx.user_id,
+                        job_id=job.id,
+                        filename=staged_filename,
+                        data=src_pdb_bytes,
                         content_type="chemical/x-pdb",
                     )
 
