@@ -17,39 +17,75 @@
     <button type="button" id="compare-clear" class="btn-secondary" style="margin-left: 0.5rem;">Clear</button>
   </div>
 
+  {# C4 — campaign filter. Only renders when the user has at least one
+     labelled campaign, so the empty-state onboarding ladder for new
+     users is not cluttered with a no-op select. #}
+  {% if all_campaign_labels %}
+    <form method="GET" action="{{ url_for('jobs_list') }}" id="campaign-filter-form"
+          style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.88rem;">
+      <label for="campaign" style="margin: 0;">Campaign</label>
+      <select name="campaign" id="campaign" class="field-input"
+              style="max-width: 320px; padding: 0.4rem 0.5rem; font-size: 0.88rem;"
+              onchange="document.getElementById('campaign-filter-form').submit();">
+        <option value="" {% if not selected_campaign %}selected{% endif %}>All campaigns</option>
+        <option value="__uncategorized__" {% if selected_campaign == '__uncategorized__' %}selected{% endif %}>Uncategorized</option>
+        {% for label in all_campaign_labels %}
+          <option value="{{ label }}" {% if selected_campaign == label %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      {% if selected_campaign %}
+        <a class="btn-secondary" href="{{ url_for('jobs_list') }}" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Clear filter</a>
+      {% endif %}
+      <noscript>
+        <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Filter</button>
+      </noscript>
+    </form>
+  {% endif %}
+
   <div class="panel">
     <div class="panel-body">
       {% if jobs %}
-        <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-          <thead>
-            <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
-              <th style="padding: 0.5rem 0.4rem; width: 2rem;"></th>
-              <th style="padding: 0.5rem 0.4rem;">Job</th>
-              <th style="padding: 0.5rem 0.4rem;">Tool</th>
-              <th style="padding: 0.5rem 0.4rem;">Preset</th>
-              <th style="padding: 0.5rem 0.4rem;">Status</th>
-              <th style="padding: 0.5rem 0.4rem;">Submitted</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for job in jobs %}
-              <tr style="border-bottom: 1px solid var(--border);">
-                <td style="padding: 0.55rem 0.4rem;">
-                  {% if job.status == 'succeeded' %}
-                    <input type="checkbox" class="compare-chk" value="{{ job.id }}" aria-label="Select for compare">
-                  {% endif %}
-                </td>
-                <td style="padding: 0.55rem 0.4rem;">
-                  <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
-                </td>
-                <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
-                <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
-                <td style="padding: 0.55rem 0.4rem;">{{ status_badge(job.status) }}</td>
-                <td style="padding: 0.55rem 0.4rem; color: var(--text-secondary);">{{ job.created_at[:19] if job.created_at else '—' }}</td>
+        {% for group in campaign_groups %}
+          <h3 style="margin: {% if not loop.first %}1.75rem{% else %}0{% endif %} 0 0.5rem 0; font-size: 0.95rem; color: var(--text-secondary); font-weight: 500; letter-spacing: 0.02em;">
+            {% if group.label %}
+              <a href="{{ url_for('jobs_list', campaign=group.label) }}" style="color: inherit; text-decoration: none;">{{ group.label }}</a>
+              <span style="color: var(--text-tertiary); font-size: 0.85rem; font-weight: 400;">&nbsp;({{ group.jobs|length }})</span>
+            {% else %}
+              <a href="{{ url_for('jobs_list', campaign='__uncategorized__') }}" style="color: inherit; text-decoration: none;">Uncategorized</a>
+              <span style="color: var(--text-tertiary); font-size: 0.85rem; font-weight: 400;">&nbsp;({{ group.jobs|length }})</span>
+            {% endif %}
+          </h3>
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border); color: var(--text-secondary); text-align: left;">
+                <th style="padding: 0.5rem 0.4rem; width: 2rem;"></th>
+                <th style="padding: 0.5rem 0.4rem;">Job</th>
+                <th style="padding: 0.5rem 0.4rem;">Tool</th>
+                <th style="padding: 0.5rem 0.4rem;">Preset</th>
+                <th style="padding: 0.5rem 0.4rem;">Status</th>
+                <th style="padding: 0.5rem 0.4rem;">Submitted</th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {% for job in group.jobs %}
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.55rem 0.4rem;">
+                    {% if job.status == 'succeeded' %}
+                      <input type="checkbox" class="compare-chk" value="{{ job.id }}" aria-label="Select for compare">
+                    {% endif %}
+                  </td>
+                  <td style="padding: 0.55rem 0.4rem;">
+                    <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
+                  </td>
+                  <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
+                  <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
+                  <td style="padding: 0.55rem 0.4rem;">{{ status_badge(job.status) }}</td>
+                  <td style="padding: 0.55rem 0.4rem; color: var(--text-secondary);">{{ job.created_at[:19] if job.created_at else '—' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endfor %}
 
         {% if total_pages and total_pages > 1 %}
           <nav class="pager" aria-label="Jobs pagination"
@@ -59,12 +95,12 @@
             </div>
             <div style="display: flex; gap: 0.5rem;">
               {% if page > 1 %}
-                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page-1) }}">Previous</a>
+                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page-1, campaign=selected_campaign) if selected_campaign else url_for('jobs_list', page=page-1) }}">Previous</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Previous</span>
               {% endif %}
               {% if page < total_pages %}
-                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page+1) }}">Next</a>
+                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page+1, campaign=selected_campaign) if selected_campaign else url_for('jobs_list', page=page+1) }}">Next</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Next</span>
               {% endif %}

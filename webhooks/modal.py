@@ -192,7 +192,77 @@ def _apply_terminal(
         ),
     )
     _observe_terminal(job.tool, terminal_status)
+
+    # D3 funnel fire. Only the success path lights up the dashboard
+    # event; failures are tracked by _observe_terminal's stripe-events
+    # mirror. The CAS race above leaves ``fresh`` on a non-succeeded
+    # status when a concurrent writer landed first; in that case the
+    # other writer owns the emit.
+    if (
+        fresh is not None
+        and fresh.status == "succeeded"
+        and terminal_status == "succeeded"
+        and fresh.user_id
+    ):
+        _emit_job_completed(fresh)
+
     return fresh
+
+
+def _count_succeeded_jobs(user_id: str) -> int:
+    """Return the user's total succeeded-job count.
+
+    Best-effort: a Supabase hiccup returns 0, which steers the funnel
+    emit to ``first_job_completed``. The dashboard tolerates that bias
+    better than a missing event would.
+    """
+    client = get_service_client()
+    if client is None:
+        return 0
+    try:
+        response = (
+            client.table("tool_jobs")
+            .select("id", count="exact")
+            .eq("user_id", user_id)
+            .eq("status", "succeeded")
+            .limit(1)
+            .execute()
+        )
+        return int(getattr(response, "count", None) or 0)
+    except Exception:
+        logger.warning(
+            "succeeded-job count failed for user %s",
+            user_id, exc_info=True,
+        )
+        return 0
+
+
+def _emit_job_completed(fresh: ToolJob) -> None:
+    """Post the funnel event for a freshly completed job.
+
+    Lazy-imports ``shared.events`` so the webhook stays decoupled from
+    the analytics module load order.
+    """
+    try:
+        from shared.events import EVENTS, emit  # noqa: PLC0415
+
+        total = _count_succeeded_jobs(fresh.user_id)
+        is_first = total == 1
+        emit(
+            EVENTS.FIRST_JOB_COMPLETED if is_first
+            else EVENTS.NTH_JOB_COMPLETED,
+            user_id=fresh.user_id,
+            properties={
+                "tool": fresh.tool,
+                "preset": fresh.preset,
+                "job_id": fresh.id,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "funnel emit failed for job %s",
+            fresh.id, exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,25 @@
 {% block title %}{{ adapter.label }} guide — Ranomics Tools{% endblock %}
 {% block description %}How to run {{ adapter.label }} on Ranomics Tools: what it is for, the inputs it needs, and how to read the scores it returns.{% endblock %}
 
+{% block jsonld_extra %}
+{% set _desc = (meta.comparison_one_liner if meta and meta.comparison_one_liner else (meta.about.what_it_is if meta and meta.about and meta.about.what_it_is else adapter.blurb)) %}
+{% set _desc_clean = (_desc | striptags) if _desc else "" %}
+{% set _desc_trunc = (_desc_clean[:250]) if _desc_clean else "" %}
+{% set sa = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": adapter.label,
+  "applicationCategory": "ScientificApplication",
+  "operatingSystem": "Any (web-based)"
+} %}
+{% if _desc_trunc %}{% set _ = sa.update({"description": _desc_trunc}) %}{% endif %}
+{% if meta and meta.paper_url %}{% set _ = sa.update({"citation": meta.paper_url}) %}{% endif %}
+{% if meta and meta.github_url %}{% set _ = sa.update({"codeRepository": meta.github_url}) %}{% endif %}
+<script type="application/ld+json">
+{{ sa | tojson }}
+</script>
+{% endblock %}
+
 {% block content %}
   {% include "help/_help_nav.html" with context %}
 
@@ -33,8 +52,17 @@
           </p>
         {% endif %}
         {% if meta and meta.about and meta.about.when_to_use %}
-          <ul style="margin: 1rem 0 0 0; padding-left: 1.2rem; color: var(--text-secondary); line-height: 1.7;">
+          <p style="margin: 1rem 0 0.4rem 0; font-weight: 600; color: var(--text-primary);">When it fits:</p>
+          <ul style="margin: 0; padding-left: 1.2rem; color: var(--text-secondary); line-height: 1.7;">
             {% for item in meta.about.when_to_use %}
+              <li>{{ item | safe }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if meta and meta.about and meta.about.when_not_to_use %}
+          <p style="margin: 1rem 0 0.4rem 0; font-weight: 600; color: var(--text-primary);">When to pick something else:</p>
+          <ul style="margin: 0; padding-left: 1.2rem; color: var(--text-secondary); line-height: 1.7;">
+            {% for item in meta.about.when_not_to_use %}
               <li>{{ item | safe }}</li>
             {% endfor %}
           </ul>
@@ -86,6 +114,25 @@
             </dl>
           </div>
         {% endif %}
+
+        {% if meta and (meta.runtime_band or (meta.about and meta.about.runtime_table)) %}
+          <div style="margin-top: 1.5rem;">
+            <p class="field-helper" style="margin: 0 0 0.6rem 0;">Typical runtime:</p>
+            {% if meta.runtime_band %}
+              <p style="margin: 0 0 0.6rem 0; color: var(--text-secondary); line-height: 1.6;">{{ meta.runtime_band }}</p>
+            {% endif %}
+            {% if meta.about and meta.about.runtime_table %}
+              <dl style="margin: 0;">
+                {% for row in meta.about.runtime_table %}
+                  <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.6rem;">{{ row.preset }}</dt>
+                  {% if row.typical %}
+                    <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">{{ row.typical }}</dd>
+                  {% endif %}
+                {% endfor %}
+              </dl>
+            {% endif %}
+          </div>
+        {% endif %}
       </div>
     </div>
   </section>
@@ -124,14 +171,68 @@
     </div>
   </section>
 
+  {# ─── Try these examples ─────────────────────────────────────────── #}
+  {% if meta and meta.examples %}
+    <section class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Try these examples</h2>
+        </div>
+        <div class="panel-body">
+          <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+            One-click sample inputs that load straight into the run form.
+            Edit any field before submitting.
+          </p>
+          <dl style="margin: 0;">
+            {% for ex in meta.examples %}
+              <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.75rem;">
+                <a href="{{ url_for('tool_form', tool=tool, example=ex.id) }}"
+                   style="color: var(--accent-text); text-decoration: none;">
+                  {{ ex.label }}
+                </a>
+              </dt>
+              {% if ex.description %}
+                <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">{{ ex.description }}</dd>
+              {% endif %}
+            {% endfor %}
+          </dl>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
   {# ─── References and run ─────────────────────────────────────────── #}
   <section class="section">
-    {% if meta and (meta.paper_citation or meta.paper_url or meta.github_url) %}
+    {% if meta and (meta.paper_citation or meta.paper_url or meta.github_url or meta.paper) %}
       <div class="panel" style="margin-bottom: 1.25rem;">
         <div class="panel-header">
           <h2 class="panel-title">References</h2>
         </div>
         <div class="panel-body">
+          {% if meta.paper %}
+            {% set p = meta.paper %}
+            <div style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+              {% if p.authors %}
+                <span style="color: var(--text-primary);">{{ p.authors }}.</span>
+              {% endif %}
+              {% if p.title %}
+                <span>&ldquo;{{ p.title }}.&rdquo;</span>
+              {% endif %}
+              {% if p.journal %}
+                <em>{{ p.journal }}</em>{% if p.year %},{% else %}.{% endif %}
+              {% endif %}
+              {% if p.year %}
+                {{ p.year }}.
+              {% endif %}
+              {% if p.doi %}
+                <span style="display: block; margin-top: 0.25rem;">
+                  DOI:
+                  <a href="https://doi.org/{{ p.doi }}" target="_blank" rel="noopener noreferrer"
+                     style="color: var(--accent-text); text-decoration: none;">{{ p.doi }}</a>
+                </span>
+              {% endif %}
+            </div>
+          {% endif %}
           {% if meta.paper_citation %}
             <p style="margin: 0 0 0.6rem 0; color: var(--text-secondary); line-height: 1.6;">{{ meta.paper_citation }}</p>
           {% endif %}
@@ -140,7 +241,7 @@
               <a href="{{ meta.paper_url }}" target="_blank" rel="noopener noreferrer" class="btn-secondary">Read the paper</a>
             {% endif %}
             {% if meta.github_url %}
-              <a href="{{ meta.github_url }}" target="_blank" rel="noopener noreferrer" class="btn-secondary">View on GitHub</a>
+              <a href="{{ meta.github_url }}" target="_blank" rel="noopener noreferrer" class="btn-secondary">Source code on GitHub</a>
             {% endif %}
           </div>
         </div>

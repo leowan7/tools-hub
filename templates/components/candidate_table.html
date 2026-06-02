@@ -57,6 +57,31 @@
 }
 .cand-table .cand-row:hover { background: rgba(255,255,255,.03); }
 
+/* Top-design highlight. Subtle accent tint on the first ranked row plus
+   a left rail so the eye lands there first. Hover styling above still
+   applies on top. */
+.cand-table .cand-row.cand-row-top {
+  background: rgba(43, 158, 126, .06);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+.cand-table .cand-row.cand-row-top:hover {
+  background: rgba(43, 158, 126, .10);
+}
+.cand-rank-top-badge {
+  display: inline-block;
+  margin-left: .35rem;
+  padding: .05rem .35rem;
+  font-size: .6rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(43, 158, 126, .12);
+  border: 1px solid rgba(43, 158, 126, .35);
+  border-radius: var(--radius-sm);
+  vertical-align: middle;
+}
+
 /* Metric tooltip */
 .mtt {
   display: inline-flex;
@@ -187,6 +212,10 @@
 </div>
 
 {# ── Table ─────────────────────────────────────────────────────── #}
+{# Per-tool score legend lookup. Returns ``{col_key: {good, excellent,
+   direction, explanation}}``; empty dict if the tool has no legends.
+   Registered as a Jinja global in app.py from shared.score_legends. #}
+{% set legends = score_legends_for(tool_slug) if score_legends_for else {} %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
@@ -195,11 +224,24 @@
         <th style="width:2rem;" title="Click to shortlist for lab submission">★</th>
         {% for col in columns %}
           {% set g = metric_glossary.get(col, {}) %}
-          <th data-col="{{ col }}" class="sortable-col">
+          {% set leg = legends.get(col) %}
+          {# When a per-tool legend exists, its explanation is the
+             concrete "what counts as good?" answer; the metric_glossary
+             entry remains the academic citation. Stack both into one
+             tooltip so the user gets the actionable line first. #}
+          {% set tooltip_text = '' %}
+          {% if leg %}
+            {% set tooltip_text = leg.explanation %}
+          {% endif %}
+          {% if g.get('definition') %}
+            {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ ' Range: ' ~ g.good_range ~ ('. ' ~ g.citation if g.citation else '') %}
+          {% endif %}
+          <th data-col="{{ col }}" class="sortable-col"
+              {% if leg %}title="{{ leg.explanation }}"{% endif %}>
             {{ g.get('label', col) -}}
-            {% if g.get('definition') %}
+            {% if tooltip_text %}
               <span class="mtt"
-                    data-tooltip="{{ g.definition }} Range: {{ g.good_range }}{% if g.citation %} — {{ g.citation }}{% endif %}">?</span>
+                    data-tooltip="{{ tooltip_text }}">?</span>
             {% endif %}
           </th>
         {% endfor %}
@@ -224,8 +266,16 @@
         {% set pdb_url     = '/api/jobs/' ~ job_id ~ '/pdb/' ~ (pdb_key | urlencode) %}
         {% set has_pdb     = use_url or has_b64 %}
 
-        <tr class="cand-row" data-idx="{{ idx }}">
-          <td>{{ cand.get('rank', loop.index) }}</td>
+        {# Candidates arrive pre-ranked from the pipeline. Visually
+           anchor the first row so the eye lands on the top design.
+           Ordering is unchanged; only styling differs. #}
+        <tr class="cand-row{% if loop.first %} cand-row-top{% endif %}" data-idx="{{ idx }}">
+          <td>
+            {{ cand.get('rank', loop.index) }}
+            {% if loop.first %}
+              <span class="cand-rank-top-badge" title="Top-ranked design in this run">Top</span>
+            {% endif %}
+          </td>
           <td class="star-cell">
             <button class="star-btn" data-idx="{{ idx }}" data-job="{{ job_id }}" title="Shortlist">&#9734;</button>
           </td>

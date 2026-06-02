@@ -3,6 +3,7 @@
 {% from "tools/_prefill.html" import pre_value, prefill_script, workspace_hidden_inputs %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/examples_chip_group.html" import examples_chip_group %}
+{% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -156,6 +157,8 @@
             Paste your FASTA — monomer or multimer up to 600 aa total.
             ~1-2 min on A100-40GB.
           </div>
+
+          {{ field_campaign(prefilled=pre_fill) }}
 
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}

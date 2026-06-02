@@ -58,13 +58,23 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
     job_url = f"{base_url}/jobs/{job.id}"
     tone = _result_tone(job)
     tool = _tool_label(job.tool)
-    subject = {
-        "success":   f"Your {tool} run finished",
-        "empty":     f"Your {tool} run finished — no candidates",
-        "failed":    f"Your {tool} run failed",
-    }[tone]
-    html_body = _render_html(job=job, job_url=job_url, tone=tone)
-    text_body = _render_text(job=job, job_url=job_url, tone=tone)
+    subject = f"Your {tool} run is done"
+
+    ctx = _job_complete_template_context(
+        job=job, base_url=base_url, job_url=job_url, tone=tone, tool=tool,
+    )
+    try:
+        html_body = _render_template("job_complete.html", **ctx)
+        text_body = _render_template("job_complete.txt", **ctx)
+    except Exception:
+        logger.warning(
+            "job_complete template render failed for job %s; "
+            "falling back to inline body",
+            getattr(job, "id", "?"),
+            exc_info=True,
+        )
+        html_body = _render_html(job=job, job_url=job_url, tone=tone)
+        text_body = _render_text(job=job, job_url=job_url, tone=tone)
 
     if not api_key:
         logger.info(
@@ -119,6 +129,148 @@ def send_job_complete_email(*, user_email: str, job) -> bool:  # noqa: ANN001
 # ---------------------------------------------------------------------------
 # Body rendering
 # ---------------------------------------------------------------------------
+
+
+def _job_complete_template_context(
+    *, job, base_url: str, job_url: str, tone: str, tool: str,  # noqa: ANN001
+) -> dict:
+    """Build the variable dict for ``templates/email/job_complete.{html,txt}``.
+
+    Extracts top-candidate score plus a 1-line interpretation from the
+    score-legends table (C7), and resolves the natural next-step tool
+    via the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in shared.refold.
+    Robust against partial result payloads: every optional field falls
+    back to "" so the templates render cleanly with no missing-data
+    warning text.
+    """
+    headline = {
+        "success": f"Your {tool} run is ready",
+        "empty":   f"Your {tool} run finished with no candidates",
+        "failed":  f"Your {tool} run failed",
+    }[tone]
+    top_score_label, top_score_value, top_score_caption, top_pdb_key = (
+        _top_candidate_summary(job=job, tone=tone)
+    )
+    next_step_url, next_step_label = _next_step_for_job(
+        job=job, base_url=base_url, tone=tone,
+    )
+    return {
+        "base_url":          base_url,
+        "tool_label":        tool,
+        "headline":          headline,
+        "summary":           _result_summary(job, tone=tone),
+        "cost_line":         _cost_breakdown_line(job, tone=tone),
+        "job_id":            getattr(job, "id", ""),
+        "job_preset":        getattr(job, "preset", "") or "",
+        "job_created":       (getattr(job, "created_at", "") or "")[:19],
+        "job_url":           job_url,
+        "tone":              tone,
+        "top_score_label":   top_score_label,
+        "top_score_value":   top_score_value,
+        "top_score_caption": top_score_caption,
+        "top_pdb_key":       top_pdb_key,
+        "next_step_url":     next_step_url,
+        "next_step_label":   next_step_label,
+    }
+
+
+def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # noqa: ANN001
+    """Pull (label, value, 1-line caption, pdb_key) for the top candidate.
+
+    Returns four empty strings when the job has no candidate scores to
+    surface (sequence-design tools, structure-prediction tools, failed
+    runs). The caption comes from shared.score_legends; when no legend
+    is registered for the chosen column the caption falls back to "".
+    """
+    if tone != "success":
+        return ("", "", "", "")
+    result = getattr(job, "result", None) or {}
+    if not isinstance(result, dict):
+        return ("", "", "", "")
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return ("", "", "", "")
+    top = candidates[0]
+    if not isinstance(top, dict):
+        return ("", "", "", "")
+    scores = top.get("scores")
+    if not isinstance(scores, dict) or not scores:
+        # Some adapters inline the score at the candidate root instead of
+        # under .scores. Fall back to a small allowlist of known keys.
+        flat = {
+            k: top.get(k)
+            for k in ("iptm", "ipTM", "plddt", "pLDDT", "ptm", "i_pae")
+            if isinstance(top.get(k), (int, float))
+        }
+        scores = flat or {}
+    if not scores:
+        return ("", "", "", "")
+
+    try:
+        from shared.score_legends import (  # noqa: PLC0415
+            score_legends_for,
+        )
+        legends = score_legends_for(getattr(job, "tool", "") or "")
+    except Exception:
+        legends = {}
+
+    # Prefer columns with a registered legend so the caption is
+    # meaningful. Then fall back to the first numeric score we see.
+    chosen_col = None
+    for col in scores:
+        if col in legends and isinstance(scores.get(col), (int, float)):
+            chosen_col = col
+            break
+    if chosen_col is None:
+        for col, val in scores.items():
+            if isinstance(val, (int, float)):
+                chosen_col = col
+                break
+    if chosen_col is None:
+        return ("", "", "", "")
+
+    value = scores[chosen_col]
+    if isinstance(value, float):
+        value_str = f"{value:.3f}"
+    else:
+        value_str = str(value)
+    caption = ""
+    legend = legends.get(chosen_col)
+    if isinstance(legend, dict):
+        explanation = legend.get("explanation")
+        if isinstance(explanation, str):
+            caption = explanation
+    pdb_key = top.get("pdb_key") or ""
+    if not isinstance(pdb_key, str):
+        pdb_key = str(pdb_key)
+    return (str(chosen_col), value_str, caption, pdb_key)
+
+
+def _next_step_for_job(
+    *, job, base_url: str, tone: str,  # noqa: ANN001
+) -> tuple[str, str]:
+    """Resolve the natural next-step tool for a binder-design job.
+
+    Uses the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in
+    shared.refold: tools that produce binder sequences get ColabFold as
+    the no-MSA orthogonal validator. Returns ("", "") when no handoff
+    applies (failed/empty result, or a tool not in SOURCE_TOOLS).
+    """
+    if tone != "success":
+        return ("", "")
+    try:
+        from shared.refold import SOURCE_TOOLS  # noqa: PLC0415
+    except Exception:
+        return ("", "")
+    tool_slug = getattr(job, "tool", "") or ""
+    if tool_slug not in SOURCE_TOOLS:
+        return ("", "")
+    dest_slug = "colabfold"
+    # _label_for_tool is defined further down in the wallet-senders
+    # block; it covers colabfold/esmfold and falls through to the slug
+    # if a future destination is added. Forward reference is fine since
+    # this function is only invoked at email-send time.
+    return f"{base_url}/tools/{dest_slug}", _label_for_tool(dest_slug)
 
 
 def _tool_label(slug: str) -> str:
@@ -613,6 +765,45 @@ def send_daily_digest(
         html_body=html_body,
         text_body=text_body,
         log_tag="daily_digest",
+    )
+
+
+def send_reengagement_email(
+    *,
+    user_email: str,
+    candidate,  # noqa: ANN001 — cron.reengagement.Candidate
+    base_url: str,
+) -> bool:
+    """C6 — re-engagement email for a user with credits sitting unused.
+
+    Reads the suggestion list off ``candidate.suggestions`` (built by
+    the sweep) and the user's balance off ``candidate.balance_usd``.
+    Returns True on confirmed send. Failures are logged but never raise.
+    """
+    subject = "You have credits sitting unused"
+    suggestions = list(getattr(candidate, "suggestions", []) or [])
+    context = {
+        "base_url":    base_url,
+        "balance_usd": _money(getattr(candidate, "balance_usd", 0) or 0),
+        "suggestions": suggestions,
+    }
+    try:
+        html_body = _render_template("reengagement.html", **context)
+        text_body = _render_template("reengagement.txt", **context)
+    except Exception:
+        logger.warning(
+            "reengagement template render failed for user %s",
+            getattr(candidate, "user_id", "?"), exc_info=True,
+        )
+        return False
+    return _send_simple(
+        api_key=os.environ.get("RESEND_API_KEY", "").strip(),
+        from_addr=_from_address(),
+        to_email=user_email,
+        subject=subject,
+        html_body=html_body,
+        text_body=text_body,
+        log_tag=f"reengagement user={getattr(candidate, 'user_id', '?')}",
     )
 
 

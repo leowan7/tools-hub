@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}Showcase | Anonymized binder design runs on Ranomics Tools{% endblock %}
+
+{% block description %}Anonymized BindCraft, RFantibody, RFdiffusion plus ProteinMPNN, ColabFold, and Epitope Scout runs on dedicated GPUs through tools.ranomics.com. Internal benchmark runs with score legend, runtime, and downstream handoff.{% endblock %}
+
+{% block jsonld_extra %}
+{# Dataset JSON-LD per showcase entry. One <script> per entry so
+   crawlers index them as distinct datasets. #}
+{% for e in entries %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": e.meta.title,
+  "description": e.meta.title,
+  "creator": {"@type": "Organization", "name": "Ranomics"},
+  "isAccessibleForFree": True,
+  "datePublished": e.meta.date|string,
+  "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
+  "url": (request.url_root.rstrip('/') ~ url_for('tool_form', tool=e.meta.tool) if e.meta.tool not in ('scout',) else request.url_root.rstrip('/') ~ '/scout'),
+  "measurementTechnique": "Top score: " ~ (e.meta.top_score|string)
+} | tojson }}
+</script>
+{% endfor %}
+{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>Tools showcase</h1>
+    <p class="subtitle">Anonymized binder design runs on dedicated GPUs through tools.ranomics.com.</p>
+  </div>
+
+  <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-bottom: 1.5rem;">
+    <div class="panel-body">
+      <strong>Internal preview.</strong> Replace with real customer anonymized data before launch. Every entry below is an internal benchmark run with synthetic targets.
+    </div>
+  </div>
+
+  {% for e in entries %}
+    <section class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
+          {% if e.meta.internal_benchmark %}
+            <span class="panel-badge">Internal benchmark run</span>
+          {% endif %}
+        </div>
+        <div class="panel-body">
+          <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.88rem;">
+            <span><strong style="color: var(--text-primary);">Tool</strong> {{ e.meta.tool }}</span>
+            <span><strong style="color: var(--text-primary);">Target</strong> {{ e.meta.target_kind }}</span>
+            <span><strong style="color: var(--text-primary);">Top score</strong> {{ e.meta.top_score }}</span>
+            <span><strong style="color: var(--text-primary);">Date</strong> {{ e.meta.date }}</span>
+          </div>
+
+          {# Body rendered as plaintext in a <pre> block so we avoid a
+             markdown dependency. The Markdown source is human-readable
+             and the <pre> preserves paragraph breaks and bullet shape. #}
+          <pre style="white-space: pre-wrap; font-family: var(--font-body, inherit); font-size: 0.96rem; line-height: 1.65; color: var(--text-secondary); margin: 0;">{{ e.body }}</pre>
+
+          <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
+            {% if e.tool_url %}
+              <a href="{{ e.tool_url }}" class="btn-primary">Open {{ e.meta.tool }} on tools.ranomics.com</a>
+            {% endif %}
+            {% if e.guide_url %}
+              <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool }} guide</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </section>
+  {% endfor %}
+
+  <section class="section">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Run something like this</span>
+      </div>
+      <div class="panel-body">
+        <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+          Every showcase entry above starts at Epitope Scout, runs through
+          a design tool (BindCraft, RFantibody, RFdiffusion, BoltzGen, or
+          PXDesign), and ends with a structure prediction sanity check
+          (AlphaFold2, ColabFold, ESMFold, or Boltz-2).
+        </p>
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
+          <a href="{{ url_for('pricing') }}" class="btn-secondary">How billing works</a>
+          <a href="{{ url_for('signup') }}" class="btn-secondary">Create a free account</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+{% endblock %}

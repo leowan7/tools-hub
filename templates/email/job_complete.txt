@@ -1,0 +1,28 @@
+{# Plain-text version of job_complete.html. Same variables. #}
+{{ headline }}
+
+{{ summary }}
+
+{% if top_score_label and top_score_value -%}
+Top design: {{ top_score_label }} {{ top_score_value }}{% if top_pdb_key %} ({{ top_pdb_key }}){% endif %}
+{% if top_score_caption %}{{ top_score_caption }}
+{% endif %}
+{% endif -%}
+{% if cost_line -%}
+{{ cost_line }}
+
+{% endif -%}
+{% if tone == 'success' -%}
+View results: {{ job_url }}
+{%- else -%}
+View job details: {{ job_url }}
+{%- endif %}
+
+{% if next_step_url and next_step_label -%}
+Natural next step: validate the top design with an orthogonal predictor.
+Run the natural next step ({{ next_step_label }}): {{ next_step_url }}
+
+{% endif -%}
+Job {{ job_id }} | preset {{ job_preset }} | submitted {{ job_created }}
+
+Ranomics Tools. {{ base_url }}

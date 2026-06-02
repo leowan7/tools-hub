@@ -352,6 +352,18 @@ def _apply_checkout_session_completed(event: dict) -> dict:
         user_id=user_id,
         amount_usd=amount_usd,
     )
+    # D3 funnel fire. Mirrors the wallet credit into PostHog so the
+    # signup -> first_job -> topup conversion view sees this row. No-op
+    # when PUBLIC_POSTHOG_KEY is unset.
+    from shared.events import EVENTS, emit  # noqa: PLC0415
+    emit(
+        EVENTS.TOPUP_COMPLETE,
+        user_id=user_id,
+        properties={
+            "amount_usd": float(amount_usd),
+            "kind": "topup",
+        },
+    )
     return {
         "status": "ok",
         "user_id": user_id,
@@ -409,6 +421,17 @@ def _apply_payment_intent_succeeded(event: dict) -> dict:
         "send_auto_reload_charged_email",
         user_id=user_id,
         amount_usd=amount_usd,
+    )
+    # D3 funnel fire. Auto-reloads land on the same funnel event so the
+    # dashboard does not need to know about the two checkout shapes.
+    from shared.events import EVENTS, emit  # noqa: PLC0415
+    emit(
+        EVENTS.TOPUP_COMPLETE,
+        user_id=user_id,
+        properties={
+            "amount_usd": float(amount_usd),
+            "kind": "auto_reload",
+        },
     )
     return {
         "status": "ok",

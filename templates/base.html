@@ -55,6 +55,20 @@
       });
     </script>
   {% endif %}
+
+  {# Organization JSON-LD always renders. Per-page templates add tool/FAQ schema via jsonld_extra. #}
+  {% block jsonld %}
+  <script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "Ranomics",
+  "url": "https://www.ranomics.com",
+  "sameAs": ["https://tools.ranomics.com"]
+} | tojson }}
+  </script>
+  {% endblock %}
+  {% block jsonld_extra %}{% endblock %}
 </head>
 <body{% block body_attr %}{% endblock %}>
   {% block body %}

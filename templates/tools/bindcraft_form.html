@@ -3,6 +3,7 @@
 {% from "components/about_panel.html" import about_panel %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/examples_chip_group.html" import examples_chip_group %}
+{% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -246,6 +247,8 @@
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
             Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
           </div>
+
+          {{ field_campaign(prefilled=pre_fill) }}
 
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}

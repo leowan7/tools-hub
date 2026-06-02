@@ -226,10 +226,103 @@
     </div>
   </div>
 
+  {# "What next?" reverse-funnel block. Renders only on terminal-success
+     jobs (status=succeeded). Pairs the run with a matching explainer on
+     ranomics.com plus a soft contact link. Additive to the
+     "Take it further" CRO panel rendered by results_shell.html, which
+     handles the hard Pilot / Sprint CTAs for composite binder tools. #}
+  {% if job.status == 'succeeded' %}
+    {% set _utm = '?utm_source=tools-hub&utm_medium=reverse-funnel&utm_campaign=' ~ job.tool %}
+    {% set _binder_tools = ['mpnn', 'rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
+    {% if job.tool == 'mpnn' %}
+      {% set _blog_path = '/resource-hub/proteinmpnn-sequence-design-explained' %}
+      {% set _blog_label = 'ProteinMPNN sequence design explained' %}
+    {% elif job.tool == 'rfdiffusion' %}
+      {% set _blog_path = '/resource-hub/how-rfdiffusion-works-protein-designers-guide' %}
+      {% set _blog_label = 'How RFdiffusion works' %}
+    {% elif job.tool == 'bindcraft' %}
+      {% set _blog_path = '/resource-hub/bindcraft-vs-rfdiffusion' %}
+      {% set _blog_label = 'BindCraft vs RFdiffusion' %}
+    {% elif job.tool == 'rfantibody' %}
+      {% set _blog_path = '/resource-hub/dms-for-antibody-affinity-maturation' %}
+      {% set _blog_label = 'DMS for antibody affinity maturation' %}
+    {% elif job.tool == 'pxdesign' %}
+      {% set _blog_path = '/resource-hub/de-novo-protein-design-failure-modes' %}
+      {% set _blog_label = 'De novo protein design failure modes' %}
+    {% elif job.tool == 'boltzgen' %}
+      {% set _blog_path = '/resource-hub/what-is-de-novo-protein-design' %}
+      {% set _blog_label = 'What is de novo protein design' %}
+    {% elif job.tool == 'af2' %}
+      {% set _blog_path = '/resource-hub/colabfold-vs-alphafold-when-to-use-which' %}
+      {% set _blog_label = 'ColabFold vs AlphaFold, when to use which' %}
+    {% elif job.tool == 'colabfold' %}
+      {% set _blog_path = '/resource-hub/colabfold-batch-triage-binder-designs' %}
+      {% set _blog_label = 'Using ColabFold batch to triage binder designs' %}
+    {% elif job.tool == 'esmfold' %}
+      {% set _blog_path = '/resource-hub/colabfold-vs-alphafold-when-to-use-which' %}
+      {% set _blog_label = 'ColabFold vs AlphaFold, when to use which' %}
+    {% elif job.tool == 'scout' %}
+      {% set _blog_path = '/resource-hub/when-to-use-epitope-scout-vs-a-structural-biologist' %}
+      {% set _blog_label = 'When to use Epitope Scout vs a structural biologist' %}
+    {% elif job.tool == 'developability' %}
+      {% set _blog_path = '/resource-hub/rfdiffusion-developability-check-before-wet-lab' %}
+      {% set _blog_label = 'Developability checks before wet lab' %}
+    {% elif job.tool == 'library_planner' %}
+      {% set _blog_path = '/resource-hub/the-numbers-game-library-diversity-ngs' %}
+      {% set _blog_label = 'Library diversity and NGS depth' %}
+    {% else %}
+      {% set _blog_path = '' %}
+      {% set _blog_label = '' %}
+    {% endif %}
+    {% if job.tool in _binder_tools %}
+      {% set _contact_path = '/ranomics-contact?service=binder-pilot&' ~ _utm[1:] %}
+    {% else %}
+      {% set _contact_path = '/ranomics-contact' ~ _utm %}
+    {% endif %}
+    <div class="panel" style="margin-top: 1rem;">
+      <div class="panel-body">
+        <div style="font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-text); margin-bottom: 0.45rem;">
+          What next?
+        </div>
+        <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
+          <div style="flex: 1 1 320px; color: var(--text-secondary); font-size: 0.9rem;">
+            {% if _blog_path %}
+              Read the explainer on
+              <a href="https://www.ranomics.com{{ _blog_path }}{{ _utm }}"
+                 target="_blank" rel="noopener noreferrer"
+                 style="color: var(--accent-text);">{{ _blog_label }}</a>,
+              or get a hand running this at scale.
+            {% else %}
+              Want help running this at scale? Talk to the team that built
+              the pipeline.
+            {% endif %}
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+            {% if _blog_path %}
+              <a href="https://www.ranomics.com{{ _blog_path }}{{ _utm }}"
+                 target="_blank" rel="noopener noreferrer"
+                 class="btn-secondary"
+                 style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Read explainer</a>
+            {% endif %}
+            <a href="https://www.ranomics.com{{ _contact_path }}"
+               target="_blank" rel="noopener noreferrer"
+               class="btn-secondary"
+               style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Run this at scale</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
   <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
     <a href="{{ url_for('jobs_list') }}" class="btn-secondary">All jobs</a>
     <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
     <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
+    {% if job.status == 'succeeded' and share_allowed %}
+      <button type="button" id="share-result-btn" class="btn-secondary"
+              data-job-id="{{ job.id }}">Share this result</button>
+      <span id="share-status" style="color: var(--text-secondary); font-size: 0.85rem;"></span>
+    {% endif %}
     {% if job.status in ('pending', 'running') %}
       <button type="button" id="cancel-job-btn" class="btn-secondary"
               style="color: #f87171; border-color: rgba(248,113,113,0.35);"
@@ -237,6 +330,51 @@
       <span id="cancel-status" style="color: var(--text-secondary); font-size: 0.85rem;"></span>
     {% endif %}
   </div>
+
+  {% if job.status == 'succeeded' and share_allowed %}
+    <script>
+      (function () {
+        var btn = document.getElementById('share-result-btn');
+        if (!btn) return;
+        var statusNote = document.getElementById('share-status');
+        btn.addEventListener('click', function () {
+          btn.disabled = true;
+          statusNote.textContent = 'Building link...';
+          fetch('/jobs/' + btn.dataset.jobId + '/share', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+          })
+            .then(function (r) { return r.json().then(function (b) { return [r.ok, b]; }); })
+            .then(function (pair) {
+              btn.disabled = false;
+              if (!pair[0]) {
+                statusNote.textContent = 'Could not build share link: ' + (pair[1].error || 'unknown');
+                return;
+              }
+              var shareUrl = pair[1].url || '';
+              if (!shareUrl) {
+                statusNote.textContent = 'Share link missing from response.';
+                return;
+              }
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(shareUrl).then(function () {
+                  statusNote.textContent = 'Link copied to clipboard.';
+                }).catch(function () {
+                  statusNote.textContent = shareUrl;
+                });
+              } else {
+                statusNote.textContent = shareUrl;
+              }
+            })
+            .catch(function () {
+              statusNote.textContent = 'Network error. Retry in a moment.';
+              btn.disabled = false;
+            });
+        });
+      })();
+    </script>
+  {% endif %}
 
   {% if job.status in ('pending', 'running') %}
     <script>

@@ -122,3 +122,27 @@ Usage:
     {% if helper %}<div class="field-helper">{{ helper|safe }}</div>{% endif %}
   </div>
 {% endmacro %}
+
+{# field_campaign — C4 lightweight grouping for power users. Optional
+   free-form label that becomes the campaign group header on /jobs.
+   Width matches the helper text column so 50 variations of one target
+   land under one heading instead of as 50 flat rows. The 80-char cap
+   mirrors the server-side normalization in shared.jobs.create_job. #}
+{% macro field_campaign(prefilled=none) %}
+  <div class="field-group">
+    <label for="campaign_label" class="field-label">Campaign</label>
+    <input
+      type="text"
+      name="campaign_label"
+      id="campaign_label"
+      class="field-input"
+      style="max-width: 320px;"
+      value="{{ _resolve_value('campaign_label', prefilled, '') }}"
+      placeholder="Optional, e.g., HER2-binder-v3"
+      maxlength="80"
+    >
+    <div class="field-helper">
+      Group related runs on your jobs page. Leave blank to file under Uncategorized.
+    </div>
+  </div>
+{% endmacro %}

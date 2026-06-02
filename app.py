@@ -85,6 +85,7 @@ from shared.jobs import (
     complete_job,
     create_job,
     get_job,
+    list_campaign_labels_for_user,
     list_jobs_for_user,
     list_jobs_paginated,
     mark_failed,
@@ -111,6 +112,7 @@ from shared.storage import (
     upload_input,
 )
 from shared import metric_glossary as _metric_glossary
+from shared import score_legends as _score_legends
 from tools import base as tool_base
 import tools.af2         # noqa: F401 — import to register adapter (D2 atomic)
 import tools.bindcraft   # noqa: F401 — import to register adapter
@@ -356,6 +358,53 @@ def _wallet_params_from_form(form) -> dict:  # noqa: ANN001
                 pass
             params[key] = stripped
     return params
+
+
+def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
+    """Return True when ``user_metadata.allow_share`` is explicitly True.
+
+    Default is False — the D4 share endpoint never emits a URL for an
+    account that has not actively turned share-out on. Used by
+    ``/jobs/<id>/share`` to gate the JSON response.
+    """
+    if not isinstance(user_metadata, dict):
+        return False
+    value = user_metadata.get("allow_share")
+    return isinstance(value, bool) and value is True
+
+
+def _top_score_for_share(job) -> str | None:  # noqa: ANN001
+    """Pull a formatted top-candidate score for the share og_title.
+
+    Returns None when the job has no candidate scores to surface (a
+    failed run, a sequence-design tool, a job without a result yet).
+    The caller composes ``og_title`` without the trailing score clause
+    when this returns None.
+    """
+    if getattr(job, "status", None) != "succeeded":
+        return None
+    result = getattr(job, "result", None) or {}
+    if not isinstance(result, dict):
+        return None
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    top = candidates[0]
+    if not isinstance(top, dict):
+        return None
+    scores = top.get("scores")
+    if not isinstance(scores, dict):
+        # Some adapters inline the score at the candidate root.
+        flat = {
+            k: top.get(k) for k in ("iptm", "ipTM", "plddt", "pLDDT")
+            if isinstance(top.get(k), (int, float))
+        }
+        scores = flat or {}
+    for col in scores:
+        val = scores.get(col)
+        if isinstance(val, (int, float)):
+            return f"{col} {val:.3f}" if isinstance(val, float) else f"{col} {val}"
+    return None
 
 
 def _round_up_topup_amount(deficit: Decimal) -> Decimal:
@@ -641,6 +690,13 @@ def create_app() -> Flask:
 
     # Metric glossary available in all templates (candidate_table macro reads it).
     flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
+
+    # Per-tool score legends. The candidate_table macro calls
+    # ``score_legends_for(tool_slug)`` to render per-column "what counts
+    # as good?" tooltips. Returns a {column_key: legend} dict.
+    flask_app.jinja_env.globals["score_legends_for"] = (
+        _score_legends.score_legends_for
+    )
 
     # ``tool_about(adapter)`` returns the structured About-panel dict
     # from ``tools/<slug>/meta.py``. Lets refactored form templates
@@ -938,6 +994,19 @@ def create_app() -> Flask:
             },
             ip=client_ip,
             user_agent=user_agent,
+        )
+
+        # D3 funnel fire. The Supabase audit row above is the source of
+        # truth; this is the PostHog mirror that drives the funnel
+        # dashboard. emit() is a no-op when PUBLIC_POSTHOG_KEY is unset.
+        from shared.events import EVENTS, emit  # noqa: PLC0415
+        emit(
+            EVENTS.SIGNUP_COMPLETE,
+            user_id=result.user_id,
+            properties={
+                "domain_class": result.classification,
+                "signup_quality": result.signup_quality,
+            },
         )
 
         return render_template(
@@ -1251,6 +1320,53 @@ def create_app() -> Flask:
             flask_app.static_folder, "robots.txt", mimetype="text/plain"
         )
 
+    @flask_app.route("/talk/<campaign>", methods=["GET"])
+    def talk_redirect(campaign: str):
+        """Conference short-link redirector (D5 of the growth plan).
+
+        Looks up ``campaign`` in ``CONFERENCE_LINKS`` and 302-redirects
+        to the configured destination with UTM params appended so the
+        click attributes back to the originating conference. Unknown
+        slugs fall back to the homepage but still carry a UTM tag so we
+        capture the click as ``conference-unknown``.
+        """
+        from urllib.parse import urlencode, urlsplit, urlunsplit  # noqa: PLC0415
+        from shared.conference_links import CONFERENCE_LINKS  # noqa: PLC0415
+
+        if campaign in CONFERENCE_LINKS and campaign != "default":
+            destination = CONFERENCE_LINKS[campaign]
+            utm_campaign = campaign
+            utm_source = f"conference-{campaign}"
+        else:
+            destination = CONFERENCE_LINKS.get(
+                "default", "https://tools.ranomics.com/"
+            )
+            utm_campaign = "unknown"
+            utm_source = "conference-unknown"
+
+        parts = urlsplit(destination)
+        existing = parts.query
+        utm = urlencode({
+            "utm_source": utm_source,
+            "utm_medium": "outbound",
+            "utm_campaign": utm_campaign,
+        })
+        new_query = f"{existing}&{utm}" if existing else utm
+        target = urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
+        )
+        return redirect(target, code=302)
+
+    # Register the IndexNow verification file route only when the env
+    # var is set. IndexNow requires a key.txt file at the site root
+    # whose body is the same key sent in the submission payload.
+    _indexnow_key = os.environ.get("INDEXNOW_KEY", "").strip()
+    if _indexnow_key:
+        @flask_app.route(f"/{_indexnow_key}.txt", methods=["GET"])
+        def indexnow_key_file():
+            """Serve the IndexNow ownership-verification key as plain text."""
+            return Response(_indexnow_key, mimetype="text/plain")
+
     @flask_app.route("/sitemap.xml", methods=["GET"])
     def sitemap_xml():
         """Emit a sitemap listing every public, crawlable URL.
@@ -1276,6 +1392,7 @@ def create_app() -> Flask:
             "/help/faq",
             "/help/troubleshooting",
             "/scout",
+            "/showcase",
             "/terms",
             "/privacy",
         ]
@@ -1286,13 +1403,18 @@ def create_app() -> Flask:
             priority = "1.0" if path == "/" else "0.7"
             urls.append((f"{base}{path}", "weekly", priority))
 
-        # Per-tool help guides.
+        # Per-tool help guides + public preview pages (B2). The preview
+        # page at /tools/<slug> serves logged-out crawlers a real HTML
+        # response; the run form (same URL, logged-in) is not crawled.
         try:
             for adapter in tool_base.all_adapters():
                 if not tool_enabled(adapter.slug):
                     continue
                 urls.append(
                     (f"{base}/help/tools/{adapter.slug}", "monthly", "0.6")
+                )
+                urls.append(
+                    (f"{base}/tools/{adapter.slug}", "weekly", "0.7")
                 )
         except Exception:
             logger.warning("sitemap: failed to enumerate tool adapters", exc_info=True)
@@ -2299,6 +2421,249 @@ def create_app() -> Flask:
         return adapter, None
 
     # ------------------------------------------------------------------
+    # B2 — public preview page helpers. Used by the logged-out branch
+    # of /tools/<slug> and only there.
+    # ------------------------------------------------------------------
+
+    # SEO phrase pairs per tool slug. ``seo_phrase`` is a short natural
+    # phrase reused in the page title and lede; ``seo_long`` is a longer
+    # phrase used once in body copy. Pulled into one map so the shared
+    # preview shell stays free of per-tool branching.
+    _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
+        "mpnn": (
+            "free online ProteinMPNN tool",
+            "Run ProteinMPNN sequence design on a backbone PDB with no "
+            "install and no local GPU"
+        ),
+        "af2": (
+            "AlphaFold2 multimer without a local GPU",
+            "Fold complexes through your browser with full MSA and "
+            "templates, results land at /jobs"
+        ),
+        "colabfold": (
+            "ColabFold online without Colab",
+            "Fast no-MSA folds in 1 to 2 minutes per run, no MMseqs2 "
+            "round-trip on your laptop"
+        ),
+        "esmfold": (
+            "ESMFold online single-sequence fold",
+            "Fastest monomer fold from the ESM-2 language model with no "
+            "MSA, no multimer, no install"
+        ),
+        "bindcraft": (
+            "BindCraft de novo binder design no install",
+            "Hallucinate 60 to 150 residue protein binders against a "
+            "target PDB on a dedicated GPU"
+        ),
+        "rfantibody": (
+            "RFantibody nanobody design online",
+            "Generate VHH scaffolds against a target PDB without setting "
+            "up RoseTTAFold or Rosetta locally"
+        ),
+        "rfdiffusion": (
+            "RFdiffusion de novo binder design online",
+            "Run RFdiffusion plus AF2 multimer scoring through your "
+            "browser without an A100"
+        ),
+        "boltzgen": (
+            "BoltzGen multi-modality binder design online",
+            "Design mini-proteins, nanobodies, antibodies, or peptides "
+            "against the same target with glycan and PTM support"
+        ),
+        "boltz2": (
+            "Boltz-2 cofold validation online",
+            "Validate a designed binder against your antigen with "
+            "single-sequence cofold and interface confidence"
+        ),
+        "pxdesign": (
+            "PXDesign AF2-IG binder design online",
+            "AF2-initial-guess binder generation with real ipTM, pLDDT, "
+            "and pAE on every candidate"
+        ),
+    }
+
+    def _preview_seo_phrases(slug: str) -> tuple[str, str]:
+        """Return (short, long) SEO phrase pair for a tool slug.
+
+        Falls back to a generic pair so newly registered tools still get
+        sensible copy without an explicit entry in the map.
+        """
+        return _PREVIEW_SEO_PHRASES.get(
+            slug,
+            (
+                f"free {slug} tool online",
+                "Run it through your browser on a dedicated GPU with no "
+                "install"
+            ),
+        )
+
+    def _runtime_band_for_adapter(adapter, meta) -> str:
+        """Compute the same runtime band string used on the homepage cards.
+
+        Mirrors the inline logic in :func:`_build_tools_catalog` so the
+        preview page reports the same band as the homepage. Falls back
+        to '—' when the adapter has no PRESET_RUNTIME entries.
+        """
+        if meta is None:
+            return "—"
+        runtime_map = getattr(meta, "PRESET_RUNTIME", None) or {}
+        legacy_rows = getattr(meta, "preset_runtime_rows", None) or ()
+        legacy_by_slug = {
+            r.get("slug"): r.get("runtime")
+            for r in legacy_rows
+            if r.get("slug") and r.get("runtime")
+        }
+        runtimes: list[str] = []
+        for preset in adapter.presets:
+            entry = runtime_map.get(preset.slug) or {}
+            if entry.get("typical_minutes"):
+                rt = f"{entry['typical_minutes']} min"
+            else:
+                rt = legacy_by_slug.get(preset.slug)
+            if rt and rt not in runtimes:
+                runtimes.append(rt)
+        if len(runtimes) >= 2:
+            return f"{runtimes[0]} to {runtimes[-1]}"
+        if len(runtimes) == 1:
+            return runtimes[0]
+        return "—"
+
+    def _template_exists(template_name: str) -> bool:
+        """True if Jinja can resolve ``template_name`` via the loader."""
+        try:
+            flask_app.jinja_env.get_template(template_name)
+            return True
+        except Exception:
+            return False
+
+    # ------------------------------------------------------------------
+    # B7 — showcase loader. Reads content/showcase/*.md, parses a simple
+    # ``---``-delimited frontmatter block, and returns a list of
+    # ``{meta, body, slug, tool_url, guide_url}`` dicts for the template.
+    # ------------------------------------------------------------------
+
+    _SHOWCASE_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "content", "showcase"
+    )
+
+    def _parse_showcase_frontmatter(text: str) -> tuple[dict, str]:
+        """Parse a minimal YAML-ish frontmatter block from ``text``.
+
+        Accepts ``key: value`` lines between two ``---`` separators.
+        ``true``/``false`` (case-insensitive) coerce to bool; bare
+        numbers coerce to int or float. Everything else stays a string.
+        Returns ``(meta, body)``. If the frontmatter block is missing,
+        ``meta`` is empty and the whole input is the body.
+        """
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return {}, text
+        meta: dict = {}
+        i = 1
+        while i < len(lines) and lines[i].strip() != "---":
+            line = lines[i]
+            if ":" in line:
+                key, _, value = line.partition(":")
+                key = key.strip()
+                value = value.strip()
+                if value.lower() in ("true", "false"):
+                    meta[key] = value.lower() == "true"
+                else:
+                    try:
+                        if "." in value:
+                            meta[key] = float(value)
+                        else:
+                            meta[key] = int(value)
+                    except ValueError:
+                        meta[key] = value
+            i += 1
+        body = "\n".join(lines[i + 1:]).strip("\n")
+        return meta, body
+
+    def _load_showcase_entries() -> list[dict]:
+        """Read every .md file under content/showcase/, sorted by filename.
+
+        Filename order is the curated display order (entries are named
+        ``01-...``, ``02-...`` etc). Each entry's ``tool`` frontmatter
+        is matched to a registered tool adapter so the entry can link
+        into the matching /tools/<slug> preview page from B2. The
+        hardcoded Epitope Scout slug ``scout`` resolves to the Scout
+        index route instead.
+        """
+        if not os.path.isdir(_SHOWCASE_DIR):
+            return []
+        entries: list[dict] = []
+        for filename in sorted(os.listdir(_SHOWCASE_DIR)):
+            if not filename.endswith(".md"):
+                continue
+            full = os.path.join(_SHOWCASE_DIR, filename)
+            try:
+                with open(full, "r", encoding="utf-8") as fh:
+                    raw = fh.read()
+            except OSError:
+                logger.warning("showcase: failed to read %s", filename, exc_info=True)
+                continue
+            meta, body = _parse_showcase_frontmatter(raw)
+            meta.setdefault("internal_benchmark", True)
+            tool_slug = (meta.get("tool") or "").strip()
+            tool_url: str | None = None
+            guide_url: str | None = None
+            if tool_slug == "scout":
+                try:
+                    tool_url = url_for("scout.index")
+                except Exception:
+                    tool_url = "/scout"
+            elif tool_slug:
+                adapter = tool_base.get(tool_slug)
+                if adapter is not None and tool_enabled(tool_slug):
+                    try:
+                        tool_url = url_for("tool_form", tool=tool_slug)
+                    except Exception:
+                        tool_url = f"/tools/{tool_slug}"
+                    try:
+                        guide_url = url_for(
+                            "help_tool_guide", tool=tool_slug
+                        )
+                    except Exception:
+                        guide_url = f"/help/tools/{tool_slug}"
+            entries.append({
+                "meta": meta,
+                "body": body,
+                "slug": filename[:-3],
+                "tool_url": tool_url,
+                "guide_url": guide_url,
+            })
+        return entries
+
+    # ------------------------------------------------------------------
+    # B7 — public /showcase: curated anonymized runs with deep links into
+    # the matching /tools/<slug> preview pages from B2. Indexable.
+    # ------------------------------------------------------------------
+
+    @flask_app.route("/showcase", methods=["GET"])
+    def showcase():
+        """Render the curated showcase index.
+
+        Loads every ``.md`` file under ``content/showcase/``, parses a
+        simple YAML-ish frontmatter block, and renders the body as
+        plaintext inside the template's ``<pre>`` block. Per-entry
+        Dataset JSON-LD is emitted from the template so each entry is
+        indexable as its own dataset.
+
+        Frontmatter shape:
+            ---
+            title: str
+            tool: <slug matching tools.<slug>>
+            target_kind: str
+            top_score: number
+            date: YYYY-MM-DD
+            internal_benchmark: bool (default True)
+            ---
+        """
+        entries = _load_showcase_entries()
+        return render_template("showcase.html", entries=entries)
+
+    # ------------------------------------------------------------------
     # Help / docs hub — public (no login required).
     # ------------------------------------------------------------------
 
@@ -2336,11 +2701,16 @@ def create_app() -> Flask:
         return render_template("help/troubleshooting.html")
 
     @flask_app.route("/tools/<tool>", methods=["GET"])
-    @login_required
     def tool_form(tool: str):
-        """Render a GPU tool's submission form.
+        """Render a GPU tool's submission form, or a public preview if logged out.
 
-        Pre-fill sources (query params, owner-scoped):
+        Logged-out branch (B2): render ``tools/<slug>_preview.html`` if
+        present, falling back to the shared ``tools/_preview.html`` shell.
+        The preview is indexable; the underlying run form is not. The
+        POST handler at /tools/<slug>/submit stays @login_required so
+        logged-out visitors cannot spawn jobs.
+
+        Logged-in pre-fill sources (query params, owner-scoped):
           * ``clone_from=<job_id>`` — reuse all inputs of an earlier job.
             Same-tool only (exact parameter fidelity).
           * ``from_job=<job_id>`` — Phase 4 cross-tool handoff. Copies
@@ -2359,6 +2729,37 @@ def create_app() -> Flask:
         adapter, err = _require_tool(tool)
         if err:
             return err
+
+        # Logged-out: render the public preview shell. Per-tool override
+        # at templates/tools/<slug>_preview.html wins if present;
+        # otherwise fall through to the shared shell. The shared shell
+        # extends base.html and renders About + score legend + paper +
+        # "Sign in to run" CTA.
+        if not session.get("user_email"):
+            import importlib  # noqa: PLC0415
+            preview_meta = None
+            try:
+                preview_meta = importlib.import_module(
+                    f"tools.{adapter.slug}.meta"
+                )
+            except ImportError:
+                pass
+            runtime_band = _runtime_band_for_adapter(adapter, preview_meta)
+            seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
+            login_next = url_for("tool_form", tool=adapter.slug)
+            per_tool_template = f"tools/{adapter.slug}_preview.html"
+            template_name = per_tool_template if _template_exists(
+                per_tool_template
+            ) else "tools/_preview.html"
+            return render_template(
+                template_name,
+                adapter=adapter,
+                meta=preview_meta,
+                runtime_band=runtime_band,
+                login_next=login_next,
+                seo_phrase=seo_phrase,
+                seo_long=seo_long,
+            )
 
         ctx = load_user_context()
         if ctx is None:
@@ -2485,6 +2886,20 @@ def create_app() -> Flask:
                             f"example:{adapter.slug}/{example_id}"
                         ),
                     }
+
+                # D3 funnel fire. Only count entries that resolved to a
+                # real example dict; a typo'd ?example=foo silently
+                # falls through to the empty form and should not pollute
+                # the dashboard.
+                from shared.events import EVENTS, emit  # noqa: PLC0415
+                emit(
+                    EVENTS.EXAMPLE_LOADED,
+                    user_id=ctx.user_id,
+                    properties={
+                        "tool": adapter.slug,
+                        "example_id": example_id,
+                    },
+                )
 
         # The wallet estimate partial reads balance_usd for first paint
         # so the form lights up with the user's real balance even before
@@ -2726,6 +3141,11 @@ def create_app() -> Flask:
             wallet_ctx["tool_slug"] = adapter.slug
             inputs["_wallet"] = wallet_ctx
 
+        # C4 — free-form campaign label. Trimmed + length-capped in
+        # create_job so power users running 50 variations of one target
+        # see them grouped on /jobs instead of 50 flat rows.
+        form_campaign_label = (request.form.get("campaign_label") or "").strip()
+
         job = create_job(
             user_id=ctx.user_id,
             tool=adapter.slug,
@@ -2733,6 +3153,7 @@ def create_app() -> Flask:
             inputs=inputs,
             target_pdb_id=ws_target,
             workspace_id=ws_id,
+            campaign_label=form_campaign_label or None,
         )
         if job is None:
             # Release the hold so we don't leave a stranded reservation.
@@ -2953,6 +3374,32 @@ def create_app() -> Flask:
             )
 
         set_modal_call(job.id, submit_result["function_call_id"])
+
+        # D3 funnel fire. Distinguish the user's first-ever submission
+        # from their nth so the dashboard can read activation rate
+        # directly. list_jobs_paginated returns a count that already
+        # includes the row we just created, so total == 1 -> first.
+        # Best-effort: a count failure must not stall the redirect.
+        try:
+            _, total_jobs = list_jobs_paginated(
+                ctx.user_id, page=1, page_size=1,
+            )
+            is_first = total_jobs == 1
+        except Exception:
+            is_first = False
+        from shared.events import EVENTS, emit  # noqa: PLC0415
+        emit(
+            EVENTS.FIRST_JOB_SUBMITTED if is_first
+            else EVENTS.NTH_JOB_SUBMITTED,
+            user_id=ctx.user_id,
+            properties={
+                "tool": adapter.slug,
+                "preset": preset.slug,
+                "is_pilot": preset.slug == "pilot",
+                "job_id": job.id,
+            },
+        )
+
         return redirect(url_for("job_detail", job_id=job.id))
 
     @flask_app.route("/jobs", methods=["GET"])
@@ -2966,12 +3413,48 @@ def create_app() -> Flask:
         except ValueError:
             page = 1
         page_size = 25
+        # C4 — campaign filter. ``?campaign=<label>`` narrows the list to
+        # a single campaign; ``?campaign=__uncategorized__`` selects the
+        # rows where campaign_label IS NULL. Missing means "all rows".
+        raw_campaign = request.args.get("campaign")
+        campaign_filter: str | None
+        if raw_campaign is None:
+            campaign_filter = None
+        elif raw_campaign == "__uncategorized__":
+            campaign_filter = ""
+        else:
+            campaign_filter = raw_campaign.strip() or None
         jobs, total = list_jobs_paginated(
-            ctx.user_id, page=page, page_size=page_size
+            ctx.user_id,
+            page=page,
+            page_size=page_size,
+            campaign_label=campaign_filter,
         )
         total_pages = max(1, (total + page_size - 1) // page_size)
         if page > total_pages:
-            return redirect(url_for("jobs_list", page=total_pages))
+            redirect_args = {"page": total_pages}
+            if raw_campaign is not None:
+                redirect_args["campaign"] = raw_campaign
+            return redirect(url_for("jobs_list", **redirect_args))
+        # Group rows by campaign_label for the per-campaign h3 headers.
+        # Uncategorized rows sort last. Preserves the newest-first order
+        # within each group since list_jobs_paginated already ordered by
+        # created_at DESC.
+        groups: dict[str, list] = {}
+        for j in jobs:
+            key = j.campaign_label or "__uncategorized__"
+            groups.setdefault(key, []).append(j)
+        campaign_groups = []
+        for key in sorted(
+            (k for k in groups if k != "__uncategorized__"),
+            key=str.lower,
+        ):
+            campaign_groups.append({"label": key, "jobs": groups[key]})
+        if "__uncategorized__" in groups:
+            campaign_groups.append({
+                "label": None, "jobs": groups["__uncategorized__"]
+            })
+        all_campaign_labels = list_campaign_labels_for_user(ctx.user_id)
         return render_template(
             "jobs_list.html",
             jobs=jobs,
@@ -2979,6 +3462,9 @@ def create_app() -> Flask:
             page_size=page_size,
             total=total,
             total_pages=total_pages,
+            campaign_groups=campaign_groups,
+            all_campaign_labels=all_campaign_labels,
+            selected_campaign=raw_campaign,
         )
 
     @flask_app.route("/jobs/compare", methods=["GET"])
@@ -3051,6 +3537,15 @@ def create_app() -> Flask:
                     ),
                 })
 
+        # D4 — share button gating. Only resolve user_metadata for the
+        # terminal-success branch where the share button could render;
+        # the admin.list_users round-trip is wasted on pending/running.
+        share_allowed = False
+        if job.status == "succeeded":
+            from shared.jobs import resolve_user_email_and_meta  # noqa: PLC0415
+            _email, user_meta = resolve_user_email_and_meta(ctx.user_id)
+            share_allowed = _share_allowed(user_meta)
+
         return render_template(
             "job_detail.html",
             job=job,
@@ -3063,6 +3558,7 @@ def create_app() -> Flask:
             is_long_running=bool(preset_obj and preset_obj.long_running),
             user_email=session.get("user_email") or "",
             send_target_tools=send_target_tools,
+            share_allowed=share_allowed,
         )
 
     @flask_app.route("/jobs/<job_id>/status.json", methods=["GET"])
@@ -3223,11 +3719,16 @@ def create_app() -> Flask:
                 # can_refold gate above should make this unreachable.
                 continue
 
+            # C4 — promote the per-batch label to the first-class column so
+            # /jobs can group the refold batch without sniffing inputs JSON.
+            # The legacy inputs._campaign_label key is kept for backward
+            # compatibility with rows older than the C4 migration.
             job = create_job(
                 user_id=ctx.user_id,
                 tool=dest_adapter.slug,
                 preset="standalone",
                 inputs=inputs,
+                campaign_label=campaign_label,
             )
             if job is None:
                 logger.warning(
@@ -3267,6 +3768,23 @@ def create_app() -> Flask:
 
         if not spawned:
             return redirect(url_for("job_detail", job_id=job_id))
+
+        # D3 funnel fire. The refold is a per-batch handoff from the
+        # source tool to the destination predictor; ``n`` is the actual
+        # number of jobs that landed in Supabase, not the form-requested
+        # count (a few candidates may have lacked extractable sequences).
+        from shared.events import EVENTS, emit  # noqa: PLC0415
+        emit(
+            EVENTS.REFOLD_SPAWNED,
+            user_id=ctx.user_id,
+            properties={
+                "source_tool": src.tool,
+                "dest_tool": dest_tool,
+                "n": len(spawned),
+                "source_job_id": src.id,
+            },
+        )
+
         return redirect(
             url_for("jobs_compare", ids=",".join(spawned))
         )
@@ -3296,6 +3814,69 @@ def create_app() -> Flask:
                 "status": job.status,
             }
         )
+
+    @flask_app.route("/jobs/<job_id>/share", methods=["POST"])
+    @login_required
+    def job_share(job_id: str):
+        """D4 share payload for a finished job.
+
+        Returns ``{url, og_title, og_description, og_image}`` for the
+        caller to drop into a LinkedIn / X compose box. The URL points
+        back at ``/jobs/<id>`` with a ``utm_source=share`` trio so the
+        cross-domain analytics report can attribute the inbound click.
+
+        Gated on the per-user opt-in
+        ``auth.users.user_metadata.allow_share`` (default False) so a
+        share link is never generated for an account that has not
+        explicitly enabled the feature.
+        """
+        from shared.jobs import resolve_user_email_and_meta  # noqa: PLC0415
+
+        ctx = load_user_context()
+        if ctx is None:
+            return jsonify({"error": "unauthenticated"}), 401
+        job = get_job(job_id, user_id=ctx.user_id)
+        if job is None:
+            return jsonify({"error": "not_found"}), 404
+        _email, user_meta = resolve_user_email_and_meta(ctx.user_id)
+        if not _share_allowed(user_meta):
+            return jsonify({"error": "share_not_enabled"}), 403
+
+        base_url = os.environ.get(
+            "PUBLIC_BASE_URL", "https://tools.ranomics.com"
+        ).rstrip("/")
+        tool_slug = job.tool or ""
+        share_url = (
+            f"{base_url}/jobs/{job.id}"
+            f"?utm_source=share&utm_medium=user-share"
+            f"&utm_campaign={tool_slug}"
+        )
+        adapter = tool_base.get(tool_slug)
+        tool_label = adapter.label if adapter else (tool_slug or "tool")
+        top_score = _top_score_for_share(job)
+        if top_score is None:
+            og_title = (
+                f"I designed a binder with {tool_label} on "
+                f"tools.ranomics.com"
+            )
+        else:
+            og_title = (
+                f"I designed a binder with {tool_label} on "
+                f"tools.ranomics.com. Top score {top_score}."
+            )
+        og_description = (
+            "Ranomics tools-hub runs the same GPU pipelines used in "
+            "production protein design."
+        )
+        og_image = url_for(
+            "static", filename="og-image.png", _external=True,
+        )
+        return jsonify({
+            "url":            share_url,
+            "og_title":       og_title,
+            "og_description": og_description,
+            "og_image":       og_image,
+        })
 
     # ------------------------------------------------------------------
     # Public tool comparison matrix + campaign intake stub
@@ -4264,6 +4845,28 @@ def create_app() -> Flask:
         # Use stdout so Railway cron logs show the outcome line.
         print(f"digest:send {click_msg}", flush=True)
 
+    @flask_app.cli.command("reengagement:send")
+    def cli_reengagement_send():
+        """Sweep for unused-credit users and send the 7-day re-engagement email.
+
+        Usage::
+
+            flask reengagement:send
+
+        No-ops cleanly when no user qualifies.
+        """
+        from cron.reengagement import send_reengagement  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = send_reengagement()
+        print(
+            f"reengagement:send qualified={summary['qualified']} "
+            f"sent={summary['sent']} "
+            f"skipped_no_suggestions={summary['skipped_no_suggestions']} "
+            f"errors={summary['errors']}",
+            flush=True,
+        )
+
     @flask_app.cli.command("jobs:sweep-stuck")
     def cli_sweep_stuck():
         """Terminalise stuck pending/running jobs and release their holds.
@@ -4287,6 +4890,26 @@ def create_app() -> Flask:
         )
         for err in summary["errors"]:
             print(f"  err: {err}", flush=True)
+
+    @flask_app.cli.command("indexnow:ping")
+    def cli_indexnow_ping():
+        """Submit the hub's high-value URLs to IndexNow.
+
+        Usage::
+
+            flask indexnow:ping
+
+        No-ops if INDEXNOW_KEY is unset.
+        """
+        from cron.indexnow_ping import ping_high_value_urls  # noqa: PLC0415
+
+        with flask_app.app_context():
+            result = ping_high_value_urls()
+        print(
+            f"indexnow:ping status={result['status']} "
+            f"submitted={result['submitted']} message={result['message']}",
+            flush=True,
+        )
 
     return flask_app
 

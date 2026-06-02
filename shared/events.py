@@ -17,11 +17,20 @@ Two append-only Supabase tables backed this module:
 
 Writes are best-effort. Logging an event must not break the request it
 records — every helper catches and warns.
+
+D3 (growth funnel)
+------------------
+On top of the Supabase audit tables, this module also exposes ``emit()``,
+a fire-and-forget POST to PostHog's server-side capture endpoint. The
+PostHog stream powers the funnel dashboard (visit -> signup -> first_job
+-> second_job -> topup). Use the ``EVENTS`` namespace for the canonical
+event names so the dashboard and the call sites agree on spelling.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -127,4 +136,106 @@ def log_event(
         logger.warning(
             "Failed to log user_event (type=%s user=%s)",
             event_type, user_id, exc_info=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# D3: PostHog server-side ingest (funnel dashboard)
+# ---------------------------------------------------------------------------
+
+
+class EVENTS:
+    """Canonical event names fired by the funnel instrumentation.
+
+    Importers should reference these constants (e.g.
+    ``emit(EVENTS.FIRST_JOB_SUBMITTED, ...)``) rather than typing the
+    string literal so the dashboard query and the call sites cannot
+    drift.
+    """
+
+    SIGNUP_COMPLETE = "signup_complete"
+    TOPUP_COMPLETE = "topup_complete"
+    FIRST_JOB_SUBMITTED = "first_job_submitted"
+    FIRST_JOB_COMPLETED = "first_job_completed"
+    NTH_JOB_SUBMITTED = "nth_job_submitted"
+    NTH_JOB_COMPLETED = "nth_job_completed"
+    CROSS_TOOL_HANDOFF_CLICKED = "cross_tool_handoff_clicked"
+    SHARE_CLICKED = "share_clicked"
+    EXAMPLE_LOADED = "example_loaded"
+    REFOLD_SPAWNED = "refold_spawned"
+
+
+# PostHog server-side capture endpoint. The legacy /capture/ path is
+# stable and accepts the same JSON shape as the v3 ingest path; we use
+# the legacy path because it works against both EU and US clouds without
+# version pinning.
+_POSTHOG_CAPTURE_PATH = "/capture/"
+
+# Posting a single event must never block the request thread; PostHog
+# is best-effort telemetry. Two seconds is the documented soft timeout
+# their own JS client uses.
+_POSTHOG_TIMEOUT_S = 2
+
+
+def _posthog_api_key() -> str:
+    """Resolve the PostHog project API key from env.
+
+    Reads ``PUBLIC_POSTHOG_KEY`` first (the funnel-dashboard convention)
+    and falls back to ``POSTHOG_KEY`` (the existing env var that gates
+    the client-side snippet in ``templates/base.html``). Returns an
+    empty string when neither is set, which turns ``emit()`` into a
+    no-op.
+    """
+    return (
+        os.environ.get("PUBLIC_POSTHOG_KEY", "").strip()
+        or os.environ.get("POSTHOG_KEY", "").strip()
+    )
+
+
+def _posthog_host() -> str:
+    return (
+        os.environ.get("POSTHOG_HOST", "").strip()
+        or "https://us.i.posthog.com"
+    ).rstrip("/")
+
+
+def emit(
+    event_name: str,
+    *,
+    user_id: Optional[str],
+    properties: Optional[dict] = None,
+) -> None:
+    """Fire a server-side PostHog capture for ``event_name``.
+
+    No-op when ``PUBLIC_POSTHOG_KEY`` / ``POSTHOG_KEY`` is unset, so
+    dev and staging do not pollute production funnel data. Every
+    exception is swallowed and logged at WARNING so that emitting an
+    event never crashes the request it records. The HTTP call uses a
+    2 second timeout so a slow PostHog responder cannot stall the
+    response.
+    """
+    if not event_name:
+        return
+    api_key = _posthog_api_key()
+    if not api_key:
+        return
+    # PostHog requires a distinct_id on every event. For server-fired
+    # events on anonymous traffic we fall back to a stable sentinel so
+    # the row still lands and gets stitched downstream.
+    distinct_id = user_id or "anonymous"
+    payload = {
+        "api_key": api_key,
+        "event": event_name,
+        "distinct_id": distinct_id,
+        "properties": dict(properties or {}),
+    }
+    url = _posthog_host() + _POSTHOG_CAPTURE_PATH
+    try:
+        import requests  # noqa: PLC0415
+
+        requests.post(url, json=payload, timeout=_POSTHOG_TIMEOUT_S)
+    except Exception:
+        logger.warning(
+            "PostHog emit failed (event=%s user=%s)",
+            event_name, user_id, exc_info=True,
         )

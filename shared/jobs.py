@@ -86,6 +86,7 @@ class ToolJob:
     created_at: Optional[str]
     started_at: Optional[str]
     completed_at: Optional[str]
+    campaign_label: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ToolJob":
@@ -104,6 +105,7 @@ class ToolJob:
             created_at=row.get("created_at"),
             started_at=row.get("started_at"),
             completed_at=row.get("completed_at"),
+            campaign_label=row.get("campaign_label"),
         )
 
     def to_dict(self) -> dict:
@@ -118,6 +120,7 @@ class ToolJob:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "campaign_label": self.campaign_label,
         }
 
 
@@ -134,6 +137,7 @@ def create_job(
     inputs: dict,
     target_pdb_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
+    campaign_label: Optional[str] = None,
 ) -> Optional[ToolJob]:
     """Insert a new tool_jobs row in pending status. Returns None on failure.
 
@@ -143,6 +147,11 @@ def create_job(
     can deduct the actual Modal cost from the right Workspace cap. Stored
     inside the jsonb column rather than as dedicated columns to avoid a
     schema migration — same pattern as ``inputs._progress`` from heartbeats.
+
+    ``campaign_label`` is the C4 free-form user-typed string that groups
+    related submissions on /jobs (e.g. "HER2-binder-v3"). NULL when the
+    user left the field blank. Empty/whitespace strings are normalized to
+    NULL so the index stays tight.
     """
     client = get_service_client()
     if client is None:
@@ -157,6 +166,14 @@ def create_job(
         if workspace_id:
             ws_ctx["workspace_id"] = workspace_id
         inputs["_workspace"] = ws_ctx
+    # Normalize campaign_label: trim whitespace, cap length, drop empties.
+    label: Optional[str] = None
+    if isinstance(campaign_label, str):
+        stripped = campaign_label.strip()
+        if stripped:
+            # 80 char cap mirrors the form-field maxlength so server +
+            # client agree on the truncation rule.
+            label = stripped[:80]
     row = {
         "user_id": user_id,
         "tool": tool,
@@ -168,6 +185,7 @@ def create_job(
         # wallet pivot; pricing lives in shared/wallet_estimates.py now.
         "credits_cost": 0,
         "job_token": generate_job_token(),
+        "campaign_label": label,
     }
     try:
         response = client.table(_TABLE).insert(row).execute()
@@ -877,11 +895,22 @@ def _send_overrun_kill_notice(
 
 
 def _send_completion_email(job: "ToolJob") -> None:
-    """Send the job-done email if we can resolve the user's email address."""
+    """Send the job-done email if we can resolve the user's email address.
+
+    Per-user opt-out (C5): respects
+    ``auth.users.user_metadata.email_preferences.job_complete_email``.
+    Missing key defaults to True; an explicit ``False`` skips the send.
+    """
     if job.status not in {"succeeded", "failed"}:
         return
-    user_email = _resolve_email_for_user(job.user_id)
+    user_email, user_meta = resolve_user_email_and_meta(job.user_id)
     if not user_email:
+        return
+    if not _email_pref_enabled(user_meta, "job_complete_email", default=True):
+        logger.info(
+            "Skipping job-complete email for job %s: user opt-out",
+            job.id,
+        )
         return
     try:
         from shared.email import send_job_complete_email  # noqa: PLC0415
@@ -894,9 +923,23 @@ def _send_completion_email(job: "ToolJob") -> None:
 
 def _resolve_email_for_user(user_id: str) -> Optional[str]:
     """Look up the auth.users email for the given user id via service-role client."""
+    email, _meta = resolve_user_email_and_meta(user_id)
+    return email
+
+
+def resolve_user_email_and_meta(
+    user_id: str,
+) -> tuple[Optional[str], dict]:
+    """Return ``(email, user_metadata)`` for ``user_id`` in one round-trip.
+
+    Used by the completion-email path so the opt-out check does not cost
+    a second ``admin.list_users()`` call after the email lookup. Returns
+    ``(None, {})`` when the user cannot be found or the service client
+    is unavailable.
+    """
     client = get_service_client()
     if client is None:
-        return None
+        return None, {}
     try:
         page = client.auth.admin.list_users()
         users = getattr(page, "users", None) or page
@@ -904,14 +947,38 @@ def _resolve_email_for_user(user_id: str) -> Optional[str]:
             uid = getattr(u, "id", None) or (
                 u.get("id") if isinstance(u, dict) else None
             )
-            if uid == user_id:
-                email = getattr(u, "email", None) or (
-                    u.get("email") if isinstance(u, dict) else None
-                )
-                return email
+            if uid != user_id:
+                continue
+            email = getattr(u, "email", None) or (
+                u.get("email") if isinstance(u, dict) else None
+            )
+            meta = getattr(u, "user_metadata", None)
+            if meta is None and isinstance(u, dict):
+                meta = u.get("user_metadata")
+            return email, meta if isinstance(meta, dict) else {}
     except Exception:
         logger.warning("Could not resolve email for user %s", user_id, exc_info=True)
-    return None
+    return None, {}
+
+
+def _email_pref_enabled(
+    user_metadata: dict, key: str, *, default: bool,
+) -> bool:
+    """Read ``user_metadata.email_preferences[key]`` as a strict bool.
+
+    Missing key or non-bool value falls back to ``default``. Used by the
+    job-complete opt-out gate; the same shape is reused by the C6
+    re-engagement sweep.
+    """
+    if not isinstance(user_metadata, dict):
+        return default
+    prefs = user_metadata.get("email_preferences")
+    if not isinstance(prefs, dict):
+        return default
+    value = prefs.get(key)
+    if isinstance(value, bool):
+        return value
+    return default
 
 
 def update_inputs(job_id: str, inputs: dict) -> bool:
@@ -973,12 +1040,18 @@ def list_jobs_paginated(
     *,
     page: int = 1,
     page_size: int = 25,
+    campaign_label: Optional[str] = None,
 ) -> tuple[list[ToolJob], int]:
     """Paginated owner-scoped job list. Returns (rows, total_count).
 
     Uses PostgREST ``range()`` for offset/limit and ``count="exact"`` on
     the select so the template can render page controls without a
     separate count round-trip.
+
+    ``campaign_label`` filters rows to a single campaign. The special
+    value ``""`` (empty string) selects only the uncategorized rows
+    (``campaign_label IS NULL``); a non-empty string filters by equality.
+    Pass ``None`` (default) to skip filtering.
     """
     page = max(1, int(page))
     page_size = max(1, min(100, int(page_size)))
@@ -988,10 +1061,18 @@ def list_jobs_paginated(
     start = (page - 1) * page_size
     end = start + page_size - 1
     try:
-        response = (
+        query = (
             client.table(_TABLE)
             .select("*", count="exact")
             .eq("user_id", user_id)
+        )
+        if campaign_label is not None:
+            if campaign_label == "":
+                query = query.is_("campaign_label", "null")
+            else:
+                query = query.eq("campaign_label", campaign_label)
+        response = (
+            query
             .order("created_at", desc=True)
             .range(start, end)
             .execute()
@@ -1010,6 +1091,42 @@ def list_jobs_paginated(
             exc_info=True,
         )
         return [], 0
+
+
+def list_campaign_labels_for_user(user_id: str) -> list[str]:
+    """Return distinct non-null campaign labels for the user, sorted A-Z.
+
+    Powers the campaign filter ``<select>`` on /jobs. Capped at 200
+    distinct labels so a runaway batch script cannot blow up the page.
+    """
+    client = get_service_client()
+    if client is None:
+        return []
+    try:
+        response = (
+            client.table(_TABLE)
+            .select("campaign_label")
+            .eq("user_id", user_id)
+            .not_.is_("campaign_label", "null")
+            .limit(2000)
+            .execute()
+        )
+    except Exception:
+        logger.warning(
+            "Failed to list campaign labels for user %s",
+            user_id,
+            exc_info=True,
+        )
+        return []
+    rows = getattr(response, "data", None) or []
+    seen: set[str] = set()
+    for r in rows:
+        label = r.get("campaign_label")
+        if isinstance(label, str) and label.strip():
+            seen.add(label.strip())
+        if len(seen) >= 200:
+            break
+    return sorted(seen, key=str.lower)
 
 
 def _update(job_id: str, payload: dict) -> bool:

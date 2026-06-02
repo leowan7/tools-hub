@@ -1,0 +1,14 @@
+{# Plain-text version of reengagement.html. Same variables. #}
+You have credits sitting unused
+
+Your tools-hub wallet still has ${{ balance_usd }} of compute on it, and
+we have not seen a run from you in the last week. No pressure, but here
+are two tools you have not tried yet that the credit comfortably covers.
+{% for suggestion in suggestions %}
+{{ suggestion.label }}
+{{ suggestion.blurb }}
+Try {{ suggestion.label }}: {{ suggestion.url }}
+{% endfor %}
+The Ranomics team
+
+Ranomics Tools. {{ base_url }}

@@ -3,6 +3,50 @@
 {% block title %}FAQ — Ranomics Tools{% endblock %}
 {% block description %}Frequently asked questions about Ranomics Tools: wallet billing, accounts, data and privacy, run times, what a design is, and what the scores mean.{% endblock %}
 
+{% block jsonld_extra %}
+{% set faq_items = [
+  {"q": "How does billing work?",
+   "a": "You top up a USD wallet and each job debits the actual cost of the compute it consumes. There is no subscription, no seat license, and no fixed tier. The whole pricing surface is one number, your balance."},
+  {"q": "Is there a minimum top-up?",
+   "a": "Yes. The minimum top-up is $20. Suggested amounts at checkout are $20, $50, $200, $500, and $2,500. There are no fixed packages, so you can top up any amount at or above the minimum."},
+  {"q": "What is a hold versus a final charge?",
+   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. When the job finishes, the final charge is settled against that hold. If the job ends up cheaper than estimated, the surplus returns to your wallet automatically."},
+  {"q": "Are there subscriptions?",
+   "a": "No. There are no subscriptions, seats, or tiers, and no minimum monthly spend. You pay only for the compute your jobs use. Top ups are final and unused balance does not expire."},
+  {"q": "What happens if a job fails?",
+   "a": "You are charged for the compute the job consumed, even on failure, because we pay our compute provider for that time. Per tool hard caps limit how much any single job can cost in the worst case."},
+  {"q": "More on pricing",
+   "a": "The full billing model, example costs per tool, and the safety caps that prevent surprise bills are on the pricing page."},
+  {"q": "How do I create an account?",
+   "a": "Sign up with your email at tools.ranomics.com. New accounts start with a small wallet balance so you can verify a tool works on your inputs before topping up."},
+  {"q": "How is my data handled?",
+   "a": "Your uploads and results belong to your account and are tied to the email you signed in with. A job link opened under a different account will not show another user's results. See the privacy policy for the full detail."},
+  {"q": "Can I run a tool to test it first?",
+   "a": "Yes. Use a smoke run to confirm a tool accepts your inputs before committing to a paid run. It is the fastest way to catch a bad chain ID or a malformed PDB."},
+  {"q": "How long do runs take?",
+   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. A pilot run on a generative tool typically lands between 15 and 45 minutes. Every tool form shows a typical runtime before you submit."},
+  {"q": "What is a design?",
+   "a": "A design is one candidate the tool generates, a backbone with a sequence, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
+  {"q": "What do the scores mean?",
+   "a": "ipTM is interface confidence, higher is better, aim above roughly 0.7 on a tractable target. pLDDT is per-residue fold confidence, higher is better. i_pAE and pAE are predicted alignment error, lower is better."}
+] %}
+{% set faq_main_entity = [] %}
+{% for item in faq_items %}
+  {% set _ = faq_main_entity.append({
+    "@type": "Question",
+    "name": item.q,
+    "acceptedAnswer": {"@type": "Answer", "text": item.a}
+  }) %}
+{% endfor %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": faq_main_entity
+} | tojson }}
+</script>
+{% endblock %}
+
 {% block content %}
   {% include "help/_help_nav.html" with context %}
 

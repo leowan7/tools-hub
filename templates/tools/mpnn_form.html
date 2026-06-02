@@ -5,6 +5,7 @@
 {% from "components/tool_form_layout.html" import tool_form_layout %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/examples_chip_group.html" import examples_chip_group %}
+{% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -89,6 +90,8 @@
             Upload your backbone PDB and pick chain(s) to redesign.
             ~30-60 s on A10G-24GB.
           </div>
+
+          {{ field_campaign(prefilled=pre_fill) }}
 
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}

@@ -1,0 +1,89 @@
+{# Job-complete transactional email (C5).
+   Sender: shared.email.send_job_complete_email
+   Triggered from shared.jobs._send_completion_email when a job reaches
+   a terminal state (succeeded/failed/timeout). Gated by the user's
+   metadata.email_preferences.job_complete_email flag (default True).
+
+   Variables:
+     base_url             URL prefix for tools.ranomics.com (no trailing slash)
+     tool_label           Human label, e.g. "BindCraft"
+     headline             Top-of-mail headline string
+     summary              Plain-English one-liner about the result
+     cost_line            Optional cost summary string ("" if none)
+     job_id               Job id (UUID string)
+     job_preset           Preset slug
+     job_created          Submitted-at string (first 19 chars)
+     job_url              Link to /jobs/<id>
+     tone                 "success" | "empty" | "failed"
+     top_score_label      Score label string (e.g. "ipTM"); empty when no top score
+     top_score_value      Score value string (e.g. "0.74"); empty when no top score
+     top_score_caption    1-line interpretation of the top score; empty if none
+     top_pdb_key          PDB filename of top design; empty if none
+     next_step_url        URL of /tools/<dest_tool>; empty if no handoff
+     next_step_label      Tool label, e.g. "ColabFold"; empty if no handoff
+#}
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+            color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;
+            background:#ffffff;">
+  <h2 style="margin:0 0 .75rem 0;font-size:20px;">{{ headline }}</h2>
+
+  <p style="margin:0 0 1rem 0;line-height:1.55;">{{ summary }}</p>
+
+  {% if top_score_label and top_score_value %}
+    <div style="margin:1rem 0;padding:12px 14px;background:#f6f8f7;
+                border-left:3px solid #2B9E7E;border-radius:4px;">
+      <div style="font-size:13px;color:#666;">Top design</div>
+      <div style="margin-top:2px;font-size:15px;">
+        <strong>{{ top_score_label }} {{ top_score_value }}</strong>
+        {% if top_pdb_key %}
+          <span style="color:#888;font-size:13px;">
+            ({{ top_pdb_key }})
+          </span>
+        {% endif %}
+      </div>
+      {% if top_score_caption %}
+        <div style="margin-top:6px;font-size:13px;color:#555;line-height:1.5;">
+          {{ top_score_caption }}
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if cost_line %}
+    <p style="font-size:13px;color:#666;margin:8px 0 0 0;">{{ cost_line }}</p>
+  {% endif %}
+
+  <p style="margin:1.5rem 0;">
+    <a href="{{ job_url }}"
+       style="display:inline-block;padding:12px 22px;
+              background:{% if tone == 'success' %}#1f9d55{% else %}#525252{% endif %};
+              color:#ffffff;text-decoration:none;border-radius:6px;
+              font-weight:600;">
+      {% if tone == 'success' %}View results{% else %}View job details{% endif %}
+    </a>
+  </p>
+
+  {% if next_step_url and next_step_label %}
+    <p style="margin:1.25rem 0 0 0;font-size:14px;line-height:1.55;">
+      Natural next step: validate the top design with an orthogonal predictor.
+    </p>
+    <p style="margin:0.5rem 0 0 0;">
+      <a href="{{ next_step_url }}"
+         style="display:inline-block;padding:10px 18px;background:#ffffff;
+                color:#2B9E7E;text-decoration:none;border:1px solid #2B9E7E;
+                border-radius:6px;font-weight:600;">
+        Run the natural next step ({{ next_step_label }})
+      </a>
+    </p>
+  {% endif %}
+
+  <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
+  <p style="font-size:13px;color:#666;margin:0;">
+    Job <code>{{ job_id }}</code> &middot; preset
+    <code>{{ job_preset }}</code> &middot; submitted {{ job_created }}
+  </p>
+  <p style="font-size:12px;color:#999;margin:8px 0 0 0;">
+    Ranomics Tools.
+    <a href="{{ base_url }}" style="color:#999;">tools.ranomics.com</a>
+  </p>
+</div>
