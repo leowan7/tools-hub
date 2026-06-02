@@ -792,6 +792,35 @@ def create_app() -> Flask:
                 "nav wallet read failed for %s", ctx.user_id, exc_info=True
             )
 
+        # Onboarding ribbon (C9): show the welcome strip to first-run users.
+        # Conditions: signed in + wallet credit > 0 + zero tool_jobs rows.
+        # Cheap check, runs once for fresh users and stops as soon as they
+        # submit their first job (the ribbon hides server-side).
+        base["show_onboarding_ribbon"] = False
+        try:
+            if (
+                base.get("nav_wallet_usd") is not None
+                and base["nav_wallet_usd"] > 0
+            ):
+                client = get_service_client()
+                if client is not None:
+                    resp = (
+                        client.table("tool_jobs")
+                        .select("id")
+                        .eq("user_id", ctx.user_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    rows = getattr(resp, "data", None) or []
+                    if not rows:
+                        base["show_onboarding_ribbon"] = True
+        except Exception:
+            logger.debug(
+                "onboarding ribbon check failed for %s",
+                ctx.user_id,
+                exc_info=True,
+            )
+
         return base
 
     # Stripe webhook — mounted at /webhooks/stripe. Signature verification
