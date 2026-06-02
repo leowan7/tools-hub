@@ -3715,6 +3715,63 @@ def create_app() -> Flask:
                     "_refold_of_job_id": src.id,
                     "_campaign_label": campaign_label,
                 }
+            elif dest_tool == "boltz2":
+                # Boltz-2 cofold against the SOURCE job's original antigen.
+                # Reuses the source's already-staged target PDB rather than
+                # re-uploading. The source job must have requires_pdb=True
+                # (all SOURCE_TOOLS do), so _pdb_storage_path is guaranteed.
+                src_inputs = src.inputs or {}
+                staged_path = (src_inputs.get("_pdb_storage_path") or "").strip()
+                if not staged_path:
+                    logger.warning(
+                        "refold->boltz2: source job %s has no _pdb_storage_path",
+                        src.id,
+                    )
+                    continue
+                try:
+                    src_presigned = presigned_input_url(
+                        staged_path, expires_seconds=7200,
+                    )
+                except Exception:
+                    logger.exception(
+                        "refold->boltz2: presigned_input_url failed for %s",
+                        staged_path,
+                    )
+                    continue
+                src_chain = str(src_inputs.get("target_chain") or "A").strip() or "A"
+                # SOURCE_TOOLS all persist hotspot_residues as list[int] in
+                # their validate() output; tolerate a string from any
+                # future adapter that drops the parsing.
+                raw_hotspots = src_inputs.get("hotspot_residues") or []
+                if isinstance(raw_hotspots, str):
+                    parsed: list[int] = []
+                    for tok in raw_hotspots.replace(";", ",").split(","):
+                        tok = tok.strip()
+                        if tok:
+                            try:
+                                parsed.append(int(tok))
+                            except ValueError:
+                                pass
+                    raw_hotspots = parsed
+                hotspot_list = [int(x) for x in raw_hotspots if str(x).strip()]
+                inputs = {
+                    "preset": "standalone",
+                    "target_chain": src_chain,
+                    "hotspot_residues": hotspot_list,
+                    "binder_sequences": [
+                        {"name": seq.fasta_header, "sequence": seq.sequence},
+                    ],
+                    "parameters": {"n_designs_total": 1},
+                    "target": (
+                        f"Refold of {src.tool} job {src.id[:8]}, "
+                        f"rank {seq.rank}"
+                    ),
+                    "_refold_of_job_id": src.id,
+                    "_campaign_label": campaign_label,
+                    "_pdb_storage_path": staged_path,
+                    "_input_pdb_url": src_presigned,
+                    "_input_presigned_url": src_presigned,
+                }
             else:
                 # can_refold gate above should make this unreachable.
                 continue
@@ -3745,10 +3802,28 @@ def create_app() -> Flask:
                     job_token=job.job_token,
                     _external=True,
                 )
+                # Boltz-2 needs the antigen presigned URL and the
+                # per-design upload endpoint (partial-results streaming).
+                # ColabFold/ESMFold ignore both because their FASTA
+                # travels inline in job_spec.
+                submit_inputs: dict = dict(job_spec)
+                if dest_tool == "boltz2":
+                    submit_inputs["_input_pdb_url"] = inputs.get(
+                        "_input_presigned_url", ""
+                    )
+                    submit_inputs["_input_presigned_url"] = inputs.get(
+                        "_input_presigned_url", ""
+                    )
+                    submit_inputs["_upload_urls_endpoint"] = url_for(
+                        "upload_urls",
+                        job_id=job.id,
+                        job_token=job.job_token,
+                        _external=True,
+                    )
                 modal_client.submit(
                     dest_adapter.slug,
                     "standalone",
-                    inputs=job_spec,
+                    inputs=submit_inputs,
                     job_id=job.id,
                     job_token=job.job_token,
                     webhook_url=webhook_url,

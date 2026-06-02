@@ -31,12 +31,18 @@ SOURCE_TOOLS: frozenset[str] = frozenset({
     "boltzgen",
 })
 
-# Destination tools that accept a single-monomer FASTA. ColabFold's
-# no-MSA path is the fastest credible orthogonal check; ESMFold is even
-# faster but monomer-only. Both run < 2 min on tools-hub.
+# Destination tools that accept a single binder and produce a per-design
+# fold for the comparison view. ColabFold (no-MSA monomer) and ESMFold
+# (single-sequence monomer) are the cheapest orthogonal checks; both run
+# < 2 min on tools-hub. Boltz-2 is the antibody-trained cofold against
+# the SOURCE job's original antigen — same target, different predictor —
+# so it is the strongest orthogonal signal for binder-design results.
+# Each candidate spawns its own Boltz-2 job to match the per-spawned-job
+# row layout of /jobs/compare.
 DESTINATION_TOOLS: frozenset[str] = frozenset({
     "colabfold",
     "esmfold",
+    "boltz2",
 })
 
 

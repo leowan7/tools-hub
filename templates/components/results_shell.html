@@ -77,11 +77,22 @@
               </select>
               <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with ESMFold</button>
             </form>
+            <form method="POST" action="{{ url_for('job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+              <input type="hidden" name="dest_tool" value="boltz2">
+              <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>
+              <select name="n" aria-label="Number of top designs to refold" style="background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.25rem 0.4rem; font-size: 0.85rem;">
+                <option value="5" selected>5</option>
+                <option value="10">10</option>
+              </select>
+              <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with Boltz-2 (cofold)</button>
+            </form>
           </div>
           <p style="color: var(--text-tertiary); font-size: 0.78rem; margin: 0.5rem 0 0 0;">
             Spawns one fold per design in parallel; results land in a
-            single comparison view. Each fold is billed to your wallet
-            on completion (a few cents per fold).
+            single comparison view. ColabFold and ESMFold re-fold the
+            binder alone; Boltz-2 re-folds it against the same antigen
+            you designed against (cofold). Each fold is billed to your
+            wallet on completion (a few cents per fold).
           </p>
         </div>
       {% endif %}
