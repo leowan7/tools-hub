@@ -412,19 +412,31 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
     if isinstance(smoke, dict):
         status_raw = str(smoke.get("status") or "").upper()
         if status_raw == "COMPLETED":
-            # Unwrap smoke["output"] so job.result has the same flat shape
-            # as the webhook path (which already passes payload["output"]
-            # straight through). Without this, mini_pilot results were
-            # stored as {"status": "COMPLETED", "output": {"candidates": [...]}},
-            # and every results template doing job.result.get("candidates")
-            # saw nothing. Merge tier and gpu_seconds in so the templates
-            # that read those off output still see them.
-            output = smoke.get("output") or {}
-            if not isinstance(output, dict):
-                output = {}
-            for key in ("tier", "gpu_seconds", "runtime_seconds"):
-                if key in smoke and key not in output:
-                    output[key] = smoke[key]
+            # Two shapes land here:
+            #   - Composite tools (mini_pilot legacy) nest results under
+            #     ``smoke["output"]`` so the webhook path and the inline
+            #     path agree on a shared ``payload["output"]`` contract.
+            #   - Atomic tools (MPNN / AF2 / ColabFold / ESMFold /
+            #     Boltz-2) emit a FLAT ``smoke_results.json`` whose
+            #     domain keys (sequences, designs, ...) sit at the top
+            #     level next to status / tier / runtime_seconds.
+            # Unwrap accordingly so job.result always carries the
+            # tool-specific keys without silently dropping any of them.
+            raw_output = smoke.get("output")
+            if isinstance(raw_output, dict):
+                output = dict(raw_output)
+                # Composite shape — merge tier + timing from the wrapper
+                # so templates that read them off the top level still see
+                # them when they live one level up.
+                for key in ("tier", "gpu_seconds", "runtime_seconds"):
+                    if key in smoke and key not in output:
+                        output[key] = smoke[key]
+            else:
+                # Flat atomic-tool shape — take everything except
+                # ``status`` (already used to branch above). Preserves
+                # designs / sequences / antigen_length / contacted_residues
+                # / ... without per-tool key allowlists.
+                output = {k: v for k, v in smoke.items() if k != "status"}
             return {
                 "status": "succeeded",
                 "result": output,
