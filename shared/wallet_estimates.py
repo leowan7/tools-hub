@@ -171,6 +171,21 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("13.00"),
         absolute_cap_usd=Decimal("500.00"),
     ),
+    "boltz2": ToolSpec(
+        slug="boltz2",
+        gpu_class="A100-40GB",
+        # Conservative bootstrap covering both presets: standalone ~60 s/design,
+        # msa_server ~180 s/design. Holding at the higher value over-reserves on
+        # standalone runs (released as surplus on settle) but never under-holds
+        # an MSA fetch. Historical p90 supersedes this once >=20 runs land.
+        expected_gpu_seconds=180.0,
+        designs_per_run_baseline=1,
+        scaling_param="n_designs_total",
+        # ~2x the marked-up msa_server per-design cost at the baseline; scales
+        # linearly with binder count up to the absolute cap.
+        base_hard_cap_usd=Decimal("0.40"),
+        absolute_cap_usd=Decimal("50.00"),
+    ),
     "boltzgen": ToolSpec(
         slug="boltzgen",
         gpu_class="A100-80GB",

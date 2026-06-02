@@ -114,9 +114,22 @@ GLOSSARY: dict[str, dict] = {
             "threshold' means the pipeline ran cleanly but the design did "
             "not meet pilot-tier quality bars — useful for inspecting the "
             "score distribution, not for advancing to validation. 'stub' "
-            "marks smoke-test stubs whose scores are placeholders."
+            "marks smoke-test stubs whose scores are placeholders. "
+            "'strict_pass' / 'soft_pass' are Boltz-2 cofold tiers: "
+            "strict_pass = complex_pLDDT > 0.85 AND ipTM > 0.7 AND at "
+            "least 5 hotspot contacts."
         ),
-        "good_range": "pass",
+        "good_range": "pass / strict_pass",
+        "citation": "",
+    },
+    "n_hotspot_contacts": {
+        "label": "Hotspot hits",
+        "definition": (
+            "Number of user-requested antigen hotspot residues that the "
+            "binder contacts in the predicted complex (any heavy atom "
+            "within 5 Å). Boltz-2 cofold validation only."
+        ),
+        "good_range": "> 4 out of 7 typical for strict-pass designs",
         "citation": "",
     },
 }
@@ -135,6 +148,7 @@ _FORMAT: dict[str, str] = {
     "shape_complementarity": ".3f",
     "SAP": ".2f",
     "filter_status": "str",
+    "n_hotspot_contacts": ".0f",
 }
 
 

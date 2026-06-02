@@ -114,6 +114,7 @@ from shared import metric_glossary as _metric_glossary
 from tools import base as tool_base
 import tools.af2         # noqa: F401 — import to register adapter (D2 atomic)
 import tools.bindcraft   # noqa: F401 — import to register adapter
+import tools.boltz2      # noqa: F401 — import to register adapter (Boltz-2 cofold)
 import tools.boltzgen    # noqa: F401 — import to register adapter
 import tools.colabfold   # noqa: F401 — import to register adapter (D3 atomic)
 import tools.esmfold     # noqa: F401 — import to register adapter (D4 atomic)

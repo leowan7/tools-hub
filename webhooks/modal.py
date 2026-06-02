@@ -335,6 +335,12 @@ def _sanitize_candidate(cand: dict) -> dict | None:
     Drops unknown keys and caps string lengths so a spoofed or buggy
     pipeline cannot bloat the inputs jsonb or smuggle markup into the
     status page. Returns None when there is no usable integer rank.
+
+    Schema is additive across tools — fields not set by a given pipeline
+    come back as None and the results renderer hides them. Boltz-2 adds
+    ``name``, ``ptm``, ``complex_plddt``, ``complex_iplddt``,
+    ``n_hotspot_contacts``, ``contacted_residues`` on top of the
+    composite-pipeline schema (rank/pdb_key/iptm/plddt/i_pae/filter_status).
     """
     try:
         rank = int(cand.get("rank"))
@@ -349,12 +355,42 @@ def _sanitize_candidate(cand: dict) -> dict | None:
 
     pdb_key = cand.get("pdb_key")
     filter_status = cand.get("filter_status")
+    name = cand.get("name")
+
+    # contacted_residues: positive 1-indexed ints, cap at 64 to keep the
+    # jsonb row bounded. Anything else gets dropped silently.
+    raw_contacts = cand.get("contacted_residues")
+    contacts_out: list[int] | None = None
+    if isinstance(raw_contacts, list):
+        cleaned: list[int] = []
+        for v in raw_contacts[:64]:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 < n < 100000:
+                cleaned.append(n)
+        contacts_out = cleaned
+
+    n_hotspot_contacts: int | None = None
+    try:
+        if cand.get("n_hotspot_contacts") is not None:
+            n_hotspot_contacts = max(0, int(cand.get("n_hotspot_contacts")))
+    except (TypeError, ValueError):
+        n_hotspot_contacts = None
+
     return {
         "rank": rank,
+        "name": str(name)[:64] if name else None,
         "pdb_key": str(pdb_key)[:256] if pdb_key else None,
         "iptm": _num(cand.get("iptm")),
+        "ptm": _num(cand.get("ptm")),
         "plddt": _num(cand.get("plddt")),
+        "complex_plddt": _num(cand.get("complex_plddt")),
+        "complex_iplddt": _num(cand.get("complex_iplddt")),
         "i_pae": _num(cand.get("i_pae")),
+        "n_hotspot_contacts": n_hotspot_contacts,
+        "contacted_residues": contacts_out,
         "filter_status": str(filter_status)[:64] if filter_status else None,
     }
 
