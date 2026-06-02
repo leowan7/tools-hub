@@ -32,6 +32,37 @@ paper_url: str = "https://www.nature.com/articles/s41586-021-03819-2"
 # MSA + a clean pip install. The upstream AlphaFold2 repo is linked
 # from the ColabFold README.
 github_url: str = "https://github.com/sokrypton/ColabFold"
+
+seo_faq: list[dict] = [
+    {
+        "q": "Can I run AlphaFold2 multimer online without a local GPU?",
+        "a": (
+            "Yes. Ranomics Tools runs AlphaFold2 (via the ColabFold "
+            "implementation) on a dedicated GPU through your browser, "
+            "with full MSA search and template support. Results land on a "
+            "job page with ipTM, pLDDT, and pAE plots."
+        ),
+    },
+    {
+        "q": "How is this different from running ColabFold yourself?",
+        "a": (
+            "Same underlying weights and pipeline — but you skip CUDA "
+            "setup, MMseqs2 round-trip on your laptop, and the wait for "
+            "the public Colab queue. You also get a persistent job page "
+            "you can share or hand off into ProteinMPNN or BindCraft."
+        ),
+    },
+    {
+        "q": "How much does an AlphaFold2 multimer run cost?",
+        "a": (
+            "Billing is by the second of dedicated GPU time. A typical "
+            "single-complex fold costs a few cents to a dollar from your "
+            "wallet. New accounts start with $5 of credit, which covers "
+            "many monomer folds or a handful of multimers."
+        ),
+    },
+]
+
 comparison_one_liner: str = (
     "Pick AF2 when you need the gold-standard structure prediction with "
     "calibrated pLDDT + PAE. For faster single-sequence folds use "

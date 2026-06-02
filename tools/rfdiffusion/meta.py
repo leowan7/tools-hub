@@ -28,6 +28,39 @@ paper_url: str = "https://www.nature.com/articles/s41586-023-06415-8"
 
 github_url: str = "https://github.com/RosettaCommons/RFdiffusion"
 
+
+seo_faq: list[dict] = [
+    {
+        "q": "Can I run RFdiffusion online without installing it locally?",
+        "a": (
+            "Yes. Ranomics Tools runs the full RFdiffusion + ProteinMPNN + "
+            "AF2 multimer pipeline on a dedicated GPU through your browser. "
+            "You upload a target PDB, set hotspots and binder length, and "
+            "candidates come back with real ipTM, pLDDT, and i_pAE scores."
+        ),
+    },
+    {
+        "q": "How much does one RFdiffusion run cost?",
+        "a": (
+            "Billing is by the second of dedicated GPU time. A pilot run "
+            "(~15 to 30 minutes on an A100) typically clears for under a "
+            "few dollars from your wallet. New accounts start with a $5 "
+            "balance, which covers a first small-target run."
+        ),
+    },
+    {
+        "q": "Do I need to choose hotspots before running RFdiffusion?",
+        "a": (
+            "Hotspots are strongly recommended — they tell RFdiffusion "
+            "which residues on the target the binder should contact. If you "
+            "do not have a hotspot guess, run Epitope Scout first to score "
+            "the target surface, then hand off the picked residues into "
+            "the RFdiffusion form."
+        ),
+    },
+]
+
+
 # One-line decision helper shown in the "About" panel.
 comparison_one_liner: str = (
     "Pick RFdiffusion when you want general de novo binder design "

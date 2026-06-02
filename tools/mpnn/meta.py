@@ -27,6 +27,36 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 paper_citation: str = "Dauparas et al., Science 2022"
 paper_url: str = "https://www.science.org/doi/10.1126/science.add2187"
 github_url: str = "https://github.com/dauparas/ProteinMPNN"
+
+seo_faq: list[dict] = [
+    {
+        "q": "Can I run ProteinMPNN online without a local GPU?",
+        "a": (
+            "Yes. Upload a backbone PDB and Ranomics Tools runs ProteinMPNN "
+            "on a dedicated GPU in seconds. You get ranked sequence "
+            "redesigns plus per-position recovery — no install, no CUDA."
+        ),
+    },
+    {
+        "q": "How much does one ProteinMPNN job cost?",
+        "a": (
+            "Billing is by the second. A typical ProteinMPNN job costs a "
+            "fraction of a cent because the model finishes in under a "
+            "minute on most backbones. New accounts start with a $5 "
+            "wallet balance, which is enough for thousands of runs."
+        ),
+    },
+    {
+        "q": "Does ProteinMPNN need an MSA?",
+        "a": (
+            "No. ProteinMPNN is a structure-conditioned sequence model — "
+            "it takes the backbone coordinates directly and never queries "
+            "an MSA. That makes it the fastest route from a designed "
+            "backbone to a sequence you can synthesise."
+        ),
+    },
+]
+
 comparison_one_liner: str = (
     "Pick ProteinMPNN when you already have a backbone and need candidate "
     "sequences. For de novo backbone generation, use RFantibody, BindCraft, "

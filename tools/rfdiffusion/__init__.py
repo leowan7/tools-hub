@@ -124,7 +124,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="rfdiffusion",
-    label="RFdiffusion -- de novo binder design",
+    label="RFdiffusion — de novo binder design",
     blurb=(
         "Composite binder design: RFdiffusion backbones + ProteinMPNN "
         "sequences + AF2 multimer validation. Candidates carry real "
@@ -133,7 +133,7 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot -- your target, ~30 min",
+            label="Pilot — your target, ~30 min",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
                 "with AF2 multimer validation. Up to 200 candidates with real "

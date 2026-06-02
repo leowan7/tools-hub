@@ -68,6 +68,28 @@
 } | tojson }}
   </script>
   {% endblock %}
+
+  {# BreadcrumbList JSON-LD. Pages that pass a `breadcrumbs` context var
+     (list of {name, url}) get a SERP-eligible breadcrumb trail. #}
+  {% if breadcrumbs %}
+  {% set _bc_items = [] %}
+  {% for crumb in breadcrumbs %}
+    {% set _ = _bc_items.append({
+      "@type": "ListItem",
+      "position": loop.index,
+      "name": crumb.name,
+      "item": crumb.url
+    }) %}
+  {% endfor %}
+  <script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": _bc_items
+} | tojson }}
+  </script>
+  {% endif %}
+
   {% block jsonld_extra %}{% endblock %}
 </head>
 <body{% block body_attr %}{% endblock %}>

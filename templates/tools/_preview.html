@@ -22,11 +22,12 @@
 #}
 {% extends "base.html" %}
 
-{% block title %}{{ adapter.label }} — {{ seo_phrase }} | Ranomics Tools{% endblock %}
-{% block description %}{{ adapter.blurb }} Run {{ adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label }} on a dedicated GPU through your browser. {{ seo_long }}{% endblock %}
+{% set _short_name = short_name or (adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label) %}
+
+{% block title %}Run {{ _short_name }} online — {{ seo_phrase }} | Ranomics Tools{% endblock %}
+{% block description %}Run {{ _short_name }} online on a dedicated GPU through your browser — no install, no local CUDA. {{ seo_long }}.{% endblock %}
 
 {% block jsonld_extra %}
-{% set _short_name = adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label %}
 {% set _desc_src = (meta.comparison_one_liner if meta and meta.comparison_one_liner else adapter.blurb) %}
 {% set _desc_clean = (_desc_src | striptags) if _desc_src else "" %}
 {% set _desc_trunc = (_desc_clean[:250]) if _desc_clean else "" %}
@@ -43,16 +44,34 @@
 <script type="application/ld+json">
 {{ sa | tojson }}
 </script>
+
+{% if meta and meta.seo_faq %}
+{% set _faq_main = [] %}
+{% for item in meta.seo_faq %}
+  {% set _ = _faq_main.append({
+    "@type": "Question",
+    "name": item.q,
+    "acceptedAnswer": {"@type": "Answer", "text": item.a}
+  }) %}
+{% endfor %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": _faq_main
+} | tojson }}
+</script>
+{% endif %}
 {% endblock %}
 
 {% block content %}
   {% block preview_hero %}
     <div class="hero">
-      <h1>{{ adapter.label }}</h1>
-      <p class="subtitle">{{ adapter.blurb }}</p>
+      <h1>Run {{ _short_name }} online</h1>
+      <p class="subtitle">{{ adapter.label }} — {{ adapter.blurb }}</p>
       <p style="margin: 0.85rem 0 0; color: var(--text-secondary); line-height: 1.6; max-width: 60ch;">
-        A {{ seo_phrase }} you can run through tools.ranomics.com on a
-        dedicated GPU. {{ seo_long }}.
+        {{ _short_name }} is a {{ seo_phrase }} you can run through
+        tools.ranomics.com on a dedicated GPU. {{ seo_long }}.
       </p>
       <div style="margin-top: 1.25rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
         <a href="{{ url_for('login', next=login_next) }}" class="btn-primary">Sign in to run</a>
@@ -70,7 +89,7 @@
       <section class="section">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">When to pick this tool</span>
+            <h2 class="panel-title">When to pick this tool</h2>
           </div>
           <div class="panel-body">
             <p style="margin: 0; color: var(--text-secondary); line-height: 1.65;">{{ meta.comparison_one_liner }}</p>
@@ -85,7 +104,7 @@
       <section class="section">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">What it is</span>
+            <h2 class="panel-title">What it is</h2>
           </div>
           <div class="panel-body">
             {% if meta.about.what_it_is %}
@@ -109,7 +128,7 @@
     <section class="section">
       <div class="panel">
         <div class="panel-header">
-          <span class="panel-title">A typical result</span>
+          <h2 class="panel-title">A typical result</h2>
         </div>
         <div class="panel-body">
           <div style="display: flex; align-items: center; justify-content: center; min-height: 220px; border: 1px dashed var(--border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-secondary); padding: 1.25rem; text-align: center;">
@@ -128,7 +147,7 @@
     <section class="section">
       <div class="panel">
         <div class="panel-header">
-          <span class="panel-title">What good looks like</span>
+          <h2 class="panel-title">What good looks like</h2>
         </div>
         <div class="panel-body">
           <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
@@ -169,10 +188,82 @@
       <section class="section">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">Typical runtime</span>
+            <h2 class="panel-title">Typical runtime</h2>
           </div>
           <div class="panel-body">
             <p style="margin: 0; color: var(--text-secondary); line-height: 1.65;">{{ runtime_band }} per run on a dedicated GPU. Billing is by the second of compute, so a faster preset costs less.</p>
+          </div>
+        </div>
+      </section>
+    {% endif %}
+  {% endblock %}
+
+  {% block preview_learn_more %}
+    {% if learn_more_url %}
+      <section class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Learn how {{ _short_name }} works</h2>
+          </div>
+          <div class="panel-body">
+            <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+              We keep a plain-English overview of {{ _short_name }} on the
+              main Ranomics site — what the model does under the hood, the
+              kinds of targets it works on, and where it fits inside a
+              full design-to-wet-lab campaign.
+            </p>
+            <a href="{{ learn_more_url }}"
+               class="btn-secondary"
+               target="_blank"
+               rel="noopener">How {{ _short_name }} works at Ranomics</a>
+          </div>
+        </div>
+      </section>
+    {% endif %}
+  {% endblock %}
+
+  {% block preview_related %}
+    {% if related_tools %}
+      <section class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Related tools on Ranomics</h2>
+          </div>
+          <div class="panel-body">
+            <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+              If you are picking between {{ _short_name }} and a sibling
+              algorithm, these run on the same hub against the same target.
+            </p>
+            <dl style="margin: 0;">
+              {% for r in related_tools %}
+                <dt style="font-weight: 600; margin-top: 0.85rem;">
+                  <a href="{{ r.url }}" style="color: var(--accent-text); text-decoration: none;">Run {{ r.short_name }} online</a>
+                </dt>
+                {% if r.blurb %}
+                  <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">{{ r.blurb }}</dd>
+                {% endif %}
+              {% endfor %}
+            </dl>
+          </div>
+        </div>
+      </section>
+    {% endif %}
+  {% endblock %}
+
+  {% block preview_faq %}
+    {% if meta and meta.seo_faq %}
+      <section class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Questions people ask about {{ _short_name }}</h2>
+          </div>
+          <div class="panel-body">
+            <dl style="margin: 0;">
+              {% for item in meta.seo_faq %}
+                <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.85rem;">{{ item.q }}</dt>
+                <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.65;">{{ item.a }}</dd>
+              {% endfor %}
+            </dl>
           </div>
         </div>
       </section>
@@ -184,7 +275,7 @@
       <section class="section">
         <div class="panel">
           <div class="panel-header">
-            <span class="panel-title">References</span>
+            <h2 class="panel-title">References</h2>
           </div>
           <div class="panel-body">
             {% if meta.paper_citation %}
@@ -212,7 +303,7 @@
           <div style="max-width: 52ch;">
             <p style="margin: 0 0 0.35rem 0; color: var(--text-primary); font-weight: 600;">Ready to run it?</p>
             <p style="margin: 0; color: var(--text-secondary); line-height: 1.6;">
-              Sign in to open the {{ adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label }} run form. Your $5 starting balance is enough for a first job on a small target.
+              Sign in to open the {{ _short_name }} run form. Your $5 starting balance is enough for a first job on a small target.
             </p>
           </div>
           <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">

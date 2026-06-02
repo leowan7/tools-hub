@@ -33,6 +33,38 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 paper_citation: str = "Pacesa et al., bioRxiv 2024"
 paper_url: str = "https://www.biorxiv.org/content/10.1101/2024.09.30.615802v1"
 github_url: str = "https://github.com/martinpacesa/BindCraft"
+
+seo_faq: list[dict] = [
+    {
+        "q": "Can I run BindCraft online without installing it?",
+        "a": (
+            "Yes. Ranomics Tools runs the full BindCraft hallucination "
+            "loop on a dedicated GPU through your browser. Upload a target "
+            "PDB, pick hotspots and binder length, and candidates come "
+            "back with AF2 ipTM and pLDDT on every hit."
+        ),
+    },
+    {
+        "q": "BindCraft vs RFdiffusion — which should I pick?",
+        "a": (
+            "Both design de novo binders against your target. BindCraft "
+            "hallucinates sequences and backbones jointly inside AF2; "
+            "RFdiffusion samples a backbone first then drops sequences in "
+            "with ProteinMPNN. Run both on the same hub and compare ipTM "
+            "before committing to wet-lab."
+        ),
+    },
+    {
+        "q": "How long does a BindCraft pilot take?",
+        "a": (
+            "Typical pilot runs finish in roughly 20 to 60 minutes on a "
+            "dedicated A100, depending on target size and how many "
+            "candidates pass the internal ipTM filter. Billing is by the "
+            "second so a faster preset costs less."
+        ),
+    },
+]
+
 comparison_one_liner: str = (
     "Pick BindCraft when you have a target PDB plus known hotspot "
     "residues and want de novo 60-150 aa protein binders."

@@ -29,6 +29,37 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 paper_citation: str = "Wohlwend et al., MIT (2024)"
 paper_url: str = "https://github.com/jwohlwend/boltz"
 github_url: str = "https://github.com/jwohlwend/boltz"
+
+seo_faq: list[dict] = [
+    {
+        "q": "Can I run BoltzGen online without setting up the model locally?",
+        "a": (
+            "Yes. Ranomics Tools runs BoltzGen on a dedicated GPU through "
+            "your browser. Upload a target PDB, pick a scaffold class "
+            "(mini-binder, VHH, scFv, or peptide), and candidates come "
+            "back with structure + affinity-like scores per hit."
+        ),
+    },
+    {
+        "q": "Which modalities does BoltzGen design against the same target?",
+        "a": (
+            "BoltzGen can design mini-proteins, nanobodies, antibodies "
+            "(scFv-class), or peptides against the same target with "
+            "glycan and PTM support. The form switches scaffold class "
+            "per run, so you can A/B different modalities cheaply before "
+            "committing to wet-lab."
+        ),
+    },
+    {
+        "q": "How long does a BoltzGen pilot run take?",
+        "a": (
+            "Pilot runs typically finish in 30 to 90 minutes on a "
+            "dedicated A100, depending on target size and modality. "
+            "Billing is by the second of GPU time."
+        ),
+    },
+]
+
 comparison_one_liner: str = (
     "Pick BoltzGen when you want one model that can design "
     "mini-proteins, nanobodies, antibodies, or peptides against the "

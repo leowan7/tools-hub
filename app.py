@@ -2540,6 +2540,79 @@ def create_app() -> Flask:
             ),
         )
 
+    # Map tools-hub slug -> ranomics.com /technology/<slug> page slug.
+    # Used to emit a cross-site "Learn how X works" link on each public
+    # preview so the two co-owned sites reinforce each other for
+    # algorithm-name search intent.
+    _RANOMICS_TECHNOLOGY_SLUGS: dict[str, str] = {
+        "mpnn": "proteinmpnn",
+        "af2": "alphafold2",
+        "colabfold": "colabfold",
+        "esmfold": "esmfold",
+        "rfdiffusion": "rfdiffusion",
+        "rfantibody": "rfantibody",
+        "bindcraft": "bindcraft",
+        "boltzgen": "boltzgen",
+        "pxdesign": "pxdesign",
+    }
+
+    # 2-3 related tools per slug, ordered by closest sibling first.
+    # Powers an internal-linking "Related tools" block on each preview
+    # page so a searcher comparing algorithms gets surfaced the next
+    # logical option from the same workflow stage.
+    _RELATED_TOOLS: dict[str, tuple[str, ...]] = {
+        "rfdiffusion": ("bindcraft", "pxdesign", "boltzgen"),
+        "bindcraft":   ("rfdiffusion", "boltzgen", "pxdesign"),
+        "pxdesign":    ("rfdiffusion", "bindcraft", "boltzgen"),
+        "boltzgen":    ("rfdiffusion", "rfantibody", "bindcraft"),
+        "rfantibody":  ("boltzgen", "rfdiffusion", "bindcraft"),
+        "mpnn":        ("af2", "colabfold", "esmfold"),
+        "af2":         ("colabfold", "esmfold", "mpnn"),
+        "colabfold":   ("af2", "esmfold", "mpnn"),
+        "esmfold":     ("af2", "colabfold", "mpnn"),
+        "boltz2":      ("af2", "colabfold", "boltzgen"),
+    }
+
+    def _short_name_for_label(label: str) -> str:
+        """Return the algorithm name only — strip any 'X — descriptor' tail.
+
+        Accepts em-dash ('—'), double-dash ('--'), or bare label. Used
+        in SEO titles and h1s so the page leads with the searchable
+        algorithm name rather than the full marketing label.
+        """
+        for sep in (" — ", " -- ", " – "):
+            if sep in label:
+                return label.split(sep, 1)[0].strip()
+        return label.strip()
+
+    def _related_tool_cards(slug: str) -> list[dict]:
+        """Build the related-tools card list for the preview page.
+
+        Each card carries slug, short_name, one-line description, and
+        the tool_form URL so the template stays declarative.
+        """
+        import importlib  # noqa: PLC0415
+        out: list[dict] = []
+        for related_slug in _RELATED_TOOLS.get(slug, ()):
+            related_adapter = tool_base.get(related_slug)
+            if related_adapter is None or not tool_enabled(related_slug):
+                continue
+            blurb = related_adapter.blurb or ""
+            try:
+                rmeta = importlib.import_module(f"tools.{related_slug}.meta")
+                one_liner = getattr(rmeta, "comparison_one_liner", None)
+                if one_liner:
+                    blurb = one_liner
+            except ImportError:
+                pass
+            out.append({
+                "slug": related_slug,
+                "short_name": _short_name_for_label(related_adapter.label),
+                "blurb": blurb,
+                "url": url_for("tool_form", tool=related_slug),
+            })
+        return out
+
     def _runtime_band_for_adapter(adapter, meta) -> str:
         """Compute the same runtime band string used on the homepage cards.
 
@@ -2713,8 +2786,14 @@ def create_app() -> Flask:
     @flask_app.route("/help", methods=["GET"])
     def help_index():
         """Docs hub: getting started, per-tool guides, FAQ, troubleshooting."""
+        breadcrumbs = [
+            {"name": "Home", "url": url_for("index", _external=True)},
+            {"name": "Help", "url": url_for("help_index", _external=True)},
+        ]
         return render_template(
-            "help/index.html", adapters=tool_base.all_adapters()
+            "help/index.html",
+            adapters=tool_base.all_adapters(),
+            breadcrumbs=breadcrumbs,
         )
 
     @flask_app.route("/help/getting-started", methods=["GET"])
@@ -2731,8 +2810,24 @@ def create_app() -> Flask:
             meta = importlib.import_module(f"tools.{tool}.meta")
         except ImportError:
             meta = None
+        short_name = _short_name_for_label(adapter.label)
+        breadcrumbs = [
+            {"name": "Home", "url": url_for("index", _external=True)},
+            {"name": "Help", "url": url_for("help_index", _external=True)},
+            {"name": "Tools", "url": url_for(
+                "tools_comparison", _external=True
+            )},
+            {"name": short_name, "url": url_for(
+                "help_tool_guide", tool=tool, _external=True
+            )},
+        ]
         return render_template(
-            "help/tool_guide.html", tool=tool, adapter=adapter, meta=meta
+            "help/tool_guide.html",
+            tool=tool,
+            adapter=adapter,
+            meta=meta,
+            short_name=short_name,
+            breadcrumbs=breadcrumbs,
         )
 
     @flask_app.route("/help/faq", methods=["GET"])
@@ -2794,6 +2889,21 @@ def create_app() -> Flask:
             template_name = per_tool_template if _template_exists(
                 per_tool_template
             ) else "tools/_preview.html"
+            short_name = _short_name_for_label(adapter.label)
+            tech_slug = _RANOMICS_TECHNOLOGY_SLUGS.get(adapter.slug)
+            learn_more_url = (
+                f"https://www.ranomics.com/technology/{tech_slug}"
+                if tech_slug else None
+            )
+            breadcrumbs = [
+                {"name": "Home", "url": url_for("index", _external=True)},
+                {"name": "Tools", "url": url_for(
+                    "tools_comparison", _external=True
+                )},
+                {"name": short_name, "url": url_for(
+                    "tool_form", tool=adapter.slug, _external=True
+                )},
+            ]
             return render_template(
                 template_name,
                 adapter=adapter,
@@ -2802,6 +2912,10 @@ def create_app() -> Flask:
                 login_next=login_next,
                 seo_phrase=seo_phrase,
                 seo_long=seo_long,
+                short_name=short_name,
+                learn_more_url=learn_more_url,
+                related_tools=_related_tool_cards(adapter.slug),
+                breadcrumbs=breadcrumbs,
             )
 
         ctx = load_user_context()
@@ -4116,11 +4230,18 @@ def create_app() -> Flask:
             if members:
                 grouped.append((category, members))
 
+        breadcrumbs = [
+            {"name": "Home", "url": url_for("index", _external=True)},
+            {"name": "All tools", "url": url_for(
+                "tools_comparison", _external=True
+            )},
+        ]
         return render_template(
             "tools/comparison.html",
             tools=catalog,
             grouped=grouped,
             authenticated=bool(session.get("user_email")),
+            breadcrumbs=breadcrumbs,
         )
 
     # ------------------------------------------------------------------
