@@ -100,6 +100,13 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("esmfold", "smoke"):          90,
     ("esmfold", "standalone"):     360,
     ("esmfold", "fast"):           360,   # legacy alias — pre-D4 planning
+    # Boltz-2 cofold: ``standalone`` = single-sequence (~60 s/design); cap
+    # at 1200 s covers a 10-binder run with weight-load headroom.
+    # ``msa_server`` = --use_msa_server (~3 min/design including MSA
+    # fetch); cap at 3600 s covers a 10-binder run including the
+    # public-server tail latency. Modal hard timeout is 3600 s.
+    ("boltz2", "standalone"):      1200,
+    ("boltz2", "msa_server"):      3600,
     ("af2_ig", "standard"):        720,
     # Composite pipelines. smoke + mini_pilot tiers were removed
     # 2026-05-29; pilot is the only user-facing tier and full is reserved
