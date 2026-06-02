@@ -224,6 +224,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "af2": "Structure prediction",
     "colabfold": "Structure prediction",
     "esmfold": "Structure prediction",
+    "boltz2": "Structure prediction",
 }
 
 
