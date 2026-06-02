@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <title>De novo minibinders</title>
+  <line x1="4" y1="21" x2="20" y2="21"/>
+  <line x1="8.5" y1="21" x2="8.5" y2="8"/>
+  <path d="M6.5 18 Q8.5 19 10.5 18"/>
+  <path d="M6.5 15 Q8.5 16 10.5 15"/>
+  <path d="M6.5 12 Q8.5 13 10.5 12"/>
+  <path d="M6.5 9 Q8.5 10 10.5 9"/>
+  <line x1="15.5" y1="21" x2="15.5" y2="8"/>
+  <path d="M13.5 18 Q15.5 19 17.5 18"/>
+  <path d="M13.5 15 Q15.5 16 17.5 15"/>
+  <path d="M13.5 12 Q15.5 13 17.5 12"/>
+  <path d="M13.5 9 Q15.5 10 17.5 9"/>
+  <path d="M7.5 8 L12 3.5 L16.5 8 Z" fill="#2B9E7E" stroke="#2B9E7E" stroke-linejoin="round"/>
+</svg>

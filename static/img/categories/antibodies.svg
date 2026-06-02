@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <title>Antibodies</title>
+  <path d="M12 12 L12 21"/>
+  <path d="M12 12 L6 5"/>
+  <path d="M12 12 L18 5"/>
+  <path d="M4.5 3.5 L6 5 L4.5 6.5 L3 5 Z" fill="#2B9E7E" stroke="#2B9E7E" stroke-linejoin="round"/>
+  <path d="M19.5 3.5 L21 5 L19.5 6.5 L18 5 Z" fill="#2B9E7E" stroke="#2B9E7E" stroke-linejoin="round"/>
+</svg>

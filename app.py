@@ -111,6 +111,7 @@ from shared.storage import (
     stage_campaign_candidates,
     upload_input,
 )
+from shared import category_glyphs as _category_glyphs
 from shared import metric_glossary as _metric_glossary
 from shared import score_legends as _score_legends
 from tools import base as tool_base
@@ -696,6 +697,17 @@ def create_app() -> Flask:
     # as good?" tooltips. Returns a {column_key: legend} dict.
     flask_app.jinja_env.globals["score_legends_for"] = (
         _score_legends.score_legends_for
+    )
+
+    # Map workflow-stage category labels to SVG glyph slugs. The
+    # homepage tile grid and ``/tools`` discovery page render the
+    # returned slug into ``static/img/categories/<slug>.svg`` so each
+    # category section gets a scannable visual marker.
+    flask_app.jinja_env.globals["category_glyph"] = (
+        _category_glyphs.category_glyph_slug
+    )
+    flask_app.jinja_env.globals["inline_category_glyph"] = (
+        _category_glyphs.inline_category_glyph
     )
 
     # ``tool_about(adapter)`` returns the structured About-panel dict
