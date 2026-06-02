@@ -2997,7 +2997,9 @@ def create_app() -> Flask:
         raw = [x for x in raw if x]
         if len(raw) < 2:
             return redirect(url_for("jobs_list"))
-        jobs = list_jobs_by_ids(ctx.user_id, raw[:6])
+        # Bumped from 6 to 10 so a C3 "Re-fold top 10" lands cleanly in
+        # a single comparison view.
+        jobs = list_jobs_by_ids(ctx.user_id, raw[:10])
         columns = []
         for j in jobs:
             adapter = tool_base.get(j.tool)
@@ -3120,6 +3122,152 @@ def create_app() -> Flask:
                 "gpu_seconds_used": job.gpu_seconds_used,
                 "started_at": getattr(job, "started_at", None),
             }
+        )
+
+    @flask_app.route("/jobs/<job_id>/refold", methods=["POST"])
+    @login_required
+    @idempotent()
+    def job_refold(job_id: str):
+        """C3 — spawn N orthogonal second-opinion folds on the top N
+        designs from a binder-design job and redirect the user to
+        /jobs/compare with the new IDs.
+
+        Form fields:
+          dest_tool  — "colabfold" or "esmfold"
+          n          — number of top designs to refold (clamped to
+                       refold.MAX_REFOLD_N, default refold.DEFAULT_REFOLD_N).
+
+        Each spawned job runs in the destination tool's "standalone"
+        preset with the candidate's binder sequence as a single-monomer
+        FASTA. Per-job wallet billing happens on the existing
+        completion-side path (charge_for_job); a fresh signup credit
+        covers a top-5 refold many times over.
+        """
+        from shared.refold import (  # noqa: PLC0415
+            DEFAULT_REFOLD_N, MAX_REFOLD_N, can_refold,
+            extract_top_n_sequences,
+        )
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
+        src = get_job(job_id, user_id=ctx.user_id)
+        if src is None:
+            return render_template("404.html"), 404
+        if src.status != "succeeded":
+            return redirect(url_for("job_detail", job_id=job_id))
+
+        dest_tool = (request.form.get("dest_tool") or "").strip()
+        try:
+            n_raw = int(request.form.get("n") or DEFAULT_REFOLD_N)
+        except ValueError:
+            n_raw = DEFAULT_REFOLD_N
+        n = max(1, min(n_raw, MAX_REFOLD_N))
+
+        if not can_refold(src.tool, dest_tool):
+            return redirect(url_for("job_detail", job_id=job_id))
+        if not tool_enabled(dest_tool):
+            return redirect(url_for("job_detail", job_id=job_id))
+        dest_adapter = tool_base.get(dest_tool)
+        if dest_adapter is None:
+            return redirect(url_for("job_detail", job_id=job_id))
+
+        seqs = extract_top_n_sequences(src.result or {}, n)
+        if not seqs:
+            # Source job has no extractable sequences. Bail back to the
+            # source detail page; the calling button is only rendered
+            # when the candidate table is non-empty, so this should be
+            # rare (e.g. partially failed runs that completed early).
+            return redirect(url_for("job_detail", job_id=job_id))
+
+        # Spawn one job per sequence. The shared campaign_label lets
+        # /jobs/compare and future C4 campaign work group them later.
+        campaign_label = f"validation-of-{src.id[:8]}"
+        spawned: list[str] = []
+        for seq in seqs:
+            # Build the inputs in the shape the destination adapter's
+            # validate() would produce after parsing the form. This
+            # bypasses validate() since we control the FASTA content
+            # entirely — every sequence here came out of a previously
+            # validated job's result candidates.
+            if dest_tool == "colabfold":
+                inputs = {
+                    "preset": "standalone",
+                    "fasta_text": (
+                        f">{seq.fasta_header}\n{seq.sequence}"
+                    ),
+                    "num_recycles": 1,
+                    "use_templates": False,
+                    "target": (
+                        f"Refold of {src.tool} job {src.id[:8]}, "
+                        f"rank {seq.rank}"
+                    ),
+                    "_refold_of_job_id": src.id,
+                    "_campaign_label": campaign_label,
+                }
+            elif dest_tool == "esmfold":
+                inputs = {
+                    "preset": "standalone",
+                    "fasta_text": (
+                        f">{seq.fasta_header}\n{seq.sequence}"
+                    ),
+                    "target": (
+                        f"Refold of {src.tool} job {src.id[:8]}, "
+                        f"rank {seq.rank}"
+                    ),
+                    "_refold_of_job_id": src.id,
+                    "_campaign_label": campaign_label,
+                }
+            else:
+                # can_refold gate above should make this unreachable.
+                continue
+
+            job = create_job(
+                user_id=ctx.user_id,
+                tool=dest_adapter.slug,
+                preset="standalone",
+                inputs=inputs,
+            )
+            if job is None:
+                logger.warning(
+                    "refold: create_job failed for rank %s (%s -> %s)",
+                    seq.rank, src.tool, dest_tool,
+                )
+                continue
+
+            try:
+                job_spec = dest_adapter.build_payload(inputs, "")
+                webhook_url = url_for(
+                    "modal_result",
+                    job_id=job.id,
+                    job_token=job.job_token,
+                    _external=True,
+                )
+                modal_client.submit(
+                    dest_adapter.slug,
+                    "standalone",
+                    inputs=job_spec,
+                    job_id=job.id,
+                    job_token=job.job_token,
+                    webhook_url=webhook_url,
+                )
+                spawned.append(job.id)
+            except Exception:
+                logger.exception(
+                    "refold: modal submit failed for job %s", job.id,
+                )
+                mark_failed(
+                    job.id,
+                    error={
+                        "bucket": "modal-submit",
+                        "detail": "refold spawn failed",
+                    },
+                )
+
+        if not spawned:
+            return redirect(url_for("job_detail", job_id=job_id))
+        return redirect(
+            url_for("jobs_compare", ids=",".join(spawned))
         )
 
     @flask_app.route("/jobs/<job_id>/cancel", methods=["POST"])
