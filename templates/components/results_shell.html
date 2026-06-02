@@ -15,16 +15,21 @@
   </div>
   <div class="panel-body">
     {% if candidates %}
-      {# Detect populated-but-all-failing case. filter_status is 'pass' on
-         designs that cleared the production filter, 'below threshold' on
-         pilot-fallback designs, and 'fail' on pxdesign filter rejections.
-         Designs with no filter_status at all (boltzgen normal path) are
-         treated as passing. Banner fires only when EVERY candidate has
-         a non-pass, non-stub filter_status set. #}
+      {# Detect populated-but-all-failing case. Pass-equivalent statuses:
+         - 'pass' — composite tools that cleared the production filter
+         - 'strict_pass' — Boltz-2 cofold strict tier (complex_pLDDT > 85,
+           ipTM > 0.7, hotspot hits > 4)
+         - 'soft_pass' — Boltz-2 cofold soft tier (ipTM > 0.5)
+         Failing statuses: 'fail', 'below threshold', everything else
+         tool-specific. 'stub' marks smoke-test stubs (also excluded).
+         Designs with no filter_status (boltzgen normal path) are treated
+         as passing. Banner fires only when EVERY candidate has a clearly
+         failing filter_status set. #}
+      {% set _pass_statuses = ['pass', 'strict_pass', 'soft_pass'] %}
       {% set ns = namespace(failing=0, total=candidates|length) %}
       {% for c in candidates %}
         {% set fs = c.get('scores', {}).get('filter_status', '') %}
-        {% if fs and fs != 'pass' and 'stub' not in fs %}
+        {% if fs and fs not in _pass_statuses and 'stub' not in fs %}
           {% set ns.failing = ns.failing + 1 %}
         {% endif %}
       {% endfor %}
