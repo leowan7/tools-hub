@@ -419,12 +419,15 @@ class TestSmokePresetShape:
         assert modal_app_name("bindcraft") == "ranomics-bindcraft-prod"
 
     def test_preset_gpu_seconds_caps_registered(self):
-        """Both ESMFold presets have an entry in PRESET_CAPS - the
+        """All ESMFold presets have an entry in PRESET_CAPS - the
         generic submit route raises ``ValueError`` otherwise."""
         from gpu.modal_client import preset_gpu_seconds
 
         assert preset_gpu_seconds("esmfold", "smoke") == 90
         assert preset_gpu_seconds("esmfold", "standalone") == 360
+        # Batch preset: sequential per-fold inside one warm container.
+        # Matches tools/esmfold/modal_app.py:_MAX_SESSION_S.
+        assert preset_gpu_seconds("esmfold", "batch") == 3600
 
     def test_legacy_fast_preset_still_registered(self):
         """Pre-D4 planning code paths used the ``fast`` preset alias.

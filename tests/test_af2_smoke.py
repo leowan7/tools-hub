@@ -586,11 +586,14 @@ class TestSmokePresetShape:
         assert modal_app_name("bindcraft") == "ranomics-bindcraft-prod"
 
     def test_preset_gpu_seconds_caps_registered(self):
-        """Both AF2 presets have an entry in PRESET_CAPS."""
+        """All AF2 presets have an entry in PRESET_CAPS."""
         from gpu.modal_client import preset_gpu_seconds
 
         assert preset_gpu_seconds("af2", "smoke") == 180
         assert preset_gpu_seconds("af2", "standalone") == 1200
+        # Batch preset: sequential per-fold inside one warm container.
+        # Matches tools/af2/modal_app.py:_MAX_SESSION_S.
+        assert preset_gpu_seconds("af2", "batch") == 14400
 
     def test_modal_payload_for_standalone_offline_stub(self, monkeypatch):
         from gpu import modal_client as mc

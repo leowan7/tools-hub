@@ -460,12 +460,15 @@ class TestSmokePresetShape:
         assert modal_app_name("bindcraft") == "ranomics-bindcraft-prod"
 
     def test_preset_gpu_seconds_caps_registered(self):
-        """Both ColabFold presets have an entry in PRESET_CAPS — the
+        """All ColabFold presets have an entry in PRESET_CAPS — the
         generic submit route raises ``ValueError`` otherwise."""
         from gpu.modal_client import preset_gpu_seconds
 
         assert preset_gpu_seconds("colabfold", "smoke") == 120
         assert preset_gpu_seconds("colabfold", "standalone") == 420
+        # Batch preset: sequential per-fold inside one warm container.
+        # Matches tools/colabfold/modal_app.py:_MAX_SESSION_S.
+        assert preset_gpu_seconds("colabfold", "batch") == 14400
 
     def test_modal_payload_for_standalone_offline_stub(self, monkeypatch):
         from gpu import modal_client as mc

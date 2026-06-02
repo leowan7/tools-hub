@@ -86,6 +86,11 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("af2", "smoke"):              180,
     ("af2", "standalone"):         1200,
     ("af2", "standard"):           720,   # legacy alias — pre-D2 planning
+    # AF2 batch: sequential per-fold inside one warm A100-80GB container.
+    # Cap matches tools/af2/modal_app.py:_MAX_SESSION_S (14400 s = 4 h)
+    # which covers a 50-record run at ~5 min/fold warm with cold-start
+    # headroom on the first fold.
+    ("af2", "batch"):              14400,
     # D3 ColabFold: slug "colabfold" → ``ranomics-colabfold-prod``.
     # Smoke fits in ~120 s post-JIT (first run includes ~3 min JAX
     # compile on a cold container). Standalone budgets 420 s — no-MSA
@@ -93,6 +98,11 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("colabfold", "smoke"):        120,
     ("colabfold", "standalone"):   420,
     ("colabfold", "fast"):         720,  # legacy alias — pre-D3 planning
+    # ColabFold batch: sequential per-fold inside one warm A100-40GB
+    # container. Cap matches tools/colabfold/modal_app.py:_MAX_SESSION_S
+    # (14400 s = 4 h) — supports up to 200 records at ~1-2 min/fold warm
+    # with cold-start headroom on the first fold.
+    ("colabfold", "batch"):        14400,
     # D4 ESMFold: slug "esmfold" → ``ranomics-esmfold-prod``. Smoke
     # folds the baked 76 aa ubiquitin fixture on ESMFold-3B in ~30 s
     # once warm (~60-90 s cold including model load). Standalone caps
@@ -100,6 +110,11 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("esmfold", "smoke"):          90,
     ("esmfold", "standalone"):     360,
     ("esmfold", "fast"):           360,   # legacy alias — pre-D4 planning
+    # ESMFold batch: sequential per-fold inside one warm A100-40GB
+    # container. Cap matches tools/esmfold/modal_app.py:_MAX_SESSION_S
+    # (3600 s) so a 500-record run that hits the modal session ceiling
+    # surfaces a clean timeout instead of silently truncating designs.
+    ("esmfold", "batch"):          3600,
     # Boltz-2 cofold: ``standalone`` = single-sequence (~60 s/design); cap
     # at 1200 s covers a 10-binder run with weight-load headroom.
     # ``msa_server`` = --use_msa_server (~3 min/design including MSA
