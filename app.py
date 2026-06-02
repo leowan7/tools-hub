@@ -2445,12 +2445,53 @@ def create_app() -> Flask:
                     "token": f"handoff:{ho.id}",
                 }
 
+        # C2 — "Load example" chip: a first-time user can populate the
+        # form with a known-good PDB / FASTA in one click. The example
+        # registry lives at tools/<slug>/meta.py:examples; the actual
+        # files live at tools/<slug>/examples/<filename>. Param overrides
+        # in the example dict are applied to pre_fill the same way
+        # clone_from does, then the form is decorated with either an
+        # "example:<tool>/<id>" pdb_source token (binder / sequence-
+        # design tools) or pre-populated FASTA text (AF2 / ColabFold /
+        # ESMFold). The submit-side resolver below stages the PDB
+        # exactly like a fresh upload.
+        example_id = request.args.get("example", "").strip()
+        if example_id and not pre_fill:
+            from shared.examples import (  # noqa: PLC0415
+                load_example, read_example_text,
+            )
+            entry = load_example(adapter.slug, example_id)
+            if entry is not None:
+                for k, v in (entry.get("params") or {}).items():
+                    pre_fill[k] = v
+                fasta_field = entry.get("fasta_field")
+                if fasta_field:
+                    fasta_content = read_example_text(
+                        adapter.slug, example_id
+                    )
+                    if fasta_content is not None:
+                        pre_fill[fasta_field] = fasta_content
+                else:
+                    pre_fill.setdefault("preset", "pilot")
+                    pdb_source = {
+                        "label": (
+                            f"Example: {entry.get('label', example_id)}"
+                        ),
+                        "filename": entry.get(
+                            "filename", f"{example_id}.pdb"
+                        ),
+                        "token": (
+                            f"example:{adapter.slug}/{example_id}"
+                        ),
+                    }
+
         # The wallet estimate partial reads balance_usd for first paint
         # so the form lights up with the user's real balance even before
         # the /api/wallet/estimate call returns. Falls back to 0 if the
         # service client is misconfigured.
         wallet_for_form = get_or_create_wallet(ctx.user_id) or {}
 
+        from shared.examples import list_examples  # noqa: PLC0415
         return render_template(
             adapter.form_template,
             adapter=adapter,
@@ -2459,6 +2500,8 @@ def create_app() -> Flask:
             pdb_source=pdb_source,
             workspace_ctx=workspace_ctx,
             wallet=wallet_for_form,
+            examples=list_examples(adapter.slug),
+            active_example_id=example_id or None,
         )
 
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
@@ -2560,6 +2603,7 @@ def create_app() -> Flask:
             (uploaded is not None and uploaded.filename)
             or reuse_token.startswith("job:")
             or reuse_token.startswith("handoff:")
+            or reuse_token.startswith("example:")
         ):
             return render_template(
                 adapter.form_template,
@@ -2779,6 +2823,33 @@ def create_app() -> Flask:
                         filename=ho.pdb_filename,
                     )
                     mark_consumed(ho.id)
+                elif reuse_token.startswith("example:"):
+                    # C2 example: read local PDB bytes and stage as if
+                    # uploaded. Idempotent — examples on disk are immutable
+                    # so re-running the same example_id is safe.
+                    spec = reuse_token.split(":", 1)[1]  # "<tool>/<id>"
+                    if "/" not in spec:
+                        raise StorageError("malformed example token")
+                    ex_tool, ex_id = spec.split("/", 1)
+                    from shared.examples import (  # noqa: PLC0415
+                        load_example, read_example_bytes,
+                    )
+                    entry = load_example(ex_tool, ex_id)
+                    if entry is None:
+                        raise StorageError("example not found")
+                    example_bytes = read_example_bytes(ex_tool, ex_id)
+                    if example_bytes is None:
+                        raise StorageError("example file missing")
+                    staged_filename = entry.get(
+                        "filename", f"{ex_id}.pdb"
+                    )
+                    staged_path = upload_input(
+                        user_id=ctx.user_id,
+                        job_id=job.id,
+                        filename=staged_filename,
+                        data=example_bytes,
+                        content_type="chemical/x-pdb",
+                    )
 
                 presigned_url = presigned_input_url(
                     staged_path, expires_seconds=7200

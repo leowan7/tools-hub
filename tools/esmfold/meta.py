@@ -75,3 +75,30 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
+
+
+# Sample monomer sequences a first-time user can load in one click.
+examples: list[dict] = [
+    {
+        "id": "ubiquitin",
+        "label": "Ubiquitin (76 aa)",
+        "description": (
+            "Tiny monomer benchmark. ~30 s on the ESM-2 3B model; "
+            "fastest possible feedback loop."
+        ),
+        "filename": "ubiquitin.fasta",
+        "fasta_field": "fasta_text",
+        "params": {},
+    },
+    {
+        "id": "top7",
+        "label": "Top7 de novo design (93 aa)",
+        "description": (
+            "Canonical de novo designed protein. Shows the ESM-2 "
+            "single-sequence fold on a designed protein."
+        ),
+        "filename": "top7.fasta",
+        "fasta_field": "fasta_text",
+        "params": {},
+    },
+]

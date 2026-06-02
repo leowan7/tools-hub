@@ -1,0 +1,58 @@
+{# C2 — "Load example" chip group. Renders above the primary input
+   field on each tool form. Each chip links to the same form with
+   ``?example=<id>`` so the server-side prefill path (clone/from_job/
+   handoff sibling) populates the form fields and stages the example
+   PDB / FASTA. Renders nothing if the tool has no examples — so
+   templates can call it unconditionally.
+
+   Inputs
+   ------
+     tool_slug          — adapter.slug for the current form.
+     examples           — list of example dicts (passed in from the
+                          view; comes from shared.examples.list_examples).
+     active_example_id  — optional; the id of the currently-loaded
+                          example (so its chip can be styled selected).
+
+   Usage
+   -----
+     {% from "components/examples_chip_group.html" import examples_chip_group %}
+     {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
+#}
+{% macro examples_chip_group(tool_slug, examples, active_example_id=None) %}
+  {% if examples %}
+    <div class="examples-chip-group" style="margin: 0 0 1.1rem 0;">
+      <div style="font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-text); margin-bottom: 0.4rem;">
+        Load example
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 0.4rem;">
+        {% for ex in examples %}
+          {% set is_active = (active_example_id == ex.id) %}
+          <a href="{{ url_for('tool_form', tool=tool_slug, example=ex.id) }}"
+             title="{{ ex.description }}"
+             style="display: inline-flex; align-items: center; gap: 0.35rem;
+                    padding: 0.35rem 0.7rem;
+                    border-radius: 999px;
+                    font-size: 0.78rem;
+                    font-family: var(--font-body);
+                    text-decoration: none;
+                    border: 1px solid {% if is_active %}var(--accent){% else %}var(--border){% endif %};
+                    background: {% if is_active %}rgba(43, 158, 126, 0.12){% else %}var(--bg-elevated){% endif %};
+                    color: {% if is_active %}var(--accent-text){% else %}var(--text-secondary){% endif %};
+                    transition: border-color 120ms ease, color 120ms ease;">
+            <span aria-hidden="true" style="opacity: 0.7; font-size: 0.7rem;">{% if is_active %}&#10003;{% else %}+{% endif %}</span>
+            <span>{{ ex.label }}</span>
+          </a>
+        {% endfor %}
+      </div>
+      {% if active_example_id %}
+        <div style="margin-top: 0.45rem; font-size: 0.78rem; color: var(--text-tertiary);">
+          Example loaded. Edit any field below before submitting, or
+          <a href="{{ url_for('tool_form', tool=tool_slug) }}"
+             style="color: var(--text-secondary); text-decoration: underline;">
+            clear example
+          </a>.
+        </div>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endmacro %}

@@ -2,6 +2,7 @@
 {% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/examples_chip_group.html" import examples_chip_group %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -179,6 +180,7 @@
           <input type="hidden" name="preset" value="pilot">
 
           <div id="pilot-fields">
+            {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
             {{ pdb_source_banner(pdb_source) }}
             <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target PDB</label>
             {# Required (server-render) when no staged source is present.

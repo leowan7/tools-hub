@@ -2,6 +2,7 @@
 {% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/examples_chip_group.html" import examples_chip_group %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -209,6 +210,7 @@
           </div>
 
           <div id="pilot-fields">
+            {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
             <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
               <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 62ch; margin: 0 0 1rem 0;">
                 Runs against your own target — upload PDB, optionally
