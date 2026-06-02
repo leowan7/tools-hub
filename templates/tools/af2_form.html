@@ -97,6 +97,57 @@
       margin-bottom: 0.35rem;
       resize: vertical;
     }
+    .af2-preset-group {
+      display: grid;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .af2-preset-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .af2-preset-option:hover { border-color: var(--accent-dim); }
+    .af2-preset-option input[type="radio"] {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+    }
+    .af2-preset-option .preset-title {
+      display: block;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.92rem;
+      margin-bottom: 0.15rem;
+    }
+    .af2-preset-option .preset-desc {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .af2-batch-textarea {
+      width: 100%;
+      max-width: 620px;
+      min-height: 10rem;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin-bottom: 0.35rem;
+      resize: vertical;
+    }
+    #af2-mode[data-mode="standalone"] [data-show-when="batch"] { display: none; }
+    #af2-mode[data-mode="batch"] [data-show-when="standalone"] { display: none; }
   </style>
 
   <div class="hero">
@@ -118,68 +169,118 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          {# Single standalone tier — preset is fixed via a hidden field. #}
-          <input type="hidden" name="preset" value="standalone">
 
-          <div id="pilot-fields">
-            {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
-            {# Reconstruct the textarea value from whichever pre_fill
-               shape is available. Fresh POST with a validation error
-               resubmits the raw ``fasta`` string; a ``clone_from``
-               clone loads the stored ``inputs`` which carry structured
-               ``fasta_records`` (our persisted form). Without this
-               fallback the clone link on the results page produces an
-               empty textarea — Codex P2. #}
-            {% set _prefill_fasta = (pre_fill.get('fasta') if pre_fill else '') or '' %}
-            {% if not _prefill_fasta and pre_fill and pre_fill.get('fasta_records') %}
-              {% set _lines = [] %}
-              {% for _rec in pre_fill.get('fasta_records') %}
-                {% set _ = _lines.append('>' ~ (_rec.get('header') or ('chain' ~ loop.index))) %}
-                {% set _ = _lines.append(_rec.get('sequence') or '') %}
-              {% endfor %}
-              {% set _prefill_fasta = _lines | join('\n') %}
-            {% endif %}
-            <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA</label>
-            <textarea name="fasta" id="fasta" class="af2-fasta-textarea"
-                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRF...">{{ _prefill_fasta }}</textarea>
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              Paste single-chain or multimer FASTA. For multimer, use one
-              <code>&gt;header</code> line per chain. Up to 1500 AA total
-              across chains on the atomic tier.
-            </div>
-            <div style="color: var(--text-tertiary); font-size: 0.78rem; max-width: 58ch; margin-bottom: 1.0rem;">
-              Or upload a .fasta file:
-              <input type="file" name="fasta_file" id="fasta_file" accept=".fasta,.fa,.faa,.txt"
-                     style="display: inline-block; margin-left: 0.4rem; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.25rem 0.4rem; font-family: var(--font-body); font-size: 0.78rem;">
-            </div>
+          {# Pre-fill may carry a legacy ``preset='pilot'`` on cross-tool
+             handoffs (set by app.py:tool_form). Normalise anything that
+             is not a real AF2 preset back to ``standalone`` so the
+             radio always renders a default-checked option. #}
+          {% set _raw_preset = (pre_fill.get('preset') if pre_fill else None) %}
+          {% set active_preset = _raw_preset if _raw_preset in ('standalone', 'batch') else 'standalone' %}
 
-            <label for="num_recycles" class="label" style="display:block; margin-bottom: 0.4rem;">Number of recycles</label>
-            <input type="number" name="num_recycles" id="num_recycles" {{ pre_value(pre_fill, "num_recycles", "3") }} min="1" max="5"
-                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              How many AF2 recycles to run (1-5). More recycles cost more
-              GPU-seconds but converge marginal cases. Default 3 matches
-              the AF2 paper and is a good balance.
-            </div>
-
-            <label class="label" style="display:block; margin-bottom: 0.4rem;">
-              <input type="checkbox" name="use_templates" id="use_templates" value="on"
-                     {% if pre_fill and pre_fill.get('use_templates') in (True, 'on', '1', 'true') %}checked
-                     {% elif not pre_fill %}checked
-                     {% endif %}
-                     style="margin-right: 0.4rem; vertical-align: middle;">
-              Use PDB templates
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Preset</label>
+          <div class="af2-preset-group">
+            <label class="af2-preset-option">
+              <input type="radio" name="preset" value="standalone"
+                     {% if active_preset == 'standalone' %}checked{% endif %}
+                     onchange="document.getElementById('af2-mode').dataset.mode='standalone'">
+              <span>
+                <span class="preset-title">Standalone — one FASTA</span>
+                <span class="preset-desc">
+                  Paste or upload FASTA. Multi-record FASTA is treated as
+                  one multimer fold (chains joined). Up to 1500 AA total.
+                  ~5-10 min on A100-80GB.
+                </span>
+              </span>
             </label>
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Fetch homologous structures from PDB as templates for the
-              prediction. Turn off for orphan sequences or when you want
-              a pure sequence-only fold.
+            <label class="af2-preset-option">
+              <input type="radio" name="preset" value="batch"
+                     {% if active_preset == 'batch' %}checked{% endif %}
+                     onchange="document.getElementById('af2-mode').dataset.mode='batch'">
+              <span>
+                <span class="preset-title">Batch — many fold targets</span>
+                <span class="preset-desc">
+                  Fold up to 50 independent targets in one job. Each
+                  record can be a monomer or a multimer (use <code>:</code>
+                  inside a record to break chains). Slowest of the three
+                  structure-prediction tools — expect ~5-10 min per fold.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          <div id="af2-mode" data-mode="{{ active_preset }}">
+            <div id="pilot-fields" data-show-when="standalone">
+              {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
+              {# Reconstruct the textarea value from whichever pre_fill
+                 shape is available. Fresh POST with a validation error
+                 resubmits the raw ``fasta`` string; a ``clone_from``
+                 clone loads the stored ``inputs`` which carry structured
+                 ``fasta_records`` (our persisted form). Without this
+                 fallback the clone link on the results page produces an
+                 empty textarea — Codex P2. #}
+              {% set _prefill_fasta = (pre_fill.get('fasta') if pre_fill else '') or '' %}
+              {% if not _prefill_fasta and pre_fill and pre_fill.get('fasta_records') %}
+                {% set _lines = [] %}
+                {% for _rec in pre_fill.get('fasta_records') %}
+                  {% set _ = _lines.append('>' ~ (_rec.get('header') or ('chain' ~ loop.index))) %}
+                  {% set _ = _lines.append(_rec.get('sequence') or '') %}
+                {% endfor %}
+                {% set _prefill_fasta = _lines | join('\n') %}
+              {% endif %}
+              <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA</label>
+              <textarea name="fasta" id="fasta" class="af2-fasta-textarea"
+                        placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRF...">{{ _prefill_fasta }}</textarea>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+                Paste single-chain or multimer FASTA. For multimer, use one
+                <code>&gt;header</code> line per chain. Up to 1500 AA total
+                across chains on the atomic tier.
+              </div>
+              <div style="color: var(--text-tertiary); font-size: 0.78rem; max-width: 58ch; margin-bottom: 1.0rem;">
+                Or upload a .fasta file:
+                <input type="file" name="fasta_file" id="fasta_file" accept=".fasta,.fa,.faa,.txt"
+                       style="display: inline-block; margin-left: 0.4rem; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.25rem 0.4rem; font-family: var(--font-body); font-size: 0.78rem;">
+              </div>
+            </div>
+
+            <div id="batch-fields" data-show-when="batch">
+              <label for="sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Fold targets (FASTA or one per line)</label>
+              <textarea name="sequences" id="sequences" class="af2-batch-textarea"
+                        placeholder=">target_0&#10;MKLIVAINVMG...&#10;>complex_a:b&#10;EVQLVES...:GSHMLNCIV..."
+                        spellcheck="false"
+                        oninput="(function(t){var n=(t.value||'').split(/\r?\n/).filter(function(l){return l.trim();}).filter(function(l){return !l.startsWith('>');}).length; document.getElementById('batch-count').textContent=n;})(this)">{{ (pre_fill.get('sequences') if pre_fill else '') or '' }}</textarea>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.0rem;">
+                Up to <strong>50</strong> independent fold targets per
+                submit. Each record is one fold; up to 1500 AA total per
+                record (across chains). For a multimer record, separate
+                chains with <code>:</code> on the sequence line (the
+                ColabFold-multimer convention). Lines without a
+                <code>&gt;</code> header are auto-named.
+                Detected records: <strong id="batch-count">0</strong>.
+              </div>
             </div>
           </div>
 
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Paste or upload your FASTA. ColabFold MMseqs2 MSA + AF2.
-            ~5-10 min on A100-80GB.
+          <label for="num_recycles" class="label" style="display:block; margin-bottom: 0.4rem;">Number of recycles</label>
+          <input type="number" name="num_recycles" id="num_recycles" {{ pre_value(pre_fill, "num_recycles", "3") }} min="1" max="5"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            How many AF2 recycles to run (1-5). More recycles cost more
+            GPU-seconds but converge marginal cases. Default 3 matches
+            the AF2 paper and is a good balance.
+          </div>
+
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">
+            <input type="checkbox" name="use_templates" id="use_templates" value="on"
+                   {% if pre_fill and pre_fill.get('use_templates') in (True, 'on', '1', 'true') %}checked
+                   {% elif not pre_fill %}checked
+                   {% endif %}
+                   style="margin-right: 0.4rem; vertical-align: middle;">
+            Use PDB templates
+          </label>
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            Fetch homologous structures from PDB as templates for the
+            prediction. Turn off for orphan sequences or when you want
+            a pure sequence-only fold.
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

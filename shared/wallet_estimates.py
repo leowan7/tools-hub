@@ -117,23 +117,57 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("1.50"),
         absolute_cap_usd=Decimal("500.00"),
     ),
+    # The AF2 ``ToolAdapter`` registers under slug ``af2``, not
+    # ``alphafold2``. The historic ``alphafold2`` key above is preserved
+    # for tests + the cross-domain SEO mapping in app.py:_RANOMICS_…
+    # but is never read by the production wallet route. The ``af2``
+    # entry below mirrors it and adds the batch scaling so the new
+    # preset's held amount scales linearly with the record count.
+    "af2": ToolSpec(
+        slug="af2",
+        gpu_class="A100-80GB",
+        expected_gpu_seconds=300.0,
+        designs_per_run_baseline=1,
+        scaling_param="n_designs_total",
+        base_hard_cap_usd=Decimal("1.50"),
+        absolute_cap_usd=Decimal("500.00"),
+    ),
     "colabfold": ToolSpec(
         slug="colabfold",
-        gpu_class="A100-80GB",
-        expected_gpu_seconds=480.0,
+        # ColabFold's Modal app runs on A100-40GB (see
+        # tools/colabfold/modal_app.py _GPU). Standalone tier folds in
+        # ~1-2 min warm.
+        gpu_class="A100-40GB",
+        expected_gpu_seconds=120.0,
         designs_per_run_baseline=1,
-        scaling_param=None,
-        base_hard_cap_usd=Decimal("2.50"),
-        absolute_cap_usd=Decimal("500.00"),
+        # Batch preset stamps ``n_designs_total`` so the held amount
+        # scales linearly with the record count. Standalone tier leaves
+        # it at 1 and the estimate matches the existing single-fold cost.
+        scaling_param="n_designs_total",
+        base_hard_cap_usd=Decimal("0.50"),
+        # Headroom for the 200-record batch ceiling: at the baseline
+        # 120 s/fold, 200 folds × $0.000714/s × 1.7 markup ≈ $29. Capping
+        # at $200 leaves room for historical drift / templates-on runs.
+        absolute_cap_usd=Decimal("200.00"),
     ),
     "esmfold": ToolSpec(
         slug="esmfold",
-        gpu_class="A100-80GB",
+        # ESMFold's Modal app runs on A100-40GB (see tools/esmfold/modal_app.py
+        # _GPU). Standalone tier folds in ~30 s warm.
+        gpu_class="A100-40GB",
         expected_gpu_seconds=60.0,
         designs_per_run_baseline=1,
-        scaling_param=None,
+        # Batch preset stamps ``n_designs_total`` so the held amount scales
+        # linearly with the record count. Standalone tier leaves the param
+        # at the baseline (1) and the estimate stays at the single-fold
+        # cost. Mirrors Boltz-2's scaling shape.
+        scaling_param="n_designs_total",
         base_hard_cap_usd=Decimal("0.30"),
-        absolute_cap_usd=Decimal("100.00"),
+        # Headroom for the 500-record batch ceiling: at the baseline
+        # 60 s/fold, 500 folds × $0.000714/s × 1.7 markup ≈ $36. Capping
+        # at $200 lets the historical p90 grow to ~150 s/fold without the
+        # estimator silently clipping the hold.
+        absolute_cap_usd=Decimal("200.00"),
     ),
     "rfdiffusion": ToolSpec(
         slug="rfdiffusion",

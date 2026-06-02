@@ -38,10 +38,12 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-80GB"
-# 30 min — cold-pod JAX JIT compile + fold takes >18 min for monomer
-# on cold A100 (Bug 8b). Until image.run_function-baked JIT cache
-# lands, give cold smokes enough headroom to actually complete.
-_MAX_SESSION_S = 1800
+# 4 h ceiling covers the standalone tier (~5-10 min warm, ~30 min cold)
+# and the batch preset (up to 50 records at ~5 min/fold warm
+# sequential). Cold-pod JAX JIT compile + fold takes >18 min for monomer
+# on cold A100 (Bug 8b); keep headroom so a 50-record batch that lands
+# on a cold container can still complete.
+_MAX_SESSION_S = 14400
 _PYTHON = "python3"
 
 
@@ -58,6 +60,10 @@ def _build_run_env(payload: dict) -> dict[str, str]:
             {
                 "job_spec": payload.get("job_spec", {}),
                 "input_presigned_url": payload.get("input_presigned_url", ""),
+                # Required for the batch preset's partial-results streaming.
+                # The standalone tier ignores it (results inline via the
+                # function return value). Matches the Boltz-2 contract.
+                "upload_urls_endpoint": payload.get("upload_urls_endpoint", ""),
                 "job_token": payload.get("job_token", ""),
                 "tier": payload.get("tier", ""),
             }

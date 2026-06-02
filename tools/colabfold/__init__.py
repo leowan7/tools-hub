@@ -19,6 +19,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from shared.sequence_parsing import (
+    CANONICAL_AA as SHARED_CANONICAL_AA,
+    find_non_canonical_residues,
+    parse_fasta_or_lines,
+)
 from tools.base import Preset, ToolAdapter, register
 
 
@@ -30,7 +35,13 @@ RECYCLES_MIN = 1
 RECYCLES_MAX = 5
 SEQ_LEN_MIN = 10
 SEQ_LEN_MAX = 600  # matches run_pipeline.SEQ_LEN_MAX
-CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
+CANONICAL_AA = set(SHARED_CANONICAL_AA)
+# Batch preset ceiling. No-MSA ColabFold folds in ~1-2 min warm per
+# record on A100-40GB. 200 records × ~2 min = ~7 h sequential — fits
+# inside the 4 h Modal session budget only at the low end (~100 fast
+# folds). For library-scale we still rely on splitting; future Modal-
+# side fan-out lifts the ceiling.
+MAX_BATCH = 200
 
 
 def _parse_int(value: Any, default: int) -> int:
@@ -94,14 +105,23 @@ def validate(
 ) -> tuple[Optional[dict], Optional[str]]:
     """Coerce form fields into the ColabFold job_spec shape.
 
-    The single ``standalone`` tier takes a caller-supplied FASTA text
-    plus num_recycles + use_templates. A missing or blank preset is
-    treated as ``standalone`` so the form's hidden preset field is
-    robust.
+    Two presets:
+
+    - ``standalone`` (default): caller-supplied FASTA, num_recycles,
+      use_templates. Multi-record FASTA is treated as ONE multimer fold
+      (chains joined with ``:``).
+    - ``batch``: caller-supplied list of fold targets. Each record is an
+      independent fold; ``:`` inside a record marks chain breaks.
+
+    A missing or blank preset is treated as ``standalone`` so the form's
+    hidden preset field is robust.
     """
     preset = (form.get("preset") or "standalone").strip() or "standalone"
-    if preset != "standalone":
-        return None, "Pick a preset."
+    if preset not in {"standalone", "batch"}:
+        return None, "Pick a preset (standalone or batch)."
+
+    if preset == "batch":
+        return _validate_batch(form)
 
     # standalone tier — caller-supplied FASTA.
     fasta_text = (form.get("fasta_text") or "").strip()
@@ -182,6 +202,81 @@ def validate(
     )
 
 
+def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[str]]:
+    """Parse the ``sequences`` textarea into a batch_records list.
+
+    Each record's ``sequence`` may contain ``:`` chain breaks for an
+    intra-record multimer fold. Per-record total AA ≤ SEQ_LEN_MAX.
+    """
+    raw = form.get("sequences") or form.get("batch_sequences") or ""
+    records, err = parse_fasta_or_lines(raw, default_name_prefix="fold")
+    if err:
+        return None, err
+    if not records:
+        return None, "Paste at least one fold target."
+    if len(records) > MAX_BATCH:
+        return None, (
+            f"Max {MAX_BATCH} records per batch run "
+            f"(received {len(records)}). For larger libraries split into "
+            "multiple batches or use ESMFold batch for the monomer "
+            "screening pass."
+        )
+
+    for r in records:
+        name = r["name"]
+        seq = r["sequence"]
+        chains = seq.split(":") if ":" in seq else [seq]
+        chains = [c for c in chains if c]
+        if not chains:
+            return None, f"Record {name!r} parsed to zero chains."
+        total = sum(len(c) for c in chains)
+        if total > SEQ_LEN_MAX:
+            return None, (
+                f"Record {name!r} is {total} aa across {len(chains)} "
+                f"chain(s) — max {SEQ_LEN_MAX} per record (no-MSA budget)."
+            )
+        for ci, chain in enumerate(chains):
+            if len(chain) < SEQ_LEN_MIN:
+                return None, (
+                    f"Record {name!r} chain {ci + 1} is {len(chain)} aa "
+                    f"— min {SEQ_LEN_MIN}."
+                )
+            bad = find_non_canonical_residues(chain, frozenset(CANONICAL_AA))
+            if bad:
+                return None, (
+                    f"Record {name!r} chain {ci + 1} contains non-canonical "
+                    f"residues: {bad}"
+                )
+
+    num_recycles = _parse_int(form.get("num_recycles"), 1)
+    if num_recycles < RECYCLES_MIN or num_recycles > RECYCLES_MAX:
+        return None, (
+            f"num_recycles must be between {RECYCLES_MIN} and {RECYCLES_MAX}."
+        )
+    use_templates = _parse_bool(form.get("use_templates"), False)
+
+    batch_records = [
+        {
+            "name": r["name"],
+            "sequence": r["sequence"],
+            "chains": (r["sequence"].split(":") if ":" in r["sequence"] else [r["sequence"]]),
+        }
+        for r in records
+    ]
+
+    return (
+        {
+            "preset": "batch",
+            "batch_records": batch_records,
+            "num_recycles": num_recycles,
+            "use_templates": use_templates,
+            "target": f"ColabFold batch ({len(batch_records)} records)",
+            "parameters": {"n_designs_total": len(batch_records)},
+        },
+        None,
+    )
+
+
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the ColabFold job_spec shape ``run_pipeline.py`` expects.
 
@@ -189,7 +284,19 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     Storage round-trip — FASTAs are tiny) so the presigned URL is
     ignored. Keeping the ``presigned_url`` argument in the signature
     matches the ``BuildPayloadFn`` protocol in ``tools/base.py``.
+
+    Batch preset forwards ``batch_records`` and the per-job parameters;
+    the standalone preset keeps the existing single-fold contract.
     """
+    if inputs.get("preset") == "batch":
+        return {
+            "batch_records": inputs.get("batch_records", []),
+            "parameters": {
+                "num_recycles": inputs["num_recycles"],
+                "use_templates": bool(inputs["use_templates"]),
+                "n_designs_total": len(inputs.get("batch_records", [])),
+            },
+        }
     return {
         "fasta_text": inputs.get("fasta_text", ""),
         "parameters": {
@@ -216,6 +323,18 @@ adapter = ToolAdapter(
                 "No MSA, no templates — pair with D2 AF2 if you need the "
                 "full MSA-backed fold."
             ),
+        ),
+        Preset(
+            slug="batch",
+            label="Batch — many fold targets",
+            description=(
+                "Fold many independent targets in one job (up to 200 "
+                "records). Each record can be a monomer or a multimer "
+                "(use ``:`` inside a record to break chains). Per-design "
+                "results stream into the job page as folds complete. "
+                "Fast no-MSA tier — ~1-2 min per fold."
+            ),
+            long_running=True,
         ),
     ),
     validate=validate,

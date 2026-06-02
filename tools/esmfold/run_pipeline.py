@@ -66,6 +66,9 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
+
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,6 +122,80 @@ def _fail(bucket: str, check: str, detail: str) -> None:
         }
     )
     sys.exit(1)
+
+
+# ===========================================================================
+# Heartbeat + upload helpers (batch preset only).
+# Identical contract to tools/boltz2/run_pipeline.py so the hub-side
+# webhook ingestion handles both tools without per-tool branches.
+# ===========================================================================
+
+
+def _heartbeat_url(webhook_url: str) -> str:
+    """Derive the /webhooks/heartbeat URL from the main webhook URL."""
+    parsed = urlparse(webhook_url)
+    return urlunparse(parsed._replace(path="/webhooks/heartbeat"))
+
+
+def send_heartbeat(
+    webhook_url: str,
+    job_id: str,
+    stage: str,
+    designs_completed: int = 0,
+    designs_total: int = 0,
+    new_candidate: dict | None = None,
+) -> None:
+    """Fire-and-forget heartbeat. Never raises — a flaky webhook hop
+    must not abort an in-progress batch fold.
+    """
+    if not webhook_url:
+        return
+    body = {
+        "job_id": job_id,
+        "stage": stage,
+        "designs_completed": int(designs_completed),
+        "designs_total": int(designs_total),
+    }
+    if isinstance(new_candidate, dict):
+        body["new_candidate"] = new_candidate
+        body["job_token"] = os.environ.get("JOB_TOKEN", "")
+    try:
+        resp = requests.post(_heartbeat_url(webhook_url), json=body, timeout=10)
+        logger.debug("Heartbeat sent: %s (HTTP %d)", stage, resp.status_code)
+    except Exception as exc:
+        logger.warning("Heartbeat failed (%s): %s", stage, exc)
+
+
+def request_upload_urls(
+    upload_endpoint: str, job_token: str, filenames: list[str]
+) -> dict[str, str]:
+    """Ask the hub for presigned PUT URLs keyed by filename."""
+    resp = requests.post(
+        upload_endpoint,
+        json={"filenames": filenames},
+        headers={"Authorization": f"Bearer {job_token}"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"upload_urls request failed: HTTP {resp.status_code} "
+            f"{resp.text[:200]}"
+        )
+    return resp.json()["urls"]
+
+
+def upload_pdb(url: str, pdb_bytes: bytes) -> None:
+    """PUT the PDB bytes to a presigned URL with chemical/x-pdb."""
+    resp = requests.put(
+        url,
+        data=pdb_bytes,
+        headers={"Content-Type": "chemical/x-pdb"},
+        timeout=120,
+    )
+    if resp.status_code not in (200, 201, 204):
+        raise RuntimeError(
+            f"upload failed: HTTP {resp.status_code} {resp.text[:200]}"
+        )
 
 
 # ===========================================================================
@@ -616,11 +693,63 @@ def reject_stub(parsed: dict[str, Any]) -> None:
 # ===========================================================================
 
 
-def main() -> None:
-    start = time.time()
-    payload = parse_payload()
-    preflight(payload)
+def _validate_record_inline(name: str, seq: str) -> str:
+    """Mirror of ``validate_fasta`` for an already-parsed batch record.
 
+    Skips the file-IO + BioPython parse path; returns a clean uppercase
+    sequence. Raises ``ValueError`` with a per-record explanation on
+    failure so the batch loop can mark the record as failed without
+    aborting the whole job.
+    """
+    seq = (seq or "").strip().upper()
+    if not seq:
+        raise ValueError(f"record {name!r} has no sequence")
+    if ":" in seq:
+        raise ValueError(
+            f"record {name!r} contains ':' (multimer separator) — ESMFold v1 "
+            "is monomer-only"
+        )
+    if len(seq) < SEQ_LEN_MIN:
+        raise ValueError(f"record {name!r} is {len(seq)} aa — min {SEQ_LEN_MIN}")
+    if len(seq) > SEQ_LEN_MAX:
+        raise ValueError(
+            f"record {name!r} is {len(seq)} aa — max {SEQ_LEN_MAX} for "
+            "ESMFold-3B on A100-40GB within the per-fold budget"
+        )
+    non_canonical = set(seq) - CANONICAL_AA
+    if non_canonical:
+        raise ValueError(
+            f"record {name!r} contains non-canonical residues: "
+            f"{sorted(non_canonical)}"
+        )
+    return seq
+
+
+def _fold_record(name: str, seq: str) -> dict[str, Any]:
+    """Fold one record and shape the result into a per-design dict.
+
+    Returns the candidate-table-friendly shape (``rank`` and ``pdb_key``
+    are set by the caller after the upload). Raises ``ValueError`` if
+    stub-rejection flags the output, so the batch loop can mark this
+    record as a failure and move on without aborting the run.
+    """
+    raw_output = run_esmfold(seq)
+    parsed = shape_output(raw_output)
+    reject_stub(parsed)
+    plddt = parsed.get("plddt_per_residue") or []
+    return {
+        "name": name,
+        "sequence": seq,
+        "total_length": len(seq),
+        "mean_plddt": parsed.get("mean_plddt"),
+        "ptm": parsed.get("ptm"),
+        "pdb_b64": parsed.get("pdb_b64"),
+        "plddt_per_residue": plddt,
+    }
+
+
+def _run_single(payload: dict[str, Any], start: float) -> None:
+    """Existing single-fold path. Writes inline result; no streaming."""
     tier = str(payload.get("tier") or "").lower() or "standalone"
 
     with tempfile.TemporaryDirectory(prefix="esmfold_", dir="/tmp") as _td:
@@ -651,6 +780,147 @@ def main() -> None:
         fasta_summary["total_length"],
         runtime_seconds,
     )
+
+
+def _run_batch(
+    payload: dict[str, Any], records: list[dict[str, Any]], start: float
+) -> None:
+    """Sequential batch fold across N records with per-design streaming.
+
+    One container loads ESMFold-3B once and folds each record in turn.
+    Each successful fold uploads its PDB via the presigned PUT URL and
+    fires a ``new_candidate`` heartbeat so the live job page updates as
+    folds complete. Failures (bad input, stub rejection, upload error)
+    increment ``n_failures`` and do not abort the rest of the batch.
+    """
+    job_id = os.environ.get("JOB_ID", "")
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    job_token = payload.get("job_token", "") or os.environ.get("JOB_TOKEN", "")
+    upload_endpoint = payload.get("upload_urls_endpoint", "")
+    if not upload_endpoint:
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            "upload_urls_endpoint missing from payload — batch preset "
+            "requires the web flow to populate it",
+        )
+
+    designs_total = len(records)
+    logger.info("esmfold batch starting: designs=%d", designs_total)
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="loading_model",
+        designs_completed=0,
+        designs_total=designs_total,
+    )
+
+    designs_out: list[dict] = []
+    n_failures = 0
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="folding",
+        designs_completed=0,
+        designs_total=designs_total,
+    )
+
+    for i, rec in enumerate(records):
+        name = str(rec.get("name") or f"design_{i}").strip() or f"design_{i}"
+        try:
+            seq = _validate_record_inline(name, rec.get("sequence") or "")
+        except ValueError as exc:
+            n_failures += 1
+            logger.warning("design %s: validation failed — %s", name, exc)
+            continue
+
+        design_start = time.time()
+        logger.info(
+            "=== folding %d/%d %s (%d aa) ===",
+            i + 1, designs_total, name, len(seq),
+        )
+        try:
+            folded = _fold_record(name, seq)
+        except SystemExit:
+            # reject_stub() calls _fail() which writes a FAILED smoke
+            # result + sys.exit(1). For batch we want to keep going.
+            n_failures += 1
+            logger.warning("design %s: stub-rejection killed the fold", name)
+            continue
+        except Exception as exc:
+            n_failures += 1
+            logger.warning("design %s: fold raised — %s", name, exc)
+            continue
+
+        pdb_key = f"{name}.pdb"
+        try:
+            pdb_text = base64.b64decode(folded["pdb_b64"]).decode("utf-8")
+            urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+            upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
+        except Exception as exc:
+            n_failures += 1
+            logger.warning("design %s: upload failed (%s)", name, exc)
+            continue
+
+        design_entry = {
+            "rank": i,
+            "name": name,
+            "pdb_key": pdb_key,
+            "mean_plddt": folded.get("mean_plddt"),
+            "ptm": folded.get("ptm"),
+            "total_length": folded.get("total_length"),
+            "runtime_seconds": int(time.time() - design_start),
+        }
+        designs_out.append(design_entry)
+        send_heartbeat(
+            webhook_url, job_id,
+            stage="folding",
+            designs_completed=i + 1,
+            designs_total=designs_total,
+            new_candidate=design_entry,
+        )
+        logger.info(
+            "  -> %s mean_pLDDT=%s ptm=%s len=%d",
+            name,
+            design_entry["mean_plddt"],
+            design_entry["ptm"],
+            design_entry["total_length"],
+        )
+
+    runtime_seconds = int(time.time() - start)
+    _write_result(
+        {
+            "status": "COMPLETED",
+            "tier": "batch",
+            "designs_total": designs_total,
+            "designs_completed": len(designs_out),
+            "n_failures": n_failures,
+            "designs": designs_out,
+            "runtime_seconds": runtime_seconds,
+            "provider_job_id": os.environ.get("JOB_ID", ""),
+        }
+    )
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="complete",
+        designs_completed=len(designs_out),
+        designs_total=designs_total,
+    )
+    logger.info(
+        "batch pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
+        len(designs_out), designs_total, n_failures, runtime_seconds,
+    )
+
+
+def main() -> None:
+    start = time.time()
+    payload = parse_payload()
+    preflight(payload)
+
+    job_spec = payload.get("job_spec") or {}
+    batch_records = job_spec.get("batch_records") if isinstance(job_spec, dict) else None
+    if batch_records:
+        _run_batch(payload, list(batch_records), start)
+    else:
+        _run_single(payload, start)
 
 
 if __name__ == "__main__":

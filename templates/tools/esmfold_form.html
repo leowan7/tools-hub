@@ -96,6 +96,57 @@
       line-height: 1.45;
       resize: vertical;
     }
+    .esmfold-preset-group {
+      display: grid;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .esmfold-preset-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .esmfold-preset-option:hover { border-color: var(--accent-dim); }
+    .esmfold-preset-option input[type="radio"] {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+    }
+    .esmfold-preset-option .preset-title {
+      display: block;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.92rem;
+      margin-bottom: 0.15rem;
+    }
+    .esmfold-preset-option .preset-desc {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .esmfold-batch-textarea {
+      width: 100%;
+      max-width: 560px;
+      min-height: 9rem;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin-bottom: 0.35rem;
+      resize: vertical;
+    }
+    #esmfold-mode[data-mode="standalone"] [data-show-when="batch"] { display: none; }
+    #esmfold-mode[data-mode="batch"] [data-show-when="standalone"] { display: none; }
   </style>
 
   <div class="hero">
@@ -117,27 +168,73 @@
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ workspace_hidden_inputs(workspace_ctx) }}
-          {# Single standalone tier — preset is fixed via a hidden field. #}
-          <input type="hidden" name="preset" value="standalone">
 
-          <div id="pilot-fields">
-            {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
-            <label for="fasta_text" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA (single chain)</label>
-            <textarea name="fasta_text" id="fasta_text" class="esmfold-fasta"
-                      placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."
-                      spellcheck="false">{{ (pre_fill.get('fasta_text') if pre_fill else '') or '' }}</textarea>
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
-              Paste one monomer sequence in FASTA format (single chain only, 10-400 aa).
-              Canonical 20 amino acids + <code>X</code> for unknown.
-              ESMFold v1 is <strong>monomer-only</strong> - for multimers use
-              ColabFold (D3) or AF2 standalone (D2). No MSA is computed;
-              the fold comes straight from the ESM-2 language model.
-            </div>
+          {# Pre-fill may carry a legacy ``preset='pilot'`` on cross-tool
+             handoffs (set by app.py:tool_form). Normalise anything that
+             is not a real ESMFold preset back to ``standalone`` so the
+             radio always renders a default-checked option. #}
+          {% set _raw_preset = (pre_fill.get('preset') if pre_fill else None) %}
+          {% set active_preset = _raw_preset if _raw_preset in ('standalone', 'batch') else 'standalone' %}
+
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Preset</label>
+          <div class="esmfold-preset-group">
+            <label class="esmfold-preset-option">
+              <input type="radio" name="preset" value="standalone"
+                     {% if active_preset == 'standalone' %}checked{% endif %}
+                     onchange="document.getElementById('esmfold-mode').dataset.mode='standalone'">
+              <span>
+                <span class="preset-title">Standalone — one FASTA</span>
+                <span class="preset-desc">
+                  Paste a single-chain monomer (10-400 aa). One fold, inline
+                  result. ~30 s on A100-40GB once the 3B model is warm.
+                </span>
+              </span>
+            </label>
+            <label class="esmfold-preset-option">
+              <input type="radio" name="preset" value="batch"
+                     {% if active_preset == 'batch' %}checked{% endif %}
+                     onchange="document.getElementById('esmfold-mode').dataset.mode='batch'">
+              <span>
+                <span class="preset-title">Batch — many monomers</span>
+                <span class="preset-desc">
+                  Fold many monomer sequences in one job, up to 500 records.
+                  Per-design results stream into the job page as they
+                  complete. Cost scales linearly with batch size.
+                </span>
+              </span>
+            </label>
           </div>
 
-          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Paste your FASTA - single-chain monomer up to 400 aa.
-            ~30 s on A100-40GB once the 3B model is warm.
+          <div id="esmfold-mode" data-mode="{{ active_preset }}">
+            <div id="pilot-fields" data-show-when="standalone">
+              {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
+              <label for="fasta_text" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA (single chain)</label>
+              <textarea name="fasta_text" id="fasta_text" class="esmfold-fasta"
+                        placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."
+                        spellcheck="false">{{ (pre_fill.get('fasta_text') if pre_fill else '') or '' }}</textarea>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
+                Paste one monomer sequence in FASTA format (single chain only, 10-400 aa).
+                Canonical 20 amino acids + <code>X</code> for unknown.
+                ESMFold v1 is <strong>monomer-only</strong> - for multimers use
+                ColabFold (D3) or AF2 standalone (D2). No MSA is computed;
+                the fold comes straight from the ESM-2 language model.
+              </div>
+            </div>
+
+            <div id="batch-fields" data-show-when="batch">
+              <label for="sequences" class="label" style="display:block; margin-bottom: 0.4rem;">Sequences (FASTA or one per line)</label>
+              <textarea name="sequences" id="sequences" class="esmfold-batch-textarea"
+                        placeholder=">design_0&#10;MKWVTFISLLFLFSSAYSRGVF...&#10;>design_1&#10;EVQLVESGGGLVQPGGSLRLSC..."
+                        spellcheck="false"
+                        oninput="(function(t){var n=(t.value||'').split(/\r?\n/).filter(function(l){return l.trim();}).filter(function(l){return !l.startsWith('>');}).length; document.getElementById('batch-count').textContent=n;})(this)">{{ (pre_fill.get('sequences') if pre_fill else '') or '' }}</textarea>
+              <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
+                Up to <strong>500</strong> monomer sequences per submit, 10-400 aa each.
+                Canonical 20 amino acids + <code>X</code> for unknown.
+                Lines beginning with <code>&gt;</code> are treated as FASTA headers; lines
+                without a header are auto-named <code>design_0</code>, <code>design_1</code>, …
+                Detected records: <strong id="batch-count">0</strong>.
+              </div>
+            </div>
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

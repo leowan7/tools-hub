@@ -58,6 +58,9 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse, urlunparse
+
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +97,74 @@ def _write_result(payload: dict[str, Any]) -> None:
     except OSError as exc:
         # Last-ditch: log to stderr so Modal logs capture the reason.
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
+
+
+def _heartbeat_url(webhook_url: str) -> str:
+    """Derive the /webhooks/heartbeat URL from the main webhook URL."""
+    parsed = urlparse(webhook_url)
+    return urlunparse(parsed._replace(path="/webhooks/heartbeat"))
+
+
+def send_heartbeat(
+    webhook_url: str,
+    job_id: str,
+    stage: str,
+    designs_completed: int = 0,
+    designs_total: int = 0,
+    new_candidate: dict | None = None,
+) -> None:
+    """Fire-and-forget heartbeat. Never raises — a flaky webhook hop must
+    not abort an in-progress batch fold. Schema mirrors the Boltz-2 +
+    ESMFold batch contract.
+    """
+    if not webhook_url:
+        return
+    body = {
+        "job_id": job_id,
+        "stage": stage,
+        "designs_completed": int(designs_completed),
+        "designs_total": int(designs_total),
+    }
+    if isinstance(new_candidate, dict):
+        body["new_candidate"] = new_candidate
+        body["job_token"] = os.environ.get("JOB_TOKEN", "")
+    try:
+        resp = requests.post(_heartbeat_url(webhook_url), json=body, timeout=10)
+        logger.debug("Heartbeat sent: %s (HTTP %d)", stage, resp.status_code)
+    except Exception as exc:
+        logger.warning("Heartbeat failed (%s): %s", stage, exc)
+
+
+def request_upload_urls(
+    upload_endpoint: str, job_token: str, filenames: list[str]
+) -> dict[str, str]:
+    """Ask the hub for presigned PUT URLs keyed by filename."""
+    resp = requests.post(
+        upload_endpoint,
+        json={"filenames": filenames},
+        headers={"Authorization": f"Bearer {job_token}"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"upload_urls request failed: HTTP {resp.status_code} "
+            f"{resp.text[:200]}"
+        )
+    return resp.json()["urls"]
+
+
+def upload_pdb(url: str, pdb_bytes: bytes) -> None:
+    """PUT the PDB bytes to a presigned URL with chemical/x-pdb."""
+    resp = requests.put(
+        url,
+        data=pdb_bytes,
+        headers={"Content-Type": "chemical/x-pdb"},
+        timeout=120,
+    )
+    if resp.status_code not in (200, 201, 204):
+        raise RuntimeError(
+            f"upload failed: HTTP {resp.status_code} {resp.text[:200]}"
+        )
 
 
 def _fail(bucket: str, check: str, detail: str) -> None:
@@ -701,11 +772,32 @@ def reject_stub(result: dict[str, Any]) -> None:
 # ===========================================================================
 
 
-def main() -> None:
-    start = time.time()
-    payload = parse_payload()
-    preflight(payload)
+def _write_batch_record_fasta(
+    name: str, sequence: str, dest: Path
+) -> tuple[str, int, int]:
+    """Write a single batch record to ``dest`` (FASTA shape).
 
+    Sequence may contain ``:`` chain breaks for an intra-record multimer
+    fold — this matches the ColabFold-multimer input convention. Returns
+    ``(model_preset, num_chains, total_aa)``.
+    """
+    chains = [c.strip().upper() for c in (sequence or "").split(":") if c.strip()]
+    if not chains:
+        raise ValueError(f"record {name!r} parsed to zero chains")
+    total_aa = sum(len(c) for c in chains)
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name)[:60] or "fold"
+    if len(chains) == 1:
+        with open(dest, "w") as out:
+            out.write(f">{safe_name}\n{chains[0]}\n")
+        return "monomer", 1, total_aa
+    joined = ":".join(chains)
+    with open(dest, "w") as out:
+        out.write(f">{safe_name}\n{joined}\n")
+    return "multimer", len(chains), total_aa
+
+
+def _run_single(payload: dict[str, Any], start: float) -> None:
+    """Existing single-fold path."""
     job_spec = payload.get("job_spec") or {}
     tier = str(payload.get("tier") or "").lower() or "standalone"
 
@@ -717,11 +809,8 @@ def main() -> None:
         num_recycles = 3
     use_templates = bool(parameters.get("use_templates", True))
 
-    # Defensive clamping (adapter already validates, but belts-and-braces
-    # because the pipeline may be invoked directly via ``modal run``).
     num_recycles = max(RECYCLES_MIN, min(RECYCLES_MAX, num_recycles))
 
-    # Smoke tier forces the fastest possible preset regardless of caller.
     if tier == "smoke":
         num_recycles = 1
         use_templates = False
@@ -762,6 +851,198 @@ def main() -> None:
         len(parsed.get("plddt_per_residue") or []),
         runtime_seconds,
     )
+
+
+def _run_batch(
+    payload: dict[str, Any], records: list[dict[str, Any]], start: float
+) -> None:
+    """Sequential batch fold across N records with per-design streaming.
+
+    Each record is folded as its own colabfold_batch invocation. The
+    Modal container loads weights + JIT-compiles once (cold), then reuses
+    that warmth for every subsequent fold, so per-record wall-clock
+    drops sharply after the first fold completes.
+    """
+    job_id = os.environ.get("JOB_ID", "")
+    webhook_url = os.environ.get("WEBHOOK_URL", "")
+    job_token = payload.get("job_token", "") or os.environ.get("JOB_TOKEN", "")
+    upload_endpoint = payload.get("upload_urls_endpoint", "")
+    if not upload_endpoint:
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            "upload_urls_endpoint missing from payload — batch preset "
+            "requires the web flow to populate it",
+        )
+
+    job_spec = payload.get("job_spec") or {}
+    parameters = job_spec.get("parameters") or {}
+    try:
+        num_recycles = int(parameters.get("num_recycles", 3))
+    except (TypeError, ValueError):
+        num_recycles = 3
+    num_recycles = max(RECYCLES_MIN, min(RECYCLES_MAX, num_recycles))
+    use_templates = bool(parameters.get("use_templates", True))
+
+    designs_total = len(records)
+    logger.info("af2 batch starting: designs=%d", designs_total)
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="loading_model",
+        designs_completed=0,
+        designs_total=designs_total,
+    )
+
+    designs_out: list[dict] = []
+    n_failures = 0
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="folding",
+        designs_completed=0,
+        designs_total=designs_total,
+    )
+
+    with tempfile.TemporaryDirectory(prefix="af2_batch_", dir="/tmp") as _td:
+        workdir = Path(_td)
+
+        for i, rec in enumerate(records):
+            name = str(rec.get("name") or f"fold_{i}").strip() or f"fold_{i}"
+            sequence = rec.get("sequence") or ""
+            design_start = time.time()
+            design_workdir = workdir / f"d_{i:03d}"
+            design_workdir.mkdir(parents=True, exist_ok=True)
+            fasta_path = design_workdir / "input.fasta"
+            try:
+                model_preset, n_chains, total_aa = _write_batch_record_fasta(
+                    name, sequence, fasta_path
+                )
+            except ValueError as exc:
+                n_failures += 1
+                logger.warning("design %s: bad input — %s", name, exc)
+                continue
+            if total_aa > MAX_TOTAL_AA:
+                n_failures += 1
+                logger.warning(
+                    "design %s: %d AA exceeds per-record cap %d — skipping",
+                    name, total_aa, MAX_TOTAL_AA,
+                )
+                continue
+
+            logger.info(
+                "=== folding %d/%d %s (%d chain%s, %d aa, preset=%s) ===",
+                i + 1, designs_total, name,
+                n_chains, '' if n_chains == 1 else 's',
+                total_aa, model_preset,
+            )
+            try:
+                out_dir = run_colabfold(
+                    fasta=fasta_path,
+                    model_preset=model_preset,
+                    num_recycles=num_recycles,
+                    use_templates=use_templates,
+                    use_msa=True,
+                    workdir=design_workdir,
+                )
+                parsed = parse_af2_output(out_dir, fasta=fasta_path)
+            except SystemExit:
+                # _fail() inside colabfold/parse aborts via sys.exit. For
+                # batch we want to keep going.
+                n_failures += 1
+                logger.warning("design %s: pipeline _fail killed the fold", name)
+                continue
+            except Exception as exc:
+                n_failures += 1
+                logger.warning("design %s: fold raised — %s", name, exc)
+                continue
+
+            pdb_b64 = parsed.get("pdb_b64") or ""
+            if not pdb_b64:
+                n_failures += 1
+                logger.warning("design %s: no PDB produced", name)
+                continue
+            try:
+                pdb_text = base64.b64decode(pdb_b64).decode("utf-8")
+            except Exception as exc:
+                n_failures += 1
+                logger.warning("design %s: pdb decode failed — %s", name, exc)
+                continue
+
+            pdb_key = f"{re.sub(r'[^A-Za-z0-9_-]+', '_', name)[:60] or 'fold'}.pdb"
+            try:
+                urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+                upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
+            except Exception as exc:
+                n_failures += 1
+                logger.warning("design %s: upload failed — %s", name, exc)
+                continue
+
+            plddt = parsed.get("plddt_per_residue") or []
+            mean_plddt = round(sum(plddt) / len(plddt), 2) if plddt else None
+            design_entry = {
+                "rank": i,
+                "name": name,
+                "pdb_key": pdb_key,
+                "mean_plddt": mean_plddt,
+                "iptm": parsed.get("iptm"),
+                "ptm": parsed.get("ptm"),
+                "total_aa": parsed.get("total_aa", total_aa),
+                "num_chains": parsed.get("num_chains", n_chains),
+                "model_preset": model_preset,
+                "runtime_seconds": int(time.time() - design_start),
+            }
+            designs_out.append(design_entry)
+            send_heartbeat(
+                webhook_url, job_id,
+                stage="folding",
+                designs_completed=i + 1,
+                designs_total=designs_total,
+                new_candidate=design_entry,
+            )
+            logger.info(
+                "  -> %s mean_pLDDT=%s ipTM=%s pTM=%s len=%d",
+                name, mean_plddt, design_entry["iptm"], design_entry["ptm"], design_entry["total_aa"],
+            )
+
+    runtime_seconds = int(time.time() - start)
+    _write_result(
+        {
+            "status": "COMPLETED",
+            "tier": "batch",
+            "designs_total": designs_total,
+            "designs_completed": len(designs_out),
+            "n_failures": n_failures,
+            "designs": designs_out,
+            "num_recycles": num_recycles,
+            "use_templates": use_templates,
+            "runtime_seconds": runtime_seconds,
+            "provider_job_id": os.environ.get("JOB_ID", ""),
+        }
+    )
+    send_heartbeat(
+        webhook_url, job_id,
+        stage="complete",
+        designs_completed=len(designs_out),
+        designs_total=designs_total,
+    )
+    logger.info(
+        "batch pipeline ok — %d/%d designs folded, %d failures, runtime=%ds",
+        len(designs_out), designs_total, n_failures, runtime_seconds,
+    )
+
+
+def main() -> None:
+    start = time.time()
+    payload = parse_payload()
+    preflight(payload)
+
+    job_spec = payload.get("job_spec") or {}
+    batch_records = (
+        job_spec.get("batch_records") if isinstance(job_spec, dict) else None
+    )
+    if batch_records:
+        _run_batch(payload, list(batch_records), start)
+    else:
+        _run_single(payload, start)
 
 
 if __name__ == "__main__":

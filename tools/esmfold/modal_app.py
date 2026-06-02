@@ -38,7 +38,10 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-40GB"
-_MAX_SESSION_S = 600  # 10 min per ATOMIC-TOOLS.md D4 - ESMFold is fast.
+# 60 min ceiling covers the standalone tier (~30 s warm) and the batch
+# preset (up to 500 records at ~5 s/seq sequential on a warm A100-40GB,
+# leaving headroom for cold weight load + tail-end uploads).
+_MAX_SESSION_S = 3600
 _PYTHON = "python3"
 
 
@@ -55,6 +58,11 @@ def _build_run_env(payload: dict) -> dict[str, str]:
             {
                 "job_spec": payload.get("job_spec", {}),
                 "input_presigned_url": payload.get("input_presigned_url", ""),
+                # Required for the batch preset's partial-results streaming.
+                # The standalone tier ignores it (results inline via the
+                # function return value). Matches the Boltz-2 contract at
+                # tools/boltz2/modal_app.py:_build_run_env.
+                "upload_urls_endpoint": payload.get("upload_urls_endpoint", ""),
                 "job_token": payload.get("job_token", ""),
                 "tier": payload.get("tier", ""),
             }

@@ -1,8 +1,18 @@
 {# ESMFold (D4) results partial - included by job_detail.html on status=succeeded.
 
-   Output schema (from run_pipeline.py main()):
-     pdb_b64, plddt_per_residue, pae_matrix_b64, ptm, mean_plddt,
-     sequence, chain_count, total_length, runtime_seconds.
+   Two render paths:
+
+   1. Standalone (single fold) — original output schema from run_pipeline
+      `_run_single`: pdb_b64, plddt_per_residue, pae_matrix_b64, ptm,
+      mean_plddt, sequence, chain_count, total_length, runtime_seconds.
+      Renders the inline summary panel + per-residue pLDDT spark.
+
+   2. Batch — output schema from `_run_batch`: designs[] (list of
+      per-design dicts with rank/name/pdb_key/mean_plddt/ptm/total_length),
+      plus designs_total / designs_completed / n_failures /
+      runtime_seconds. Renders via the shared results_panel +
+      candidate_table macros so each design gets its own NGL viewer +
+      PDB download row, mirroring Boltz-2's results UI exactly.
 
    ESMFold v1 specifics vs D3 ColabFold:
      - No iptm (monomer-only).
@@ -10,12 +20,12 @@
        template must not render a broken "pTM" tile when that happens
        (ATOMIC-TOOLS.md gotcha).
      - pae_matrix_b64 is often empty (most ESMFold runs don't return pAE).
+#}
 
-   The shared results_panel macro + candidate_table expect the composite
-   pipeline's ``candidates`` shape, so we render an inline summary panel
-   here (parallel to the D3 ColabFold results template). #}
+{% from "components/results_shell.html" import results_panel %}
 
 {% set output         = job.result or {} %}
+{% set raw_designs    = output.get('designs', []) %}
 {% set plddt          = output.get('plddt_per_residue', []) %}
 {% set mean_plddt     = output.get('mean_plddt') %}
 {% set ptm            = output.get('ptm') %}
@@ -27,6 +37,78 @@
 {% set pae_b64        = output.get('pae_matrix_b64') %}
 {% set clone_url      = url_for('tool_form', tool='esmfold', clone_from=job.id) %}
 
+{# ----- Batch path ----- #}
+{% if raw_designs %}
+  {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
+  {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
+  {% set n_failures         = output.get('n_failures') or 0 %}
+
+  {# Reshape designs into the candidate_table contract. Sort by mean
+     pLDDT desc so the highest-confidence folds land at the top. #}
+  {% set candidates = [] %}
+  {% for d in raw_designs %}
+    {% set _ = candidates.append({
+        'rank': d.get('rank'),
+        'name': d.get('name'),
+        'pdb_key': d.get('pdb_key'),
+        'scores': {
+          'mean_pLDDT': d.get('mean_plddt'),
+          'pTM': d.get('ptm'),
+          'length': d.get('total_length'),
+        },
+    }) %}
+  {% endfor %}
+  {% set candidates = candidates | sort(attribute='scores.mean_pLDDT', reverse=True) %}
+  {% set columns = ['mean_pLDDT', 'pTM', 'length'] %}
+
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header">
+      <span class="panel-title">ESMFold batch</span>
+      <span class="panel-badge">batch</span>
+    </div>
+    <div class="panel-body">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:1rem; margin-bottom:0.5rem;">
+        <div>
+          <div style="color:var(--text-tertiary); font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase;">Designs folded</div>
+          <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem;">
+            {{ designs_completed }} / {{ designs_total }}
+            {% if n_failures %}
+              <span style="color:#fca5a5; font-size:0.8rem;">({{ n_failures }} fail)</span>
+            {% endif %}
+          </div>
+        </div>
+        {% if runtime %}
+          <div>
+            <div style="color:var(--text-tertiary); font-size:0.72rem; letter-spacing:0.08em; text-transform:uppercase;">Runtime</div>
+            <div style="color:var(--text-primary); font-family:var(--font-mono); font-size:1.1rem;">{{ runtime }} s</div>
+          </div>
+        {% endif %}
+      </div>
+      <div style="color:var(--text-secondary); font-size:0.82rem; max-width:64ch;">
+        ESMFold v1 monomer fold per record, no MSA. Sequences ranked by
+        mean pLDDT — values above 70 generally fold to a well-defined
+        structure; below 50 the model is uncertain.
+      </div>
+    </div>
+  </div>
+
+  {% call results_panel(
+      candidates=candidates,
+      columns=columns,
+      tool_slug='esmfold',
+      job_id=job.id,
+      clone_url=clone_url,
+      tier='batch',
+      gpu_seconds=runtime,
+      send_target_tools=send_target_tools) %}
+    <p class="subtitle">
+      ESMFold returned no completed designs. Confirm every input record
+      is a monomer 10-400 aa long with canonical residues, then re-submit.
+    </p>
+  {% endcall %}
+
+{# ----- Standalone (single-fold) path ----- #}
+{% else %}
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">
     <span class="panel-title">Fold result</span>
@@ -142,3 +224,4 @@
     {% endif %}
   </div>
 </div>
+{% endif %}

@@ -46,7 +46,7 @@ class TestAdapterRegistration:
     def test_presets_shape(self):
         adapter = get_adapter("colabfold")
         slugs = [p.slug for p in adapter.presets]
-        assert slugs == ["standalone"]
+        assert slugs == ["standalone", "batch"]
 
     def test_neither_preset_requires_pdb(self):
         """ColabFold takes FASTA text, never a PDB upload."""
@@ -267,11 +267,15 @@ def test_form_renders_when_flag_on(app_with_colabfold_flag, monkeypatch):
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "ColabFold" in body
-    # Single standalone tier: preset is a hidden field, not a <select>.
-    assert '<input type="hidden" name="preset" value="standalone">' in body
+    # Two presets: standalone (default) + batch. Both render as radios
+    # under the same ``preset`` name; the first is checked by default.
+    assert 'name="preset" value="standalone"' in body
+    assert 'name="preset" value="batch"' in body
     assert '<option value="smoke"' not in body
-    # The standalone FASTA input renders unconditionally.
+    # The standalone FASTA input + batch sequences textarea both render;
+    # CSS toggles visibility based on the active preset.
     assert 'name="fasta_text"' in body
+    assert 'name="sequences"' in body
 
 
 def test_form_404s_when_flag_off(app_with_colabfold_flag, monkeypatch):
@@ -343,8 +347,15 @@ def test_handoff_pilot_preset_runs_standalone_not_smoke(
     resp = client.get("/tools/colabfold?from_job=src-job-abc")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert '<input type="hidden" name="preset" value="standalone">' in body, (
-        "form must pin the standalone preset on a handoff"
+    # The standalone preset radio must be the default-checked option on a
+    # handoff (batch is only opted into explicitly by the user).
+    import re
+    standalone_radio = re.search(
+        r'<input type="radio" name="preset" value="standalone"\s+checked',
+        body,
+    )
+    assert standalone_radio is not None, (
+        "form must default to the standalone preset on a handoff"
     )
     assert '<option value="smoke"' not in body, (
         "smoke option must not survive (the smoke tier was removed)"

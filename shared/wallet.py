@@ -115,9 +115,13 @@ DEFAULT_USD_PER_SECOND = 0.001028  # A100-80GB rate.
 # :data:`shared.wallet_estimates.TOOL_SPECS` entries.
 PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     "mpnn":        Decimal("150.00"),
+    # ``alphafold2`` retained for backward compat with existing tests +
+    # wallet ledger rows recorded under that key. The production route
+    # uses the ``af2`` adapter slug, mirrored below.
     "alphafold2":  Decimal("500.00"),
+    "af2":         Decimal("500.00"),
     "colabfold":   Decimal("500.00"),
-    "esmfold":     Decimal("100.00"),
+    "esmfold":     Decimal("200.00"),
     "rfdiffusion": Decimal("500.00"),
     "rfantibody":  Decimal("500.00"),
     "bindcraft":   Decimal("500.00"),
