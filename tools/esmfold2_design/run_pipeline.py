@@ -62,9 +62,6 @@ Output shape (``/tmp/smoke_results.json``)::
     }
 
 TODO (post first prod run, separate PR):
-  - Stream per-design complex PDBs via presigned PUT URLs from
-    ``upload_urls_endpoint`` for live status-page rendering, matching
-    the partial-results contract Boltz-2 uses.
   - Send heartbeats with ``new_candidate`` events for the live UI.
   - Calibrate STRICT_IPTM / STRICT_CDR_IPTM_PROXY thresholds against
     the first 8-seed PD-L1 sweep instead of the conservative defaults.
@@ -80,6 +77,8 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Optional
+
+import requests
 
 # /opt is the cookbook tutorial path planted by Dockerfile.modal.
 sys.path.insert(0, "/opt")
@@ -115,8 +114,8 @@ def _write_result(payload: dict[str, Any]) -> None:
         logger.error("Failed to write %s: %s", SMOKE_RESULTS_PATH, exc)
 
 
-def _parse_job_payload() -> tuple[dict[str, Any], str, str]:
-    """Read JOB_PAYLOAD env, return (job_spec, job_id, tier)."""
+def _parse_job_payload() -> tuple[dict[str, Any], str, str, dict[str, Any]]:
+    """Read JOB_PAYLOAD env, return (job_spec, job_id, tier, full_payload)."""
     raw = os.environ.get("JOB_PAYLOAD", "")
     if not raw:
         raise RuntimeError("JOB_PAYLOAD env var is empty.")
@@ -125,7 +124,44 @@ def _parse_job_payload() -> tuple[dict[str, Any], str, str]:
         payload.get("job_spec", {}),
         os.environ.get("JOB_ID", ""),
         os.environ.get("JOB_TIER", "minibinder"),
+        payload,
     )
+
+
+# ===========================================================================
+# Upload helpers (mirror tools/boltz2/run_pipeline.py exactly)
+# ===========================================================================
+
+
+def request_upload_urls(
+    upload_endpoint: str, job_token: str, filenames: list[str]
+) -> dict[str, str]:
+    """Ask the hub for presigned PUT URLs keyed by filename."""
+    resp = requests.post(
+        upload_endpoint,
+        json={"filenames": filenames},
+        headers={"Authorization": f"Bearer {job_token}"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"upload_urls request failed: HTTP {resp.status_code} {resp.text[:200]}"
+        )
+    return resp.json()["urls"]
+
+
+def upload_pdb(url: str, pdb_bytes: bytes) -> None:
+    """PUT the PDB bytes to a presigned URL with chemical/x-pdb."""
+    resp = requests.put(
+        url,
+        data=pdb_bytes,
+        headers={"Content-Type": "chemical/x-pdb"},
+        timeout=120,
+    )
+    if resp.status_code not in (200, 201, 204):
+        raise RuntimeError(
+            f"upload failed: HTTP {resp.status_code} {resp.text[:200]}"
+        )
 
 
 def _target_label(target_name: Optional[str], target_sequence: Optional[str]) -> str:
@@ -180,21 +216,33 @@ def _classify(
         if proxy is not None and proxy >= STRICT_CDR_IPTM_PROXY - 0.1:
             return "borderline"
         return "drop"
-    # minibinder mode
+    # minibinder mode. pI is a hard gate: an undisplayable scaffold is a
+    # drop regardless of iPTM, so check pI before the iPTM bands.
     if iptm is None:
         return "drop"
     pi_ok = pi is not None and pi < STRICT_PI
-    if iptm >= STRICT_IPTM and pi_ok:
+    if not pi_ok:
+        return "drop"
+    if iptm >= STRICT_IPTM:
         return "strict_pass"
     if iptm >= STRICT_IPTM - 0.05:
         return "borderline"
     return "drop"
 
 
-def _save_complex_pdb(complex_obj: Any, name: str) -> Optional[str]:
-    """Write a ProteinComplex out as a PDB file under PDB_OUTPUT_DIR.
+def _save_complex_pdb(
+    complex_obj: Any,
+    name: str,
+    upload_endpoint: str = "",
+    job_token: str = "",
+) -> Optional[str]:
+    """Write a ProteinComplex out as a PDB file under PDB_OUTPUT_DIR and,
+    if ``upload_endpoint`` is set, also stream the PDB bytes to the hub
+    via a presigned PUT URL (mirrors tools/boltz2/run_pipeline.py).
 
-    Returns the relative pdb_key for the smoke-results manifest.
+    Returns the relative pdb_key for the smoke-results manifest. The key
+    matches the Storage path the hub serves at
+    ``/api/jobs/<job_id>/pdb/<pdb_key>``.
     """
     if complex_obj is None:
         return None
@@ -202,14 +250,31 @@ def _save_complex_pdb(complex_obj: Any, name: str) -> Optional[str]:
     key = f"{name}_complex.pdb"
     path = PDB_OUTPUT_DIR / key
     try:
-        path.write_text(complex_obj.to_pdb_string())
+        pdb_text = complex_obj.to_pdb_string()
+        path.write_text(pdb_text)
     except Exception as exc:
         logger.warning("Failed to write %s: %s", path, exc)
         return None
+
+    if upload_endpoint:
+        try:
+            urls = request_upload_urls(upload_endpoint, job_token, [key])
+            upload_pdb(urls[key], pdb_text.encode("utf-8"))
+            logger.info("Uploaded %s to hub via presigned URL", key)
+        except Exception as exc:
+            logger.warning(
+                "Upload of %s failed (%s) — inline /tmp copy preserved", key, exc,
+            )
+
     return key
 
 
-def _shape_designs(critic_results: list[dict], is_antibody: bool) -> list[dict]:
+def _shape_designs(
+    critic_results: list[dict],
+    is_antibody: bool,
+    upload_endpoint: str = "",
+    job_token: str = "",
+) -> list[dict]:
     """Collapse the per-critic results into one row per design.
 
     The upstream critic_results is a list of dicts with keys including
@@ -255,7 +320,9 @@ def _shape_designs(critic_results: list[dict], is_antibody: bool) -> list[dict]:
         name = f"design_{rank}"
         binder_seq = _extract_binder_sequence(seq)
         pi = None if is_antibody else _isoelectric_point(binder_seq)
-        pdb_key = _save_complex_pdb(bucket["complex"], name)
+        pdb_key = _save_complex_pdb(
+            bucket["complex"], name, upload_endpoint, job_token,
+        )
         filter_status = _classify(
             is_antibody,
             bucket["iptm"],
@@ -289,7 +356,7 @@ def _shape_designs(critic_results: list[dict], is_antibody: bool) -> list[dict]:
 def main() -> int:
     start = time.time()
     try:
-        job_spec, job_id, tier = _parse_job_payload()
+        job_spec, job_id, tier, payload = _parse_job_payload()
     except Exception as exc:
         logger.error("Failed to parse job payload: %s", exc)
         _write_result(
@@ -306,6 +373,15 @@ def main() -> int:
             }
         )
         return 1
+
+    upload_endpoint = payload.get("upload_urls_endpoint", "")
+    job_token = payload.get("job_token", "") or os.environ.get("JOB_TOKEN", "")
+    if not upload_endpoint:
+        logger.warning(
+            "upload_urls_endpoint missing from payload — per-design PDBs "
+            "will only land in the inline smoke_result, not the hub Storage. "
+            "Pilot tier requires the web flow to populate this."
+        )
 
     preset = job_spec.get("preset", "minibinder")
     target_name = job_spec.get("target_name")
@@ -407,7 +483,9 @@ def main() -> int:
         )
         return 1
 
-    designs = _shape_designs(critic_results or [], is_antibody)
+    designs = _shape_designs(
+        critic_results or [], is_antibody, upload_endpoint, job_token,
+    )
     runtime = int(time.time() - start)
 
     summary = {
