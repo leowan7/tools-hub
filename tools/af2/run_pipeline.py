@@ -785,6 +785,21 @@ def reject_stub(result: dict[str, Any]) -> None:
 # ===========================================================================
 
 
+def _hhsearch_available() -> bool:
+    """True if hhsearch is on $PATH.
+
+    The AF2 image does not currently ship hhsuite, so colabfold_batch
+    crashes with ``FileNotFoundError: 'hhsearch'`` whenever
+    ``--templates`` is passed. We probe once and downgrade
+    use_templates to False if the binary is missing, instead of letting
+    every record crash deep inside colabfold's MSA pipeline. Image-level
+    fix (install hhsuite in the Dockerfile) is the proper long-term
+    answer.
+    """
+    from shutil import which  # noqa: PLC0415
+    return which("hhsearch") is not None
+
+
 def _classify_record(sequence: str) -> tuple[str, int, int, list[str]]:
     """Split a batch record sequence on ``:`` chain breaks and return
     ``(model_preset, num_chains, total_aa, chains)``.
@@ -986,6 +1001,15 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
     else:
         use_msa = True
 
+    # Image-level guard: drop --templates when hhsearch is absent so we
+    # surface a single warning instead of a per-fold colabfold crash.
+    if use_templates and not _hhsearch_available():
+        logger.warning(
+            "use_templates=True but hhsearch is not on PATH on this image — "
+            "forcing use_templates=False to avoid colabfold MSA crash"
+        )
+        use_templates = False
+
     with tempfile.TemporaryDirectory(prefix="af2_", dir="/tmp") as _td:
         workdir = Path(_td)
         fasta = resolve_input_fasta(payload, workdir)
@@ -1058,6 +1082,14 @@ def _run_batch(
         num_recycles = 3
     num_recycles = max(RECYCLES_MIN, min(RECYCLES_MAX, num_recycles))
     use_templates = bool(parameters.get("use_templates", True))
+
+    # Image-level guard (see _hhsearch_available docstring).
+    if use_templates and not _hhsearch_available():
+        logger.warning(
+            "use_templates=True but hhsearch is not on PATH on this image — "
+            "forcing use_templates=False to avoid colabfold MSA crash"
+        )
+        use_templates = False
 
     designs_total = len(records)
     logger.info("af2 batch starting: designs=%d (consolidated)", designs_total)
