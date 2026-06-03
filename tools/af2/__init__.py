@@ -213,7 +213,12 @@ def validate(
             f"num_recycles must be between {RECYCLES_MIN} and {RECYCLES_MAX}.",
         )
 
-    use_templates = _parse_bool(form.get("use_templates"), True)
+    # Default False to match the form's visible unchecked checkbox.
+    # Browsers omit unchecked checkboxes from the POST body, so a missing
+    # field MUST mean off, not on. Templates also depend on a pdb70
+    # database being present in the image; today's AF2 image ships only
+    # hhsearch, so end-to-end template runs require explicit opt-in.
+    use_templates = _parse_bool(form.get("use_templates"), False)
 
     # Multimer detection: ColabFold + AlphaFold-multimer kicks in when
     # the record list has > 1 entry. Single-record FASTAs run monomer
@@ -290,7 +295,12 @@ def _validate_batch(form: Mapping[str, Any]) -> tuple[Optional[dict], Optional[s
         return None, (
             f"num_recycles must be between {RECYCLES_MIN} and {RECYCLES_MAX}."
         )
-    use_templates = _parse_bool(form.get("use_templates"), True)
+    # Default False to match the form's visible unchecked checkbox.
+    # Browsers omit unchecked checkboxes from the POST body, so a missing
+    # field MUST mean off, not on. Templates also depend on a pdb70
+    # database being present in the image; today's AF2 image ships only
+    # hhsearch, so end-to-end template runs require explicit opt-in.
+    use_templates = _parse_bool(form.get("use_templates"), False)
 
     # Normalise per-record shape: keep raw ``sequence`` (with ``:``
     # preserved) plus a precomputed ``chains`` array for the pipeline so

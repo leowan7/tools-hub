@@ -172,12 +172,19 @@ class TestValidate:
         assert err is None, err
         assert inputs["fasta_records"][0]["sequence"] == "MKWVTFISLL"
 
-    def test_use_templates_defaults_true_on_standalone(self):
-        """Spec default is use_templates=True. Form with key absent should keep it True."""
+    def test_use_templates_defaults_false_on_standalone(self):
+        """Default must match the form's visible unchecked checkbox state.
+
+        Browsers omit unchecked checkboxes from POST bodies, so an
+        absent ``use_templates`` field MUST mean off. Templates also
+        depend on a pdb70 database that today's AF2 image does not
+        ship — defaulting True would silently invite a downstream crash
+        / runtime guard downgrade.
+        """
         form = {"preset": "standalone", "fasta": ">x\nMKWV\n"}
         inputs, err = af2_mod.validate(form, {})
         assert err is None
-        assert inputs["use_templates"] is True
+        assert inputs["use_templates"] is False
 
 
 # ---------------------------------------------------------------------------

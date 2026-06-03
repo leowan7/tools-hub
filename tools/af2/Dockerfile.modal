@@ -30,8 +30,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TF_CPP_MIN_LOG_LEVEL=3
 
 # ---------- System deps ----------
+# hhsuite ships hhsearch, hhblits, hhmake, etc. ColabFold's --templates
+# path spawns ``hhsearch`` directly and crashes with FileNotFoundError
+# if the binary is missing — see the runtime guard in run_pipeline.py
+# (_hhsearch_available). Installing here makes the templates path
+# reachable; whether it succeeds end-to-end also depends on a pdb70
+# database being available at the colabfold data dir, which is a
+# separate concern.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl git python3-pip python3-dev build-essential && \
+    curl git python3-pip python3-dev build-essential hhsuite && \
     ln -sf /usr/bin/python3 /usr/bin/python && \
     rm -rf /var/lib/apt/lists/*
 
@@ -75,6 +82,7 @@ RUN python3 -c "import jax; print('jax', jax.__version__); assert jax.__version_
     test -f /opt/smoke_target.fasta && \
     which colabfold_batch && \
     which python3 && \
+    which hhsearch && \
     echo "layer1 ok"
 
 # NOTE: no COPY run_pipeline.py or CMD — Modal invokes @app.function bodies.
