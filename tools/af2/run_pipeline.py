@@ -248,18 +248,31 @@ def preflight(payload: dict[str, Any]) -> None:
     and tmp-writable, which only exist at runtime. Failures write
     FAILED to ``/tmp/smoke_results.json`` and sys.exit(1).
     """
-    # 1. payload shape — fasta_records required EXCEPT on smoke tier,
-    # which uses the baked /opt/smoke_target.fasta fixture (mirrors
-    # D1 MPNN's smoke contract). resolve_input_fasta() handles the
-    # smoke fallback at line ~247.
+    # 1. payload shape. Smoke tier uses the baked /opt/smoke_target.fasta
+    # fixture. Standalone tier needs ``fasta_records`` (legacy single-fold
+    # key). Batch preset sends ``batch_records`` instead and is dispatched
+    # by main() before reaching the single-fold path — accept either.
     tier = str(payload.get("tier") or "").lower()
     job_spec = payload.get("job_spec") or {}
     if tier != "smoke":
-        if "fasta_records" not in job_spec:
-            _fail("preflight", "payload", "missing fasta_records in job_spec")
-        records = job_spec.get("fasta_records") or []
-        if not isinstance(records, list) or not records:
-            _fail("preflight", "payload", "fasta_records must be a non-empty list")
+        batch_records = job_spec.get("batch_records")
+        if isinstance(batch_records, list) and batch_records:
+            # Batch path — main() will dispatch to _run_batch().
+            pass
+        else:
+            if "fasta_records" not in job_spec:
+                _fail(
+                    "preflight",
+                    "payload",
+                    "missing fasta_records / batch_records in job_spec",
+                )
+            records = job_spec.get("fasta_records") or []
+            if not isinstance(records, list) or not records:
+                _fail(
+                    "preflight",
+                    "payload",
+                    "fasta_records must be a non-empty list",
+                )
 
     # 2. ColabFold binary on $PATH
     try:
