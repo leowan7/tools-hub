@@ -30,10 +30,14 @@ from typing import Any
 import modal
 
 _TOOL = "esmfold2-design"
-_DOCKERFILE = "tools/esmfold2_design/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = "tools/esmfold2_design/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "H100"
+
+# Pinned upstream commit on evolutionaryscale/esm. binder_design.py at this
+# SHA is cloned into /opt/ at image build time so run_pipeline.py can do
+# ``import binder_design`` directly. Bump the SHA to bump the algorithm.
+_ESM_GIT_SHA = "f652b471d29d"
 # 60 min ceiling — covers the worst-case scfv preset with batch_size=6
 # plus weight-load tail latency on a cold container.
 _MAX_SESSION_S = 60 * 60
@@ -73,8 +77,43 @@ weights = modal.Volume.from_name(
     "ranomics-esmfold2-models", create_if_missing=True
 )
 
+# Mirrors the upstream cookbook image build (evolutionaryscale/esm
+# cookbook/tutorials/binder_design.py, ~line 1150): micromamba base for
+# the conda-only deps (anarci + hmmer from bioconda), then pip for esm
+# itself. abnumber is the pythonic wrapper around anarci that
+# binder_design imports. Switched from a hand-rolled Dockerfile after
+# micromamba 2.x changed the shell-init CLI and broke the build.
 image = (
-    modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
+    modal.Image.micromamba(python_version="3.12")
+    .apt_install("git", "build-essential", "curl", "wget", "ca-certificates")
+    .micromamba_install(
+        "anarci>=2020.04.03",
+        "hmmer=3.4",
+        channels=["conda-forge", "bioconda"],
+    )
+    .pip_install(
+        "abnumber",
+        "biopython",
+        "requests",
+        "pandas",
+        "py3Dmol",
+        f"esm @ git+https://github.com/evolutionaryscale/esm.git@{_ESM_GIT_SHA}",
+    )
+    .run_commands(
+        f"git clone --depth 1 https://github.com/evolutionaryscale/esm.git /tmp/esm-repo "
+        f"&& cd /tmp/esm-repo "
+        f"&& git fetch --depth 1 origin {_ESM_GIT_SHA} "
+        f"&& git checkout {_ESM_GIT_SHA} "
+        f"&& cp /tmp/esm-repo/cookbook/tutorials/binder_design.py /opt/binder_design.py "
+        f"&& rm -rf /tmp/esm-repo",
+    )
+    .env({
+        "HF_HOME": "/models",
+        "HF_XET_HIGH_PERFORMANCE": "1",
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+    })
+    .workdir("/opt")
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
 )
 
