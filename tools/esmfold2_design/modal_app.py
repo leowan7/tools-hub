@@ -37,7 +37,7 @@ _GPU = "H100"
 # Pinned upstream commit on evolutionaryscale/esm. binder_design.py at this
 # SHA is cloned into /opt/ at image build time so run_pipeline.py can do
 # ``import binder_design`` directly. Bump the SHA to bump the algorithm.
-_ESM_GIT_SHA = "f652b471d29d"
+_ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
 # 60 min ceiling — covers the worst-case scfv preset with batch_size=6
 # plus weight-load tail latency on a cold container.
 _MAX_SESSION_S = 60 * 60
