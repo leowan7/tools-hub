@@ -3,11 +3,12 @@ name: Deploy Modal apps
 # Auto-deploys the atomic tools-hub Modal apps on push to main.
 #
 # Apps (one Modal deploy per matrix job):
-#   - mpnn      (tools/mpnn/modal_app.py)
-#   - af2       (tools/af2/modal_app.py)
-#   - colabfold (tools/colabfold/modal_app.py)
-#   - esmfold   (tools/esmfold/modal_app.py)
-#   - boltz2    (tools/boltz2/modal_app.py)
+#   - mpnn             (tools/mpnn/modal_app.py)
+#   - af2              (tools/af2/modal_app.py)
+#   - colabfold        (tools/colabfold/modal_app.py)
+#   - esmfold          (tools/esmfold/modal_app.py)
+#   - boltz2           (tools/boltz2/modal_app.py)
+#   - esmfold2_design  (tools/esmfold2_design/modal_app.py)
 #
 # Prerequisites:
 #   - Repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set.
@@ -45,6 +46,7 @@ jobs:
           - colabfold
           - esmfold
           - boltz2
+          - esmfold2_design
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

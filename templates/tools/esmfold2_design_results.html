@@ -1,0 +1,153 @@
+{# ESMFold2-design results partial — included by job_detail.html on status=succeeded.
+
+   Reshapes the Modal pipeline's per-design output into the
+   candidate_table contract. Each design becomes one row with:
+     - iPTM
+     - distogram iPTM proxy (or CDR distogram iPTM proxy in scFv mode)
+     - final_loss (gradient-descent loss at step 150)
+     - isoelectric_point (minibinder mode only; scFv mode reports —)
+     - filter_status (strict_pass | borderline | drop)
+
+   The pipeline returns a single best_sequence (the top design from the
+   gradient run) plus a per-critic results table. Both are surfaced. #}
+
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output             = job.result or {} %}
+{% set preset             = output.get('preset') %}
+{% set is_antibody        = output.get('is_antibody', preset == 'scfv') %}
+{% set target_label       = output.get('target_label') or output.get('target_name') or 'target' %}
+{% set binder_label       = output.get('binder_label') or output.get('binder_name') or '—' %}
+{% set raw_designs        = output.get('designs', []) %}
+{% set best_sequence      = output.get('best_sequence') %}
+{% set trajectory_steps   = output.get('trajectory_steps') %}
+{% set tier               = output.get('tier') %}
+{% set runtime_seconds    = output.get('runtime_seconds') %}
+{% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
+{% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
+{% set use_scaling_critics = output.get('use_scaling_critics') %}
+{% set clone_url          = url_for('tool_form', tool='esmfold2-design', clone_from=job.id) %}
+
+{# Reshape designs → candidate_table schema. scFv mode keys the iPTM
+   proxy as cdr_distogram_iptm_proxy; minibinder mode keys it as
+   distogram_iptm_proxy. Sort by iPTM desc so the top design lands first. #}
+{% set candidates = [] %}
+{% for d in raw_designs %}
+  {% set _proxy = d.get('cdr_distogram_iptm_proxy') if is_antibody else d.get('distogram_iptm_proxy') %}
+  {% set _ = candidates.append({
+      'rank': d.get('rank'),
+      'name': d.get('name') or ('design_' ~ (d.get('rank') or '0')),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {
+        'ipTM': d.get('iptm'),
+        'iPTM_proxy': _proxy,
+        'final_loss': d.get('final_loss'),
+        'pI': d.get('isoelectric_point') if not is_antibody else none,
+        'filter_status': d.get('filter_status'),
+      },
+      'designed_sequence': d.get('designed_sequence'),
+  }) %}
+{% endfor %}
+
+{% set candidates = candidates | sort(attribute='scores.ipTM', reverse=True) %}
+
+{% if is_antibody %}
+  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'filter_status'] %}
+{% else %}
+  {% set columns = ['ipTM', 'iPTM_proxy', 'final_loss', 'pI', 'filter_status'] %}
+{% endif %}
+
+{# Top summary panel. #}
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">ESMFold2 design — {{ 'scFv CDR design' if is_antibody else 'de novo minibinder' }}</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Designs returned</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ designs_completed }} / {{ designs_total }}
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Target</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.92rem;">
+          {{ target_label }}
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Binder mode</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.92rem;">
+          {{ binder_label }}
+        </div>
+      </div>
+      {% if trajectory_steps %}
+        <div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Optimization steps</div>
+          <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+            {{ trajectory_steps }}
+          </div>
+        </div>
+      {% endif %}
+      {% if runtime_seconds %}
+        <div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Runtime</div>
+          <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+            {{ runtime_seconds }} s
+          </div>
+        </div>
+      {% endif %}
+    </div>
+    <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
+      ESMFold2 design backpropagates through the structure predictor to
+      jointly optimize sequence and binding pose. Strict-pass designs
+      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&gt;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&gt;&nbsp;0.55</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
+      are the ones worth ordering. {% if use_scaling_critics %}The 15-checkpoint scaling-critic ensemble was used — expect calibrated proxy scores.{% else %}The scaling critics were not used — only the real iPTM is calibrated; the proxy is informative only.{% endif %}
+    </div>
+  </div>
+</div>
+
+{# Best-sequence callout — the top design's sequence is short enough to
+   render inline. Useful for copy-paste into Twist / IDT order forms. #}
+{% if best_sequence %}
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header">
+      <span class="panel-title">Best design — sequence</span>
+    </div>
+    <div class="panel-body">
+      <div style="font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.6; word-break: break-all; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.75rem 1rem; max-width: 84ch;">
+        {{ best_sequence }}
+      </div>
+      <div style="color: var(--text-secondary); font-size: 0.82rem; margin-top: 0.5rem;">
+        {% if is_antibody %}
+          scFv heavy-light fusion with GS linker. CDRs are the designed
+          regions; framework is preserved verbatim. Length {{ best_sequence | length }} aa.
+        {% else %}
+          De novo minibinder, {{ best_sequence | length }} aa.
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{# Per-design candidate table — pdb_key resolves to the complex PDB
+   download via the shared candidate_table macro. NGL viewer per row. #}
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='esmfold2-design',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=tier,
+    gpu_seconds=runtime_seconds,
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    ESMFold2 design returned no designs. The most common cause is a
+    target sequence that fails ESMFold2 single-chain folding (very short,
+    very long, or all glycine). Check the Modal logs
+    (<code>modal app logs ranomics-esmfold2-design-prod</code>) for the
+    gradient-descent trajectory and re-submit with a different seed.
+  </p>
+{% endcall %}

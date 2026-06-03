@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, prefill_script, workspace_hidden_inputs %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/examples_chip_group.html" import examples_chip_group %}
+{% from "components/field_group.html" import field_campaign %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# ESMFold2-design form. Two-panel layout matching Boltz-2. Sequence-
+     only inputs — no PDB upload. Preset radio (minibinder | scfv)
+     conditionally reveals the framework picker; target_mode radio
+     conditionally reveals the paste textarea. JS at the bottom wires
+     both reveals + the wallet n_designs_total = batch_size signal. #}
+
+  <style>
+    .esmd-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .esmd-layout { grid-template-columns: 1fr; }
+    }
+    .esmd-radio-group {
+      display: grid;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .esmd-radio-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .esmd-radio-option:hover { border-color: var(--accent-dim); }
+    .esmd-radio-option input[type="radio"] {
+      margin-top: 0.2rem;
+      accent-color: var(--accent);
+    }
+    .esmd-radio-option .opt-title {
+      display: block;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.92rem;
+      margin-bottom: 0.15rem;
+    }
+    .esmd-radio-option .opt-desc {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .esmd-target-textarea {
+      width: 100%;
+      min-height: 7rem;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin-bottom: 0.35rem;
+    }
+    .esmd-select, .esmd-number {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      margin-bottom: 0.35rem;
+    }
+    .esmd-select { width: 100%; max-width: 360px; }
+    .esmd-number { width: 100%; max-width: 160px; }
+    .esmd-conditional { margin-bottom: 1.25rem; }
+    .esmd-conditional[hidden] { display: none; }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="esmd-layout">
+    {# ---------- LEFT: form ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+
+          {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
+
+          {# ----- Preset (binder mode) ----- #}
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder mode</label>
+          <div class="esmd-radio-group" id="esmd-preset-group">
+            <label class="esmd-radio-option">
+              <input type="radio" name="preset" value="minibinder" data-esmd-preset
+                     {{ pre_checked(pre_fill, 'preset', 'minibinder', is_first=True) }}>
+              <span>
+                <span class="opt-title">De novo minibinder (60-200 aa)</span>
+                <span class="opt-desc">
+                  Free scaffold, isoelectric-point filter (pI&nbsp;&lt;&nbsp;6)
+                  baked in. Goal-equivalent to RFdiffusion + ProteinMPNN
+                  but in one gradient pass through ESMFold2.
+                </span>
+              </span>
+            </label>
+            <label class="esmd-radio-option">
+              <input type="radio" name="preset" value="scfv" data-esmd-preset
+                     {{ pre_checked(pre_fill, 'preset', 'scfv', is_first=False) }}>
+              <span>
+                <span class="opt-title">scFv with framework-locked CDRs</span>
+                <span class="opt-desc">
+                  All six CDRs designed jointly on a locked humanized
+                  framework. Trastuzumab, atezolizumab, or ocankitug.
+                  Only catalog tool that does paired heavy + light scFvs.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {# ----- scFv framework (visible only when preset=scfv) ----- #}
+          <div class="esmd-conditional" data-esmd-scfv-only hidden>
+            <label for="binder_framework" class="label" style="display:block; margin-bottom: 0.4rem;">scFv framework</label>
+            <select name="binder_framework" id="binder_framework" class="esmd-select">
+              <option value="trastuzumab_framework_vhvl" {% if (pre_fill.get('binder_framework') if pre_fill else '') == 'trastuzumab_framework_vhvl' %}selected{% endif %}>Trastuzumab (anti-HER2, humanized IgG1)</option>
+              <option value="atezolizumab_framework_vhvl" {% if (pre_fill.get('binder_framework') if pre_fill else '') == 'atezolizumab_framework_vhvl' %}selected{% endif %}>Atezolizumab (anti-PD-L1, humanized IgG1)</option>
+              <option value="ocankitug_framework_vhvl" {% if (pre_fill.get('binder_framework') if pre_fill else '') == 'ocankitug_framework_vhvl' %}selected{% endif %}>Ocankitug (humanized IgG1)</option>
+            </select>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch;">
+              Framework backbone and sequence are fixed. Only the six CDR
+              regions are mutated by the inversion loop.
+            </div>
+          </div>
+
+          {# ----- Target mode ----- #}
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Target</label>
+          <div class="esmd-radio-group">
+            <label class="esmd-radio-option">
+              <input type="radio" name="target_mode" value="preset" data-esmd-target-mode
+                     {{ pre_checked(pre_fill, 'target_mode', 'preset', is_first=True) }}>
+              <span>
+                <span class="opt-title">Paper-validated preset</span>
+                <span class="opt-desc">
+                  Pick one of five UniProt-cropped targets used in the
+                  EvolutionaryScale 2025 paper. Easiest baseline.
+                </span>
+              </span>
+            </label>
+            <label class="esmd-radio-option">
+              <input type="radio" name="target_mode" value="paste" data-esmd-target-mode
+                     {{ pre_checked(pre_fill, 'target_mode', 'paste', is_first=False) }}>
+              <span>
+                <span class="opt-title">Paste a target sequence</span>
+                <span class="opt-desc">
+                  Single chain, 30-800 aa, canonical amino acids only.
+                  Crop to the ectodomain or binding surface for best
+                  results.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {# ----- Target preset (visible only when target_mode=preset) ----- #}
+          <div class="esmd-conditional" data-esmd-preset-target-only hidden>
+            <label for="target_name" class="label" style="display:block; margin-bottom: 0.4rem;">Target preset</label>
+            <select name="target_name" id="target_name" class="esmd-select">
+              <option value="cd45"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'cd45'   %}selected{% endif %}>CD45 (P08575, 389-574) — receptor-type tyrosine-phosphatase</option>
+              <option value="ctla4"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'ctla4'  %}selected{% endif %}>CTLA4 (P16410, 37-155) — immune checkpoint</option>
+              <option value="egfr"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'egfr'   %}selected{% endif %}>EGFR (P00533, 333-524) — receptor tyrosine kinase</option>
+              <option value="pd-l1"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pd-l1'  %}selected{% endif %}>PD-L1 (Q9NZQ7, 17-132) — immune checkpoint</option>
+              <option value="pdgfr"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pdgfr'  %}selected{% endif %}>PDGFR (P09619, 125-312) — receptor tyrosine kinase</option>
+            </select>
+          </div>
+
+          {# ----- Target sequence paste (visible only when target_mode=paste) ----- #}
+          <div class="esmd-conditional" data-esmd-paste-target-only hidden>
+            <label for="target_sequence" class="label" style="display:block; margin-bottom: 0.4rem;">Target sequence</label>
+            <textarea name="target_sequence" id="target_sequence"
+                      placeholder="MHVAQPAVVLASSRGIASFVCEYASPGKATEVRVTVLRQADSQVTEVCAATY..."
+                      spellcheck="false"
+                      class="esmd-target-textarea">{{ (pre_fill.get('target_sequence') if pre_fill else '') or '' }}</textarea>
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch;">
+              Single-chain protein sequence. 30-800 aa. Whitespace and
+              line breaks are stripped. Non-canonical residues will be
+              rejected.
+            </div>
+          </div>
+
+          {# ----- Seed + batch_size side by side ----- #}
+          <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem; margin-bottom: 1.25rem;">
+            <div>
+              <label for="seed" class="label" style="display:block; margin-bottom: 0.4rem;">Seed</label>
+              <input type="number" name="seed" id="seed" min="0" max="2147483647" {{ pre_value(pre_fill, 'seed', '0') }} class="esmd-number" style="max-width: 100%;">
+              <div style="color: var(--text-secondary); font-size: 0.82rem;">
+                Integer 0+. Different seeds yield different designs — sweep
+                to build a candidate library.
+              </div>
+            </div>
+            <div>
+              <label for="batch_size" class="label" style="display:block; margin-bottom: 0.4rem;">Batch size</label>
+              <input type="number" name="batch_size" id="batch_size" min="1" max="6" {{ pre_value(pre_fill, 'batch_size', '1') }} class="esmd-number" style="max-width: 100%;">
+              <div style="color: var(--text-secondary); font-size: 0.82rem;">
+                Designs per gradient run (1-6). Higher batch = more
+                candidates per H100-hour, higher VRAM.
+              </div>
+            </div>
+          </div>
+
+          {# ----- Use scaling critics ----- #}
+          <label style="display: flex; align-items: flex-start; gap: 0.5rem; margin-bottom: 1.25rem; cursor: pointer;">
+            <input type="checkbox" name="use_scaling_critics" value="on" {{ 'checked' if pre_fill and pre_fill.get('use_scaling_critics') in ('on', 'true', '1') else '' }} style="margin-top: 0.2rem; accent-color: var(--accent);">
+            <span>
+              <span style="color: var(--text-primary); font-weight: 500; font-size: 0.92rem;">Use scaling critics (stricter ranking)</span>
+              <span style="display: block; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.45;">
+                Loads the 15-checkpoint ESMFold2 scaling ensemble for the
+                distogram iPTM proxy alongside the real iPTM. Off by
+                default (lower memory). Recommended only after you have
+                a calibrated baseline run for the target.
+              </span>
+            </span>
+          </label>
+
+          {{ field_campaign(prefilled=pre_fill) }}
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          <button type="submit" class="btn-primary">Submit design run</button>
+        </form>
+      </div>
+    </div>
+
+    {# ---------- RIGHT: About ESMFold2 design ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  <script>
+    // Conditional reveals + wallet n_designs_total = batch_size.
+    (function () {
+      var presetRadios = document.querySelectorAll('input[name="preset"][data-esmd-preset]');
+      var targetModeRadios = document.querySelectorAll('input[name="target_mode"][data-esmd-target-mode]');
+      var scfvOnly = document.querySelector('[data-esmd-scfv-only]');
+      var presetTargetOnly = document.querySelector('[data-esmd-preset-target-only]');
+      var pasteTargetOnly = document.querySelector('[data-esmd-paste-target-only]');
+      var batchInput = document.getElementById('batch_size');
+
+      function syncPreset() {
+        var selected = document.querySelector('input[name="preset"]:checked');
+        var isScfv = selected && selected.value === 'scfv';
+        if (scfvOnly) scfvOnly.hidden = !isScfv;
+      }
+      function syncTargetMode() {
+        var selected = document.querySelector('input[name="target_mode"]:checked');
+        var isPaste = selected && selected.value === 'paste';
+        if (presetTargetOnly) presetTargetOnly.hidden = isPaste;
+        if (pasteTargetOnly) pasteTargetOnly.hidden = !isPaste;
+      }
+      function syncWalletCount() {
+        var n = parseInt(batchInput && batchInput.value, 10);
+        if (!isFinite(n) || n < 1) n = 1;
+        var hidden = document.querySelector('input[name="n_designs_total"]');
+        if (!hidden) {
+          hidden = document.createElement('input');
+          hidden.type = 'hidden';
+          hidden.name = 'n_designs_total';
+          var form = batchInput && batchInput.form;
+          if (form) form.appendChild(hidden);
+        }
+        hidden.value = String(n);
+        if (typeof window.refreshWalletEstimate === 'function') {
+          window.refreshWalletEstimate();
+        }
+      }
+
+      for (var i = 0; i < presetRadios.length; i++) {
+        presetRadios[i].addEventListener('change', syncPreset);
+      }
+      for (var j = 0; j < targetModeRadios.length; j++) {
+        targetModeRadios[j].addEventListener('change', syncTargetMode);
+      }
+      if (batchInput) {
+        batchInput.addEventListener('input', syncWalletCount);
+        batchInput.addEventListener('change', syncWalletCount);
+      }
+      syncPreset();
+      syncTargetMode();
+      syncWalletCount();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+{% endblock %}

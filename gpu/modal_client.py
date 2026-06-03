@@ -122,7 +122,14 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # public-server tail latency. Modal hard timeout is 3600 s.
     ("boltz2", "standalone"):      1200,
     ("boltz2", "msa_server"):      3600,
-    ("af2_ig", "standard"):        720,
+    # ESMFold2-design: gradient-based inversion of ESMFold2 on H100.
+    # ~150 steps per design at 4-6 s/step gives ~10-15 min per gradient
+    # run. Cap at 2400 s (40 min) per preset — headroom over upstream's
+    # 60-min Modal timeout, room for batch_size up to 6 and weight-load
+    # latency on a cold container. Tune downward once we have real
+    # observed wall-clock distributions from the first prod batches.
+    ("esmfold2-design", "minibinder"): 2400,
+    ("esmfold2-design", "scfv"):       2400,
     # Composite pipelines. smoke + mini_pilot tiers were removed
     # 2026-05-29; pilot is the only user-facing tier and full is reserved
     # for AI Binder Sprint runs that go through the webhook flow.

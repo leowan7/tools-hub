@@ -220,6 +220,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "bindcraft": "De novo minibinders",
     "pxdesign": "De novo minibinders",
     "rfantibody": "Antibodies (VHH)",
+    "esmfold2-design": "Antibodies (scFv) + minibinders",
     "boltzgen": "Dual capabilities (minibinder + antibody scaffolds)",
     "mpnn": "Sequence on a backbone",
     "af2": "Structure prediction",
