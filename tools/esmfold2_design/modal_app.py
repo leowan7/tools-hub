@@ -100,12 +100,16 @@ image = (
         f"esm @ git+https://github.com/evolutionaryscale/esm.git@{_ESM_GIT_SHA}",
     )
     .run_commands(
-        f"git clone --depth 1 https://github.com/evolutionaryscale/esm.git /tmp/esm-repo "
-        f"&& cd /tmp/esm-repo "
-        f"&& git fetch --depth 1 origin {_ESM_GIT_SHA} "
-        f"&& git checkout {_ESM_GIT_SHA} "
-        f"&& cp /tmp/esm-repo/cookbook/tutorials/binder_design.py /opt/binder_design.py "
-        f"&& rm -rf /tmp/esm-repo",
+        # Fetch the pinned binder_design.py via GitHub's archive endpoint
+        # rather than git clone — we only need one file, and shallow git
+        # fetch by SHA fails on GitHub (couldn't find remote ref).
+        f"curl -fL https://github.com/evolutionaryscale/esm/archive/{_ESM_GIT_SHA}.tar.gz "
+        f"  -o /tmp/esm.tar.gz "
+        f"&& tar -xzf /tmp/esm.tar.gz -C /tmp/ "
+        f"&& cp /tmp/esm-{_ESM_GIT_SHA}/cookbook/tutorials/binder_design.py "
+        f"     /opt/binder_design.py "
+        f"&& test -f /opt/binder_design.py "
+        f"&& rm -rf /tmp/esm.tar.gz /tmp/esm-{_ESM_GIT_SHA}",
     )
     .env({
         "HF_HOME": "/models",
