@@ -30,7 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # We install into a named env then export its bin/ onto PATH so the pip
 # install of esm in the base env can still resolve hmmer at runtime.
 RUN curl -L https://micro.mamba.pm/api/micromamba/linux-64/latest \
-        | tar -xvj -C /usr/local/bin/ bin/micromamba \
+        | tar -xvj -C /usr/local bin/micromamba \
+    && test -x /usr/local/bin/micromamba \
     && /usr/local/bin/micromamba shell init -s bash -p /opt/micromamba \
     && /usr/local/bin/micromamba create -y -p /opt/micromamba/envs/anarci \
         -c conda-forge -c bioconda \
