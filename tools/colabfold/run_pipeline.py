@@ -781,23 +781,202 @@ def reject_stub(parsed: dict[str, Any]) -> None:
 # ===========================================================================
 
 
-def _write_batch_record_fasta(
-    name: str, sequence: str, dest: Path
-) -> tuple[int, int]:
-    """Write a single batch record to ``dest`` (FASTA shape).
+def _classify_record(sequence: str) -> tuple[int, int, list[str]]:
+    """Split a batch record sequence on ``:`` chain breaks and return
+    ``(num_chains, total_aa, chains)``.
 
-    ``:`` chains inside the sequence are preserved (ColabFold-multimer
-    convention). Returns ``(num_chains, total_aa)``.
+    Used by the consolidated batch path to pre-validate every record
+    before colabfold_batch sees them.
     """
     chains = [c.strip().upper() for c in (sequence or "").split(":") if c.strip()]
     if not chains:
-        raise ValueError(f"record {name!r} parsed to zero chains")
+        raise ValueError("record parsed to zero chains")
     total_aa = sum(len(c) for c in chains)
-    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", name)[:60] or "fold"
-    joined = ":".join(chains)
+    return len(chains), total_aa, chains
+
+
+def _write_consolidated_fasta(
+    records: list[dict[str, Any]],
+    dest: Path,
+) -> tuple[dict[str, dict[str, Any]], int]:
+    """Write all valid batch records to a single multi-record FASTA.
+
+    Each record gets a synthetic ``>d{idx:04d}`` header so output files
+    can be dispatched unambiguously back to their input record. Returns
+    ``(record_map, n_validation_failures)``. Records with empty
+    sequences, illegal residues, or chains exceeding ``SEQ_LEN_MAX``
+    are skipped here (counted as failures) rather than letting
+    colabfold crash mid-run.
+    """
+    record_map: dict[str, dict[str, Any]] = {}
+    n_failures = 0
     with open(dest, "w") as out:
-        out.write(f">{safe_name}\n{joined}\n")
-    return len(chains), total_aa
+        for i, rec in enumerate(records):
+            name = str(rec.get("name") or f"fold_{i}").strip() or f"fold_{i}"
+            sequence = rec.get("sequence") or ""
+            try:
+                n_chains, total_aa, chains = _classify_record(sequence)
+            except ValueError as exc:
+                n_failures += 1
+                logger.warning("design %s: bad input — %s", name, exc)
+                continue
+            # Per-chain bounds: every chain must fit the cap or colabfold
+            # will OOM at JIT time.
+            bad_chain = False
+            for idx, chain in enumerate(chains, start=1):
+                if len(chain) < SEQ_LEN_MIN:
+                    logger.warning(
+                        "design %s chain %d: %d aa below min %d",
+                        name, idx, len(chain), SEQ_LEN_MIN,
+                    )
+                    bad_chain = True
+                    break
+                if len(chain) > SEQ_LEN_MAX:
+                    logger.warning(
+                        "design %s chain %d: %d aa above max %d",
+                        name, idx, len(chain), SEQ_LEN_MAX,
+                    )
+                    bad_chain = True
+                    break
+                non_canonical = set(chain) - CANONICAL_AA
+                if non_canonical:
+                    logger.warning(
+                        "design %s chain %d: non-canonical residues %s",
+                        name, idx, sorted(non_canonical),
+                    )
+                    bad_chain = True
+                    break
+            if bad_chain:
+                n_failures += 1
+                continue
+            if total_aa > SEQ_LEN_MAX:
+                n_failures += 1
+                logger.warning(
+                    "design %s: total %d aa exceeds cap %d — skipping",
+                    name, total_aa, SEQ_LEN_MAX,
+                )
+                continue
+            safe_name = f"d{i:04d}"
+            joined = ":".join(chains)
+            out.write(f">{safe_name}\n{joined}\n")
+            record_map[safe_name] = {
+                "index": i,
+                "name": name,
+                "num_chains": n_chains,
+                "total_aa": total_aa,
+            }
+    return record_map, n_failures
+
+
+def _run_colabfold_consolidated(
+    fasta_path: Path,
+    *,
+    num_recycles: int,
+    use_templates: bool,
+    workdir: Path,
+) -> tuple[subprocess.Popen, Path]:
+    """Spawn ``colabfold_batch`` over a multi-record FASTA, no-MSA mode.
+
+    Returns a live ``Popen`` so the caller can poll the output dir for
+    streamed per-record results. Mirrors :func:`run_colabfold` but uses
+    ``--model-type auto`` so monomer vs multimer dispatch happens per
+    record without grouping.
+    """
+    out_dir = workdir / "colabfold_out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "colabfold_batch",
+        str(fasta_path),
+        str(out_dir),
+        "--data", str(COLABFOLD_CACHE_DIR),
+        "--msa-mode", "single_sequence",
+        "--num-recycle", str(num_recycles),
+        "--num-models", "1",
+        "--rank", "iptm",
+        # auto = monomer when single chain in record, multimer when ':'
+        # joins multiple chains. Lets one process handle a mixed batch.
+        "--model-type", "auto",
+    ]
+    if use_templates:
+        cmd.append("--templates")
+
+    logger.info("colabfold consolidated cmd: %s", " ".join(cmd))
+
+    env = dict(os.environ)
+    if os.path.isdir("/opt/jax_cache"):
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/opt/jax_cache")
+    else:
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", "/tmp/jax_cache")
+    env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+    env.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+    env.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
+    env.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    env.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+    env.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "4.0")
+    env.setdefault("TF_FORCE_UNIFIED_MEMORY", "1")
+    env.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+
+    process = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+    return process, out_dir
+
+
+def _stream_consolidated_results(
+    process: subprocess.Popen,
+    out_dir: Path,
+    record_map: dict[str, dict[str, Any]],
+    on_design_ready: Any,
+    timeout: float,
+    poll_interval: float = 5.0,
+) -> int:
+    """Poll ``out_dir`` for per-record outputs while ``process`` runs.
+
+    Calls ``on_design_ready(safe_name, scores_path, pdb_path)`` exactly
+    once per record as soon as its rank_001 scores JSON + PDB pair
+    appears. Returns the process exit code, or raises TimeoutExpired.
+    """
+    start = time.time()
+    seen: set[str] = set()
+    safe_name_pat = re.compile(r"^(d\d{4})_scores_rank_001")
+    while True:
+        rc = process.poll()
+        for json_path in sorted(out_dir.glob("*_scores_rank_001*.json")):
+            match = safe_name_pat.match(json_path.name)
+            if not match:
+                continue
+            safe_name = match.group(1)
+            if safe_name in seen or safe_name not in record_map:
+                continue
+            relaxed = [
+                p for p in sorted(out_dir.glob(f"{safe_name}_*relaxed_rank_001*.pdb"))
+                if "_unrelaxed_" not in p.name
+            ]
+            unrelaxed = sorted(out_dir.glob(f"{safe_name}_*unrelaxed_rank_001*.pdb"))
+            pdb_candidates = relaxed or unrelaxed
+            if not pdb_candidates:
+                continue
+            seen.add(safe_name)
+            try:
+                on_design_ready(safe_name, json_path, pdb_candidates[0])
+            except Exception as exc:
+                logger.warning(
+                    "design %s: streaming dispatch failed — %s", safe_name, exc
+                )
+        if rc is not None:
+            return rc
+        if time.time() - start > timeout:
+            process.kill()
+            try:
+                process.wait(timeout=10)
+            except Exception:
+                pass
+            raise subprocess.TimeoutExpired(args=process.args, timeout=timeout)
+        time.sleep(poll_interval)
 
 
 def _run_single(payload: dict[str, Any], start: float) -> None:
@@ -860,11 +1039,18 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
 def _run_batch(
     payload: dict[str, Any], records: list[dict[str, Any]], start: float
 ) -> None:
-    """Sequential batch fold across N records with per-design streaming.
+    """Consolidated batch fold across N records with per-design streaming.
 
-    Each record is folded via its own ``colabfold_batch`` invocation. The
-    first cold-start fold absorbs the JAX JIT compile; subsequent folds
-    in the same container reuse the warm runtime.
+    All records are written to a single multi-record FASTA and folded
+    by one ``colabfold_batch --msa-mode single_sequence --model-type
+    auto`` invocation. ColabFold loads the AF2 weights + pays the JAX
+    JIT compile cost exactly once for the entire batch. Per-design
+    heartbeats are emitted live by polling the output dir for each
+    record's rank_001 scores JSON + PDB pair as colabfold writes them.
+
+    Compared to the original per-record subprocess loop this skips
+    N×(~10 s Python+JAX import overhead) — which on no-MSA, short
+    sequences is the dominant cost.
     """
     job_id = os.environ.get("JOB_ID", "")
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -888,7 +1074,7 @@ def _run_batch(
     use_templates = bool(parameters.get("use_templates", False))
 
     designs_total = len(records)
-    logger.info("colabfold batch starting: designs=%d", designs_total)
+    logger.info("colabfold batch starting: designs=%d (consolidated)", designs_total)
     send_heartbeat(
         webhook_url, job_id,
         stage="loading_model",
@@ -896,111 +1082,193 @@ def _run_batch(
         designs_total=designs_total,
     )
 
-    designs_out: list[dict] = []
-    n_failures = 0
-    send_heartbeat(
-        webhook_url, job_id,
-        stage="folding",
-        designs_completed=0,
-        designs_total=designs_total,
-    )
+    designs_out: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="colabfold_batch_", dir="/tmp") as _td:
         workdir = Path(_td)
-
-        for i, rec in enumerate(records):
-            name = str(rec.get("name") or f"fold_{i}").strip() or f"fold_{i}"
-            sequence = rec.get("sequence") or ""
-            design_start = time.time()
-            design_workdir = workdir / f"d_{i:03d}"
-            design_workdir.mkdir(parents=True, exist_ok=True)
-            fasta_path = design_workdir / "input.fasta"
-            try:
-                n_chains, total_aa = _write_batch_record_fasta(
-                    name, sequence, fasta_path
-                )
-            except ValueError as exc:
-                n_failures += 1
-                logger.warning("design %s: bad input — %s", name, exc)
-                continue
-            if total_aa > SEQ_LEN_MAX:
-                n_failures += 1
-                logger.warning(
-                    "design %s: %d aa exceeds per-record cap %d — skipping",
-                    name, total_aa, SEQ_LEN_MAX,
-                )
-                continue
-
+        fasta_path = workdir / "batch.fasta"
+        record_map, n_failures = _write_consolidated_fasta(records, fasta_path)
+        if not record_map:
+            _write_result(
+                {
+                    "status": "COMPLETED",
+                    "tier": "batch",
+                    "designs_total": designs_total,
+                    "designs_completed": 0,
+                    "n_failures": n_failures,
+                    "designs": [],
+                    "num_recycles": num_recycles,
+                    "use_templates": use_templates,
+                    "runtime_seconds": int(time.time() - start),
+                    "provider_job_id": os.environ.get("JOB_ID", ""),
+                }
+            )
+            send_heartbeat(
+                webhook_url, job_id,
+                stage="complete",
+                designs_completed=0,
+                designs_total=designs_total,
+            )
             logger.info(
-                "=== folding %d/%d %s (%d chain%s, %d aa) ===",
-                i + 1, designs_total, name,
-                n_chains, '' if n_chains == 1 else 's', total_aa,
+                "batch pipeline ok — 0/%d designs folded "
+                "(all records failed pre-validation), %d failures",
+                designs_total, n_failures,
+            )
+            return
+
+        send_heartbeat(
+            webhook_url, job_id,
+            stage="folding",
+            designs_completed=0,
+            designs_total=designs_total,
+        )
+        fold_start = time.time()
+
+        # Bound by the Modal session ceiling minus margin for post-processing.
+        max_session_s = int(os.environ.get("MAX_BATCH_TIMEOUT_S", "14000"))
+
+        process, out_dir = _run_colabfold_consolidated(
+            fasta_path=fasta_path,
+            num_recycles=num_recycles,
+            use_templates=use_templates,
+            workdir=workdir,
+        )
+
+        def _dispatch(safe_name: str, scores_path: Path, pdb_path: Path) -> None:
+            """Per-record post-processing: parse scores, upload PDB, emit heartbeat."""
+            rec_info = record_map[safe_name]
+            try:
+                with open(scores_path) as fh:
+                    scores = json.load(fh)
+            except Exception as exc:
+                logger.warning(
+                    "design %s: scores parse failed — %s",
+                    rec_info["name"], exc,
+                )
+                rec_info["failed"] = True
+                return
+
+            plddt_raw = scores.get("plddt") or []
+            try:
+                plddt = [float(x) for x in plddt_raw]
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "design %s: plddt cast failed — %s",
+                    rec_info["name"], exc,
+                )
+                rec_info["failed"] = True
+                return
+            if not plddt:
+                logger.warning("design %s: empty plddt", rec_info["name"])
+                rec_info["failed"] = True
+                return
+
+            try:
+                pdb_bytes = pdb_path.read_bytes()
+            except OSError as exc:
+                logger.warning(
+                    "design %s: PDB read failed — %s",
+                    rec_info["name"], exc,
+                )
+                rec_info["failed"] = True
+                return
+            if len(pdb_bytes) < 200:
+                logger.warning(
+                    "design %s: PDB only %d bytes — not a real fold",
+                    rec_info["name"], len(pdb_bytes),
+                )
+                rec_info["failed"] = True
+                return
+
+            user_name = rec_info["name"]
+            pdb_key = (
+                f"{re.sub(r'[^A-Za-z0-9_-]+', '_', user_name)[:60] or 'fold'}.pdb"
             )
             try:
-                out_dir = run_colabfold(
-                    fasta_path=fasta_path,
-                    num_recycles=num_recycles,
-                    use_templates=use_templates,
-                    workdir=design_workdir,
-                )
-                parsed = parse_colabfold_output(out_dir)
-            except SystemExit:
-                n_failures += 1
-                logger.warning("design %s: pipeline _fail killed the fold", name)
-                continue
-            except Exception as exc:
-                n_failures += 1
-                logger.warning("design %s: fold raised — %s", name, exc)
-                continue
-
-            parsed.pop("pae_matrix_raw", None)
-            pdb_b64 = parsed.get("pdb_b64") or ""
-            if not pdb_b64:
-                n_failures += 1
-                logger.warning("design %s: no PDB produced", name)
-                continue
-            try:
-                pdb_text = base64.b64decode(pdb_b64).decode("utf-8")
-            except Exception as exc:
-                n_failures += 1
-                logger.warning("design %s: pdb decode failed — %s", name, exc)
-                continue
-
-            pdb_key = f"{re.sub(r'[^A-Za-z0-9_-]+', '_', name)[:60] or 'fold'}.pdb"
-            try:
                 urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
+                upload_pdb(urls[pdb_key], pdb_bytes)
             except Exception as exc:
-                n_failures += 1
-                logger.warning("design %s: upload failed — %s", name, exc)
-                continue
+                logger.warning(
+                    "design %s: upload failed — %s",
+                    user_name, exc,
+                )
+                rec_info["failed"] = True
+                return
 
-            plddt = parsed.get("plddt_per_residue") or []
-            mean_plddt = round(sum(plddt) / len(plddt), 2) if plddt else None
+            mean_plddt = round(sum(plddt) / len(plddt), 2)
+            ptm = scores.get("ptm")
+            iptm = scores.get("iptm")
             design_entry = {
-                "rank": i,
-                "name": name,
+                "rank": rec_info["index"],
+                "name": user_name,
                 "pdb_key": pdb_key,
                 "mean_plddt": mean_plddt,
-                "iptm": parsed.get("iptm"),
-                "ptm": parsed.get("ptm"),
-                "total_aa": total_aa,
-                "num_chains": n_chains,
-                "runtime_seconds": int(time.time() - design_start),
+                "iptm": float(iptm) if iptm is not None else None,
+                "ptm": float(ptm) if ptm is not None else None,
+                "total_aa": rec_info["total_aa"],
+                "num_chains": rec_info["num_chains"],
+                "runtime_seconds": int(time.time() - fold_start),
             }
             designs_out.append(design_entry)
+            rec_info["done"] = True
             send_heartbeat(
                 webhook_url, job_id,
                 stage="folding",
-                designs_completed=i + 1,
+                designs_completed=len(designs_out),
                 designs_total=designs_total,
                 new_candidate=design_entry,
             )
             logger.info(
                 "  -> %s mean_pLDDT=%s ipTM=%s pTM=%s aa=%d",
-                name, mean_plddt,
-                design_entry["iptm"], design_entry["ptm"], total_aa,
+                user_name, mean_plddt,
+                design_entry["iptm"], design_entry["ptm"],
+                design_entry["total_aa"],
             )
+
+        try:
+            exit_code = _stream_consolidated_results(
+                process=process,
+                out_dir=out_dir,
+                record_map=record_map,
+                on_design_ready=_dispatch,
+                timeout=max_session_s,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error(
+                "colabfold consolidated batch TIMEOUT after %ds — "
+                "%d/%d designs streamed before kill",
+                max_session_s, len(designs_out), designs_total,
+            )
+            _fail(
+                "tool-invocation",
+                "timeout",
+                f"colabfold_batch consolidated exceeded {max_session_s}s.",
+            )
+            return  # unreachable
+
+        if exit_code != 0:
+            logger.error(
+                "colabfold consolidated exit %d after %d/%d designs streamed",
+                exit_code, len(designs_out), designs_total,
+            )
+            if not designs_out:
+                _fail(
+                    "tool-invocation",
+                    "exit",
+                    f"colabfold_batch consolidated exited {exit_code} "
+                    "with zero completed designs.",
+                )
+
+        # Account for records colabfold skipped silently or that failed
+        # post-fold processing.
+        n_failures += sum(
+            1
+            for info in record_map.values()
+            if not info.get("done") and not info.get("failed")
+        )
+        n_failures += sum(
+            1 for info in record_map.values() if info.get("failed")
+        )
 
     runtime_seconds = int(time.time() - start)
     _write_result(
