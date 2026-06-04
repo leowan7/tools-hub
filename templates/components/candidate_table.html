@@ -299,6 +299,12 @@
                 {% set disp = '%.3f' | format(fval) %}
               {% elif col == 'pLDDT' %}
                 {% set disp = '%.1f' | format(fval) %}
+              {% elif col == 'seed' %}
+                {# seed is a discrete integer ID, not a measurement — render
+                   as int so the column reads "0", "1" instead of "0.00",
+                   "1.00". data-val keeps the float so column sort still
+                   orders numerically. #}
+                {% set disp = '%d' | format(fval) %}
               {% else %}
                 {% set disp = '%.2f' | format(fval) %}
               {% endif %}
