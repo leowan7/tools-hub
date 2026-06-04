@@ -16,10 +16,12 @@ Shapes
 
 Open thread
 -----------
-    Strict-pass thresholds (minibinder ``iptm > 0.55``, scfv
+    Strict-pass thresholds (minibinder ``iptm > 0.75``, scfv
     ``cdr_distogram_iptm_proxy > 0.5``) are conservative starting points,
     not paper-derived. Tune after the first 8-seed sweep against PD-L1
-    surfaces real ipTM distributions on each preset.
+    surfaces real ipTM distributions on each preset. Minibinder iPTM
+    was raised from 0.55 on 2026-06-03 after early runs showed real
+    designs sitting at 0.83-0.95 with the gate admitting too much noise.
 """
 
 from __future__ import annotations
@@ -124,9 +126,13 @@ about: dict = {
         {
             "name": "Batch size",
             "explanation": (
-                "Designs produced per gradient run (1-6). Higher "
-                "batch = more designs per H100-hour but higher VRAM. "
-                "Default 1 is the safe choice for first runs."
+                "Designs produced per gradient run (1-6). All designs "
+                "share one ~10 min H100 pass, so a higher batch "
+                "multiplies candidates without multiplying wall-clock. "
+                "<strong>Default 3</strong> — single-design runs often "
+                "return <code>drop</code> after the iPTM and pI gates. "
+                "Bump to 6 for first-pass exploration; drop to 1 only "
+                "when you already know the target gives clean hits."
             ),
         },
         {
@@ -148,7 +154,7 @@ about: dict = {
         "proxy (or CDR distogram iPTM proxy for scFvs), final loss, "
         "isoelectric point, and predicted complex PDB. Strict-pass "
         "classification surfaces designs worth ordering (minibinder: "
-        "<code>iptm &gt; 0.55</code> AND <code>pI &lt; 6</code>; "
+        "<code>iptm &gt; 0.75</code> AND <code>pI &lt; 6</code>; "
         "scfv: <code>cdr_distogram_iptm_proxy &gt; 0.5</code>)."
     ),
     "paper_citation": paper_citation,
@@ -164,10 +170,10 @@ examples: list[dict] = [
         "id": "ctla4-minibinder",
         "label": "CTLA4 + minibinder",
         "description": (
-            "Generate a de novo minibinder against the human CTLA4 "
-            "ectodomain (UniProt P16410, 37-155). One design at seed 0. "
-            "CTLA4 was one of the five targets validated in the paper. "
-            "Expect ~10 min wall-clock."
+            "Generate de novo minibinders against the human CTLA4 "
+            "ectodomain (UniProt P16410, 37-155). Three designs at "
+            "seed 0 in a single ~10 min gradient pass. CTLA4 was one "
+            "of the five targets validated in the paper."
         ),
         "filename": None,
         "params": {
@@ -175,7 +181,7 @@ examples: list[dict] = [
             "target_mode": "preset",
             "target_name": "ctla4",
             "seed": "0",
-            "batch_size": "1",
+            "batch_size": "3",
         },
     },
     {
@@ -183,9 +189,9 @@ examples: list[dict] = [
         "label": "PD-L1 + trastuzumab scFv",
         "description": (
             "Design all six CDRs of a trastuzumab-framework scFv "
-            "against human PD-L1 (UniProt Q9NZQ7, 17-132). One design "
-            "at seed 0. Reproduces the upstream notebook's Option 2 "
-            "interactive cell. Expect ~12 min wall-clock."
+            "against human PD-L1 (UniProt Q9NZQ7, 17-132). Three "
+            "designs at seed 0 in a single ~12 min gradient pass. "
+            "Reproduces the upstream notebook's Option 2 cell."
         ),
         "filename": None,
         "params": {
@@ -194,7 +200,7 @@ examples: list[dict] = [
             "target_name": "pd-l1",
             "binder_framework": "trastuzumab_framework_vhvl",
             "seed": "0",
-            "batch_size": "1",
+            "batch_size": "3",
         },
     },
 ]

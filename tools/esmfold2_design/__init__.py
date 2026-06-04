@@ -64,7 +64,11 @@ def _parse_seed(raw: str) -> tuple[Optional[int], Optional[str]]:
 def _parse_batch_size(raw: str) -> tuple[Optional[int], Optional[str]]:
     raw = (raw or "").strip()
     if not raw:
-        return 1, None
+        # Default 3, not 1: a single-design run usually returns drop
+        # because the pI / iPTM gates kill the only candidate. Three
+        # designs share the same gradient pass (same wall-clock) and
+        # multiply the odds of at least one strict_pass roughly 3x.
+        return 3, None
     try:
         bs = int(raw)
     except ValueError:

@@ -103,7 +103,7 @@
     <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
       ESMFold2 design backpropagates through the structure predictor to
       jointly optimize sequence and binding pose. Strict-pass designs
-      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&gt;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&gt;&nbsp;0.55</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
+      ({% if is_antibody %}<code>cdr_distogram_iptm_proxy&nbsp;&gt;&nbsp;0.5</code>{% else %}<code>iptm&nbsp;&gt;&nbsp;0.75</code> and <code>pI&nbsp;&lt;&nbsp;6</code>{% endif %})
       are the ones worth ordering. {% if use_scaling_critics %}The 15-checkpoint scaling-critic ensemble was used — expect calibrated proxy scores.{% else %}The scaling critics were not used — only the real iPTM is calibrated; the proxy is informative only.{% endif %}
     </div>
   </div>

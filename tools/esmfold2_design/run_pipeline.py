@@ -95,7 +95,11 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 PDB_OUTPUT_DIR = Path("/tmp/results")
 
 # Strict-pass thresholds. Open thread: tune against real PD-L1 sweep.
-STRICT_IPTM = 0.55
+# Raised from 0.55 to 0.75 on 2026-06-03 after three test runs returned
+# iPTM 0.83 / 0.83 / 0.95 — the prior gate was admitting noise. Real
+# paper-ordered binders sit at iPTM >= ~0.7, so 0.75 is the conservative
+# pass-through that rejects mid-band noise without hiding marginal hits.
+STRICT_IPTM = 0.75
 STRICT_CDR_IPTM_PROXY = 0.50
 STRICT_PI = 6.0  # minibinder only: pI < 6 for downstream displayability
 
