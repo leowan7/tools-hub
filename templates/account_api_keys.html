@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}API Keys — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,nofollow{% endblock %}
+
+{% block content %}
+
+  <div class="hero">
+    <h1>API Keys</h1>
+    <p class="subtitle">
+      Bearer tokens for the Platform API. Use these on the
+      <code>Authorization</code> header to submit binder candidates
+      programmatically from your agent.
+    </p>
+  </div>
+
+  {% if just_minted_plaintext %}
+    <div class="panel" style="border-color: var(--color-accent-dim, #2B9E7E);">
+      <div class="panel-header">
+        <span class="panel-title">New key — copy now</span>
+      </div>
+      <div class="panel-body">
+        <p style="margin-top: 0;">
+          This is the only time the full key is shown. Store it in a
+          password manager or secret store. If you lose it, revoke and
+          mint a new one.
+        </p>
+        <pre style="background: #08101B; padding: 1rem; border-radius: 0.5rem; user-select: all; word-break: break-all; white-space: pre-wrap;"><code>{{ just_minted_plaintext }}</code></pre>
+        <p style="margin-bottom: 0; font-size: 0.875rem; color: var(--color-text-secondary, #b5b5b5);">
+          Test it with
+          <code>curl -H "Authorization: Bearer {{ just_minted_plaintext[:8] }}…" https://tools.ranomics.com/api/v1/targets</code>
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if create_error %}
+    <div class="error-box" style="margin-bottom: 1rem;">
+      {{ create_error }}
+    </div>
+  {% endif %}
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Create a new key</span>
+    </div>
+    <div class="panel-body">
+      <form method="POST" action="{{ url_for('account_api_keys_create') }}" style="display: grid; gap: 0.75rem; max-width: 36rem;">
+        <label style="display: grid; gap: 0.25rem;">
+          <span style="font-size: 0.875rem;">Label (optional)</span>
+          <input
+            type="text"
+            name="label"
+            maxlength="120"
+            placeholder="my-laptop, ci-runner, design-bot-v3"
+            style="padding: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--color-border, #2a2a2a); background: var(--color-bg-surface, #111); color: inherit;"
+          />
+        </label>
+        <label style="display: grid; gap: 0.25rem;">
+          <span style="font-size: 0.875rem;">Role</span>
+          <select name="role" style="padding: 0.5rem; border-radius: 0.4rem; border: 1px solid var(--color-border, #2a2a2a); background: var(--color-bg-surface, #111); color: inherit;">
+            <option value="member">Member — read &amp; write (submit experiments)</option>
+            <option value="viewer">Viewer — read only (poll status &amp; results)</option>
+          </select>
+        </label>
+        <button type="submit" class="btn-primary" style="justify-self: start;">Mint key</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Your keys</span>
+    </div>
+    <div class="panel-body">
+      {% if keys|length == 0 %}
+        <p style="margin: 0; color: var(--color-text-secondary, #b5b5b5);">
+          No keys yet. Mint one above to start calling
+          <code>https://tools.ranomics.com/api/v1/</code>.
+        </p>
+      {% else %}
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead>
+            <tr style="text-align: left; border-bottom: 1px solid var(--color-border, #2a2a2a);">
+              <th style="padding: 0.5rem;">Prefix</th>
+              <th style="padding: 0.5rem;">Label</th>
+              <th style="padding: 0.5rem;">Role</th>
+              <th style="padding: 0.5rem;">Created</th>
+              <th style="padding: 0.5rem;">Last used</th>
+              <th style="padding: 0.5rem;">Status</th>
+              <th style="padding: 0.5rem;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for k in keys %}
+              <tr style="border-bottom: 1px solid var(--color-border, #2a2a2a);">
+                <td style="padding: 0.5rem; font-family: monospace;">{{ k.prefix }}…</td>
+                <td style="padding: 0.5rem;">{{ k.label or '—' }}</td>
+                <td style="padding: 0.5rem;">{{ k.role }}</td>
+                <td style="padding: 0.5rem; font-size: 0.85rem;">{{ k.created_at_display }}</td>
+                <td style="padding: 0.5rem; font-size: 0.85rem;">{{ k.last_used_display or '—' }}</td>
+                <td style="padding: 0.5rem;">
+                  {% if k.revoked_at %}
+                    <span style="color: #c66;">revoked</span>
+                  {% else %}
+                    <span style="color: var(--color-accent-text, #2B9E7E);">active</span>
+                  {% endif %}
+                </td>
+                <td style="padding: 0.5rem;">
+                  {% if not k.revoked_at %}
+                    <form method="POST" action="{{ url_for('account_api_keys_revoke', key_id=k.key_id) }}" style="margin: 0;" onsubmit="return confirm('Revoke this key? Active sessions stop working immediately.');">
+                      <button type="submit" class="btn-secondary" style="font-size: 0.85rem;">Revoke</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Quickstart</span>
+    </div>
+    <div class="panel-body">
+      <p style="margin-top: 0;">
+        Full reference at
+        <a href="https://ranomics.com/platform" class="nav-link">ranomics.com/platform</a>.
+        Spec at
+        <a href="/api/v1/openapi.json" class="nav-link">/api/v1/openapi.json</a>.
+      </p>
+      <pre style="background: #08101B; padding: 1rem; border-radius: 0.5rem; overflow-x: auto;"><code>curl https://tools.ranomics.com/api/v1/experiments \
+  -H "Authorization: Bearer rk_live_..." \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: my-batch-2026-06-04" \
+  -d '{
+    "name": "her2-mpnn-batch-01",
+    "experiment_spec": {
+      "experiment_type": "yeast_display",
+      "target": {"custom": {"name": "HER2 ECD"}},
+      "library_design": {"mode": "designed_panel", "diversity_estimate": 12000},
+      "sequences": {"des001": "MASRYLLN..."}
+    }
+  }'</code></pre>
+    </div>
+  </div>
+
+{% endblock %}

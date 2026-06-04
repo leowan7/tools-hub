@@ -1,0 +1,655 @@
+"""Platform API — Flask blueprint for /api/v1/*.
+
+Endpoints (all JSON; Bearer auth via ``shared.api_auth.api_auth_required``):
+
+    GET    /api/v1/targets
+    POST   /api/v1/experiments
+    POST   /api/v1/experiments/cost-estimate
+    GET    /api/v1/experiments/{id}
+    GET    /api/v1/experiments/{id}/quote
+    POST   /api/v1/quotes/{id}/confirm
+    GET    /api/v1/experiments/{id}/results
+    GET    /api/v1/openapi.json
+
+Design notes
+------------
+- Conventions deliberately mirror Adaptyv Foundry where they apply
+  (Bearer auth, sequences dict with ':' chain separator, results_status
+  enum, status FSM). This is the load-bearing differentiator: agents
+  already trained on the Adaptyv shape recognise ours without retraining.
+- The differentiation vs Adaptyv lives in the result format
+  (enrichment counts + called_hit vs kinetic constants) and in the
+  pricing/scope model (library-scale triage vs per-sequence kinetics).
+- Idempotency-Key header is honoured on POST /experiments. A repeat
+  call with the same key from the same user returns the original row.
+- Every response has ``X-Robots-Tag: noindex`` and ``Cache-Control:
+  no-store`` (except the static openapi.json which is short-cached).
+- CORS is wide-open — Bearer auth is safe across origins (no cookie).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Optional
+
+from flask import Blueprint, g, jsonify, request
+
+from shared.api_auth import api_auth_required
+from shared.campaigns import (
+    API_TERMINAL_STATUSES,
+    ASSAY_TYPES,
+    IdempotentReplay,
+    Campaign,
+    campaign_to_api_view,
+    campaign_to_status_view,
+    create_api_campaign,
+    get_campaign,
+    list_user_campaigns,
+    transition_api_status,
+)
+from shared.webhooks import dispatch_webhook
+
+logger = logging.getLogger(__name__)
+
+
+platform_api_bp = Blueprint(
+    "platform_api",
+    __name__,
+    url_prefix="/api/v1",
+)
+
+
+# ---------------------------------------------------------------------------
+# Response shaping
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.after_request
+def _api_response_headers(response):
+    """Apply the API-wide response posture.
+
+    Three concerns:
+      1. Block search-engine indexing (the API is not user-readable).
+      2. Wide-open CORS (Bearer auth is safe; no cookie identity).
+      3. Disable caching on dynamic responses (the spec endpoint
+         overrides this to 5 min public).
+    """
+    response.headers.setdefault("X-Robots-Tag", "noindex")
+    response.headers.setdefault("Access-Control-Allow-Origin", "*")
+    response.headers.setdefault(
+        "Access-Control-Allow-Headers",
+        "Authorization,Content-Type,Idempotency-Key",
+    )
+    response.headers.setdefault(
+        "Access-Control-Allow-Methods", "GET,POST,OPTIONS"
+    )
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+def _error(status: int, code: str, message: str, **extra: Any):
+    body = {"error": {"code": code, "message": message, **extra}}
+    resp = jsonify(body)
+    resp.status_code = status
+    return resp
+
+
+def _json_body() -> Optional[dict[str, Any]]:
+    """Parse the request body as JSON. None on invalid input."""
+    if not request.data:
+        return None
+    try:
+        body = request.get_json(force=True, silent=False)
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+
+_AMINO_ALPHABET = frozenset("ACDEFGHIKLMNPQRSTVWY:")
+_MAX_SEQUENCE_LEN = 2000  # generous upper bound for fusion constructs
+_MAX_SEQUENCES_PER_SUBMIT = 50_000  # YDS library scale, hard cap
+
+
+def _validate_sequences(raw: Any) -> tuple[Optional[dict[str, str]], Optional[str]]:
+    """Validate the sequences dict.
+
+    Returns ``(sequences, None)`` on success or ``(None, error_message)``
+    so the caller can return a precise 400. We deliberately accept the
+    full Adaptyv-compatible shape: dict of ``{user_key: str}`` where
+    each value is uppercase amino acids with ``:`` between chains.
+    """
+    if not isinstance(raw, dict):
+        return None, "sequences must be a JSON object"
+    if not raw:
+        return None, "sequences cannot be empty"
+    if len(raw) > _MAX_SEQUENCES_PER_SUBMIT:
+        return None, (
+            f"sequences exceeds per-submission cap of {_MAX_SEQUENCES_PER_SUBMIT}"
+        )
+
+    cleaned: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not key:
+            return None, "sequence keys must be non-empty strings"
+        if not isinstance(value, str):
+            return None, f"sequence {key!r} value must be a string"
+        normalized = value.strip().upper()
+        if not normalized:
+            return None, f"sequence {key!r} value is empty"
+        if len(normalized) > _MAX_SEQUENCE_LEN:
+            return None, (
+                f"sequence {key!r} exceeds per-sequence cap of "
+                f"{_MAX_SEQUENCE_LEN} amino acids"
+            )
+        if not set(normalized).issubset(_AMINO_ALPHABET):
+            return None, (
+                f"sequence {key!r} contains non-canonical residues "
+                "(expected uppercase ACDEFGHIKLMNPQRSTVWY with ':' as "
+                "chain separator)"
+            )
+        cleaned[key] = normalized
+    return cleaned, None
+
+
+def _validate_webhook_url(raw: Any) -> tuple[Optional[str], Optional[str]]:
+    if raw is None or raw == "":
+        return None, None
+    if not isinstance(raw, str):
+        return None, "webhook_url must be a string"
+    if not (raw.startswith("https://") or raw.startswith("http://")):
+        return None, "webhook_url must be an http:// or https:// URL"
+    if len(raw) > 2000:
+        return None, "webhook_url is too long"
+    return raw, None
+
+
+def _idempotency_key_from_header() -> Optional[str]:
+    raw = request.headers.get("Idempotency-Key", "").strip()
+    if not raw:
+        return None
+    # 8–128 chars; printable ASCII. Reject unicode garbage early.
+    if len(raw) < 8 or len(raw) > 128:
+        return None
+    if not raw.isprintable():
+        return None
+    return raw
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/targets
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.get("/targets")
+@api_auth_required(read_only=True)
+def list_targets():
+    """List calibrated targets.
+
+    The alpha catalogue is empty: every submission is custom-scoped, so
+    callers should fall back to the ``custom`` shape on POST /experiments.
+    A future migration populates this endpoint and ``cost-estimate``
+    starts returning real numbers instead of ``requires_human_quote``.
+    """
+    return jsonify({"targets": [], "total": 0})
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/experiments
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.post("/experiments")
+@api_auth_required()
+def create_experiment():
+    """Create a new experiment.
+
+    Request body::
+
+        {
+          "name": "her2-mpnn-batch-01",
+          "webhook_url": "https://...",
+          "experiment_spec": {
+            "experiment_type": "yeast_display",
+            "target": {
+              "custom": {"name": "HER2 ECD", "antigen_sequence": "...", "notes": "..."}
+            },
+            "library_design": {
+              "mode": "designed_panel",
+              "diversity_estimate": 12000,
+              "notes": "MPNN top-1% by score"
+            },
+            "sequences": {"des001": "MASRYLLNPHWGV..."}
+          }
+        }
+
+    Idempotency-Key header (8–128 chars) is honoured: a repeat with the
+    same key from the same user returns the original experiment row.
+    """
+    body = _json_body()
+    if body is None:
+        return _error(400, "invalid_body", "Request body must be a JSON object.")
+
+    spec = body.get("experiment_spec")
+    if not isinstance(spec, dict):
+        return _error(
+            400, "invalid_body", "experiment_spec is required and must be an object."
+        )
+
+    experiment_type = spec.get("experiment_type")
+    if experiment_type not in ASSAY_TYPES:
+        return _error(
+            400,
+            "invalid_experiment_type",
+            f"experiment_type must be one of {list(ASSAY_TYPES)}.",
+        )
+
+    target = spec.get("target")
+    if not isinstance(target, dict):
+        return _error(400, "invalid_target", "target is required.")
+    if "target_id" in target:
+        # Catalogue targets are not live yet; reject explicitly.
+        return _error(
+            400,
+            "calibrated_targets_unavailable",
+            "The calibrated target catalogue is not live in the alpha. "
+            "Use the 'custom' target shape instead.",
+        )
+    custom = target.get("custom")
+    if not isinstance(custom, dict):
+        return _error(
+            400,
+            "invalid_target",
+            "target.custom is required: {name, antigen_sequence?, notes?}.",
+        )
+    target_name = (custom.get("name") or "").strip()
+    if not target_name:
+        return _error(400, "invalid_target", "target.custom.name is required.")
+    target_context_parts: list[str] = []
+    antigen = (custom.get("antigen_sequence") or "").strip()
+    if antigen:
+        target_context_parts.append(f"antigen_sequence: {antigen}")
+    notes = (custom.get("notes") or "").strip()
+    if notes:
+        target_context_parts.append(f"notes: {notes}")
+    target_context = "\n".join(target_context_parts)
+
+    sequences, err = _validate_sequences(spec.get("sequences"))
+    if err:
+        return _error(400, "invalid_sequences", err)
+
+    library_design = spec.get("library_design")
+    if library_design is not None and not isinstance(library_design, dict):
+        return _error(
+            400,
+            "invalid_library_design",
+            "library_design must be an object when provided.",
+        )
+
+    webhook_url, err = _validate_webhook_url(body.get("webhook_url"))
+    if err:
+        return _error(400, "invalid_webhook_url", err)
+
+    idempotency_key = _idempotency_key_from_header()
+    name = body.get("name")
+    if name is not None and not isinstance(name, str):
+        return _error(400, "invalid_name", "name must be a string when provided.")
+
+    try:
+        campaign = create_api_campaign(
+            user_id=g.api_user_id,
+            name=name,
+            assay_type=experiment_type,
+            target_name=target_name,
+            target_context=target_context,
+            sequences=sequences,
+            library_design=library_design,
+            webhook_url=webhook_url,
+            idempotency_key=idempotency_key,
+        )
+    except IdempotentReplay as replay:
+        resp = jsonify(campaign_to_api_view(replay.campaign))
+        resp.status_code = 200
+        resp.headers["Idempotent-Replay"] = "true"
+        return resp
+    except ValueError as exc:
+        return _error(400, "invalid_request", str(exc))
+
+    if campaign is None:
+        return _error(
+            500,
+            "submission_failed",
+            "Could not persist the experiment. Try again or contact support.",
+        )
+
+    # Move to WaitingForConfirmation immediately. The alpha workflow
+    # gates further progress on a human quote, so 'Draft' is a state
+    # the customer never observes from the outside.
+    moved = transition_api_status(
+        campaign.id, new_status="WaitingForConfirmation", by="system"
+    )
+    if moved is not None:
+        campaign = moved
+        _fire_webhook(
+            campaign,
+            event_type="experiment.waiting_for_confirmation",
+            prev_status="Draft",
+        )
+
+    resp = jsonify(campaign_to_api_view(campaign))
+    resp.status_code = 201
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/experiments/cost-estimate
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.post("/experiments/cost-estimate")
+@api_auth_required(read_only=True)
+def cost_estimate():
+    """Non-binding ballpark for a hypothetical submission.
+
+    Inputs::
+
+        {
+          "experiment_type": "yeast_display" | "mammalian_display" | "dms",
+          "candidate_count": 5000,
+          "library_diversity": 12000,
+          "target_kind": "catalog" | "custom"
+        }
+
+    During the alpha the calibrated-target catalogue is empty, so every
+    response is ``requires_human_quote=true`` with an order-of-magnitude
+    placeholder range. The range is deliberately wide — the real number
+    depends on round count, sort gates, and NGS depth that the human
+    scoping conversation pins down.
+    """
+    body = _json_body()
+    if body is None:
+        return _error(400, "invalid_body", "Request body must be a JSON object.")
+
+    experiment_type = body.get("experiment_type")
+    if experiment_type not in ASSAY_TYPES:
+        return _error(
+            400,
+            "invalid_experiment_type",
+            f"experiment_type must be one of {list(ASSAY_TYPES)}.",
+        )
+    target_kind = body.get("target_kind", "custom")
+    if target_kind not in ("catalog", "custom"):
+        return _error(
+            400, "invalid_target_kind", "target_kind must be 'catalog' or 'custom'."
+        )
+
+    return jsonify(
+        {
+            "experiment_type": experiment_type,
+            "target_kind": target_kind,
+            "requires_human_quote": True,
+            "estimated_range_usd": _placeholder_range(experiment_type),
+            "scoping_url": _scoping_url(),
+            "note": (
+                "The alpha returns a placeholder range; a calibrated number "
+                "is issued after a brief scoping call. "
+                "Submit POST /experiments to start the conversation."
+            ),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/experiments/{id}
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.get("/experiments/<experiment_id>")
+@api_auth_required(read_only=True)
+def get_experiment(experiment_id: str):
+    campaign = _load_owned_campaign(experiment_id)
+    if isinstance(campaign, tuple):
+        return campaign
+    return jsonify(campaign_to_status_view(campaign))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/experiments/{id}/quote
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.get("/experiments/<experiment_id>/quote")
+@api_auth_required(read_only=True)
+def get_experiment_quote(experiment_id: str):
+    campaign = _load_owned_campaign(experiment_id)
+    if isinstance(campaign, tuple):
+        return campaign
+
+    if campaign.status in ("Draft", "WaitingForConfirmation"):
+        return _error(
+            404,
+            "quote_not_ready",
+            "The quote has not been issued yet. Status will move to "
+            "'QuoteSent' when the scoping team finishes review.",
+            current_status=campaign.status,
+        )
+
+    # The alpha hands back a stub. A future migration writes real quote
+    # line items into a related table (or onto lab_campaigns via a
+    # dedicated jsonb column). The shape stays stable.
+    return jsonify(
+        {
+            "experiment_id": campaign.id,
+            "quote_id": campaign.id,  # 1:1 in the alpha
+            "status": campaign.status,
+            "issued_at": campaign.last_transition_at,
+            "line_items": [],
+            "total_usd": None,
+            "valid_until": None,
+            "terms_url": _terms_url(),
+            "note": (
+                "Alpha-mode stub. The line-item shape is documented in "
+                "the OpenAPI spec under /openapi.json."
+            ),
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/quotes/{id}/confirm
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.post("/quotes/<quote_id>/confirm")
+@api_auth_required()
+def confirm_quote(quote_id: str):
+    campaign = _load_owned_campaign(quote_id)
+    if isinstance(campaign, tuple):
+        return campaign
+
+    if campaign.status != "QuoteSent":
+        return _error(
+            409,
+            "quote_not_confirmable",
+            "Only experiments in status 'QuoteSent' can be confirmed.",
+            current_status=campaign.status,
+        )
+
+    moved = transition_api_status(
+        campaign.id, new_status="WaitingForMaterials", by="api"
+    )
+    if moved is None:
+        return _error(
+            500,
+            "transition_failed",
+            "Could not confirm the quote. Try again or contact support.",
+        )
+
+    _fire_webhook(
+        moved,
+        event_type="experiment.confirmed",
+        prev_status="QuoteSent",
+    )
+    return jsonify(campaign_to_status_view(moved))
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/experiments/{id}/results
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.get("/experiments/<experiment_id>/results")
+@api_auth_required(read_only=True)
+def get_experiment_results(experiment_id: str):
+    campaign = _load_owned_campaign(experiment_id)
+    if isinstance(campaign, tuple):
+        return campaign
+
+    if campaign.results_status == "none":
+        return _error(
+            404,
+            "results_not_ready",
+            "Results are not available yet. Poll GET /experiments/{id} "
+            "and watch for results_status to flip to 'partial' or 'all'.",
+            current_status=campaign.status,
+            results_status=campaign.results_status,
+        )
+
+    # Alpha stub. The contract below is the documented YDS shape; the
+    # download URLs are signed Supabase links that the scoping team
+    # attaches via the admin tooling at the end of an experiment.
+    # Until those tools are wired, we surface whatever's been written
+    # to library_design['results'] (operator-uploaded JSON).
+    library_design = campaign.library_design or {}
+    results_payload = library_design.get("results") if isinstance(library_design, dict) else None
+    if not isinstance(results_payload, dict):
+        results_payload = {
+            "rounds": [],
+            "sequences": [],
+            "downloads": {},
+        }
+    return jsonify(
+        {
+            "experiment_id": campaign.id,
+            "status": campaign.status,
+            "results_status": campaign.results_status,
+            **results_payload,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/openapi.json
+# ---------------------------------------------------------------------------
+
+
+@platform_api_bp.get("/openapi.json")
+def openapi_spec():
+    """Serve the OpenAPI 3.1 spec for tooling auto-generation."""
+    from tools.platform_api.openapi_spec import build_spec  # noqa: PLC0415
+
+    resp = jsonify(build_spec())
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+# Handle CORS preflight on all blueprint paths.
+@platform_api_bp.route(
+    "/<path:_anything>", methods=["OPTIONS"]
+)
+@platform_api_bp.route("/", methods=["OPTIONS"])
+def _preflight(_anything: str = ""):
+    resp = jsonify({})
+    resp.status_code = 204
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+
+def _load_owned_campaign(experiment_id: str) -> Campaign | tuple:
+    """Resolve an experiment id scoped to the authenticated user.
+
+    Returns the Campaign on success, or a Flask response tuple ready to
+    return on miss / wrong-user. Caller checks ``isinstance(... , tuple)``.
+    """
+    campaign = get_campaign(experiment_id, user_id=g.api_user_id)
+    if campaign is None:
+        return _error(
+            404,
+            "experiment_not_found",
+            "No experiment with that id is visible on this API key.",
+        )
+    if campaign.submission_source != "api":
+        # A user with both web-form and API submissions shouldn't see
+        # web rows via the API surface — different lifecycle, different
+        # enum, different result shape.
+        return _error(
+            404,
+            "experiment_not_found",
+            "No experiment with that id is visible on this API key.",
+        )
+    return campaign
+
+
+def _fire_webhook(campaign: Campaign, *, event_type: str, prev_status: str) -> None:
+    """Fire-and-forget webhook on a transition. Never raises."""
+    try:
+        dispatch_webhook(
+            campaign_id=campaign.id,
+            event_type=event_type,
+            target_url=campaign.webhook_url,
+            payload={
+                "delivery_id": None,  # filled by webhook ledger
+                "event_type": event_type,
+                "experiment_id": campaign.id,
+                "prev_status": prev_status,
+                "new_status": campaign.status,
+                "results_status": campaign.results_status,
+                "timestamp": campaign.last_transition_at,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "webhook dispatch raised for campaign %s", campaign.id, exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Calibrated placeholders
+# ---------------------------------------------------------------------------
+
+
+def _placeholder_range(experiment_type: str) -> list[int]:
+    """Order-of-magnitude USD range per assay.
+
+    These are honest unit-economics bands, not promises. The scoping
+    call replaces them with a calibrated number.
+    """
+    ranges = {
+        "yeast_display": [12000, 80000],
+        "mammalian_display": [25000, 150000],
+        "dms": [18000, 120000],
+    }
+    return ranges.get(experiment_type, [10000, 100000])
+
+
+def _scoping_url() -> str:
+    return (
+        os.environ.get("PLATFORM_API_SCOPING_URL")
+        or "https://ranomics.com/ranomics-contact?service=platform-api"
+    )
+
+
+def _terms_url() -> str:
+    return (
+        os.environ.get("PLATFORM_API_TERMS_URL")
+        or "https://tools.ranomics.com/terms"
+    )
