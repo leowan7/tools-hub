@@ -209,25 +209,33 @@
             </div>
           </div>
 
-          {# ----- Seed + batch_size side by side ----- #}
-          <div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem; margin-bottom: 1.25rem;">
+          {# ----- Starting seed + seeds-to-run + batch_size in one row ----- #}
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;">
             <div>
-              <label for="seed" class="label" style="display:block; margin-bottom: 0.4rem;">Seed</label>
+              <label for="seed" class="label" style="display:block; margin-bottom: 0.4rem;">Starting seed</label>
               <input type="number" name="seed" id="seed" min="0" max="2147483647" {{ pre_value(pre_fill, 'seed', '0') }} class="esmd-number" style="max-width: 100%;">
               <div style="color: var(--text-secondary); font-size: 0.82rem;">
-                Integer 0+. Different seeds yield different designs — sweep
-                to build a candidate library.
+                The first seed in the sweep. Different seeds yield
+                different designs.
+              </div>
+            </div>
+            <div>
+              <label for="n_seeds" class="label" style="display:block; margin-bottom: 0.4rem;">Seeds to run</label>
+              <input type="number" name="n_seeds" id="n_seeds" min="1" max="64" {{ pre_value(pre_fill, 'n_seeds', '1') }} class="esmd-number" style="max-width: 100%;">
+              <div style="color: var(--text-secondary); font-size: 0.82rem;">
+                Parallel sweep size (1-64). All seeds run on their own
+                H100 in parallel, so a 16-seed sweep finishes in the
+                same wall-clock as one seed. Cost scales linearly.
               </div>
             </div>
             <div>
               <label for="batch_size" class="label" style="display:block; margin-bottom: 0.4rem;">Batch size</label>
               <input type="number" name="batch_size" id="batch_size" min="1" max="6" {{ pre_value(pre_fill, 'batch_size', '3') }} class="esmd-number" style="max-width: 100%;">
               <div style="color: var(--text-secondary); font-size: 0.82rem;">
-                Designs per gradient run (1-6). All designs share one
-                H100 pass, so a higher batch multiplies candidates at
-                the same wall-clock. Single-design runs often return
-                <code>drop</code>; default 3 is the recommended starting
-                point.
+                Designs per seed (1-6). All share one H100 pass per
+                seed, so a higher batch multiplies candidates at the
+                same wall-clock. Default 3 balances yield against the
+                <code>drop</code> rate from the iPTM / pI gates.
               </div>
             </div>
           </div>
@@ -269,6 +277,7 @@
       var presetTargetOnly = document.querySelector('[data-esmd-preset-target-only]');
       var pasteTargetOnly = document.querySelector('[data-esmd-paste-target-only]');
       var batchInput = document.getElementById('batch_size');
+      var nSeedsInput = document.getElementById('n_seeds');
 
       function syncPreset() {
         var selected = document.querySelector('input[name="preset"]:checked');
@@ -282,17 +291,22 @@
         if (pasteTargetOnly) pasteTargetOnly.hidden = !isPaste;
       }
       function syncWalletCount() {
-        var n = parseInt(batchInput && batchInput.value, 10);
-        if (!isFinite(n) || n < 1) n = 1;
+        var bs = parseInt(batchInput && batchInput.value, 10);
+        if (!isFinite(bs) || bs < 1) bs = 1;
+        var ns = parseInt(nSeedsInput && nSeedsInput.value, 10);
+        if (!isFinite(ns) || ns < 1) ns = 1;
         var hidden = document.querySelector('input[name="n_designs_total"]');
         if (!hidden) {
           hidden = document.createElement('input');
           hidden.type = 'hidden';
           hidden.name = 'n_designs_total';
-          var form = batchInput && batchInput.form;
+          var form = (batchInput && batchInput.form) || (nSeedsInput && nSeedsInput.form);
           if (form) form.appendChild(hidden);
         }
-        hidden.value = String(n);
+        // n_designs_total = parallel seeds * designs per seed. The
+        // wallet estimator bills one credit per design, so the user
+        // sees total cost climb with both axes.
+        hidden.value = String(bs * ns);
         if (typeof window.refreshWalletEstimate === 'function') {
           window.refreshWalletEstimate();
         }
@@ -307,6 +321,10 @@
       if (batchInput) {
         batchInput.addEventListener('input', syncWalletCount);
         batchInput.addEventListener('change', syncWalletCount);
+      }
+      if (nSeedsInput) {
+        nSeedsInput.addEventListener('input', syncWalletCount);
+        nSeedsInput.addEventListener('change', syncWalletCount);
       }
       syncPreset();
       syncTargetMode();

@@ -44,6 +44,13 @@ TARGET_SEQ_MIN = 30
 TARGET_SEQ_MAX = 800
 BATCH_SIZE_MIN = 1
 BATCH_SIZE_MAX = 6
+# Multi-seed fan-out range. The Modal orchestrator (modal_app.run_tool)
+# spawns one H100 child per seed in parallel, so wall-clock stays equal
+# to the slowest child regardless of n_seeds. Capped at 64 to stay well
+# under Modal's default per-app concurrency ceiling (~100) and to bound
+# wallet exposure on a single submission.
+N_SEEDS_MIN = 1
+N_SEEDS_MAX = 64
 SEED_MAX = 2**31 - 1
 CANONICAL_AA = set("ACDEFGHIKLMNPQRSTVWYX")
 
@@ -79,6 +86,22 @@ def _parse_batch_size(raw: str) -> tuple[Optional[int], Optional[str]]:
             f"{BATCH_SIZE_MAX}."
         )
     return bs, None
+
+
+def _parse_n_seeds(raw: str) -> tuple[Optional[int], Optional[str]]:
+    raw = (raw or "").strip()
+    if not raw:
+        return 1, None
+    try:
+        n = int(raw)
+    except ValueError:
+        return None, f"Number of seeds must be an integer; got {raw!r}."
+    if n < N_SEEDS_MIN or n > N_SEEDS_MAX:
+        return None, (
+            f"Number of seeds must be between {N_SEEDS_MIN} and "
+            f"{N_SEEDS_MAX}."
+        )
+    return n, None
 
 
 def _check_protein_sequence(seq: str, label: str) -> Optional[str]:
@@ -150,6 +173,10 @@ def validate(
     if bs_err:
         return None, bs_err
 
+    n_seeds, n_seeds_err = _parse_n_seeds(form.get("n_seeds") or "")
+    if n_seeds_err:
+        return None, n_seeds_err
+
     use_scaling_critics = (
         (form.get("use_scaling_critics") or "").strip().lower() in {"on", "1", "true", "yes"}
     )
@@ -173,13 +200,16 @@ def validate(
             "binder_name": binder_name,
             "is_antibody": preset == "scfv",
             "seed": seed,
+            "n_seeds": n_seeds,
             "batch_size": batch_size,
             "use_scaling_critics": use_scaling_critics,
             "target": " + ".join(label_bits),
-            # Each ``batch_size`` produces one candidate per gradient run; the
-            # wallet estimator counts batch_size as designs_total so cost
-            # scales with the number of independent designs returned.
-            "parameters": {"n_designs_total": batch_size},
+            # n_seeds * batch_size = total designs returned. n_seeds fans
+            # out to parallel Modal children (same wall-clock as one
+            # seed), batch_size runs N designs inside one gradient pass.
+            # The wallet estimator treats each design as one billable
+            # unit so cost scales linearly with both axes.
+            "parameters": {"n_designs_total": n_seeds * batch_size},
         },
         None,
     )
@@ -189,6 +219,8 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the ESMFold2-design job_spec for the Modal pipeline.
 
     ``presigned_url`` is unused — this tool does not accept a target PDB.
+    ``seed`` here is the *start* of the sweep range when ``n_seeds > 1``;
+    the Modal orchestrator runs seeds [seed, seed + n_seeds).
     """
     return {
         "preset": inputs["preset"],
@@ -197,6 +229,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
         "binder_name": inputs["binder_name"],
         "is_antibody": inputs["is_antibody"],
         "seed": inputs["seed"],
+        "n_seeds": inputs.get("n_seeds", 1),
         "batch_size": inputs["batch_size"],
         "use_scaling_critics": inputs["use_scaling_critics"],
         "parameters": inputs["parameters"],

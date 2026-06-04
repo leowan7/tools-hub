@@ -115,12 +115,25 @@ about: dict = {
             ),
         },
         {
-            "name": "Seed",
+            "name": "Starting seed",
             "explanation": (
                 "Integer seed for the soft-sequence initialization. "
-                "Different seeds yield different designs — sweep seeds "
-                "to build a candidate library. The upstream notebook "
-                "demonstrates a 128-seed grid."
+                "Different seeds yield different designs. When "
+                "<strong>Seeds to run</strong> is greater than 1 this "
+                "is the first seed in the sweep; the orchestrator runs "
+                "<code>[seed, seed + n)</code> in parallel."
+            ),
+        },
+        {
+            "name": "Seeds to run",
+            "explanation": (
+                "Number of parallel seeds to sweep (1-64). Each seed "
+                "gets its own H100 worker, all run in parallel, so a "
+                "16-seed sweep finishes in the same wall-clock as one "
+                "seed (~10-15 min). Results from every seed merge into "
+                "one globally-ranked table. Use this when you need to "
+                "build a candidate library against a target. Cost "
+                "scales linearly with seeds x batch size."
             ),
         },
         {
@@ -152,10 +165,13 @@ about: dict = {
     "output_summary": (
         "Per-design table with designed sequence, iPTM, distogram iPTM "
         "proxy (or CDR distogram iPTM proxy for scFvs), final loss, "
-        "isoelectric point, and predicted complex PDB. Strict-pass "
-        "classification surfaces designs worth ordering (minibinder: "
-        "<code>iptm &gt; 0.75</code> AND <code>pI &lt; 6</code>; "
-        "scfv: <code>cdr_distogram_iptm_proxy &gt; 0.5</code>)."
+        "isoelectric point, source seed, and predicted complex PDB. "
+        "Strict-pass classification surfaces designs worth ordering "
+        "(minibinder: <code>iptm &gt; 0.75</code> AND "
+        "<code>pI &lt; 6</code>; scfv: "
+        "<code>cdr_distogram_iptm_proxy &gt; 0.5</code>). Sweep mode "
+        "(<strong>Seeds to run</strong> &gt; 1) merges every seed's "
+        "designs into one globally-ranked table."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,
@@ -181,6 +197,7 @@ examples: list[dict] = [
             "target_mode": "preset",
             "target_name": "ctla4",
             "seed": "0",
+            "n_seeds": "1",
             "batch_size": "3",
         },
     },
@@ -200,7 +217,28 @@ examples: list[dict] = [
             "target_name": "pd-l1",
             "binder_framework": "trastuzumab_framework_vhvl",
             "seed": "0",
+            "n_seeds": "1",
             "batch_size": "3",
+        },
+    },
+    {
+        "id": "pdl1-minibinder-4seed-sweep",
+        "label": "PD-L1 minibinder 4-seed sweep",
+        "description": (
+            "Sweep seeds 0-3 against PD-L1 in one job (4 parallel H100 "
+            "workers, batch size 1 each). Same ~10 min wall-clock as a "
+            "single seed; results merge into one globally-ranked table "
+            "with per-design source seed. Demonstrates the multi-seed "
+            "fan-out path for building a candidate library."
+        ),
+        "filename": None,
+        "params": {
+            "preset": "minibinder",
+            "target_mode": "preset",
+            "target_name": "pd-l1",
+            "seed": "0",
+            "n_seeds": "4",
+            "batch_size": "1",
         },
     },
 ]
