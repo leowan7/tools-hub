@@ -950,6 +950,136 @@ def create_app() -> Flask:
     flask_app.config.setdefault("MAX_CONTENT_LENGTH", 20 * 1024 * 1024)
     flask_app.register_blueprint(scout_bp)
 
+    # ------------------------------------------------------------------
+    # Platform API — wet-lab as an API for binder-design agents.
+    #
+    # Gated behind ENABLE_PLATFORM_API=1 so the entire /api/v1/* surface
+    # plus /account/api-keys plus /.well-known/ai-plugin.json return 404
+    # in environments where the alpha is not yet live. Toggle on the
+    # Railway env var to flip live; remove and restart to remove cleanly.
+    # ------------------------------------------------------------------
+    if os.environ.get("ENABLE_PLATFORM_API", "").strip() == "1":
+        from tools.platform_api import platform_api_bp  # noqa: PLC0415
+
+        flask_app.register_blueprint(platform_api_bp)
+
+        @flask_app.route("/.well-known/ai-plugin.json", methods=["GET"])
+        def ai_plugin_manifest():
+            from flask import jsonify  # noqa: PLC0415
+
+            payload = {
+                "schema_version": "v1",
+                "name_for_human": "Ranomics Platform API",
+                "name_for_model": "ranomics_platform",
+                "description_for_human": (
+                    "Submit binder candidates for yeast-display triage and "
+                    "retrieve enrichment results."
+                ),
+                "description_for_model": (
+                    "Use this API to triage AI-designed binder libraries via "
+                    "wet-lab yeast display, mammalian display, or DMS at "
+                    "Ranomics. POST /api/v1/experiments with a sequences dict "
+                    "and target spec; poll GET /api/v1/experiments/{id} for "
+                    "status; fetch results via GET /api/v1/experiments/{id}/"
+                    "results once results_status != 'none'. Convention-"
+                    "compatible with Adaptyv Foundry shapes."
+                ),
+                "auth": {"type": "user_http", "authorization_type": "bearer"},
+                "api": {
+                    "type": "openapi",
+                    "url": "https://tools.ranomics.com/api/v1/openapi.json",
+                },
+                "logo_url": "https://ranomics.com/favicon.svg",
+                "contact_email": "info@ranomics.com",
+                "legal_info_url": "https://ranomics.com/platform",
+            }
+            resp = jsonify(payload)
+            resp.headers["Cache-Control"] = "public, max-age=300"
+            return resp
+
+        # --- /account/api-keys management page ---
+        from shared.api_keys import (  # noqa: PLC0415
+            VALID_ROLES,
+            list_keys,
+            mint_token,
+            revoke_key,
+        )
+        from shared.auth import login_required  # noqa: PLC0415
+
+        def _format_dt(value):
+            if not value:
+                return None
+            # Supabase returns ISO 8601 strings; trim subseconds + tz for display.
+            return str(value)[:19].replace("T", " ") + " UTC"
+
+        @flask_app.route("/account/api-keys", methods=["GET"])
+        @login_required
+        def account_api_keys():
+            user_ctx = load_user_context()
+            if user_ctx is None:
+                return redirect(url_for("login"))
+            raw_keys = list_keys(user_ctx.user_id)
+            keys = [
+                {
+                    "key_id": k.key_id,
+                    "prefix": k.prefix,
+                    "label": k.label,
+                    "role": k.role,
+                    "revoked_at": k.revoked_at,
+                    "created_at_display": _format_dt(k.created_at),
+                    "last_used_display": _format_dt(k.last_used_at),
+                }
+                for k in raw_keys
+            ]
+            just_minted = session.pop("_platform_api_just_minted", None)
+            create_error = session.pop("_platform_api_create_error", None)
+            return render_template(
+                "account_api_keys.html",
+                keys=keys,
+                just_minted_plaintext=just_minted,
+                create_error=create_error,
+            )
+
+        @flask_app.route("/account/api-keys/create", methods=["POST"])
+        @login_required
+        def account_api_keys_create():
+            user_ctx = load_user_context()
+            if user_ctx is None:
+                return redirect(url_for("login"))
+            label = (request.form.get("label") or "").strip()[:120] or None
+            role = (request.form.get("role") or "member").strip().lower()
+            if role not in VALID_ROLES:
+                role = "member"
+            minted = mint_token(
+                user_id=user_ctx.user_id, role=role, label=label
+            )
+            if minted is None:
+                session["_platform_api_create_error"] = (
+                    "Could not mint a new key. Either you've hit the active-"
+                    "key cap or the database is temporarily unreachable. "
+                    "Revoke an unused key and try again, or contact support."
+                )
+            else:
+                plaintext, _prefix = minted
+                session["_platform_api_just_minted"] = plaintext
+            return redirect(url_for("account_api_keys"))
+
+        @flask_app.route(
+            "/account/api-keys/<key_id>/revoke", methods=["POST"]
+        )
+        @login_required
+        def account_api_keys_revoke(key_id):
+            user_ctx = load_user_context()
+            if user_ctx is None:
+                return redirect(url_for("login"))
+            revoke_key(key_id=key_id, user_id=user_ctx.user_id)
+            return redirect(url_for("account_api_keys"))
+
+        logger.info(
+            "Platform API enabled (/api/v1/*, /.well-known/ai-plugin.json, "
+            "/account/api-keys)"
+        )
+
     # Single Modal client shared across stub tool routes.
     modal_client = ModalClient()
 
