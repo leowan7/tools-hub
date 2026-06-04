@@ -1,0 +1,35 @@
+name: Vendored PDB utils drift guard
+
+on:
+  pull_request:
+    paths:
+      - 'shared/pipeline_normalize.py'
+      - 'shared/uniprot_lookup.py'
+      - 'shared/VENDORED_SHA256.lock'
+      - '.github/workflows/vendored-drift.yml'
+  push:
+    branches:
+      - main
+      - master
+      - 'feat/**'
+      - 'fix/**'
+    paths:
+      - 'shared/pipeline_normalize.py'
+      - 'shared/uniprot_lookup.py'
+      - 'shared/VENDORED_SHA256.lock'
+
+jobs:
+  verify-vendored-sha:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify vendored SHA256
+        run: |
+          set -euo pipefail
+          cd shared
+          # Verifies that pipeline_normalize.py and uniprot_lookup.py are
+          # byte-identical to the source of truth in llm-proteinDesigner
+          # (backend/pdb_utils/*). If either hash drifts, this job fails
+          # and the maintainer must update BOTH repos in lock-step, then
+          # refresh VENDORED_SHA256.lock here.
+          sha256sum -c VENDORED_SHA256.lock

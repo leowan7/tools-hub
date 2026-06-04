@@ -94,6 +94,8 @@ from shared.jobs import (
     update_inputs,
 )
 from shared.metrics import register_metrics
+from typing import Optional
+
 from shared.pdb_inspect import (
     CifConversionError,
     convert_cif_to_pdb_bytes,
@@ -102,6 +104,106 @@ from shared.pdb_inspect import (
     validate_hotspots,
     validate_target_chain,
 )
+from shared.pdb_preflight import (
+    BINDER_DESIGN_TOOLS,
+    PreflightVerdict,
+    VerdictKind,
+    preflight_for_tool,
+)
+from shared.uniprot_lookup import alphafold_api_url
+
+
+# ---------------------------------------------------------------------------
+# AlphaFold fallback helpers (wired into /tools/<tool>/preflight and the
+# ``alphafold:<accession>`` reuse_pdb_token path in tool_submit).
+# ---------------------------------------------------------------------------
+
+# Match the UniProt accession format that uniprot_lookup uses. Kept local
+# to app.py so the helper stays a one-liner and we don't have to expose
+# yet another private regex from the vendored module.
+import re as _re  # noqa: PLC0415 — alias to dodge any later "import re" rename
+
+_AF_ACCESSION_RE = _re.compile(
+    r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})"
+    r"(?:-\d+)?$"
+)
+
+
+def _fetch_alphafold_bytes(accession: str) -> Optional[bytes]:
+    """Fetch the latest AlphaFold-DB PDB for a UniProt accession.
+
+    Two-hop: first hit the prediction API to pin the current model URL
+    (v4/v5/v6 vary across entries), then GET the PDB file. Returns the
+    bytes on success, ``None`` on any failure (the caller surfaces a
+    "couldn't fetch" message to the user).
+    """
+    if not _AF_ACCESSION_RE.match(accession or ""):
+        return None
+    import requests  # noqa: PLC0415
+    try:
+        api = requests.get(
+            alphafold_api_url(accession),
+            timeout=8,
+            headers={"User-Agent": "ranomics-tools-hub/preflight"},
+        )
+    except Exception as exc:  # noqa: BLE001 - any network failure
+        logger.warning("alphafold fetch metadata failed for %s: %s",
+                       accession, exc)
+        return None
+    if api.status_code != 200:
+        logger.info("alphafold metadata %s returned HTTP %d",
+                    accession, api.status_code)
+        return None
+    try:
+        meta_list = api.json()
+        pdb_url = meta_list[0]["pdbUrl"]
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        logger.warning("alphafold metadata %s shape unexpected: %s",
+                       accession, exc)
+        return None
+    try:
+        pdb = requests.get(
+            pdb_url, timeout=20,
+            headers={"User-Agent": "ranomics-tools-hub/preflight"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("alphafold fetch pdb failed for %s: %s",
+                       accession, exc)
+        return None
+    if pdb.status_code != 200:
+        logger.info("alphafold pdb fetch %s returned HTTP %d",
+                    accession, pdb.status_code)
+        return None
+    return pdb.content
+
+
+def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
+    """Project a PreflightVerdict into the JSON shape the panel JS expects."""
+    af = None
+    if verdict.alphafold is not None:
+        af = {
+            "accession": verdict.alphafold.uniprot_accession,
+            "display_id": verdict.alphafold.display_id,
+            "reuse_token": f"alphafold:{verdict.alphafold.uniprot_accession}",
+        }
+    return {
+        "kind": verdict.kind.value,
+        "ok": verdict.ok,
+        "tool_slug": verdict.tool_slug,
+        "target_chain": verdict.target_chain,
+        "source_label": source_label,
+        "cleanup_items": list(verdict.cleanup.items),
+        "residues_kept_on_target_chain":
+            verdict.cleanup.residues_kept_on_target_chain,
+        "hotspots": {
+            "surviving": list(verdict.hotspot_status.get("surviving", [])),
+            "dropped": list(verdict.hotspot_status.get("dropped", [])),
+        },
+        "reason": verdict.reason,
+        "suggested_fix": verdict.suggested_fix,
+        "alphafold": af,
+        "nearest_clean_residues": list(verdict.nearest_clean_residues),
+    }
 from shared.storage import (
     StorageError,
     copy_input,
@@ -3150,6 +3252,131 @@ def create_app() -> Flask:
             active_example_id=example_id or None,
         )
 
+    @flask_app.route("/tools/<tool>/preflight", methods=["POST"])
+    @login_required
+    def tool_preflight(tool: str):
+        """Run the per-tool PDB preflight and return a JSON verdict.
+
+        Fired by ``static/js/preflight.js`` when the user attaches a PDB
+        (or clicks "Use AlphaFold model instead"). No wallet hold, no
+        job row, no Modal call — this is purely a "would this work?"
+        check. The same logic re-runs at submit time as the actual gate.
+
+        Accepts EITHER:
+          - ``target_pdb`` file upload (multipart) + form fields, OR
+          - ``alphafold_accession`` form field with a UniProt id like
+            ``P25779`` (we fetch the AF model and run preflight on it).
+
+        Returns JSON; see ``_verdict_to_json`` for the shape.
+        """
+        adapter, err = _require_tool(tool)
+        if err:
+            return ({"error": "Unknown tool"}, 404)
+        if adapter.slug not in BINDER_DESIGN_TOOLS:
+            return ({
+                "kind": "ready", "ok": True,
+                "tool_slug": adapter.slug,
+                "cleanup_items": [], "hotspots": {"surviving": [], "dropped": []},
+                "alphafold": None,
+            }, 200)
+
+        target_chain = (request.form.get("target_chain") or "A").strip()
+        raw_hotspots = (request.form.get("hotspot_residues") or "").strip()
+        hotspots: list = []
+        if raw_hotspots:
+            for tok in raw_hotspots.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    hotspots.append(int(tok))
+                except ValueError:
+                    # Non-integer hotspot entries are surfaced through the
+                    # form validator on submit; for preflight purposes we
+                    # ignore them so the panel renders something useful.
+                    pass
+
+        # Source the bytes: file upload OR AlphaFold fetch.
+        af_accession = (request.form.get("alphafold_accession") or "").strip()
+        uploaded = request.files.get("target_pdb")
+        pdb_bytes: Optional[bytes] = None
+        source_label: str = ""
+
+        if af_accession:
+            fetched = _fetch_alphafold_bytes(af_accession)
+            if fetched is None:
+                return ({
+                    "kind": "needs_fix", "ok": False,
+                    "tool_slug": adapter.slug,
+                    "reason": (
+                        f"Couldn't fetch AlphaFold model for {af_accession}. "
+                        f"The AlphaFold-DB may not have this UniProt entry."
+                    ),
+                    "suggested_fix": (
+                        "Pick a different target or upload a cleaned PDB manually."
+                    ),
+                    "cleanup_items": [],
+                    "hotspots": {"surviving": [], "dropped": []},
+                    "alphafold": None,
+                }, 200)
+            pdb_bytes = fetched
+            source_label = f"AF-{af_accession}"
+        elif uploaded and uploaded.filename:
+            pdb_bytes = uploaded.read()
+            # If the upload is CIF, convert before preflight (the
+            # downstream pipeline_normalize assumes PDB-or-CIF, but the
+            # normalizer's extension routing keys off filename; safer to
+            # convert here once so the preflight matches the submit-side
+            # cleanup pass exactly).
+            fname_lower = (uploaded.filename or "").lower()
+            if fname_lower.endswith((".cif", ".mmcif")):
+                try:
+                    pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
+                except CifConversionError as exc:
+                    return ({
+                        "kind": "needs_fix", "ok": False,
+                        "tool_slug": adapter.slug,
+                        "reason": str(exc),
+                        "suggested_fix": (
+                            "Save the structure as PDB format and re-upload."
+                        ),
+                        "cleanup_items": [],
+                        "hotspots": {"surviving": [], "dropped": []},
+                        "alphafold": None,
+                    }, 200)
+            source_label = uploaded.filename
+        else:
+            return ({
+                "kind": "needs_fix", "ok": False,
+                "tool_slug": adapter.slug,
+                "reason": "No PDB uploaded.",
+                "suggested_fix": "Attach a target PDB above.",
+                "cleanup_items": [],
+                "hotspots": {"surviving": [], "dropped": []},
+                "alphafold": None,
+            }, 200)
+
+        # Cheap inspection first — catches "this isn't a PDB at all".
+        inspection = inspect_pdb_bytes(pdb_bytes, filename=source_label)
+        if not inspection.ok:
+            return ({
+                "kind": "needs_fix", "ok": False,
+                "tool_slug": adapter.slug,
+                "reason": inspection.error or "Couldn't parse upload as PDB.",
+                "suggested_fix": (
+                    "Confirm the file is a PDB or mmCIF protein structure."
+                ),
+                "cleanup_items": [],
+                "hotspots": {"surviving": [], "dropped": []},
+                "alphafold": None,
+            }, 200)
+
+        verdict = preflight_for_tool(
+            adapter.slug, pdb_bytes,
+            target_chain=target_chain, hotspots=hotspots,
+        )
+        return (_verdict_to_json(verdict, source_label), 200)
+
     @flask_app.route("/tools/<tool>/submit", methods=["POST"])
     @login_required
     @idempotent()
@@ -3251,6 +3478,7 @@ def create_app() -> Flask:
             or reuse_token.startswith("handoff:")
             or reuse_token.startswith("example:")
             or reuse_token.startswith("resample:")
+            or reuse_token.startswith("alphafold:")
         ):
             return render_template(
                 adapter.form_template,
@@ -3348,6 +3576,97 @@ def create_app() -> Flask:
                 )
             else:
                 converted_filename = uploaded.filename
+
+        # ---- AlphaFold reuse_token: fetch the AF model + use as PDB ----
+        # When the user clicked "Use AlphaFold model instead" in the
+        # preflight panel, the form replaces the file upload with
+        # reuse_pdb_token="alphafold:<accession>". Fetch the model now,
+        # treat the bytes as the upload for the rest of the submit path,
+        # and let the hard-gate preflight below decide if the hotspots
+        # still resolve on the AF model.
+        af_accession_for_reuse: str | None = None
+        if reuse_token.startswith("alphafold:"):
+            af_accession_for_reuse = reuse_token.split(":", 1)[1].strip()
+            af_bytes = _fetch_alphafold_bytes(af_accession_for_reuse)
+            if af_bytes is None:
+                if hold_tx_id_from_g := getattr(g, "wallet_hold_tx_id", None):
+                    try:
+                        wallet_release_hold(
+                            hold_tx_id_from_g, reason="alphafold_fetch_failed",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "tool_submit: release_hold after AF fetch fail "
+                            "raised for hold=%s", hold_tx_id_from_g,
+                            exc_info=True,
+                        )
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error=(
+                        f"Couldn't fetch AlphaFold model AF-{af_accession_for_reuse}. "
+                        f"Try uploading a target PDB directly."
+                    ),
+                    pre_fill=inputs,
+                    pdb_source=None,
+                    workspace_ctx=workspace_ctx,
+                )
+            pdb_bytes = af_bytes
+            converted_filename = f"AF-{af_accession_for_reuse}.pdb"
+
+        # ---- Hard-gate preflight (the rfantibody / hcruz fix) ----
+        # For binder design tools, re-run the per-tool normalizer in
+        # dry-run mode against the bytes we're about to ship to Modal
+        # and BLOCK the submit on NEEDS_FIX. The exact same logic powers
+        # the /tools/<tool>/preflight AJAX endpoint that drives the panel
+        # above the Run button, so the user has already seen this verdict
+        # before clicking. The gate here is the safety net for direct-POST
+        # / curl / form-resubmit-without-JS paths.
+        if (
+            adapter.slug in BINDER_DESIGN_TOOLS
+            and pdb_bytes is not None
+        ):
+            preflight_target_chain = (inputs.get("target_chain") or "").strip()
+            preflight_hotspots = inputs.get("hotspot_residues") or []
+            try:
+                preflight_verdict = preflight_for_tool(
+                    adapter.slug, pdb_bytes,
+                    target_chain=preflight_target_chain,
+                    hotspots=preflight_hotspots,
+                )
+            except Exception:
+                # Defensive: a preflight crash must not block submit on
+                # otherwise-valid uploads. Log and let the existing
+                # server-side normalizer in the Modal pipeline handle it.
+                logger.exception("preflight unexpected error tool=%s",
+                                 adapter.slug)
+                preflight_verdict = None
+            if preflight_verdict is not None and not preflight_verdict.ok:
+                if hold_for_release := getattr(g, "wallet_hold_tx_id", None):
+                    try:
+                        wallet_release_hold(
+                            hold_for_release, reason="preflight_failed",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "tool_submit: release_hold on preflight "
+                            "failure raised for hold=%s",
+                            hold_for_release, exc_info=True,
+                        )
+                source_label = converted_filename or (
+                    uploaded.filename if uploaded is not None else None
+                ) or ""
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error=None,
+                    preflight_verdict=_verdict_to_json(
+                        preflight_verdict, source_label,
+                    ),
+                    pre_fill=inputs,
+                    pdb_source=None,
+                    workspace_ctx=workspace_ctx,
+                )
 
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
@@ -3501,6 +3820,23 @@ def create_app() -> Flask:
                         job_id=job.id,
                         filename=staged_filename,
                         data=example_bytes,
+                        content_type="chemical/x-pdb",
+                    )
+                elif reuse_token.startswith("alphafold:"):
+                    # AlphaFold fallback: pdb_bytes was already populated by
+                    # the AF fetch above the preflight gate (so the gate
+                    # could vote on the actual model). Stage those bytes as
+                    # if the user had uploaded them.
+                    if pdb_bytes is None:
+                        raise StorageError("alphafold fetch produced no bytes")
+                    staged_filename = (
+                        converted_filename or f"AF-{af_accession_for_reuse}.pdb"
+                    )
+                    staged_path = upload_input(
+                        user_id=ctx.user_id,
+                        job_id=job.id,
+                        filename=staged_filename,
+                        data=pdb_bytes,
                         content_type="chemical/x-pdb",
                     )
                 elif reuse_token.startswith("resample:"):

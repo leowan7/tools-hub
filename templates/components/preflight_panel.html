@@ -1,0 +1,235 @@
+{# Preflight verdict panel for binder design tools (rfantibody, rfdiffusion,
+   bindcraft, boltzgen). The panel renders three states:
+
+     - ready                 — ✓ Ready, plain green confirmation
+     - ready_with_fallback   — ✓ Ready, plus a soft "you might prefer AF" suggestion
+     - needs_fix             — ✗ Hard gate; specific reason + suggested fix
+
+   Mounted in two places:
+     1. Server-rendered when preflight_verdict is passed (the hard-gate
+        re-render after a POST that fails preflight). Mirrors what JS
+        would have shown.
+     2. Empty placeholder with id="preflight-panel" that preflight.js
+        replaces in-place when the user attaches a file or clicks the
+        AlphaFold-fallback button.
+
+   The submit button (#tool-submit-btn) is enabled / disabled based on
+   the verdict's `ok` field (preflight.js handles the toggle).
+
+   Macro args:
+     verdict       — dict with keys: kind, ok, target_chain, cleanup_items,
+                     residues_kept_on_target_chain, hotspots, reason,
+                     suggested_fix, alphafold, nearest_clean_residues,
+                     source_label.
+                     None or empty → render the empty placeholder. #}
+
+{% macro preflight_panel(verdict=None, tool_slug=None) %}
+<div id="preflight-panel"
+     class="preflight-panel{% if verdict %} preflight-panel--{{ verdict.kind }}{% endif %}"
+     data-tool="{{ tool_slug or (verdict.tool_slug if verdict else '') }}"
+     data-kind="{{ verdict.kind if verdict else '' }}"
+     data-ok="{{ '1' if (verdict and verdict.ok) else '0' }}">
+  {% if verdict %}
+    {% if verdict.kind == 'ready' or verdict.kind == 'ready_with_fallback' %}
+      <div class="preflight-header preflight-header--ok">
+        <span class="preflight-icon" aria-hidden="true">✓</span>
+        <strong>Ready to run</strong>
+      </div>
+      <div class="preflight-body">
+        {% if verdict.source_label %}
+          <div class="preflight-meta">
+            Target: <code>{{ verdict.source_label }}</code>,
+            chain {{ verdict.target_chain }}
+            — {{ verdict.residues_kept_on_target_chain }} residues
+          </div>
+        {% endif %}
+        {% if verdict.hotspots.surviving %}
+          <div class="preflight-meta">
+            Hotspots
+            {{ verdict.hotspots.surviving | join(', ') }}
+            — all preserved
+          </div>
+        {% endif %}
+        {% if verdict.cleanup_items %}
+          <div class="preflight-cleanup">
+            Cleanup applied:
+            <ul>
+              {% for item in verdict.cleanup_items %}
+                <li>{{ item }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% else %}
+          <div class="preflight-cleanup preflight-cleanup--nothing">
+            Nothing to clean.
+          </div>
+        {% endif %}
+        {% if verdict.kind == 'ready_with_fallback' and verdict.alphafold %}
+          <div class="preflight-af preflight-af--soft">
+            <div class="preflight-af-icon" aria-hidden="true">💡</div>
+            <div class="preflight-af-body">
+              <p>
+                We recognised this as UniProt
+                <code>{{ verdict.alphafold.accession }}</code>.
+                The AlphaFold model
+                <code>{{ verdict.alphafold.display_id }}</code>
+                is single-conformation and tends to give more
+                predictable runs. Same hotspot numbering works.
+              </p>
+              <button type="button"
+                      class="preflight-af-btn"
+                      data-reuse-token="{{ verdict.alphafold.reuse_token }}"
+                      data-accession="{{ verdict.alphafold.accession }}">
+                Use AlphaFold model instead
+              </button>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    {% elif verdict.kind == 'needs_fix' %}
+      <div class="preflight-header preflight-header--block">
+        <span class="preflight-icon" aria-hidden="true">✗</span>
+        <strong>Can't run this target as-is</strong>
+      </div>
+      <div class="preflight-body">
+        {% if verdict.reason %}
+          <p class="preflight-reason">{{ verdict.reason }}</p>
+        {% endif %}
+        {% if verdict.suggested_fix %}
+          <p class="preflight-fix">
+            <strong>Try one of these:</strong><br>
+            {{ verdict.suggested_fix }}
+          </p>
+        {% endif %}
+        {% if verdict.alphafold %}
+          <div class="preflight-af preflight-af--hard">
+            <button type="button"
+                    class="preflight-af-btn preflight-af-btn--hard"
+                    data-reuse-token="{{ verdict.alphafold.reuse_token }}"
+                    data-accession="{{ verdict.alphafold.accession }}">
+              Use AlphaFold model
+              <code>{{ verdict.alphafold.display_id }}</code>
+            </button>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro preflight_styles() %}
+<style>
+  .preflight-panel {
+    border-radius: 0.5rem;
+    padding: 0;
+    margin: 1rem 0;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #d1d5db);
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .preflight-panel[data-kind=""] { display: none; }
+  .preflight-panel--ready,
+  .preflight-panel--ready_with_fallback {
+    border-color: #16a34a;
+    background: #f0fdf4;
+  }
+  .preflight-panel--needs_fix {
+    border-color: #dc2626;
+    background: #fef2f2;
+  }
+  .preflight-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid currentColor;
+    font-size: 0.95rem;
+  }
+  .preflight-header--ok { color: #166534; }
+  .preflight-header--block { color: #991b1b; }
+  .preflight-icon {
+    font-size: 1.25rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .preflight-body {
+    padding: 0.75rem 1rem;
+    color: #1f2937;
+    font-size: 0.9rem;
+    line-height: 1.45;
+  }
+  .preflight-meta {
+    color: #374151;
+    margin-bottom: 0.25rem;
+  }
+  .preflight-meta code,
+  .preflight-af code,
+  .preflight-af-btn code {
+    background: rgba(0,0,0,0.05);
+    padding: 0 0.25rem;
+    border-radius: 0.25rem;
+    font-size: 0.85em;
+  }
+  .preflight-cleanup {
+    margin-top: 0.5rem;
+    color: #374151;
+  }
+  .preflight-cleanup ul {
+    margin: 0.25rem 0 0 1.25rem;
+    padding: 0;
+  }
+  .preflight-cleanup--nothing {
+    color: #6b7280;
+    font-style: italic;
+  }
+  .preflight-reason {
+    color: #991b1b;
+    margin: 0 0 0.5rem 0;
+  }
+  .preflight-fix {
+    color: #1f2937;
+    margin: 0 0 0.5rem 0;
+  }
+  .preflight-af {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border-radius: 0.375rem;
+  }
+  .preflight-af--soft {
+    background: #fefce8;
+    border: 1px solid #fde68a;
+    display: flex;
+    gap: 0.5rem;
+  }
+  .preflight-af--hard {
+    background: transparent;
+    padding: 0;
+  }
+  .preflight-af-icon { font-size: 1.25rem; line-height: 1.2; }
+  .preflight-af-body p { margin: 0 0 0.5rem 0; }
+  .preflight-af-btn {
+    background: #2563eb;
+    color: #fff;
+    border: 0;
+    padding: 0.5rem 0.875rem;
+    border-radius: 0.375rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .preflight-af-btn:hover { background: #1d4ed8; }
+  .preflight-af-btn--hard {
+    margin-top: 0.5rem;
+    background: #16a34a;
+  }
+  .preflight-af-btn--hard:hover { background: #15803d; }
+  .preflight-panel--loading {
+    border-color: #9ca3af;
+    background: #f9fafb;
+    color: #6b7280;
+    padding: 0.75rem 1rem;
+    font-size: 0.9rem;
+  }
+</style>
+{% endmacro %}
