@@ -22,6 +22,7 @@ bump memory to 60 GB host RAM.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -38,9 +39,12 @@ _GPU = "H100"
 # SHA is cloned into /opt/ at image build time so run_pipeline.py can do
 # ``import binder_design`` directly. Bump the SHA to bump the algorithm.
 _ESM_GIT_SHA = "f652b471d29da828b31e9b7a9cf7d0a7803240f5"
-# 60 min ceiling — covers the worst-case scfv preset with batch_size=6
-# plus weight-load tail latency on a cold container.
+# 60 min ceiling per H100 worker — covers the worst-case scfv preset
+# with batch_size=6 plus weight-load tail latency on a cold container.
 _MAX_SESSION_S = 60 * 60
+# Orchestrator waits for the slowest child; 75 min gives a 15 min margin
+# over the worker timeout to absorb spawn overhead + aggregation.
+_ORCHESTRATOR_TIMEOUT_S = 75 * 60
 _PYTHON = "python3"
 
 
@@ -121,6 +125,12 @@ image = (
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
 )
 
+# Orchestrator runs CPU-only (no GPU, no weights mount) — its job is to
+# spawn N child workers, wait, and aggregate. debian_slim is enough; the
+# orchestrator only needs stdlib + the modal package (preinstalled by the
+# Modal runtime).
+orchestrator_image = modal.Image.debian_slim(python_version="3.12")
+
 app = modal.App("ranomics-esmfold2-design-prod")
 
 
@@ -132,8 +142,13 @@ app = modal.App("ranomics-esmfold2-design-prod")
     memory=10 * 1024,
     volumes={"/models": weights},
 )
-def run_tool(payload: Any) -> dict:
-    """Run one ESMFold2-design session.
+def _run_one_seed(payload: Any) -> dict:
+    """Worker — runs one ESMFold2-design gradient pass at one seed.
+
+    Internal entry point used by the ``run_tool`` orchestrator. Body is
+    the previous monolithic ``run_tool`` implementation, unchanged: read
+    JOB_PAYLOAD env, subprocess into ``run_pipeline.py``, load the resulting
+    ``/tmp/smoke_results.json``, commit the weights Volume, return.
 
     Subprocess stdout/stderr stream live to Modal's function logs so
     failures are visible via ``modal app logs ranomics-esmfold2-design-prod``
@@ -143,10 +158,12 @@ def run_tool(payload: Any) -> dict:
 
     env = _merged_environment(payload)
     cmd = [_PYTHON, "-u", _RUN_PIPELINE_REMOTE]
+    job_spec = (payload or {}).get("job_spec", {}) or {}
 
-    print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
+    print(f"[_run_one_seed] spawning: {' '.join(cmd)}", flush=True)
     print(
-        f"[run_tool] JOB_ID={env.get('JOB_ID')} TIER={env.get('JOB_TIER')} "
+        f"[_run_one_seed] JOB_ID={env.get('JOB_ID')} TIER={env.get('JOB_TIER')} "
+        f"seed={job_spec.get('seed')} pdb_prefix={job_spec.get('pdb_prefix', '')!r} "
         f"WEBHOOK={env.get('WEBHOOK_URL')}",
         flush=True,
     )
@@ -159,14 +176,14 @@ def run_tool(payload: Any) -> dict:
         timeout=max(60, _MAX_SESSION_S - 30),
     )
 
-    print(f"[run_tool] subprocess exited: {result.returncode}", flush=True)
+    print(f"[_run_one_seed] subprocess exited: {result.returncode}", flush=True)
 
     smoke_result: dict | None = None
     try:
         with open("/tmp/smoke_results.json") as fh:
             smoke_result = json.load(fh)
         print(
-            f"[run_tool] loaded smoke_results.json: "
+            f"[_run_one_seed] loaded smoke_results.json: "
             f"status={smoke_result.get('status')} "
             f"completed={smoke_result.get('designs_completed')}/"
             f"{smoke_result.get('designs_total')}",
@@ -175,19 +192,246 @@ def run_tool(payload: Any) -> dict:
     except FileNotFoundError:
         pass
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"[run_tool] failed to read smoke_results.json: {exc}", flush=True)
+        print(f"[_run_one_seed] failed to read smoke_results.json: {exc}", flush=True)
 
     # Persist the weights Volume so any newly-downloaded model files survive
     # the container teardown. Idempotent if nothing was written.
     try:
         weights.commit()
     except Exception as exc:
-        print(f"[run_tool] weights.commit() raised: {exc}", flush=True)
+        print(f"[_run_one_seed] weights.commit() raised: {exc}", flush=True)
 
     return {
         "exit_code": result.returncode,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
+        "smoke_result": smoke_result,
+    }
+
+
+@app.function(
+    image=orchestrator_image,
+    cpu=2,
+    memory=1024,
+    timeout=_ORCHESTRATOR_TIMEOUT_S,
+)
+def run_tool(payload: Any) -> dict:
+    """Orchestrator entrypoint — fans out N parallel seeds, aggregates.
+
+    Reads ``payload["job_spec"]["n_seeds"]`` (default 1). The seed sweep
+    runs over ``[seed, seed + n_seeds)``. Each child gets its own
+    ``pdb_prefix=seed{N}_`` so PDB filenames don't collide in the per-job
+    Storage namespace. Children run in parallel on H100s; the orchestrator
+    blocks on each call's ``.get()`` until all finish, then merges their
+    ``candidates`` and ``designs`` arrays, globally re-ranks by ipTM, and
+    returns one umbrella smoke_result. The shape matches what tools-hub's
+    ``_interpret_pipeline_return`` already consumes — fan-out is invisible
+    to the hub.
+
+    For ``n_seeds == 1`` this is a thin pass-through with one child spawn
+    (~5s orchestrator overhead vs going direct to ``_run_one_seed``).
+    """
+    job_spec = (payload or {}).get("job_spec", {}) or {}
+    n_seeds = max(1, int(job_spec.get("n_seeds") or 1))
+    start_seed = int(job_spec.get("seed") or 0)
+    job_id = str(payload.get("job_id", "")) if isinstance(payload, dict) else ""
+
+    print(
+        f"[run_tool] fanout: n_seeds={n_seeds} start_seed={start_seed} "
+        f"job_id={job_id}",
+        flush=True,
+    )
+
+    if n_seeds == 1:
+        cp = copy.deepcopy(payload) if isinstance(payload, dict) else payload
+        if isinstance(cp, dict):
+            cp.setdefault("job_spec", {})
+            cp["job_spec"].setdefault("pdb_prefix", "")
+            cp["job_spec"]["n_seeds"] = 1
+        # ``.remote()`` is the synchronous equivalent of ``.spawn().get()``.
+        # Returns the worker's full return dict; we pass it through unchanged.
+        return _run_one_seed.remote(cp)
+
+    children: list[tuple[int, Any]] = []
+    for i in range(n_seeds):
+        seed = start_seed + i
+        cp = copy.deepcopy(payload) if isinstance(payload, dict) else {}
+        cp.setdefault("job_spec", {})
+        cp["job_spec"]["seed"] = seed
+        cp["job_spec"]["pdb_prefix"] = f"seed{seed}_"
+        cp["job_spec"]["n_seeds"] = 1
+        call = _run_one_seed.spawn(cp)
+        children.append((seed, call))
+        print(
+            f"[run_tool] spawned child seed={seed} fc_id="
+            f"{getattr(call, 'object_id', '?')}",
+            flush=True,
+        )
+
+    print(
+        f"[run_tool] waiting for {len(children)} children to complete",
+        flush=True,
+    )
+
+    successes: list[tuple[int, dict]] = []
+    failures: list[tuple[int, str]] = []
+    for seed, call in children:
+        try:
+            r = call.get()
+            successes.append((seed, r))
+            print(f"[run_tool] child seed={seed} completed", flush=True)
+        except Exception as exc:
+            failures.append((seed, str(exc)))
+            print(f"[run_tool] child seed={seed} FAILED: {exc}", flush=True)
+
+    print(
+        f"[run_tool] aggregation: {len(successes)} succeeded, "
+        f"{len(failures)} failed",
+        flush=True,
+    )
+    return _aggregate(successes, failures, payload)
+
+
+def _aggregate(
+    successes: list[tuple[int, dict]],
+    failures: list[tuple[int, str]],
+    orig_payload: dict,
+) -> dict:
+    """Merge N child returns into one umbrella ``run_tool`` return dict.
+
+    Concats ``candidates`` and ``designs`` across children, globally
+    re-ranks by ipTM, tags each entry with its source seed so the CSV
+    exporter and UI can attribute hits. Sums failure counts. If every
+    child failed, returns a FAILED umbrella so tools-hub marks the job
+    failed and surfaces the first few error strings to the user.
+    """
+    tier = ""
+    if isinstance(orig_payload, dict):
+        tier = str(orig_payload.get("tier") or "")
+    umbrella_provider_id = ""
+    if isinstance(orig_payload, dict):
+        umbrella_provider_id = str(orig_payload.get("job_id") or "")
+
+    if not successes:
+        err = "; ".join(f"seed {s}: {e}" for s, e in failures[:5])
+        return {
+            "exit_code": 1,
+            "stdout_tail": "",
+            "stderr_tail": "",
+            "provider_job_id": umbrella_provider_id,
+            "smoke_result": {
+                "status": "FAILED",
+                "tier": tier,
+                "error": f"All {len(failures)} seeds failed. {err}",
+                "designs_total": 0,
+                "designs_completed": 0,
+                "n_failures": len(failures),
+                "designs": [],
+                "candidates": [],
+                "runtime_seconds": 0,
+                "n_seeds": len(failures),
+                "seeds_succeeded": 0,
+                "seeds_failed": len(failures),
+                "failure_notes": [f"seed {s}: {e}" for s, e in failures],
+                "provider_job_id": umbrella_provider_id,
+            },
+        }
+
+    template = (successes[0][1].get("smoke_result") or {}) if isinstance(
+        successes[0][1], dict
+    ) else {}
+    preset = template.get("preset", "")
+    target_name = template.get("target_name")
+    target_label = template.get("target_label", "")
+    binder_name = template.get("binder_name", "")
+    binder_label = template.get("binder_label", "")
+    is_antibody = bool(template.get("is_antibody", False))
+    use_scaling_critics = bool(template.get("use_scaling_critics", False))
+
+    all_candidates: list[dict] = []
+    all_designs: list[dict] = []
+    max_runtime = 0
+    designs_total = 0
+    designs_completed = 0
+    inner_failures = 0
+    best_iptm: float | None = None
+    best_seq: str | None = None
+
+    for seed, child_ret in successes:
+        smoke = (child_ret or {}).get("smoke_result") or {}
+        for cand in smoke.get("candidates", []) or []:
+            tagged = dict(cand)
+            tagged["seed"] = seed
+            scores = dict(tagged.get("scores") or {})
+            scores["seed"] = seed
+            tagged["scores"] = scores
+            all_candidates.append(tagged)
+            iptm = scores.get("ipTM")
+            if isinstance(iptm, (int, float)):
+                if best_iptm is None or iptm > best_iptm:
+                    best_iptm = float(iptm)
+                    best_seq = tagged.get("sequence") or tagged.get(
+                        "designed_sequence"
+                    )
+        for d in smoke.get("designs", []) or []:
+            tagged = dict(d)
+            tagged["seed"] = seed
+            all_designs.append(tagged)
+        designs_total += int(smoke.get("designs_total") or 0)
+        designs_completed += int(smoke.get("designs_completed") or 0)
+        inner_failures += int(smoke.get("n_failures") or 0)
+        max_runtime = max(max_runtime, int(smoke.get("runtime_seconds") or 0))
+
+    def _cand_sort_key(c: dict) -> float:
+        iptm = (c.get("scores") or {}).get("ipTM")
+        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+
+    def _design_sort_key(d: dict) -> float:
+        iptm = d.get("iptm")
+        return -1.0 if not isinstance(iptm, (int, float)) else -float(iptm)
+
+    all_candidates.sort(key=_cand_sort_key)
+    all_designs.sort(key=_design_sort_key)
+
+    for rank, c in enumerate(all_candidates):
+        c["rank"] = rank
+        c["name"] = f"seed{c.get('seed', 0)}_rank{rank}"
+    for rank, d in enumerate(all_designs):
+        d["rank"] = rank
+
+    n_failures_total = inner_failures + len(failures)
+
+    smoke_result = {
+        "status": "COMPLETED" if designs_completed > 0 else "FAILED",
+        "tier": tier,
+        "preset": preset,
+        "is_antibody": is_antibody,
+        "target_name": target_name,
+        "target_label": target_label,
+        "binder_name": binder_name,
+        "binder_label": binder_label,
+        "designs_total": designs_total,
+        "designs_completed": designs_completed,
+        "n_failures": n_failures_total,
+        "use_scaling_critics": use_scaling_critics,
+        "best_sequence": best_seq,
+        "designs": all_designs,
+        "candidates": all_candidates,
+        "runtime_seconds": max_runtime,
+        "n_seeds": len(successes) + len(failures),
+        "seeds_succeeded": len(successes),
+        "seeds_failed": len(failures),
+        "failure_notes": [f"seed {s}: {e}" for s, e in failures],
+        "provider_job_id": umbrella_provider_id,
+    }
+    if designs_completed == 0:
+        smoke_result["error"] = "All seeds returned zero designs"
+
+    return {
+        "exit_code": 0 if designs_completed > 0 else 1,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "provider_job_id": umbrella_provider_id,
         "smoke_result": smoke_result,
     }

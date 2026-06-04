@@ -278,6 +278,7 @@ def _shape_designs(
     is_antibody: bool,
     upload_endpoint: str = "",
     job_token: str = "",
+    pdb_prefix: str = "",
 ) -> list[dict]:
     """Collapse the per-critic results into one row per design.
 
@@ -287,6 +288,12 @@ def _shape_designs(
     for the same design — we group on designed_sequence and pull the
     real iPTM from the Cutoff2025 critic, the proxy from any Fast-base
     critic.
+
+    ``pdb_prefix`` namespaces PDB filenames so multi-seed fan-out jobs
+    (where the orchestrator spawns N children, each running this
+    pipeline with a different seed) don't collide in the per-job
+    Storage namespace. The orchestrator sets it to ``seed{N}_`` per
+    child; single-seed runs leave it empty.
     """
     by_sequence: dict[str, dict] = {}
     for row in critic_results:
@@ -321,7 +328,7 @@ def _shape_designs(
 
     designs: list[dict] = []
     for rank, (seq, bucket) in enumerate(by_sequence.items()):
-        name = f"design_{rank}"
+        name = f"{pdb_prefix}design_{rank}"
         binder_seq = _extract_binder_sequence(seq)
         pi = None if is_antibody else _isoelectric_point(binder_seq)
         pdb_key = _save_complex_pdb(
@@ -364,7 +371,7 @@ def _shape_designs(
     designs.sort(key=lambda d: (-1 if d["iptm"] is None else -d["iptm"]))
     for rank, d in enumerate(designs):
         d["rank"] = rank
-        d["name"] = f"design_{rank}"
+        d["name"] = f"{pdb_prefix}design_{rank}"
     return designs
 
 
@@ -406,6 +413,10 @@ def main() -> int:
     seed = int(job_spec.get("seed", 0))
     batch_size = int(job_spec.get("batch_size", 1))
     use_scaling_critics = bool(job_spec.get("use_scaling_critics", False))
+    # pdb_prefix is set by the multi-seed orchestrator in modal_app.py
+    # so each child run uses a unique Storage key for its PDB output;
+    # single-seed runs receive an empty string and behave as before.
+    pdb_prefix = str(job_spec.get("pdb_prefix", "") or "")
 
     logger.info(
         "ESMFold2 design start: job=%s tier=%s preset=%s target=%s "
@@ -499,7 +510,11 @@ def main() -> int:
         return 1
 
     designs = _shape_designs(
-        critic_results or [], is_antibody, upload_endpoint, job_token,
+        critic_results or [],
+        is_antibody,
+        upload_endpoint,
+        job_token,
+        pdb_prefix=pdb_prefix,
     )
     runtime = int(time.time() - start)
 
