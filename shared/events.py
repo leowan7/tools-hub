@@ -57,6 +57,8 @@ USER_EVENT_TYPES: frozenset[str] = frozenset({
     "pricing_view",
     "login",
     "signup_completed",
+    "signup_form_started",
+    "signup_failed",
     "credit_exhausted",
 })
 

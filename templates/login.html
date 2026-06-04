@@ -209,6 +209,33 @@
       });
     }
 
+    (function () {
+      // signup_form_started: fire once when the user first interacts
+      // with the signup form, IF the signup panel is the active tab at
+      // that moment. Gives the funnel a real abandonment denominator
+      // (page_view -> form_started -> submit -> succeeded/failed).
+      var fired = false;
+      var panel = document.getElementById('panel-signup');
+      if (!panel) return;
+      var inputs = panel.querySelectorAll(
+        'input[name="email"], input[name="password"], input[name="password2"], textarea[name="purpose"]'
+      );
+      function onStart() {
+        if (fired) return;
+        if (!panel.classList.contains('active')) return;
+        fired = true;
+        try { if (window.track) window.track('signup_form_started'); } catch (e) {}
+        inputs.forEach(function (el) {
+          el.removeEventListener('focus', onStart);
+          el.removeEventListener('input', onStart);
+        });
+      }
+      inputs.forEach(function (el) {
+        el.addEventListener('focus', onStart);
+        el.addEventListener('input', onStart);
+      });
+    })();
+
     {% if mode == 'update_password' %}
     (function () {
       var form = document.getElementById('update-password-form');

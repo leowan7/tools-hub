@@ -35,16 +35,19 @@ from shared.supabase_client import get_supabase_client
 STAFF_EMAILS: frozenset[str] = frozenset({"leo@ranomics.com"})
 
 # Form-submit guards on /signup.
-#   MIN_FILL_SECONDS  Reject submits faster than a real human fills
-#                     four short fields. Calibrated low so password
-#                     managers don't trip it.
+#   MIN_FILL_SECONDS  Floor on time-to-submit. Effectively disabled
+#                     (0) because the floor was false-positiving real
+#                     prospects whose password manager auto-filled and
+#                     submitted in <2s. Honeypot + signed token are
+#                     the load-bearing bot defenses; the timing floor
+#                     was the cheapest one to lose.
 #   MAX_FILL_SECONDS  Reject stale tokens. After this, the form is
 #                     re-fetched so the timestamp cannot be replayed.
 #   MIN_PURPOSE_CHARS Minimum length when a personal-domain signup
 #                     is required to attach a "what are you working on"
 #                     note. Real notes clear this comfortably; junk
 #                     drive-by submits don't.
-MIN_FILL_SECONDS: int = 2
+MIN_FILL_SECONDS: int = 0
 MAX_FILL_SECONDS: int = 3600
 MIN_PURPOSE_CHARS: int = 30
 
@@ -168,12 +171,20 @@ class SignupResult:
     Exactly one of (user_id) and (rejection_reason, error_message) is
     populated. On reject, /signup also writes a row to
     public.signup_rejections — see _log_rejection in app.py.
+
+    ``rejection_reason`` is set only when the failure should be logged
+    to the bot-filter audit table (honeypot/timing/disposable/etc).
+    ``failure_code`` is set on EVERY failure — including UX-level
+    bounces like existing_account/weak_password/auth_error that don't
+    belong in the bot-filter table but still need to land in the
+    signup_failed user_event so the funnel is complete.
     """
 
     success: bool
     user_id: Optional[str] = None
     error_message: str = ""
     rejection_reason: Optional[str] = None
+    failure_code: Optional[str] = None
     classification: Optional[str] = None
     signup_quality: Optional[str] = None
     purpose_stored: Optional[str] = None
@@ -389,6 +400,7 @@ def register_user(
             success=False,
             error_message="Registration failed. Please try again.",
             rejection_reason="honeypot",
+            failure_code="honeypot",
         )
 
     # ----- Layer 2: timing token --------------------------------------------
@@ -401,6 +413,7 @@ def register_user(
                 "try again."
             ),
             rejection_reason="timing",
+            failure_code="timing_expired",
         )
     if elapsed < MIN_FILL_SECONDS:
         return SignupResult(
@@ -410,6 +423,7 @@ def register_user(
                 "was submitted faster than a human can read it."
             ),
             rejection_reason="timing",
+            failure_code="timing_fast",
         )
 
     # ----- Layer 3: classify -------------------------------------------------
@@ -422,6 +436,7 @@ def register_user(
             success=False,
             error_message="Email and password are required.",
             rejection_reason="invalid",
+            failure_code="missing_required",
         )
 
     classification = classify_email(email)
@@ -431,6 +446,7 @@ def register_user(
             success=False,
             error_message="Please enter a valid email address.",
             rejection_reason="invalid",
+            failure_code="invalid_email",
         )
 
     if classification == EmailClass.DISPOSABLE:
@@ -441,6 +457,7 @@ def register_user(
                 "Please use your work, school, or personal email."
             ),
             rejection_reason="disposable",
+            failure_code="disposable",
             classification=classification.value,
         )
 
@@ -452,6 +469,7 @@ def register_user(
                 "us what you're working on (30+ characters)."
             ),
             rejection_reason="purpose_missing",
+            failure_code="purpose_missing",
             classification=classification.value,
         )
 
@@ -472,6 +490,7 @@ def register_user(
             success=False,
             error_message="Authentication service is not configured.",
             rejection_reason=None,  # internal misconfig, do not log as rejection
+            failure_code="service_misconfigured",
             classification=classification.value,
         )
 
@@ -491,6 +510,7 @@ def register_user(
                 success=False,
                 error_message="An account with this email already exists.",
                 rejection_reason=None,
+                failure_code="existing_account",
                 classification=classification.value,
             )
         if "password" in low and "weak" in low:
@@ -498,6 +518,7 @@ def register_user(
                 success=False,
                 error_message="Password is too weak. Use at least 8 characters.",
                 rejection_reason=None,
+                failure_code="weak_password",
                 classification=classification.value,
             )
         logger.warning("Supabase sign-up error: %s", exc)
@@ -505,6 +526,7 @@ def register_user(
             success=False,
             error_message=f"Registration failed: {msg}",
             rejection_reason=None,
+            failure_code="auth_error",
             classification=classification.value,
         )
 
@@ -520,6 +542,7 @@ def register_user(
             success=False,
             error_message="Registration failed. Please try again.",
             rejection_reason=None,
+            failure_code="no_user_id",
             classification=classification.value,
         )
 

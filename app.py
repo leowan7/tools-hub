@@ -922,6 +922,26 @@ def create_app() -> Flask:
         )
         from shared.events import log_event, log_signup_rejection  # noqa: PLC0415
 
+        def _log_signup_failed(reason: str, email_value: str) -> None:
+            """Fire a signup_failed user_event so every failure mode is funnel-visible.
+
+            Coexists with signup_rejections: that table stays the
+            bot-filter audit log; this event is the UX funnel feed.
+            """
+            domain = email_value.rsplit("@", 1)[1].lower() if "@" in email_value else ""
+            log_event(
+                event_type="signup_failed",
+                session_id=session.get("anon_session_id"),
+                path="/signup",
+                props={
+                    "reason": reason,
+                    "email": email_value.strip().lower()[:320] if email_value else None,
+                    "email_domain": domain or None,
+                },
+                ip=client_ip,
+                user_agent=user_agent,
+            )
+
         if request.method == "GET":
             return render_template(
                 "login.html",
@@ -950,6 +970,7 @@ def create_app() -> Flask:
         # honeypot / timing checks still happen below — confirmation
         # mismatch is a UX problem, not a junk-filter problem.
         if password and password2 and password != password2:
+            _log_signup_failed("password_mismatch", email)
             return render_template(
                 "login.html",
                 mode="signup",
@@ -961,6 +982,7 @@ def create_app() -> Flask:
                 next="/",
             )
         if password and len(password) < 8:
+            _log_signup_failed("password_short", email)
             return render_template(
                 "login.html",
                 mode="signup",
@@ -972,6 +994,7 @@ def create_app() -> Flask:
                 next="/",
             )
         if not terms_accepted:
+            _log_signup_failed("terms_not_accepted", email)
             return render_template(
                 "login.html",
                 mode="signup",
@@ -1012,6 +1035,11 @@ def create_app() -> Flask:
                     ip=client_ip,
                     user_agent=user_agent,
                 )
+            # Always emit the user-event so the funnel sees every miss,
+            # including the silent register_user paths (existing_account,
+            # weak_password, auth_error, etc.) that don't land in
+            # signup_rejections.
+            _log_signup_failed(result.failure_code or "unknown", email)
             return render_template(
                 "login.html",
                 mode="signup",

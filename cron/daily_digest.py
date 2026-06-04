@@ -69,6 +69,8 @@ class DigestPayload:
     tool_activity: List[Dict[str, Any]] = field(default_factory=list)
     rejections: List[Dict[str, Any]] = field(default_factory=list)
     lapsed_users: List[Dict[str, Any]] = field(default_factory=list)
+    # Repeat existing-account hits (forgot-password / cross-device prospects)
+    existing_email_watch: List[Dict[str, Any]] = field(default_factory=list)
 
     # Metadata
     site_base_url: str = "https://tools.ranomics.com"
@@ -197,6 +199,49 @@ def build_payload(window_hours: int = 24) -> DigestPayload:
     payload.rejections_total = len(rejection_rows)
     payload.rejections_by_reason = {r["reason"]: r["count"] for r in rejection_section}
     payload.rejections = rejection_section
+
+    # --- 2b. Existing-email watch -----------------------------------------
+    # Surface emails that hit existing_account during signup in the
+    # window. These are prospects who tried to create an account that
+    # already exists — usually a forgot-password scenario or a second
+    # device. Manual outreach (or a "looks like you already have an
+    # account, want a reset link?" follow-up) is high-leverage here.
+    existing_watch: List[dict] = []
+    try:
+        failed_events = (
+            client.table("user_events")
+            .select("created_at,props,ip,user_agent")
+            .gte("created_at", window_start_iso)
+            .eq("event_type", "signup_failed")
+            .execute()
+            .data
+            or []
+        )
+        per_email: dict = defaultdict(list)
+        for e in failed_events:
+            props = e.get("props") or {}
+            if (props.get("reason") or "") != "existing_account":
+                continue
+            em = (props.get("email") or "").lower().strip()
+            if not em:
+                continue
+            per_email[em].append(e)
+        for em, hits in per_email.items():
+            hits.sort(key=lambda r: r.get("created_at") or "")
+            existing_watch.append({
+                "email": em,
+                "attempts": len(hits),
+                "first_seen": (hits[0].get("created_at") or "")[:19],
+                "last_seen": (hits[-1].get("created_at") or "")[:19],
+                "ips": sorted({str(h.get("ip")) for h in hits if h.get("ip")})[:3],
+            })
+        # Surface repeat-offenders first, then anyone who tried at all.
+        existing_watch.sort(
+            key=lambda r: (r["attempts"], r["last_seen"]), reverse=True
+        )
+    except Exception:
+        logger.warning("digest: existing-email watch query failed", exc_info=True)
+    payload.existing_email_watch = existing_watch[:20]
 
     # --- 3. Tool runs in window -------------------------------------------
     run_rows: List[dict] = []
