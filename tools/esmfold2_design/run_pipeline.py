@@ -330,18 +330,29 @@ def _shape_designs(
             bucket["cdr_distogram_iptm_proxy"],
             pi,
         )
+        # Build a single ``scores`` dict so the generic /jobs/<id>/export.csv
+        # exporter in app.py picks up every numeric/categorical column. The
+        # flat copies are kept because the results template and the strict-
+        # pass classifier in this file read them by short name.
+        # ``sequence`` (binder only) is what /jobs/<id>/export.fasta reads;
+        # ``designed_sequence`` (target|binder) is the UI's primary field.
+        scores = {
+            "iptm": bucket["iptm"],
+            "distogram_iptm_proxy": bucket["distogram_iptm_proxy"],
+            "cdr_distogram_iptm_proxy": bucket["cdr_distogram_iptm_proxy"],
+            "final_loss": bucket["final_loss"],
+            "isoelectric_point": pi,
+            "filter_status": filter_status,
+        }
         designs.append(
             {
                 "rank": rank,
                 "name": name,
                 "pdb_key": pdb_key,
                 "designed_sequence": seq,
-                "iptm": bucket["iptm"],
-                "distogram_iptm_proxy": bucket["distogram_iptm_proxy"],
-                "cdr_distogram_iptm_proxy": bucket["cdr_distogram_iptm_proxy"],
-                "final_loss": bucket["final_loss"],
-                "isoelectric_point": pi,
-                "filter_status": filter_status,
+                "sequence": binder_seq,
+                "scores": scores,
+                **scores,
             }
         )
 
