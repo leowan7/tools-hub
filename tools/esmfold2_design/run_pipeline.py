@@ -499,6 +499,32 @@ def main() -> int:
     )
     runtime = int(time.time() - start)
 
+    # The Flask CSV/FASTA exporters + summarize_top_score read
+    # ``job.result["candidates"]`` with ``scores`` as a nested dict and
+    # capitalized keys (ipTM, iPTM_proxy, pI). Build that canonical view
+    # alongside the ``designs`` shape the results template already
+    # consumes, so we don't have to rewrite either.
+    candidates = [
+        {
+            "rank": d["rank"],
+            "name": d["name"],
+            "pdb_key": d["pdb_key"],
+            "designed_sequence": d["designed_sequence"],
+            "sequence": d.get("sequence", ""),
+            "scores": {
+                "ipTM": d["iptm"],
+                "iPTM_proxy": (
+                    d["cdr_distogram_iptm_proxy"] if is_antibody
+                    else d["distogram_iptm_proxy"]
+                ),
+                "final_loss": d["final_loss"],
+                "pI": None if is_antibody else d["isoelectric_point"],
+                "filter_status": d["filter_status"],
+            },
+        }
+        for d in designs
+    ]
+
     summary = {
         "status": "COMPLETED",
         "tier": tier,
@@ -515,6 +541,7 @@ def main() -> int:
         "trajectory_steps": len(trajectory) if trajectory is not None else None,
         "best_sequence": _extract_binder_sequence(best_seq) if best_seq else None,
         "designs": designs,
+        "candidates": candidates,
         "runtime_seconds": runtime,
         "provider_job_id": job_id,
     }
