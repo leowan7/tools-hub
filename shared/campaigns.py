@@ -414,7 +414,19 @@ def create_api_campaign(
     }
     try:
         response = client.table(_TABLE).insert(row).execute()
-    except Exception:
+    except Exception as exc:
+        # FIX #5 (validation review): if two concurrent POSTs with the
+        # same Idempotency-Key both passed find_by_idempotency_key (both
+        # saw None), the second insert hits the partial unique index
+        # `lab_campaigns_user_idempotency_idx`. We don't want to return
+        # 500 — re-fetch and raise IdempotentReplay so the caller surfaces
+        # a clean 200 with the existing experiment.
+        if idempotency_key and _is_unique_violation(exc):
+            existing = find_by_idempotency_key(
+                user_id=user_id, idempotency_key=idempotency_key
+            )
+            if existing is not None:
+                raise IdempotentReplay(existing)
         logger.error("create_api_campaign: insert failed", exc_info=True)
         return None
     rows = list(getattr(response, "data", None) or [])
@@ -423,24 +435,72 @@ def create_api_campaign(
     return Campaign.from_row(rows[0])
 
 
+def _is_unique_violation(exc: BaseException) -> bool:
+    """Best-effort detection of Postgres SQLSTATE 23505 (unique_violation).
+
+    supabase-py raises a few different concrete exception classes
+    depending on the underlying HTTP failure mode, but the JSON body
+    always carries ``code = '23505'`` for a unique-constraint hit. We
+    sniff the exception's string repr and known attributes — never trust
+    a single field, never crash on missing ones.
+    """
+    text = repr(exc)
+    if "23505" in text or "duplicate key value" in text.lower():
+        return True
+    code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
+    if code == "23505":
+        return True
+    # supabase-py sometimes wraps the error body in a ``json``/``message`` attr.
+    body = getattr(exc, "json", None) or getattr(exc, "message", None)
+    if body is not None and "23505" in str(body):
+        return True
+    return False
+
+
+@dataclass(frozen=True)
+class TransitionResult:
+    """Outcome of :func:`transition_api_status`.
+
+    ``moved`` is True when the row actually changed status (so callers
+    know to fire a webhook); False when the row was already at the target
+    status, or was in a terminal state. ``prev_status`` is the
+    pre-transition status — used by callers to populate the webhook
+    payload's ``prev_status`` field honestly (FIX #6).
+    """
+
+    moved: bool
+    prev_status: Optional[str]
+    campaign: Optional[Campaign]
+
+
 def transition_api_status(
     campaign_id: str,
     *,
     new_status: str,
     by: str = "system",
     results_status: Optional[str] = None,
-) -> Optional[Campaign]:
-    """Move an API-FSM campaign to a new status.
+) -> TransitionResult:
+    """Atomically transition an API-FSM campaign to a new status.
 
-    Appends an entry to ``status_log`` and bumps ``last_transition_at``.
-    Optionally updates ``results_status`` on the same write so the
-    transition into 'DataAnalysis' / 'Done' is atomic with results
-    becoming visible. Webhook dispatch is the caller's responsibility
-    (it lives in :mod:`shared.webhooks` and needs the prev_status
-    snapshot we return).
+    FIX #6 (validation review): the previous implementation did
+    READ-MODIFY-WRITE in Python and lost concurrent status_log appends.
+    This wraps the operation in the ``transition_lab_campaign_api``
+    Postgres function (migration 0026) so the read+append+write happens
+    under one row lock.
 
-    Returns the updated row, or None on failure / unknown campaign.
-    Raises ValueError for invalid status / results_status / source.
+    Returns a :class:`TransitionResult` rather than the raw Campaign so
+    callers can distinguish "no-op" (already in this status) from "moved"
+    and fire webhooks accordingly.
+
+    Behaviour
+    ---------
+    - Invalid ``new_status`` / ``results_status`` raise ``ValueError``
+      (caught by routes.py to return a 400; cross-source attempts and
+      transitions out of a terminal state are NOT raised — they fall
+      through the RPC as ``TransitionResult(moved=False, campaign=…)``,
+      which the caller treats as "nothing to do" without a 4xx.
+    - Unknown campaign id or RPC failure returns
+      ``TransitionResult(False, None, None)``.
     """
     if new_status not in API_STATUSES:
         raise ValueError(f"invalid API status: {new_status!r}")
@@ -449,49 +509,38 @@ def transition_api_status(
 
     client = get_service_client()
     if client is None:
-        return None
-
-    # Need the current row so we can compute prev_status and append to
-    # status_log atomically. Two reads + one write is fine here — the
-    # alpha volume is low and the row is owner-scoped.
-    current = get_campaign(campaign_id)
-    if current is None:
-        return None
-    if current.submission_source != "api":
-        raise ValueError(
-            "transition_api_status: row was not submitted via the API"
-        )
-    if current.status in API_TERMINAL_STATUSES and new_status != current.status:
-        # Forward-only FSM; never reanimate a Done/Cancelled campaign.
-        raise ValueError(
-            f"cannot transition out of terminal status {current.status!r}"
-        )
-
-    now = datetime.now(timezone.utc).isoformat()
-    new_log = list(current.status_log) + [
-        {"status": new_status, "at": now, "by": by}
-    ]
-    patch: dict[str, Any] = {
-        "status": new_status,
-        "status_log": new_log,
-        "last_transition_at": now,
-    }
-    if results_status is not None:
-        patch["results_status"] = results_status
+        return TransitionResult(moved=False, prev_status=None, campaign=None)
 
     try:
-        response = (
-            client.table(_TABLE).update(patch).eq("id", campaign_id).execute()
-        )
+        response = client.rpc(
+            "transition_lab_campaign_api",
+            {
+                "p_campaign_id": campaign_id,
+                "p_new_status": new_status,
+                "p_by": by,
+                "p_results_status": results_status,
+            },
+        ).execute()
     except Exception:
         logger.error(
-            "transition_api_status failed for %s", campaign_id, exc_info=True
+            "transition_api_status RPC failed for %s",
+            campaign_id,
+            exc_info=True,
         )
-        return None
+        return TransitionResult(moved=False, prev_status=None, campaign=None)
+
     rows = list(getattr(response, "data", None) or [])
     if not rows:
-        return None
-    return Campaign.from_row(rows[0])
+        return TransitionResult(moved=False, prev_status=None, campaign=None)
+    row = rows[0]
+    # When the function found no matching row, every field is NULL.
+    if row.get("campaign") is None:
+        return TransitionResult(moved=False, prev_status=None, campaign=None)
+    return TransitionResult(
+        moved=bool(row.get("moved")),
+        prev_status=row.get("prev_status"),
+        campaign=Campaign.from_row(row["campaign"]),
+    )
 
 
 # ---------------------------------------------------------------------------

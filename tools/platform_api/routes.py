@@ -111,18 +111,25 @@ def _json_body() -> Optional[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-_AMINO_ALPHABET = frozenset("ACDEFGHIKLMNPQRSTVWY:")
+_AMINO_RESIDUES = frozenset("ACDEFGHIKLMNPQRSTVWY")
+_AMINO_ALPHABET = _AMINO_RESIDUES | frozenset(":")
 _MAX_SEQUENCE_LEN = 2000  # generous upper bound for fusion constructs
 _MAX_SEQUENCES_PER_SUBMIT = 50_000  # YDS library scale, hard cap
+_MAX_CHAINS_PER_SEQUENCE = 4  # 99% of YDS designs are 1-2 chains; 4 is generous
 
 
 def _validate_sequences(raw: Any) -> tuple[Optional[dict[str, str]], Optional[str]]:
     """Validate the sequences dict.
 
     Returns ``(sequences, None)`` on success or ``(None, error_message)``
-    so the caller can return a precise 400. We deliberately accept the
-    full Adaptyv-compatible shape: dict of ``{user_key: str}`` where
-    each value is uppercase amino acids with ``:`` between chains.
+    so the caller can return a precise 400. Adaptyv-compatible shape:
+    dict of ``{user_key: str}`` where each value is uppercase amino acids
+    with ``:`` between chains.
+
+    FIX #11 (validation review): reject empty chains. ``::``, ``A:``,
+    ``:B``, ``:`` all fail; library construction can't dispense empty
+    inserts. Also caps chain count to head off accidental ``A:B:C:D:E``
+    submissions.
     """
     if not isinstance(raw, dict):
         return None, "sequences must be a JSON object"
@@ -153,19 +160,50 @@ def _validate_sequences(raw: Any) -> tuple[Optional[dict[str, str]], Optional[st
                 "(expected uppercase ACDEFGHIKLMNPQRSTVWY with ':' as "
                 "chain separator)"
             )
+        # Per-chain checks: every chain must contain ≥1 residue from
+        # the canonical alphabet (no leading/trailing/internal empty).
+        chains = normalized.split(":")
+        if len(chains) > _MAX_CHAINS_PER_SEQUENCE:
+            return None, (
+                f"sequence {key!r} has {len(chains)} chains; cap is "
+                f"{_MAX_CHAINS_PER_SEQUENCE}"
+            )
+        for chain_idx, chain in enumerate(chains):
+            if not chain:
+                return None, (
+                    f"sequence {key!r} contains an empty chain at position "
+                    f"{chain_idx} (':' separator with no residues)"
+                )
+            if not set(chain).issubset(_AMINO_RESIDUES):
+                return None, (
+                    f"sequence {key!r} chain {chain_idx} has invalid residues"
+                )
         cleaned[key] = normalized
     return cleaned, None
 
 
 def _validate_webhook_url(raw: Any) -> tuple[Optional[str], Optional[str]]:
+    """Validate webhook_url for the SSRF guard (FIX #14).
+
+    Delegates to :func:`shared.webhooks.validate_webhook_url_safe`, which
+    rejects cleartext, embedded credentials, and any URL that resolves to
+    a private/loopback/link-local IP (including Railway's CGNAT range).
+    """
+    from shared.webhooks import (  # noqa: PLC0415 — keep validator close to caller
+        UnsafeWebhookURLError,
+        validate_webhook_url_safe,
+    )
+
     if raw is None or raw == "":
         return None, None
     if not isinstance(raw, str):
         return None, "webhook_url must be a string"
-    if not (raw.startswith("https://") or raw.startswith("http://")):
-        return None, "webhook_url must be an http:// or https:// URL"
     if len(raw) > 2000:
         return None, "webhook_url is too long"
+    try:
+        validate_webhook_url_safe(raw)
+    except UnsafeWebhookURLError as exc:
+        return None, str(exc)
     return raw, None
 
 
@@ -329,16 +367,20 @@ def create_experiment():
 
     # Move to WaitingForConfirmation immediately. The alpha workflow
     # gates further progress on a human quote, so 'Draft' is a state
-    # the customer never observes from the outside.
-    moved = transition_api_status(
+    # the customer never observes from the outside. The transition is
+    # atomic at the DB level (transition_lab_campaign_api RPC); we use
+    # the returned prev_status to populate the webhook payload honestly
+    # instead of hardcoding "Draft" (FIX #6).
+    result = transition_api_status(
         campaign.id, new_status="WaitingForConfirmation", by="system"
     )
-    if moved is not None:
-        campaign = moved
+    if result.campaign is not None:
+        campaign = result.campaign
+    if result.moved:
         _fire_webhook(
             campaign,
             event_type="experiment.waiting_for_confirmation",
-            prev_status="Draft",
+            prev_status=result.prev_status or "Draft",
         )
 
     resp = jsonify(campaign_to_api_view(campaign))
@@ -480,22 +522,28 @@ def confirm_quote(quote_id: str):
             current_status=campaign.status,
         )
 
-    moved = transition_api_status(
+    result = transition_api_status(
         campaign.id, new_status="WaitingForMaterials", by="api"
     )
-    if moved is None:
+    if result.campaign is None:
         return _error(
             500,
             "transition_failed",
             "Could not confirm the quote. Try again or contact support.",
         )
 
-    _fire_webhook(
-        moved,
-        event_type="experiment.confirmed",
-        prev_status="QuoteSent",
-    )
-    return jsonify(campaign_to_status_view(moved))
+    # Defensive check: the 409 gate above already guarantees status was
+    # 'QuoteSent' on entry, so the RPC's no-op branch (prev_status ==
+    # new_status) cannot fire here on the current code path. We keep
+    # ``if result.moved`` as a belt-and-suspenders guard against a future
+    # caller adding a confirm-twice retry path.
+    if result.moved:
+        _fire_webhook(
+            result.campaign,
+            event_type="experiment.confirmed",
+            prev_status=result.prev_status or "QuoteSent",
+        )
+    return jsonify(campaign_to_status_view(result.campaign))
 
 
 # ---------------------------------------------------------------------------
