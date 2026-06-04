@@ -173,6 +173,50 @@ def test_multi_model_warning():
 
 
 # ---------------------------------------------------------------------------
+# Tests: altloc detection (rfantibody hcruz@indicasat fix, 2026-06-03)
+# ---------------------------------------------------------------------------
+
+ALTLOC_PDB = b"""\
+HEADER    ALTLOC
+ATOM      1  N   ALA A  20       1.000   1.000   1.000  1.00 10.00           N
+ATOM      2  CA AALA A  20       2.000   1.000   1.000  0.50 10.00           C
+ATOM      3  CA BALA A  20       2.500   1.500   1.500  0.50 10.00           C
+ATOM      4  C   ALA A  20       3.000   1.000   1.000  1.00 10.00           C
+ATOM      5  O   ALA A  20       3.000   2.000   1.000  1.00 10.00           O
+ATOM      6  N   GLY A  21       4.000   1.000   1.000  1.00 10.00           N
+ATOM      7  CA  GLY A  21       5.000   1.000   1.000  1.00 10.00           C
+ATOM      8  C   GLY A  21       6.000   1.000   1.000  1.00 10.00           C
+ATOM      9  O   GLY A  21       6.000   2.000   1.000  1.00 10.00           O
+END
+"""
+
+
+def test_clean_pdb_has_zero_altloc_count():
+    report = inspect_pdb_bytes(CLEAN_TWO_RES_PDB)
+    assert report.ok
+    assert report.altloc_atom_count == 0
+    assert not any("alternate-conformation" in w.lower() for w in report.warnings)
+
+
+def test_altloc_records_counted_and_warned():
+    """3IUT/3KKU class structures with altloc A/B/C records caused the
+    RFdiffusion "Non-positive determinant" crash for hcruz on 2026-06-03;
+    surface the count in warnings so log triage spots it fast.
+    """
+    report = inspect_pdb_bytes(ALTLOC_PDB)
+    assert report.ok
+    # Two altloc-letter atom records (CA A, CA B).
+    assert report.altloc_atom_count == 2
+    assert any("alternate-conformation" in w for w in report.warnings)
+
+
+def test_summarize_for_log_includes_altloc_count():
+    report = inspect_pdb_bytes(ALTLOC_PDB)
+    line = summarize_for_log(report)
+    assert "altloc=2" in line
+
+
+# ---------------------------------------------------------------------------
 # Tests: target_chain validation
 # ---------------------------------------------------------------------------
 

@@ -67,6 +67,12 @@ class InspectionReport:
 
     ``ok`` is True iff the structure is acceptable to ship to GPU. When
     ``ok`` is False, ``error`` carries a user-facing message.
+
+    ``altloc_atom_count`` is the number of ATOM/HETATM records whose
+    altloc column is a non-blank letter (A, B, C, ...). The server-side
+    normalizer collapses these to one record per atom name, but the count
+    is useful for log triage and for surfacing a "we cleaned X alternate
+    conformations off your upload" hint in the future.
     """
     ok: bool
     error: Optional[str] = None
@@ -76,6 +82,7 @@ class InspectionReport:
     total_hetatm_residues: int = 0
     total_water_residues: int = 0
     warnings: list = field(default_factory=list)       # list[str]
+    altloc_atom_count: int = 0
 
     def chain_ids(self) -> list:
         return [c.chain_id for c in self.chains]
@@ -160,6 +167,17 @@ def inspect_pdb_bytes(
     total_hetatm = 0
     total_water = 0
 
+    # Count alt-conformation atom records (any altloc that is not blank).
+    # Biopython parses multi-altloc atoms into DisorderedAtom containers;
+    # walking get_unpacked_list() yields all altloc copies.
+    altloc_atom_count = 0
+    for chain in target_model:
+        for residue in chain:
+            for atom in residue.get_unpacked_list():
+                alt = (atom.get_altloc() or "").strip()
+                if alt:
+                    altloc_atom_count += 1
+
     for chain in target_model:
         cid = chain.get_id()
         std = 0
@@ -207,12 +225,19 @@ def inspect_pdb_bytes(
         total_standard_residues=total_standard,
         total_hetatm_residues=total_hetatm,
         total_water_residues=total_water,
+        altloc_atom_count=altloc_atom_count,
     )
 
     if model_count > 1:
         report.warnings.append(
             f"Multi-model NMR ensemble detected ({model_count} models); "
             f"only model 1 will be used."
+        )
+    if altloc_atom_count:
+        report.warnings.append(
+            f"Found {altloc_atom_count} alternate-conformation atom record(s) "
+            f"(altloc A/B/C). The server will keep the highest-occupancy "
+            f"conformation per atom before running the pipeline."
         )
     if total_standard == 0:
         report.ok = False
@@ -341,6 +366,7 @@ def summarize_for_log(report: InspectionReport) -> str:
         f"protein_res={report.total_standard_residues}",
         f"hetatm={report.total_hetatm_residues}",
         f"water={report.total_water_residues}",
+        f"altloc={report.altloc_atom_count}",
     ]
     for chain in report.chains:
         parts.append(
