@@ -23,19 +23,36 @@
                      source_label.
                      None or empty → render the empty placeholder. #}
 
-{% macro preflight_panel(verdict=None, tool_slug=None) %}
-<div id="preflight-panel"
-     class="preflight-panel{% if verdict %} preflight-panel--{{ verdict.kind }}{% endif %}"
-     data-tool="{{ tool_slug or (verdict.tool_slug if verdict else '') }}"
+{% macro preflight_panel(verdict=None, tool_slug=None, summary=False) %}
+{# summary=True is used by the job detail page: suppresses action buttons
+   (Use AlphaFold) and renders an additional "we swapped in AF-X" header
+   when verdict.used_alphafold is set. The form-side path leaves summary
+   defaulted to False so the live AJAX panel keeps the interactive bits. #}
+<div {% if not summary %}id="preflight-panel"{% endif %}
+     class="preflight-panel{% if verdict %} preflight-panel--{{ verdict.kind }}{% endif %}{% if summary %} preflight-panel--summary{% endif %}"
+     {% if not summary %}data-tool="{{ tool_slug or (verdict.tool_slug if verdict else '') }}"{% endif %}
      data-kind="{{ verdict.kind if verdict else '' }}"
      data-ok="{{ '1' if (verdict and verdict.ok) else '0' }}">
   {% if verdict %}
     {% if verdict.kind == 'ready' or verdict.kind == 'ready_with_fallback' %}
       <div class="preflight-header preflight-header--ok">
         <span class="preflight-icon" aria-hidden="true">✓</span>
-        <strong>Ready to run</strong>
+        <strong>
+          {% if summary %}
+            PDB ready
+          {% else %}
+            Ready to run
+          {% endif %}
+        </strong>
       </div>
       <div class="preflight-body">
+        {% if summary and verdict.used_alphafold and verdict.alphafold_accession_used %}
+          <div class="preflight-meta preflight-meta--swap">
+            <strong>Swapped to AlphaFold model</strong>
+            <code>AF-{{ verdict.alphafold_accession_used }}</code>
+            for cleaner single-conformation geometry.
+          </div>
+        {% endif %}
         {% if verdict.source_label %}
           <div class="preflight-meta">
             Target: <code>{{ verdict.source_label }}</code>,
@@ -64,7 +81,7 @@
             Nothing to clean.
           </div>
         {% endif %}
-        {% if verdict.kind == 'ready_with_fallback' and verdict.alphafold %}
+        {% if verdict.kind == 'ready_with_fallback' and verdict.alphafold and not summary %}
           <div class="preflight-af preflight-af--soft">
             <div class="preflight-af-icon" aria-hidden="true">💡</div>
             <div class="preflight-af-body">
@@ -101,7 +118,7 @@
             {{ verdict.suggested_fix }}
           </p>
         {% endif %}
-        {% if verdict.alphafold %}
+        {% if verdict.alphafold and not summary %}
           <div class="preflight-af preflight-af--hard">
             <button type="button"
                     class="preflight-af-btn preflight-af-btn--hard"
@@ -163,6 +180,17 @@
     color: #374151;
     margin-bottom: 0.25rem;
   }
+  .preflight-meta--swap {
+    background: #ecfdf5;
+    border-left: 3px solid #16a34a;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .preflight-panel--summary { font-size: 0.9rem; }
+  .preflight-panel--summary .preflight-header { padding: 0.6rem 0.9rem; }
+  .preflight-panel--summary .preflight-body { padding: 0.6rem 0.9rem; }
   .preflight-meta code,
   .preflight-af code,
   .preflight-af-btn code {

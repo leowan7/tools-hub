@@ -3667,6 +3667,29 @@ def create_app() -> Flask:
                     pdb_source=None,
                     workspace_ctx=workspace_ctx,
                 )
+            # Verdict is OK — stash the JSON shape on inputs._preflight so
+            # the /jobs/<id> page can replay the same panel ("we cleaned X,
+            # Y, Z"; "swapped in AlphaFold AF-Pxxxxxx"). Persists with the
+            # job row so the panel survives a page refresh and shows up on
+            # completed jobs too — useful for "what did the cleanup change
+            # before this design pool was generated?" provenance later.
+            if preflight_verdict is not None and preflight_verdict.ok:
+                ok_source_label = converted_filename or (
+                    uploaded.filename if uploaded is not None else None
+                ) or (
+                    f"AF-{af_accession_for_reuse}.pdb"
+                    if af_accession_for_reuse else ""
+                )
+                inputs = dict(inputs)
+                inputs["_preflight"] = _verdict_to_json(
+                    preflight_verdict, ok_source_label,
+                )
+                # Record explicitly when the user actually accepted the AF
+                # swap (vs the verdict merely surfacing the suggestion).
+                if af_accession_for_reuse:
+                    inputs["_preflight"]["used_alphafold"] = True
+                    inputs["_preflight"]["alphafold_accession_used"] = \
+                        af_accession_for_reuse
 
         # Create the tool_jobs row so we have job_id + job_token for the
         # Modal payload and a persistent handle even if Modal submit
