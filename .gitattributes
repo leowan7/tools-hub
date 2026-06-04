@@ -3,3 +3,8 @@
 # computes a consistent hash on Linux CI and on local Windows checkouts.
 contracts/CONTRACTS_SHA256.lock text eol=lf
 contracts/*.py text eol=lf
+
+# Vendored PDB utility modules — same drift-guard rationale, same rule.
+shared/VENDORED_SHA256.lock text eol=lf
+shared/pipeline_normalize.py text eol=lf
+shared/uniprot_lookup.py text eol=lf

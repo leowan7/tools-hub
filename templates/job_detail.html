@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "components/status_badge.html" import status_badge %}
+{% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 
 {% block title %}Job {{ job.id[:8] }} — Ranomics Tools{% endblock %}
 
@@ -202,6 +203,19 @@
           </p>
         {% endif %}
       </div>
+
+      {# Preflight summary: rendered for any job whose tool_submit captured
+         a PDB preflight verdict (binder design tools only, currently). Same
+         visual language as the form-side panel; summary=True hides the
+         interactive AlphaFold buttons because the job's input is already
+         locked in by this point. #}
+      {% set _preflight = (job.inputs or {}).get('_preflight') %}
+      {% if _preflight %}
+        {{ preflight_styles() }}
+        <div class="preflight-job-wrap" style="margin-top: 1rem; max-width: 720px;">
+          {{ preflight_panel(_preflight, summary=True) }}
+        </div>
+      {% endif %}
 
       <div id="results-container">
         {% if job.status == 'succeeded' and job.result %}
