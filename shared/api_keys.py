@@ -45,7 +45,7 @@ import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from shared.credits import get_service_client
 
@@ -90,6 +90,35 @@ class APIKeyContext:
     @property
     def can_write(self) -> bool:
         return self.role == "member"
+
+
+_LAST_USED_THROTTLE_SECONDS = int(
+    os.environ.get("API_KEY_LAST_USED_THROTTLE_SECONDS", "60")
+)
+
+
+def _last_used_is_stale(last_used_at_raw: Any) -> bool:
+    """Return True if last_used_at is None or older than the throttle window.
+
+    Tolerant of supabase ISO 8601 strings and missing values. A bad value
+    falls through to ``True`` (stale) so we still update — better to bump
+    last_used twice than to miss every update because of a parse error.
+    """
+    if not last_used_at_raw:
+        return True
+    if isinstance(last_used_at_raw, datetime):
+        last_used = last_used_at_raw
+    else:
+        try:
+            last_used = datetime.fromisoformat(
+                str(last_used_at_raw).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            return True
+    if last_used.tzinfo is None:
+        last_used = last_used.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - last_used).total_seconds()
+    return age >= _LAST_USED_THROTTLE_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +252,27 @@ def resolve_token(plaintext: str) -> Optional[APIKeyContext]:
 
     # Best-effort last_used touch; swallow errors so a hot-path DB blip
     # doesn't 5xx the agent.
-    try:
-        client.table(_TABLE).update(
-            {"last_used_at": datetime.now(timezone.utc).isoformat()}
-        ).eq("id", row["id"]).execute()
-    except Exception:
-        logger.debug("resolve_token: last_used_at update failed", exc_info=True)
+    #
+    # FIX #9 (validation review): throttle to once per
+    # _LAST_USED_THROTTLE_SECONDS so a tight polling loop doesn't issue
+    # an UPDATE per request. Also filter ``revoked_at IS NULL`` on the
+    # write so a token revoked between SELECT and UPDATE doesn't get
+    # touched — would mislead the audit ("revoked key just used?").
+    if _last_used_is_stale(row.get("last_used_at")):
+        try:
+            (
+                client.table(_TABLE)
+                .update(
+                    {"last_used_at": datetime.now(timezone.utc).isoformat()}
+                )
+                .eq("id", row["id"])
+                .is_("revoked_at", "null")
+                .execute()
+            )
+        except Exception:
+            logger.debug(
+                "resolve_token: last_used_at update failed", exc_info=True
+            )
 
     return APIKeyContext(
         key_id=str(row["id"]),
