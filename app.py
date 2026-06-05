@@ -997,6 +997,12 @@ def create_app() -> Flask:
 
         flask_app.register_blueprint(platform_api_bp)
 
+        # Surface the flag to Jinja so templates (e.g. account.html) can
+        # conditionally show the "Platform API → API Keys" entry point.
+        # Without this, the /account/api-keys page exists but is
+        # invisible — users had no way to discover it from the in-app nav.
+        flask_app.jinja_env.globals["platform_api_enabled"] = True
+
         @flask_app.route("/.well-known/ai-plugin.json", methods=["GET"])
         def ai_plugin_manifest():
             from flask import jsonify  # noqa: PLC0415
