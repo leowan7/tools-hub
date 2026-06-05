@@ -69,6 +69,14 @@ _MAX_ATTEMPTS = len(_BACKOFF_SECONDS) + 1  # 1 initial + 5 retries
 
 _REQUEST_TIMEOUT_SECONDS = 8.0
 
+# DNS lookup cap for validate_webhook_url_safe. The default Linux
+# resolver timeout is ~30s, which lets a malicious hostname stall any
+# request thread that hits this code path. 2 seconds is generous for
+# any legitimate authoritative NS in the relevant geos.
+_DNS_LOOKUP_TIMEOUT_SECONDS = float(
+    os.environ.get("WEBHOOK_DNS_LOOKUP_TIMEOUT_SECONDS", "2.0")
+)
+
 # Concurrency cap on in-flight dispatch threads.
 # Each thread sleeps up to 6h between retries, holds an HTTPS
 # connection-pool slot, and runs the Supabase service client through
@@ -281,6 +289,16 @@ def validate_webhook_url_safe(url: str) -> None:
                 "webhook_url targets a private or special-use IP"
             )
     else:
+        # FIX HI-05 (fresh-review): socket.getaddrinfo has no per-call
+        # timeout argument and inherits the OS resolver's default (often
+        # 30s on Linux). A malicious caller can submit a hostname whose
+        # authoritative DNS is intentionally slow and stall the request
+        # thread for the full default. Cap the lookup to 2 seconds via
+        # the process-wide default socket timeout — narrowly scoped so
+        # we restore the previous value on the way out and don't affect
+        # any other socket op on this thread.
+        prior_default = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(_DNS_LOOKUP_TIMEOUT_SECONDS)
         try:
             addrinfo = socket.getaddrinfo(
                 host, None, proto=socket.IPPROTO_TCP
@@ -289,6 +307,13 @@ def validate_webhook_url_safe(url: str) -> None:
             raise UnsafeWebhookURLError(
                 f"webhook_url host could not be resolved: {exc}"
             )
+        except socket.timeout as exc:
+            raise UnsafeWebhookURLError(
+                f"webhook_url DNS lookup timed out after "
+                f"{_DNS_LOOKUP_TIMEOUT_SECONDS}s: {exc}"
+            )
+        finally:
+            socket.setdefaulttimeout(prior_default)
         # Every record must be public. A multi-A response with a single
         # private entry is treated as unsafe (a sometimes-public DNS
         # rebinding attack lands here).
@@ -396,11 +421,23 @@ def _post_once(target_url: str, body: bytes, signature: str) -> tuple[bool, str]
         )
     except requests.RequestException as exc:
         return (False, f"requests error: {exc}")
+    except Exception as exc:
+        # FIX ME-02 (fresh-review): a non-requests exception here would
+        # bubble out of _dispatch_loop and kill the worker thread, leaving
+        # the webhook_deliveries row orphaned with no retry. Catch broadly
+        # and convert to a normal failure return so the row records
+        # last_error and the dispatch loop schedules the next retry.
+        return (False, f"unexpected error: {exc.__class__.__name__}: {exc}")
     if 200 <= resp.status_code < 300:
         return (True, f"http {resp.status_code}")
     # Capture a short snippet but never let an attacker's body leak more
-    # than 200 chars of internal state into our DB.
-    snippet = (resp.text or "")[:200]
+    # than 200 chars of internal state into our DB. Decoding the response
+    # body can itself raise (LookupError on a bogus Content-Type charset,
+    # UnicodeDecodeError on malformed bytes); contain those too.
+    try:
+        snippet = (resp.text or "")[:200]
+    except Exception:
+        snippet = "<response body undecodable>"
     return (False, f"http {resp.status_code}: {snippet}")
 
 
@@ -423,6 +460,24 @@ def _dispatch_loop(*, delivery_id: str, target_url: str, payload: dict[str, Any]
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
     for attempt_index in range(_MAX_ATTEMPTS):
+        # FIX HI-02 (fresh-review): re-validate the URL at the top of
+        # every retry. The validation done in dispatch_webhook closes
+        # the once-at-enqueue rebinding window, but a 6h retry schedule
+        # gives a DNS-rebinding attacker plenty of room to flip the
+        # host's A record to an internal IP between attempt N-1 and N.
+        # Without this, retries 2-6 happily POST to whatever the resolver
+        # returns at request time. We stamp the row and stop on rebind
+        # so the operator sees the rejection in webhook_deliveries.last_error.
+        try:
+            validate_webhook_url_safe(target_url)
+        except UnsafeWebhookURLError as exc:
+            _update_delivery(
+                delivery_id=delivery_id,
+                attempts=attempt_index,
+                delivered_at=datetime.now(timezone.utc),
+                last_error=f"rebind blocked at retry {attempt_index}: {exc}",
+            )
+            return
         ts = int(time.time())
         sig = format_signature_header(ts, sign_payload(ts, body, secret))
         ok, message = _post_once(target_url, body, sig)

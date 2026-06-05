@@ -979,6 +979,20 @@ def create_app() -> Flask:
                 "webhook delivery will fail closed until it is configured."
             )
 
+        # FIX HI-03 (fresh-review): harden session cookies before any
+        # API-key surface goes live. Flask's default
+        # SESSION_COOKIE_SAMESITE is None (== browser default "Lax"),
+        # which still permits top-level POST navigations to send the
+        # cookie — so a malicious page can submit a hidden form to
+        # /account/api-keys/create on the user's behalf. Strict blocks
+        # cross-site requests entirely. Secure flag is harmless here
+        # because the app runs behind HTTPS in prod (Railway provides
+        # TLS). Direct assignment — Flask's default_config pre-populates
+        # these keys with None/False so .setdefault() is a no-op.
+        flask_app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
+        flask_app.config["SESSION_COOKIE_SECURE"] = True
+        flask_app.config["SESSION_COOKIE_HTTPONLY"] = True
+
         from tools.platform_api import platform_api_bp  # noqa: PLC0415
 
         flask_app.register_blueprint(platform_api_bp)
@@ -1026,6 +1040,33 @@ def create_app() -> Flask:
         )
         from shared.auth import login_required  # noqa: PLC0415
 
+        # FIX HI-03 (fresh-review): per-session CSRF token for the
+        # /account/api-keys/* POST handlers. SameSite=Strict blocks the
+        # cross-site case browser-side; this guards against same-site
+        # XSS-leveraged forgeries and any pre-Strict legacy browser.
+        # Stored in session as a hex string; rotated when the cookie
+        # rotates (login/logout/secret change).
+        import hmac as _hmac  # noqa: PLC0415
+        import secrets as _secrets  # noqa: PLC0415
+
+        _CSRF_SESSION_KEY = "_platform_api_csrf"
+
+        def _ensure_csrf_token() -> str:
+            """Return the session's CSRF token, minting one if absent."""
+            token = session.get(_CSRF_SESSION_KEY)
+            if not token or not isinstance(token, str):
+                token = _secrets.token_urlsafe(32)
+                session[_CSRF_SESSION_KEY] = token
+            return token
+
+        def _csrf_ok() -> bool:
+            """Constant-time compare submitted ``_csrf`` against session value."""
+            expected = session.get(_CSRF_SESSION_KEY) or ""
+            submitted = (request.form.get("_csrf") or "").strip()
+            if not expected or not submitted:
+                return False
+            return _hmac.compare_digest(expected, submitted)
+
         def _format_dt(value):
             if not value:
                 return None
@@ -1065,6 +1106,7 @@ def create_app() -> Flask:
                 keys=keys,
                 just_minted_plaintext=just_minted_plaintext,
                 create_error=create_error,
+                csrf_token=_ensure_csrf_token(),
             )
 
         @flask_app.route("/account/api-keys", methods=["GET"])
@@ -1081,6 +1123,17 @@ def create_app() -> Flask:
             user_ctx = load_user_context()
             if user_ctx is None:
                 return redirect(url_for("login"))
+            if not _csrf_ok():
+                # FIX HI-03: defense-in-depth over SameSite=Strict. A 400
+                # is fine here — legitimate users hitting this path always
+                # POST through the rendered form, which carries the token.
+                return _render_api_keys_page(
+                    user_ctx.user_id,
+                    create_error=(
+                        "Form submission failed CSRF check. Refresh this "
+                        "page and try again."
+                    ),
+                ), 400
             label = (request.form.get("label") or "").strip()[:120] or None
             role = (request.form.get("role") or "member").strip().lower()
             if role not in VALID_ROLES:
@@ -1113,6 +1166,15 @@ def create_app() -> Flask:
             user_ctx = load_user_context()
             if user_ctx is None:
                 return redirect(url_for("login"))
+            if not _csrf_ok():
+                # FIX HI-03: revoke is destructive; refuse without CSRF.
+                return _render_api_keys_page(
+                    user_ctx.user_id,
+                    create_error=(
+                        "Revoke request failed CSRF check. Refresh and "
+                        "try again."
+                    ),
+                ), 400
             revoke_key(key_id=key_id, user_id=user_ctx.user_id)
             return redirect(url_for("account_api_keys"))
 

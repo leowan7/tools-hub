@@ -47,6 +47,7 @@
     </div>
     <div class="panel-body">
       <form method="POST" action="{{ url_for('account_api_keys_create') }}" style="display: grid; gap: 0.75rem; max-width: 36rem;">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
         <label style="display: grid; gap: 0.25rem;">
           <span style="font-size: 0.875rem;">Label (optional)</span>
           <input
@@ -110,6 +111,7 @@
                 <td style="padding: 0.5rem;">
                   {% if not k.revoked_at %}
                     <form method="POST" action="{{ url_for('account_api_keys_revoke', key_id=k.key_id) }}" style="margin: 0;" onsubmit="return confirm('Revoke this key? Active sessions stop working immediately.');">
+                      <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                       <button type="submit" class="btn-secondary" style="font-size: 0.85rem;">Revoke</button>
                     </form>
                   {% endif %}

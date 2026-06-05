@@ -55,7 +55,12 @@ _TABLE = "api_keys"
 
 _TOKEN_PREFIX = "rk_live_"
 _TOKEN_RAND_BYTES = 16  # token_urlsafe(16) → 22 chars
-_PREFIX_DISPLAY_LEN = 12  # "rk_live_abcd" — 12 chars including the rk_ tag
+# FIX HI-04 (fresh-review): only persist the literal scheme prefix, not
+# any plaintext randomness. Storing 4 random chars (the prior value of
+# 12) was inconsistent with the module docstring's "plaintext is never
+# persisted" guarantee. Keyspace was still ~2^108 with 4 bits leaked,
+# but Stripe-pattern hygiene calls for scheme-only display.
+_PREFIX_DISPLAY_LEN = len(_TOKEN_PREFIX)  # "rk_live_" — no plaintext bits
 
 VALID_ROLES = frozenset({"member", "viewer"})
 
@@ -92,9 +97,35 @@ class APIKeyContext:
         return self.role == "member"
 
 
-_LAST_USED_THROTTLE_SECONDS = int(
-    os.environ.get("API_KEY_LAST_USED_THROTTLE_SECONDS", "60")
-)
+def _read_throttle_seconds() -> int:
+    """Read and validate the last_used_at touch throttle.
+
+    FIX ME-06 (fresh-review): a misconfigured 0 or negative value makes
+    every call stale (``age >= 0`` always true), defeating the throttle
+    and flooding the DB with UPDATEs. Validate at import; fall back to
+    the documented default with a warning so operator typos are visible.
+    """
+    raw = os.environ.get("API_KEY_LAST_USED_THROTTLE_SECONDS", "60")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "API_KEY_LAST_USED_THROTTLE_SECONDS=%r is not an integer; "
+            "defaulting to 60",
+            raw,
+        )
+        return 60
+    if value < 1:
+        logger.warning(
+            "API_KEY_LAST_USED_THROTTLE_SECONDS=%d is < 1 (defeats throttle); "
+            "defaulting to 60",
+            value,
+        )
+        return 60
+    return value
+
+
+_LAST_USED_THROTTLE_SECONDS = _read_throttle_seconds()
 
 
 def _last_used_is_stale(last_used_at_raw: Any) -> bool:
