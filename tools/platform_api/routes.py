@@ -33,7 +33,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, g, jsonify, make_response, request
 
 from shared.api_auth import api_auth_required
 from shared.campaigns import (
@@ -602,6 +602,56 @@ def openapi_spec():
     from tools.platform_api.openapi_spec import build_spec  # noqa: PLC0415
 
     resp = jsonify(build_spec())
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
+
+# Browsable docs page for humans. The openapi.json endpoint returns raw
+# JSON (correct for machine consumption, ugly for humans clicking
+# through). This page mounts Swagger UI against the same spec — single
+# CDN-hosted bundle, no build step. The marketing landing page on
+# ranomics.com/platform is a separate, larger follow-up.
+_SWAGGER_UI_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ranomics Platform API — Reference</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,follow">
+  <link rel="icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css">
+  <style>
+    body { margin: 0; background: #0b0f17; }
+    .topbar { display: none; }
+    .swagger-ui .info .title small.version-stamp { background: #2B9E7E; }
+  </style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>
+  <script>
+    window.addEventListener('load', function () {
+      window.ui = SwaggerUIBundle({
+        url: '/api/v1/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: 'BaseLayout',
+        defaultModelsExpandDepth: 0,
+        docExpansion: 'list',
+      });
+    });
+  </script>
+</body>
+</html>
+"""
+
+
+@platform_api_bp.get("/docs")
+def docs_page():
+    """Swagger UI rendering of the OpenAPI spec at ``/api/v1/openapi.json``."""
+    resp = make_response(_SWAGGER_UI_HTML)
+    resp.headers["Content-Type"] = "text/html; charset=utf-8"
     resp.headers["Cache-Control"] = "public, max-age=300"
     return resp
 
