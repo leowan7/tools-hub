@@ -200,3 +200,64 @@ behaviour rather than a research guess.
 - AlphaFold / ColabFold-Multimer / Boltz-2 fold-fallback escape hatch
 - Form + hotspot picker JS multi-chain widening
 - 3 GPU pipelines: rfdiffusion contig, bindcraft settings, boltzgen YAML
+
+## Observed results (2026-06-05)
+
+5 jobs dispatched against `tools.ranomics.com` production. 2 reached
+informative terminal state; 1 gave the size-cap data point we needed;
+2 were cancelled after the literature signal made further spend redundant.
+
+| # | Tool | Fixture | Status | Wall | What it told us |
+|---|---|---|---|---|---|
+| 1 | rfantibody | oversized 1JFF/A 412aa | **succeeded** | 2489s | 412aa runs clean on **A100-80GB** (Week 1 said 40GB — wrong) → caps too tight |
+| 2 | rfdiffusion | oversized 1JFF/A 412aa | **failed (ASSERTION)** | 60s | `('A', 35) is not in pdb file!` — 1JFF has unresolved res 35; confirms any-gap rule |
+| 3 | bindcraft | oversized 1JFF/A 412aa | cancelled | 2717s | (cancelled after lit signal) |
+| 4 | boltzgen | oversized 1JFF/A 412aa | cancelled | 2707s | (cancelled after lit signal) |
+| 5 | rfdiffusion | gappy 2LZM/A del60-69 | **failed (ASSERTION)** | 81s | `('A', 60) is not in pdb file!` — independent confirmation of any-gap rule |
+
+### Key findings
+
+1. **rfantibody GPU label was wrong.** Modal log shows
+   `NVIDIA A100-SXM4-80GB`, Week 1 had `gpu="A100-40GB"`. Fixed.
+
+2. **All size caps were too conservative.** Literature (Watson 2023,
+   Pacesa 2024, Adaptyv 2024) plus the rfantibody 412aa success show
+   400-500aa targets are routinely designed against on A100-80GB.
+   Updated caps:
+
+   | Tool | Old hard_cap | New hard_cap |
+   |---|---|---|
+   | rfantibody | 400 | **600** |
+   | rfdiffusion | 400 | **500** |
+   | bindcraft | 350 | **500** |
+   | boltzgen | 400 | **600** |
+
+3. **The real binding constraint is wall-time, not VRAM.** rfantibody
+   took 41 min for **4 designs** at 412aa. Scaling to typical user
+   `num_designs=100` ≈ 17 hours — exceeds Modal subprocess timeouts
+   long before VRAM exhausts. Added `runtime_hard_cap_min` per tool
+   that hard-blocks (target_aa × num_designs) combinations exceeding
+   the pilot-tier wall ceiling. Suggested fix: lower design count.
+
+4. **RFdiffusion any-gap rule confirmed by 2 independent failures.**
+   The Week 1 hypothesis (`needs_fix_on_any_gap=True`) is now backed
+   by real GPU evidence. Both rfdiffusion jobs failed within 60-81s
+   at `contigs.py:396` with `AssertionError: ('A', N) is not in pdb
+   file!`. No GPU time billed — failures fire before VRAM allocation.
+
+### Spend
+
+- rfantibody 1: ~$7 (succeeded, 41 min)
+- rfdiffusion 2: ~$0.20 (asserted at 60s)
+- bindcraft 3: ~$10 (cancelled at 45 min, partial billing)
+- boltzgen 4: ~$8 (cancelled at 45 min, partial billing)
+- rfdiffusion 5: ~$0.30 (asserted at 81s)
+- **Total: ~$25-30.** Under the $240 ceiling.
+
+### Files updated post-calibration
+
+- `shared/pdb_preflight_rules.py` — TOOL_RULES updated per table above + GPU label fix + new `runtime_hard_cap_min` field
+- `shared/pdb_preflight.py` — `_check_size_envelope` enforces runtime cap; dispatcher short-circuits on `over_runtime_cap`
+- `app.py` — JSON serializer exposes `over_runtime_cap` + `runtime_hard_cap_min`
+- `templates/components/preflight_panel.html` — renders runtime line in size envelope row
+- `tests/test_pdb_preflight.py` — bumped test fixtures to new caps + added 3 runtime-cap tests

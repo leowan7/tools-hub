@@ -427,19 +427,20 @@ def test_antibody_icodes_do_not_create_false_gap():
 # ---------------------------------------------------------------------------
 
 def test_size_envelope_within_caps_emits_runtime_estimate():
-    """100-aa target with 100 designs → runtime estimate populated."""
+    """100-aa target with 4 designs → runtime estimate populated, under caps."""
     data = _chain_pdb("A", list(range(1, 101)))
     v = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
-        binder_max_aa=120, num_designs=100,
+        binder_max_aa=120, num_designs=4,
     )
     assert v.size_envelope is not None
     assert v.size_envelope.residue_count == 100
     assert v.size_envelope.runtime_estimate_min is not None
     assert v.size_envelope.runtime_estimate_min >= 5.0
-    assert v.size_envelope.runtime_basis == "100 designs"
+    assert v.size_envelope.runtime_basis == "4 designs"
     assert not v.size_envelope.over_soft_warn
     assert not v.size_envelope.over_hard_cap
+    assert not v.size_envelope.over_runtime_cap
 
 
 def test_size_envelope_omits_runtime_when_num_designs_missing():
@@ -450,15 +451,16 @@ def test_size_envelope_omits_runtime_when_num_designs_missing():
     )
     assert v.size_envelope is not None
     assert v.size_envelope.runtime_estimate_min is None
+    assert not v.size_envelope.over_runtime_cap
 
 
 def test_size_soft_warn_surfaces_amber_message():
-    """rfdiffusion at 300 aa (warn=250) → amber warn, still passes."""
-    data = _chain_pdb("A", list(range(1, 301)))   # 300 aa
+    """rfdiffusion at 350 aa (soft_warn=300, hard=500) → amber warn, still passes."""
+    data = _chain_pdb("A", list(range(1, 351)))   # 350 aa
     v = preflight_for_tool(
         "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
     )
-    # 300 > soft_warn 250 but < hard_cap 400
+    # 350 > soft_warn 300 but < hard_cap 500
     assert v.size_envelope.over_soft_warn
     assert not v.size_envelope.over_hard_cap
     assert v.size_envelope.warn_message is not None
@@ -466,8 +468,8 @@ def test_size_soft_warn_surfaces_amber_message():
 
 
 def test_size_hard_cap_blocks_oversized_target():
-    """rfdiffusion at 410 aa (cap=400) → NEEDS_FIX."""
-    data = _chain_pdb("A", list(range(1, 411)))   # 410 aa
+    """rfdiffusion at 550 aa (cap=500) → NEEDS_FIX."""
+    data = _chain_pdb("A", list(range(1, 551)))   # 550 aa
     v = preflight_for_tool(
         "rfdiffusion", data, target_chain="A", hotspots=[100, 200, 300],
     )
@@ -477,14 +479,14 @@ def test_size_hard_cap_blocks_oversized_target():
 
 
 def test_combined_budget_blocks_target_plus_binder():
-    """rfdiffusion 350 aa target + 200 aa binder = 550 > 500 combined cap."""
-    data = _chain_pdb("A", list(range(1, 351)))   # 350 aa
+    """rfdiffusion 450 aa target + 200 aa binder = 650 > 600 combined cap."""
+    data = _chain_pdb("A", list(range(1, 451)))   # 450 aa
     v = preflight_for_tool(
         "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
-        binder_max_aa=200, num_designs=100,
+        binder_max_aa=200, num_designs=4,
     )
-    # 350 < 400 (no hard cap on target alone)
-    # But 350 + 200 = 550 > 500 combined cap
+    # 450 < 500 (no hard cap on target alone)
+    # But 450 + 200 = 650 > 600 combined cap
     assert v.kind is VerdictKind.NEEDS_FIX
     assert not v.size_envelope.over_hard_cap
     assert v.size_envelope.over_combined_cap
@@ -492,29 +494,79 @@ def test_combined_budget_blocks_target_plus_binder():
 
 
 def test_bindcraft_tighter_cap_blocks_what_rfdiffusion_allows():
-    """bindcraft hard_cap=350 should block a 360-aa target rfdiffusion would accept."""
-    data = _chain_pdb("A", list(range(1, 361)))   # 360 aa
+    """bindcraft hard_cap=500 should block a 510-aa target rfdiffusion (cap=500 too) blocks."""
+    # Now both have hard_cap=500. Use bindcraft soft_warn=300 vs rfdiffusion
+    # soft_warn=300 (same). Verify bindcraft blocks at exactly its cap and
+    # rfdiffusion blocks at its cap.
+    data_510 = _chain_pdb("A", list(range(1, 511)))   # 510 aa
     v_bc = preflight_for_tool(
-        "bindcraft", data, target_chain="A", hotspots=[100, 200],
+        "bindcraft", data_510, target_chain="A", hotspots=[100, 200],
     )
     assert v_bc.kind is VerdictKind.NEEDS_FIX
     assert v_bc.size_envelope.over_hard_cap
 
+    # 510 also exceeds rfdiffusion's hard_cap (500)
     v_rf = preflight_for_tool(
-        "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
+        "rfdiffusion", data_510, target_chain="A", hotspots=[100, 200],
     )
-    # rfdiffusion cap=400, so 360 is within → no hard cap (just over soft warn)
-    assert not v_rf.size_envelope.over_hard_cap
+    assert v_rf.size_envelope.over_hard_cap
 
 
 def test_size_envelope_gpu_field_populated():
-    """GPU label is plumbed through so the panel can display it."""
+    """GPU label is plumbed through so the panel can display it.
+
+    Week 2 calibration: rfantibody is A100-80GB (Modal log confirmed),
+    not A100-40GB as Week 1's rules incorrectly claimed.
+    """
     data = _chain_pdb("A", list(range(1, 101)))
     v = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
     )
-    assert v.size_envelope.gpu == "A100-40GB"
-    v2 = preflight_for_tool(
-        "bindcraft", data, target_chain="A", hotspots=[50],
+    assert v.size_envelope.gpu == "A100-80GB"
+    v_bg = preflight_for_tool(
+        "boltzgen", data, target_chain="A", hotspots=[],
     )
-    assert v2.size_envelope.gpu == "A100-80GB"
+    assert v_bg.size_envelope.gpu == "A100-40GB"
+
+
+# ---------------------------------------------------------------------------
+# Runtime hard cap (Week 2 addition — pilot-tier wall-time ceiling)
+# ---------------------------------------------------------------------------
+
+def test_runtime_hard_cap_blocks_high_design_count():
+    """200 designs × 200 aa target on rfantibody → estimate exceeds 120 min cap."""
+    data = _chain_pdb("A", list(range(1, 201)))   # 200 aa
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+        binder_max_aa=120, num_designs=200,
+    )
+    # 200 aa < rfantibody hard_cap 600, but 200 designs × 200 aa exceeds
+    # runtime_hard_cap_min=120
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_runtime_cap
+    assert not v.size_envelope.over_hard_cap
+    assert "wall-clock" in v.reason.lower() or "min" in v.reason.lower()
+    # Suggested fix should mention lowering design count
+    assert "designs" in v.suggested_fix.lower()
+
+
+def test_runtime_hard_cap_passes_for_small_jobs():
+    """4 designs × 100 aa target → comfortably under runtime cap."""
+    data = _chain_pdb("A", list(range(1, 101)))   # 100 aa
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+        binder_max_aa=120, num_designs=4,
+    )
+    assert not v.size_envelope.over_runtime_cap
+    assert v.size_envelope.runtime_estimate_min is not None
+    assert v.size_envelope.runtime_estimate_min < v.size_envelope.runtime_hard_cap_min
+
+
+def test_runtime_hard_cap_not_checked_when_num_designs_missing():
+    """No num_designs → no runtime estimate → no runtime block possible."""
+    data = _chain_pdb("A", list(range(1, 101)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+    )
+    assert not v.size_envelope.over_runtime_cap
+    assert v.size_envelope.runtime_estimate_min is None

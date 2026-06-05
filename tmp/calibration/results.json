@@ -1,16 +1,16 @@
 {
-  "polled_at": "2026-06-05T12:52:39.407618Z",
+  "polled_at": "2026-06-05T13:37:24.627478Z",
   "jobs": [
     {
       "n": 1,
       "tool": "rfantibody",
       "fixture": "oversized_1jff_a",
       "job_id": "fb824db2-52c8-4633-94ab-25db5032d13e",
-      "status": "running",
-      "mode": "PENDING",
-      "summary": null,
-      "wall_s": null,
-      "gpu_seconds_used": null,
+      "status": "succeeded",
+      "mode": "SLOW_SUCCESS",
+      "summary": "wall=2489s near cap=1800s",
+      "wall_s": 2489,
+      "gpu_seconds_used": 2484,
       "credits_cost": 0,
       "expected": "OOM at 412aa (theoretical hard_cap=400)"
     },
@@ -32,10 +32,10 @@
       "tool": "bindcraft",
       "fixture": "oversized_1jff_a",
       "job_id": "13a41fbe-711b-48fd-a756-614f74988d6e",
-      "status": "running",
-      "mode": "PENDING",
-      "summary": null,
-      "wall_s": null,
+      "status": "cancelled",
+      "mode": "OTHER",
+      "summary": "",
+      "wall_s": 2717,
       "gpu_seconds_used": null,
       "credits_cost": 0,
       "expected": "OOM at 412aa (theoretical hard_cap=350, fixture is 18% over)"
@@ -45,10 +45,10 @@
       "tool": "boltzgen",
       "fixture": "oversized_1jff_a",
       "job_id": "23806bfd-c938-476b-9ea2-7e1fa934d202",
-      "status": "running",
-      "mode": "PENDING",
-      "summary": null,
-      "wall_s": null,
+      "status": "cancelled",
+      "mode": "OTHER",
+      "summary": "",
+      "wall_s": 2707,
       "gpu_seconds_used": null,
       "credits_cost": 0,
       "expected": "OOM or subprocess timeout at 412aa (theoretical hard_cap=400)"
@@ -67,6 +67,6 @@
       "expected": "Contig-builder assertion error (confirms needs_fix_on_any_gap=True)"
     }
   ],
-  "terminal_count": 2,
+  "terminal_count": 5,
   "total": 5
 }

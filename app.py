@@ -230,6 +230,8 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
                 else round(verdict.size_envelope.runtime_estimate_min, 1)
             ),
             "runtime_basis": verdict.size_envelope.runtime_basis,
+            "runtime_hard_cap_min": verdict.size_envelope.runtime_hard_cap_min,
+            "over_runtime_cap": verdict.size_envelope.over_runtime_cap,
             "gpu": verdict.size_envelope.gpu,
             "warn_message": verdict.size_envelope.warn_message,
             "hard_fail_message": verdict.size_envelope.hard_fail_message,

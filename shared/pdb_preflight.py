@@ -140,6 +140,8 @@ class SizeEnvelopeStatus:
     over_combined_cap: bool = False
     runtime_estimate_min: Optional[float] = None
     runtime_basis: Optional[str] = None             # e.g. "100 designs"
+    runtime_hard_cap_min: Optional[int] = None      # pilot-tier wall ceiling
+    over_runtime_cap: bool = False                  # estimate > hard cap → block
     gpu: Optional[str] = None
     warn_message: Optional[str] = None              # human prose for the panel
     hard_fail_message: Optional[str] = None         # human prose for NEEDS_FIX
@@ -289,7 +291,11 @@ def preflight_for_tool(
     size_envelope = _check_size_envelope(
         rules, kept, binder_max_aa=binder_max_aa, num_designs=num_designs,
     )
-    if size_envelope.over_hard_cap or size_envelope.over_combined_cap:
+    if (
+        size_envelope.over_hard_cap
+        or size_envelope.over_combined_cap
+        or size_envelope.over_runtime_cap
+    ):
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -298,7 +304,10 @@ def preflight_for_tool(
             hotspot_status={"surviving": [], "dropped": list(hotspots)},
             reason=size_envelope.hard_fail_message,
             suggested_fix=(
-                "Try the AlphaFold model trimmed to the epitope domain, "
+                "Lower the number of designs in the form, or switch to the "
+                "full tier for a higher wall-clock budget."
+                if size_envelope.over_runtime_cap
+                else "Try the AlphaFold model trimmed to the epitope domain, "
                 "or split your target into a sub-domain that fits."
             ),
             alphafold=af_suggestion,
@@ -690,11 +699,14 @@ def _check_size_envelope(
 
     runtime_min: Optional[float] = None
     runtime_basis: Optional[str] = None
+    over_runtime_cap = False
     if num_designs is not None and num_designs > 0:
         runtime_min = runtime_estimate_min(rules, target_aa, num_designs)
         runtime_basis = (
             f"{num_designs} design{'s' if num_designs != 1 else ''}"
         )
+        if runtime_min > env.runtime_hard_cap_min:
+            over_runtime_cap = True
 
     warn_msg: Optional[str] = None
     hard_msg: Optional[str] = None
@@ -702,8 +714,8 @@ def _check_size_envelope(
         hard_msg = (
             f"Target chain has {target_aa} residues — {rules.slug.title()}'s "
             f"GPU envelope tops out around {env.hard_cap_target_aa} on "
-            f"{env.gpu if hasattr(env, 'gpu') else rules.gpu}. The job would "
-            f"likely run out of memory partway through."
+            f"{rules.gpu}. The job would likely run out of memory partway "
+            f"through."
         )
     elif over_combined:
         hard_msg = (
@@ -712,6 +724,20 @@ def _check_size_envelope(
             f"{env.hard_cap_combined_aa}-aa combined budget for "
             f"{rules.slug.title()}. Either pick a smaller target or "
             f"shorten the max binder length."
+        )
+    elif over_runtime_cap and runtime_min is not None:
+        # Runtime cap fires AFTER size caps because size is a harder
+        # constraint (no work around it). Runtime can be reduced by
+        # lowering num_designs.
+        # Compute a num_designs that would fit under the cap, for the
+        # suggested-fix message.
+        from shared.pdb_preflight_rules import runtime_estimate_min as _est
+        max_designs = max(1, int(num_designs * env.runtime_hard_cap_min / runtime_min))
+        hard_msg = (
+            f"Estimated wall-clock for {num_designs} designs at "
+            f"{target_aa} aa target is ~{int(runtime_min)} min on "
+            f"{rules.gpu} — above the {env.runtime_hard_cap_min}-min pilot "
+            f"ceiling. Lower the design count to about {max_designs} or fewer."
         )
     elif over_warn:
         warn_msg = (
@@ -733,6 +759,8 @@ def _check_size_envelope(
         over_combined_cap=over_combined and not over_hard,
         runtime_estimate_min=runtime_min,
         runtime_basis=runtime_basis,
+        runtime_hard_cap_min=env.runtime_hard_cap_min,
+        over_runtime_cap=over_runtime_cap and not (over_hard or over_combined),
         gpu=rules.gpu,
         warn_message=warn_msg,
         hard_fail_message=hard_msg,

@@ -143,6 +143,7 @@
         {% if verdict.size_envelope and (
               verdict.size_envelope.over_hard_cap
               or verdict.size_envelope.over_combined_cap
+              or verdict.size_envelope.over_runtime_cap
               or verdict.size_envelope.over_soft_warn) %}
           <div class="preflight-meta preflight-meta--warn">
             Size envelope:
@@ -152,6 +153,11 @@
             {% if verdict.size_envelope.combined_aa %}
               Combined with binder: {{ verdict.size_envelope.combined_aa }} aa
               (cap {{ verdict.size_envelope.hard_cap_combined_aa }} aa).
+            {% endif %}
+            {% if verdict.size_envelope.runtime_estimate_min %}
+              <br>Estimated runtime: ~{{ verdict.size_envelope.runtime_estimate_min }} min
+              for {{ verdict.size_envelope.runtime_basis }}
+              (pilot ceiling {{ verdict.size_envelope.runtime_hard_cap_min }} min).
             {% endif %}
           </div>
         {% endif %}

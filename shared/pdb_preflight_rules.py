@@ -70,12 +70,21 @@ class SizeEnvelope:
         Number of designs at the ``runtime_base_min`` anchor. Used so the
         estimator linearly scales when the user requests more/fewer designs.
         100 for diffusion tools, 10 for bindcraft (default trajectories).
+    ``runtime_hard_cap_min``
+        HARD BLOCK threshold (minutes) — reject submit when the runtime
+        estimator predicts wall-clock above this. Sized for pilot tier
+        practicality: pilot-tier Modal subprocess caps are 1800-7200s per
+        stage, and a 100-design job at 200+ aa target would hit these
+        long before VRAM exhaustion. Set per-tool from observed per-design
+        rate × typical num_designs ceiling recoverable within Modal's
+        per-stage timeout budget.
     """
     hard_cap_target_aa: int
     soft_warn_target_aa: int
     hard_cap_combined_aa: int
     runtime_base_min: float
     runtime_alpha: float
+    runtime_hard_cap_min: int
     runtime_baseline_designs: int = 100
 
 
@@ -92,23 +101,47 @@ class ToolRules:
 
 
 # ---------------------------------------------------------------------------
-# Initial constants
-# (pre-calibration; Week 2 deliberate-fail loop tunes them against real
-# OOM/timeout boundaries observed on tools.ranomics.com)
+# Constants
+#
+# Size caps reflect Week 2 calibration (2026-06-05) + published binder
+# design literature:
+#
+#   - Watson et al. 2023 (RFdiffusion, Nature): training distribution
+#     50-400 aa, designs against >700 aa targets (TfR, hemagglutinin).
+#   - Pacesa et al. 2024 (BindCraft): default-settings examples up to
+#     ~500 aa target on A100-80GB.
+#   - Adaptyv 2024 community designs: HER2 ECD ~620 aa via BindCraft +
+#     RFdiffusion.
+#
+# Week 2 empirical: rfantibody at 412 aa (1JFF chain A) × 4 designs ran
+# clean in 2489s wall (RFdiffusion 1115s + ProteinMPNN 42s + RF2 ~1330s)
+# on A100-80GB. No OOM. The fixture sat at the prior hard_cap of 400 and
+# completed comfortably — caps were too tight.
+#
+# Runtime estimator anchors are calibrated from this data point:
+#   rfantibody 41 min @ 412 aa × 4 designs  →  base=200 min @ 120 aa × 100
+#   designs assuming alpha=1.2. Other tools scaled proportionally from
+#   published per-design rates (RFdiffusion ~5-10 min/design at small
+#   targets, BindCraft ~30 min/trajectory, Boltz-1 ~5-10 min/design).
+#
+# runtime_hard_cap_min hard-blocks (target_aa, num_designs) combinations
+# that obviously exceed Modal's pilot-tier subprocess timeouts long
+# before VRAM is the issue.
 # ---------------------------------------------------------------------------
 
 _RFANTIBODY = ToolRules(
     slug="rfantibody",
-    gpu="A100-40GB",
+    gpu="A100-80GB",                 # Week 2: corrected from "A100-40GB"
     multi_chain_supported=False,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=400,
-        soft_warn_target_aa=250,
-        hard_cap_combined_aa=520,    # +120 VHH framework (binder fixed)
-        runtime_base_min=20.0,
-        runtime_alpha=1.0,
+        hard_cap_target_aa=600,      # Week 2: 400 → 600 (lit + empirical)
+        soft_warn_target_aa=360,     # 60% of hard cap
+        hard_cap_combined_aa=720,    # +120 VHH framework (binder fixed)
+        runtime_base_min=200.0,      # Week 2 calibrated from 412/4 = 41 min
+        runtime_alpha=1.2,           # RF2 triangle attention dominates
+        runtime_hard_cap_min=120,    # pilot-tier per-stage timeout safety
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -119,22 +152,28 @@ _RFANTIBODY = ToolRules(
 
 _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
-    gpu="A100-40GB",
+    gpu="A100-80GB",                 # Week 2: corrected (verified via Modal logs)
     multi_chain_supported=True,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=400,
-        soft_warn_target_aa=250,
-        hard_cap_combined_aa=500,
-        runtime_base_min=15.0,
+        hard_cap_target_aa=500,      # Week 2: 400 → 500 (Watson 2023 distribution)
+        soft_warn_target_aa=300,
+        hard_cap_combined_aa=600,
+        runtime_base_min=150.0,      # Faster than rfantibody (no RF2 stage)
         runtime_alpha=1.2,
+        runtime_hard_cap_min=120,
     ),
     gap=GapThresholds(
         warn_length=5,
         needs_fix_length=None,        # length rule unused when on_any_gap
         needs_fix_hotspot_distance=0,
-        needs_fix_on_any_gap=True,    # contig builder asserts every res
+        needs_fix_on_any_gap=True,    # Week 2: VERIFIED — contig builder
+                                      # asserts at run_inference.py:84 →
+                                      # contigs.py:396 with
+                                      # "AssertionError: ('A', N) is not
+                                      # in pdb file!" for any missing res
+                                      # in the declared range.
     ),
 )
 
@@ -145,12 +184,13 @@ _BINDCRAFT = ToolRules(
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=350,
-        soft_warn_target_aa=200,
-        hard_cap_combined_aa=450,
-        runtime_base_min=45.0,
-        runtime_alpha=1.5,
-        runtime_baseline_designs=10,  # bindcraft default trajectories
+        hard_cap_target_aa=500,      # Week 2: 350 → 500 (Pacesa 2024)
+        soft_warn_target_aa=300,
+        hard_cap_combined_aa=600,
+        runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
+        runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
+        runtime_hard_cap_min=180,    # longer-running tool, more headroom
+        runtime_baseline_designs=10, # bindcraft default trajectories
     ),
     gap=GapThresholds(
         warn_length=10,
@@ -161,16 +201,17 @@ _BINDCRAFT = ToolRules(
 
 _BOLTZGEN = ToolRules(
     slug="boltzgen",
-    gpu="A100-40GB",
+    gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
     multi_chain_supported=True,
     hotspots_required=False,
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=400,
-        soft_warn_target_aa=250,
-        hard_cap_combined_aa=500,
-        runtime_base_min=25.0,
+        hard_cap_target_aa=600,      # Week 2: 400 → 600 (AF3-class headroom)
+        soft_warn_target_aa=360,
+        hard_cap_combined_aa=700,
+        runtime_base_min=600.0,      # Boltz-1 diffusion ~5-10 min/design × 100
         runtime_alpha=1.0,
+        runtime_hard_cap_min=120,
     ),
     gap=GapThresholds(
         warn_length=20,
