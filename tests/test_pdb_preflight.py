@@ -216,3 +216,305 @@ def test_no_alphafold_when_no_dbref():
     # Verdict will be NEEDS_FIX (too few residues), but alphafold field
     # should be None regardless.
     assert v.alphafold is None
+
+
+# ===========================================================================
+# v2: TOOL_RULES module sanity + gap detection + size envelope
+# ===========================================================================
+
+from shared.pdb_preflight_rules import (   # noqa: E402
+    TOOL_RULES, runtime_estimate_min,
+)
+
+
+def _atom_line(
+    serial: int, name: str, resname: str, chain: str,
+    resnum: int, x: float, y: float, z: float,
+    *, occ: float = 1.00, bfac: float = 10.00, icode: str = " ",
+) -> str:
+    """Build a column-perfect PDB ATOM record."""
+    elem = name[0].rjust(2)
+    aname = f" {name:<3s}" if len(name) < 4 else name[:4]
+    return (
+        f"ATOM  {serial:5d} {aname} {resname:3s} "
+        f"{chain:1s}{resnum:4d}{icode:1s}   "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}"
+        f"{occ:6.2f}{bfac:6.2f}          {elem}\n"
+    )
+
+
+def _chain_pdb(chain_id: str, residues, *, header: str = "SYNTHETIC") -> bytes:
+    """Build a synthetic PDB with N/CA/C/O backbone for each residue.
+
+    ``residues`` is a list of int resnums (icode defaulted to ' '), or
+    a list of (resnum, icode) tuples for antibody-style insertions.
+    Coordinates are spread along x so consecutive resnums never coincide.
+    """
+    lines = [f"HEADER    {header}\n"]
+    serial = 0
+    for i, r in enumerate(residues):
+        if isinstance(r, tuple):
+            rn, icode = r
+        else:
+            rn, icode = r, " "
+        x_base = float(i * 4.0)
+        for atom_name, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+            serial += 1
+            y = 1.0 if atom_name != "O" else 2.0
+            lines.append(_atom_line(
+                serial=serial, name=atom_name, resname="ALA",
+                chain=chain_id, resnum=rn,
+                x=x_base + off, y=y, z=1.0, icode=icode,
+            ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+# ---------------------------------------------------------------------------
+# TOOL_RULES sanity
+# ---------------------------------------------------------------------------
+
+def test_tool_rules_cover_all_binder_tools():
+    """Every binder tool has a complete ToolRules entry."""
+    assert set(TOOL_RULES.keys()) == BINDER_DESIGN_TOOLS
+
+
+def test_tool_rules_invariants():
+    """soft_warn < hard_cap, combined_cap >= hard_cap for every tool."""
+    for slug, rules in TOOL_RULES.items():
+        assert rules.size.soft_warn_target_aa < rules.size.hard_cap_target_aa, slug
+        assert rules.size.hard_cap_combined_aa >= rules.size.hard_cap_target_aa, slug
+        assert rules.min_target_aa > 0, slug
+        assert rules.size.runtime_base_min > 0, slug
+        assert rules.size.runtime_alpha > 0, slug
+
+
+def test_runtime_estimate_floor():
+    """Runtime estimate floors at 5 minutes for tiny targets."""
+    r = TOOL_RULES["rfantibody"]
+    assert runtime_estimate_min(r, target_aa=10, num_designs=1) >= 5.0
+
+
+def test_runtime_estimate_scales_with_designs():
+    """Doubling design count roughly doubles runtime estimate."""
+    r = TOOL_RULES["rfdiffusion"]
+    base = runtime_estimate_min(r, target_aa=120, num_designs=100)
+    bigger = runtime_estimate_min(r, target_aa=120, num_designs=200)
+    assert bigger > base * 1.8  # ~2x with a tolerance
+
+
+def test_runtime_estimate_scales_with_target_size():
+    """A bigger target should give a longer runtime estimate."""
+    r = TOOL_RULES["rfdiffusion"]
+    small = runtime_estimate_min(r, target_aa=100, num_designs=100)
+    big = runtime_estimate_min(r, target_aa=400, num_designs=100)
+    assert big > small * 2.0
+
+
+# ---------------------------------------------------------------------------
+# Internal gap detection
+# ---------------------------------------------------------------------------
+
+def test_no_gap_in_contiguous_chain():
+    """Contiguous chain 50..120 → no gaps detected for any tool."""
+    data = _chain_pdb("A", list(range(50, 121)))   # 71 residues
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[60, 70, 80],
+    )
+    assert v.gap_analysis is not None
+    assert v.gap_analysis.gaps == []
+    assert v.gap_analysis.longest_gap == 0
+    assert not v.gap_analysis.causes_hard_fail
+
+
+def test_end_of_chain_truncation_is_not_a_gap():
+    """Chain starting at 19 (missing 1-18) is NOT a gap — N-terminal trunc."""
+    data = _chain_pdb("A", list(range(19, 70)))    # 51 residues, no internal gap
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[30, 40],
+    )
+    assert v.gap_analysis.gaps == []
+
+
+def test_rfdiffusion_blocks_on_any_internal_gap():
+    """rfdiffusion: any single internal gap → NEEDS_FIX (contig assert)."""
+    # 1-30 then 35-100 → 4-residue gap at 31-34
+    data = _chain_pdb("A", list(range(1, 31)) + list(range(35, 101)))
+    v = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A", hotspots=[60, 70, 80],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.gap_analysis.causes_hard_fail
+    assert v.gap_analysis.longest_gap == 4
+    assert "contig" in v.reason.lower() or "assert" in v.reason.lower()
+
+
+def test_rfantibody_gap_near_hotspot_hard_fails():
+    """rfantibody: 3+ residue gap within 10 residues of a hotspot → NEEDS_FIX."""
+    # 1-49 then 55-100 → 5-residue gap 50-54; hotspot 53 is ~0 from the gap
+    data = _chain_pdb("A", list(range(1, 50)) + list(range(55, 101)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[60, 70],
+    )
+    # Hotspot 60 is 6 residues from gap end (54), within 10 → hard fail
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.gap_analysis.causes_hard_fail
+    assert v.gap_analysis.longest_gap == 5
+
+
+def test_rfantibody_gap_far_from_hotspot_warns_only():
+    """rfantibody: 8-residue gap with hotspots 50+ residues away → WARN only."""
+    # 1-30 then 39-200 → 8-residue gap 31-38; hotspots 100, 150 (>50 away)
+    data = _chain_pdb("A", list(range(1, 31)) + list(range(39, 201)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[100, 150],
+    )
+    # Gap is length 8 ≥ warn_length 5; hotspots are >10 away → no hard fail
+    assert v.gap_analysis.longest_gap == 8
+    assert not v.gap_analysis.causes_hard_fail
+    assert v.gap_analysis.warn_message is not None
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK)
+
+
+def test_boltzgen_tolerates_small_gaps_silently():
+    """boltzgen: 5-residue gap below warn_length 20 → no warn, no fail."""
+    data = _chain_pdb("A", list(range(1, 50)) + list(range(55, 101)))
+    v = preflight_for_tool(
+        "boltzgen", data, target_chain="A", hotspots=[],
+    )
+    assert v.gap_analysis.longest_gap == 5
+    assert not v.gap_analysis.causes_hard_fail
+    assert v.gap_analysis.warn_message is None
+
+
+def test_bindcraft_large_gap_near_hotspot_hard_fails():
+    """bindcraft: gap ≥ 20 within 5 residues of hotspot → NEEDS_FIX."""
+    # 1-50 then 75-150 → 24-residue gap 51-74; hotspot 78 is 3 from gap end
+    data = _chain_pdb("A", list(range(1, 51)) + list(range(75, 151)))
+    v = preflight_for_tool(
+        "bindcraft", data, target_chain="A", hotspots=[78, 100],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.gap_analysis.causes_hard_fail
+
+
+def test_antibody_icodes_do_not_create_false_gap():
+    """Antibody CDR insertion codes (100A, 100B, 100C) ≠ gap.
+
+    Uses a 40-residue chain (above MIN_TARGET_RESIDUES) with icode
+    insertions embedded in the middle so we actually reach the gap
+    analyser instead of short-circuiting on the min-residue check.
+    """
+    # 50..74 then 75 with icodes ' ','A','B','C' then 76..100 → 51 unique
+    # integer resnums; contiguous in integer space; icodes are insertions
+    # WITHIN resnum 75 and shouldn't appear as numbering gaps.
+    residues: list = list(range(50, 75))
+    residues += [(75, " "), (75, "A"), (75, "B"), (75, "C")]
+    residues += list(range(76, 101))
+    data = _chain_pdb("A", residues)
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[75, 80],
+    )
+    # No gap should be detected — integer resnums are 50-100 contiguous,
+    # icode-distinguished 75A/B/C fold into the same integer resnum 75.
+    assert v.gap_analysis is not None
+    assert v.gap_analysis.gaps == []
+    assert v.gap_analysis.longest_gap == 0
+
+
+# ---------------------------------------------------------------------------
+# Size envelope
+# ---------------------------------------------------------------------------
+
+def test_size_envelope_within_caps_emits_runtime_estimate():
+    """100-aa target with 100 designs → runtime estimate populated."""
+    data = _chain_pdb("A", list(range(1, 101)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+        binder_max_aa=120, num_designs=100,
+    )
+    assert v.size_envelope is not None
+    assert v.size_envelope.residue_count == 100
+    assert v.size_envelope.runtime_estimate_min is not None
+    assert v.size_envelope.runtime_estimate_min >= 5.0
+    assert v.size_envelope.runtime_basis == "100 designs"
+    assert not v.size_envelope.over_soft_warn
+    assert not v.size_envelope.over_hard_cap
+
+
+def test_size_envelope_omits_runtime_when_num_designs_missing():
+    """Without num_designs, the panel shouldn't surface a runtime guess."""
+    data = _chain_pdb("A", list(range(1, 101)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+    )
+    assert v.size_envelope is not None
+    assert v.size_envelope.runtime_estimate_min is None
+
+
+def test_size_soft_warn_surfaces_amber_message():
+    """rfdiffusion at 300 aa (warn=250) → amber warn, still passes."""
+    data = _chain_pdb("A", list(range(1, 301)))   # 300 aa
+    v = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
+    )
+    # 300 > soft_warn 250 but < hard_cap 400
+    assert v.size_envelope.over_soft_warn
+    assert not v.size_envelope.over_hard_cap
+    assert v.size_envelope.warn_message is not None
+    assert v.kind is VerdictKind.READY_WITH_FALLBACK or v.kind is VerdictKind.READY
+
+
+def test_size_hard_cap_blocks_oversized_target():
+    """rfdiffusion at 410 aa (cap=400) → NEEDS_FIX."""
+    data = _chain_pdb("A", list(range(1, 411)))   # 410 aa
+    v = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A", hotspots=[100, 200, 300],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_hard_cap
+    assert "GPU envelope" in v.reason or "out of memory" in v.reason.lower()
+
+
+def test_combined_budget_blocks_target_plus_binder():
+    """rfdiffusion 350 aa target + 200 aa binder = 550 > 500 combined cap."""
+    data = _chain_pdb("A", list(range(1, 351)))   # 350 aa
+    v = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
+        binder_max_aa=200, num_designs=100,
+    )
+    # 350 < 400 (no hard cap on target alone)
+    # But 350 + 200 = 550 > 500 combined cap
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert not v.size_envelope.over_hard_cap
+    assert v.size_envelope.over_combined_cap
+    assert "combined" in v.reason.lower() or str(v.size_envelope.combined_aa) in v.reason
+
+
+def test_bindcraft_tighter_cap_blocks_what_rfdiffusion_allows():
+    """bindcraft hard_cap=350 should block a 360-aa target rfdiffusion would accept."""
+    data = _chain_pdb("A", list(range(1, 361)))   # 360 aa
+    v_bc = preflight_for_tool(
+        "bindcraft", data, target_chain="A", hotspots=[100, 200],
+    )
+    assert v_bc.kind is VerdictKind.NEEDS_FIX
+    assert v_bc.size_envelope.over_hard_cap
+
+    v_rf = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A", hotspots=[100, 200],
+    )
+    # rfdiffusion cap=400, so 360 is within → no hard cap (just over soft warn)
+    assert not v_rf.size_envelope.over_hard_cap
+
+
+def test_size_envelope_gpu_field_populated():
+    """GPU label is plumbed through so the panel can display it."""
+    data = _chain_pdb("A", list(range(1, 101)))
+    v = preflight_for_tool(
+        "rfantibody", data, target_chain="A", hotspots=[50],
+    )
+    assert v.size_envelope.gpu == "A100-40GB"
+    v2 = preflight_for_tool(
+        "bindcraft", data, target_chain="A", hotspots=[50],
+    )
+    assert v2.size_envelope.gpu == "A100-80GB"
