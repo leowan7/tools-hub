@@ -43,7 +43,7 @@
              style="color: var(--accent-text, #2B9E7E); border: 1px solid var(--accent-text, #2B9E7E); padding: 0.2rem 0.6rem; border-radius: 4px;"
              title="Staff-only admin">Admin</a>
         {% endif %}
-        <a href="{{ url_for('account') }}" class="nav-link">{{ session.get('user_email') }}</a>
+        <a href="{{ url_for('account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
         <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
