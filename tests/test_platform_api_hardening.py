@@ -553,3 +553,353 @@ def test_webhook_dispatch_semaphore_backpressures(monkeypatch):
         # Release the drained tokens so other tests aren't poisoned.
         for ok in drained:
             wh._dispatch_semaphore.release()
+
+
+# ===========================================================================
+# Fresh-review (2nd adversarial pass) fixes
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# FIX HI-02 — re-validate webhook URL on every retry iteration
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_loop_revalidates_url_each_retry(monkeypatch):
+    """A DNS-rebind that flips the host to a private IP mid-retry must
+    stop the loop and stamp the delivery row. Without the per-iteration
+    validation, retries 2..N would POST to whatever DNS returns.
+
+    Setup: attempt 0 validates clean → POST fails (server 500) → backoff.
+    Attempt 1 validates → rebind raised → no POST, row stamped, return.
+    """
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "test-secret")
+    # Skip the 30s real backoff between attempts.
+    monkeypatch.setattr(wh.time, "sleep", lambda _s: None)
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh,
+        "_update_delivery",
+        lambda **kwargs: update_calls.append(kwargs),
+    )
+
+    # Attempt 0 validation passes; attempt 1 raises (rebind).
+    validate_calls = {"n": 0}
+
+    def _fake_validate(url):
+        validate_calls["n"] += 1
+        if validate_calls["n"] >= 2:
+            raise wh.UnsafeWebhookURLError(
+                "host rebind: resolved to 10.0.0.5"
+            )
+
+    monkeypatch.setattr(wh, "validate_webhook_url_safe", _fake_validate)
+
+    posted = {"n": 0}
+
+    def _fake_post(*a, **kw):
+        posted["n"] += 1
+
+        class _R:
+            status_code = 500  # force retry
+            text = "boom"
+
+        return _R()
+
+    monkeypatch.setattr(wh._session, "post", _fake_post)
+
+    wh._dispatch_loop(
+        delivery_id="d-rebind",
+        target_url="https://attacker.example/hook",
+        payload={
+            "event_type": "test",
+            "experiment_id": "c1",
+            "new_status": "QuoteSent",
+        },
+    )
+
+    # Exactly ONE POST happened (attempt 0); attempt 1's in-loop
+    # validation rejected before _post_once.
+    assert posted["n"] == 1
+    assert validate_calls["n"] == 2
+    # Row was stamped with the rebind-detected error.
+    stamps = [u for u in update_calls if "rebind" in (u.get("last_error") or "")]
+    assert stamps, "delivery row should be stamped with rebind error"
+
+
+# ---------------------------------------------------------------------------
+# FIX HI-04 — _PREFIX_DISPLAY_LEN drops to 8 (no plaintext bits stored)
+# ---------------------------------------------------------------------------
+
+
+def test_api_key_prefix_carries_no_plaintext_randomness():
+    """The persisted ``api_keys.prefix`` column is the literal scheme
+    only; never any random bits from the plaintext token."""
+    from shared import api_keys
+
+    # The constant itself drives the slice in mint_token.
+    assert api_keys._PREFIX_DISPLAY_LEN == len(api_keys._TOKEN_PREFIX)
+
+    # And the slice produces exactly "rk_live_" — not "rk_live_abcd".
+    plaintext = api_keys._new_plaintext()
+    derived_prefix = plaintext[: api_keys._PREFIX_DISPLAY_LEN]
+    assert derived_prefix == "rk_live_"
+    assert len(derived_prefix) == 8
+
+
+# ---------------------------------------------------------------------------
+# FIX HI-05 — DNS lookup has a hard timeout
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_url_dns_lookup_has_timeout(monkeypatch):
+    """``validate_webhook_url_safe`` must not stall on a slow resolver.
+
+    We replace ``socket.getaddrinfo`` with one that observes the current
+    default socket timeout and asserts a sub-10s cap.
+    """
+    import socket as _socket
+
+    from shared import webhooks as wh
+
+    seen_timeout = {}
+
+    def _fake_getaddrinfo(host, port, **_kw):
+        seen_timeout["t"] = _socket.getdefaulttimeout()
+        return [(_socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    wh.validate_webhook_url_safe("https://example.com/hook")
+    assert seen_timeout["t"] is not None
+    assert seen_timeout["t"] <= 10.0  # cap should be small (default 2.0)
+
+
+def test_webhook_url_dns_lookup_timeout_rejects(monkeypatch):
+    """When the resolver times out, the URL is REJECTED, not accepted."""
+    import socket as _socket
+
+    from shared import webhooks as wh
+
+    def _slow_getaddrinfo(host, port, **_kw):
+        raise _socket.timeout("simulated slow DNS")
+
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _slow_getaddrinfo)
+
+    with pytest.raises(wh.UnsafeWebhookURLError, match="DNS lookup timed out"):
+        wh.validate_webhook_url_safe("https://example.com/hook")
+
+
+# ---------------------------------------------------------------------------
+# FIX HI-01 verification — IPv4-mapped IPv6 literals are rejected
+# (false positive on the reviewer's premise of Python 3.11; we run 3.13)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://[::ffff:127.0.0.1]/",
+        "https://[::ffff:10.0.0.5]/",
+        "https://[::ffff:169.254.169.254]/",
+        "https://[::ffff:100.64.1.1]/",
+        "https://[::1]/",
+        "https://[::]/",
+    ],
+)
+def test_ipv4_mapped_ipv6_literal_rejected(bad):
+    """Python 3.12+ unwraps IPv4-mapped IPv6 in is_private/is_loopback.
+    Production runs 3.13 (see runtime.txt). Pin the rejection so a future
+    runtime downgrade can't silently re-open the bypass."""
+    from shared import webhooks as wh
+
+    with pytest.raises(
+        wh.UnsafeWebhookURLError,
+        match="private or special-use IP",
+    ):
+        wh.validate_webhook_url_safe(bad)
+
+
+# ---------------------------------------------------------------------------
+# FIX ME-01 — _is_unique_violation correctly detects postgrest.APIError
+# ---------------------------------------------------------------------------
+
+
+def test_is_unique_violation_detects_real_postgrest_api_error():
+    """Production raises postgrest.exceptions.APIError, NOT RuntimeError.
+    The detection function must match the real shape so the idempotency
+    race catch path actually fires."""
+    from shared import campaigns
+
+    if campaigns._PostgrestAPIError is None:
+        pytest.skip("postgrest not installed in test env")
+
+    err = campaigns._PostgrestAPIError(
+        {
+            "code": "23505",
+            "message": "duplicate key value violates unique constraint",
+            "details": "Key (user_id, idempotency_key)=(u, k) already exists.",
+            "hint": None,
+        }
+    )
+    assert campaigns._is_unique_violation(err) is True
+
+
+def test_is_unique_violation_rejects_non_23505_postgrest_error():
+    """The catch must NOT trigger on unrelated postgrest errors."""
+    from shared import campaigns
+
+    if campaigns._PostgrestAPIError is None:
+        pytest.skip("postgrest not installed in test env")
+
+    err = campaigns._PostgrestAPIError(
+        {
+            "code": "42501",  # insufficient_privilege
+            "message": "permission denied for table lab_campaigns",
+            "details": None,
+            "hint": None,
+        }
+    )
+    assert campaigns._is_unique_violation(err) is False
+
+
+# ---------------------------------------------------------------------------
+# FIX ME-02 — _post_once converts unexpected exceptions to failure return
+# ---------------------------------------------------------------------------
+
+
+def test_post_once_swallows_unexpected_exception(monkeypatch):
+    """A non-RequestException from the response decode (or anywhere)
+    must convert to a failure return, not bubble up and kill the
+    dispatch thread."""
+    from shared import webhooks as wh
+
+    class _ExplodingResp:
+        status_code = 400
+
+        @property
+        def text(self):
+            raise LookupError("unknown encoding: 'invalid-charset'")
+
+    def _fake_post(*a, **kw):
+        return _ExplodingResp()
+
+    monkeypatch.setattr(wh._session, "post", _fake_post)
+
+    ok, message = wh._post_once("https://example.com", b"{}", "sig")
+    assert ok is False
+    # The decode failure path should have engaged.
+    assert "http 400" in message
+    assert "undecodable" in message
+
+
+def test_post_once_swallows_unexpected_post_exception(monkeypatch):
+    """A non-requests exception from .post() must also convert to a
+    failure return."""
+    from shared import webhooks as wh
+
+    def _fake_post(*a, **kw):
+        raise MemoryError("simulated allocation failure")
+
+    monkeypatch.setattr(wh._session, "post", _fake_post)
+
+    ok, message = wh._post_once("https://example.com", b"{}", "sig")
+    assert ok is False
+    assert "unexpected error" in message
+    assert "MemoryError" in message
+
+
+# ---------------------------------------------------------------------------
+# FIX ME-06 — throttle env var rejects zero/negative
+# ---------------------------------------------------------------------------
+
+
+def test_throttle_env_rejects_zero(monkeypatch):
+    """``API_KEY_LAST_USED_THROTTLE_SECONDS=0`` would disable the
+    throttle. Validator must clamp to 60s and log a warning."""
+    import importlib
+
+    from shared import api_keys
+
+    monkeypatch.setenv("API_KEY_LAST_USED_THROTTLE_SECONDS", "0")
+    # Re-derive via the helper directly (cheaper than re-import).
+    assert api_keys._read_throttle_seconds() == 60
+
+
+def test_throttle_env_rejects_negative(monkeypatch):
+    from shared import api_keys
+
+    monkeypatch.setenv("API_KEY_LAST_USED_THROTTLE_SECONDS", "-5")
+    assert api_keys._read_throttle_seconds() == 60
+
+
+def test_throttle_env_rejects_non_integer(monkeypatch):
+    from shared import api_keys
+
+    monkeypatch.setenv("API_KEY_LAST_USED_THROTTLE_SECONDS", "soon")
+    assert api_keys._read_throttle_seconds() == 60
+
+
+def test_throttle_env_accepts_valid(monkeypatch):
+    from shared import api_keys
+
+    monkeypatch.setenv("API_KEY_LAST_USED_THROTTLE_SECONDS", "90")
+    assert api_keys._read_throttle_seconds() == 90
+
+
+# ---------------------------------------------------------------------------
+# FIX LO-08 — dispatch_webhook owns the delivery_id; caller doesn't pre-stuff None
+# ---------------------------------------------------------------------------
+
+
+def test_fire_webhook_caller_does_not_pass_delivery_id_sentinel(monkeypatch):
+    """The route-level _fire_webhook must NOT pre-populate delivery_id=None
+    in the payload dict — it now lets dispatch_webhook mint and graft
+    the id. Sentinel field would survive into the persisted payload row
+    if a future refactor removed the grafting step."""
+    from tools.platform_api import routes as routes_mod
+
+    captured = {}
+
+    def _fake_dispatch(*, campaign_id, event_type, target_url, payload):
+        captured.update(payload)
+        return "dispatched"
+
+    monkeypatch.setattr(routes_mod, "dispatch_webhook", _fake_dispatch)
+
+    # Build a minimal Campaign with required fields.
+    from shared.campaigns import Campaign
+
+    camp = Campaign(
+        id="c-1",
+        user_id="u-1",
+        source_job_id=None,
+        candidate_indices=[0],
+        target_name="t",
+        target_context="",
+        assay_type="yeast_display",
+        affinity_goal_kd_nm=None,
+        timeline_weeks=None,
+        budget_band="custom",
+        status="WaitingForConfirmation",
+        ranomics_contact=None,
+        notes_internal=None,
+        created_at=None,
+        reviewed_at=None,
+        webhook_url="https://example.com/hook",
+        results_status="none",
+        last_transition_at="2026-06-04T00:00:00Z",
+    )
+
+    routes_mod._fire_webhook(
+        camp, event_type="experiment.waiting_for_confirmation", prev_status="Draft"
+    )
+
+    assert captured  # dispatch was called
+    assert "delivery_id" not in captured, (
+        "caller must not pre-populate delivery_id; dispatch_webhook "
+        "is the only minter"
+    )

@@ -191,6 +191,17 @@ def get_campaign(campaign_id: str, *, user_id: Optional[str] = None) -> Optional
             query = query.eq("user_id", user_id)
         response = query.single().execute()
     except Exception:
+        # FIX ME-05 (fresh-review): we still return None (callers translate
+        # to 404 with no enumeration leak), but log so a real outage
+        # doesn't look like every campaign just stopped existing. The
+        # log includes the user_id scope so an operator can distinguish
+        # "row not found" from "RLS denial" from "DB unreachable".
+        logger.warning(
+            "get_campaign returned no row for id=%s user_id=%s",
+            campaign_id,
+            user_id,
+            exc_info=True,
+        )
         return None
     data = getattr(response, "data", None)
     if not data:
@@ -435,22 +446,48 @@ def create_api_campaign(
     return Campaign.from_row(rows[0])
 
 
-def _is_unique_violation(exc: BaseException) -> bool:
-    """Best-effort detection of Postgres SQLSTATE 23505 (unique_violation).
+try:  # pragma: no cover — import shape may shift across supabase-py versions
+    from postgrest.exceptions import APIError as _PostgrestAPIError
+except Exception:  # pragma: no cover
+    _PostgrestAPIError = None  # type: ignore[assignment]
 
-    supabase-py raises a few different concrete exception classes
-    depending on the underlying HTTP failure mode, but the JSON body
-    always carries ``code = '23505'`` for a unique-constraint hit. We
-    sniff the exception's string repr and known attributes — never trust
-    a single field, never crash on missing ones.
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    """Detect Postgres SQLSTATE 23505 (unique_violation) on a supabase-py error.
+
+    FIX ME-01 (fresh-review): the prior implementation only sniffed
+    ``repr(exc)``, which the test suite exercised against a synthetic
+    ``RuntimeError("…23505…")`` — production raised
+    ``postgrest.exceptions.APIError`` whose repr does NOT include "23505"
+    in every version. We now (1) match the real APIError class via
+    isinstance and read ``.code`` directly, (2) fall back to the broader
+    string sniff for non-postgrest paths (e.g. supabase-py wrapping the
+    error body differently across releases), and (3) never crash on a
+    missing attribute.
+
+    Returning False on ambiguity is the safe failure mode — the caller's
+    catch path falls through to logging + 500. Better than a false
+    positive that surfaces a non-duplicate failure as a phantom replay.
     """
-    text = repr(exc)
+    if _PostgrestAPIError is not None and isinstance(exc, _PostgrestAPIError):
+        code = (getattr(exc, "code", None) or "").strip()
+        if code == "23505":
+            return True
+        details = (getattr(exc, "details", None) or "").lower()
+        if "duplicate key" in details or "23505" in details:
+            return True
+        message = (getattr(exc, "message", None) or "").lower()
+        if "duplicate key" in message or "23505" in message:
+            return True
+        return False
+
+    # Non-postgrest path (legacy / test mocks / wrapping layer).
+    text = repr(exc) + " " + str(exc)
     if "23505" in text or "duplicate key value" in text.lower():
         return True
     code = getattr(exc, "code", None) or getattr(exc, "pgcode", None)
     if code == "23505":
         return True
-    # supabase-py sometimes wraps the error body in a ``json``/``message`` attr.
     body = getattr(exc, "json", None) or getattr(exc, "message", None)
     if body is not None and "23505" in str(body):
         return True

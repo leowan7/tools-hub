@@ -151,7 +151,12 @@ def test_mint_token_returns_plaintext_and_prefix(fake_rows):
     assert result is not None
     plaintext, prefix = result
     assert plaintext.startswith("rk_live_")
-    assert plaintext[:12] == prefix
+    # FIX HI-04 (fresh-review): prefix is the literal scheme tag only —
+    # no plaintext randomness leaks into the persisted `prefix` column.
+    # Pin both length and the no-randomness invariant so a future bump of
+    # _PREFIX_DISPLAY_LEN can't silently re-introduce the leak.
+    assert prefix == "rk_live_"
+    assert len(prefix) == 8
     assert len(plaintext) > 20
 
     row = fake_rows[-1]
@@ -160,6 +165,9 @@ def test_mint_token_returns_plaintext_and_prefix(fake_rows):
     assert row["label"] == "laptop"
     # Plaintext is never persisted.
     assert plaintext not in row.values()
+    # The persisted prefix matches the returned prefix and is JUST the
+    # literal "rk_live_" — no random bits.
+    assert row["prefix"] == "rk_live_"
     # Hashed_token is sha256 of plaintext.
     assert row["hashed_token"] == hashlib.sha256(
         plaintext.encode("utf-8")

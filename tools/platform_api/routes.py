@@ -648,14 +648,21 @@ def _load_owned_campaign(experiment_id: str) -> Campaign | tuple:
 
 
 def _fire_webhook(campaign: Campaign, *, event_type: str, prev_status: str) -> None:
-    """Fire-and-forget webhook on a transition. Never raises."""
+    """Fire-and-forget webhook on a transition. Never raises.
+
+    The caller hands ``dispatch_webhook`` everything BUT ``delivery_id``;
+    that field is minted inside ``dispatch_webhook`` (FIX #4) and grafted
+    onto the body before signing so the signed bytes always reference
+    the same id that lands in webhook_deliveries.id. Don't pass a sentinel
+    here — the prior ``"delivery_id": None`` looked like a real bug to
+    every reviewer who scanned this file (LO-08 fresh-review).
+    """
     try:
         dispatch_webhook(
             campaign_id=campaign.id,
             event_type=event_type,
             target_url=campaign.webhook_url,
             payload={
-                "delivery_id": None,  # filled by webhook ledger
                 "event_type": event_type,
                 "experiment_id": campaign.id,
                 "prev_status": prev_status,
