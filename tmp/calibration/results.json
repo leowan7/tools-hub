@@ -1,0 +1,72 @@
+{
+  "polled_at": "2026-06-05T12:52:39.407618Z",
+  "jobs": [
+    {
+      "n": 1,
+      "tool": "rfantibody",
+      "fixture": "oversized_1jff_a",
+      "job_id": "fb824db2-52c8-4633-94ab-25db5032d13e",
+      "status": "running",
+      "mode": "PENDING",
+      "summary": null,
+      "wall_s": null,
+      "gpu_seconds_used": null,
+      "credits_cost": 0,
+      "expected": "OOM at 412aa (theoretical hard_cap=400)"
+    },
+    {
+      "n": 2,
+      "tool": "rfdiffusion",
+      "fixture": "oversized_1jff_a",
+      "job_id": "3cbcc590-d5b2-495c-814e-a8254acb6fed",
+      "status": "failed",
+      "mode": "ASSERTION",
+      "summary": "AssertionError: ('A', 35) is not in pdb file!",
+      "wall_s": 60,
+      "gpu_seconds_used": null,
+      "credits_cost": 0,
+      "expected": "OOM at 412aa OR succeed slowly (cap is tighter than reality)"
+    },
+    {
+      "n": 3,
+      "tool": "bindcraft",
+      "fixture": "oversized_1jff_a",
+      "job_id": "13a41fbe-711b-48fd-a756-614f74988d6e",
+      "status": "running",
+      "mode": "PENDING",
+      "summary": null,
+      "wall_s": null,
+      "gpu_seconds_used": null,
+      "credits_cost": 0,
+      "expected": "OOM at 412aa (theoretical hard_cap=350, fixture is 18% over)"
+    },
+    {
+      "n": 4,
+      "tool": "boltzgen",
+      "fixture": "oversized_1jff_a",
+      "job_id": "23806bfd-c938-476b-9ea2-7e1fa934d202",
+      "status": "running",
+      "mode": "PENDING",
+      "summary": null,
+      "wall_s": null,
+      "gpu_seconds_used": null,
+      "credits_cost": 0,
+      "expected": "OOM or subprocess timeout at 412aa (theoretical hard_cap=400)"
+    },
+    {
+      "n": 5,
+      "tool": "rfdiffusion",
+      "fixture": "gappy_2lzm_a_del60_69",
+      "job_id": "d837f618-4058-4d82-b810-329d72522db8",
+      "status": "failed",
+      "mode": "ASSERTION",
+      "summary": "AssertionError: ('A', 60) is not in pdb file!",
+      "wall_s": 81,
+      "gpu_seconds_used": null,
+      "credits_cost": 0,
+      "expected": "Contig-builder assertion error (confirms needs_fix_on_any_gap=True)"
+    }
+  ],
+  "terminal_count": 2,
+  "total": 5
+}

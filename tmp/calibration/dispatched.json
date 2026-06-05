@@ -1,0 +1,79 @@
+{
+  "dispatched_at": "2026-06-05T12:30:00Z",
+  "branch": "fix/preflight-v2-gaps-and-size",
+  "commit": "dd91897",
+  "fixtures": {
+    "oversized_1jff_a": {
+      "source": "RCSB 1JFF chain A",
+      "ca_residue_count": 412,
+      "purpose": "probe per-tool size hard cap (v1=400 for rfantibody/rfdiffusion/boltzgen, 350 for bindcraft)"
+    },
+    "gappy_2lzm_a_del60_69": {
+      "source": "RCSB 2LZM chain A, residues 60-69 deleted",
+      "ca_residue_count": 154,
+      "purpose": "confirm RFdiffusion any-internal-gap rule (contig builder assertion hypothesis)"
+    }
+  },
+  "jobs": [
+    {
+      "n": 1,
+      "tool": "rfantibody",
+      "fixture": "oversized_1jff_a",
+      "tier": "pilot",
+      "num_designs": 4,
+      "target_chain": "A",
+      "hotspots": "100, 200, 300",
+      "job_id": "fb824db2-52c8-4633-94ab-25db5032d13e",
+      "campaign_label": "cal_week2_rfantibody_oversized",
+      "expected": "OOM at 412aa (theoretical hard_cap=400)"
+    },
+    {
+      "n": 2,
+      "tool": "rfdiffusion",
+      "fixture": "oversized_1jff_a",
+      "tier": "pilot",
+      "num_designs": 4,
+      "target_chain": "A",
+      "hotspots": "100, 200, 300",
+      "job_id": "3cbcc590-d5b2-495c-814e-a8254acb6fed",
+      "campaign_label": "cal_week2_rfdiffusion_oversized",
+      "expected": "OOM at 412aa OR succeed slowly (cap is tighter than reality)"
+    },
+    {
+      "n": 3,
+      "tool": "bindcraft",
+      "fixture": "oversized_1jff_a",
+      "tier": "pilot",
+      "num_designs": 4,
+      "target_chain": "A",
+      "hotspots": "100, 200, 300",
+      "job_id": "13a41fbe-711b-48fd-a756-614f74988d6e",
+      "campaign_label": "cal_week2_bindcraft_oversized",
+      "expected": "OOM at 412aa (theoretical hard_cap=350, fixture is 18% over)"
+    },
+    {
+      "n": 4,
+      "tool": "boltzgen",
+      "fixture": "oversized_1jff_a",
+      "tier": "pilot",
+      "num_designs": 4,
+      "target_chain": "A",
+      "hotspots": "100, 200, 300",
+      "job_id": "23806bfd-c938-476b-9ea2-7e1fa934d202",
+      "campaign_label": "cal_week2_boltzgen_oversized",
+      "expected": "OOM or subprocess timeout at 412aa (theoretical hard_cap=400)"
+    },
+    {
+      "n": 5,
+      "tool": "rfdiffusion",
+      "fixture": "gappy_2lzm_a_del60_69",
+      "tier": "pilot",
+      "num_designs": 4,
+      "target_chain": "A",
+      "hotspots": "80, 100",
+      "job_id": "d837f618-4058-4d82-b810-329d72522db8",
+      "campaign_label": "cal_week2_rfdiffusion_gappy",
+      "expected": "Contig-builder assertion error (confirms needs_fix_on_any_gap=True)"
+    }
+  ]
+}
