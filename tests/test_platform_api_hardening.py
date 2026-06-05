@@ -530,13 +530,13 @@ def test_webhook_dispatch_semaphore_backpressures(monkeypatch):
 
     try:
         # In this state, _bounded_dispatch should hit the backpressure
-        # branch and NOT call _dispatch_loop.
+        # branch and NOT call _dispatch_once.
         called_loop = {"yes": False}
 
         def _fake_loop(**_kw):
             called_loop["yes"] = True
 
-        monkeypatch.setattr(wh, "_dispatch_loop", _fake_loop)
+        monkeypatch.setattr(wh, "_dispatch_once", _fake_loop)
 
         wh._bounded_dispatch(
             delivery_id="d1",
@@ -566,18 +566,20 @@ def test_webhook_dispatch_semaphore_backpressures(monkeypatch):
 
 
 def test_dispatch_loop_revalidates_url_each_retry(monkeypatch):
-    """A DNS-rebind that flips the host to a private IP mid-retry must
-    stop the loop and stamp the delivery row. Without the per-iteration
-    validation, retries 2..N would POST to whatever DNS returns.
+    """A DNS-rebind that flips the host to a private IP between attempts
+    must block the retry POST and stamp the delivery row.
 
-    Setup: attempt 0 validates clean → POST fails (server 500) → backoff.
-    Attempt 1 validates → rebind raised → no POST, row stamped, return.
+    CR-02 (fresh-review) refactored the in-thread retry loop into a
+    single-attempt-and-reschedule model: each call to _dispatch_once
+    runs one POST, then either succeeds, schedules a future
+    next_retry_at, or stamps delivered_at when out of retries. So this
+    test now drives TWO separate _dispatch_once calls — the second one
+    simulates the cron sweep picking up the rescheduled row, with DNS
+    having rebound to a private IP in the gap.
     """
     from shared import webhooks as wh
 
     monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "test-secret")
-    # Skip the 30s real backoff between attempts.
-    monkeypatch.setattr(wh.time, "sleep", lambda _s: None)
 
     update_calls: list[dict] = []
     monkeypatch.setattr(
@@ -586,7 +588,8 @@ def test_dispatch_loop_revalidates_url_each_retry(monkeypatch):
         lambda **kwargs: update_calls.append(kwargs),
     )
 
-    # Attempt 0 validation passes; attempt 1 raises (rebind).
+    # First attempt validation passes; the cron-retry attempt sees the
+    # rebind and raises.
     validate_calls = {"n": 0}
 
     def _fake_validate(url):
@@ -611,17 +614,29 @@ def test_dispatch_loop_revalidates_url_each_retry(monkeypatch):
 
     monkeypatch.setattr(wh._session, "post", _fake_post)
 
-    wh._dispatch_loop(
+    payload = {
+        "event_type": "test",
+        "experiment_id": "c1",
+        "new_status": "QuoteSent",
+    }
+
+    # First attempt: POST happens, fails, row gets next_retry_at.
+    wh._dispatch_once(
         delivery_id="d-rebind",
         target_url="https://attacker.example/hook",
-        payload={
-            "event_type": "test",
-            "experiment_id": "c1",
-            "new_status": "QuoteSent",
-        },
+        payload=payload,
+        prior_attempts=0,
+    )
+    # Cron sweep would pick the row back up here. Second attempt: validation
+    # raises because DNS now resolves to a private IP.
+    wh._dispatch_once(
+        delivery_id="d-rebind",
+        target_url="https://attacker.example/hook",
+        payload=payload,
+        prior_attempts=1,
     )
 
-    # Exactly ONE POST happened (attempt 0); attempt 1's in-loop
+    # Exactly ONE POST happened (the first attempt); the retry's
     # validation rejected before _post_once.
     assert posted["n"] == 1
     assert validate_calls["n"] == 2
@@ -902,4 +917,288 @@ def test_fire_webhook_caller_does_not_pass_delivery_id_sentinel(monkeypatch):
     assert "delivery_id" not in captured, (
         "caller must not pre-populate delivery_id; dispatch_webhook "
         "is the only minter"
+    )
+
+
+# ===========================================================================
+# CR-02 — Single-attempt dispatch + cron sweep
+# ===========================================================================
+
+
+def test_dispatch_once_single_attempt_success_stamps_delivered(monkeypatch):
+    """A successful attempt stamps delivered_at and never sleeps in-thread."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "x")
+    monkeypatch.setattr(wh, "validate_webhook_url_safe", lambda _u: None)
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh, "_update_delivery", lambda **kw: update_calls.append(kw)
+    )
+
+    sleep_calls = {"n": 0}
+    monkeypatch.setattr(
+        wh.time, "sleep", lambda _s: sleep_calls.__setitem__("n", sleep_calls["n"] + 1)
+    )
+
+    class _OkResp:
+        status_code = 200
+        text = "ok"
+
+    monkeypatch.setattr(wh._session, "post", lambda *a, **kw: _OkResp())
+
+    wh._dispatch_once(
+        delivery_id="d-ok",
+        target_url="https://example.com/hook",
+        payload={"event_type": "t", "experiment_id": "c", "new_status": "Done"},
+        prior_attempts=0,
+    )
+
+    # delivered_at was stamped; no in-thread sleep happened.
+    assert any(u.get("delivered_at") for u in update_calls)
+    assert sleep_calls["n"] == 0
+
+
+def test_dispatch_once_failure_schedules_next_retry_does_not_sleep(monkeypatch):
+    """A failed attempt writes next_retry_at and returns. The cron sweep
+    is the new retry driver, not in-thread sleep."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "x")
+    monkeypatch.setattr(wh, "validate_webhook_url_safe", lambda _u: None)
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh, "_update_delivery", lambda **kw: update_calls.append(kw)
+    )
+
+    sleep_calls = {"n": 0}
+    monkeypatch.setattr(
+        wh.time, "sleep", lambda _s: sleep_calls.__setitem__("n", sleep_calls["n"] + 1)
+    )
+
+    class _FailResp:
+        status_code = 500
+        text = "boom"
+
+    monkeypatch.setattr(wh._session, "post", lambda *a, **kw: _FailResp())
+
+    wh._dispatch_once(
+        delivery_id="d-fail",
+        target_url="https://example.com/hook",
+        payload={"event_type": "t", "experiment_id": "c", "new_status": "QuoteSent"},
+        prior_attempts=0,
+    )
+
+    # Row was updated with next_retry_at but NOT delivered_at.
+    assert any(u.get("next_retry_at") for u in update_calls)
+    assert not any(u.get("delivered_at") for u in update_calls)
+    # And we never slept in-thread (the cron drives retries now).
+    assert sleep_calls["n"] == 0
+
+
+def test_dispatch_once_past_max_attempts_stamps_delivered(monkeypatch):
+    """When attempts has burned through the backoff schedule, stamp
+    delivered_at to drop the row from the queue."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "x")
+    monkeypatch.setattr(wh, "validate_webhook_url_safe", lambda _u: None)
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh, "_update_delivery", lambda **kw: update_calls.append(kw)
+    )
+
+    class _FailResp:
+        status_code = 500
+        text = "still failing"
+
+    monkeypatch.setattr(wh._session, "post", lambda *a, **kw: _FailResp())
+
+    # prior_attempts == len(_BACKOFF_SECONDS) means we've burned through
+    # the schedule. The next failure should stamp delivered_at.
+    wh._dispatch_once(
+        delivery_id="d-end",
+        target_url="https://example.com/hook",
+        payload={"event_type": "t", "experiment_id": "c", "new_status": "Done"},
+        prior_attempts=len(wh._BACKOFF_SECONDS),
+    )
+
+    assert any(u.get("delivered_at") for u in update_calls)
+
+
+def test_sweep_due_deliveries_dispatches_each_row(monkeypatch):
+    """The sweep calls the claim RPC and dispatches each returned row."""
+    from shared import webhooks as wh
+
+    # Fake supabase client whose .rpc(...).execute() returns 3 rows.
+    rows = [
+        {
+            "id": "d1",
+            "target_url": "https://example.com/h1",
+            "payload": {"event_type": "t1"},
+            "attempts": 0,
+            "last_error": None,
+        },
+        {
+            "id": "d2",
+            "target_url": "https://example.com/h2",
+            "payload": {"event_type": "t2"},
+            "attempts": 1,
+            "last_error": "prev fail",
+        },
+        {
+            "id": "d3",
+            "target_url": "https://example.com/h3",
+            "payload": {"event_type": "t3"},
+            "attempts": 0,
+            "last_error": None,
+        },
+    ]
+
+    class _FakeExec:
+        def execute(self):
+            class _R:
+                data = rows
+
+            return _R()
+
+    class _FakeClient:
+        def rpc(self, name, params):
+            assert name == "claim_due_webhook_deliveries"
+            assert params.get("p_limit") == 50
+            return _FakeExec()
+
+    monkeypatch.setattr(wh, "get_service_client", lambda: _FakeClient())
+
+    dispatched: list[dict] = []
+
+    def _fake_bounded(*, delivery_id, target_url, payload, prior_attempts):
+        dispatched.append(
+            {
+                "delivery_id": delivery_id,
+                "target_url": target_url,
+                "payload": payload,
+                "prior_attempts": prior_attempts,
+            }
+        )
+
+    monkeypatch.setattr(wh, "_bounded_dispatch", _fake_bounded)
+
+    # Patch Thread to run inline so the test can observe dispatches
+    # without waiting for daemon threads.
+    class _InlineThread:
+        def __init__(self, target, kwargs, name, daemon):
+            self._target = target
+            self._kwargs = kwargs
+
+        def start(self):
+            self._target(**self._kwargs)
+
+    monkeypatch.setattr(wh.threading, "Thread", _InlineThread)
+
+    count = wh.sweep_due_deliveries(limit=50)
+    assert count == 3
+    assert len(dispatched) == 3
+    assert {d["delivery_id"] for d in dispatched} == {"d1", "d2", "d3"}
+    # prior_attempts propagated correctly so backoff schedule continues.
+    by_id = {d["delivery_id"]: d for d in dispatched}
+    assert by_id["d2"]["prior_attempts"] == 1
+
+
+def test_sweep_drops_rows_past_max_attempts(monkeypatch):
+    """Rows whose attempts already exhausted the backoff get stamped
+    delivered_at instead of being re-dispatched."""
+    from shared import webhooks as wh
+
+    rows = [
+        {
+            "id": "d-exhausted",
+            "target_url": "https://example.com/h",
+            "payload": {},
+            "attempts": wh._MAX_ATTEMPTS,
+            "last_error": "all gone",
+        },
+    ]
+
+    class _FakeExec:
+        def execute(self):
+            class _R:
+                data = rows
+
+            return _R()
+
+    class _FakeClient:
+        def rpc(self, *a, **kw):
+            return _FakeExec()
+
+    monkeypatch.setattr(wh, "get_service_client", lambda: _FakeClient())
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh, "_update_delivery", lambda **kw: update_calls.append(kw)
+    )
+    monkeypatch.setattr(
+        wh,
+        "_bounded_dispatch",
+        lambda **kw: pytest.fail("should not dispatch exhausted row"),
+    )
+
+    count = wh.sweep_due_deliveries(limit=50)
+    assert count == 0
+    assert any(u.get("delivered_at") for u in update_calls)
+
+
+def test_sweep_handles_missing_service_client(monkeypatch):
+    """When supabase is unreachable, sweep returns 0 (not crash)."""
+    from shared import webhooks as wh
+
+    monkeypatch.setattr(wh, "get_service_client", lambda: None)
+    count = wh.sweep_due_deliveries(limit=50)
+    assert count == 0
+
+
+def test_sweep_skips_rows_with_missing_target_url(monkeypatch):
+    """A row with no target_url is stamped delivered_at and not dispatched."""
+    from shared import webhooks as wh
+
+    rows = [
+        {
+            "id": "d-notarget",
+            "target_url": "",
+            "payload": {},
+            "attempts": 0,
+            "last_error": None,
+        },
+    ]
+
+    class _FakeExec:
+        def execute(self):
+            class _R:
+                data = rows
+
+            return _R()
+
+    class _FakeClient:
+        def rpc(self, *a, **kw):
+            return _FakeExec()
+
+    monkeypatch.setattr(wh, "get_service_client", lambda: _FakeClient())
+
+    update_calls: list[dict] = []
+    monkeypatch.setattr(
+        wh, "_update_delivery", lambda **kw: update_calls.append(kw)
+    )
+    monkeypatch.setattr(
+        wh,
+        "_bounded_dispatch",
+        lambda **kw: pytest.fail("should not dispatch row with no target_url"),
+    )
+
+    count = wh.sweep_due_deliveries(limit=50)
+    assert count == 0
+    assert any(
+        "no target_url" in (u.get("last_error") or "") for u in update_calls
     )
