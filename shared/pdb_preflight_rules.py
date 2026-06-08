@@ -70,21 +70,19 @@ class SizeEnvelope:
         Number of designs at the ``runtime_base_min`` anchor. Used so the
         estimator linearly scales when the user requests more/fewer designs.
         100 for diffusion tools, 10 for bindcraft (default trajectories).
-    ``runtime_hard_cap_min``
-        HARD BLOCK threshold (minutes) — reject submit when the runtime
-        estimator predicts wall-clock above this. Sized for pilot tier
-        practicality: pilot-tier Modal subprocess caps are 1800-7200s per
-        stage, and a 100-design job at 200+ aa target would hit these
-        long before VRAM exhaustion. Set per-tool from observed per-design
-        rate × typical num_designs ceiling recoverable within Modal's
-        per-stage timeout budget.
+
+    Note: the prior ``runtime_hard_cap_min`` field was retired by the
+    tier-collapse PR. Wall-clock is no longer a preflight block; long
+    campaigns are a legitimate user choice on the single-tier model,
+    and Modal's own per-subprocess timeout is the residual safety net.
+    The runtime estimate is still surfaced as advisory copy in the
+    preflight panel.
     """
     hard_cap_target_aa: int
     soft_warn_target_aa: int
     hard_cap_combined_aa: int
     runtime_base_min: float
     runtime_alpha: float
-    runtime_hard_cap_min: int
     runtime_baseline_designs: int = 100
 
 
@@ -124,9 +122,10 @@ class ToolRules:
 #   published per-design rates (RFdiffusion ~5-10 min/design at small
 #   targets, BindCraft ~30 min/trajectory, Boltz-1 ~5-10 min/design).
 #
-# runtime_hard_cap_min hard-blocks (target_aa, num_designs) combinations
-# that obviously exceed Modal's pilot-tier subprocess timeouts long
-# before VRAM is the issue.
+# The estimate is surfaced in the preflight panel as advisory copy. It
+# no longer blocks submit — the tier-collapse PR retired the wall-clock
+# hard cap in favour of letting users run multi-day campaigns when they
+# explicitly choose a large design count.
 # ---------------------------------------------------------------------------
 
 _RFANTIBODY = ToolRules(
@@ -141,7 +140,6 @@ _RFANTIBODY = ToolRules(
         hard_cap_combined_aa=720,    # +120 VHH framework (binder fixed)
         runtime_base_min=200.0,      # Week 2 calibrated from 412/4 = 41 min
         runtime_alpha=1.2,           # RF2 triangle attention dominates
-        runtime_hard_cap_min=120,    # pilot-tier per-stage timeout safety
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -162,7 +160,6 @@ _RFDIFFUSION = ToolRules(
         hard_cap_combined_aa=600,
         runtime_base_min=150.0,      # Faster than rfantibody (no RF2 stage)
         runtime_alpha=1.2,
-        runtime_hard_cap_min=120,
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -189,7 +186,6 @@ _BINDCRAFT = ToolRules(
         hard_cap_combined_aa=600,
         runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
         runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
-        runtime_hard_cap_min=180,    # longer-running tool, more headroom
         runtime_baseline_designs=10, # bindcraft default trajectories
     ),
     gap=GapThresholds(
@@ -211,7 +207,6 @@ _BOLTZGEN = ToolRules(
         hard_cap_combined_aa=700,
         runtime_base_min=600.0,      # Boltz-1 diffusion ~5-10 min/design × 100
         runtime_alpha=1.0,
-        runtime_hard_cap_min=120,
     ),
     gap=GapThresholds(
         warn_length=20,

@@ -440,7 +440,6 @@ def test_size_envelope_within_caps_emits_runtime_estimate():
     assert v.size_envelope.runtime_basis == "4 designs"
     assert not v.size_envelope.over_soft_warn
     assert not v.size_envelope.over_hard_cap
-    assert not v.size_envelope.over_runtime_cap
 
 
 def test_size_envelope_omits_runtime_when_num_designs_missing():
@@ -451,7 +450,6 @@ def test_size_envelope_omits_runtime_when_num_designs_missing():
     )
     assert v.size_envelope is not None
     assert v.size_envelope.runtime_estimate_min is None
-    assert not v.size_envelope.over_runtime_cap
 
 
 def test_size_soft_warn_surfaces_amber_message():
@@ -530,43 +528,37 @@ def test_size_envelope_gpu_field_populated():
 
 
 # ---------------------------------------------------------------------------
-# Runtime hard cap (Week 2 addition — pilot-tier wall-time ceiling)
+# Runtime estimate (advisory only — the tier-collapse PR retired the
+# wall-clock hard cap; the estimator now surfaces minutes as a panel hint
+# but never blocks submit. The remaining test pins the estimator math to
+# the existing curve so an accidental anchor change is caught.)
 # ---------------------------------------------------------------------------
 
-def test_runtime_hard_cap_blocks_high_design_count():
-    """200 designs × 200 aa target on rfantibody → estimate exceeds 120 min cap."""
+def test_runtime_estimate_scales_with_design_count():
+    """200 designs takes 50x longer than 4 designs at the same target size."""
     data = _chain_pdb("A", list(range(1, 201)))   # 200 aa
-    v = preflight_for_tool(
+    big = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
         binder_max_aa=120, num_designs=200,
     )
-    # 200 aa < rfantibody hard_cap 600, but 200 designs × 200 aa exceeds
-    # runtime_hard_cap_min=120
-    assert v.kind is VerdictKind.NEEDS_FIX
-    assert v.size_envelope.over_runtime_cap
-    assert not v.size_envelope.over_hard_cap
-    assert "wall-clock" in v.reason.lower() or "min" in v.reason.lower()
-    # Suggested fix should mention lowering design count
-    assert "designs" in v.suggested_fix.lower()
-
-
-def test_runtime_hard_cap_passes_for_small_jobs():
-    """4 designs × 100 aa target → comfortably under runtime cap."""
-    data = _chain_pdb("A", list(range(1, 101)))   # 100 aa
-    v = preflight_for_tool(
+    small = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
         binder_max_aa=120, num_designs=4,
     )
-    assert not v.size_envelope.over_runtime_cap
-    assert v.size_envelope.runtime_estimate_min is not None
-    assert v.size_envelope.runtime_estimate_min < v.size_envelope.runtime_hard_cap_min
+    # Both should pass preflight on size grounds; runtime cap retired.
+    assert big.kind is not VerdictKind.NEEDS_FIX
+    assert small.kind is not VerdictKind.NEEDS_FIX
+    # Estimate scales linearly in num_designs (200 / 4 = 50x).
+    assert big.size_envelope.runtime_estimate_min is not None
+    assert small.size_envelope.runtime_estimate_min is not None
+    ratio = big.size_envelope.runtime_estimate_min / small.size_envelope.runtime_estimate_min
+    assert 40.0 < ratio < 55.0  # allow floor + arithmetic slack
 
 
-def test_runtime_hard_cap_not_checked_when_num_designs_missing():
-    """No num_designs → no runtime estimate → no runtime block possible."""
+def test_runtime_estimate_omitted_without_num_designs():
+    """No num_designs → estimator does not surface a misleading value."""
     data = _chain_pdb("A", list(range(1, 101)))
     v = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
     )
-    assert not v.size_envelope.over_runtime_cap
     assert v.size_envelope.runtime_estimate_min is None
