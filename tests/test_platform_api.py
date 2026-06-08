@@ -38,7 +38,9 @@ def _valid_ctx() -> APIKeyContext:
     )
 
 
-def test_targets_returns_empty_list_in_alpha():
+def test_targets_returns_calibrated_catalogue():
+    """The catalogue is populated; every entry carries the documented
+    on-wire shape so an agent can plan without an extra round-trip."""
     app = _build_app()
     client = app.test_client()
     with patch(
@@ -50,7 +52,12 @@ def test_targets_returns_empty_list_in_alpha():
         )
     assert resp.status_code == 200
     body = resp.get_json()
-    assert body == {"targets": [], "total": 0}
+    assert isinstance(body["targets"], list)
+    assert body["total"] == len(body["targets"])
+    assert body["total"] >= 5  # alpha catalogue floor
+    sample = body["targets"][0]
+    for required in ("target_id", "name", "supported_experiment_types", "typical_campaign_range_usd"):
+        assert required in sample, f"missing required field: {required}"
     assert resp.headers["X-Robots-Tag"] == "noindex"
     assert resp.headers["Cache-Control"] == "no-store"
 
@@ -175,7 +182,12 @@ def test_create_experiment_rejects_non_canonical_residues():
     assert body["error"]["code"] == "invalid_sequences"
 
 
-def test_create_experiment_rejects_calibrated_target_id():
+def test_create_experiment_rejects_unknown_target_id():
+    """A target_id not in the catalogue returns 404 unknown_target.
+
+    Distinct from the old behaviour: before the catalogue shipped, any
+    target_id returned 400 calibrated_targets_unavailable. Now unknown
+    ids are properly distinguished from known ids."""
     app = _build_app()
     client = app.test_client()
     with patch(
@@ -186,15 +198,15 @@ def test_create_experiment_rejects_calibrated_target_id():
             json={
                 "experiment_spec": {
                     "experiment_type": "yeast_display",
-                    "target": {"target_id": "some-uuid"},
+                    "target": {"target_id": "tgt_does_not_exist_v1"},
                     "sequences": {"d1": "MASR"},
                 }
             },
             headers={"Authorization": "Bearer rk_live_xxx"},
         )
-    assert resp.status_code == 400
+    assert resp.status_code == 404
     body = resp.get_json()
-    assert body["error"]["code"] == "calibrated_targets_unavailable"
+    assert body["error"]["code"] == "unknown_target"
 
 
 def test_webhook_signature_roundtrip():

@@ -74,9 +74,12 @@ def build_spec() -> dict[str, Any]:
                     "tags": ["targets"],
                     "summary": "List calibrated targets",
                     "description": (
-                        "Returns the calibrated antigen catalogue. Empty during "
-                        "the alpha — use the `custom` target shape on POST "
-                        "/experiments."
+                        "Returns the calibrated antigen catalogue. Each "
+                        "entry carries `supported_experiment_types` and "
+                        "`typical_campaign_range_usd`. Use the entry's "
+                        "`target_id` on POST /experiments to skip human "
+                        "scoping, or use the `custom` target shape for a "
+                        "one-off antigen."
                     ),
                     "responses": {
                         "200": {
@@ -142,9 +145,11 @@ def build_spec() -> dict[str, Any]:
                     "tags": ["experiments"],
                     "summary": "Non-binding cost estimate",
                     "description": (
-                        "Returns an order-of-magnitude USD range plus a "
-                        "scoping URL. Alpha submissions all return "
-                        "`requires_human_quote=true`."
+                        "Returns a USD range. Catalogue targets "
+                        "(`target_kind=catalog` + `target_id`) get a "
+                        "calibrated band with `requires_human_quote=false`. "
+                        "Custom targets get an order-of-magnitude "
+                        "placeholder with `requires_human_quote=true`."
                     ),
                     "requestBody": {
                         "required": True,
@@ -308,8 +313,87 @@ def build_spec() -> dict[str, Any]:
                     "type": "object",
                     "required": ["targets", "total"],
                     "properties": {
-                        "targets": {"type": "array", "items": {"type": "object"}},
+                        "targets": {
+                            "type": "array",
+                            "items": {"$ref": "#/components/schemas/CalibratedTarget"},
+                        },
                         "total": {"type": "integer"},
+                    },
+                },
+                "CalibratedTarget": {
+                    "type": "object",
+                    "required": [
+                        "target_id",
+                        "name",
+                        "supported_experiment_types",
+                        "typical_campaign_range_usd",
+                    ],
+                    "properties": {
+                        "target_id": {
+                            "type": "string",
+                            "description": (
+                                "Opaque, stable, human-readable catalogue id, "
+                                "e.g. `tgt_her2_ecd_v1`."
+                            ),
+                        },
+                        "name": {"type": "string"},
+                        "official_symbol": {
+                            "type": "string",
+                            "description": "HGNC gene symbol, when applicable.",
+                        },
+                        "uniprot_id": {"type": "string"},
+                        "antigen_form": {
+                            "type": "string",
+                            "description": (
+                                "Form delivered to the wet lab "
+                                "(e.g. recombinant soluble ECD, biotinylated)."
+                            ),
+                        },
+                        "antigen_sequence_stub": {
+                            "type": "string",
+                            "description": (
+                                "Display-only canonical sequence stub for "
+                                "the form used at the lab. Carries no "
+                                "signal peptide. Use UniProt for the "
+                                "authoritative reference."
+                            ),
+                        },
+                        "supported_experiment_types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "yeast_display",
+                                    "mammalian_display",
+                                    "dms",
+                                ],
+                            },
+                        },
+                        "indication_area": {"type": "string"},
+                        "calibration_notes": {
+                            "type": "string",
+                            "description": (
+                                "Operator-authored notes about sort gates, "
+                                "panel scaffolds, or epitope anchoring used "
+                                "during previous campaigns."
+                            ),
+                        },
+                        "typical_campaign_range_usd": {
+                            "type": "object",
+                            "description": (
+                                "Per-experiment-type cost band, "
+                                "`{experiment_type: [low_usd, high_usd]}`. "
+                                "Bands are wide on purpose: round count, "
+                                "sort gates, and NGS depth all shift the "
+                                "final number."
+                            ),
+                            "additionalProperties": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "minItems": 2,
+                                "maxItems": 2,
+                            },
+                        },
                     },
                 },
                 "CreateExperimentRequest": {
@@ -360,13 +444,18 @@ def build_spec() -> dict[str, Any]:
                 },
                 "Target": {
                     "type": "object",
+                    "description": (
+                        "Supply EITHER `target_id` (catalogue path) or "
+                        "`custom` (one-off antigen). Mutually exclusive."
+                    ),
                     "properties": {
                         "target_id": {
                             "type": "string",
-                            "format": "uuid",
                             "description": (
-                                "Reserved for calibrated targets. Rejected "
-                                "during the alpha — use `custom`."
+                                "Catalogue target id from "
+                                "`GET /api/v1/targets`. The experiment is "
+                                "constructed against the catalogue entry "
+                                "and skips human scoping."
                             ),
                         },
                         "custom": {
@@ -377,6 +466,11 @@ def build_spec() -> dict[str, Any]:
                                 "antigen_sequence": {"type": "string"},
                                 "notes": {"type": "string"},
                             },
+                            "description": (
+                                "One-off antigen. Routes through human "
+                                "scoping; cost-estimate returns a "
+                                "placeholder range."
+                            ),
                         },
                     },
                 },
@@ -487,6 +581,17 @@ def build_spec() -> dict[str, Any]:
                         "target_kind": {
                             "type": "string",
                             "enum": ["catalog", "custom"],
+                            "description": (
+                                "Default `custom`. Set to `catalog` and "
+                                "pass `target_id` to get a calibrated band."
+                            ),
+                        },
+                        "target_id": {
+                            "type": "string",
+                            "description": (
+                                "Required when `target_kind=catalog`. "
+                                "Available ids from GET /api/v1/targets."
+                            ),
                         },
                     },
                 },
@@ -496,7 +601,21 @@ def build_spec() -> dict[str, Any]:
                     "properties": {
                         "experiment_type": {"type": "string"},
                         "target_kind": {"type": "string"},
-                        "requires_human_quote": {"type": "boolean"},
+                        "target_id": {
+                            "type": "string",
+                            "description": (
+                                "Echoed back when the estimate was keyed "
+                                "to a catalogue entry."
+                            ),
+                        },
+                        "target_name": {"type": "string"},
+                        "requires_human_quote": {
+                            "type": "boolean",
+                            "description": (
+                                "`false` for calibrated catalogue entries; "
+                                "`true` for custom targets."
+                            ),
+                        },
                         "estimated_range_usd": {
                             "type": "array",
                             "items": {"type": "integer"},
