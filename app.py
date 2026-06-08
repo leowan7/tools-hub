@@ -868,6 +868,24 @@ def create_app() -> Flask:
         "SESSION_SECRET_KEY", os.urandom(32)
     )
 
+    # GPU label sync: best-effort refresh of TOOL_RULES.gpu from Modal-side
+    # metadata. Today this is a stub that always falls back to the hardcoded
+    # values; the hook exists so a future Modal API query or vendored
+    # gpu_manifest.json can plug in without touching the create_app flow.
+    # Wrapped in try/except so a Modal outage cannot stop tools-hub from
+    # booting. See shared/modal_gpu_metadata.py for the extension paths.
+    try:
+        from shared.modal_gpu_metadata import (  # noqa: PLC0415
+            sync_tool_rules_gpu_labels,
+        )
+        sync_tool_rules_gpu_labels()
+    except Exception:
+        logger.warning(
+            "modal_gpu_sync raised at startup; continuing with hardcoded "
+            "TOOL_RULES.gpu values.",
+            exc_info=True,
+        )
+
     # Metric glossary available in all templates (candidate_table macro reads it).
     flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
 
