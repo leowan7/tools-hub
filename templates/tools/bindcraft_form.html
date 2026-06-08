@@ -240,13 +240,18 @@
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
 
           <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-          <input type="number" name="num_designs" id="num_designs" required {{ pre_value(pre_fill, "num_designs", "8") }} min="1" max="24"
+          <input type="number" name="num_designs" id="num_designs" required {{ pre_value(pre_fill, "num_designs", "4") }} min="1" max="500"
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-            How many final filtered designs to return (1 to 24). Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. Pipeline cost floor is ~45 min regardless of count.
+            How many final filtered designs to return (1 to 500). Each passes AF2 re-prediction with ipTM and pLDDT above the BindCraft default thresholds. Pipeline cost floor is ~45 min regardless of count.
           </div>
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+            First time on this target? Start with 4 designs (~45 min) to
+            confirm your hotspots and binder length range, then scale to
+            100+ once the small batch looks reasonable. BindCraft
+            trajectories are heavy (~30 min each) so larger campaigns
+            run for days. Billed by actual GPU consumed; cancellation
+            does not refund time already used.
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

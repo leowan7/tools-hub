@@ -57,13 +57,18 @@ def validate(
     if binder_length_min > binder_length_max:
         return None, "binder_length_min must be <= binder_length_max."
 
-    raw_num_designs = (form.get("num_designs") or "8").strip()
+    raw_num_designs = (form.get("num_designs") or "4").strip()
     try:
         num_designs = int(raw_num_designs)
     except ValueError:
         return None, "num_designs must be a whole number."
-    if num_designs < 1 or num_designs > 24:
-        return None, "num_designs must be between 1 and 24."
+    # Tier-collapse PR: raised the per-job cap from 24 to 500. BindCraft
+    # trajectories are expensive (~30 min each on A100-80GB), so the
+    # wallet $500 hard cap typically constrains real campaigns long
+    # before this validator's ceiling. Bigger campaigns top up the
+    # wallet.
+    if num_designs < 1 or num_designs > 500:
+        return None, "num_designs must be between 1 and 500."
 
     return (
         {
@@ -108,10 +113,13 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — your target, ~45 min",
+            label="Your target, ~30 min start to first results",
             description=(
-                "~45 min on A100-80GB, up to 24 final designs (you choose), "
-                "results emailed on completion."
+                "BindCraft against your uploaded PDB on A100-80GB. "
+                "Pick 1-500 trajectories. Start with a small batch "
+                "(4 trajectories, ~30-45 min) to confirm your target "
+                "and hotspots, then scale to 100+ once the small batch "
+                "looks reasonable. Results emailed on completion."
             ),
             requires_pdb=True,
             long_running=True,

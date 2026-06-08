@@ -263,18 +263,22 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" min="1" max="200" value="8"
+            <input type="number" name="num_designs" id="num_designs" min="1" max="1000" value="4"
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              How many candidates to sample (1 to 200). Each is independently scored by AF2 multimer (ipTM, pLDDT, i_pAE).
+              How many candidates to sample (1 to 1000). Each is independently scored by AF2 multimer (ipTM, pLDDT, i_pAE).
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+              First time on this target? Start with 4 designs (~30 min) to
+              confirm your hotspots and binder length, then scale to 100+
+              once the small batch looks reasonable. Larger jobs take
+              longer wall-clock and are billed by actual GPU consumed;
+              cancellation does not refund time already used.
             </div>
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed (~15-30 min on A100-40GB).
+            Runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed when the run completes (A100-80GB).
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

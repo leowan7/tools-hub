@@ -267,10 +267,16 @@
             </div>
 
             <label for="budget" class="label" style="display:block; margin-bottom: 0.4rem;">Budget (final candidates)</label>
-            <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "8") }} min="1" max="24"
+            <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "4") }} min="1" max="200"
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              Top-N final candidates returned (1 to 200). Each refolded with RMSD + ipTM.
+            </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+              First time on this target? Start with 4 designs (~15-30 min)
+              to confirm your binder length and protocol, then scale up
+              once the small batch looks reasonable. Billed by actual GPU
+              consumed; cancellation does not refund time already used.
             </div>
           </div>
 

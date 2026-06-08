@@ -80,9 +80,15 @@ def validate(
     if binder_length_min > binder_length_max:
         return None, "binder_length_min must be <= binder_length_max."
 
-    budget = _parse_int(form.get("budget"), 8)
-    if budget < 1 or budget > 24:
-        return None, "budget must be between 1 and 24."
+    budget = _parse_int(form.get("budget"), 4)
+    # Tier-collapse PR: raised the per-job cap from 24 to 200 (matches
+    # the internal num_designs pool in build_payload). Going above 200
+    # needs a coordinated bump to the docker-side num_designs and
+    # subprocess timeout in llm-proteinDesigner; that is follow-up
+    # work, not in this PR. The wallet $300 hard cap on boltzgen still
+    # constrains actual spend.
+    if budget < 1 or budget > 200:
+        return None, "budget must be between 1 and 200."
 
     protocol = (form.get("protocol") or "protein-anything").strip()
     if protocol not in ALLOWED_PROTOCOLS:
@@ -151,11 +157,14 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — your target, ~30 min",
+            label="Your target, ~30 min start to first results",
             description=(
-                "Real BoltzGen run against your uploaded target. Up to 24 "
-                "final candidates with refolding RMSD + ipTM scores; "
-                "results emailed when complete (~15-60 min on A100-40GB)."
+                "Real BoltzGen run against your uploaded target. Pick "
+                "1-200 final candidates with refolding RMSD + ipTM "
+                "scores. Start with 4 designs (~15-30 min) to confirm "
+                "your target and binder length, then scale up once the "
+                "small batch looks reasonable. Results emailed when "
+                "complete; A100-40GB."
             ),
             requires_pdb=True,
             long_running=True,
