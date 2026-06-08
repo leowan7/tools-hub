@@ -67,6 +67,18 @@
       </span>
     </div>
 
+    {# Burn-down billing notice (tier-collapse PR). Surfaces the
+       consumption-based billing model + the no-refund-on-cancel rule
+       so users see the rule before they submit, not after they cancel
+       and discover the charge. #}
+    <div class="wallet-estimate-row wallet-estimate-row--billing-note">
+      <span class="wallet-estimate-helper">
+        Billed by actual GPU consumed, up to the estimate. Surplus
+        returns to your wallet automatically. Cancellation does not
+        refund GPU time already used.
+      </span>
+    </div>
+
     {# Soft warning band — visible when estimate is near the scaled hard cap. #}
     <div class="wallet-estimate-warning" data-estimate-soft-warning hidden>
       This run is near the per job cost ceiling for this tool. If compute
