@@ -48,7 +48,12 @@ the operator mints their first key.
 
 ## CR-02 — In-process dispatcher loses deliveries on backpressure / restart / crash
 
-### What's broken
+**STATUS: SHIPPED 2026-06-08 (PR #14, commit `17d8ffc`).** Migration
+0027 applied to production Supabase the same day. Sections below
+preserved as historical context; see "What shipped" at the bottom of
+this section for the landed implementation.
+
+### What's broken (historical)
 
 `shared/webhooks.py:461-494` — the dispatcher runs in daemon threads
 that sleep up to 6h between retries. Three failure modes silently
@@ -105,13 +110,43 @@ A 60-second cron worker. Sketch:
 0025), so the poll is cheap. `FOR UPDATE SKIP LOCKED` lets multiple
 Railway replicas run the cron without double-firing.
 
-### Hard deadline
+### Hard deadline (historical)
 
 - **Before the first customer who depends on webhook reliability** —
   not necessarily before the first ARC-level dev integration test, but
   before any customer's pipeline routes off webhook signals.
 - A simple heuristic: ship CR-02 before publishing the `/platform`
   page on ranomics.com to any audience beyond direct outreach.
+
+### What shipped (2026-06-08, PR #14)
+
+1. `supabase/migrations/0027_webhook_deliveries_claim_rpc.sql` —
+   `claim_due_webhook_deliveries(p_limit, p_lease_seconds)` SECURITY
+   DEFINER RPC. `FOR UPDATE SKIP LOCKED` claims up to `p_limit` ready
+   rows and bumps `next_retry_at` by the lease so a crashed worker
+   can't double-fire. Service-role-only.
+2. `shared/webhooks.py` — renamed `_dispatch_loop` to
+   `_dispatch_once`. One attempt per call. Success stamps
+   `delivered_at`; failure with retries left writes `next_retry_at`
+   and returns; past max attempts stamps `delivered_at` with
+   `last_error`. No more in-thread `time.sleep`. New
+   `sweep_due_deliveries(limit=50)` calls the RPC and fans rows out to
+   `_bounded_dispatch` threads.
+3. `app.py` — APScheduler `BackgroundScheduler` registered behind
+   `ENABLE_PLATFORM_API=1` and `WEBHOOK_SWEEP_ENABLED=1` (default ON).
+   Interval = `WEBHOOK_SWEEP_INTERVAL_SECONDS` (default 60, floor 10).
+   `coalesce=True, max_instances=1` so a slow tick doesn't pile up.
+4. Tests: 7 new in `tests/test_platform_api_hardening.py` (single-
+   attempt success, failure-reschedules-no-sleep, past-max-stamps,
+   sweep-dispatches-each-row, drops-past-max, missing-service-client,
+   skips-missing-target-url). 100/100 platform-API tests pass.
+5. Smoke: post-merge live `GET https://tools.ranomics.com/api/v1/
+   openapi.json` returns HTTP 200, OpenAPI 3.1.0, 7 endpoints.
+
+The semaphore-saturation, process-restart, and unexpected-exception
+failure modes are all closed: rows live in Postgres with an indexed
+`next_retry_at` and the cron sweeps them every 60s. A Railway replica
+won't double-fire because the RPC holds `FOR UPDATE SKIP LOCKED`.
 
 ---
 
