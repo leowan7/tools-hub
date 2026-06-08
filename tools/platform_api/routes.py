@@ -48,6 +48,13 @@ from shared.campaigns import (
     list_user_campaigns,
     transition_api_status,
 )
+from tools.platform_api.calibrated_targets import (
+    cost_band,
+    get_target,
+    list_catalog,
+    supported_experiment_types,
+    supports_experiment_type,
+)
 from shared.webhooks import dispatch_webhook
 
 logger = logging.getLogger(__name__)
@@ -229,12 +236,17 @@ def _idempotency_key_from_header() -> Optional[str]:
 def list_targets():
     """List calibrated targets.
 
-    The alpha catalogue is empty: every submission is custom-scoped, so
-    callers should fall back to the ``custom`` shape on POST /experiments.
-    A future migration populates this endpoint and ``cost-estimate``
-    starts returning real numbers instead of ``requires_human_quote``.
+    Returns every entry from the alpha catalogue. Each entry carries
+    ``supported_experiment_types`` and ``typical_campaign_range_usd``
+    so a planning agent can decide whether to submit under the catalogue
+    path or use a one-off ``custom`` target.
+
+    The catalogue is small and curated by hand; it is not user-extensible.
+    Use the ``custom`` target shape on POST /experiments for one-off
+    antigens.
     """
-    return jsonify({"targets": [], "total": 0})
+    targets = list_catalog()
+    return jsonify({"targets": targets, "total": len(targets)})
 
 
 # ---------------------------------------------------------------------------
@@ -290,32 +302,78 @@ def create_experiment():
     target = spec.get("target")
     if not isinstance(target, dict):
         return _error(400, "invalid_target", "target is required.")
-    if "target_id" in target:
-        # Catalogue targets are not live yet; reject explicitly.
-        return _error(
-            400,
-            "calibrated_targets_unavailable",
-            "The calibrated target catalogue is not live in the alpha. "
-            "Use the 'custom' target shape instead.",
-        )
+
+    target_id_raw = target.get("target_id")
     custom = target.get("custom")
-    if not isinstance(custom, dict):
+
+    if target_id_raw is not None and custom is not None:
         return _error(
             400,
             "invalid_target",
-            "target.custom is required: {name, antigen_sequence?, notes?}.",
+            "target.target_id and target.custom are mutually exclusive; "
+            "supply one or the other.",
         )
-    target_name = (custom.get("name") or "").strip()
-    if not target_name:
-        return _error(400, "invalid_target", "target.custom.name is required.")
-    target_context_parts: list[str] = []
-    antigen = (custom.get("antigen_sequence") or "").strip()
-    if antigen:
-        target_context_parts.append(f"antigen_sequence: {antigen}")
-    notes = (custom.get("notes") or "").strip()
-    if notes:
-        target_context_parts.append(f"notes: {notes}")
-    target_context = "\n".join(target_context_parts)
+
+    if target_id_raw is not None:
+        # Calibrated catalogue path.
+        if not isinstance(target_id_raw, str):
+            return _error(
+                400, "invalid_target", "target.target_id must be a string."
+            )
+        calibrated_entry = get_target(target_id_raw.strip())
+        if calibrated_entry is None:
+            return _error(
+                404,
+                "unknown_target",
+                f"target_id '{target_id_raw}' is not in the calibrated "
+                "catalogue. List available ids via GET /api/v1/targets, "
+                "or use the 'custom' shape for a one-off antigen.",
+            )
+        if not supports_experiment_type(calibrated_entry, experiment_type):
+            supported = supported_experiment_types(calibrated_entry)
+            return _error(
+                400,
+                "unsupported_experiment_type",
+                f"target_id '{calibrated_entry['target_id']}' is not "
+                f"calibrated for experiment_type '{experiment_type}'. "
+                f"Supported: {supported}.",
+            )
+        target_name = calibrated_entry["name"]
+        parts: list[str] = [f"catalogue_target_id: {calibrated_entry['target_id']}"]
+        if calibrated_entry.get("uniprot_id"):
+            parts.append(f"uniprot_id: {calibrated_entry['uniprot_id']}")
+        if calibrated_entry.get("antigen_form"):
+            parts.append(f"antigen_form: {calibrated_entry['antigen_form']}")
+        if calibrated_entry.get("antigen_sequence_stub"):
+            parts.append(
+                f"antigen_sequence (catalogue stub): "
+                f"{calibrated_entry['antigen_sequence_stub']}"
+            )
+        if calibrated_entry.get("calibration_notes"):
+            parts.append(
+                f"calibration_notes: {calibrated_entry['calibration_notes']}"
+            )
+        target_context = "\n".join(parts)
+    else:
+        # Custom one-off path. ``target.custom`` is required.
+        if not isinstance(custom, dict):
+            return _error(
+                400,
+                "invalid_target",
+                "target.custom is required: "
+                "{name, antigen_sequence?, notes?}.",
+            )
+        target_name = (custom.get("name") or "").strip()
+        if not target_name:
+            return _error(400, "invalid_target", "target.custom.name is required.")
+        target_context_parts: list[str] = []
+        antigen = (custom.get("antigen_sequence") or "").strip()
+        if antigen:
+            target_context_parts.append(f"antigen_sequence: {antigen}")
+        notes = (custom.get("notes") or "").strip()
+        if notes:
+            target_context_parts.append(f"notes: {notes}")
+        target_context = "\n".join(target_context_parts)
 
     sequences, err = _validate_sequences(spec.get("sequences"))
     if err:
@@ -404,14 +462,15 @@ def cost_estimate():
           "experiment_type": "yeast_display" | "mammalian_display" | "dms",
           "candidate_count": 5000,
           "library_diversity": 12000,
-          "target_kind": "catalog" | "custom"
+          "target_kind": "catalog" | "custom",
+          "target_id": "tgt_her2_ecd_v1"
         }
 
-    During the alpha the calibrated-target catalogue is empty, so every
-    response is ``requires_human_quote=true`` with an order-of-magnitude
-    placeholder range. The range is deliberately wide — the real number
-    depends on round count, sort gates, and NGS depth that the human
-    scoping conversation pins down.
+    Custom targets all return ``requires_human_quote: true`` with an
+    order-of-magnitude placeholder band. Catalogue targets return a
+    calibrated band keyed on the entry's ``typical_campaign_range_usd``
+    map. Bands are wide on purpose: round count, sort gates, and NGS
+    depth all shift the final number.
     """
     body = _json_body()
     if body is None:
@@ -430,6 +489,49 @@ def cost_estimate():
             400, "invalid_target_kind", "target_kind must be 'catalog' or 'custom'."
         )
 
+    target_id = body.get("target_id")
+    if target_kind == "catalog":
+        if not isinstance(target_id, str) or not target_id.strip():
+            return _error(
+                400,
+                "invalid_target_id",
+                "target_id is required when target_kind is 'catalog'.",
+            )
+        entry = get_target(target_id.strip())
+        if entry is None:
+            return _error(
+                404,
+                "unknown_target",
+                f"target_id '{target_id}' is not in the calibrated "
+                "catalogue. List available ids via GET /api/v1/targets.",
+            )
+        band = cost_band(entry, experiment_type)
+        if band is None:
+            supported = supported_experiment_types(entry)
+            return _error(
+                400,
+                "unsupported_experiment_type",
+                f"target_id '{entry['target_id']}' is not calibrated for "
+                f"experiment_type '{experiment_type}'. "
+                f"Supported: {supported}.",
+            )
+        return jsonify(
+            {
+                "experiment_type": experiment_type,
+                "target_kind": "catalog",
+                "target_id": entry["target_id"],
+                "target_name": entry["name"],
+                "requires_human_quote": False,
+                "estimated_range_usd": band,
+                "note": (
+                    "Calibrated band based on previously-run campaigns "
+                    "against this catalogue entry. Final invoice depends "
+                    "on round count, sort gates, and NGS depth set during "
+                    "experiment design."
+                ),
+            }
+        )
+
     return jsonify(
         {
             "experiment_type": experiment_type,
@@ -438,8 +540,8 @@ def cost_estimate():
             "estimated_range_usd": _placeholder_range(experiment_type),
             "scoping_url": _scoping_url(),
             "note": (
-                "The alpha returns a placeholder range; a calibrated number "
-                "is issued after a brief scoping call. "
+                "The alpha returns a placeholder range for custom targets; "
+                "a calibrated number is issued after a brief scoping call. "
                 "Submit POST /experiments to start the conversation."
             ),
         }
