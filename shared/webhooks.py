@@ -441,7 +441,31 @@ def _post_once(target_url: str, body: bytes, signature: str) -> tuple[bool, str]
     return (False, f"http {resp.status_code}: {snippet}")
 
 
-def _dispatch_loop(*, delivery_id: str, target_url: str, payload: dict[str, Any]) -> None:
+def _dispatch_once(
+    *,
+    delivery_id: str,
+    target_url: str,
+    payload: dict[str, Any],
+    prior_attempts: int = 0,
+) -> None:
+    """Run a SINGLE delivery attempt and reschedule.
+
+    CR-02 (fresh-review): the prior implementation looped in-thread with
+    ``time.sleep(wait_seconds)`` between attempts, holding a semaphore
+    slot for up to 7.2 hours and losing every retry on a Railway
+    redeploy (the in-thread sleep dies with the worker). We now:
+
+      1. Run exactly ONE POST attempt per call.
+      2. On success: stamp ``delivered_at``.
+      3. On failure with retries left: update ``next_retry_at`` and
+         return. The cron sweep picks the row back up when due.
+      4. On failure past the schedule: stamp ``delivered_at`` (with
+         ``last_error`` retained for the audit trail).
+
+    ``prior_attempts`` is the number of attempts ALREADY recorded on the
+    row before this call. The cron sweep passes ``row["attempts"]``; the
+    inline first-fire from ``dispatch_webhook`` passes 0.
+    """
     secret = _signing_secret()
     if not secret:
         logger.error(
@@ -457,60 +481,52 @@ def _dispatch_loop(*, delivery_id: str, target_url: str, payload: dict[str, Any]
         )
         return
 
+    # FIX HI-02 (fresh-review): re-validate at every attempt so a
+    # DNS-rebinding attacker can't flip the host between the original
+    # enqueue and a later retry.
+    try:
+        validate_webhook_url_safe(target_url)
+    except UnsafeWebhookURLError as exc:
+        _update_delivery(
+            delivery_id=delivery_id,
+            attempts=prior_attempts,
+            delivered_at=datetime.now(timezone.utc),
+            last_error=f"rebind blocked at attempt {prior_attempts}: {exc}",
+        )
+        return
+
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ts = int(time.time())
+    sig = format_signature_header(ts, sign_payload(ts, body, secret))
+    ok, message = _post_once(target_url, body, sig)
+    attempts = prior_attempts + 1
 
-    for attempt_index in range(_MAX_ATTEMPTS):
-        # FIX HI-02 (fresh-review): re-validate the URL at the top of
-        # every retry. The validation done in dispatch_webhook closes
-        # the once-at-enqueue rebinding window, but a 6h retry schedule
-        # gives a DNS-rebinding attacker plenty of room to flip the
-        # host's A record to an internal IP between attempt N-1 and N.
-        # Without this, retries 2-6 happily POST to whatever the resolver
-        # returns at request time. We stamp the row and stop on rebind
-        # so the operator sees the rejection in webhook_deliveries.last_error.
-        try:
-            validate_webhook_url_safe(target_url)
-        except UnsafeWebhookURLError as exc:
-            _update_delivery(
-                delivery_id=delivery_id,
-                attempts=attempt_index,
-                delivered_at=datetime.now(timezone.utc),
-                last_error=f"rebind blocked at retry {attempt_index}: {exc}",
-            )
-            return
-        ts = int(time.time())
-        sig = format_signature_header(ts, sign_payload(ts, body, secret))
-        ok, message = _post_once(target_url, body, sig)
-        attempts = attempt_index + 1
-        if ok:
-            _update_delivery(
-                delivery_id=delivery_id,
-                attempts=attempts,
-                delivered_at=datetime.now(timezone.utc),
-                last_error=None,
-            )
-            return
+    if ok:
+        _update_delivery(
+            delivery_id=delivery_id,
+            attempts=attempts,
+            delivered_at=datetime.now(timezone.utc),
+            last_error=None,
+        )
+        return
 
-        if attempt_index < len(_BACKOFF_SECONDS):
-            wait_seconds = _BACKOFF_SECONDS[attempt_index]
-            next_at = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
-            _update_delivery(
-                delivery_id=delivery_id,
-                attempts=attempts,
-                last_error=message,
-                next_retry_at=next_at,
-            )
-            time.sleep(wait_seconds)
-        else:
-            # Out of retries. Stamp delivered_at so the queue forgets it,
-            # but keep last_error for the audit trail.
-            _update_delivery(
-                delivery_id=delivery_id,
-                attempts=attempts,
-                delivered_at=datetime.now(timezone.utc),
-                last_error=message,
-            )
-            return
+    if prior_attempts < len(_BACKOFF_SECONDS):
+        wait_seconds = _BACKOFF_SECONDS[prior_attempts]
+        next_at = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
+        _update_delivery(
+            delivery_id=delivery_id,
+            attempts=attempts,
+            last_error=message,
+            next_retry_at=next_at,
+        )
+        return
+    # Out of retries. Stamp delivered_at so the queue forgets it.
+    _update_delivery(
+        delivery_id=delivery_id,
+        attempts=attempts,
+        delivered_at=datetime.now(timezone.utc),
+        last_error=message,
+    )
 
 
 def _bounded_dispatch(
@@ -518,12 +534,16 @@ def _bounded_dispatch(
     delivery_id: str,
     target_url: str,
     payload: dict[str, Any],
+    prior_attempts: int = 0,
 ) -> None:
-    """Wrap ``_dispatch_loop`` in the concurrency semaphore.
+    """Wrap ``_dispatch_once`` in the concurrency semaphore.
 
     If the semaphore can't be acquired immediately (too many in-flight
-    deliveries), we stamp the row with last_error and a future
-    next_retry_at so a later cron / next dispatch wave can pick it up.
+    deliveries), we stamp the row with a near-future ``next_retry_at``
+    so the cron sweep picks it up shortly. Unlike the prior single-
+    attempt-with-sleeps model, a backpressure event no longer orphans
+    the row (CR-02 fresh-review): the sweep is the source of truth for
+    "what's still pending."
     """
     if not _dispatch_semaphore.acquire(blocking=False):
         logger.warning(
@@ -533,20 +553,118 @@ def _bounded_dispatch(
         )
         _update_delivery(
             delivery_id=delivery_id,
-            attempts=0,
+            attempts=prior_attempts,
             last_error=(
                 f"backpressure: dispatch capacity ({_MAX_INFLIGHT}) saturated; "
-                "row left queued for next attempt"
+                "queued for cron sweep"
             ),
             next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=60),
         )
         return
     try:
-        _dispatch_loop(
-            delivery_id=delivery_id, target_url=target_url, payload=payload
+        _dispatch_once(
+            delivery_id=delivery_id,
+            target_url=target_url,
+            payload=payload,
+            prior_attempts=prior_attempts,
         )
     finally:
         _dispatch_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
+# Cron sweep (CR-02 fresh-review)
+# ---------------------------------------------------------------------------
+
+
+def sweep_due_deliveries(*, limit: int = 50) -> int:
+    """Pick up to ``limit`` ready-to-fire deliveries and dispatch each.
+
+    CR-02: a Railway redeploy used to lose every in-thread retry sleep,
+    silently orphaning rows. This sweep replaces the in-thread sleep
+    model. It runs from an APScheduler tick (or any other cron) and:
+
+      1. Calls the ``claim_due_webhook_deliveries`` RPC to atomically
+         lease rows whose ``next_retry_at`` has elapsed. The RPC bumps
+         ``next_retry_at`` by a 90s lease so a peer worker (or the next
+         tick) won't double-fire if this worker crashes mid-dispatch.
+      2. For each leased row, calls ``_bounded_dispatch`` with the
+         stored payload. The dispatcher either stamps ``delivered_at``
+         on success or writes a new ``next_retry_at`` on failure.
+      3. Rows that have already burned through the backoff schedule
+         (``attempts >= _MAX_ATTEMPTS``) are stamped ``delivered_at``
+         to drop them from the queue.
+
+    Returns the number of rows dispatched on this tick. Caller logs the
+    count for operator visibility.
+    """
+    client = get_service_client()
+    if client is None:
+        logger.warning("sweep_due_deliveries: service client unavailable")
+        return 0
+    try:
+        response = client.rpc(
+            "claim_due_webhook_deliveries",
+            {"p_limit": max(1, min(int(limit), 500))},
+        ).execute()
+    except Exception:
+        logger.error("sweep_due_deliveries: RPC failed", exc_info=True)
+        return 0
+
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return 0
+
+    dispatched = 0
+    for row in rows:
+        try:
+            delivery_id = str(row["id"])
+            target_url = row.get("target_url")
+            payload = row.get("payload") or {}
+            attempts = int(row.get("attempts") or 0)
+        except (KeyError, TypeError, ValueError):
+            logger.warning("sweep: malformed row, skipping: %r", row)
+            continue
+
+        if not target_url:
+            # Row has no target — shouldn't happen, but don't loop on it.
+            _update_delivery(
+                delivery_id=delivery_id,
+                attempts=attempts,
+                delivered_at=datetime.now(timezone.utc),
+                last_error="row has no target_url; dropped from queue",
+            )
+            continue
+
+        if attempts >= _MAX_ATTEMPTS:
+            # Already past the schedule; drop from queue.
+            _update_delivery(
+                delivery_id=delivery_id,
+                attempts=attempts,
+                delivered_at=datetime.now(timezone.utc),
+                last_error=row.get("last_error") or "max attempts reached",
+            )
+            continue
+
+        # Dispatch on a daemon thread so a slow subscriber doesn't stall
+        # the sweep. The semaphore caps concurrent in-flight dispatches.
+        thread = threading.Thread(
+            target=_bounded_dispatch,
+            kwargs={
+                "delivery_id": delivery_id,
+                "target_url": target_url,
+                "payload": payload,
+                "prior_attempts": attempts,
+            },
+            name=f"webhook-sweep-{delivery_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        dispatched += 1
+
+    if dispatched:
+        logger.info("webhook sweep dispatched %d row(s)", dispatched)
+    return dispatched
 
 
 def dispatch_webhook(

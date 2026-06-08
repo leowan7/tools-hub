@@ -1003,6 +1003,60 @@ def create_app() -> Flask:
         # invisible — users had no way to discover it from the in-app nav.
         flask_app.jinja_env.globals["platform_api_enabled"] = True
 
+        # CR-02 (fresh-review): start the webhook-retry sweep.
+        # The in-thread sleep model used to lose every retry on a Railway
+        # redeploy (the worker dies mid-sleep). The sweep replaces that:
+        # ``next_retry_at`` becomes the source of truth, and a 60s tick
+        # picks up any due rows. Gated behind WEBHOOK_SWEEP_ENABLED in
+        # case an operator needs to disable it (the kill switch on top
+        # of the ENABLE_PLATFORM_API kill switch).
+        if os.environ.get("WEBHOOK_SWEEP_ENABLED", "1").strip() == "1":
+            try:
+                from datetime import (  # noqa: PLC0415
+                    datetime,
+                    timedelta,
+                    timezone,
+                )
+
+                from apscheduler.schedulers.background import (  # noqa: PLC0415
+                    BackgroundScheduler,
+                )
+                from shared.webhooks import sweep_due_deliveries  # noqa: PLC0415
+
+                sweep_interval = int(
+                    os.environ.get("WEBHOOK_SWEEP_INTERVAL_SECONDS", "60")
+                )
+                if sweep_interval < 10:
+                    sweep_interval = 10  # floor; below this we DoS the DB
+                _webhook_scheduler = BackgroundScheduler(
+                    timezone="UTC",
+                    daemon=True,
+                    job_defaults={
+                        "coalesce": True,  # drop missed ticks, don't pile up
+                        "max_instances": 1,  # one sweep at a time per replica
+                    },
+                )
+                _webhook_scheduler.add_job(
+                    sweep_due_deliveries,
+                    trigger="interval",
+                    seconds=sweep_interval,
+                    id="webhook-sweep",
+                    next_run_time=datetime.now(timezone.utc)
+                    + timedelta(seconds=sweep_interval),
+                )
+                _webhook_scheduler.start()
+                logger.info(
+                    "Webhook sweep started (interval=%ds)",
+                    sweep_interval,
+                )
+            except Exception:
+                logger.error(
+                    "Webhook sweep failed to start; "
+                    "deliveries that backpressure or fail their first attempt "
+                    "will not be retried until a manual sweep runs.",
+                    exc_info=True,
+                )
+
         @flask_app.route("/.well-known/ai-plugin.json", methods=["GET"])
         def ai_plugin_manifest():
             from flask import jsonify  # noqa: PLC0415
