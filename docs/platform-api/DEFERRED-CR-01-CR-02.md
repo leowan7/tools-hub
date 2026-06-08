@@ -7,7 +7,12 @@ and when each must land.
 
 ## CR-01 — Single global `WEBHOOK_SIGNING_SECRET`
 
-### What's broken
+**STATUS: SHIPPED 2026-06-08 (PR #15, commit `e2b900d`).** Migration
+0028 applied to production Supabase the same day. Sections below
+preserved as historical context; see "What shipped" at the bottom of
+this section for the landed implementation.
+
+### What's broken (historical)
 
 `shared/webhooks.py:128` reads one process-wide secret and signs every
 outbound webhook with it. Two customers verifying with the same secret
@@ -39,10 +44,69 @@ Per-tenant signing secret. Sketch:
 5. Payload gains `owner_user_id` field for receiver-side cross-check.
 6. OpenAPI manifest documents both the secret reveal and the new field.
 
-### Hard deadline
+### Hard deadline (historical)
 
 Before the **second** Platform-API customer is onboarded. Not before
 the operator mints their first key.
+
+### What shipped (2026-06-08, PR #15)
+
+1. `supabase/migrations/0028_user_profiles_webhook_secret.sql` —
+   adds three nullable columns on `user_profiles`:
+   `webhook_signing_secret` (plaintext HMAC key, format pinned to
+   `whsec_<22-128 url-safe>`), `webhook_secret_prefix` (display-only
+   first 8 chars), `webhook_secret_rotated_at` (audit timestamp).
+   Column-level `REVOKE SELECT / INSERT / UPDATE` on the secret column
+   for `PUBLIC`, `anon`, and `authenticated` keeps it off the
+   anon/authenticated read path. Service-role only.
+2. `shared/api_keys.py` — `mint_token` now returns a triple
+   `(plaintext, prefix, webhook_secret_or_None)`. On a user's first
+   API-key mint, `_new_webhook_secret()` produces a `whsec_` +
+   `secrets.token_urlsafe(16)` value and persists it via
+   `_write_webhook_secret`. Subsequent mints reuse the existing secret
+   (idempotent). New helpers: `rotate_webhook_secret` (forces a new
+   secret), `resolve_webhook_secret` (dispatch-time lookup),
+   `get_webhook_secret_display` (dashboard helper that returns prefix
+   + rotated_at only, never plaintext).
+3. `shared/webhooks.py` — `_resolve_signing_secret(owner_user_id)`
+   prefers the per-tenant secret, falls back to the
+   `WEBHOOK_SIGNING_SECRET` env var during the transition window,
+   returns `None` to fail closed. `dispatch_webhook` accepts an
+   `owner_user_id` kwarg and grafts it into the signed payload so
+   receivers can cross-check and the cron sweep can resolve the
+   secret. `_dispatch_once` reads `owner_user_id` off the persisted
+   payload and resolves the secret per-row, so the CR-02 sweep is
+   safe across tenants.
+4. `tools/platform_api/routes.py` — `_fire_webhook` now passes
+   `owner_user_id=campaign.user_id` to `dispatch_webhook`.
+5. `tools/platform_api/openapi_spec.py` — `webhook_url` description
+   in the CreateExperimentRequest schema explains the per-tenant
+   `whsec_` secret + Stripe-style `t=<ts>,v1=<hex hmac-sha256>` scheme.
+   A new `WebhookEvent` schema documents the payload shape (required:
+   `delivery_id`, `event_type`, `experiment_id`, `new_status`,
+   `results_status`, `timestamp`; optional: `prev_status`,
+   `owner_user_id`).
+6. `app.py` + `templates/account_api_keys.html` — the dashboard now
+   reveals the webhook secret exactly once on first mint (one-time
+   panel; copy-now wording matches the API-key reveal). A status
+   panel shows the prefix + last-rotated-at. A CSRF-protected
+   "Rotate webhook secret" button posts to
+   `account_api_keys_rotate_webhook_secret` and surfaces the new
+   plaintext once.
+7. Tests — 9 new in `tests/test_api_keys.py` (persist-on-first-mint,
+   second-mint-no-rotate, rotate-replaces, resolve returns plaintext,
+   unknown-user None, empty-id reject, display helpers, format
+   pin) + 7 new in `tests/test_platform_api_hardening.py`
+   (resolve-prefers-per-tenant, falls-back-to-env, both-missing,
+   no-owner-falls-back, grafts-owner-into-payload, signs-with-
+   per-tenant, refuses-when-no-secret). 88/88 platform-API tests
+   pass.
+
+The transition window: existing rows with NULL `webhook_signing_secret`
+fall back to the `WEBHOOK_SIGNING_SECRET` env var, so legacy receivers
+keep verifying as before. After the operator's next mint (or after
+they hit the dashboard rotate button), the per-tenant column is
+populated and the env-var path stops being exercised for that tenant.
 
 ---
 
