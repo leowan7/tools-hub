@@ -14,8 +14,14 @@ prefix can be added without schema changes.
 Usage
 -----
     # /account/api-keys
-    plaintext, prefix = mint_token(user_id=u, role="member", label="my-laptop")
-    # plaintext shown once; prefix stored for display
+    plaintext, prefix, webhook_secret = mint_token(
+        user_id=u, role="member", label="my-laptop"
+    )
+    # plaintext shown once; prefix stored for display.
+    # webhook_secret is the per-tenant HMAC key (CR-01). It is non-None
+    # ONLY on the first mint for a user — subsequent mints keep the
+    # existing secret and the tuple's third element is None. To force a
+    # new secret, call :func:`rotate_webhook_secret`.
 
     # /api/v1/experiments
     ctx = resolve_token(bearer_value)
@@ -23,6 +29,19 @@ Usage
         return jsonify({"error": "invalid_api_key"}), 401
     g.api_user_id = ctx.user_id
     g.api_key_role = ctx.role
+
+Per-tenant webhook signing (CR-01)
+----------------------------------
+A single ``WEBHOOK_SIGNING_SECRET`` env var used to sign every webhook,
+which meant two API customers could each forge events the other would
+accept as authentic. CR-01 moves the secret to ``user_profiles.
+webhook_signing_secret`` so each tenant gets their own HMAC material.
+This module owns:
+
+- :func:`_new_webhook_secret` — mints a ``whsec_<22 url-safe>`` key
+- :func:`ensure_webhook_secret` — on first mint, persists + returns it
+- :func:`rotate_webhook_secret` — forces a new secret + returns it
+- :func:`resolve_webhook_secret` — service-role lookup used at dispatch
 
 Security notes
 --------------
@@ -35,6 +54,9 @@ Security notes
   never echoed back after the mint call.
 - Revoked keys remain in the table for audit; ``resolve_token`` filters
   them out via ``revoked_at IS NULL``.
+- Webhook secrets follow the same plaintext-shown-once rule. Migration
+  0028 revokes SELECT on the secret column for anon and authenticated
+  roles, so only the service-role path can read it.
 """
 
 from __future__ import annotations
@@ -52,9 +74,18 @@ from shared.credits import get_service_client
 logger = logging.getLogger(__name__)
 
 _TABLE = "api_keys"
+_USER_PROFILES_TABLE = "user_profiles"
 
 _TOKEN_PREFIX = "rk_live_"
 _TOKEN_RAND_BYTES = 16  # token_urlsafe(16) → 22 chars
+
+# CR-01: per-tenant webhook signing secret. Stripe convention is
+# ``whsec_…``; mirrored here so receivers already wired for Stripe-style
+# verification code recognise the shape. Stored in plaintext on
+# user_profiles (HMAC needs the literal key) but column-level grants in
+# migration 0028 hide it from anon and authenticated reads.
+_WEBHOOK_SECRET_PREFIX = "whsec_"
+_WEBHOOK_SECRET_RAND_BYTES = 16  # token_urlsafe(16) → 22 chars
 # FIX HI-04 (fresh-review): only persist the literal scheme prefix, not
 # any plaintext randomness. Storing 4 random chars (the prior value of
 # 12) was inconsistent with the module docstring's "plaintext is never
@@ -182,17 +213,191 @@ def _looks_like_platform_token(value: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _new_webhook_secret() -> str:
+    """Generate a fresh per-tenant webhook signing secret.
+
+    Format: ``whsec_<22 url-safe base64 chars>``. The literal ``whsec_``
+    prefix matches Stripe / Resend so receivers' Stripe-style verifier
+    code recognises it without retraining.
+    """
+    return _WEBHOOK_SECRET_PREFIX + secrets.token_urlsafe(_WEBHOOK_SECRET_RAND_BYTES)
+
+
+def _write_webhook_secret(*, user_id: str, secret: str) -> bool:
+    """Persist a webhook secret on user_profiles. Service-role only.
+
+    Returns True on a successful single-row update. Logs failures but
+    never raises — the caller (``ensure_webhook_secret`` /
+    ``rotate_webhook_secret``) decides how to surface the error.
+    """
+    client = get_service_client()
+    if client is None:
+        logger.error("write_webhook_secret: service client unavailable")
+        return False
+    prefix = secret[: len(_WEBHOOK_SECRET_PREFIX)]
+    try:
+        response = (
+            client.table(_USER_PROFILES_TABLE)
+            .update(
+                {
+                    "webhook_signing_secret": secret,
+                    "webhook_secret_prefix": prefix,
+                    "webhook_secret_rotated_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(),
+                }
+            )
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception:
+        logger.error(
+            "write_webhook_secret: update failed for %s", user_id, exc_info=True
+        )
+        return False
+    return bool(list(getattr(response, "data", None) or []))
+
+
+def ensure_webhook_secret(*, user_id: str) -> Optional[str]:
+    """Mint a webhook secret if the user has none. Returns plaintext on
+    a fresh mint; None if a secret already exists (don't expose it).
+
+    Idempotent on the existing-secret path so callers can call once per
+    mint_token without inadvertently rotating. Use
+    :func:`rotate_webhook_secret` to force a new one.
+    """
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        response = (
+            client.table(_USER_PROFILES_TABLE)
+            .select("webhook_signing_secret")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        logger.error(
+            "ensure_webhook_secret: lookup failed for %s", user_id, exc_info=True
+        )
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if rows and rows[0].get("webhook_signing_secret"):
+        # Existing secret — don't expose. Caller's UI shows the prefix
+        # via a separate selector.
+        return None
+    if not rows:
+        # No user_profiles row at all. Shouldn't happen for a logged-in
+        # user (created at signup) but log it loud — if a future user
+        # path skips signup, we want this noisy, not silent.
+        logger.error(
+            "ensure_webhook_secret: no user_profiles row for %s; "
+            "cannot persist webhook secret",
+            user_id,
+        )
+        return None
+    secret = _new_webhook_secret()
+    if not _write_webhook_secret(user_id=user_id, secret=secret):
+        return None
+    return secret
+
+
+def rotate_webhook_secret(*, user_id: str) -> Optional[str]:
+    """Force a new webhook signing secret. Returns the new plaintext.
+
+    All previously-issued secrets become invalid immediately for HMAC
+    verification on receivers. Caller's UI must surface this clearly.
+    """
+    secret = _new_webhook_secret()
+    if not _write_webhook_secret(user_id=user_id, secret=secret):
+        return None
+    return secret
+
+
+def resolve_webhook_secret(*, user_id: str) -> Optional[str]:
+    """Look up a user's webhook signing secret. Service-role only path.
+
+    Returns None if the user has no per-tenant secret yet — the caller
+    (``shared.webhooks._signing_secret_for_user``) decides whether to
+    fall back to the global env-var secret during the rollout window.
+    """
+    if not user_id:
+        return None
+    client = get_service_client()
+    if client is None:
+        logger.warning("resolve_webhook_secret: service client unavailable")
+        return None
+    try:
+        response = (
+            client.table(_USER_PROFILES_TABLE)
+            .select("webhook_signing_secret")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        logger.warning(
+            "resolve_webhook_secret: lookup failed for %s", user_id, exc_info=True
+        )
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return None
+    secret = rows[0].get("webhook_signing_secret")
+    return secret or None
+
+
+def get_webhook_secret_display(*, user_id: str) -> Optional[dict[str, Any]]:
+    """Return display-only metadata for the dashboard.
+
+    Surfaces the prefix and rotated_at without exposing the secret
+    plaintext. Returns None if no secret has been minted yet.
+    """
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        response = (
+            client.table(_USER_PROFILES_TABLE)
+            .select("webhook_secret_prefix,webhook_secret_rotated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        logger.warning(
+            "get_webhook_secret_display: lookup failed for %s",
+            user_id,
+            exc_info=True,
+        )
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return None
+    prefix = rows[0].get("webhook_secret_prefix")
+    if not prefix:
+        return None
+    return {
+        "prefix": prefix,
+        "rotated_at": rows[0].get("webhook_secret_rotated_at"),
+    }
+
+
 def mint_token(
     *,
     user_id: str,
     role: str = "member",
     label: Optional[str] = None,
-) -> Optional[tuple[str, str]]:
-    """Create a new API key. Returns ``(plaintext, prefix)`` once.
+) -> Optional[tuple[str, str, Optional[str]]]:
+    """Create a new API key. Returns ``(plaintext, prefix, webhook_secret)``.
 
     The plaintext is the only side-effect the caller can expose to the
-    user — store nothing else. Returns None on database failure or if
-    the user has hit ``PLATFORM_API_MAX_KEYS_PER_USER`` active keys.
+    user — store nothing else. ``webhook_secret`` is non-None ONLY on the
+    first mint per user (CR-01) — see :func:`ensure_webhook_secret`.
+
+    Returns None on database failure or if the user has hit
+    ``PLATFORM_API_MAX_KEYS_PER_USER`` active keys.
     """
     if role not in VALID_ROLES:
         raise ValueError(f"invalid role: {role!r}")
@@ -245,7 +450,12 @@ def mint_token(
     rows = list(getattr(response, "data", None) or [])
     if not rows:
         return None
-    return (plaintext, prefix)
+
+    # CR-01: mint a per-tenant webhook signing secret on the first
+    # key for this user. ensure_webhook_secret is a no-op (returns
+    # None) if the user already has one — never silently rotate.
+    webhook_secret = ensure_webhook_secret(user_id=user_id)
+    return (plaintext, prefix, webhook_secret)
 
 
 def resolve_token(plaintext: str) -> Optional[APIKeyContext]:

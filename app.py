@@ -1137,7 +1137,9 @@ def create_app() -> Flask:
             user_id: str,
             *,
             just_minted_plaintext: Optional[str] = None,
+            just_minted_webhook_secret: Optional[str] = None,
             create_error: Optional[str] = None,
+            rotate_notice: Optional[str] = None,
         ):
             """Shared renderer for the GET and POST handlers.
 
@@ -1146,8 +1148,12 @@ def create_app() -> Flask:
             through the session cookie (FIX #3 in the validation review:
             Flask sessions are signed-but-not-encrypted, so storing
             ``rk_live_...`` there leaked the plaintext into the browser
-            cookie jar and any proxy log capturing cookies).
+            cookie jar and any proxy log capturing cookies). The
+            ``just_minted_webhook_secret`` parameter follows the same
+            never-in-session rule for the per-tenant HMAC key (CR-01).
             """
+            from shared.api_keys import get_webhook_secret_display
+
             raw_keys = list_keys(user_id)
             keys = [
                 {
@@ -1161,11 +1167,15 @@ def create_app() -> Flask:
                 }
                 for k in raw_keys
             ]
+            webhook_secret_display = get_webhook_secret_display(user_id=user_id)
             return render_template(
                 "account_api_keys.html",
                 keys=keys,
                 just_minted_plaintext=just_minted_plaintext,
+                just_minted_webhook_secret=just_minted_webhook_secret,
+                webhook_secret_display=webhook_secret_display,
                 create_error=create_error,
+                rotate_notice=rotate_notice,
                 csrf_token=_ensure_csrf_token(),
             )
 
@@ -1210,12 +1220,57 @@ def create_app() -> Flask:
                         "Revoke an unused key and try again, or contact support."
                     ),
                 )
-            plaintext, _prefix = minted
+            plaintext, _prefix, webhook_secret = minted
             # Plaintext is rendered ONCE in the response body. It never
-            # touches session, cookies, or storage.
+            # touches session, cookies, or storage. Same rule for the
+            # per-tenant webhook secret (CR-01) — non-None only on the
+            # first mint per user.
             return _render_api_keys_page(
                 user_ctx.user_id,
                 just_minted_plaintext=plaintext,
+                just_minted_webhook_secret=webhook_secret,
+            )
+
+        @flask_app.route(
+            "/account/api-keys/rotate-webhook-secret", methods=["POST"]
+        )
+        @login_required
+        def account_api_keys_rotate_webhook_secret():
+            """Rotate the per-tenant webhook signing secret (CR-01).
+
+            Surfaces the new plaintext exactly once. The old secret stops
+            being valid for HMAC verification immediately — receivers
+            must be updated before this is clicked.
+            """
+            from shared.api_keys import rotate_webhook_secret
+
+            user_ctx = load_user_context()
+            if user_ctx is None:
+                return redirect(url_for("login"))
+            if not _csrf_ok():
+                return _render_api_keys_page(
+                    user_ctx.user_id,
+                    create_error=(
+                        "Rotate request failed CSRF check. Refresh and "
+                        "try again."
+                    ),
+                ), 400
+            new_secret = rotate_webhook_secret(user_id=user_ctx.user_id)
+            if not new_secret:
+                return _render_api_keys_page(
+                    user_ctx.user_id,
+                    create_error=(
+                        "Could not rotate the webhook secret. The database "
+                        "is temporarily unreachable; try again in a moment."
+                    ),
+                )
+            return _render_api_keys_page(
+                user_ctx.user_id,
+                just_minted_webhook_secret=new_secret,
+                rotate_notice=(
+                    "Webhook secret rotated. The old secret stopped "
+                    "verifying as of now. Update your receivers."
+                ),
             )
 
         @flask_app.route(
