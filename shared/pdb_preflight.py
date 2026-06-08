@@ -2,20 +2,26 @@
 and decides whether the upload is fit to ship to Modal.
 
 The four binder-design tools (rfantibody, rfdiffusion, bindcraft, boltzgen)
-all expect a single-chain antigen target and (for 3 of 4) a list of hotspot
-residues that the model must build a CDR around. The vendored
-``pipeline_normalize`` already strips waters, hetatm, hydrogens, alt
-conformations, NMR ensembles, and modified residues — silently, so by
-itself it's invisible to the user. This module surfaces the cleanup as a
-user-facing verdict:
+all expect an antigen target plus (for 3 of 4) hotspot residues for the
+model to build a CDR around. The vendored ``pipeline_normalize`` already
+strips waters, hetatm, hydrogens, alt conformations, NMR ensembles, and
+modified residues — silently, so by itself it's invisible to the user.
+This module surfaces the cleanup as a user-facing verdict, plus runs
+additional structural checks not done by the normalizer:
 
-  - VerdictKind.READY:            ✓ Ready (plus a list of things we cleaned).
+  - VerdictKind.READY:            ✓ Ready to run.
   - VerdictKind.READY_WITH_FALLBACK:
                                   ✓ Ready, but a cleaner AlphaFold target
-                                  exists for the same UniProt — offer the swap.
+                                  exists for the same UniProt — or we
+                                  noticed a softness (size warn, internal
+                                  gap) the user might want to know about.
   - VerdictKind.NEEDS_FIX:        ✗ Can't run. Specific reason + suggested
                                   next action, optionally including an
                                   AlphaFold swap.
+
+Per-tool rules (size caps, gap thresholds, hotspot policy) live in
+``pdb_preflight_rules.TOOL_RULES`` — one dataclass per tool. The
+evaluator reads from there rather than hardcoding magic numbers.
 
 A hard gate fires only on NEEDS_FIX. tools-hub's ``tool_submit`` releases
 the wallet hold and re-renders the form with this verdict above the Run
@@ -24,6 +30,7 @@ button. See templates/components/preflight_panel.html for the UI shape.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -37,31 +44,22 @@ from shared.pipeline_normalize import (
     normalize_for_rfantibody,
     normalize_for_rfdiffusion,
 )
+from shared.pdb_preflight_rules import (
+    BINDER_DESIGN_TOOLS,
+    HOTSPOTS_REQUIRED,
+    TOOL_RULES,
+    ToolRules,
+    runtime_estimate_min,
+)
 from shared.uniprot_lookup import extract_uniprot_map
 
 logger = logging.getLogger(__name__)
 
 
-# Tools subject to the hard gate. esmfold2-design is sequence-only — no PDB.
-BINDER_DESIGN_TOOLS: frozenset[str] = frozenset({
-    "rfantibody",
-    "rfdiffusion",
-    "bindcraft",
-    "boltzgen",
-})
-
-# Tools where hotspot residues are required (boltzgen accepts an empty list).
-HOTSPOTS_REQUIRED: frozenset[str] = frozenset({
-    "rfantibody",
-    "rfdiffusion",
-    "bindcraft",
-})
-
-# Minimum protein residue count on the target chain after cleanup. Below
-# this the model has nothing to design against. 30 is the lower bound for
-# any meaningful target fold; smaller fragments should go through pxdesign
-# or be re-thought as peptide binders.
-MIN_TARGET_RESIDUES = 30
+# Back-compat re-export. Old call sites + tests import MIN_TARGET_RESIDUES
+# from this module; it's now derived from TOOL_RULES (lowest min across
+# binder tools). Per-tool checks use rules.min_target_aa directly.
+MIN_TARGET_RESIDUES: int = min(r.min_target_aa for r in TOOL_RULES.values())
 
 
 class VerdictKind(str, Enum):
@@ -98,6 +96,58 @@ class AlphaFoldSuggestion:
 
 
 @dataclass
+class GapInfo:
+    """One contiguous run of missing residues inside the target chain.
+
+    ``start`` and ``end`` are inclusive endpoints of the MISSING range in
+    original PDB numbering (e.g. surviving 49, 50, 60, 61 → start=51,
+    end=59, length=9). ``nearest_hotspot_distance`` is the minimum
+    sequence distance from any gap endpoint to any user-picked hotspot
+    residue, or ``math.inf`` when no hotspots are picked.
+    """
+    start: int
+    end: int
+    length: int
+    nearest_hotspot_distance: float
+
+
+@dataclass
+class GapAnalysis:
+    """Summary of internal-gap detection on the target chain."""
+    gaps: list = field(default_factory=list)        # list[GapInfo]
+    longest_gap: int = 0
+    causes_hard_fail: bool = False                  # True ↔ verdict went NEEDS_FIX
+    warn_message: Optional[str] = None              # human prose for the panel
+    hard_fail_message: Optional[str] = None         # human prose for NEEDS_FIX
+
+
+@dataclass
+class SizeEnvelopeStatus:
+    """Per-tool size check result for the target chain (+ combined budget).
+
+    ``residue_count`` is the post-cleanup residue count on the target
+    chain. ``runtime_estimate_min`` is None when the caller didn't pass
+    ``num_designs`` (so we don't surface a misleading estimate).
+    """
+    residue_count: int
+    hard_cap_target_aa: int
+    soft_warn_target_aa: int
+    hard_cap_combined_aa: int
+    binder_max_aa: Optional[int] = None
+    combined_aa: Optional[int] = None
+    over_soft_warn: bool = False
+    over_hard_cap: bool = False
+    over_combined_cap: bool = False
+    runtime_estimate_min: Optional[float] = None
+    runtime_basis: Optional[str] = None             # e.g. "100 designs"
+    runtime_hard_cap_min: Optional[int] = None      # pilot-tier wall ceiling
+    over_runtime_cap: bool = False                  # estimate > hard cap → block
+    gpu: Optional[str] = None
+    warn_message: Optional[str] = None              # human prose for the panel
+    hard_fail_message: Optional[str] = None         # human prose for NEEDS_FIX
+
+
+@dataclass
 class PreflightVerdict:
     """The full verdict shown in the preflight panel + used as the gate."""
     kind: VerdictKind
@@ -109,6 +159,8 @@ class PreflightVerdict:
     suggested_fix: Optional[str] = None
     alphafold: Optional[AlphaFoldSuggestion] = None
     nearest_clean_residues: list = field(default_factory=list)
+    gap_analysis: Optional[GapAnalysis] = None
+    size_envelope: Optional[SizeEnvelopeStatus] = None
 
     @property
     def ok(self) -> bool:
@@ -133,6 +185,8 @@ def preflight_for_tool(
     *,
     target_chain: str,
     hotspots: list,
+    binder_max_aa: Optional[int] = None,
+    num_designs: Optional[int] = None,
 ) -> PreflightVerdict:
     """Top-level entry. Returns a PreflightVerdict for the named binder tool.
 
@@ -140,6 +194,13 @@ def preflight_for_tool(
     tools-hub does the CIF→PDB conversion at upload time before calling
     this). ``hotspots`` is the user-typed list of integers; empty list is
     valid for boltzgen, required non-empty for the other three.
+
+    ``binder_max_aa`` is the maximum binder length the user picked on the
+    form; when provided, the combined-budget cap fires if
+    (target_aa + binder_max_aa) exceeds the tool's combined ceiling.
+    ``num_designs`` is the requested design count; when provided, the
+    panel surfaces a runtime estimate. Both default to None so existing
+    callers keep working without payload-shape changes.
 
     On any unexpected error (parser blow-up, etc.) returns a NEEDS_FIX
     verdict with the underlying message — never raises.
@@ -156,6 +217,7 @@ def preflight_for_tool(
             hotspot_status={"surviving": list(hotspots), "dropped": []},
         )
 
+    rules = TOOL_RULES[tool_slug]
     preview = _PREVIEW_FN[tool_slug]
     af_suggestion = _maybe_alphafold(pdb_bytes, target_chain)
     target_chain = (target_chain or "").strip()
@@ -202,10 +264,10 @@ def preflight_for_tool(
             pass
 
     cleanup = _summarize_cleanup(report)
-
-    # Now check tool-specific requirements against the cleaned-up structure.
     kept = report.residues_kept_per_chain.get(target_chain, 0)
-    if kept < MIN_TARGET_RESIDUES:
+
+    # ---- min residues (per-tool floor) -------------------------------------
+    if kept < rules.min_target_aa:
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -215,7 +277,7 @@ def preflight_for_tool(
             reason=(
                 f"After cleanup, chain {target_chain} has only {kept} "
                 f"protein residue(s) — the model needs at least "
-                f"{MIN_TARGET_RESIDUES} to design against."
+                f"{rules.min_target_aa} to design against."
             ),
             suggested_fix=(
                 f"Confirm chain {target_chain} is the antigen, not a peptide "
@@ -225,17 +287,68 @@ def preflight_for_tool(
             alphafold=af_suggestion,
         )
 
-    # Hotspot validation. We need the per-residue resnum survival map; the
-    # current normalizer report exposes counts per chain, not residue ids,
-    # so re-derive survival from the cleaned PDB. A re-run with output to
-    # /tmp would expose this directly; cheaper to walk the residue ids out
-    # of a second dry-run inside our own residue walker.
+    # ---- size envelope (hard cap + combined budget + runtime estimate) -----
+    size_envelope = _check_size_envelope(
+        rules, kept, binder_max_aa=binder_max_aa, num_designs=num_designs,
+    )
+    if (
+        size_envelope.over_hard_cap
+        or size_envelope.over_combined_cap
+        or size_envelope.over_runtime_cap
+    ):
+        return PreflightVerdict(
+            kind=VerdictKind.NEEDS_FIX,
+            tool_slug=tool_slug,
+            target_chain=target_chain,
+            cleanup=cleanup,
+            hotspot_status={"surviving": [], "dropped": list(hotspots)},
+            reason=size_envelope.hard_fail_message,
+            suggested_fix=(
+                "Lower the number of designs in the form, or switch to the "
+                "full tier for a higher wall-clock budget."
+                if size_envelope.over_runtime_cap
+                else "Try the AlphaFold model trimmed to the epitope domain, "
+                "or split your target into a sub-domain that fits."
+            ),
+            alphafold=af_suggestion,
+            size_envelope=size_envelope,
+        )
+
+    # ---- internal gap analysis --------------------------------------------
+    gap_analysis = _check_internal_gaps(
+        pdb_bytes, target_chain, hotspots, rules,
+    )
+    if gap_analysis.causes_hard_fail:
+        return PreflightVerdict(
+            kind=VerdictKind.NEEDS_FIX,
+            tool_slug=tool_slug,
+            target_chain=target_chain,
+            cleanup=cleanup,
+            hotspot_status={"surviving": [], "dropped": list(hotspots)},
+            reason=gap_analysis.hard_fail_message,
+            suggested_fix=(
+                f"Use the AlphaFold model below — it's a single-conformation "
+                f"structure with no missing residues."
+                if af_suggestion
+                else (
+                    "Find an alternative PDB entry without internal disorder, "
+                    "or use the same UniProt's AlphaFold model."
+                )
+            ),
+            alphafold=af_suggestion,
+            gap_analysis=gap_analysis,
+            size_envelope=size_envelope,
+        )
+
+    # ---- hotspot validation ------------------------------------------------
+    # Walks raw bytes with the same backbone-completeness rules
+    # pipeline_normalize applies, so we don't need a second normalizer
+    # invocation. Quick and avoids a second tmp file.
     surviving, dropped_hotspots = _check_hotspots(
         pdb_bytes, target_chain, hotspots,
     )
 
-    hotspot_required = tool_slug in HOTSPOTS_REQUIRED
-    if hotspot_required and not hotspots:
+    if rules.hotspots_required and not hotspots:
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -249,9 +362,11 @@ def preflight_for_tool(
                 "field."
             ),
             alphafold=af_suggestion,
+            gap_analysis=gap_analysis,
+            size_envelope=size_envelope,
         )
 
-    if dropped_hotspots and hotspot_required:
+    if dropped_hotspots and rules.hotspots_required:
         # One or more user-picked hotspots didn't survive cleanup. Suggest
         # nearby clean residues on the same chain.
         nearest = _nearest_clean_residues(
@@ -286,18 +401,23 @@ def preflight_for_tool(
             ),
             alphafold=af_suggestion,
             nearest_clean_residues=nearest,
+            gap_analysis=gap_analysis,
+            size_envelope=size_envelope,
         )
 
-    # All checks passed. Decide whether to surface the AlphaFold fallback
-    # as a soft "you might prefer this" suggestion. We do this only when
-    # the cleanup actually had to fix something material on a crystal
-    # structure (altloc collapsed, or > 5 residues dropped for bad
-    # backbones). Pristine crystal targets / AF inputs don't get the
-    # suggestion — it'd be noise.
-    surfaced_af = (
+    # ---- decide READY vs READY_WITH_FALLBACK ------------------------------
+    # All hard checks passed. Surface AF as a soft suggestion when cleanup
+    # actually had to fix something material (altloc collapsed, >5 residues
+    # dropped, OR a non-hard-fail gap was detected, OR target is over the
+    # soft warn threshold). Pristine inputs get plain READY.
+    surfaced_af = bool(
         af_suggestion
-        and (cleanup.altloc_records_collapsed > 0
-             or cleanup.residues_dropped > 5)
+        and (
+            cleanup.altloc_records_collapsed > 0
+            or cleanup.residues_dropped > 5
+            or (gap_analysis.warn_message is not None)
+            or size_envelope.over_soft_warn
+        )
     )
     kind = (
         VerdictKind.READY_WITH_FALLBACK
@@ -310,6 +430,8 @@ def preflight_for_tool(
         cleanup=cleanup,
         hotspot_status={"surviving": surviving, "dropped": dropped_hotspots},
         alphafold=af_suggestion if surfaced_af else None,
+        gap_analysis=gap_analysis,
+        size_envelope=size_envelope,
     )
 
 
@@ -368,21 +490,18 @@ def _summarize_cleanup(report: PipelineNormalizationReport) -> CleanupSummary:
     )
 
 
-def _check_hotspots(
-    pdb_bytes: bytes, target_chain: str, hotspots: list,
-) -> tuple[list, list]:
-    """Return (surviving_hotspots, dropped_hotspots) after cleanup.
+def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
+    """Sorted list of resnums on ``target_chain`` with a complete N/CA/C/O
+    backbone and no all-zero coordinates.
 
-    Walks the raw bytes with the same backbone-completeness rules
-    pipeline_normalize applies, so we don't need a second normalizer
-    invocation. Quick and avoids a second tmp file.
+    Used by both ``_check_hotspots`` and ``_check_internal_gaps`` so the
+    notion of "surviving residue" stays consistent across checks. Integer
+    resnum only — insertion codes (icodes, e.g. antibody 100A/100B/100C)
+    are folded into the same resnum, which is correct for gap detection
+    (icodes are insertions WITHIN a resnum, not numbering gaps).
     """
-    if not hotspots:
-        return [], []
-    # Build per-residue backbone presence on the target chain. We track
-    # by (resnum, icode); icode is rarely used in user uploads.
-    bb_present: dict = {}  # resnum -> set of backbone atoms seen
     required = {"N", "CA", "C", "O"}
+    bb_present: dict = {}  # resnum -> set of backbone atoms seen
     for raw in pdb_bytes.split(b"\n"):
         if not (raw.startswith(b"ATOM") or raw.startswith(b"HETATM")):
             continue
@@ -407,7 +526,16 @@ def _check_hotspots(
         if all(abs(c) < 1e-6 for c in (x, y, z)):
             continue
         bb_present.setdefault(resnum, set()).add(atom_name)
+    return sorted(r for r, atoms in bb_present.items() if required.issubset(atoms))
 
+
+def _check_hotspots(
+    pdb_bytes: bytes, target_chain: str, hotspots: list,
+) -> tuple[list, list]:
+    """Return ``(surviving_hotspots, dropped_hotspots)`` after cleanup."""
+    if not hotspots:
+        return [], []
+    clean = set(_clean_resnums_on_chain(pdb_bytes, target_chain))
     surviving: list = []
     dropped: list = []
     for h in hotspots:
@@ -416,11 +544,227 @@ def _check_hotspots(
         except (TypeError, ValueError):
             dropped.append(h)
             continue
-        if required.issubset(bb_present.get(n, set())):
+        if n in clean:
             surviving.append(n)
         else:
             dropped.append(n)
     return surviving, dropped
+
+
+def _check_internal_gaps(
+    pdb_bytes: bytes,
+    target_chain: str,
+    hotspots: list,
+    rules: ToolRules,
+) -> GapAnalysis:
+    """Find internal (not end-of-chain) numbering gaps and apply tool rules.
+
+    End-of-chain truncation (residues before the first surviving resnum or
+    after the last) is NOT counted as an internal gap — crystal structures
+    routinely lack disordered N/C-terminal tails and that's not what we
+    want to warn about. Only gaps BETWEEN two surviving resnums count.
+    """
+    clean = _clean_resnums_on_chain(pdb_bytes, target_chain)
+    if len(clean) < 2:
+        return GapAnalysis()
+
+    # Normalize hotspots to integers for distance math; non-integer entries
+    # are silently skipped (handled elsewhere by hotspot validator).
+    hs_ints: list = []
+    for h in hotspots or []:
+        try:
+            hs_ints.append(int(h))
+        except (TypeError, ValueError):
+            continue
+
+    gaps: list = []
+    for prev, curr in zip(clean, clean[1:]):
+        if curr <= prev + 1:
+            continue
+        start = prev + 1
+        end = curr - 1
+        length = end - start + 1
+        if hs_ints:
+            dist = min(
+                min(abs(h - start), abs(h - end)) for h in hs_ints
+            )
+            nearest = float(dist)
+        else:
+            nearest = math.inf
+        gaps.append(GapInfo(start, end, length, nearest))
+
+    if not gaps:
+        return GapAnalysis()
+
+    longest = max(g.length for g in gaps)
+
+    # Hard fail decision.
+    hard_fail = False
+    hard_msg: Optional[str] = None
+    if rules.gap.needs_fix_on_any_gap:
+        # rfdiffusion-style: any internal gap is a hard fail because the
+        # contig builder asserts every residue in the declared range exists.
+        g0 = gaps[0]
+        if len(gaps) == 1:
+            ranges = f"residues {g0.start}-{g0.end} unresolved"
+        else:
+            extra = len(gaps) - 1
+            ranges = (
+                f"residues {g0.start}-{g0.end} unresolved "
+                f"(plus {extra} more internal gap{'s' if extra != 1 else ''})"
+            )
+        hard_msg = (
+            f"Chain {target_chain} has internal disorder ({ranges}). "
+            f"{rules.slug.title()}'s contig builder requires every residue "
+            f"in the declared range to exist — it will fail with an assertion "
+            f"error mid-run."
+        )
+        hard_fail = True
+    elif rules.gap.needs_fix_length is not None and hs_ints:
+        # Length + near-hotspot rule. Find any gap that triggers BOTH
+        # conditions.
+        for g in gaps:
+            if (
+                g.length >= rules.gap.needs_fix_length
+                and g.nearest_hotspot_distance <= rules.gap.needs_fix_hotspot_distance
+            ):
+                hard_msg = (
+                    f"Chain {target_chain} has a {g.length}-residue gap "
+                    f"(residues {g.start}-{g.end} unresolved) "
+                    f"{_dist_phrase(g.nearest_hotspot_distance)} a hotspot. "
+                    f"{rules.slug.title()} is known to fail near gaps like "
+                    f"this — typically a degenerate rotation frame mid-run."
+                )
+                hard_fail = True
+                break
+
+    # Warn decision (separate path; can co-exist with hard_fail, but the
+    # NEEDS_FIX path takes precedence in the dispatch).
+    warn_msg: Optional[str] = None
+    if longest >= rules.gap.warn_length and not hard_fail:
+        # Find the worst gap (longest). Mention only the longest in
+        # the message to keep the panel readable; the full list is in
+        # gap_analysis.gaps for callers that want it.
+        worst = max(gaps, key=lambda g: g.length)
+        nearest_phrase = ""
+        if hs_ints and worst.nearest_hotspot_distance != math.inf:
+            nearest_phrase = (
+                f" — {int(worst.nearest_hotspot_distance)} residues from "
+                f"your nearest hotspot"
+            )
+        warn_msg = (
+            f"Chain {target_chain} has a {worst.length}-residue internal "
+            f"gap (residues {worst.start}-{worst.end} unresolved)"
+            f"{nearest_phrase}. {rules.slug.title()} may run but design "
+            f"quality drops near the seam."
+        )
+
+    return GapAnalysis(
+        gaps=gaps,
+        longest_gap=longest,
+        causes_hard_fail=hard_fail,
+        warn_message=warn_msg,
+        hard_fail_message=hard_msg,
+    )
+
+
+def _dist_phrase(d: float) -> str:
+    """Render a sequence-distance number for the gap-near-hotspot message."""
+    if d == math.inf:
+        return "(no hotspots picked)"
+    n = int(d)
+    if n == 0:
+        return "directly adjacent to"
+    if n == 1:
+        return "1 residue away from"
+    return f"{n} residues away from"
+
+
+def _check_size_envelope(
+    rules: ToolRules,
+    target_aa: int,
+    *,
+    binder_max_aa: Optional[int],
+    num_designs: Optional[int],
+) -> SizeEnvelopeStatus:
+    """Evaluate the target residue count against the tool's size envelope."""
+    env = rules.size
+    combined = (target_aa + binder_max_aa) if binder_max_aa is not None else None
+
+    over_hard = target_aa > env.hard_cap_target_aa
+    over_combined = (
+        combined is not None and combined > env.hard_cap_combined_aa
+    )
+    over_warn = target_aa > env.soft_warn_target_aa
+
+    runtime_min: Optional[float] = None
+    runtime_basis: Optional[str] = None
+    over_runtime_cap = False
+    if num_designs is not None and num_designs > 0:
+        runtime_min = runtime_estimate_min(rules, target_aa, num_designs)
+        runtime_basis = (
+            f"{num_designs} design{'s' if num_designs != 1 else ''}"
+        )
+        if runtime_min > env.runtime_hard_cap_min:
+            over_runtime_cap = True
+
+    warn_msg: Optional[str] = None
+    hard_msg: Optional[str] = None
+    if over_hard:
+        hard_msg = (
+            f"Target chain has {target_aa} residues — {rules.slug.title()}'s "
+            f"GPU envelope tops out around {env.hard_cap_target_aa} on "
+            f"{rules.gpu}. The job would likely run out of memory partway "
+            f"through."
+        )
+    elif over_combined:
+        hard_msg = (
+            f"Target ({target_aa} aa) + max binder ({binder_max_aa} aa) "
+            f"= {combined} aa total complex, which exceeds the "
+            f"{env.hard_cap_combined_aa}-aa combined budget for "
+            f"{rules.slug.title()}. Either pick a smaller target or "
+            f"shorten the max binder length."
+        )
+    elif over_runtime_cap and runtime_min is not None:
+        # Runtime cap fires AFTER size caps because size is a harder
+        # constraint (no work around it). Runtime can be reduced by
+        # lowering num_designs.
+        # Compute a num_designs that would fit under the cap, for the
+        # suggested-fix message.
+        from shared.pdb_preflight_rules import runtime_estimate_min as _est
+        max_designs = max(1, int(num_designs * env.runtime_hard_cap_min / runtime_min))
+        hard_msg = (
+            f"Estimated wall-clock for {num_designs} designs at "
+            f"{target_aa} aa target is ~{int(runtime_min)} min on "
+            f"{rules.gpu} — above the {env.runtime_hard_cap_min}-min pilot "
+            f"ceiling. Lower the design count to about {max_designs} or fewer."
+        )
+    elif over_warn:
+        warn_msg = (
+            f"Target chain has {target_aa} residues — that's above the "
+            f"{env.soft_warn_target_aa}-aa comfort zone for "
+            f"{rules.slug.title()}. The job should still run, but expect "
+            f"longer wall-clock and a higher chance of out-of-memory."
+        )
+
+    return SizeEnvelopeStatus(
+        residue_count=target_aa,
+        hard_cap_target_aa=env.hard_cap_target_aa,
+        soft_warn_target_aa=env.soft_warn_target_aa,
+        hard_cap_combined_aa=env.hard_cap_combined_aa,
+        binder_max_aa=binder_max_aa,
+        combined_aa=combined,
+        over_soft_warn=over_warn and not over_hard and not over_combined,
+        over_hard_cap=over_hard,
+        over_combined_cap=over_combined and not over_hard,
+        runtime_estimate_min=runtime_min,
+        runtime_basis=runtime_basis,
+        runtime_hard_cap_min=env.runtime_hard_cap_min,
+        over_runtime_cap=over_runtime_cap and not (over_hard or over_combined),
+        gpu=rules.gpu,
+        warn_message=warn_msg,
+        hard_fail_message=hard_msg,
+    )
 
 
 def _nearest_clean_residues(
@@ -436,35 +780,7 @@ def _nearest_clean_residues(
     on the same chain within ±``window`` of any dropped hotspot, ordered
     by sequence distance ascending then resnum ascending.
     """
-    # Use the same backbone walk to find ALL clean residues on the chain.
-    clean_set: set = set()
-    required = {"N", "CA", "C", "O"}
-    bb: dict = {}
-    for raw in pdb_bytes.split(b"\n"):
-        if not raw.startswith(b"ATOM"):
-            continue
-        try:
-            line = raw.decode("ascii", errors="replace")
-        except Exception:
-            continue
-        if len(line) < 54:
-            continue
-        if (line[21] if len(line) > 21 else " ") != target_chain:
-            continue
-        atom_name = line[12:16].strip()
-        if atom_name not in required:
-            continue
-        try:
-            resnum = int(line[22:26])
-            x = float(line[30:38])
-            y = float(line[38:46])
-            z = float(line[46:54])
-        except ValueError:
-            continue
-        if all(abs(c) < 1e-6 for c in (x, y, z)):
-            continue
-        bb.setdefault(resnum, set()).add(atom_name)
-    clean_set = {r for r, atoms in bb.items() if required.issubset(atoms)}
+    clean_set = set(_clean_resnums_on_chain(pdb_bytes, target_chain))
     if not clean_set:
         return []
 

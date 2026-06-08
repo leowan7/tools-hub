@@ -186,6 +186,56 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "display_id": verdict.alphafold.display_id,
             "reuse_token": f"alphafold:{verdict.alphafold.uniprot_accession}",
         }
+    gap_block = None
+    if verdict.gap_analysis is not None and (
+        verdict.gap_analysis.gaps
+        or verdict.gap_analysis.warn_message
+        or verdict.gap_analysis.hard_fail_message
+    ):
+        import math as _math
+        gap_block = {
+            "longest_gap": verdict.gap_analysis.longest_gap,
+            "causes_hard_fail": verdict.gap_analysis.causes_hard_fail,
+            "warn_message": verdict.gap_analysis.warn_message,
+            "hard_fail_message": verdict.gap_analysis.hard_fail_message,
+            "gaps": [
+                {
+                    "start": g.start,
+                    "end": g.end,
+                    "length": g.length,
+                    "nearest_hotspot_distance": (
+                        None
+                        if g.nearest_hotspot_distance == _math.inf
+                        else g.nearest_hotspot_distance
+                    ),
+                }
+                for g in verdict.gap_analysis.gaps
+            ],
+        }
+    size_block = None
+    if verdict.size_envelope is not None:
+        size_block = {
+            "residue_count": verdict.size_envelope.residue_count,
+            "hard_cap_target_aa": verdict.size_envelope.hard_cap_target_aa,
+            "soft_warn_target_aa": verdict.size_envelope.soft_warn_target_aa,
+            "hard_cap_combined_aa": verdict.size_envelope.hard_cap_combined_aa,
+            "binder_max_aa": verdict.size_envelope.binder_max_aa,
+            "combined_aa": verdict.size_envelope.combined_aa,
+            "over_soft_warn": verdict.size_envelope.over_soft_warn,
+            "over_hard_cap": verdict.size_envelope.over_hard_cap,
+            "over_combined_cap": verdict.size_envelope.over_combined_cap,
+            "runtime_estimate_min": (
+                None
+                if verdict.size_envelope.runtime_estimate_min is None
+                else round(verdict.size_envelope.runtime_estimate_min, 1)
+            ),
+            "runtime_basis": verdict.size_envelope.runtime_basis,
+            "runtime_hard_cap_min": verdict.size_envelope.runtime_hard_cap_min,
+            "over_runtime_cap": verdict.size_envelope.over_runtime_cap,
+            "gpu": verdict.size_envelope.gpu,
+            "warn_message": verdict.size_envelope.warn_message,
+            "hard_fail_message": verdict.size_envelope.hard_fail_message,
+        }
     return {
         "kind": verdict.kind.value,
         "ok": verdict.ok,
@@ -203,7 +253,32 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
         "suggested_fix": verdict.suggested_fix,
         "alphafold": af,
         "nearest_clean_residues": list(verdict.nearest_clean_residues),
+        "gap_analysis": gap_block,
+        "size_envelope": size_block,
     }
+
+
+def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
+    """Extract (binder_max_aa, num_designs) from a request.form-like mapping.
+
+    Both are optional — when absent or unparseable, return (None, None) so
+    preflight_for_tool skips the runtime estimate + combined-budget cap
+    rather than firing on garbage. Used by both /preflight (request.form)
+    and tool_submit (the validated ``inputs`` dict; .get works for both).
+    """
+    def _maybe_int(v) -> Optional[int]:
+        if v is None or v == "":
+            return None
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if n > 0 else None
+
+    return (
+        _maybe_int(source.get("binder_length_max")),
+        _maybe_int(source.get("num_designs")),
+    )
 from shared.storage import (
     StorageError,
     copy_input,
@@ -3719,9 +3794,11 @@ def create_app() -> Flask:
                 "alphafold": None,
             }, 200)
 
+        binder_max_aa, num_designs = _parse_preflight_size_params(request.form)
         verdict = preflight_for_tool(
             adapter.slug, pdb_bytes,
             target_chain=target_chain, hotspots=hotspots,
+            binder_max_aa=binder_max_aa, num_designs=num_designs,
         )
         return (_verdict_to_json(verdict, source_label), 200)
 
@@ -3976,11 +4053,16 @@ def create_app() -> Flask:
         ):
             preflight_target_chain = (inputs.get("target_chain") or "").strip()
             preflight_hotspots = inputs.get("hotspot_residues") or []
+            preflight_binder_max, preflight_num_designs = (
+                _parse_preflight_size_params(inputs)
+            )
             try:
                 preflight_verdict = preflight_for_tool(
                     adapter.slug, pdb_bytes,
                     target_chain=preflight_target_chain,
                     hotspots=preflight_hotspots,
+                    binder_max_aa=preflight_binder_max,
+                    num_designs=preflight_num_designs,
                 )
             except Exception:
                 # Defensive: a preflight crash must not block submit on

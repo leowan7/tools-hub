@@ -67,6 +67,28 @@
             — all preserved
           </div>
         {% endif %}
+        {% if verdict.size_envelope %}
+          <div class="preflight-meta{% if verdict.size_envelope.over_soft_warn %} preflight-meta--warn{% endif %}">
+            Size envelope:
+            {{ verdict.size_envelope.residue_count }} aa target
+            (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
+            <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% if verdict.size_envelope.combined_aa %}
+              Combined with binder: {{ verdict.size_envelope.combined_aa }} aa
+              (cap {{ verdict.size_envelope.hard_cap_combined_aa }} aa).
+            {% endif %}
+            {% if verdict.size_envelope.runtime_estimate_min %}
+              <br>Estimated runtime: ≈{{ verdict.size_envelope.runtime_estimate_min }} min
+              for {{ verdict.size_envelope.runtime_basis }}.
+            {% endif %}
+          </div>
+          {% if verdict.size_envelope.warn_message %}
+            <p class="preflight-warn">{{ verdict.size_envelope.warn_message }}</p>
+          {% endif %}
+        {% endif %}
+        {% if verdict.gap_analysis and verdict.gap_analysis.warn_message %}
+          <p class="preflight-warn">{{ verdict.gap_analysis.warn_message }}</p>
+        {% endif %}
         {% if verdict.cleanup_items %}
           <div class="preflight-cleanup">
             Cleanup applied:
@@ -116,6 +138,39 @@
           <p class="preflight-fix">
             <strong>Try one of these:</strong><br>
             {{ verdict.suggested_fix }}
+          </p>
+        {% endif %}
+        {% if verdict.size_envelope and (
+              verdict.size_envelope.over_hard_cap
+              or verdict.size_envelope.over_combined_cap
+              or verdict.size_envelope.over_runtime_cap
+              or verdict.size_envelope.over_soft_warn) %}
+          <div class="preflight-meta preflight-meta--warn">
+            Size envelope:
+            {{ verdict.size_envelope.residue_count }} aa target
+            (cap {{ verdict.size_envelope.hard_cap_target_aa }} aa on
+            <code>{{ verdict.size_envelope.gpu }}</code>).
+            {% if verdict.size_envelope.combined_aa %}
+              Combined with binder: {{ verdict.size_envelope.combined_aa }} aa
+              (cap {{ verdict.size_envelope.hard_cap_combined_aa }} aa).
+            {% endif %}
+            {% if verdict.size_envelope.runtime_estimate_min %}
+              <br>Estimated runtime: ~{{ verdict.size_envelope.runtime_estimate_min }} min
+              for {{ verdict.size_envelope.runtime_basis }}
+              (pilot ceiling {{ verdict.size_envelope.runtime_hard_cap_min }} min).
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if verdict.gap_analysis and verdict.gap_analysis.gaps and not verdict.gap_analysis.causes_hard_fail %}
+          {# Gaps detected but not the cause of this needs_fix — surface
+             them anyway as supplementary context. The hard fail message
+             from gap_analysis is already in verdict.reason when it IS
+             the cause. #}
+          <p class="preflight-warn">
+            Also detected:
+            chain {{ verdict.target_chain }} has
+            {{ verdict.gap_analysis.gaps | length }} internal gap{% if verdict.gap_analysis.gaps | length != 1 %}s{% endif %}
+            (longest {{ verdict.gap_analysis.longest_gap }} residues).
           </p>
         {% endif %}
         {% if verdict.alphafold and not summary %}
@@ -179,6 +234,24 @@
   .preflight-meta {
     color: #374151;
     margin-bottom: 0.25rem;
+  }
+  .preflight-meta--warn {
+    background: #fffbeb;
+    border-left: 3px solid #f59e0b;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    margin-bottom: 0.5rem;
+    color: #78350f;
+    font-size: 0.9rem;
+  }
+  .preflight-warn {
+    background: #fffbeb;
+    border-left: 3px solid #f59e0b;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+    margin: 0.5rem 0;
+    color: #78350f;
+    font-size: 0.9rem;
   }
   .preflight-meta--swap {
     background: #ecfdf5;
