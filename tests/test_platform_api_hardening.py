@@ -879,8 +879,20 @@ def test_fire_webhook_caller_does_not_pass_delivery_id_sentinel(monkeypatch):
 
     captured = {}
 
-    def _fake_dispatch(*, campaign_id, event_type, target_url, payload):
+    def _fake_dispatch(
+        *,
+        campaign_id,
+        event_type,
+        target_url,
+        payload,
+        owner_user_id=None,
+    ):
+        # CR-01: dispatch_webhook now accepts owner_user_id. Stash it on
+        # the captured dict so the existing delivery_id-sentinel check
+        # still works AND we can pin that the route did pass user_id
+        # through (cross-tenant signing bug if it doesn't).
         captured.update(payload)
+        captured["__owner_user_id"] = owner_user_id
         return "dispatched"
 
     monkeypatch.setattr(routes_mod, "dispatch_webhook", _fake_dispatch)
@@ -917,6 +929,13 @@ def test_fire_webhook_caller_does_not_pass_delivery_id_sentinel(monkeypatch):
     assert "delivery_id" not in captured, (
         "caller must not pre-populate delivery_id; dispatch_webhook "
         "is the only minter"
+    )
+    # CR-01: route MUST pass the campaign owner through so the
+    # dispatcher signs with the per-tenant secret.
+    assert captured.get("__owner_user_id") == "u-1", (
+        "_fire_webhook must pass campaign.user_id as owner_user_id; "
+        "without it the dispatcher falls through to the shared global "
+        "secret and CR-01 regresses."
     )
 
 
@@ -1202,3 +1221,208 @@ def test_sweep_skips_rows_with_missing_target_url(monkeypatch):
     assert any(
         "no target_url" in (u.get("last_error") or "") for u in update_calls
     )
+
+
+# ---------------------------------------------------------------------------
+# CR-01 — per-tenant webhook signing secret
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_signing_secret_prefers_per_tenant(monkeypatch):
+    """When the user has a per-tenant secret, that's what gets used; the
+    env-var fallback is ignored even when set."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "env-fallback")
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret",
+        lambda user_id: "whsec_tenant_secret",
+    )
+
+    assert wh._resolve_signing_secret(owner_user_id="u1") == "whsec_tenant_secret"
+
+
+def test_resolve_signing_secret_falls_back_to_env_when_tenant_missing(monkeypatch):
+    """During the rollout window, a user with no per-tenant secret yet
+    falls back to the env-var so legacy receivers keep verifying. After
+    every tenant has rotated, the env var should be unset."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "env-fallback")
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret", lambda user_id: None
+    )
+
+    assert wh._resolve_signing_secret(owner_user_id="u1") == "env-fallback"
+
+
+def test_resolve_signing_secret_returns_none_when_both_missing(monkeypatch):
+    """Both lookups fail → None. The caller refuses to fire — that's the
+    fail-closed behavior. An unsigned payload sent to a receiver looks
+    like an attacker hit, not a legitimate webhook."""
+    from shared import webhooks as wh
+
+    monkeypatch.delenv("WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret", lambda user_id: None
+    )
+
+    assert wh._resolve_signing_secret(owner_user_id="u1") is None
+
+
+def test_resolve_signing_secret_no_owner_falls_back_to_env(monkeypatch):
+    """Legacy rows (or test paths) without owner_user_id can still use
+    the env var. Once CR-01 is fully rolled out, the env var becomes
+    optional; until then it's the bootstrap."""
+    from shared import webhooks as wh
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "env-only")
+
+    assert wh._resolve_signing_secret(owner_user_id=None) == "env-only"
+
+
+def test_dispatch_webhook_grafts_owner_user_id_into_payload(monkeypatch):
+    """The signed body MUST include owner_user_id (CR-01) so the
+    receiver can confirm "this event is intended for my tenant"."""
+    from shared import webhooks as webhooks_mod
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "test-fallback-secret")
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret",
+        lambda user_id: f"whsec_tenant_{user_id}",
+    )
+
+    class _FakeResp:
+        status_code = 200
+        text = "ok"
+
+    captured = {}
+
+    def _fake_post(url, data, headers, timeout, allow_redirects):
+        captured["body"] = data
+        return _FakeResp()
+
+    monkeypatch.setattr(webhooks_mod._session, "post", _fake_post)
+
+    enqueued = {}
+
+    def _fake_enqueue(*, delivery_id, campaign_id, target_url, event_type, payload):
+        enqueued["payload"] = payload
+        return delivery_id
+
+    monkeypatch.setattr(webhooks_mod, "_enqueue_delivery", _fake_enqueue)
+    monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
+    monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
+
+    webhooks_mod.dispatch_webhook(
+        campaign_id="c-cr01",
+        event_type="experiment.test",
+        owner_user_id="tenant-A",
+        payload={
+            "event_type": "experiment.test",
+            "experiment_id": "c-cr01",
+            "new_status": "QuoteSent",
+        },
+        target_url="https://example.com/hook",
+    )
+
+    for _ in range(50):
+        if "body" in captured:
+            break
+        time.sleep(0.05)
+
+    # owner_user_id lives in the persisted row's payload.
+    assert enqueued["payload"]["owner_user_id"] == "tenant-A"
+    # And in the actually-signed bytes.
+    import json
+    body = json.loads(captured["body"].decode("utf-8"))
+    assert body["owner_user_id"] == "tenant-A"
+
+
+def test_dispatch_once_signs_with_per_tenant_secret(monkeypatch):
+    """``_dispatch_once`` resolves the secret from ``payload.owner_user_id``
+    and uses it for HMAC, not the env var. This is the leg the cron
+    sweep takes — the row in webhook_deliveries already has the
+    owner_user_id in its persisted payload."""
+    from shared import webhooks as webhooks_mod
+
+    monkeypatch.setenv("WEBHOOK_SIGNING_SECRET", "env-fallback-NOT-used")
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret",
+        lambda user_id: "whsec_tenant_A_secret",
+    )
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = "ok"
+
+    def _fake_post(url, data, headers, timeout, allow_redirects):
+        captured["body"] = data
+        captured["sig"] = headers["X-Ranomics-Signature"]
+        return _FakeResp()
+
+    monkeypatch.setattr(webhooks_mod._session, "post", _fake_post)
+    monkeypatch.setattr(webhooks_mod, "_update_delivery", MagicMock())
+    monkeypatch.setattr(webhooks_mod, "validate_webhook_url_safe", lambda _u: None)
+
+    payload = {
+        "event_type": "experiment.test",
+        "experiment_id": "exp-1",
+        "delivery_id": "deliv-1",
+        "owner_user_id": "tenant-A",
+        "new_status": "Done",
+    }
+    webhooks_mod._dispatch_once(
+        delivery_id="deliv-1",
+        target_url="https://example.com/hook",
+        payload=payload,
+    )
+
+    # The signature must verify against the per-tenant secret, not the
+    # env var. We use verify_signature directly so we don't have to
+    # parse the header twice.
+    body = captured["body"]
+    assert webhooks_mod.verify_signature(
+        captured["sig"], body, "whsec_tenant_A_secret"
+    )
+    # And the env-var secret MUST NOT verify (proof we didn't use it).
+    assert not webhooks_mod.verify_signature(
+        captured["sig"], body, "env-fallback-NOT-used"
+    )
+
+
+def test_dispatch_once_refuses_when_no_secret_available(monkeypatch):
+    """No per-tenant secret AND no env-var fallback → stamp the row and
+    return. Don't post an unsigned payload to the subscriber."""
+    from shared import webhooks as webhooks_mod
+
+    monkeypatch.delenv("WEBHOOK_SIGNING_SECRET", raising=False)
+    monkeypatch.setattr(
+        "shared.api_keys.resolve_webhook_secret", lambda user_id: None
+    )
+
+    update_kwargs = {}
+
+    def _fake_update(**kwargs):
+        update_kwargs.update(kwargs)
+
+    monkeypatch.setattr(webhooks_mod, "_update_delivery", _fake_update)
+    # The HTTP layer must not be reached.
+    monkeypatch.setattr(
+        webhooks_mod._session,
+        "post",
+        lambda *a, **k: pytest.fail("should not POST without a secret"),
+    )
+
+    payload = {"event_type": "x", "experiment_id": "e", "owner_user_id": "u-1"}
+    webhooks_mod._dispatch_once(
+        delivery_id="deliv-x",
+        target_url="https://example.com/hook",
+        payload=payload,
+    )
+
+    # delivered_at stamped so the cron forgets the row.
+    assert update_kwargs.get("delivered_at") is not None
+    assert "no signing secret" in (update_kwargs.get("last_error") or "")

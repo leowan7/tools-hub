@@ -322,7 +322,11 @@ def build_spec() -> dict[str, Any]:
                             "format": "uri",
                             "description": (
                                 "Optional. POST is signed with X-Ranomics-"
-                                "Signature: t=<ts>,v1=<hex hmac-sha256>."
+                                "Signature: t=<ts>,v1=<hex hmac-sha256>. "
+                                "The HMAC key is the **per-tenant** webhook "
+                                "signing secret shown once at /account/api-"
+                                "keys (whsec_…). Payload shape: see the "
+                                "WebhookEvent schema."
                             ),
                         },
                         "experiment_spec": {
@@ -584,6 +588,63 @@ def build_spec() -> dict[str, Any]:
                                     "format": "uri",
                                 },
                             },
+                        },
+                    },
+                },
+                "WebhookEvent": {
+                    "type": "object",
+                    "description": (
+                        "Body Ranomics POSTs to ``webhook_url`` on every "
+                        "status transition. Verify the X-Ranomics-Signature "
+                        "header against your per-tenant ``whsec_…`` secret "
+                        "before trusting the body. Receivers SHOULD also "
+                        "check ``owner_user_id`` matches the recipient "
+                        "tenant before acting (CR-01 defense-in-depth)."
+                    ),
+                    "required": [
+                        "delivery_id",
+                        "event_type",
+                        "experiment_id",
+                        "new_status",
+                        "results_status",
+                        "timestamp",
+                    ],
+                    "properties": {
+                        "delivery_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": (
+                                "Stable id for receiver-side dedup. Repeats "
+                                "of the same delivery_id are retries; treat "
+                                "them as idempotent."
+                            ),
+                        },
+                        "event_type": {
+                            "type": "string",
+                            "example": "experiment.status_changed",
+                        },
+                        "experiment_id": {"type": "string", "format": "uuid"},
+                        "prev_status": {
+                            "$ref": "#/components/schemas/StatusEnum"
+                        },
+                        "new_status": {
+                            "$ref": "#/components/schemas/StatusEnum"
+                        },
+                        "results_status": {
+                            "$ref": "#/components/schemas/ResultsStatusEnum"
+                        },
+                        "owner_user_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": (
+                                "CR-01: the tenant who owns the experiment. "
+                                "Use this to confirm the event is intended "
+                                "for the recipient before acting."
+                            ),
+                        },
+                        "timestamp": {
+                            "type": "string",
+                            "format": "date-time",
                         },
                     },
                 },

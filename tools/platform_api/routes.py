@@ -706,12 +706,17 @@ def _fire_webhook(campaign: Campaign, *, event_type: str, prev_status: str) -> N
     the same id that lands in webhook_deliveries.id. Don't pass a sentinel
     here — the prior ``"delivery_id": None`` looked like a real bug to
     every reviewer who scanned this file (LO-08 fresh-review).
+
+    CR-01: pass ``owner_user_id`` so the dispatcher can sign with the
+    per-tenant HMAC secret and graft the owner id onto the payload for
+    receiver-side cross-check.
     """
     try:
         dispatch_webhook(
             campaign_id=campaign.id,
             event_type=event_type,
             target_url=campaign.webhook_url,
+            owner_user_id=campaign.user_id,
             payload={
                 "event_type": event_type,
                 "experiment_id": campaign.id,

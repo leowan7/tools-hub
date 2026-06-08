@@ -35,6 +35,32 @@
     </div>
   {% endif %}
 
+  {% if just_minted_webhook_secret %}
+    <div class="panel" style="border-color: var(--color-accent-dim, #2B9E7E);">
+      <div class="panel-header">
+        <span class="panel-title">Webhook signing secret — copy now</span>
+      </div>
+      <div class="panel-body">
+        <p style="margin-top: 0;">
+          This is the HMAC key Ranomics will sign your webhook payloads
+          with. Receivers verify it using the
+          <code>X-Ranomics-Signature</code> header (Stripe scheme).
+          {% if rotate_notice %}
+            <strong>{{ rotate_notice }}</strong>
+          {% else %}
+            This is shown once; store it in your receiver's secret store
+            alongside the API key above.
+          {% endif %}
+        </p>
+        <pre style="background: #08101B; padding: 1rem; border-radius: 0.5rem; user-select: all; word-break: break-all; white-space: pre-wrap;"><code>{{ just_minted_webhook_secret }}</code></pre>
+        <p style="margin-bottom: 0; font-size: 0.875rem; color: var(--color-text-secondary, #b5b5b5);">
+          Verify a payload (Python):
+          <code>hmac.new(secret.encode(), f"{t}.".encode() + body, "sha256").hexdigest()</code>
+        </p>
+      </div>
+    </div>
+  {% endif %}
+
   {% if create_error %}
     <div class="error-box" style="margin-bottom: 1rem;">
       {{ create_error }}
@@ -120,6 +146,41 @@
             {% endfor %}
           </tbody>
         </table>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Webhook signing secret</span>
+    </div>
+    <div class="panel-body">
+      {% if webhook_secret_display %}
+        <p style="margin-top: 0;">
+          A per-tenant HMAC secret is on file. We sign every webhook to
+          your <code>webhook_url</code> with this key. The dashboard
+          only shows the prefix — full plaintext is revealed once at
+          mint time.
+        </p>
+        <p style="font-family: monospace; margin: 0.5rem 0;">
+          <strong>{{ webhook_secret_display.prefix }}…</strong>
+          {% if webhook_secret_display.rotated_at %}
+            <span style="color: var(--color-text-secondary, #b5b5b5); font-family: inherit; margin-left: 0.5rem;">
+              last rotated {{ webhook_secret_display.rotated_at[:19].replace('T', ' ') }} UTC
+            </span>
+          {% endif %}
+        </p>
+        <form method="POST" action="{{ url_for('account_api_keys_rotate_webhook_secret') }}" style="margin-top: 0.75rem;" onsubmit="return confirm('Rotate the webhook secret? Receivers verifying with the old secret will start rejecting payloads immediately. Update them before clicking OK.');">
+          <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+          <button type="submit" class="btn-secondary" style="font-size: 0.85rem;">Rotate webhook secret</button>
+        </form>
+      {% else %}
+        <p style="margin: 0; color: var(--color-text-secondary, #b5b5b5);">
+          No webhook secret minted yet. The first time you create an API
+          key, we mint one for you and reveal it once. To force a fresh
+          secret without minting a new key, use the rotate button after
+          your first mint.
+        </p>
       {% endif %}
     </div>
   </div>

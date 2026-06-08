@@ -133,7 +133,41 @@ class WebhookPayload:
 
 
 def _signing_secret() -> Optional[str]:
+    """Global env-var fallback signing secret.
+
+    Used only when per-tenant secret resolution (CR-01) returns None —
+    typically a pre-CR-01 row whose ``owner_user_id`` is missing from
+    the payload, or a tenant that hasn't been backfilled yet. Live use
+    of this path beyond the transition window indicates a tenant who
+    never minted their first webhook secret.
+    """
     return (os.environ.get("WEBHOOK_SIGNING_SECRET") or "").strip() or None
+
+
+def _resolve_signing_secret(*, owner_user_id: Optional[str]) -> Optional[str]:
+    """Pick the HMAC secret to sign a delivery with.
+
+    CR-01: per-tenant secret takes precedence over the global env-var
+    fallback. The env-var path exists only for the rollout window — once
+    every active tenant has rotated, the global secret can be unset.
+
+    Returns None when both lookups fail; the caller refuses to fire so
+    an unsigned payload never reaches a customer endpoint.
+    """
+    if owner_user_id:
+        # Local import keeps shared.webhooks importable in test harnesses
+        # that stub shared.api_keys before importing.
+        from shared.api_keys import resolve_webhook_secret
+
+        per_tenant = resolve_webhook_secret(user_id=owner_user_id)
+        if per_tenant:
+            return per_tenant
+        logger.warning(
+            "webhook: per-tenant secret missing for user %s; falling back "
+            "to global WEBHOOK_SIGNING_SECRET (CR-01 transition window)",
+            owner_user_id,
+        )
+    return _signing_secret()
 
 
 def sign_payload(timestamp: int, body: bytes, secret: str) -> str:
@@ -465,19 +499,30 @@ def _dispatch_once(
     ``prior_attempts`` is the number of attempts ALREADY recorded on the
     row before this call. The cron sweep passes ``row["attempts"]``; the
     inline first-fire from ``dispatch_webhook`` passes 0.
+
+    CR-01: the signing secret is resolved per-tenant from
+    ``payload["owner_user_id"]`` with a fallback to the global env var
+    for rows enqueued before the migration. Refusing to fire when both
+    lookups fail is intentional — an unsigned payload reaching a
+    customer endpoint is indistinguishable from an attacker hitting it.
     """
-    secret = _signing_secret()
+    owner_user_id = payload.get("owner_user_id") if isinstance(payload, dict) else None
+    secret = _resolve_signing_secret(owner_user_id=owner_user_id)
     if not secret:
         logger.error(
-            "webhook dispatch refused: WEBHOOK_SIGNING_SECRET not set "
-            "(delivery_id=%s)",
+            "webhook dispatch refused: no signing secret available "
+            "(delivery_id=%s, owner_user_id=%s)",
             delivery_id,
+            owner_user_id,
         )
         _update_delivery(
             delivery_id=delivery_id,
             attempts=_MAX_ATTEMPTS,
             delivered_at=datetime.now(timezone.utc),
-            last_error="WEBHOOK_SIGNING_SECRET not configured",
+            last_error=(
+                "no signing secret available: per-tenant secret missing "
+                "and WEBHOOK_SIGNING_SECRET fallback not configured"
+            ),
         )
         return
 
@@ -673,6 +718,7 @@ def dispatch_webhook(
     event_type: str,
     payload: dict[str, Any],
     target_url: Optional[str],
+    owner_user_id: Optional[str] = None,
 ) -> Optional[str]:
     """Fire-and-forget a signed webhook.
 
@@ -685,14 +731,21 @@ def dispatch_webhook(
     retries — FIX #4 from the validation review. The id is minted here
     BEFORE row insert so the persisted payload (in webhook_deliveries.
     payload) and the signed bytes both reference the same id.
+
+    CR-01: ``owner_user_id`` is grafted onto the signed payload so the
+    receiver can cross-check "is this event really for me?" before
+    acting on it, and so the sweep can resolve the per-tenant signing
+    secret from the persisted row.
     """
     if not target_url:
         return None
-    if not _signing_secret():
+    secret_for_check = _resolve_signing_secret(owner_user_id=owner_user_id)
+    if not secret_for_check:
         logger.error(
-            "dispatch_webhook refused: WEBHOOK_SIGNING_SECRET not set "
-            "(campaign_id=%s)",
+            "dispatch_webhook refused: no signing secret available "
+            "(campaign_id=%s, owner_user_id=%s)",
             campaign_id,
+            owner_user_id,
         )
         return None
 
@@ -710,9 +763,13 @@ def dispatch_webhook(
         return None
 
     # Mint id locally so we can bake it into the signed payload before
-    # persisting (FIX #4).
+    # persisting (FIX #4). CR-01: also graft owner_user_id so the sweep
+    # can resolve the per-tenant signing secret from the persisted row,
+    # and so the receiver can cross-check ownership.
     delivery_id = str(uuid.uuid4())
     signed_payload = {**payload, "delivery_id": delivery_id}
+    if owner_user_id:
+        signed_payload["owner_user_id"] = owner_user_id
 
     written = _enqueue_delivery(
         delivery_id=delivery_id,
