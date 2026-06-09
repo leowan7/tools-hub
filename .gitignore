@@ -15,3 +15,11 @@ graphify-out/
 .graphifyignore
 scratch/
 design-refs/
+
+# Local agent/tooling state (per-machine; never tracked)
+.claude/
+.gstack/
+
+# Local deploy/run logs (per-run output; never tracked)
+.deploy-logs/
+runs/
