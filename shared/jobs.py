@@ -87,6 +87,7 @@ class ToolJob:
     started_at: Optional[str]
     completed_at: Optional[str]
     campaign_label: Optional[str] = None
+    failure_class: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ToolJob":
@@ -106,6 +107,7 @@ class ToolJob:
             started_at=row.get("started_at"),
             completed_at=row.get("completed_at"),
             campaign_label=row.get("campaign_label"),
+            failure_class=row.get("failure_class"),
         )
 
     def to_dict(self) -> dict:
@@ -121,7 +123,123 @@ class ToolJob:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "campaign_label": self.campaign_label,
+            "failure_class": self.failure_class,
         }
+
+
+# ---------------------------------------------------------------------------
+# Failure classifier (drives the wallet settlement branch)
+# ---------------------------------------------------------------------------
+#
+# Maps (status, error bucket, result) -> failure_class enum value, where
+# enum values match the CHECK constraint in
+# supabase/migrations/0029_tool_jobs_failure_class.sql.
+#
+# Refund policy by class:
+#   succeeded, completed_no_yield, user_cancelled, safety_kill
+#       -> charge actual GPU consumed (settle_hold)
+#   infra_crash, tool_error, preflight_miss, no_progress_timeout, unclassified
+#       -> full refund (release_hold)
+#
+# The unclassified bucket is the deliberate judgment-case fallback per
+# the tier-collapse spec: ambiguous failures default to refund so the
+# user is never billed for a case we cannot confidently attribute.
+
+
+# Failure classes that bill the user for consumed GPU time.
+_BILLED_FAILURE_CLASSES: frozenset[str] = frozenset({
+    "succeeded",
+    "completed_no_yield",
+    "user_cancelled",
+    "safety_kill",
+})
+
+# Failure classes that refund the full hold (no charge to the user).
+_REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
+    "infra_crash",
+    "tool_error",
+    "preflight_miss",
+    "no_progress_timeout",
+    "unclassified",
+})
+
+# Error buckets that map to specific failure classes. Anything not in
+# this table on a 'failed' row defaults to 'unclassified' (refund).
+_ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
+    # Real production bucket strings (verified by grepping the repo):
+    "pipeline":                "tool_error",          # docker run_pipeline crashed (app.py:4652)
+    "storage":                 "infra_crash",         # Supabase Storage upload failed (app.py:4353)
+    "modal-submit":            "infra_crash",         # Modal SDK submit raised before GPU pod started (app.py:4423, 4916)
+    "preflight":               "preflight_miss",      # docker-side preflight check failed (ATOMIC-TOOLS.md)
+    "cancelled":               "user_cancelled",      # belt-and-suspenders; status="cancelled" path normally catches first (jobs.py:360)
+    "overrun_safety_kill":     "safety_kill",         # server-side overrun kill (jobs.py:843)
+    # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
+    "modal_crash":             "infra_crash",
+    "modal_oom":               "infra_crash",
+    "modal_timeout":           "no_progress_timeout",
+}
+
+
+def classify_terminal_state(
+    *,
+    status: str,
+    error: Optional[dict] = None,
+    result: Optional[dict] = None,
+) -> Optional[str]:
+    """Map a terminal job row to its failure_class enum value.
+
+    Pure function. Returns NULL for non-terminal statuses so callers can
+    distinguish "not yet classified" from "explicitly classified".
+
+    The mapping is conservative: any 'failed' row whose error bucket is
+    not in the known table classifies as 'unclassified', which routes
+    to a full refund. This implements the spec's "judgment cases default
+    to refund" policy without surfacing every novel bucket as a billed
+    case.
+    """
+    if status == "succeeded":
+        # A succeeded run that produced zero passing designs is
+        # technically billable (we ran the GPU as ordered) but is
+        # surfaced separately so ops can monitor the yield rate. The
+        # zero-yield detection is best-effort because not every tool
+        # emits a candidates array.
+        candidates = None
+        if isinstance(result, dict):
+            candidates = result.get("candidates")
+        if isinstance(candidates, list) and len(candidates) == 0:
+            return "completed_no_yield"
+        return "succeeded"
+
+    if status == "cancelled":
+        return "user_cancelled"
+
+    if status == "timeout":
+        return "no_progress_timeout"
+
+    if status == "failed":
+        if isinstance(error, dict):
+            bucket = error.get("bucket")
+            if isinstance(bucket, str):
+                mapped = _ERROR_BUCKET_TO_FAILURE_CLASS.get(bucket)
+                if mapped:
+                    return mapped
+        return "unclassified"
+
+    # Non-terminal: leave NULL so the column reflects no decision yet.
+    return None
+
+
+def is_billed_failure_class(failure_class: Optional[str]) -> bool:
+    """Return True iff the class bills the user for consumed GPU time.
+
+    NULL (legacy / unclassified) returns False so unfamiliar paths
+    default to refund. The caller is expected to pair this with the
+    legacy fallback in ``_settle_wallet_hold_for_completed_job`` when
+    the column is NULL on a known-good job row.
+    """
+    if failure_class is None:
+        return False
+    return failure_class in _BILLED_FAILURE_CLASSES
 
 
 def generate_job_token() -> str:
@@ -275,13 +393,21 @@ def mark_succeeded(
     gpu_seconds_used: Optional[int] = None,
     allowed_current: tuple[str, ...] = _NON_TERMINAL,
 ) -> bool:
-    """CAS-style success transition. Returns True iff the row actually moved."""
+    """CAS-style success transition. Returns True iff the row actually moved.
+
+    Sets ``failure_class`` from :func:`classify_terminal_state` so the
+    wallet settle path can route by typed classification rather than
+    re-deriving it from the error bucket on every read.
+    """
     return _cas_update(
         job_id,
         {
             "status": "succeeded",
             "result": result,
             "gpu_seconds_used": gpu_seconds_used,
+            "failure_class": classify_terminal_state(
+                status="succeeded", result=result,
+            ),
             "completed_at": _now_iso(),
         },
         allowed_current=allowed_current,
@@ -295,13 +421,21 @@ def mark_failed(
     gpu_seconds_used: Optional[int] = None,
     allowed_current: tuple[str, ...] = _NON_TERMINAL,
 ) -> bool:
-    """CAS-style failed transition. Returns True iff the row actually moved."""
+    """CAS-style failed transition. Returns True iff the row actually moved.
+
+    Sets ``failure_class`` based on the error bucket. Unknown buckets
+    classify as ``unclassified`` which routes to a full refund (the
+    deliberate judgment-case fallback from the tier-collapse spec).
+    """
     return _cas_update(
         job_id,
         {
             "status": "failed",
             "error": error,
             "gpu_seconds_used": gpu_seconds_used,
+            "failure_class": classify_terminal_state(
+                status="failed", error=error,
+            ),
             "completed_at": _now_iso(),
         },
         allowed_current=allowed_current,
@@ -313,11 +447,16 @@ def mark_timeout(
     *,
     allowed_current: tuple[str, ...] = _NON_TERMINAL,
 ) -> bool:
-    """CAS-style timeout transition. Returns True iff the row actually moved."""
+    """CAS-style timeout transition. Returns True iff the row actually moved.
+
+    Timeouts classify as ``no_progress_timeout`` (infra-side stall),
+    which routes to a full refund.
+    """
     return _cas_update(
         job_id,
         {
             "status": "timeout",
+            "failure_class": classify_terminal_state(status="timeout"),
             "completed_at": _now_iso(),
         },
         allowed_current=allowed_current,
@@ -352,12 +491,16 @@ def mark_cancelled(
     Returns True iff this caller actually flipped the row to 'cancelled'.
     When False, another writer (Modal webhook, inline poll) already wrote
     a terminal status; the caller MUST NOT issue a refund.
+
+    Cancellations classify as ``user_cancelled``, which bills for
+    consumed GPU time (no refund of time already used).
     """
     return _cas_update(
         job_id,
         {
             "status": "cancelled",
             "error": {"bucket": "cancelled", "detail": reason},
+            "failure_class": classify_terminal_state(status="cancelled"),
             "completed_at": _now_iso(),
         },
         allowed_current=allowed_current,
@@ -370,16 +513,20 @@ def cancel_job(
     user_id: str,
     modal_client,  # noqa: ANN001 — avoid circular import of gpu.modal_client
 ) -> tuple[Optional["ToolJob"], Optional[str]]:
-    """Cancel a pending/running job. Owner-scoped; releases the wallet hold.
+    """Cancel a pending/running job. Owner-scoped; bills consumed GPU.
 
     Flow:
       1. Owner-scope fetch; reject if missing or already terminal.
       2. Best-effort Modal FunctionCall cancel (non-fatal if Modal flakes —
          the tool_jobs row is the authoritative state and a stray Modal
          run terminates harmlessly once the tools-hub side is terminal).
-      3. Mark the job 'cancelled' with an error bucket of the same name.
-      4. Release the wallet hold so the user is billed nothing for the
-         cancelled run. Idempotent and a no-op for jobs with no hold.
+      3. Mark the job 'cancelled' with failure_class='user_cancelled'.
+      4. Settle the wallet hold against the consumed GPU time persisted
+         by the most recent heartbeat (``mid_run_monitor_check``
+         updates ``gpu_seconds_used`` on every check). The user is
+         charged for actual GPU consumed up to the cancel point and
+         refunded any surplus. Cancellations BEFORE the first heartbeat
+         settle at zero consumption (full refund).
 
     Returns ``(job, None)`` on success, ``(None, error_message)`` on
     refusal. Safe to call repeatedly — once the row is terminal, the
@@ -418,11 +565,13 @@ def cancel_job(
         )
         return None, f"already_{current}"
 
-    # Release the wallet hold placed at submit time. A user cancel bills
-    # nothing: _settle_wallet_hold_for_completed_job reads
-    # inputs._wallet.hold_tx_id and, for a cancelled row with no GPU
-    # time, calls release_hold. It is idempotent and a no-op for jobs
-    # that never carried a hold (smoke runs, pre-wallet rows).
+    # Settle the wallet hold against consumed GPU time. After the
+    # tier-collapse migration, _settle_wallet_hold_for_completed_job
+    # routes by failure_class: user_cancelled -> settle_hold (bill
+    # actual gpu_seconds_used). Cancellations before the first heartbeat
+    # have gpu_seconds_used=0 on the row and naturally settle at zero
+    # (full refund). Idempotent and a no-op for jobs that never carried
+    # a hold (smoke runs, pre-wallet rows).
     fresh = get_job(job_id, user_id=user_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
@@ -625,21 +774,25 @@ def _charge_workspace_for_completed_job(job: "ToolJob") -> None:
 def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
     """Close out the wallet hold for a job that has reached a terminal state.
 
-    Reads ``inputs._wallet_hold_tx_id`` (stashed at submission time by the
-    tools-hub route handler) and routes to one of:
+    Reads ``inputs._wallet.hold_tx_id`` (stashed at submission time by
+    the tools-hub route handler) and routes by ``job.failure_class``:
 
-    * ``settle_hold`` for ``succeeded`` and ``failed`` jobs that ran any
-      GPU time. The SQL function releases surplus, charges variance up
-      to the parameter-scaled hard cap, or records absorbed_variance if
-      the wallet has no slack to cover the deficit.
-    * ``release_hold`` for ``failed`` jobs that consumed zero GPU time
-      (system-failure path) and for ``timeout`` / ``cancelled`` rows. The
-      cancel path already runs ``release_hold`` from ``cancel_job`` for
-      its own bookkeeping, but covering it here is cheap and keeps the
-      contract symmetric.
+    * **Billed classes** (succeeded, completed_no_yield, user_cancelled,
+      safety_kill) -> ``settle_hold`` with actual GPU consumed. The SQL
+      function releases surplus, charges variance up to the parameter
+      scaled hard cap, or records absorbed_variance if the wallet has
+      no slack to cover the deficit.
+    * **Refunded classes** (infra_crash, tool_error, preflight_miss,
+      no_progress_timeout, unclassified) -> ``release_hold`` (full
+      refund). These are system-side failures that consumed time but
+      the user is not billed.
+    * **NULL failure_class** (legacy rows pre-0029, or a row that
+      reached terminal without going through a mark_* helper) -> fall
+      back to the legacy heuristic: refund if gpu_seconds <= 0, else
+      settle.
 
-    Idempotent. The SQL functions both no op on a second call against
-    the same hold id.
+    Idempotent. The underlying SQL functions both no-op on a second
+    call against the same hold id.
     """
     ws_ctx = (job.inputs or {}).get("_wallet") or {}
     if not isinstance(ws_ctx, dict):
@@ -689,7 +842,65 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
         )
         return
 
-    # No real GPU time consumed: release the hold without charging.
+    # ----- Classifier-driven routing (post-0029 rows) -------------------
+    if job.failure_class is not None:
+        if job.failure_class in _REFUNDED_FAILURE_CLASSES:
+            try:
+                release_hold(
+                    hold_tx_id,
+                    reason=failure_reason or job.failure_class,
+                )
+            except Exception:
+                logger.warning(
+                    "release_hold raised for job %s hold=%s class=%s",
+                    job.id, hold_tx_id, job.failure_class, exc_info=True,
+                )
+            return
+        if job.failure_class in _BILLED_FAILURE_CLASSES:
+            # Zero consumption user cancel: route to release_hold for the
+            # richer audit row (typed reason vs settle_hold's notes string).
+            # Other BILLED classes (succeeded, completed_no_yield,
+            # safety_kill) with zero gpu_seconds fall through to
+            # settle_hold(0, ...) so the row records an authoritative zero
+            # settlement instead of a refund. A succeeded webhook payload
+            # arriving without runtime fields must not silently refund.
+            if job.failure_class == "user_cancelled" and gpu_seconds <= 0:
+                try:
+                    release_hold(
+                        hold_tx_id,
+                        reason=failure_reason or job.failure_class,
+                    )
+                except Exception:
+                    logger.warning(
+                        "release_hold raised for job %s hold=%s class=%s "
+                        "(zero-consumption fast path)",
+                        job.id, hold_tx_id, job.failure_class, exc_info=True,
+                    )
+                return
+            try:
+                settle_hold(
+                    hold_tx_id,
+                    gpu_seconds=gpu_seconds,
+                    gpu_class=gpu_class,
+                    params=params,
+                    failure_reason=failure_reason,
+                )
+            except Exception:
+                logger.warning(
+                    "settle_hold raised for job %s hold=%s class=%s",
+                    job.id, hold_tx_id, job.failure_class, exc_info=True,
+                )
+            return
+        # Unknown class string survived the CHECK constraint somehow.
+        # Defensive: log and fall through to legacy heuristic.
+        logger.warning(
+            "Unknown failure_class=%s on job %s; using legacy settle heuristic.",
+            job.failure_class, job.id,
+        )
+
+    # ----- Legacy heuristic (pre-0029 rows, NULL failure_class) ---------
+    # No real GPU time consumed on a failure path: release the hold
+    # without charging. Otherwise true-up against actual GPU.
     if gpu_seconds <= 0 and job.status in {"failed", "timeout", "cancelled"}:
         try:
             release_hold(hold_tx_id, reason=failure_reason or "no_compute")
@@ -752,12 +963,44 @@ def mid_run_monitor_check(
     The monitor never directly settles the hold. Settlement is owned by
     ``complete_job`` so the terminal status + GPU time + email side
     effects all live behind one CAS guard.
+
+    Side effect: on every check, persists ``cumulative_gpu_seconds`` to
+    ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
+    consumed time without waiting for a terminal Modal webhook. The
+    value is a heartbeat-resolution snapshot (last value reported), so
+    a cancel between heartbeats undercharges by at most one interval.
+    The persist is CAS-guarded on status IN (pending, running) so a
+    terminal webhook landing between the read and the write wins; the
+    heartbeat's older snapshot cannot clobber the authoritative
+    settle amount.
     """
     job = get_job(job_id)
     if job is None:
         return None
     if job.status not in {"pending", "running"}:
         return None
+
+    # Persist the heartbeat-reported consumption to the row so a cancel
+    # between now and the next check can bill against actual GPU spent.
+    # Best-effort: a flaky update here does not gate the rest of the
+    # monitor logic (warning + kill still fire from the heartbeat value).
+    if cumulative_gpu_seconds and cumulative_gpu_seconds > 0:
+        try:
+            # CAS-guarded: skip the persist if the row terminalised
+            # between the get_job read above and this write. Without the
+            # guard the heartbeat's older snapshot can clobber the
+            # authoritative gpu_seconds_used the terminal webhook wrote.
+            _cas_update(
+                job_id,
+                {"gpu_seconds_used": int(cumulative_gpu_seconds)},
+                allowed_current=("pending", "running"),
+            )
+        except Exception:
+            logger.warning(
+                "mid_run_monitor_check: gpu_seconds_used persist failed "
+                "for job %s",
+                job_id, exc_info=True,
+            )
 
     ws_ctx = (job.inputs or {}).get("_wallet") or {}
     if not isinstance(ws_ctx, dict):

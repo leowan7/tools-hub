@@ -186,18 +186,14 @@ class TestCompletionEmail:
 
     def test_no_email_on_timeout(self, patched_service_client, store):
         row = self._prime(store)
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send:
+        with patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(row["id"], terminal_status="timeout")
         assert send.call_count == 0
 
     def test_no_email_when_replay(self, patched_service_client, store):
         # Already-terminal job should short-circuit — no refund, no email.
         row = self._prime(store, status="succeeded", completed_at="2026-04-24T00:00:00Z")
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
-        ), patch("shared.email.send_job_complete_email") as send:
+        with patch("shared.email.send_job_complete_email") as send:
             out = jobs_mod.complete_job(row["id"], terminal_status="succeeded")
         assert send.call_count == 0
         assert out is not None

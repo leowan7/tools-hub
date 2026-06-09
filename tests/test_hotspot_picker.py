@@ -183,3 +183,35 @@ def test_hotspot_input_tolerates_whitespace_and_trailing_comma():
     )
     assert err is None, err
     assert inputs["hotspot_residues"] == [54, 56, 115]
+
+
+# ---------------------------------------------------------------------------
+# budget cap: preserves 4x selectivity at the fixed num_designs=200 pool
+# ---------------------------------------------------------------------------
+
+
+def test_boltzgen_budget_at_cap_passes():
+    """budget=50 is the boundary that preserves a 4x selectivity ratio
+    against the num_designs=200 pool in build_payload. Pinning the
+    boundary value prevents an accidental tightening that breaks
+    forward compatibility for callers picking the maximum."""
+    inputs, err = boltzgen_adapter.validate(_pilot_form(budget="50"), files={})
+    assert err is None, err
+    assert inputs["budget"] == 50
+
+
+def test_boltzgen_budget_above_cap_rejected():
+    """budget=51 must fail. The previous behaviour accepted up to 200
+    but that collapsed the top N filter to a no op when budget
+    approached the pool size. The cap protects selectivity."""
+    inputs, err = boltzgen_adapter.validate(_pilot_form(budget="51"), files={})
+    assert inputs is None
+    assert err is not None
+    assert "50" in err
+
+
+def test_boltzgen_budget_zero_rejected():
+    """Floor of 1 is preserved post tightening."""
+    inputs, err = boltzgen_adapter.validate(_pilot_form(budget="0"), files={})
+    assert inputs is None
+    assert err is not None

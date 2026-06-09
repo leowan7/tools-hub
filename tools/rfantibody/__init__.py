@@ -48,13 +48,19 @@ def validate(
 
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
 
-    raw_num_designs = (form.get("num_designs") or "8").strip()
+    raw_num_designs = (form.get("num_designs") or "4").strip()
     try:
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 24:
-        return None, "Number of designs must be between 1 and 24."
+    # Tier-collapse PR: raised the per-job cap from 24 to 1000 so users
+    # can run real production campaigns self-serve. The wallet
+    # per-tool hard cap (shared.wallet.PER_JOB_HARD_CAP_USD) remains
+    # the durable spend ceiling -- a 1000-design rfantibody run will
+    # be blocked by the $500 wallet cap before this validator passes
+    # it through unless the user has topped up to cover it.
+    if num_designs < 1 or num_designs > 1000:
+        return None, "Number of designs must be between 1 and 1000."
 
     return (
         {
@@ -98,11 +104,13 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — your target, ~30 min",
+            label="Your target, ~30 min start to first results",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
-                "Up to 24 final VHH candidates (your choice); results "
-                "emailed when run completes (~15-60 min on A100-40GB)."
+                "Pick 1-1000 final VHH candidates. Start with a small "
+                "batch (4 designs, ~30-60 min) to confirm your target "
+                "and hotspots, then scale to 100+ once outputs look "
+                "real. Results emailed when run completes; A100-80GB."
             ),
             requires_pdb=True,
             long_running=True,

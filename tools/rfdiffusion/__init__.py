@@ -81,13 +81,16 @@ def validate(
     if err:
         return None, err
 
-    raw_num_designs = (form.get("num_designs") or "8").strip()
+    raw_num_designs = (form.get("num_designs") or "4").strip()
     try:
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 200:
-        return None, "Number of designs must be between 1 and 200."
+    # Tier-collapse PR: raised the per-job cap from 200 to 1000. The
+    # wallet per-tool hard cap ($500 for rfdiffusion) blocks excessive
+    # spend; this validator just enforces a sanity ceiling.
+    if num_designs < 1 or num_designs > 1000:
+        return None, "Number of designs must be between 1 and 1000."
 
     return (
         {
@@ -133,12 +136,14 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — your target, ~30 min",
+            label="Your target, ~30 min start to first results",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
-                "with AF2 multimer validation. Up to 200 candidates with real "
-                "scores; results emailed when complete (~15-30 min on "
-                "A100-40GB)."
+                "with AF2 multimer validation. Pick 1-1000 candidates. "
+                "Start with a small batch (4 designs, ~30 min) to "
+                "confirm your target and hotspots, then scale to 100+ "
+                "once the small batch looks reasonable. Results emailed "
+                "when complete; A100-80GB."
             ),
             requires_pdb=True,
             long_running=True,

@@ -236,19 +236,23 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" min="1" max="24" {{ pre_value(pre_fill, "num_designs", "8") }}
+            <input type="number" name="num_designs" id="num_designs" min="1" max="1000" {{ pre_value(pre_fill, "num_designs", "4") }}
                    style="width: 100%; max-width: 120px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              How many candidates to design (1 to 24). Each is independently folded and scored by RoseTTAFold-2 (pLDDT, pAE, ipAE).
+              How many candidates to design (1 to 1000). Each is independently folded and scored by RoseTTAFold-2 (pLDDT, pAE, ipAE).
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+              First time on this target? Start with 4 designs (~30-60 min) to
+              confirm your hotspots and that outputs look reasonable, then
+              scale to 100+ once the small batch checks out. Larger jobs
+              take longer wall-clock and are billed by actual GPU consumed;
+              cancellation does not refund time already used.
             </div>
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
             Runs against your own target. Upload PDB, pick hotspots.
-            Results emailed (~15-60 min on A100-40GB).
+            Results emailed when the run completes (A100-80GB).
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

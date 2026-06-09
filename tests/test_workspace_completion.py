@@ -524,8 +524,10 @@ class TestCompleteJobIntegration:
         ws_before = _ws(user_id=user_id, spent=0.0)
         ws_after = _ws(user_id=user_id, spent=0.6168)
         with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="lab@example.com"
-        ), patch("shared.email.send_job_complete_email"), patch(
+            jobs_mod,
+            "resolve_user_email_and_meta",
+            return_value=("lab@example.com", {}),
+        ), patch("shared.email.send_job_complete_email") as send, patch(
             "shared.workspaces.get_active_workspace", return_value=ws_before
         ), patch(
             "shared.workspaces.charge_for_job", return_value=ws_after
@@ -538,6 +540,8 @@ class TestCompleteJobIntegration:
             )
         charge.assert_called_once()
         assert charge.call_args.kwargs["gpu_seconds"] == 600
+        send.assert_called_once()
+        assert send.call_args.kwargs["user_email"] == "lab@example.com"
 
     def test_complete_job_no_workspace_context_no_charge(
         self, patched_service_client, store
@@ -545,8 +549,10 @@ class TestCompleteJobIntegration:
         """Pre-Workspace job (legacy submit path) must not trigger charge."""
         row = self._prime(store, inputs={})
         with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="lab@example.com"
-        ), patch("shared.email.send_job_complete_email"), patch(
+            jobs_mod,
+            "resolve_user_email_and_meta",
+            return_value=("lab@example.com", {}),
+        ), patch("shared.email.send_job_complete_email") as send, patch(
             "shared.workspaces.charge_for_job"
         ) as charge:
             jobs_mod.complete_job(
@@ -556,3 +562,6 @@ class TestCompleteJobIntegration:
                 gpu_seconds_used=600,
             )
         charge.assert_not_called()
+        # Email still fires for legacy jobs; only the workspace charge is gated.
+        send.assert_called_once()
+        assert send.call_args.kwargs["user_email"] == "lab@example.com"

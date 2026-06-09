@@ -133,7 +133,12 @@ def test_validate_pilot_rejects_bad_binder_length_range():
 
 
 def test_validate_pilot_clamps_num_designs():
-    """num_designs must be 1-200: 200 is accepted, 201 is rejected."""
+    """num_designs must be 1-1000: 1000 is accepted, 1001 is rejected.
+
+    Tier-collapse PR raised the per-job cap from 200 to 1000 so users
+    can run real production campaigns self-serve. The wallet $500
+    hard cap remains the durable spend ceiling.
+    """
     base = {
         "preset": "pilot",
         "target_chain": "A",
@@ -141,13 +146,13 @@ def test_validate_pilot_clamps_num_designs():
         "binder_length_min": "55",
         "binder_length_max": "65",
     }
-    inputs_ok, err_ok = adapter_mod.validate({**base, "num_designs": "200"}, {})
+    inputs_ok, err_ok = adapter_mod.validate({**base, "num_designs": "1000"}, {})
     assert err_ok is None, err_ok
-    assert inputs_ok["num_designs"] == 200
+    assert inputs_ok["num_designs"] == 1000
 
-    inputs, err = adapter_mod.validate({**base, "num_designs": "201"}, {})
+    inputs, err = adapter_mod.validate({**base, "num_designs": "1001"}, {})
     assert inputs is None
-    assert "1 and 200" in err
+    assert "1 and 1000" in err
 
 
 # ---------------------------------------------------------------------------

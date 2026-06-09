@@ -10,11 +10,13 @@
   {"q": "Is there a minimum top-up?",
    "a": "Yes. The minimum top-up is $20. Suggested amounts at checkout are $20, $50, $200, $500, and $2,500. There are no fixed packages, so you can top up any amount at or above the minimum."},
   {"q": "What is a hold versus a final charge?",
-   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. When the job finishes, the final charge is settled against that hold. If the job ends up cheaper than estimated, the surplus returns to your wallet automatically."},
+   "a": "When you submit a job, a hold is placed against your wallet for the estimated cost. The job is billed for actual GPU minutes consumed, up to the estimate. If the job ends up cheaper than estimated, the surplus returns to your wallet automatically."},
+  {"q": "What happens if I cancel a running job?",
+   "a": "Cancellation stops the run but charges for the GPU minutes already consumed. There is no refund for compute we already paid for. A job cancelled before the first heartbeat reports zero GPU consumed settles at zero and the full hold returns to your wallet."},
   {"q": "Are there subscriptions?",
    "a": "No. There are no subscriptions, seats, or tiers, and no minimum monthly spend. You pay only for the compute your jobs use. Top ups are final and unused balance does not expire."},
   {"q": "What happens if a job fails?",
-   "a": "You are charged for the compute the job consumed, even on failure, because we pay our compute provider for that time. Per tool hard caps limit how much any single job can cost in the worst case."},
+   "a": "It depends on the cause. If the failure is on our side (Modal pod crash, our tool image bug, our preflight letting bad input through, no-progress timeout), the full hold is refunded. If the job completed normally but produced zero passing designs, or you cancelled it mid-run, you pay for the GPU consumed. Ambiguous cases default to refund."},
   {"q": "More on pricing",
    "a": "The full billing model, example costs per tool, and the safety caps that prevent surprise bills are on the pricing page."},
   {"q": "How do I create an account?",
@@ -86,9 +88,18 @@
         <h3 class="why-card-title">What is a hold versus a final charge?</h3>
         <p class="why-card-body">
           When you submit a job, a hold is placed against your wallet for the
-          estimated cost. When the job finishes, the final charge is settled
-          against that hold. If the job ends up cheaper than estimated, the
+          estimated cost. The job is billed for actual GPU minutes consumed,
+          up to the estimate. If the job ends up cheaper than estimated, the
           surplus returns to your wallet automatically.
+        </p>
+      </article>
+      <article class="why-card">
+        <h3 class="why-card-title">What happens if I cancel a running job?</h3>
+        <p class="why-card-body">
+          Cancellation stops the run but charges for the GPU minutes already
+          consumed. There is no refund for compute we already paid for. A
+          job cancelled before the first heartbeat reports zero GPU consumed
+          settles at zero and the full hold returns to your wallet.
         </p>
       </article>
       <article class="why-card">
@@ -102,9 +113,12 @@
       <article class="why-card">
         <h3 class="why-card-title">What happens if a job fails?</h3>
         <p class="why-card-body">
-          You are charged for the compute the job consumed, even on failure,
-          because we pay our compute provider for that time. Per tool hard
-          caps limit how much any single job can cost in the worst case.
+          It depends on the cause. If the failure is on our side (Modal pod
+          crash, our tool image bug, our preflight letting bad input
+          through, no-progress timeout), the full hold is refunded. If the
+          job completed normally but produced zero passing designs, or you
+          cancelled it mid-run, you pay for the GPU consumed. Ambiguous
+          cases default to refund.
         </p>
       </article>
       <article class="why-card">

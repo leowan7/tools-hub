@@ -230,8 +230,6 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
                 else round(verdict.size_envelope.runtime_estimate_min, 1)
             ),
             "runtime_basis": verdict.size_envelope.runtime_basis,
-            "runtime_hard_cap_min": verdict.size_envelope.runtime_hard_cap_min,
-            "over_runtime_cap": verdict.size_envelope.over_runtime_cap,
             "gpu": verdict.size_envelope.gpu,
             "warn_message": verdict.size_envelope.warn_message,
             "hard_fail_message": verdict.size_envelope.hard_fail_message,
@@ -869,6 +867,24 @@ def create_app() -> Flask:
     flask_app.config["SECRET_KEY"] = os.environ.get(
         "SESSION_SECRET_KEY", os.urandom(32)
     )
+
+    # GPU label sync: best-effort refresh of TOOL_RULES.gpu from Modal-side
+    # metadata. Today this is a stub that always falls back to the hardcoded
+    # values; the hook exists so a future Modal API query or vendored
+    # gpu_manifest.json can plug in without touching the create_app flow.
+    # Wrapped in try/except so a Modal outage cannot stop tools-hub from
+    # booting. See shared/modal_gpu_metadata.py for the extension paths.
+    try:
+        from shared.modal_gpu_metadata import (  # noqa: PLC0415
+            sync_tool_rules_gpu_labels,
+        )
+        sync_tool_rules_gpu_labels()
+    except Exception:
+        logger.warning(
+            "modal_gpu_sync raised at startup; continuing with hardcoded "
+            "TOOL_RULES.gpu values.",
+            exc_info=True,
+        )
 
     # Metric glossary available in all templates (candidate_table macro reads it).
     flask_app.jinja_env.globals["metric_glossary"] = _metric_glossary.GLOSSARY
@@ -3906,9 +3922,9 @@ def create_app() -> Flask:
             # active workspace exists for this user+target.
             workspace_ctx["workspace_id"] = preflight.workspace.id
 
-        # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
-        # smoke / preview do not. Falls back to the adapter-level flag for
-        # legacy single-tier tools (e.g. BindCraft pilot-only).
+        # Per-preset PDB requirement: paid presets need an upload, smoke
+        # and preview do not. Falls back to the adapter-level flag for
+        # tools that require a PDB on every paid run (e.g. BindCraft).
         needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
         uploaded = request.files.get("target_pdb")
         reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
@@ -5358,7 +5374,7 @@ def create_app() -> Flask:
         """Bundle every candidate PDB into a ZIP.
 
         Two resolution paths per candidate, mirroring the per-design
-        endpoint (Step 4 of the pilot-tier transport fix):
+        endpoint:
 
         1. Inline ``pdb_content_b64`` — decoded and written directly.
         2. ``tool-outputs`` Storage — bytes fetched server-side and
