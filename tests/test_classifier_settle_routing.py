@@ -167,3 +167,32 @@ def test_classifier_routing_matrix_with_positive_gpu(
     else:
         release.assert_called_once()
         settle.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Defensive fall through: unknown failure_class string.
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_failure_class_falls_through_to_legacy_heuristic():
+    """A failure_class string outside both BILLED and REFUNDED frozensets
+    must not raise; the defensive branch logs and falls through to the
+    legacy status driven heuristic. The DB CHECK constraint prevents
+    this in practice, so the row is fabricated.
+
+    Legacy heuristic with status='failed' and gpu_seconds>0 settles.
+    """
+    job = ToolJob.from_row(
+        _wallet_row(
+            status="failed",
+            gpu_seconds_used=300,
+            failure_class="totally_made_up",
+        )
+    )
+    with patch("shared.wallet.release_hold") as release, patch(
+        "shared.wallet.settle_hold"
+    ) as settle:
+        jobs_mod._settle_wallet_hold_for_completed_job(job)
+    settle.assert_called_once()
+    release.assert_not_called()
+    assert settle.call_args.kwargs["gpu_seconds"] == 300.0

@@ -314,9 +314,7 @@ class TestMidRunMonitorWarn:
         job_id = _seed_running(fake_job_store)
         # 4.40 estimate at A100-40GB, $0.000714/s * 1.7 markup = $0.001214/s
         # To hit 1.5x = $6.60 we need ~5436 gpu_seconds.
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_overrun_warning_email") as warn_email:
+        with patch("shared.email.send_overrun_warning_email") as warn_email:
             result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
         assert result == "warned"
         warn_email.assert_called_once()
@@ -329,9 +327,7 @@ class TestMidRunMonitorWarn:
         job_id = _seed_running(fake_job_store)
         # Pre-set the warned flag.
         fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] = True
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_overrun_warning_email") as warn_email:
+        with patch("shared.email.send_overrun_warning_email") as warn_email:
             result = jobs_mod.mid_run_monitor_check(job_id, 5500.0)
         # Already warned: no new dispatch and no return label.
         warn_email.assert_not_called()
@@ -353,9 +349,7 @@ class TestMidRunMonitorKill:
         # still below cap, so no kill.
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "1.00"
         modal = MagicMock()
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_overrun_warning_email"), patch(
+        with patch("shared.email.send_overrun_warning_email"), patch(
             "shared.email.send_overrun_kill_email"
         ):
             result = jobs_mod.mid_run_monitor_check(
@@ -375,9 +369,7 @@ class TestMidRunMonitorKill:
         # 7000s on A100-40GB gives ~$8.50 cumulative. Ratio is 170x;
         # cost is over the $8 cap. Both kill conditions tripped.
         modal = MagicMock()
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_overrun_kill_email") as kill_email, patch(
+        with patch("shared.email.send_overrun_kill_email") as kill_email, patch(
             "shared.wallet.release_hold"
         ) as release:
             result = jobs_mod.mid_run_monitor_check(
@@ -401,9 +393,7 @@ class TestMidRunMonitorKill:
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
         modal = MagicMock()
-        with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="x@e.com"
-        ), patch("shared.email.send_overrun_kill_email"), patch(
+        with patch("shared.email.send_overrun_kill_email"), patch(
             "shared.wallet.release_hold"
         ):
             result = jobs_mod.mid_run_monitor_check(
