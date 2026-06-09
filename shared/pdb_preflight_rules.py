@@ -130,7 +130,7 @@ class ToolRules:
 
 _RFANTIBODY = ToolRules(
     slug="rfantibody",
-    gpu="A100-80GB",                 # Week 2: corrected from "A100-40GB"
+    gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfantibody_app.py:_GPU
     multi_chain_supported=False,
     hotspots_required=True,
     min_target_aa=30,
@@ -150,7 +150,7 @@ _RFANTIBODY = ToolRules(
 
 _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
-    gpu="A100-80GB",                 # Week 2: corrected (verified via Modal logs)
+    gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfdiffusion_app.py:_GPU
     multi_chain_supported=True,
     hotspots_required=True,
     min_target_aa=30,
