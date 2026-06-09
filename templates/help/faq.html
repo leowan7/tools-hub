@@ -26,7 +26,7 @@
   {"q": "Can I run a tool to test it first?",
    "a": "Yes. Use a smoke run to confirm a tool accepts your inputs before committing to a paid run. It is the fastest way to catch a bad chain ID or a malformed PDB."},
   {"q": "How long do runs take?",
-   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. A pilot run on a generative tool typically lands between 15 and 45 minutes. Every tool form shows a typical runtime before you submit."},
+   "a": "It depends on the tool and the scale you pick. A single ProteinMPNN inference finishes in about a minute. Generative tools scale roughly per design, often a minute or two each, so a small starter run lands well under an hour. Every tool form shows a typical runtime before you submit."},
   {"q": "What is a design?",
    "a": "A design is one candidate the tool generates, a backbone with a sequence, scored and ranked against the others in the run. A pilot of about 8 designs gives a real first signal because roughly 1 in 5 passes the in-silico filter on a tractable target."},
   {"q": "What do the scores mean?",
@@ -183,9 +183,10 @@
         <h3 class="why-card-title">How long do runs take?</h3>
         <p class="why-card-body">
           It depends on the tool and the scale you pick. A single ProteinMPNN
-          inference finishes in about a minute. A pilot run on a generative
-          tool typically lands between 15 and 45 minutes. Every tool form
-          shows a typical runtime before you submit.
+          inference finishes in about a minute. Generative tools scale roughly
+          per design, often a minute or two each, so a small starter run lands
+          well under an hour. Every tool form shows a typical runtime before
+          you submit.
         </p>
       </article>
       <article class="why-card">
