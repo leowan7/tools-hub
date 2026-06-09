@@ -166,18 +166,17 @@ _REFUNDED_FAILURE_CLASSES: frozenset[str] = frozenset({
 # Error buckets that map to specific failure classes. Anything not in
 # this table on a 'failed' row defaults to 'unclassified' (refund).
 _ERROR_BUCKET_TO_FAILURE_CLASS: dict[str, str] = {
-    "overrun_safety_kill":     "safety_kill",
+    # Real production bucket strings (verified by grepping the repo):
+    "pipeline":                "tool_error",          # docker run_pipeline crashed (app.py:4652)
+    "storage":                 "infra_crash",         # Supabase Storage upload failed (app.py:4353)
+    "modal-submit":            "infra_crash",         # Modal SDK submit raised before GPU pod started (app.py:4423, 4916)
+    "preflight":               "preflight_miss",      # docker-side preflight check failed (ATOMIC-TOOLS.md)
+    "cancelled":               "user_cancelled",      # belt-and-suspenders; status="cancelled" path normally catches first (jobs.py:360)
+    "overrun_safety_kill":     "safety_kill",         # server-side overrun kill (jobs.py:843)
+    # Reserved Modal-side buckets (not yet emitted; keep for future webhook payloads):
     "modal_crash":             "infra_crash",
     "modal_oom":               "infra_crash",
     "modal_timeout":           "no_progress_timeout",
-    "subprocess_error":        "tool_error",
-    "subprocess_crash":        "tool_error",
-    "docker_error":            "tool_error",
-    "venv_broken":             "tool_error",
-    "missing_dependency":      "tool_error",
-    "preflight_gap":           "preflight_miss",
-    "preflight_missed_input":  "preflight_miss",
-    "cancelled":               "user_cancelled",
 }
 
 
@@ -968,8 +967,10 @@ def mid_run_monitor_check(
     consumed time without waiting for a terminal Modal webhook. The
     value is a heartbeat-resolution snapshot (last value reported), so
     a cancel between heartbeats undercharges by at most one interval.
-    Final terminal value still overwrites this on the success / failure
-    webhook, so this never poisons the authoritative settle amount.
+    The persist is CAS-guarded on status IN (pending, running) so a
+    terminal webhook landing between the read and the write wins; the
+    heartbeat's older snapshot cannot clobber the authoritative
+    settle amount.
     """
     job = get_job(job_id)
     if job is None:
@@ -983,9 +984,14 @@ def mid_run_monitor_check(
     # monitor logic (warning + kill still fire from the heartbeat value).
     if cumulative_gpu_seconds and cumulative_gpu_seconds > 0:
         try:
-            _update(
+            # CAS-guarded: skip the persist if the row terminalised
+            # between the get_job read above and this write. Without the
+            # guard the heartbeat's older snapshot can clobber the
+            # authoritative gpu_seconds_used the terminal webhook wrote.
+            _cas_update(
                 job_id,
                 {"gpu_seconds_used": int(cumulative_gpu_seconds)},
+                allowed_current=("pending", "running"),
             )
         except Exception:
             logger.warning(

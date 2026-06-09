@@ -346,3 +346,74 @@ class TestWebhookHandlerAlreadyTerminal:
         # Store unchanged.
         assert store.rows[row["id"]]["status"] == "cancelled"
         assert store.rows[row["id"]]["result"] is None
+
+
+# ---------------------------------------------------------------------------
+# 5. Mid-run heartbeat persist must be CAS-guarded against a terminal
+#    webhook landing between the get_job read and the gpu_seconds_used
+#    write. Without the guard the heartbeat snapshot would clobber the
+#    authoritative final value written by complete_job / mark_failed.
+# ---------------------------------------------------------------------------
+
+
+class TestMidRunHeartbeatCasGuard:
+    """Heartbeat must not clobber authoritative gpu_seconds_used.
+
+    Race: get_job() reads status='running' at T1; webhook terminalises
+    the row at T2; heartbeat attempts the write at T3. With the CAS
+    guard the SQL UPDATE matches zero rows and no clobber happens.
+    """
+
+    def test_mid_run_heartbeat_uses_cas_guard_against_terminal_race(self):
+        fake_job = jobs_mod.ToolJob(
+            id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            tool="bindcraft",
+            preset="pilot",
+            status="running",
+            inputs={
+                "_wallet": {
+                    "hold_tx_id": "hold-heartbeat-cas",
+                    # Large estimate keeps ratio under the warn threshold
+                    # so the function returns None after the heartbeat
+                    # persist instead of falling into the warn or kill
+                    # branches.
+                    "estimate_usd": "10000.00",
+                    "gpu_class": "A100",
+                },
+            },
+            result=None,
+            error=None,
+            modal_function_call_id="fc-heartbeat-cas",
+            job_token="t" * 64,
+            gpu_seconds_used=None,
+            created_at="2026-06-08T00:00:00Z",
+            started_at="2026-06-08T00:00:00Z",
+            completed_at=None,
+        )
+
+        with patch.object(
+            jobs_mod, "get_job", return_value=fake_job
+        ), patch.object(
+            jobs_mod, "_cas_update", return_value=False
+        ) as cas, patch.object(
+            jobs_mod, "_update"
+        ) as legacy_update:
+            result = jobs_mod.mid_run_monitor_check(
+                job_id=fake_job.id,
+                cumulative_gpu_seconds=540,
+            )
+
+        # _cas_update was called once with the status guard pinned to
+        # the pre terminal states.
+        cas.assert_called_once()
+        args, kwargs = cas.call_args
+        assert kwargs["allowed_current"] == ("pending", "running")
+        assert args[0] == fake_job.id
+        assert args[1] == {"gpu_seconds_used": 540}
+        # Legacy unconditional _update must NOT be used for this persist;
+        # otherwise the terminal value can be clobbered.
+        legacy_update.assert_not_called()
+        # With ratio well under the warn threshold the function returns
+        # None after the persist that fizzled.
+        assert result is None
