@@ -3900,9 +3900,9 @@ def create_app() -> Flask:
             # active workspace exists for this user+target.
             workspace_ctx["workspace_id"] = preflight.workspace.id
 
-        # Per-preset PDB requirement (Wave 2): pilot tier needs an upload,
-        # smoke / preview do not. Falls back to the adapter-level flag for
-        # legacy single-tier tools (e.g. BindCraft pilot-only).
+        # Per-preset PDB requirement: paid presets need an upload, smoke
+        # and preview do not. Falls back to the adapter-level flag for
+        # tools that require a PDB on every paid run (e.g. BindCraft).
         needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
         uploaded = request.files.get("target_pdb")
         reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
@@ -5352,7 +5352,7 @@ def create_app() -> Flask:
         """Bundle every candidate PDB into a ZIP.
 
         Two resolution paths per candidate, mirroring the per-design
-        endpoint (Step 4 of the pilot-tier transport fix):
+        endpoint:
 
         1. Inline ``pdb_content_b64`` — decoded and written directly.
         2. ``tool-outputs`` Storage — bytes fetched server-side and
