@@ -515,6 +515,7 @@ class TestWebhookRoundtrip:
             job_token=token,
             status=status,
             tool=tool,
+            user_id="user-uuid-af2",
         )
 
     def test_rejects_unknown_job(self, app_with_af2_flag, monkeypatch):

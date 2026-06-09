@@ -9,7 +9,7 @@ Verifies the three behaviours Phase 4 introduced:
 3. ``list_jobs_paginated`` returns (rows, total) with correct slicing.
 
 Runs fully offline — ``shared.credits.get_service_client`` and
-``shared.jobs._resolve_email_for_user`` are patched with a small
+``shared.jobs.resolve_user_email_and_meta`` are patched with a small
 in-memory fake.
 """
 
@@ -160,7 +160,9 @@ class TestCompletionEmail:
     def test_email_on_succeeded(self, patched_service_client, store):
         row = self._prime(store)
         with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
+            jobs_mod,
+            "resolve_user_email_and_meta",
+            return_value=("user@example.com", {}),
         ), patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(
                 row["id"], terminal_status="succeeded", result={"candidates": []}
@@ -171,7 +173,9 @@ class TestCompletionEmail:
     def test_email_on_failed(self, patched_service_client, store):
         row = self._prime(store)
         with patch.object(
-            jobs_mod, "_resolve_email_for_user", return_value="user@example.com"
+            jobs_mod,
+            "resolve_user_email_and_meta",
+            return_value=("user@example.com", {}),
         ), patch("shared.email.send_job_complete_email") as send:
             jobs_mod.complete_job(
                 row["id"],

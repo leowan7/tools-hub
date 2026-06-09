@@ -381,6 +381,7 @@ class TestWebhookRoundtrip:
             job_token=token,
             status=status,
             tool=tool,
+            user_id="user-uuid-1",
         )
 
     def test_rejects_unknown_job(self, app_with_colabfold_flag, monkeypatch):
