@@ -3095,6 +3095,26 @@ def create_app() -> Flask:
             ),
         )
 
+    # Title-only phrases. Kept separate from ``_PREVIEW_SEO_PHRASES`` so the
+    # body lede stays grammatical ("X is a <seo_phrase> you can run") while
+    # the <title> stays under the 65-char SERP cap.
+    _PREVIEW_TITLE_PHRASES: dict[str, str] = {
+        "mpnn": "Free Sequence Design",
+        "af2": "AF2 Multimer No-Install",
+        "colabfold": "No Colab Required",
+        "esmfold": "Single-Sequence Folding",
+        "bindcraft": "De Novo Binder Design",
+        "rfantibody": "Nanobody Design",
+        "rfdiffusion": "De Novo Binder Design",
+        "boltzgen": "Multi-Modal Binder Design",
+        "boltz2": "Cofold Validation",
+        "pxdesign": "AF2-IG Binder Design",
+        "esmfold2-design": "scFv CDR Design",
+    }
+
+    def _preview_title_phrase(slug: str) -> str:
+        return _PREVIEW_TITLE_PHRASES.get(slug, "GPU-Backed Protein Design")
+
     # Map tools-hub slug -> ranomics.com /technology/<slug> page slug.
     # Used to emit a cross-site "Learn how X works" link on each public
     # preview so the two co-owned sites reinforce each other for
@@ -3439,6 +3459,7 @@ def create_app() -> Flask:
                 pass
             runtime_band = _runtime_band_for_adapter(adapter, preview_meta)
             seo_phrase, seo_long = _preview_seo_phrases(adapter.slug)
+            title_phrase = _preview_title_phrase(adapter.slug)
             login_next = url_for("tool_form", tool=adapter.slug)
             per_tool_template = f"tools/{adapter.slug}_preview.html"
             template_name = per_tool_template if _template_exists(
@@ -3467,6 +3488,7 @@ def create_app() -> Flask:
                 login_next=login_next,
                 seo_phrase=seo_phrase,
                 seo_long=seo_long,
+                title_phrase=title_phrase,
                 short_name=short_name,
                 learn_more_url=learn_more_url,
                 related_tools=_related_tool_cards(adapter.slug),

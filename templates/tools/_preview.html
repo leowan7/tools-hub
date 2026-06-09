@@ -24,7 +24,7 @@
 
 {% set _short_name = short_name or (adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label) %}
 
-{% block title %}Run {{ _short_name }} online — {{ seo_phrase }} | Ranomics Tools{% endblock %}
+{% block title %}{{ _short_name }} Online | {{ title_phrase }} | Ranomics{% endblock %}
 {% block description %}Run {{ _short_name }} online on a dedicated GPU through your browser — no install, no local CUDA. {{ seo_long }}.{% endblock %}
 
 {% block jsonld_extra %}
