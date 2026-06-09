@@ -142,18 +142,17 @@ def test_classify_timeout_always_no_progress_timeout():
 def test_classify_failed_known_buckets():
     """Each known error bucket maps to its declared classifier value."""
     cases = [
-        ("overrun_safety_kill",    "safety_kill"),
-        ("modal_crash",            "infra_crash"),
-        ("modal_oom",              "infra_crash"),
-        ("modal_timeout",          "no_progress_timeout"),
-        ("subprocess_error",       "tool_error"),
-        ("subprocess_crash",       "tool_error"),
-        ("docker_error",           "tool_error"),
-        ("venv_broken",            "tool_error"),
-        ("missing_dependency",     "tool_error"),
-        ("preflight_gap",          "preflight_miss"),
-        ("preflight_missed_input", "preflight_miss"),
-        ("cancelled",              "user_cancelled"),
+        # Real production bucket strings:
+        ("pipeline",             "tool_error"),
+        ("storage",              "infra_crash"),
+        ("modal-submit",         "infra_crash"),
+        ("preflight",            "preflight_miss"),
+        ("cancelled",            "user_cancelled"),
+        ("overrun_safety_kill",  "safety_kill"),
+        # Reserved Modal-side buckets:
+        ("modal_crash",          "infra_crash"),
+        ("modal_oom",            "infra_crash"),
+        ("modal_timeout",        "no_progress_timeout"),
     ]
     for bucket, expected in cases:
         out = classify_terminal_state(
