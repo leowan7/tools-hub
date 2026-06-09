@@ -38,7 +38,7 @@ This module is import-safe: no side effects, no DB calls, no network.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Catalogue
@@ -162,19 +162,13 @@ CATALOG: list[dict] = [
 # ---------------------------------------------------------------------------
 
 
-def _strip_private(entry: dict) -> dict:
-    """Return the on-wire view of an entry.
-
-    All fields are public in the alpha (we want agents to find these),
-    but the helper exists so we can later mark a field as internal
-    without rewriting every caller.
-    """
-    return dict(entry)
-
-
 def list_catalog() -> list[dict]:
-    """Return the full catalogue as the API exposes it."""
-    return [_strip_private(t) for t in CATALOG]
+    """Return the full catalogue as the API exposes it.
+
+    Returns shallow copies so callers cannot mutate the module-level
+    CATALOG by accident.
+    """
+    return [dict(t) for t in CATALOG]
 
 
 def get_target(target_id: str) -> Optional[dict]:
@@ -183,7 +177,7 @@ def get_target(target_id: str) -> Optional[dict]:
         return None
     for entry in CATALOG:
         if entry["target_id"] == target_id:
-            return _strip_private(entry)
+            return dict(entry)
     return None
 
 
@@ -214,18 +208,3 @@ def cost_band(entry: dict, experiment_type: str) -> Optional[list[int]]:
 def supported_experiment_types(entry: dict) -> list[str]:
     """List the experiment types the entry is calibrated for."""
     return list(entry.get("supported_experiment_types") or [])
-
-
-def all_target_ids() -> list[str]:
-    """Return all target ids in the catalogue (helper for tests)."""
-    return [entry["target_id"] for entry in CATALOG]
-
-
-def supported_indication_areas() -> Iterable[str]:
-    """Distinct indication areas across the catalogue (helper for tests)."""
-    seen: set[str] = set()
-    for entry in CATALOG:
-        area = entry.get("indication_area")
-        if area and area not in seen:
-            seen.add(area)
-            yield area

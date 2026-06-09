@@ -352,10 +352,12 @@ def build_spec() -> dict[str, Any]:
                         "antigen_sequence_stub": {
                             "type": "string",
                             "description": (
-                                "Display-only canonical sequence stub for "
-                                "the form used at the lab. Carries no "
-                                "signal peptide. Use UniProt for the "
-                                "authoritative reference."
+                                "Canonical sequence stub for the form used "
+                                "at the lab (signal peptide trimmed; ECD "
+                                "or soluble form only). Submitted alongside "
+                                "the experiment as part of target_context "
+                                "when a target_id is used. Use UniProt for "
+                                "the authoritative reference."
                             ),
                         },
                         "supported_experiment_types": {
