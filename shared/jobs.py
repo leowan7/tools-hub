@@ -857,12 +857,14 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
                 )
             return
         if job.failure_class in _BILLED_FAILURE_CLASSES:
-            # Billed class with zero consumption (typically user_cancelled
-            # before the first heartbeat) -> full refund via release_hold.
-            # Functionally identical to settle_hold(0) but writes a richer
-            # audit row (release_hold takes a typed reason; settle_hold
-            # buries it in a notes string).
-            if gpu_seconds <= 0:
+            # Zero consumption user cancel: route to release_hold for the
+            # richer audit row (typed reason vs settle_hold's notes string).
+            # Other BILLED classes (succeeded, completed_no_yield,
+            # safety_kill) with zero gpu_seconds fall through to
+            # settle_hold(0, ...) so the row records an authoritative zero
+            # settlement instead of a refund. A succeeded webhook payload
+            # arriving without runtime fields must not silently refund.
+            if job.failure_class == "user_cancelled" and gpu_seconds <= 0:
                 try:
                     release_hold(
                         hold_tx_id,
