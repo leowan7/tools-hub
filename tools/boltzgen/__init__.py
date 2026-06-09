@@ -81,14 +81,17 @@ def validate(
         return None, "binder_length_min must be <= binder_length_max."
 
     budget = _parse_int(form.get("budget"), 4)
-    # Tier-collapse PR: raised the per-job cap from 24 to 200 (matches
-    # the internal num_designs pool in build_payload). Going above 200
-    # needs a coordinated bump to the docker-side num_designs and
-    # subprocess timeout in llm-proteinDesigner; that is follow-up
-    # work, not in this PR. The wallet $300 hard cap on boltzgen still
-    # constrains actual spend.
-    if budget < 1 or budget > 200:
-        return None, "budget must be between 1 and 200."
+    # Cap is 50, not the candidate pool size of 200. budget is the
+    # top N selected from the num_designs=200 pool that build_payload
+    # sends. Capping budget at 50 preserves a 4x selectivity ratio
+    # (200 generated, top 50 returned). Going closer to budget=200
+    # collapses the filter to a no op and the user gets every
+    # candidate regardless of score. Raising this requires a
+    # coordinated bump to num_designs in build_payload and the 6600s
+    # subprocess timeout in llm-proteinDesigner. The wallet $300 hard
+    # cap on boltzgen still constrains actual spend.
+    if budget < 1 or budget > 50:
+        return None, "budget must be between 1 and 50."
 
     protocol = (form.get("protocol") or "protein-anything").strip()
     if protocol not in ALLOWED_PROTOCOLS:
@@ -128,8 +131,8 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     # and refolds (budget then selects the top-N to return). 1000 was the
     # original wave-2 default but ran past the 6600s subprocess timeout in
     # docker/boltzgen/run_pipeline.py:1407 on A100-40GB. 200 fits comfortably
-    # within the "~15-60 min" pilot description and still gives the filter
-    # enough population to find passing designs.
+    # within the "~15-60 min" pilot description and gives the filter a 4x
+    # selectivity ratio against the validate-side budget cap of 50.
     return {
         "job_tier": "pilot",
         "target_chain": inputs["target_chain"],
@@ -160,7 +163,7 @@ adapter = ToolAdapter(
             label="Your target, ~30 min start to first results",
             description=(
                 "Real BoltzGen run against your uploaded target. Pick "
-                "1-200 final candidates with refolding RMSD + ipTM "
+                "1 to 50 final candidates with refolding RMSD + ipTM "
                 "scores. Start with 4 designs (~15-30 min) to confirm "
                 "your target and binder length, then scale up once the "
                 "small batch looks reasonable. Results emailed when "
