@@ -782,6 +782,11 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
       function releases surplus, charges variance up to the parameter
       scaled hard cap, or records absorbed_variance if the wallet has
       no slack to cover the deficit.
+    * **user_cancelled with zero gpu_seconds** is a scoped fast path:
+      routes to ``release_hold`` (typed reason) instead of
+      ``settle_hold(0, ...)`` for the richer audit row. Other BILLED
+      classes with zero consumption still settle at zero so a runtime
+      free webhook payload cannot silently refund.
     * **Refunded classes** (infra_crash, tool_error, preflight_miss,
       no_progress_timeout, unclassified) -> ``release_hold`` (full
       refund). These are system-side failures that consumed time but
@@ -804,7 +809,7 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
     if job.status not in {"succeeded", "failed", "timeout", "cancelled"}:
         return
 
-    gpu_seconds = float(job.gpu_seconds_used or 0)
+    gpu_seconds = max(0.0, float(job.gpu_seconds_used or 0))
     gpu_class: Optional[str] = ws_ctx.get("gpu_class")
     if isinstance(job.result, dict):
         candidate = job.result.get("gpu_class") or job.result.get("gpu_sku")
