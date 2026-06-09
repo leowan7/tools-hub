@@ -290,10 +290,15 @@ def test_create_experiment_resolves_calibrated_target():
     assert resp.status_code == 201, resp.get_json()
     # Captured target_name comes from the catalogue, not custom input.
     assert captured["target_name"] == "HER2 ECD (subdomain IV)"
-    # Context grafts the catalogue id + uniprot + calibration notes.
+    # Context grafts all 5 catalogue fields the routes.py path advertises:
+    # catalogue_target_id, uniprot_id, antigen_form, antigen_sequence_stub,
+    # calibration_notes. Pin all of them so a future refactor that drops
+    # any field in routes.py fails this test loudly.
     ctx = captured["target_context"]
     assert "catalogue_target_id: tgt_her2_ecd_v1" in ctx
     assert "uniprot_id: P04626" in ctx
+    assert "antigen_form: Recombinant soluble ECD, biotinylated" in ctx
+    assert "antigen_sequence (catalogue stub):" in ctx
     assert "calibration_notes:" in ctx
 
 
