@@ -1,7 +1,7 @@
 """Pass 7 pre-flight: verify live Stripe account is ready.
 
 Runs against whatever STRIPE_SECRET_KEY is in the env. Use:
-    railway run python .deploy-logs/pass7_preflight_live_stripe.py
+    railway run python scripts/deploy/pass7_preflight_live_stripe.py
 
 That injects the production env vars without leaving them on disk.
 

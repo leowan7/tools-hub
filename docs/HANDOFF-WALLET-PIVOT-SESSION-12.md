@@ -127,7 +127,7 @@ update the Railway var and redeploy. Full steps in the Session 11 handoff.
 Re-run pre-flight after:
 ```
 cd C:/Users/lab/Documents/Claude_projects/tools-hub
-railway run --service web --environment production -- "C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe" .deploy-logs/pass7_preflight_live_stripe.py
+railway run --service web --environment production -- "C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe" scripts/deploy/pass7_preflight_live_stripe.py
 ```
 
 Pre-flight items 1-3 are GREEN; item 4 flips GREEN once the 3 events are added.
@@ -154,7 +154,7 @@ Pre-flight items 1-3 are GREEN; item 4 flips GREEN once the 3 events are added.
    commit it — and also commit the uncommitted `HANDOFF-WALLET-PIVOT-SESSION-11.md` and
    this doc (see Known mess).
 2. **Pass 7.** Leo fixes the webhook -> re-run pre-flight -> live $20 topup with
-   `.deploy-logs/pass7_watch.py` polling.
+   `scripts/deploy/pass7_watch.py` polling.
 3. **Optional Pass 7 extension:** submit an MPNN job on prod to exercise the full
    hold -> settle path with a live wallet.
 

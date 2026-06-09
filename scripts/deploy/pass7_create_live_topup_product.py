@@ -15,11 +15,11 @@ the live account:
 
 Dry run (shows what it would create, writes nothing):
     railway run --service web --environment production -- \
-        venv/Scripts/python.exe .deploy-logs/pass7_create_live_topup_product.py
+        venv/Scripts/python.exe scripts/deploy/pass7_create_live_topup_product.py
 
 Apply:
     railway run --service web --environment production -- \
-        venv/Scripts/python.exe .deploy-logs/pass7_create_live_topup_product.py --apply
+        venv/Scripts/python.exe scripts/deploy/pass7_create_live_topup_product.py --apply
 
 Idempotent: a product is tagged metadata.tools_hub_role=wallet_topup.
 A second run finds that tag and reuses the existing product instead of

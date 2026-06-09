@@ -8,11 +8,11 @@ charge.dispute.created.
 
 Dry run (shows the planned change, modifies nothing):
     railway run --service web --environment production -- \
-        python .deploy-logs/pass7_fix_webhook_events.py
+        python scripts/deploy/pass7_fix_webhook_events.py
 
 Apply:
     railway run --service web --environment production -- \
-        python .deploy-logs/pass7_fix_webhook_events.py --apply
+        python scripts/deploy/pass7_fix_webhook_events.py --apply
 
 Notes:
   - The full union of current + new events is sent, so no existing
