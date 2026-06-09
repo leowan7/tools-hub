@@ -1,7 +1,7 @@
 """Pass 7 live-watch — poll wallet + latest ledger rows every 3s.
 
 Usage:
-    venv/Scripts/python.exe .deploy-logs/pass7_watch.py
+    venv/Scripts/python.exe scripts/deploy/pass7_watch.py
 
 Stop with Ctrl+C. Use a separate terminal while you run the live
 $20 topup on https://tools.ranomics.com.

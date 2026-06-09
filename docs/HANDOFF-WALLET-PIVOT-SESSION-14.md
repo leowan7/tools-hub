@@ -207,7 +207,7 @@ failed" email goes out: set `auto_reload_enabled = False` on this row,
 2. **Resolve the test-user auto-reload row** (see "Test user state").
 3. **Live spend-path validation** — Session 13's top priority, still
    open. Submit one cheap job (MPNN) on production, watch the ledger
-   produce `hold` then a settle row with `.deploy-logs/pass7_watch.py`,
+   produce `hold` then a settle row with `scripts/deploy/pass7_watch.py`,
    confirm the balance math and that the now-race-safe daily cap
    engages. This closes the last live-validation gap for the wallet.
 

@@ -27,7 +27,7 @@ Session 11 did two things:
 
 3. **Wrote 3 regression tests.** New class `TestWalletTopupFrozenGuard` in `tests/test_wallet_api.py` (lines 715-786). Includes a fuller wallet fixture (`_wallet` staticmethod) so the not-frozen pass-through test does not crash Jinja on missing auto_reload_* keys. All 3 pass; full wallet test suite is 86/87 pass with the one failure pre-existing on `main` (Stripe-not-configured in `test_auto_reload_triggers_when_eligible`).
 
-4. **Ran Pass 7 pre-flight via `railway run`.** Wrote a `.deploy-logs/pass7_preflight_live_stripe.py` script that queries the live Stripe account using prod-injected env vars and audits the four pre-flight items (key mode, account activation, Tax, webhook endpoints). Items 1-3 GREEN; item 4 found the gap.
+4. **Ran Pass 7 pre-flight via `railway run`.** Wrote a `scripts/deploy/pass7_preflight_live_stripe.py` script that queries the live Stripe account using prod-injected env vars and audits the four pre-flight items (key mode, account activation, Tax, webhook endpoints). Items 1-3 GREEN; item 4 found the gap.
 
 5. **Updated memory.** Refreshed `project_tools_hub_wallet_pivot.md` to Session 11 state. Added `reference_railway_run_prod_env.md` for future agents who need to query prod-only state.
 
@@ -73,7 +73,7 @@ Once that's done, re-run the pre-flight to confirm all 4 events show up:
 
 ```
 cd C:/Users/lab/Documents/Claude_projects/tools-hub
-railway run --service web --environment production -- "C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe" .deploy-logs/pass7_preflight_live_stripe.py
+railway run --service web --environment production -- "C:/Users/lab/Documents/Claude_projects/tools-hub/venv/Scripts/python.exe" scripts/deploy/pass7_preflight_live_stripe.py
 ```
 
 ---
@@ -88,7 +88,7 @@ railway run --service web --environment production -- "C:/Users/lab/Documents/Cl
 - **auto_reload_enabled:** True (threshold $80, amount $25, monthly cap $1000)
 - **Ledger invariant:** balance matches `SUM(amount_usd)` across all 28 rows.
 
-Post-Pass-7 expectation: balance ~$109.9895, new `topup +$20` row, `stripe_customer_id`/`stripe_payment_method_id` flip to live values. The live watch script in `.deploy-logs/pass7_watch.py` flags those flips with `[LIVE]` vs `[sandbox]` markers.
+Post-Pass-7 expectation: balance ~$109.9895, new `topup +$20` row, `stripe_customer_id`/`stripe_payment_method_id` flip to live values. The live watch script in `scripts/deploy/pass7_watch.py` flags those flips with `[LIVE]` vs `[sandbox]` markers.
 
 ---
 
@@ -107,7 +107,7 @@ Post-Pass-7 expectation: balance ~$109.9895, new `topup +$20` row, `stripe_custo
 ### Immediate next-session priorities
 
 1. **Re-run Pass 7 pre-flight** after Leo fixes the webhook events. If item 4 flips GREEN, proceed to the actual $20 live topup.
-2. **Pass 7 execution.** Leo runs the live topup on `https://tools.ranomics.com` while a watch script (`.deploy-logs/pass7_watch.py`) polls the wallet. Verify: new `topup +$20` ledger row, `cus_*`/`pm_*` flip to live values, no `signature verification failed` in Railway logs.
+2. **Pass 7 execution.** Leo runs the live topup on `https://tools.ranomics.com` while a watch script (`scripts/deploy/pass7_watch.py`) polls the wallet. Verify: new `topup +$20` ledger row, `cus_*`/`pm_*` flip to live values, no `signature verification failed` in Railway logs.
 3. **Optional Pass 7 extension.** After topup, submit an MPNN job to exercise the full hold→settle path on prod with a live wallet (Pass 6 Step 7 equivalent, but on production).
 4. **Audit Finding 2.** Decide whether `daily_spend_cap_usd` is groundwork or missed wiring.
 

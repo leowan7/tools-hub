@@ -42,7 +42,7 @@ is the main thing left.
 
 2. **Fixed the Pass 7 webhook gap.** Added `payment_intent.succeeded`,
    `payment_intent.payment_failed`, `charge.dispute.created` to live endpoint
-   `we_1TPPD4HK3YN42tFlJK8mQ6LS` via `.deploy-logs/pass7_fix_webhook_events.py
+   `we_1TPPD4HK3YN42tFlJK8mQ6LS` via `scripts/deploy/pass7_fix_webhook_events.py
    --apply`. The signing secret is not rotated by an enabled-events update, so
    Railway's `STRIPE_WEBHOOK_SECRET` stayed valid. Pre-flight then re-ran 4/4
    GREEN.
@@ -54,7 +54,7 @@ is the main thing left.
    Product id read out of `STRIPE_WALLET_TOPUP_PRODUCT_ID`. That product was
    created only in the Stripe sandbox during Pass 2 and the env var was never
    set in Railway production. Fix: created the live product with
-   `.deploy-logs/pass7_create_live_topup_product.py --apply` (result
+   `scripts/deploy/pass7_create_live_topup_product.py --apply` (result
    `prod_UZ2ZIctuj6GIaf`, tax code `txcd_10000000`, idempotent metadata tag),
    set `STRIPE_WALLET_TOPUP_PRODUCT_ID` in Railway production via the CLI, which
    triggered a redeploy (BUILDING then SUCCESS in about 35 seconds).
@@ -63,10 +63,10 @@ is the main thing left.
    credited the wallet (topup row id=80, +$20, balance to $109.9895, event
    `evt_1TZuf7HK3YN42tFleue4xKDE`). Leo refunded the $22.60 charge in the Stripe
    dashboard. The wallet credit was reversed with
-   `.deploy-logs/pass7_rollback_topup.py --apply` (adjustment row id=81, -$20,
+   `scripts/deploy/pass7_rollback_topup.py --apply` (adjustment row id=81, -$20,
    balance to $89.9895; `SUM(amount_usd) = balance_usd` verified PASS).
 
-5. **Committed the Pass 7 toolkit.** The 7 `.deploy-logs/pass7_*.py` scripts
+5. **Committed the Pass 7 toolkit.** The 7 `scripts/deploy/pass7_*.py` scripts
    were all untracked; committed as `acfd746` (not pushed).
 
 ---
@@ -154,7 +154,7 @@ before exercising auto-reload or running enough live spend to matter. Pick one:
    then a settle row (`hold_release` for a normal job where actual is at or
    under estimate). Confirm the balance math and that the now-fixed daily cap
    engages. Use the cheapest tool first (MPNN holds were about $0.001 to $0.01).
-   Poll with `.deploy-logs/pass7_watch.py`. Resolve the auto-reload landmine
+   Poll with `scripts/deploy/pass7_watch.py`. Resolve the auto-reload landmine
    first. Session 12 called this the "optional Pass 7 extension"; it is now the
    top item.
 2. **Push `acfd746`** if you want the Pass 7 scripts on the remote. Harmless to
@@ -184,7 +184,7 @@ Could be intentional or a real bug. Not chased.
 
 ### Observed this session (new)
 
-- `.deploy-logs/pass7_preflight_live_stripe.py` checks the key, account
+- `scripts/deploy/pass7_preflight_live_stripe.py` checks the key, account
   activation, Stripe Tax, and webhook events, but NOT
   `STRIPE_WALLET_TOPUP_PRODUCT_ID` or whether the Stripe product exists. That
   gap is exactly why the missing live product slipped through to a GREEN
