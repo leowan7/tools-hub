@@ -270,6 +270,13 @@ def fake_job_store(monkeypatch):
             rows[job_id]["status"] = "failed"
             rows[job_id]["error"] = error
             rows[job_id]["gpu_seconds_used"] = gpu_seconds_used
+            # Mirror the real mark_failed: the classifier writes
+            # failure_class so the post-mark settle path routes correctly
+            # (safety_kill is BILLED, so the hold must settle_hold the
+            # consumed GPU, not release_hold a full refund).
+            rows[job_id]["failure_class"] = jobs_mod.classify_terminal_state(
+                status="failed", error=error,
+            )
         return True
 
     monkeypatch.setattr(jobs_mod, "get_job", fake_get_job)
@@ -361,7 +368,17 @@ class TestMidRunMonitorKill:
 
     def test_kill_ratio_above_cap_cancels_modal(self, fake_job_store):
         """When cumulative cost exceeds both 2x estimate AND the cap,
-        the monitor cancels Modal and flips the job to failed."""
+        the monitor cancels Modal, flips the job to failed, and settles
+        the wallet hold against consumed GPU.
+
+        NOTE on the BILLED policy: safety_kill is in
+        _BILLED_FAILURE_CLASSES (the user IS charged for GPU consumed
+        before the kill). The monitor must therefore route the hold
+        through settle_hold, NOT release_hold. A previous version of
+        this test pinned release_hold which would full-refund the
+        user for an overrun run; that contradicted the failure-class
+        policy and leaked money on every kill. Do not naively revert.
+        """
         job_id = _seed_running(fake_job_store)
         # baseline params: hard cap stays at $8 for bindcraft.
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
@@ -370,22 +387,33 @@ class TestMidRunMonitorKill:
         # cost is over the $8 cap. Both kill conditions tripped.
         modal = MagicMock()
         with patch("shared.email.send_overrun_kill_email") as kill_email, patch(
-            "shared.wallet.release_hold"
-        ) as release:
+            "shared.wallet.settle_hold"
+        ) as settle, patch("shared.wallet.release_hold") as release:
             result = jobs_mod.mid_run_monitor_check(
                 job_id, 7000.0, modal_client=modal,
             )
         assert result == "killed"
         modal.cancel.assert_called_once()
-        release.assert_called_once_with(
-            "tx-running", reason="overrun_safety_kill"
-        )
+        # safety_kill is BILLED: settle_hold gets the consumed GPU and
+        # the failure_reason flows through for the audit trail. The
+        # full-refund release_hold path must NOT fire.
+        settle.assert_called_once()
+        release.assert_not_called()
+        args = settle.call_args.args
+        kwargs = settle.call_args.kwargs
+        assert args[0] == "tx-running"
+        assert kwargs["gpu_seconds"] == 7000.0
+        assert kwargs["gpu_class"] == "A100-40GB"
+        assert kwargs["failure_reason"] == "overrun_safety_kill"
+        # Job row flipped to failed with the safety-kill bucket and
+        # the classifier wrote failure_class so the settle hook routes
+        # the hold via the BILLED path.
         kill_email.assert_called_once()
-        # Job row flipped to failed with the safety-kill bucket.
         assert fake_job_store[job_id]["status"] == "failed"
         assert (
             fake_job_store[job_id]["error"]["bucket"] == "overrun_safety_kill"
         )
+        assert fake_job_store[job_id]["failure_class"] == "safety_kill"
 
     def test_kill_skips_modal_when_no_function_call_id(self, fake_job_store):
         job_id = _seed_running(fake_job_store)
@@ -394,8 +422,8 @@ class TestMidRunMonitorKill:
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
         modal = MagicMock()
         with patch("shared.email.send_overrun_kill_email"), patch(
-            "shared.wallet.release_hold"
-        ):
+            "shared.wallet.settle_hold"
+        ), patch("shared.wallet.release_hold"):
             result = jobs_mod.mid_run_monitor_check(
                 job_id, 7000.0, modal_client=modal,
             )

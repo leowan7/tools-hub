@@ -961,13 +961,18 @@ def mid_run_monitor_check(
     * ``"warned"``: soft warning email dispatched. Idempotent on the
       stashed ``_wallet.overrun_warned`` flag in the job inputs.
     * ``"killed"``: projected cost exceeded the hard cap; the Modal
-      function call was cancelled and the job will settle at the cap
-      when its terminal webhook lands. Cancel is best effort: if Modal
-      flakes the local terminal status still wins.
+      function call was cancelled, the job row was flipped to 'failed'
+      with failure_class='safety_kill', and the wallet hold was
+      settled inline against consumed GPU time. Cancel is best effort:
+      if Modal flakes the local terminal status still wins.
 
-    The monitor never directly settles the hold. Settlement is owned by
-    ``complete_job`` so the terminal status + GPU time + email side
-    effects all live behind one CAS guard.
+    On the ``killed`` path the monitor settles the hold inline because
+    the kill closes the Modal connection and the terminal webhook may
+    never land. Settlement runs through the shared
+    ``_settle_wallet_hold_for_completed_job`` hook (idempotent), so a
+    follow-up ``complete_job`` triggered by a late webhook still
+    no-ops on the already-terminal status. The 'warned' path leaves
+    settlement to ``complete_job`` as usual.
 
     Side effect: on every check, persists ``cumulative_gpu_seconds`` to
     ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
@@ -1027,9 +1032,7 @@ def mid_run_monitor_check(
         return None
 
     try:
-        from shared.wallet import (  # noqa: PLC0415
-            compute_charge_usd, release_hold,
-        )
+        from shared.wallet import compute_charge_usd  # noqa: PLC0415
         from shared.wallet_estimates import compute_hard_cap  # noqa: PLC0415
     except Exception:
         logger.warning(
@@ -1083,7 +1086,9 @@ def mid_run_monitor_check(
         # Mark the job 'failed' with a known failure_reason so the
         # terminal callback (or a follow-up call) settles the hold at
         # the cap. We use CAS so a concurrent succeeded/failed webhook
-        # still wins.
+        # still wins. mark_failed writes failure_class='safety_kill'
+        # via classify_terminal_state, which is a BILLED class per
+        # _BILLED_FAILURE_CLASSES.
         try:
             mark_failed(
                 job_id,
@@ -1101,17 +1106,21 @@ def mid_run_monitor_check(
                 "mid_run_monitor_check: mark_failed raised for job %s",
                 job_id, exc_info=True,
             )
-        # Release the hold optimistically. settle_hold on the failure
-        # path will idempotently no op if it lands after this; the
-        # safety kill path otherwise leaves the hold lingering for the
-        # tail end of the SQL settle path to clean up.
-        try:
-            release_hold(hold_tx_id, reason="overrun_safety_kill")
-        except Exception:
-            logger.warning(
-                "mid_run_monitor_check: release_hold raised for job %s",
-                job_id, exc_info=True,
-            )
+        # Settle the wallet hold inline against consumed GPU time. The
+        # classifier writes failure_class='safety_kill' which is BILLED:
+        # settle_hold charges the user for actual consumed GPU up to
+        # the parameter scaled hard cap and refunds the surplus. We
+        # mirror cancel_job / timeout_stuck_job here: re-fetch the
+        # now-terminal row and hand it to the shared settle hook.
+        # Doing this inline (instead of waiting for a Modal webhook
+        # that may never land after the kill closes the connection)
+        # closes a money leak where the hold would otherwise sit
+        # unsettled. _settle_wallet_hold_for_completed_job is
+        # idempotent, so a follow-up complete_job from a late webhook
+        # naturally no-ops on the already-terminal status.
+        fresh = get_job(job_id)
+        if fresh is not None:
+            _settle_wallet_hold_for_completed_job(fresh)
         return "killed"
 
     return None
