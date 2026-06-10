@@ -681,3 +681,55 @@ def test_boltz2_oversized_antigen_blocks():
     assert v.kind is VerdictKind.NEEDS_FIX
     assert "trim" in v.suggested_fix.lower()
     assert str(BOLTZ2_ANTIGEN_HARD_CAP_AA) in v.reason
+
+
+# ---------------------------------------------------------------------------
+# boltz2 multi-chain antigen (gap 4) — run_pipeline folds only the named
+# chain; the rest are silently dropped. Flag it upfront.
+# ---------------------------------------------------------------------------
+
+def _two_chain_pdb(chain_a_res, chain_b_res, *, b_chain="B") -> bytes:
+    """Merge two single-chain bodies into one multi-chain PDB."""
+    a_body = [
+        ln for ln in _chain_pdb("A", chain_a_res).decode().splitlines()
+        if ln.startswith("ATOM")
+    ]
+    b_body = [
+        ln for ln in _chain_pdb(b_chain, chain_b_res).decode().splitlines()
+        if ln.startswith("ATOM")
+    ]
+    return (
+        "HEADER    TWOCHAIN\n" + "\n".join(a_body + b_body) + "\nEND\n"
+    ).encode()
+
+
+def test_boltz2_multi_chain_antigen_blocks():
+    data = _two_chain_pdb(list(range(1, 101)), list(range(1, 81)))  # A=100, B=80
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[10])
+    assert v.kind is VerdictKind.NEEDS_FIX
+    # Names both chains and which one is folded.
+    assert "A" in v.reason and "B" in v.reason
+    assert "only" in v.reason.lower()
+    assert "B" in v.reason  # the dropped chain is named
+    assert v.target_chain == "A"
+
+
+def test_boltz2_multi_chain_names_chain_to_keep():
+    data = _two_chain_pdb(list(range(1, 101)), list(range(1, 81)))
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[])
+    assert "just chain A" in v.suggested_fix
+
+
+def test_boltz2_tiny_second_chain_not_blocked():
+    """A 1-residue incidental chain must not trigger the multi-chain block."""
+    data = _two_chain_pdb(list(range(1, 101)), [500])  # A=100, B=1 residue
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[10])
+    assert v.ok
+    assert v.kind is VerdictKind.READY
+
+
+def test_boltz2_single_chain_still_ready():
+    """Regression: single-chain antigen is unaffected by the multi-chain gate."""
+    data = _chain_pdb("A", list(range(1, 121)))
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[5, 60])
+    assert v.kind is VerdictKind.READY

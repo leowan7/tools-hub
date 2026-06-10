@@ -294,6 +294,32 @@ def _preflight_boltz2(
             ),
         )
 
+    # Multi-chain antigen. run_pipeline.chain_seq folds ONLY the named
+    # chain, so any other protein chain in the upload is silently dropped.
+    # Flag it upfront (the boltz2 form has no preflight panel and a
+    # successful submit redirects, so a hard block is the only point we
+    # can surface this before the run). Tiny incidental chains (< 2 res)
+    # are ignored so a stray crystallographic fragment does not block.
+    other_chains = sorted(
+        c for c, n in counts.items() if c != antigen_chain and n >= 2
+    )
+    if other_chains:
+        listed = sorted({antigen_chain, *other_chains})
+        return _verdict(
+            VerdictKind.NEEDS_FIX,
+            reason=(
+                f"This antigen PDB has protein chains {', '.join(listed)}. "
+                f"Boltz-2 folds only the single antigen chain you name "
+                f"(chain {antigen_chain}); chain(s) "
+                f"{', '.join(other_chains)} would be dropped."
+            ),
+            suggested_fix=(
+                f"Upload a PDB containing just chain {antigen_chain}, or set "
+                f"the antigen chain to the one you want. Binder sequences go "
+                f"in the Binder sequences field, not the antigen PDB."
+            ),
+        )
+
     surviving: list = []
     out_of_range: list = []
     for h in hotspots or []:
