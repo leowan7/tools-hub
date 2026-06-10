@@ -34,18 +34,36 @@ _CLIENT_TIMEOUT_S = _timeout_env("SUPABASE_CLIENT_TIMEOUT_S", 30.0)
 
 
 def _client_options():
-    """Return ClientOptions with a bounded PostgREST timeout.
+    """Return SyncClientOptions with a bounded PostgREST timeout.
 
-    Returns None if the installed supabase version predates ClientOptions /
-    the expected shape, so callers fall back to library defaults instead of
-    crashing. Connect is capped short (5s) so dead connections fail fast;
-    read/write/pool get the full budget for legitimately slow queries.
+    Returns None if the installed supabase version predates the expected
+    shape, so callers fall back to library defaults instead of crashing.
+    Connect is capped short (5s) so dead connections fail fast; read/write/
+    pool get the full budget for legitimately slow queries.
+
+    MUST be SyncClientOptions, not the base ClientOptions: supabase-py's
+    *sync* create_client reads ``options.storage`` when it builds the auth
+    sub-client, and only SyncClientOptions (post sync/async split) carries
+    that attribute. Passing the base ClientOptions raises
+    ``AttributeError: 'ClientOptions' object has no attribute 'storage'`` at
+    construction, which returns None here and takes the whole authenticated
+    surface (login, wallet, credits, Platform API) down while /health stays
+    green (incident 2026-06-10). Fall back to ClientOptions only on older
+    supabase versions that predate the split (where it still has .storage).
     """
     try:
         import httpx  # noqa: PLC0415
-        from supabase.lib.client_options import ClientOptions  # noqa: PLC0415
 
-        return ClientOptions(
+        try:
+            from supabase.lib.client_options import (  # noqa: PLC0415
+                SyncClientOptions as _Options,
+            )
+        except ImportError:  # pragma: no cover - older supabase pre-split
+            from supabase.lib.client_options import (  # noqa: PLC0415
+                ClientOptions as _Options,
+            )
+
+        return _Options(
             postgrest_client_timeout=httpx.Timeout(
                 _CLIENT_TIMEOUT_S, connect=5.0
             ),
