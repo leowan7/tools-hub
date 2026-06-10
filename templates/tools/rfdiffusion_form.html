@@ -253,13 +253,13 @@
             <div class="rfdiffusion-binder-length">
               <input type="number" name="binder_length_min" id="binder_length_min"
                      min="30" max="150" value="55" placeholder="min">
-              <span class="sep">--</span>
+              <span class="sep">to</span>
               <input type="number" name="binder_length_max" id="binder_length_max"
                      min="30" max="150" value="65" placeholder="max">
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Range RFdiffusion samples within. Default 55-65 residues
-              is a sane starting window for compact binders; 30-150 allowed.
+              Range RFdiffusion samples within. Default 55 to 65 residues
+              is a sane starting window for compact binders; 30 to 150 allowed.
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
@@ -278,7 +278,7 @@
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
-            Runs against your own target -- upload PDB, pick hotspots, set binder length. Results emailed when the run completes (A100-80GB).
+            Runs against your own target. Upload PDB, pick hotspots, set binder length. Results emailed when the run completes (A100-80GB).
           </div>
 
           {{ field_campaign(prefilled=pre_fill) }}

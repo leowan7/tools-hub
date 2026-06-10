@@ -223,7 +223,7 @@
               <label for="n_seeds" class="label" style="display:block; margin-bottom: 0.4rem;">Seeds to run</label>
               <input type="number" name="n_seeds" id="n_seeds" min="1" max="64" {{ pre_value(pre_fill, 'n_seeds', '1') }} class="esmd-number" style="max-width: 100%;">
               <div style="color: var(--text-secondary); font-size: 0.82rem;">
-                Parallel sweep size (1-64). All seeds run on their own
+                Parallel sweep size (1 to 64). All seeds run on their own
                 H100 in parallel, so a 16-seed sweep finishes in the
                 same wall-clock as one seed. Cost scales linearly.
               </div>
@@ -232,7 +232,7 @@
               <label for="batch_size" class="label" style="display:block; margin-bottom: 0.4rem;">Batch size</label>
               <input type="number" name="batch_size" id="batch_size" min="1" max="6" {{ pre_value(pre_fill, 'batch_size', '3') }} class="esmd-number" style="max-width: 100%;">
               <div style="color: var(--text-secondary); font-size: 0.82rem;">
-                Designs per seed (1-6). All share one H100 pass per
+                Designs per seed (1 to 6). All share one H100 pass per
                 seed, so a higher batch multiplies candidates at the
                 same wall-clock. Default 3 balances yield against the
                 <code>drop</code> rate from the iPTM / pI gates.
