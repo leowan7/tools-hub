@@ -4,6 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/examples_chip_group.html" import examples_chip_group %}
 {% from "components/field_group.html" import field_campaign %}
+{% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -168,7 +169,27 @@
           {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
           {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
 
-          <button type="submit" class="btn-primary">Submit run</button>
+          {# Preflight panel: rendered server-side when tool_submit re-renders
+             with a NEEDS_FIX verdict (hard gate); otherwise an empty
+             placeholder that preflight.js fills in once the user attaches a
+             PDB. Multi-chain antigens and oversized complexes surface here
+             live. data-tool drives the AJAX endpoint URL. #}
+          {{ preflight_styles() }}
+          {% if preflight_verdict %}
+            {{ preflight_panel(preflight_verdict, tool_slug=adapter.slug) }}
+          {% else %}
+            <div id="preflight-panel"
+                 class="preflight-panel"
+                 data-tool="{{ adapter.slug }}"
+                 data-kind=""
+                 data-ok="1"></div>
+          {% endif %}
+
+          <button type="submit" class="btn-primary"
+                  id="tool-submit-btn"
+                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+            Submit run
+          </button>
         </form>
       </div>
     </div>
@@ -214,6 +235,7 @@
       recount();
     })();
   </script>
+  <script src="{{ url_for('static', filename='js/preflight.js') }}" defer></script>
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}
 {% endblock %}

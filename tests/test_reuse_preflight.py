@@ -185,3 +185,31 @@ def test_size_params_prefer_binder_length_max_when_present():
         {"binder_length_max": "90", "binder_length": "140"}
     )
     assert bmax == 90  # explicit max wins over the fallbacks
+
+
+# ---------------------------------------------------------------------------
+# Panel parity (gap 3): pxdesign + boltz2 forms now render the rich preflight
+# panel. Membership in _PREFLIGHT_PANEL_FORMS is what flips a submit-side
+# hard-gate rejection from the plain ``error`` string to the verdict UI, and
+# it is what tells the rest of the form to mount preflight.js for live
+# feedback. Lock the membership so a future refactor can't silently drop a
+# tool back to the plain-error path.
+# ---------------------------------------------------------------------------
+
+def test_pxdesign_and_boltz2_are_panel_forms():
+    assert "pxdesign" in app_mod._PREFLIGHT_PANEL_FORMS
+    assert "boltz2" in app_mod._PREFLIGHT_PANEL_FORMS
+
+
+def test_original_binder_tools_remain_panel_forms():
+    for slug in ("rfantibody", "rfdiffusion", "bindcraft", "boltzgen"):
+        assert slug in app_mod._PREFLIGHT_PANEL_FORMS
+
+
+def test_every_preflight_tool_has_a_panel():
+    # The item-3 goal: every PDB tool with a preflight evaluator also gives
+    # live panel feedback, so none silently lands on the plain-error path by
+    # omission. The fallback branch in tool_submit stays as a defensive net.
+    from shared.pdb_preflight import PREFLIGHT_TOOLS
+
+    assert PREFLIGHT_TOOLS <= app_mod._PREFLIGHT_PANEL_FORMS

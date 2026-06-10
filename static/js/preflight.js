@@ -38,6 +38,13 @@
     form.querySelector('input[type="file"][name="target_pdb"]');
   const chainInput = form.querySelector('input[name="target_chain"]');
   const hotspotInput = form.querySelector('input[name="hotspot_residues"]');
+  // Binder-size fields (optional, tool-dependent): pxdesign has a numeric
+  // binder_length; boltz2 carries a binder_sequences textarea. Forwarding
+  // these to the preflight endpoint makes the live combined / total-complex
+  // size check match the submit-side gate, which sees the validated value.
+  const binderLenInput = form.querySelector('input[name="binder_length"]');
+  const binderSeqInput =
+    form.querySelector('textarea[name="binder_sequences"]');
   const submitBtn = document.getElementById("tool-submit-btn") ||
                     form.querySelector('button[type="submit"]');
 
@@ -167,6 +174,49 @@
       .replace(/'/g, "&#39;");
   }
 
+  function maxBinderLen() {
+    // Longest binder sequence length, parsed from the boltz2 textarea.
+    // FASTA (>name headers) accumulates lines per record; otherwise each
+    // non-empty line is its own sequence. Whitespace is stripped. Returns
+    // null when the field is absent or empty.
+    if (!binderSeqInput || !binderSeqInput.value) return null;
+    const lines = binderSeqInput.value.split(/\r?\n/);
+    const hasHeaders = lines.some((l) => l.trim().charAt(0) === ">");
+    let max = 0;
+    if (hasHeaders) {
+      let cur = 0;
+      for (const raw of lines) {
+        const ln = raw.trim();
+        if (!ln) continue;
+        if (ln.charAt(0) === ">") {
+          if (cur > max) max = cur;
+          cur = 0;
+        } else {
+          cur += ln.replace(/\s+/g, "").length;
+        }
+      }
+      if (cur > max) max = cur;
+    } else {
+      for (const raw of lines) {
+        const ln = raw.trim().replace(/\s+/g, "");
+        if (ln.length > max) max = ln.length;
+      }
+    }
+    return max > 0 ? max : null;
+  }
+
+  function appendBinderFields(fd) {
+    // pxdesign: numeric binder_length, forwarded as-is.
+    if (binderLenInput && binderLenInput.value) {
+      fd.append("binder_length", binderLenInput.value);
+    }
+    // boltz2: forward the longest binder as binder_length_max, the field
+    // _parse_preflight_size_params reads directly. The raw textarea string
+    // is ignored server-side (the parser only handles the list shape).
+    const bmax = maxBinderLen();
+    if (bmax) fd.append("binder_length_max", String(bmax));
+  }
+
   function postPreflight(formData) {
     showLoading();
     return fetch(`/tools/${encodeURIComponent(toolSlug)}/preflight`, {
@@ -212,6 +262,7 @@
     if (chainInput) fd.append("target_chain", chainInput.value || "");
     if (hotspotInput)
       fd.append("hotspot_residues", hotspotInput.value || "");
+    appendBinderFields(fd);
     postPreflight(fd);
   }
 
@@ -221,6 +272,7 @@
     if (chainInput) fd.append("target_chain", chainInput.value || "");
     if (hotspotInput)
       fd.append("hotspot_residues", hotspotInput.value || "");
+    appendBinderFields(fd);
     return postPreflight(fd).then((v) => {
       // If the AF model passes preflight, stash the reuse token so the
       // form's submit endpoint fetches the same AF model on the server
@@ -247,8 +299,8 @@
   if (fileInput) {
     fileInput.addEventListener("change", runPreflightFromUpload);
   }
-  // Re-run when chain / hotspots change AND a file is attached.
-  for (const inp of [chainInput, hotspotInput]) {
+  // Re-run when chain / hotspots / binder size change AND a file is attached.
+  for (const inp of [chainInput, hotspotInput, binderLenInput, binderSeqInput]) {
     if (!inp) continue;
     let t = 0;
     inp.addEventListener("input", () => {
