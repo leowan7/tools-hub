@@ -41,6 +41,7 @@ from shared.pipeline_normalize import (
     PipelineNormalizationReport,
     normalize_for_bindcraft,
     normalize_for_boltzgen,
+    normalize_for_pxdesign,
     normalize_for_rfantibody,
     normalize_for_rfdiffusion,
 )
@@ -178,7 +179,151 @@ _PREVIEW_FN = {
     "rfdiffusion":  normalize_for_rfdiffusion,
     "bindcraft":    normalize_for_bindcraft,
     "boltzgen":     normalize_for_boltzgen,
+    "pxdesign":     normalize_for_pxdesign,
 }
+
+
+# Tools that get a server-side hard-gate preflight at submit. The binder
+# design tools (incl. pxdesign) run the normalizer dry-run + structural
+# gate via preflight_for_tool. boltz2 is included too but takes a
+# dedicated evaluator (sequence-position hotspots, single antigen chain),
+# so it is NOT a member of BINDER_DESIGN_TOOLS.
+PREFLIGHT_TOOLS: frozenset[str] = BINDER_DESIGN_TOOLS | frozenset({"boltz2"})
+
+
+# ---------------------------------------------------------------------------
+# Boltz-2 structural preflight
+#
+# Boltz-2 cofolds an antigen chain + binder sequences on A100-40GB. Its
+# semantics differ from the binder-design tools in three ways that make
+# the shared gate wrong for it:
+#   - hotspots are 1-indexed SEQUENCE positions into the named antigen
+#     chain (run_pipeline.hotspot_contacts does ag_res[p-1]), not original
+#     PDB author numbering;
+#   - hotspots are optional;
+#   - only the named antigen chain is folded (run_pipeline.chain_seq reads
+#     a single chain), so there is no contig builder / gap assertion.
+# So boltz2 runs its own checks below rather than preflight_for_tool's.
+# ---------------------------------------------------------------------------
+
+# Generous so only a genuinely too-large antigen is rejected; Modal's own
+# OOM/timeout is the residual net.
+BOLTZ2_ANTIGEN_HARD_CAP_AA = 1500
+BOLTZ2_GPU = "A100-40GB"
+
+
+def _ca_residue_counts(pdb_bytes: bytes) -> dict:
+    """Per-chain count of residues bearing a CA atom (ATOM records only).
+
+    Mirrors run_pipeline.chain_seq exactly (ATOM ... CA lines, unique
+    resnum per chain), so each count equals the antigen length boltz2
+    folds and indexes its 1-based hotspot positions into.
+    """
+    seen: dict = {}
+    for raw in pdb_bytes.split(b"\n"):
+        if not raw.startswith(b"ATOM"):
+            continue
+        if len(raw) < 26:
+            continue
+        try:
+            line = raw.decode("ascii", errors="replace")
+        except Exception:  # noqa: BLE001 - defensive
+            continue
+        if line[12:16].strip() != "CA":
+            continue
+        chain = line[21]
+        try:
+            resnum = int(line[22:26])
+        except ValueError:
+            continue
+        seen.setdefault(chain, set()).add(resnum)
+    return {c: len(s) for c, s in seen.items()}
+
+
+def _preflight_boltz2(
+    pdb_bytes: bytes, *, target_chain: str, hotspots: list,
+) -> PreflightVerdict:
+    """Structural preflight for the Boltz-2 cofold tool. Never raises."""
+    antigen_chain = (target_chain or "A").strip() or "A"
+    counts = _ca_residue_counts(pdb_bytes)
+
+    def _verdict(kind: VerdictKind, **kw) -> PreflightVerdict:
+        base = dict(
+            tool_slug="boltz2",
+            target_chain=antigen_chain,
+            cleanup=CleanupSummary(),
+            hotspot_status={"surviving": [], "dropped": []},
+        )
+        base.update(kw)
+        return PreflightVerdict(kind=kind, **base)
+
+    n_antigen = counts.get(antigen_chain, 0)
+    if n_antigen == 0:
+        present = sorted(counts.keys())
+        if present:
+            fix = (
+                f"This PDB has protein chain(s) {', '.join(present)}. "
+                f"Type one of those as the antigen chain."
+            )
+        else:
+            fix = (
+                "Confirm the upload is a protein structure (ATOM records "
+                "with CA atoms), not a ligand-only file."
+            )
+        return _verdict(
+            VerdictKind.NEEDS_FIX,
+            reason=(
+                f"Antigen chain {antigen_chain!r} has no protein residues "
+                f"in this PDB."
+            ),
+            suggested_fix=fix,
+        )
+
+    if n_antigen > BOLTZ2_ANTIGEN_HARD_CAP_AA:
+        return _verdict(
+            VerdictKind.NEEDS_FIX,
+            reason=(
+                f"Antigen chain {antigen_chain} has {n_antigen} residues, "
+                f"above the {BOLTZ2_ANTIGEN_HARD_CAP_AA}-residue cofold "
+                f"envelope for Boltz-2 on {BOLTZ2_GPU}. The complex would "
+                f"likely run out of GPU memory."
+            ),
+            suggested_fix=(
+                f"Trim chain {antigen_chain} to the epitope domain you want "
+                f"to fold against, or fold a smaller antigen."
+            ),
+        )
+
+    surviving: list = []
+    out_of_range: list = []
+    for h in hotspots or []:
+        try:
+            n = int(h)
+        except (TypeError, ValueError):
+            out_of_range.append(h)
+            continue
+        if 1 <= n <= n_antigen:
+            surviving.append(n)
+        else:
+            out_of_range.append(n)
+    if out_of_range:
+        return _verdict(
+            VerdictKind.NEEDS_FIX,
+            hotspot_status={"surviving": surviving, "dropped": out_of_range},
+            reason=(
+                f"Hotspot position(s) {out_of_range} are outside antigen "
+                f"chain {antigen_chain}, which has {n_antigen} residues."
+            ),
+            suggested_fix=(
+                f"Boltz-2 hotspots are sequence positions counted from 1, "
+                f"so use values between 1 and {n_antigen}."
+            ),
+        )
+
+    return _verdict(
+        VerdictKind.READY,
+        hotspot_status={"surviving": surviving, "dropped": []},
+    )
 
 
 def preflight_for_tool(
@@ -207,6 +352,13 @@ def preflight_for_tool(
     On any unexpected error (parser blow-up, etc.) returns a NEEDS_FIX
     verdict with the underlying message — never raises.
     """
+    if tool_slug == "boltz2":
+        # Dedicated evaluator: sequence-position hotspots, optional
+        # hotspots, single antigen chain. binder_max_aa / num_designs do
+        # not apply.
+        return _preflight_boltz2(
+            pdb_bytes, target_chain=target_chain, hotspots=hotspots,
+        )
     if tool_slug not in BINDER_DESIGN_TOOLS:
         # Defensive: if a caller asks us to gate a tool not in the list,
         # fall back to a no-op READY. Cheaper than enforcing per-call and
