@@ -286,6 +286,49 @@ def update_status(
     return Campaign.from_row(rows[0])
 
 
+def set_campaign_admin_fields(
+    campaign_id: str,
+    *,
+    ranomics_contact: Optional[str] = None,
+    notes_internal: Optional[str] = None,
+) -> Optional[Campaign]:
+    """Set admin annotation fields (contact, internal notes) without touching
+    status.
+
+    Used by the admin UI for API-FSM campaigns, whose status moves via
+    :func:`transition_api_status` (the atomic RPC) rather than
+    :func:`update_status` — the latter validates against the *web* STATUSES
+    and would reject an API status. Only fields passed as non-None are
+    written, so a blank form field leaves the stored value untouched.
+    """
+    patch: dict = {}
+    if ranomics_contact is not None:
+        patch["ranomics_contact"] = ranomics_contact
+    if notes_internal is not None:
+        patch["notes_internal"] = notes_internal
+    if not patch:
+        return get_campaign(campaign_id)
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        response = (
+            client.table(_TABLE)
+            .update(patch)
+            .eq("id", campaign_id)
+            .execute()
+        )
+    except Exception:
+        logger.error(
+            "set_campaign_admin_fields failed for %s", campaign_id, exc_info=True
+        )
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return None
+    return Campaign.from_row(rows[0])
+
+
 # ---------------------------------------------------------------------------
 # Platform API additions (migration 0023+)
 # ---------------------------------------------------------------------------

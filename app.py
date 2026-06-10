@@ -5608,7 +5608,11 @@ def create_app() -> Flask:
     @flask_app.route("/admin/campaigns/<campaign_id>", methods=["GET"])
     def admin_campaign_detail(campaign_id: str):
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
-        from shared.campaigns import get_campaign, STATUSES  # noqa: PLC0415
+        from shared.campaigns import (  # noqa: PLC0415
+            get_campaign,
+            STATUSES,
+            API_STATUSES,
+        )
         email = session.get("user_email", "")
         if not email:
             return redirect(url_for("login", next=request.path))
@@ -5618,17 +5622,30 @@ def create_app() -> Flask:
         if campaign is None:
             return render_template("404.html"), 404
         flash_msg = request.args.get("updated") == "1" and "Status updated."
+        # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
+        # web-funnel campaigns on the short one. Offer the right status set so
+        # the admin form posts a value the backend will accept.
+        statuses = (
+            list(API_STATUSES)
+            if campaign.submission_source == "api"
+            else list(STATUSES)
+        )
         return render_template(
             "admin/campaign_detail.html",
             campaign=campaign,
-            statuses=list(STATUSES),
+            statuses=statuses,
             flash_msg=flash_msg or None,
         )
 
     @flask_app.route("/admin/campaigns/<campaign_id>/status", methods=["POST"])
     def admin_campaign_update_status(campaign_id: str):
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
-        from shared.campaigns import get_campaign, update_status  # noqa: PLC0415
+        from shared.campaigns import (  # noqa: PLC0415
+            get_campaign,
+            update_status,
+            transition_api_status,
+            set_campaign_admin_fields,
+        )
         from shared.email import send_campaign_status_email  # noqa: PLC0415
         email = session.get("user_email", "")
         if not email:
@@ -5644,6 +5661,31 @@ def create_app() -> Flask:
         new_status      = request.form.get("status", "").strip()
         contact         = request.form.get("ranomics_contact", "").strip() or None
         notes_internal  = request.form.get("notes_internal", "").strip() or None
+
+        # API-direct (MCP/REST) campaigns run on the Adaptyv-style FSM and must
+        # transition through the atomic RPC (update_status only accepts the web
+        # enum and would reject an API status). Per product decision the admin
+        # status change does NOT fire the customer webhook or a status email —
+        # the customer's agent observes it on its next status poll. Contact /
+        # internal notes are persisted separately since the RPC ignores them.
+        if campaign.submission_source == "api":
+            if new_status and new_status != prev_status:
+                try:
+                    transition_api_status(
+                        campaign_id, new_status=new_status, by="admin"
+                    )
+                except ValueError:
+                    # Invalid API status — ignore and fall through to redirect.
+                    pass
+            set_campaign_admin_fields(
+                campaign_id,
+                ranomics_contact=contact,
+                notes_internal=notes_internal,
+            )
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?updated=1"
+            )
 
         try:
             updated = update_status(
