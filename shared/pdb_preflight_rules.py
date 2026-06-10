@@ -223,9 +223,12 @@ _PXDESIGN = ToolRules(
     hotspots_required=True,          # pxdesign requires >=1 hotspot
     min_target_aa=30,
     size=SizeEnvelope(
-        hard_cap_target_aa=600,      # A100-80GB headroom (matches boltzgen)
+        # pxdesign shares BindCraft's AF2 memory regime (AF2 Initial Guess
+        # validation). BindCraft (Pacesa 2025): target practically limited
+        # to ~600 aa; an 80GB card fits ~950 aa of target + binder.
+        hard_cap_target_aa=600,      # BindCraft ~600 aa practical target ceiling
         soft_warn_target_aa=360,
-        hard_cap_combined_aa=750,    # 600 target + 150 max binder length
+        hard_cap_combined_aa=950,    # BindCraft: ~950 aa (target + binder) on 80GB
         runtime_base_min=300.0,      # AF2-IG validation per design
         runtime_alpha=1.3,
         runtime_baseline_designs=8,  # pxdesign default num_designs

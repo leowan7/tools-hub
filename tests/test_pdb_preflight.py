@@ -12,7 +12,7 @@ import pytest
 
 from shared.pdb_preflight import (
     BINDER_DESIGN_TOOLS,
-    BOLTZ2_ANTIGEN_HARD_CAP_AA,
+    BOLTZ2_COMPLEX_HARD_CAP_AA,
     HOTSPOTS_REQUIRED,
     MIN_TARGET_RESIDUES,
     PREFLIGHT_TOOLS,
@@ -677,12 +677,29 @@ def test_boltz2_missing_chain_blocks():
 
 
 def test_boltz2_oversized_antigen_blocks():
-    over = BOLTZ2_ANTIGEN_HARD_CAP_AA + 1
+    over = BOLTZ2_COMPLEX_HARD_CAP_AA + 1
     data = _chain_pdb("A", list(range(1, over + 1)))   # cap + 1 residues
     v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[])
     assert v.kind is VerdictKind.NEEDS_FIX
     assert "trim" in v.suggested_fix.lower()
-    assert str(BOLTZ2_ANTIGEN_HARD_CAP_AA) in v.reason
+    assert str(BOLTZ2_COMPLEX_HARD_CAP_AA) in v.reason
+
+
+def test_boltz2_size_cap_counts_total_complex():
+    """The cap is on antigen + longest binder, not the antigen alone."""
+    # Antigen just under the cap on its own.
+    n = BOLTZ2_COMPLEX_HARD_CAP_AA - 200
+    data = _chain_pdb("A", list(range(1, n + 1)))
+    # Antigen alone passes.
+    ok = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[])
+    assert ok.kind is VerdictKind.READY
+    # Same antigen + a 400-aa binder pushes the complex over the cap.
+    over = preflight_for_tool(
+        "boltz2", data, target_chain="A", hotspots=[], binder_max_aa=400,
+    )
+    assert over.kind is VerdictKind.NEEDS_FIX
+    assert str(n + 400) in over.reason          # names the total
+    assert "binder" in over.reason.lower()
 
 
 # ---------------------------------------------------------------------------
