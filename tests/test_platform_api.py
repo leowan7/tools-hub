@@ -260,10 +260,11 @@ def _api_campaign(
     results_status="none",
     results=None,
     webhook_url=None,
+    notes_customer=None,
 ):
     """Minimal API-source Campaign for route tests.
 
-    Quote / results fields default to the empty state; pass them to
+    Quote / results / notes fields default to the empty state; pass them to
     exercise the populated paths.
     """
     from shared.campaigns import Campaign
@@ -294,6 +295,7 @@ def _api_campaign(
         quote_line_items=quote_line_items or [],
         quote_valid_until=quote_valid_until,
         results=results,
+        notes_customer=notes_customer,
     )
 
 
@@ -945,6 +947,113 @@ def test_results_save_route_rejects_bad_json_before_write():
     assert resp.status_code in (302, 303)
     assert "results_error=1" in resp.headers["Location"]
     assert not set_mock.called
+
+
+# ---------------------------------------------------------------------------
+# Customer notification (Phase 3): notes_customer + notify-on-transition
+# ---------------------------------------------------------------------------
+
+
+def test_status_view_includes_notes_customer():
+    app = _build_app()
+    client = app.test_client()
+    camp = _api_campaign("QuoteSent", notes_customer="Quote covers one sort round.")
+    with patch("shared.api_auth.resolve_token", return_value=_valid_ctx()), patch(
+        "tools.platform_api.routes._load_owned_campaign", return_value=camp
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    assert resp.get_json()["notes_customer"] == "Quote covers one sort round."
+
+
+def _transition_result(*, moved, status, webhook_url, prev_status="WaitingForConfirmation"):
+    from shared.campaigns import TransitionResult
+
+    camp = _api_campaign(status, webhook_url=webhook_url)
+    return TransitionResult(moved=moved, prev_status=prev_status, campaign=camp)
+
+
+def test_admin_notify_fires_webhook_on_quotesent():
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={
+                "status": "QuoteSent",
+                "notify_customer": "1",
+                "notes_customer": "Ready to confirm.",
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs["event_type"] == "experiment.status_changed"
+    assert kwargs["payload"]["new_status"] == "QuoteSent"
+    assert kwargs["payload"]["notes_customer"] == "Ready to confirm."
+
+
+def test_admin_no_webhook_when_notify_unchecked():
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "QuoteSent"},
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
+
+
+def test_admin_no_webhook_for_non_customer_status():
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True,
+        status="Sorting",
+        webhook_url="https://hook.example/x",
+        prev_status="LibraryConstruction",
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("LibraryConstruction"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "Sorting", "notify_customer": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
 
 
 # ---------------------------------------------------------------------------

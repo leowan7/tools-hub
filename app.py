@@ -5841,27 +5841,70 @@ def create_app() -> Flask:
         new_status      = request.form.get("status", "").strip()
         contact         = request.form.get("ranomics_contact", "").strip() or None
         notes_internal  = request.form.get("notes_internal", "").strip() or None
+        notes_customer  = request.form.get("notes_customer", "").strip() or None
+        notify_customer = request.form.get("notify_customer") == "1"
 
         # API-direct (MCP/REST) campaigns run on the Adaptyv-style FSM and must
         # transition through the atomic RPC (update_status only accepts the web
-        # enum and would reject an API status). Per product decision the admin
-        # status change does NOT fire the customer webhook or a status email —
-        # the customer's agent observes it on its next status poll. Contact /
-        # internal notes are persisted separately since the RPC ignores them.
+        # enum and would reject an API status). Admin changes are SILENT by
+        # default — the customer's agent observes them on its next poll. Phase 3
+        # adds an opt-in: tick "Notify customer" and, on a real transition into
+        # a customer-relevant state (QuoteSent / Done / Cancelled) with a
+        # webhook_url set, fire one signed webhook carrying notes_customer.
+        # Contact / internal / customer notes are persisted separately since the
+        # RPC ignores them.
         if campaign.submission_source == "api":
+            transitioned = None
             if new_status and new_status != prev_status:
                 try:
-                    transition_api_status(
+                    transitioned = transition_api_status(
                         campaign_id, new_status=new_status, by="admin"
                     )
                 except ValueError:
                     # Invalid API status — ignore and fall through to redirect.
-                    pass
+                    transitioned = None
             set_campaign_admin_fields(
                 campaign_id,
                 ranomics_contact=contact,
                 notes_internal=notes_internal,
+                notes_customer=notes_customer,
             )
+
+            _NOTIFY_STATUSES = {"QuoteSent", "Done", "Cancelled"}
+            if (
+                notify_customer
+                and transitioned is not None
+                and transitioned.moved
+                and transitioned.campaign is not None
+                and transitioned.campaign.status in _NOTIFY_STATUSES
+                and transitioned.campaign.webhook_url
+            ):
+                try:
+                    from shared.webhooks import dispatch_webhook  # noqa: PLC0415
+
+                    payload = {
+                        "event_type": "experiment.status_changed",
+                        "experiment_id": transitioned.campaign.id,
+                        "prev_status": transitioned.prev_status,
+                        "new_status": transitioned.campaign.status,
+                        "results_status": transitioned.campaign.results_status,
+                        "timestamp": transitioned.campaign.last_transition_at,
+                    }
+                    if notes_customer:
+                        payload["notes_customer"] = notes_customer
+                    dispatch_webhook(
+                        campaign_id=transitioned.campaign.id,
+                        event_type="experiment.status_changed",
+                        target_url=transitioned.campaign.webhook_url,
+                        owner_user_id=transitioned.campaign.user_id,
+                        payload=payload,
+                    )
+                except Exception:
+                    logger.warning(
+                        "admin status-change webhook dispatch raised for %s",
+                        campaign_id,
+                        exc_info=True,
+                    )
             return redirect(
                 url_for("admin_campaign_detail", campaign_id=campaign_id)
                 + "?updated=1"

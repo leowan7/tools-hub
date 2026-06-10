@@ -293,7 +293,7 @@
           </select>
           {% if is_api %}
             <p style="font-size:.75rem;color:var(--text-secondary);margin:.4rem 0 0;line-height:1.4;">
-              API status FSM — moves forward only. The customer's agent sees the change on its next status poll; no webhook is fired from here.
+              API status FSM, moves forward only. Silent by default (the agent sees it on its next poll). Tick "Notify customer" below to fire a webhook on QuoteSent, Done, or Cancelled.
             </p>
           {% endif %}
         </div>
@@ -316,6 +316,22 @@
                     class="form-control" rows="4"
                     placeholder="Feasibility assessment, capacity notes, scope decisions…">{{ campaign.notes_internal or '' }}</textarea>
         </div>
+
+        {% if is_api %}
+          <div class="form-field" style="margin-bottom:.85rem;">
+            <label for="notes_customer" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+              Customer note <span style="color:var(--text-secondary);font-weight:400;">(optional; shown to the customer)</span>
+            </label>
+            <textarea id="notes_customer" name="notes_customer"
+                      class="form-control" rows="3"
+                      placeholder="A short message sent with the status change, e.g. what the quote covers or where to collect results.">{{ campaign.notes_customer or '' }}</textarea>
+          </div>
+
+          <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:1.1rem;font-size:.85rem;">
+            <input type="checkbox" name="notify_customer" value="1">
+            Notify customer (fires a webhook on QuoteSent, Done, or Cancelled)
+          </label>
+        {% endif %}
 
         <button type="submit" class="btn-primary" style="width:100%;">{% if is_api %}Update status{% else %}Update &amp; notify user{% endif %}</button>
       </form>
