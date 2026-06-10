@@ -633,6 +633,64 @@ def test_confirm_quote_unknown_returns_404():
     assert resp.status_code == 404
 
 
+def test_confirm_quote_rejects_unpriced_quote():
+    """#1: a QuoteSent row with no posted price (total_usd null) must 409
+    quote_not_finalized and NOT advance into WaitingForMaterials. Guards
+    against an agent accepting a price-less quote."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("QuoteSent"),  # quote_total_usd defaults None
+    ), patch(
+        "tools.platform_api.routes.transition_api_status"
+    ) as trans_mock:
+        resp = client.post(
+            "/api/v1/quotes/exp-smoke-1/confirm",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 409
+    assert resp.get_json()["error"]["code"] == "quote_not_finalized"
+    assert not trans_mock.called
+
+
+def test_confirm_quote_succeeds_when_priced():
+    """A QuoteSent row with a posted price confirms and advances to
+    WaitingForMaterials."""
+    app = _build_app()
+    client = app.test_client()
+    priced = _api_campaign("QuoteSent", quote_total_usd=48000.0)
+    moved = _transition_result(
+        moved=True,
+        status="WaitingForMaterials",
+        webhook_url=None,
+        prev_status="QuoteSent",
+    )
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign", return_value=priced
+    ), patch(
+        "tools.platform_api.routes.transition_api_status", return_value=moved
+    ) as trans_mock, patch(
+        "tools.platform_api.routes.dispatch_webhook"
+    ) as dispatch_mock:
+        resp = client.post(
+            "/api/v1/quotes/exp-smoke-1/confirm",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    assert trans_mock.called
+    assert resp.get_json()["status"] == "WaitingForMaterials"
+    # A real confirm fires experiment.confirmed (prev_status QuoteSent).
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs["event_type"] == "experiment.confirmed"
+    assert kwargs["payload"]["prev_status"] == "QuoteSent"
+
+
 
 # ---------------------------------------------------------------------------
 # GET /experiments/{id}/quote — operator quote (Phase 1)
@@ -1092,7 +1150,7 @@ def test_notes_internal_never_leaves_internal_surface():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("WaitingForConfirmation"),
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
@@ -1155,7 +1213,9 @@ def test_admin_notify_fires_webhook_on_quotesent():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("WaitingForConfirmation"),
+        # Priced row: a real QuoteSent transition has a posted price (else the
+        # #1 status-dropdown guard blocks it).
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
@@ -1189,7 +1249,7 @@ def test_admin_no_webhook_when_notes_persist_fails():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("WaitingForConfirmation"),
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
@@ -1228,7 +1288,9 @@ def test_admin_notify_includes_stored_note_when_form_blank():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("InReview"),
+        # Priced: a real InReview row passed QuoteSent, so it has a price (else
+        # the #1 price-band guard blocks the move).
+        return_value=_api_campaign("InReview", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
@@ -1253,7 +1315,7 @@ def test_admin_no_webhook_when_notify_unchecked():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("WaitingForConfirmation"),
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
@@ -1279,10 +1341,13 @@ def test_admin_no_webhook_for_non_customer_status():
     )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
-        return_value=_api_campaign("LibraryConstruction"),
+        # Priced: a real LibraryConstruction row passed QuoteSent, so it carries
+        # a price. Without one the #1 band guard would early-return and this test
+        # would pass vacuously instead of exercising the _NOTIFY_STATUSES filter.
+        return_value=_api_campaign("LibraryConstruction", quote_total_usd=48000.0),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
-    ), patch(
+    ) as trans_mock, patch(
         "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
     ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
         with client.session_transaction() as sess:
@@ -1292,6 +1357,9 @@ def test_admin_no_webhook_for_non_customer_status():
             data={"status": "Sorting", "notify_customer": "1"},
         )
     assert resp.status_code in (302, 303)
+    # The transition fires (Sorting is a real move), but Sorting is not a
+    # customer-notify status, so no webhook dispatches.
+    assert trans_mock.called
     assert not dispatch_mock.called
 
 
@@ -1426,3 +1494,276 @@ def test_quote_save_rejects_non_api_campaign():
         )
     assert resp.status_code == 404
     assert not set_mock.called
+
+
+def test_quote_save_fires_webhook_when_notify_and_moved():
+    """#2: posting a quote with "Notify customer" ticked fires one
+    status_changed webhook when the row actually moves to QuoteSent and has a
+    webhook_url, so an autonomous agent learns the quote is ready."""
+    client = _full_app_client()
+    saved = _api_campaign("WaitingForConfirmation", quote_total_usd=48000.0)
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=saved
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={
+                "quote_total_usd": "48000",
+                "set_quote_sent": "1",
+                "notify_customer": "1",
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert "quoted=1" in resp.headers["Location"]
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs["event_type"] == "experiment.status_changed"
+    assert kwargs["payload"]["new_status"] == "QuoteSent"
+
+
+def test_quote_save_no_webhook_when_notify_unchecked():
+    """The quote-save path stays silent by default: no notify checkbox, no
+    webhook, even when the row moves to QuoteSent with a webhook_url."""
+    client = _full_app_client()
+    saved = _api_campaign("WaitingForConfirmation", quote_total_usd=48000.0)
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=saved
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"quote_total_usd": "48000", "set_quote_sent": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
+
+
+def test_quote_save_no_webhook_without_url():
+    """Notify ticked and the row moved, but no webhook_url is set -> no
+    dispatch."""
+    client = _full_app_client()
+    saved = _api_campaign("WaitingForConfirmation", quote_total_usd=48000.0)
+    tr = _transition_result(moved=True, status="QuoteSent", webhook_url=None)
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=saved
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={
+                "quote_total_usd": "48000",
+                "set_quote_sent": "1",
+                "notify_customer": "1",
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
+
+
+def test_quote_save_blocks_quotesent_without_price():
+    """M2: 'Move to QuoteSent' with a blank total (and no summable line items)
+    is rejected with quote_error=price_required; no write, no advance."""
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote"
+    ) as set_mock, patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"set_quote_sent": "1"},  # blank total
+        )
+    assert resp.status_code in (302, 303)
+    assert "quote_error=price_required" in resp.headers["Location"]
+    assert not set_mock.called
+    assert not trans_mock.called
+
+
+def test_quote_save_blocks_price_clobber_on_priced_row():
+    """M2: re-saving the quote form with a blank total on a row already in the
+    price-required band is rejected, so an existing price cannot be silently
+    nulled (which would strand the customer's quote and break confirm_quote)."""
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("QuoteSent", quote_total_usd=48000.0),
+    ), patch(
+        "shared.campaigns.set_campaign_quote"
+    ) as set_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={},  # blank total
+        )
+    assert resp.status_code in (302, 303)
+    assert "quote_error=price_required" in resp.headers["Location"]
+    assert not set_mock.called
+
+
+def test_quote_save_no_webhook_on_noop_transition():
+    """L3: re-saving a quote on a row already in QuoteSent does not move the
+    FSM, so no quote-ready webhook fires even with notify ticked."""
+    client = _full_app_client()
+    saved = _api_campaign(
+        "QuoteSent", quote_total_usd=48000.0, webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign(
+            "QuoteSent", quote_total_usd=48000.0, webhook_url="https://hook.example/x"
+        ),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=saved
+    ), patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock, patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={
+                "quote_total_usd": "48000",
+                "set_quote_sent": "1",
+                "notify_customer": "1",
+            },
+        )
+    assert resp.status_code in (302, 303)
+    # Already QuoteSent: the set_quote_sent block is skipped, so no move, no
+    # quote-ready webhook.
+    assert not trans_mock.called
+    assert not dispatch_mock.called
+
+
+def test_status_dropdown_blocks_quotesent_without_price():
+    """#1: the bare admin status control must not move an API row to QuoteSent
+    while quote_total_usd is null (it would create a price-less quote that
+    confirm_quote now rejects). The transition must not fire."""
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),  # total None
+    ), patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock, patch(
+        "shared.campaigns.set_campaign_admin_fields"
+    ) as fields_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "QuoteSent"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "status_error=quote_required" in resp.headers["Location"]
+    assert not trans_mock.called
+    # L1: notes/contact typed in the same submission are still persisted; only
+    # the price-less transition is blocked.
+    assert fields_mock.called
+
+
+def test_status_dropdown_blocks_skip_across_quote_line_without_price():
+    """M1: the guard blocks ANY jump across the quote line without a price, not
+    just the literal 'QuoteSent'. The FSM RPC is forward-only but not
+    adjacency-enforced, so a null-price row could otherwise be pushed straight
+    to WaitingForMaterials, skipping confirm_quote's guard entirely."""
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),  # total None
+    ), patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock, patch(
+        "shared.campaigns.set_campaign_admin_fields"
+    ):
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "WaitingForMaterials"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "status_error=quote_required" in resp.headers["Location"]
+    assert not trans_mock.called
+
+
+def test_status_dropdown_allows_cancel_without_price():
+    """Cancelled is exempt from the price band: an unpriced API row can still
+    be cancelled."""
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="Cancelled", webhook_url=None, prev_status="WaitingForConfirmation"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),  # total None
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ) as trans_mock, patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+    ):
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "Cancelled"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "updated=1" in resp.headers["Location"]
+    assert trans_mock.called
+
+
+def test_status_dropdown_allows_quotesent_with_price():
+    """The guard only blocks the price-less case: a QuoteSent move is allowed
+    once quote_total_usd is set."""
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url=None
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ) as trans_mock, patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+    ):
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "QuoteSent"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "updated=1" in resp.headers["Location"]
+    assert trans_mock.called

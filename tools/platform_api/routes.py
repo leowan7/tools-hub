@@ -726,6 +726,19 @@ def confirm_quote(quote_id: str):
             current_status=campaign.status,
         )
 
+    # A row can reach QuoteSent without a posted price (e.g. an operator moved
+    # it via the bare status control before finalising the quote). GET /quote
+    # surfaces a "being finalised" note in that state; refuse to confirm it so
+    # an agent never accepts a price-less quote and advances into lab work.
+    if campaign.quote_total_usd is None:
+        return _error(
+            409,
+            "quote_not_finalized",
+            "The quote has no posted price yet. total_usd will populate once "
+            "the scoping team finalises it; retry the confirm after that.",
+            current_status=campaign.status,
+        )
+
     result = transition_api_status(
         campaign.id, new_status="WaitingForMaterials", by="api"
     )

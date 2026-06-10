@@ -60,6 +60,19 @@ API_STATUSES = (
 )
 API_TERMINAL_STATUSES = frozenset({"Done", "Cancelled"})
 
+# Statuses at or beyond 'QuoteSent' on the forward FSM mean the customer has
+# committed (or is about to commit) money, so they require a posted quote price
+# (quote_total_usd). The FSM RPC is forward-only but NOT adjacency-enforced, so
+# callers that accept an arbitrary destination (the admin status control) must
+# refuse to cross this band while the price is null, or a row could skip the
+# quote line entirely and bypass confirm_quote's own price guard. 'Cancelled'
+# is an escape hatch and needs no price.
+PRICE_REQUIRED_STATUSES = frozenset(
+    s
+    for i, s in enumerate(API_STATUSES)
+    if i >= API_STATUSES.index("QuoteSent") and s != "Cancelled"
+)
+
 RESULTS_STATUSES = ("none", "partial", "all")
 SUBMISSION_SOURCES = ("web", "api")
 

@@ -5796,6 +5796,9 @@ def create_app() -> Flask:
             flash_msg = "Status updated."
         elif request.args.get("quoted") == "1":
             flash_msg = "Quote saved."
+        elif request.args.get("quote_error") == "price_required":
+            flash_msg = "Post a price before moving this experiment to QuoteSent (or keep it pre-quote)."
+            flash_kind = "error"
         elif request.args.get("quote_error") == "1":
             flash_msg = "Quote could not be saved. Check the values and retry."
             flash_kind = "error"
@@ -5803,6 +5806,9 @@ def create_app() -> Flask:
             flash_msg = "Results saved."
         elif request.args.get("results_error") == "1":
             flash_msg = "Results could not be saved. Check the JSON, and keep each upload under 20 MB total, then retry."
+            flash_kind = "error"
+        elif request.args.get("status_error") == "quote_required":
+            flash_msg = "Post a price in the Quote panel before moving this experiment to QuoteSent."
             flash_kind = "error"
         # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
         # web-funnel campaigns on the short one. Offer the right status set so
@@ -5824,6 +5830,7 @@ def create_app() -> Flask:
     def admin_campaign_update_status(campaign_id: str):
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
         from shared.campaigns import (  # noqa: PLC0415
+            PRICE_REQUIRED_STATUSES,
             get_campaign,
             update_status,
             transition_api_status,
@@ -5857,6 +5864,35 @@ def create_app() -> Flask:
         # Contact / internal / customer notes are persisted separately since the
         # RPC ignores them.
         if campaign.submission_source == "api":
+            # Persist contact / internal / customer notes FIRST, so a blocked
+            # transition (the price guard below) never silently discards fields
+            # typed in the same submission. These columns are independent of the
+            # FSM, so order does not matter for them.
+            saved = set_campaign_admin_fields(
+                campaign_id,
+                ranomics_contact=contact,
+                notes_internal=notes_internal,
+                notes_customer=notes_customer,
+            )
+
+            # Guard: an API row must not cross into 'QuoteSent' OR any later
+            # lab-work state without a posted price. The quote form
+            # (admin_campaign_save_quote) is the proper path and persists a
+            # price before advancing. The FSM RPC is forward-only but NOT
+            # adjacency-enforced, so the bare status dropdown could otherwise
+            # jump a null-price row straight to WaitingForMaterials (or beyond),
+            # skipping the quote line and bypassing confirm_quote's own price
+            # guard. Block the whole price-required band; 'Cancelled' is exempt.
+            if (
+                new_status != prev_status
+                and new_status in PRICE_REQUIRED_STATUSES
+                and campaign.quote_total_usd is None
+            ):
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?status_error=quote_required"
+                )
+
             transitioned = None
             if new_status and new_status != prev_status:
                 try:
@@ -5866,12 +5902,6 @@ def create_app() -> Flask:
                 except ValueError:
                     # Invalid API status — ignore and fall through to redirect.
                     transitioned = None
-            saved = set_campaign_admin_fields(
-                campaign_id,
-                ranomics_contact=contact,
-                notes_internal=notes_internal,
-                notes_customer=notes_customer,
-            )
             # If the operator attached a customer note but the persist failed
             # (service client down / RLS / migration 0032 absent), do NOT fire a
             # webhook carrying a note the stored record never received.
@@ -5974,6 +6004,7 @@ def create_app() -> Flask:
         """
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
         from shared.campaigns import (  # noqa: PLC0415
+            PRICE_REQUIRED_STATUSES,
             get_campaign,
             set_campaign_quote,
             transition_api_status,
@@ -6052,6 +6083,23 @@ def create_app() -> Flask:
 
         quote_notes = request.form.get("quote_notes", "").strip() or None
 
+        # Refuse to advance to (or remain at) QuoteSent without a posted price.
+        # Blocks a blank-total "Move to QuoteSent" save, and prevents re-saving a
+        # blank form from nulling the price on a row already in QuoteSent (which
+        # would strand the customer's quote and make confirm_quote 409). total_usd
+        # is final here (explicit value or line-item sum).
+        wants_quotesent = request.form.get("set_quote_sent") == "1" and campaign.status in (
+            "Draft",
+            "WaitingForConfirmation",
+        )
+        if total_usd is None and (
+            wants_quotesent or campaign.status in PRICE_REQUIRED_STATUSES
+        ):
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?quote_error=price_required"
+            )
+
         saved = set_campaign_quote(
             campaign_id,
             total_usd=total_usd,
@@ -6071,16 +6119,54 @@ def create_app() -> Flask:
         # Quote is persisted, so a customer fetching /quote the instant the
         # status flips already sees real numbers. Only now advance the FSM.
         # transition_api_status is forward-only and a no-op past QuoteSent.
+        transitioned = None
         if request.form.get("set_quote_sent") == "1" and campaign.status in (
             "Draft",
             "WaitingForConfirmation",
         ):
             try:
-                transition_api_status(
+                transitioned = transition_api_status(
                     campaign_id, new_status="QuoteSent", by="admin"
                 )
             except ValueError:
-                pass
+                transitioned = None
+
+        # Phase 3 parity: posting a quote is exactly when an autonomous agent
+        # wants to know. When the operator opts in ("Notify customer") and the
+        # row actually moved to QuoteSent with a webhook_url, fire one signed
+        # status_changed webhook so the agent can fetch the quote without
+        # polling. Silent otherwise, like every other admin change.
+        if (
+            request.form.get("notify_customer") == "1"
+            and transitioned is not None
+            and transitioned.moved
+            and transitioned.campaign is not None
+            and transitioned.campaign.status == "QuoteSent"
+            and transitioned.campaign.webhook_url
+        ):
+            try:
+                from shared.webhooks import dispatch_webhook  # noqa: PLC0415
+
+                dispatch_webhook(
+                    campaign_id=transitioned.campaign.id,
+                    event_type="experiment.status_changed",
+                    target_url=transitioned.campaign.webhook_url,
+                    owner_user_id=transitioned.campaign.user_id,
+                    payload={
+                        "event_type": "experiment.status_changed",
+                        "experiment_id": transitioned.campaign.id,
+                        "prev_status": transitioned.prev_status,
+                        "new_status": transitioned.campaign.status,
+                        "results_status": transitioned.campaign.results_status,
+                        "timestamp": transitioned.campaign.last_transition_at,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "quote-ready webhook dispatch raised for %s",
+                    campaign_id,
+                    exc_info=True,
+                )
 
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"

@@ -252,6 +252,15 @@ def build_spec() -> dict[str, Any]:
                 "post": {
                     "tags": ["quotes"],
                     "summary": "Accept the quote",
+                    "description": (
+                        "Moves the experiment from 'QuoteSent' to "
+                        "'WaitingForMaterials'. Returns 409 with `code: "
+                        "quote_not_confirmable` if the status is not "
+                        "'QuoteSent', or `code: quote_not_finalized` if it is "
+                        "'QuoteSent' but no price has been posted yet "
+                        "(total_usd is null). Fetch GET /experiments/{id}/quote "
+                        "first and confirm only once total_usd is present."
+                    ),
                     "parameters": [
                         {
                             "name": "quote_id",
