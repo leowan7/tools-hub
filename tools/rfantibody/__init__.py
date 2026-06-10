@@ -22,24 +22,29 @@ _CDR_SPEC_EXAMPLE = "H1:8,H2:7,H3:10-16"
 _CDR_BOUNDS: dict = {"H1": (1, 20), "H2": (1, 20), "H3": (5, 20)}
 
 
-def _validate_cdr_lengths(spec: str) -> Optional[str]:
-    """Validate the CDR length spec; return None when valid else a message.
+def _validate_cdr_lengths(spec: str) -> tuple[Optional[str], Optional[str]]:
+    """Validate and canonicalize the CDR length spec.
 
-    Accepts comma-separated ``KEY:VALUE`` entries where KEY is one of
-    H1/H2/H3 and VALUE is a single length or a ``lo-hi`` range. The hyphen
-    in ``10-16`` is required input syntax (the GPU pipeline parses it);
-    error prose still renders numeric ranges as "X to Y".
+    Returns ``(canonical_spec, None)`` when valid, else ``(None, message)``.
+    The canonical form (uppercase keys, ASCII-digit values, single-hyphen
+    ranges, no spaces) is what gets forwarded to the GPU, so leniency in
+    parsing (whitespace, case) never lets an off-format string reach the
+    pipeline. Accepts comma-separated ``KEY:VALUE`` entries where KEY is
+    H1/H2/H3 and VALUE is a whole number or a ``lo-hi`` range. The hyphen
+    in ``10-16`` is required input syntax; error prose renders numeric
+    ranges as "X to Y".
     """
     text = (spec or "").strip()
     if not text:
-        return None  # caller defaults this; empty means "use the default"
+        return "", None  # caller defaults this; empty means "use the default"
     seen: set = set()
+    canonical: list = []
     for raw_entry in text.split(","):
         entry = raw_entry.strip()
         if not entry:
             continue
         if ":" not in entry:
-            return (
+            return None, (
                 f'CDR spec entry "{entry}" must look like KEY:LENGTH. '
                 f'Example: "{_CDR_SPEC_EXAMPLE}".'
             )
@@ -47,43 +52,47 @@ def _validate_cdr_lengths(spec: str) -> Optional[str]:
         key = key.strip().upper()
         value = value.strip()
         if key not in _CDR_BOUNDS:
-            return (
+            return None, (
                 f'Unknown CDR "{key}". Use H1, H2, or H3 only '
                 f'(RFantibody designs a VHH heavy chain). '
                 f'Example: "{_CDR_SPEC_EXAMPLE}".'
             )
         if key in seen:
-            return f'CDR "{key}" is specified more than once.'
+            return None, f'CDR "{key}" is specified more than once.'
         seen.add(key)
         lo_s, sep, hi_s = value.partition("-")
         lo_s, hi_s = lo_s.strip(), hi_s.strip()
         if sep and not hi_s:
-            return (
+            return None, (
                 f'CDR {key} range "{value}" is missing its upper bound '
                 f'(write it low to high, e.g. "10-16").'
             )
-        try:
-            lo = int(lo_s)
-            hi = int(hi_s) if sep else lo
-        except ValueError:
-            return (
-                f'CDR {key} length "{value}" must be a whole number or a '
-                f'range written low to high (e.g. "10-16").'
-            )
+        # Strict ASCII-digit tokens only: rejects "+8", "1_0", embedded
+        # spaces, unicode digits, and negatives that int() would otherwise
+        # silently accept and forward off-format to the GPU.
+        for tok in ((lo_s, hi_s) if sep else (lo_s,)):
+            if not (tok.isascii() and tok.isdigit()):
+                return None, (
+                    f'CDR {key} length "{value}" must be a whole number or a '
+                    f'range written low to high (e.g. "10-16").'
+                )
+        lo = int(lo_s)
+        hi = int(hi_s) if sep else lo
         if lo > hi:
-            return (
+            return None, (
                 f"CDR {key} range is backwards: {lo} to {hi}. "
                 f"Write it low to high."
             )
         floor, ceil = _CDR_BOUNDS[key]
         if lo < floor or hi > ceil:
-            return (
+            return None, (
                 f"CDR {key} length must be between {floor} and {ceil} "
                 f"(got {value})."
             )
-    if not seen:
-        return f'CDR spec is empty. Example: "{_CDR_SPEC_EXAMPLE}".'
-    return None
+        canonical.append(f"{key}:{lo}" if not sep else f"{key}:{lo}-{hi}")
+    if not canonical:
+        return None, f'CDR spec is empty. Example: "{_CDR_SPEC_EXAMPLE}".'
+    return ",".join(canonical), None
 
 
 def validate(
@@ -118,9 +127,12 @@ def validate(
         return None, "At least one hotspot residue is required."
 
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
-    cdr_err = _validate_cdr_lengths(cdr_lengths)
+    canonical_cdr, cdr_err = _validate_cdr_lengths(cdr_lengths)
     if cdr_err:
         return None, cdr_err
+    # Forward the canonical form so whitespace / case in user input never
+    # reaches the GPU contig builder.
+    cdr_lengths = canonical_cdr or cdr_lengths
 
     raw_num_designs = (form.get("num_designs") or "4").strip()
     try:
