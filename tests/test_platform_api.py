@@ -249,8 +249,20 @@ def _viewer_ctx() -> APIKeyContext:
     )
 
 
-def _api_campaign(status: str):
-    """Minimal API-source Campaign for withdraw-route tests."""
+def _api_campaign(
+    status: str,
+    *,
+    quote_total_usd=None,
+    quote_line_items=None,
+    quote_valid_until=None,
+    quote_currency="USD",
+    last_transition_at=None,
+):
+    """Minimal API-source Campaign for route tests.
+
+    Quote fields default to the empty/unquoted state; pass them to exercise
+    the populated-quote path.
+    """
     from shared.campaigns import Campaign
 
     return Campaign(
@@ -271,6 +283,11 @@ def _api_campaign(status: str):
         reviewed_at=None,
         name="smoke",
         submission_source="api",
+        last_transition_at=last_transition_at,
+        quote_total_usd=quote_total_usd,
+        quote_currency=quote_currency,
+        quote_line_items=quote_line_items or [],
+        quote_valid_until=quote_valid_until,
     )
 
 
@@ -604,3 +621,269 @@ def test_confirm_quote_unknown_returns_404():
             headers={"Authorization": "Bearer rk_live_xxx"},
         )
     assert resp.status_code == 404
+
+
+
+# ---------------------------------------------------------------------------
+# GET /experiments/{id}/quote — operator quote (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_quote_not_ready_before_quotesent():
+    """Before a quote is issued (Draft / WaitingForConfirmation) the
+    endpoint 404s with quote_not_ready, regardless of quote columns."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1/quote",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]["code"] == "quote_not_ready"
+
+
+def test_quote_returns_persisted_values():
+    """Once QuoteSent with a persisted price, the endpoint hands back the
+    real total, currency, line items, and validity — no stub fields."""
+    app = _build_app()
+    client = app.test_client()
+    campaign = _api_campaign(
+        "QuoteSent",
+        quote_total_usd=48000.0,
+        quote_line_items=[{"name": "Yeast-display campaign", "amount_usd": 48000.0}],
+        quote_valid_until="2099-01-01T23:59:59+00:00",
+        last_transition_at="2026-06-10T12:00:00+00:00",
+    )
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign", return_value=campaign
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1/quote",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["experiment_id"] == "exp-smoke-1"
+    assert body["quote_id"] == "exp-smoke-1"
+    assert body["status"] == "QuoteSent"
+    assert body["total_usd"] == 48000.0
+    assert body["currency"] == "USD"
+    assert body["line_items"] == [
+        {"name": "Yeast-display campaign", "amount_usd": 48000.0}
+    ]
+    assert body["valid_until"] == "2099-01-01T23:59:59+00:00"
+    assert body["issued_at"] == "2026-06-10T12:00:00+00:00"
+    assert body["terms_url"].startswith("http")
+    # A finalised quote carries no pending-note.
+    assert "note" not in body
+
+
+def test_quote_pending_note_when_total_null():
+    """QuoteSent but the operator has not posted a price: total_usd is null
+    and a soft note explains the quote is being finalised (not a $0 quote)."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("QuoteSent"),
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1/quote",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["total_usd"] is None
+    assert body["line_items"] == []
+    assert body["currency"] == "USD"
+    assert "note" in body
+
+
+def test_set_campaign_quote_writes_full_patch():
+    """set_campaign_quote writes every quote column on each save (the form
+    is the full source of truth), going through the service client."""
+    from shared import campaigns as campaigns_mod
+
+    captured: dict = {}
+
+    class _Resp:
+        data = [
+            {
+                "id": "exp-smoke-1",
+                "user_id": "u1",
+                "source_job_id": None,
+                "candidate_indices": [0],
+                "target_name": "Smoke Antigen",
+                "assay_type": "yeast_display",
+                "budget_band": "custom",
+                "status": "QuoteSent",
+                "submission_source": "api",
+                "quote_total_usd": 1000,
+                "quote_currency": "USD",
+                "quote_line_items": [{"name": "x", "amount_usd": 1000}],
+            }
+        ]
+
+    class _Table:
+        def update(self, patch):
+            captured["patch"] = patch
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return _Resp()
+
+    class _Client:
+        def table(self, _name):
+            return _Table()
+
+    with patch.object(campaigns_mod, "get_service_client", return_value=_Client()):
+        result = campaigns_mod.set_campaign_quote(
+            "exp-smoke-1",
+            total_usd=1000.0,
+            currency="USD",
+            line_items=[{"name": "x", "amount_usd": 1000.0}],
+            valid_until="2099-01-01T23:59:59+00:00",
+            notes="scope notes",
+        )
+
+    patch_written = captured["patch"]
+    assert set(patch_written.keys()) == {
+        "quote_total_usd",
+        "quote_currency",
+        "quote_line_items",
+        "quote_valid_until",
+        "quote_notes",
+    }
+    assert patch_written["quote_total_usd"] == 1000.0
+    assert patch_written["quote_currency"] == "USD"
+    assert patch_written["quote_line_items"] == [{"name": "x", "amount_usd": 1000.0}]
+    assert result is not None
+    assert result.quote_total_usd == 1000.0
+
+
+def test_openapi_documents_quote_currency():
+    app = _build_app()
+    client = app.test_client()
+    body = client.get("/api/v1/openapi.json").get_json()
+    quote_props = body["components"]["schemas"]["Quote"]["properties"]
+    assert "currency" in quote_props
+    assert "total_usd" in quote_props
+
+
+# ---------------------------------------------------------------------------
+# POST /admin/campaigns/{id}/quote — operator quote save (full-app route)
+#
+# These exercise the real admin route in app.py (not the API blueprint), so
+# they import the full app and drive it with a staff session. They lock in the
+# adversarial-review fix: a failed quote write must NOT advance the FSM or
+# claim success, and a malformed valid_until must be rejected before any write.
+# ---------------------------------------------------------------------------
+
+STAFF = "staff@ranomics.com"
+
+
+def _full_app_client():
+    import app as appmod  # noqa: PLC0415
+
+    return appmod.app.test_client()
+
+
+def test_quote_save_failure_does_not_transition_or_claim_success():
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=None
+    ) as set_mock, patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"quote_total_usd": "48000", "set_quote_sent": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "quote_error=1" in resp.headers["Location"]
+    assert set_mock.called
+    # The FSM must not advance when the quote write failed.
+    assert not trans_mock.called
+
+
+def test_quote_save_success_transitions_and_redirects_quoted():
+    client = _full_app_client()
+    saved = _api_campaign("WaitingForConfirmation", quote_total_usd=48000.0)
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote", return_value=saved
+    ) as set_mock, patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"quote_total_usd": "48000", "set_quote_sent": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "quoted=1" in resp.headers["Location"]
+    assert set_mock.called
+    assert trans_mock.called
+
+
+def test_quote_save_rejects_malformed_valid_until_before_any_write():
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.set_campaign_quote"
+    ) as set_mock, patch(
+        "shared.campaigns.transition_api_status"
+    ) as trans_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"quote_valid_until": "2026-13-45", "set_quote_sent": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "quote_error=1" in resp.headers["Location"]
+    # Rejected before touching the DB; no write, no transition.
+    assert not set_mock.called
+    assert not trans_mock.called
+
+
+def test_quote_save_rejects_non_api_campaign():
+    client = _full_app_client()
+    web_campaign = _api_campaign("WaitingForConfirmation")
+    object.__setattr__(web_campaign, "submission_source", "web")
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign", return_value=web_campaign
+    ), patch(
+        "shared.campaigns.set_campaign_quote"
+    ) as set_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/quote",
+            data={"quote_total_usd": "100"},
+        )
+    assert resp.status_code == 404
+    assert not set_mock.called

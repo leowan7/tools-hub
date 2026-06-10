@@ -684,6 +684,7 @@ def build_spec() -> dict[str, Any]:
                             },
                         },
                         "total_usd": {"type": "number"},
+                        "currency": {"type": "string", "default": "USD"},
                         "valid_until": {
                             "type": "string",
                             "format": "date-time",
