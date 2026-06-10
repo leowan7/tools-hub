@@ -37,6 +37,19 @@ ATOM      8  O   GLY A  21       6.000   2.000   1.000  1.00 10.00           O
 END
 """
 
+TWO_PROTEIN_CHAINS_PDB = b"""\
+HEADER    TWO PROTEIN CHAINS
+ATOM      1  N   ALA A  20       1.000   1.000   1.000  1.00 10.00           N
+ATOM      2  CA  ALA A  20       2.000   1.000   1.000  1.00 10.00           C
+ATOM      3  C   ALA A  20       3.000   1.000   1.000  1.00 10.00           C
+ATOM      4  O   ALA A  20       3.000   2.000   1.000  1.00 10.00           O
+ATOM      5  N   GLY B  30       4.000   1.000   1.000  1.00 10.00           N
+ATOM      6  CA  GLY B  30       5.000   1.000   1.000  1.00 10.00           C
+ATOM      7  C   GLY B  30       6.000   1.000   1.000  1.00 10.00           C
+ATOM      8  O   GLY B  30       6.000   2.000   1.000  1.00 10.00           O
+END
+"""
+
 PROTEIN_PLUS_NAG_LIGAND_PDB = b"""\
 HEADER    LYSOZYME PLUS LIGAND
 ATOM      1  N   ALA A  20       1.000   1.000   1.000  1.00 10.00           N
@@ -193,6 +206,28 @@ def test_target_chain_empty_string_rejected():
     report = inspect_pdb_bytes(CLEAN_TWO_RES_PDB)
     err = validate_target_chain(report, "")
     assert err is not None
+
+
+def test_target_chain_multi_chain_all_present_returns_none():
+    # ProteinMPNN multi-chain design submits "A B"; both must validate.
+    report = inspect_pdb_bytes(TWO_PROTEIN_CHAINS_PDB)
+    assert validate_target_chain(report, "A B") is None
+
+
+def test_target_chain_multi_chain_one_missing_returns_error():
+    # The error must name the specific missing chain, not the whole string.
+    report = inspect_pdb_bytes(TWO_PROTEIN_CHAINS_PDB)
+    err = validate_target_chain(report, "A Z")
+    assert err is not None
+    assert "Z" in err
+
+
+def test_target_chain_multi_chain_one_ligand_only_returns_error():
+    # "A B" where B carries only a ligand must flag B, not pass.
+    report = inspect_pdb_bytes(PROTEIN_PLUS_NAG_LIGAND_PDB)
+    err = validate_target_chain(report, "A B")
+    assert err is not None
+    assert "B" in err
 
 
 # ---------------------------------------------------------------------------

@@ -279,27 +279,34 @@ def convert_cif_to_pdb_bytes(data: bytes, filename: str = "input.cif") -> bytes:
 def validate_target_chain(
     report: InspectionReport, target_chain: str,
 ) -> Optional[str]:
-    """Confirm the user-typed target_chain exists with protein residues.
+    """Confirm the user-typed target chain(s) exist with protein residues.
+
+    Accepts a single chain ID (``"A"``) or several whitespace-separated
+    IDs (``"A B"``) -- the latter is what ProteinMPNN multi-chain design
+    submits (the form invites ``A B`` / ``H L``). Each chain is validated
+    independently; the first missing or residue-free chain produces the
+    error, naming that specific chain rather than the whole string.
 
     Returns None on success, or a user-facing error string on failure.
     Case-sensitive (matches Biopython chain IDs). When a user types ``a``
     but the file has chain ``A``, we return an error rather than guessing.
     """
-    if not target_chain:
+    if not target_chain or not target_chain.strip():
         return "Target chain is required."
-    chain = report.chain(target_chain)
-    if chain is None:
-        present = report.chain_ids()
-        return (
-            f"Target chain '{target_chain}' is not in the uploaded file. "
-            f"Found chain(s): {', '.join(present) if present else '(none)'}."
-        )
-    if chain.standard_residue_count == 0:
-        return (
-            f"Chain '{target_chain}' has no standard protein residues. "
-            f"It contains "
-            f"{len(chain.hetatm_resnames)} ligand record(s)."
-        )
+    for cid in target_chain.split():
+        chain = report.chain(cid)
+        if chain is None:
+            present = report.chain_ids()
+            return (
+                f"Target chain '{cid}' is not in the uploaded file. "
+                f"Found chain(s): {', '.join(present) if present else '(none)'}."
+            )
+        if chain.standard_residue_count == 0:
+            return (
+                f"Chain '{cid}' has no standard protein residues. "
+                f"It contains "
+                f"{len(chain.hetatm_resnames)} ligand record(s)."
+            )
     return None
 
 
