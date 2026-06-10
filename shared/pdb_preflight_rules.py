@@ -113,7 +113,7 @@ class ToolRules:
 #
 # Week 2 empirical: rfantibody at 412 aa (1JFF chain A) × 4 designs ran
 # clean in 2489s wall (RFdiffusion 1115s + ProteinMPNN 42s + RF2 ~1330s)
-# on A100-80GB. No OOM. The fixture sat at the prior hard_cap of 400 and
+# on A100-40GB. No OOM. The fixture sat at the prior hard_cap of 400 and
 # completed comfortably — caps were too tight.
 #
 # Runtime estimator anchors are calibrated from this data point:
