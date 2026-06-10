@@ -31,9 +31,21 @@ from __future__ import annotations
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Behavioural-event inserts run OFF the request thread. A synchronous
+# Supabase insert in the request path once pinned the (single) gunicorn
+# worker for the full client timeout when a pooled connection stalled,
+# taking the whole site down (incident 2026-06-10, POST /api/track ->
+# log_event). Analytics must never be able to block a user request. A
+# small bounded pool caps how many in-flight inserts a Supabase stall can
+# accumulate; the bounded client timeout (see shared.supabase_client)
+# drains them. daemon threads so this never holds up shutdown.
+_EVENT_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="user_event")
 
 
 # Allowed reason codes for signup_rejections (validated client-side
@@ -119,26 +131,37 @@ def log_event(
         # Without either an authenticated id or a client session id,
         # the event is unattributable. Drop to keep the table clean.
         return
-    from shared.credits import get_service_client  # noqa: PLC0415
 
-    client = get_service_client()
-    if client is None:
-        return
+    payload = {
+        "user_id": user_id,
+        "session_id": (session_id or "")[:64] or None,
+        "event_type": event_type[:64],
+        "path": (path or "")[:500] or None,
+        "props": props or {},
+        "ip": ip,
+        "user_agent": (user_agent or "")[:500] or None,
+    }
+
+    def _write() -> None:
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        if client is None:
+            return
+        try:
+            client.table("user_events").insert(payload).execute()
+        except Exception:
+            logger.warning(
+                "Failed to log user_event (type=%s user=%s)",
+                event_type, user_id, exc_info=True,
+            )
+
     try:
-        client.table("user_events").insert({
-            "user_id": user_id,
-            "session_id": (session_id or "")[:64] or None,
-            "event_type": event_type[:64],
-            "path": (path or "")[:500] or None,
-            "props": props or {},
-            "ip": ip,
-            "user_agent": (user_agent or "")[:500] or None,
-        }).execute()
-    except Exception:
-        logger.warning(
-            "Failed to log user_event (type=%s user=%s)",
-            event_type, user_id, exc_info=True,
-        )
+        _EVENT_POOL.submit(_write)
+    except RuntimeError:
+        # Pool is shutting down (process exit). Drop the event rather
+        # than raise into the request path.
+        pass
 
 
 # ---------------------------------------------------------------------------

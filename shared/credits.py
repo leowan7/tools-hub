@@ -35,7 +35,7 @@ from typing import Optional
 
 from flask import session
 
-from shared.supabase_client import get_supabase_client
+from shared.supabase_client import _client_options, get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def get_service_client():
         return get_supabase_client()
     try:
         from supabase import create_client  # noqa: PLC0415
-        return create_client(url, service_key)
+        return create_client(url, service_key, options=_client_options())
     except Exception:
         logger.warning(
             "Could not create service-role Supabase client.", exc_info=True
