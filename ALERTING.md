@@ -10,16 +10,18 @@ next outage pages us instead.
 
 | Piece | Tier | State | Needs from Leo |
 | --- | --- | --- | --- |
-| External uptime monitor (UptimeRobot) on `/health` + `/` | 1 | Documented, ready to create | Create free account + 2 monitors (steps below) |
-| Railway native deploy-failure email | 1 | Documented | Confirm notification email = leo@ranomics.com in dashboard |
-| `/readyz` deep readiness endpoint (catches the failure mode the two monitors above miss) | 1b | Implemented (uncommitted) | Review the diff; add an UptimeRobot keyword monitor on it |
-| Synthetic monitor (smoke script on a schedule) | 2 | Script committed (`a502308`, unpushed) | Schedule it (GitHub Actions) + set `RK_LIVE_KEY` |
+| External uptime monitor (UptimeRobot) on `/health` + `/` | 1 | Done — 2 monitors live (`/health` Up, `/` active), 5-min, email leo@ | None (keyword upgrade needs a paid plan) |
+| Railway native deploy-failure email | 1 | Verified — Deployment Failed/Crashed/OOM → Email & In-App to leo@ranomics.com | None |
+| `/readyz` deep readiness endpoint (catches the failure mode the two monitors above miss) | 1b | Implemented (uncommitted); UptimeRobot monitor pre-created + paused | Resume that monitor after deploy |
+| Synthetic monitor (smoke script on a schedule) | 2 | Script live (`a502308`); workflow created (uncommitted) | Add `RK_LIVE_KEY` repo secret |
 | Sentry error tracking | 2 | Deferred by decision | Revisit later |
 | Outbound-timeout audit | 3 | Done; Storage patch applied (uncommitted) | Review the Storage patch diff |
 | Operator alert on new Platform API submission | Bonus | Shipped in working tree (uncommitted) | Review the diff |
 
-Nothing external has been created yet. Account creation and configuration are
-Leo's actions, documented step by step below.
+Update (2026-06-10): the UptimeRobot monitors are created and Railway's deploy
+alerts are verified (see those sections). The one remaining external action is
+adding the `RK_LIVE_KEY` GitHub repository secret for the synthetic smoke;
+entering that key is Leo's action (steps below).
 
 ## The incident, both failure modes
 
@@ -224,9 +226,11 @@ regressions that a simple URL ping cannot.
 
 ### Two prerequisites and one caveat
 
-1. **The script is committed** (`a502308`, not yet pushed to `main`).
-   Scheduling it requires it in the repo (for Railway cron) or accessible to the
-   runner (for CI), so this prerequisite is met once `a502308` is pushed.
+1. **The script is committed and pushed** (`a502308` on `main`), and the
+   GitHub Actions workflow now exists at
+   `.github/workflows/synthetic-smoke.yml` (uncommitted; it rides the next
+   commit). The scheduled cron only starts firing once that workflow file is on
+   the default branch, so it activates on the next push to `main`.
 2. **It needs `RK_LIVE_KEY`**, a member-role Platform API key minted at
    https://tools.ranomics.com/account/api-keys, stored as a secret in whatever
    runs it.
@@ -238,7 +242,10 @@ regressions that a simple URL ping cannot.
 ### Option A (recommended): GitHub Actions scheduled workflow
 
 Runs outside Railway (a second external vantage point), and GitHub emails on
-workflow failure for free. Sketch (`.github/workflows/synthetic-smoke.yml`):
+workflow failure for free. **Created** at `.github/workflows/synthetic-smoke.yml`
+(the committed file is the source of truth; beyond the outline below it also adds
+a 10-minute timeout, a `concurrency` guard, a missing-secret guard step, and pins
+Python 3.12). Outline:
 
 ```yaml
 name: synthetic-smoke

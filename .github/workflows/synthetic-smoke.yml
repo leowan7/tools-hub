@@ -1,0 +1,65 @@
+name: Synthetic smoke (Platform API)
+
+# Tier-2 outage detection (see ALERTING.md). Every 6h, run the live
+# end-to-end Platform API smoke from OUTSIDE Railway -- a GitHub-hosted
+# runner is an independent vantage point, so it still fires if Railway's
+# edge/network is down. Exercises auth, cost-estimate, a real DB-backed
+# create, idempotent replay, and read-back against
+# https://tools.ranomics.com/api/v1. A non-zero exit fails the job, and
+# GitHub emails the repo owner the failed run.
+#
+# This is the deepest detection layer: it catches failure modes the
+# UptimeRobot /health + / monitors and the /readyz probe cannot -- broken
+# auth, idempotency, persistence, or response-shape regressions -- even when
+# the site still looks "up".
+#
+# Prerequisites:
+#   - Repository secret RK_LIVE_KEY: a member-role Platform API key minted at
+#     https://tools.ranomics.com/account/api-keys
+#     (Settings > Secrets and variables > Actions > New repository secret).
+#
+# Caveat: each run creates one public.lab_campaigns row at
+# WaitingForConfirmation (no auto-cleanup). The run log prints the
+# experiment_id + cleanup SQL. The 6h cadence keeps rows from piling up;
+# bulk-delete them periodically in Supabase.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours (UTC)
+  workflow_dispatch: {}     # manual run, e.g. right after a deploy
+
+concurrency:
+  group: synthetic-smoke
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Platform API end-to-end smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RK_LIVE_KEY: ${{ secrets.RK_LIVE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Guard - RK_LIVE_KEY is set
+        run: |
+          if [ -z "${RK_LIVE_KEY}" ]; then
+            echo "::error::RK_LIVE_KEY repo secret is not set. Mint a member-role key at https://tools.ranomics.com/account/api-keys and add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      # The smoke script uses only the Python standard library, so there is
+      # nothing to pip install. It exits 0 on all-pass, non-zero on any
+      # failure (which fails this job and triggers the GitHub failure email).
+      - name: Run Platform API smoke
+        run: python scripts/smoke_platform_api.py
