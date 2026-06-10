@@ -623,30 +623,43 @@ def transition_api_status(
     )
 
 
-def delete_api_campaign(campaign_id: str, *, user_id: str) -> bool:
-    """Hard-delete an API-direct campaign row, scoped to its owner.
+def delete_api_campaign(
+    campaign_id: str,
+    *,
+    user_id: str,
+    allowed_statuses: Optional[frozenset[str]] = None,
+) -> bool:
+    """Hard-delete an API-direct campaign row, fully guarded in the query.
 
     Backs the Platform API "withdraw" path: a caller removes their own
-    not-yet-started experiment. The route enforces the status guard
-    (Draft / WaitingForConfirmation only); this function adds a ``user_id``
-    equality on the delete itself as defence in depth, so a delete can never
-    touch another user's row even if the route ownership check regressed.
+    not-yet-started experiment. The guard lives on the DELETE statement, not
+    just on a prior read, so it holds under concurrency:
 
-    Returns True when a row was deleted, False otherwise (id not found,
-    wrong owner, or DB failure).
+    - ``id`` + ``user_id`` — owner scope (never touch another user's row).
+    - ``submission_source = 'api'`` — never delete a web-form submission.
+    - ``status IN allowed_statuses`` (when given) — only delete while the row
+      is still withdrawable, closing the TOCTOU window between the route's
+      status check and this delete (a row quoted/advanced concurrently simply
+      matches nothing).
+
+    Returns True when a row was deleted, False otherwise (id not found, wrong
+    owner, not API-sourced, no longer in an allowed status, or DB failure).
     """
     client = get_service_client()
     if client is None:
         logger.error("delete_api_campaign: service client unavailable")
         return False
     try:
-        response = (
+        query = (
             client.table(_TABLE)
             .delete()
             .eq("id", campaign_id)
             .eq("user_id", user_id)
-            .execute()
+            .eq("submission_source", "api")
         )
+        if allowed_statuses:
+            query = query.in_("status", sorted(allowed_statuses))
+        response = query.execute()
     except Exception:
         logger.error(
             "delete_api_campaign failed for %s", campaign_id, exc_info=True

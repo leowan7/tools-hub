@@ -111,6 +111,12 @@ def _http(
             headers={k.lower(): v for k, v in exc.headers.items()},
             body=parsed,
         )
+    except (urllib.error.URLError, TimeoutError) as exc:
+        # Connection refused / DNS / TLS / read timeout. Return a sentinel
+        # non-2xx so the calling step fails gracefully and main() still
+        # reaches the summary (and reports any leftover row) instead of dying
+        # with an unhandled traceback that would leak the row unreported.
+        return HttpResponse(status=0, headers={}, body=f"network error: {exc}")
 
 
 # ---------------------------------------------------------------------------

@@ -294,6 +294,11 @@ def test_withdraw_deletes_waiting_experiment():
     assert body["experiment_id"] == "exp-smoke-1"
     assert body["status"] == "Withdrawn"
     assert delete_mock.called
+    # Security-critical: the delete must be owner-scoped and status-guarded.
+    kw = delete_mock.call_args.kwargs
+    assert kw.get("user_id") == "u1"
+    allowed = kw.get("allowed_statuses") or frozenset()
+    assert {"Draft", "WaitingForConfirmation"} <= set(allowed)
 
 
 def test_withdraw_rejects_experiment_past_initial_review():
@@ -371,3 +376,231 @@ def test_get_experiment_unknown_returns_404_not_500():
         )
     assert resp.status_code == 404
     assert resp.get_json()["error"]["code"] == "experiment_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Withdraw hardening: TOCTOU race handling, query scoping, sibling 404s
+# ---------------------------------------------------------------------------
+
+
+def _web_campaign(status: str = "submitted"):
+    """A web-form Campaign (submission_source='web'); invisible to the API."""
+    from shared.campaigns import Campaign
+
+    return Campaign(
+        id="web-1",
+        user_id="u1",
+        source_job_id="job-1",
+        candidate_indices=[0],
+        target_name="HER2",
+        target_context="",
+        assay_type="yeast_display",
+        affinity_goal_kd_nm=None,
+        timeline_weeks=None,
+        budget_band="pilot",
+        status=status,
+        ranomics_contact=None,
+        notes_internal=None,
+        created_at=None,
+        reviewed_at=None,
+        submission_source="web",
+    )
+
+
+class _FakeDeleteClient:
+    """Minimal chainable Supabase stub that records the DELETE filters."""
+
+    def __init__(self, returned_rows):
+        self._rows = returned_rows
+        self.filters: dict = {}
+
+    def table(self, name):
+        self.table_name = name
+        return self
+
+    def delete(self):
+        return self
+
+    def eq(self, col, val):
+        self.filters[col] = val
+        return self
+
+    def in_(self, col, vals):
+        self.filters[col] = list(vals)
+        return self
+
+    def execute(self):
+        class _R:
+            pass
+
+        r = _R()
+        r.data = self._rows
+        return r
+
+
+def test_withdraw_race_gone_returns_404():
+    """Status-guarded delete matched nothing and a re-check finds the row
+    gone (withdrawn concurrently) -> 404, not a misleading 500."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        side_effect=[
+            _api_campaign("WaitingForConfirmation"),
+            ({"error": {"code": "experiment_not_found"}}, 404),
+        ],
+    ), patch(
+        "tools.platform_api.routes.delete_api_campaign", return_value=False
+    ):
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+
+
+def test_withdraw_race_advanced_returns_409():
+    """Delete matched nothing because the row advanced (quote issued) between
+    load and delete -> 409, not 500."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        side_effect=[
+            _api_campaign("WaitingForConfirmation"),
+            _api_campaign("QuoteSent"),
+        ],
+    ), patch(
+        "tools.platform_api.routes.delete_api_campaign", return_value=False
+    ):
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 409
+    assert resp.get_json()["error"]["code"] == "not_withdrawable"
+
+
+def test_withdraw_genuine_db_fault_returns_500():
+    """Delete matched nothing yet the row is still owned + withdrawable: a
+    genuine DB fault, surfaced as 500 (not a false 404/409)."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        side_effect=[
+            _api_campaign("WaitingForConfirmation"),
+            _api_campaign("WaitingForConfirmation"),
+        ],
+    ), patch(
+        "tools.platform_api.routes.delete_api_campaign", return_value=False
+    ):
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 500
+    assert resp.get_json()["error"]["code"] == "withdraw_failed"
+
+
+def test_withdraw_rejects_web_form_campaign():
+    """A submission_source='web' row is invisible to the API DELETE (404)."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes.get_campaign", return_value=_web_campaign()
+    ):
+        resp = client.delete(
+            "/api/v1/experiments/web-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]["code"] == "experiment_not_found"
+
+
+def test_cors_allows_delete_method():
+    app = _build_app()
+    client = app.test_client()
+    resp = client.open("/api/v1/experiments", method="OPTIONS")
+    assert "DELETE" in resp.headers.get("Access-Control-Allow-Methods", "")
+
+
+def test_delete_api_campaign_scopes_query_and_returns_true():
+    from shared import campaigns
+
+    fake = _FakeDeleteClient([{"id": "exp-1"}])
+    with patch.object(campaigns, "get_service_client", return_value=fake):
+        ok = campaigns.delete_api_campaign(
+            "exp-1",
+            user_id="u1",
+            allowed_statuses=frozenset({"Draft", "WaitingForConfirmation"}),
+        )
+    assert ok is True
+    assert fake.filters["id"] == "exp-1"
+    assert fake.filters["user_id"] == "u1"
+    assert fake.filters["submission_source"] == "api"
+    assert set(fake.filters["status"]) == {"Draft", "WaitingForConfirmation"}
+
+
+def test_delete_api_campaign_false_when_no_row_matched():
+    from shared import campaigns
+
+    fake = _FakeDeleteClient([])
+    with patch.object(campaigns, "get_service_client", return_value=fake):
+        ok = campaigns.delete_api_campaign("exp-1", user_id="u1")
+    assert ok is False
+
+
+def test_delete_api_campaign_false_when_no_client():
+    from shared import campaigns
+
+    with patch.object(campaigns, "get_service_client", return_value=None):
+        ok = campaigns.delete_api_campaign("exp-1", user_id="u1")
+    assert ok is False
+
+
+def test_get_quote_unknown_returns_404():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch("tools.platform_api.routes.get_campaign", return_value=None):
+        resp = client.get(
+            "/api/v1/experiments/nope/quote",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+
+
+def test_get_results_unknown_returns_404():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch("tools.platform_api.routes.get_campaign", return_value=None):
+        resp = client.get(
+            "/api/v1/experiments/nope/results",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+
+
+def test_confirm_quote_unknown_returns_404():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch("tools.platform_api.routes.get_campaign", return_value=None):
+        resp = client.post(
+            "/api/v1/quotes/nope/confirm",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
