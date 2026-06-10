@@ -286,9 +286,64 @@ def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
         _maybe_int(source.get("binder_length_max")),
         _maybe_int(source.get("num_designs")),
     )
+
+
+def _verify_reuse_pdb_bytes(
+    adapter,
+    pdb_bytes: bytes,
+    *,
+    target_chain: str,
+    hotspots: list,
+    filename: str,
+    binder_max_aa: Optional[int] = None,
+    num_designs: Optional[int] = None,
+) -> Optional[str]:
+    """Re-run the upload gate on resolved reuse/handoff/resample bytes.
+
+    Fresh uploads are inspected + gated at the upload boundary, but the
+    reuse-token paths (job:/handoff:/example:/resample:) stage bytes that
+    skipped both. This mirrors that gate (inspect + chain/hotspot
+    validation + per-tool hard-gate preflight) so a mismatch is caught
+    upfront instead of crashing on the GPU. Reuse bytes are already PDB,
+    so no CIF conversion is needed. Returns None when fit to ship, else an
+    actionable error string. Never raises.
+    """
+    inspection = inspect_pdb_bytes(pdb_bytes, filename=filename)
+    if not inspection.ok:
+        return inspection.error or "The reused structure could not be read as PDB."
+    tc = (target_chain or "").strip()
+    if tc:
+        chain_err = validate_target_chain(inspection, tc)
+        if chain_err:
+            return chain_err
+        # boltz2 hotspots are 1-indexed sequence positions, range-checked
+        # by position in its own preflight, not original PDB numbering.
+        if hotspots and adapter.slug != "boltz2":
+            _, out_of_range = validate_hotspots(inspection, tc, hotspots)
+            if out_of_range:
+                return hotspot_range_message(inspection, tc, out_of_range)
+    if adapter.slug in PREFLIGHT_TOOLS:
+        try:
+            verdict = preflight_for_tool(
+                adapter.slug, pdb_bytes,
+                target_chain=tc, hotspots=hotspots or [],
+                binder_max_aa=binder_max_aa, num_designs=num_designs,
+            )
+        except Exception:
+            logger.exception(
+                "reuse preflight unexpected error tool=%s", adapter.slug,
+            )
+            verdict = None
+        if verdict is not None and not verdict.ok:
+            msg = verdict.reason or "This reused target can't run as-is."
+            if verdict.suggested_fix:
+                msg = f"{msg} {verdict.suggested_fix}"
+            return msg
+    return None
 from shared.storage import (
     StorageError,
     copy_input,
+    download_input,
     download_output,
     output_exists,
     presigned_input_url,
@@ -4292,6 +4347,9 @@ def create_app() -> Flask:
         presigned_url = ""
         staged_path = ""
         staged_filename = ""
+        # Bytes resolved in-memory by a reuse token (example: / resample:),
+        # captured so the reuse verification below need not re-download them.
+        reuse_resolved_bytes: bytes | None = None
         if needs_pdb:
             try:
                 if uploaded is not None and uploaded.filename:
@@ -4361,6 +4419,7 @@ def create_app() -> Flask:
                     example_bytes = read_example_bytes(ex_tool, ex_id)
                     if example_bytes is None:
                         raise StorageError("example file missing")
+                    reuse_resolved_bytes = example_bytes
                     staged_filename = entry.get(
                         "filename", f"{ex_id}.pdb"
                     )
@@ -4419,6 +4478,7 @@ def create_app() -> Flask:
                         raise StorageError(
                             f"predicted PDB decode failed: {exc}"
                         )
+                    reuse_resolved_bytes = src_pdb_bytes
                     staged_filename = (
                         f"predicted-{src.tool}-{src.id[:8]}.pdb"
                     )
@@ -4467,6 +4527,71 @@ def create_app() -> Flask:
                     pdb_source=None,
                     workspace_ctx=workspace_ctx,
                 )
+
+        # ---- Reuse-token inspection + hard-gate (gap 2) ----
+        # Fresh uploads are inspected + gated at the boundary above, but the
+        # reuse tokens (job:/handoff:/example:/resample:) stage bytes that
+        # skipped both. Re-check the RESOLVED bytes here before any Modal
+        # call so a mismatch (wrong chain, oversized, corrupt predicted PDB
+        # piped into MPNN) is flagged upfront. alphafold: already populated
+        # pdb_bytes and ran the hard-gate above, so it is excluded.
+        if (
+            needs_pdb
+            and pdb_bytes is None
+            and reuse_token
+            and not reuse_token.startswith("alphafold:")
+            and staged_path
+        ):
+            check_bytes = reuse_resolved_bytes
+            if check_bytes is None:
+                # job: / handoff: copied storage-to-storage; read the staged
+                # object back to verify it. Best-effort: a verification-only
+                # download hiccup must not block an already-staged reuse.
+                try:
+                    check_bytes = download_input(staged_path)
+                except StorageError:
+                    logger.warning(
+                        "tool_submit: could not download staged reuse PDB "
+                        "for verification job=%s path=%s",
+                        job.id, staged_path, exc_info=True,
+                    )
+                    check_bytes = None
+            if check_bytes is not None:
+                reuse_binder_max, reuse_num_designs = (
+                    _parse_preflight_size_params(inputs)
+                )
+                reuse_err = _verify_reuse_pdb_bytes(
+                    adapter, check_bytes,
+                    target_chain=(inputs.get("target_chain") or "").strip(),
+                    hotspots=inputs.get("hotspot_residues") or [],
+                    filename=staged_filename or "input.pdb",
+                    binder_max_aa=reuse_binder_max,
+                    num_designs=reuse_num_designs,
+                )
+                if reuse_err:
+                    mark_failed(
+                        job.id,
+                        error={"bucket": "preflight", "detail": reuse_err},
+                    )
+                    if hold_tx_id:
+                        try:
+                            wallet_release_hold(
+                                hold_tx_id, reason="reuse_preflight_failed",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "tool_submit: release_hold on reuse preflight "
+                                "failure raised for hold=%s",
+                                hold_tx_id, exc_info=True,
+                            )
+                    return render_template(
+                        adapter.form_template,
+                        adapter=adapter,
+                        error=reuse_err,
+                        pre_fill=inputs,
+                        pdb_source=None,
+                        workspace_ctx=workspace_ctx,
+                    )
 
         job_spec = adapter.build_payload(inputs, presigned_url)
         webhook_url = url_for(
