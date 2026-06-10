@@ -190,7 +190,43 @@ def build_spec() -> dict[str, Any]:
                         "401": {"$ref": "#/components/responses/Error401"},
                         "404": {"$ref": "#/components/responses/Error404"},
                     },
-                }
+                },
+                "delete": {
+                    "tags": ["experiments"],
+                    "summary": "Withdraw an experiment",
+                    "description": (
+                        "Withdraw (delete) one of your experiments while it "
+                        "is still in 'Draft' or 'WaitingForConfirmation', "
+                        "before a quote is issued or any lab work begins. "
+                        "Returns 409 once it has moved past initial review."
+                    ),
+                    "parameters": [{"$ref": "#/components/parameters/ExperimentId"}],
+                    "responses": {
+                        "200": {
+                            "description": "Withdrawn; the experiment row was deleted.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "experiment_id": {
+                                                "type": "string",
+                                                "format": "uuid",
+                                            },
+                                            "status": {
+                                                "type": "string",
+                                                "enum": ["Withdrawn"],
+                                            },
+                                        },
+                                    }
+                                }
+                            },
+                        },
+                        "401": {"$ref": "#/components/responses/Error401"},
+                        "404": {"$ref": "#/components/responses/Error404"},
+                        "409": {"$ref": "#/components/responses/Error409"},
+                    },
+                },
             },
             "/experiments/{experiment_id}/quote": {
                 "get": {

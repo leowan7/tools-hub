@@ -6,6 +6,7 @@ Endpoints (all JSON; Bearer auth via ``shared.api_auth.api_auth_required``):
     POST   /api/v1/experiments
     POST   /api/v1/experiments/cost-estimate
     GET    /api/v1/experiments/{id}
+    DELETE /api/v1/experiments/{id}
     GET    /api/v1/experiments/{id}/quote
     POST   /api/v1/quotes/{id}/confirm
     GET    /api/v1/experiments/{id}/results
@@ -44,6 +45,7 @@ from shared.campaigns import (
     campaign_to_api_view,
     campaign_to_status_view,
     create_api_campaign,
+    delete_api_campaign,
     get_campaign,
     list_user_campaigns,
     transition_api_status,
@@ -89,7 +91,7 @@ def _api_response_headers(response):
         "Authorization,Content-Type,Idempotency-Key",
     )
     response.headers.setdefault(
-        "Access-Control-Allow-Methods", "GET,POST,OPTIONS"
+        "Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS"
     )
     response.headers.setdefault("Cache-Control", "no-store")
     return response
@@ -579,9 +581,60 @@ def cost_estimate():
 @api_auth_required(read_only=True)
 def get_experiment(experiment_id: str):
     campaign = _load_owned_campaign(experiment_id)
-    if isinstance(campaign, tuple):
+    if not isinstance(campaign, Campaign):
         return campaign
     return jsonify(campaign_to_status_view(campaign))
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/experiments/{id}  — withdraw a not-yet-started experiment
+# ---------------------------------------------------------------------------
+
+# Only an experiment that has not yet been committed to the lab may be
+# withdrawn: the two pre-quote API-FSM states. Every later state (QuoteSent
+# onward) represents real scoping/lab work whose record we keep, so a delete
+# there returns 409. Web-form campaigns never reach these statuses and are
+# already excluded by _load_owned_campaign (submission_source == "api"), so a
+# member key can never delete a website submission through this route.
+_WITHDRAWABLE_STATUSES = frozenset({"Draft", "WaitingForConfirmation"})
+
+
+@platform_api_bp.delete("/experiments/<experiment_id>")
+@api_auth_required()
+def withdraw_experiment(experiment_id: str):
+    """Withdraw (hard-delete) one of the caller's not-yet-started experiments.
+
+    Allowed only while the experiment is in 'Draft' or
+    'WaitingForConfirmation' (before a quote is issued or any lab work
+    begins); past that it returns 409, so an in-flight or completed campaign
+    can never be erased through the API. A second delete of the same id
+    returns 404 (already gone).
+    """
+    campaign = _load_owned_campaign(experiment_id)
+    if not isinstance(campaign, Campaign):
+        # On a miss _load_owned_campaign returns an error Response (404);
+        # only a real Campaign should fall through to the status check.
+        return campaign
+
+    if campaign.status not in _WITHDRAWABLE_STATUSES:
+        return _error(
+            409,
+            "not_withdrawable",
+            "This experiment can no longer be withdrawn through the API; it "
+            "has moved past initial review. Contact the scoping team.",
+            current_status=campaign.status,
+        )
+
+    if not delete_api_campaign(experiment_id, user_id=g.api_user_id):
+        # We loaded the row a moment ago, so a False here is a race or a DB
+        # fault, not a client error.
+        return _error(
+            500,
+            "withdraw_failed",
+            "Could not withdraw the experiment. Please retry.",
+        )
+
+    return jsonify({"experiment_id": experiment_id, "status": "Withdrawn"})
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +646,7 @@ def get_experiment(experiment_id: str):
 @api_auth_required(read_only=True)
 def get_experiment_quote(experiment_id: str):
     campaign = _load_owned_campaign(experiment_id)
-    if isinstance(campaign, tuple):
+    if not isinstance(campaign, Campaign):
         return campaign
 
     if campaign.status in ("Draft", "WaitingForConfirmation"):
@@ -635,7 +688,7 @@ def get_experiment_quote(experiment_id: str):
 @api_auth_required()
 def confirm_quote(quote_id: str):
     campaign = _load_owned_campaign(quote_id)
-    if isinstance(campaign, tuple):
+    if not isinstance(campaign, Campaign):
         return campaign
 
     if campaign.status != "QuoteSent":
@@ -679,7 +732,7 @@ def confirm_quote(quote_id: str):
 @api_auth_required(read_only=True)
 def get_experiment_results(experiment_id: str):
     campaign = _load_owned_campaign(experiment_id)
-    if isinstance(campaign, tuple):
+    if not isinstance(campaign, Campaign):
         return campaign
 
     if campaign.results_status == "none":

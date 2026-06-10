@@ -229,3 +229,145 @@ def test_webhook_signature_roundtrip():
     assert verify_signature(header, body + b"x", secret) is False
     # Wrong secret fails
     assert verify_signature(header, body, "wrong-secret") is False
+
+
+# ---------------------------------------------------------------------------
+# DELETE /experiments/{id} — withdraw
+# ---------------------------------------------------------------------------
+
+
+def _viewer_ctx() -> APIKeyContext:
+    return APIKeyContext(
+        key_id="k1",
+        user_id="u1",
+        role="viewer",
+        prefix="rk_live_view",
+        label="test-viewer",
+        created_at=None,
+        last_used_at=None,
+        revoked_at=None,
+    )
+
+
+def _api_campaign(status: str):
+    """Minimal API-source Campaign for withdraw-route tests."""
+    from shared.campaigns import Campaign
+
+    return Campaign(
+        id="exp-smoke-1",
+        user_id="u1",
+        source_job_id=None,
+        candidate_indices=[0],
+        target_name="Smoke Antigen",
+        target_context="",
+        assay_type="yeast_display",
+        affinity_goal_kd_nm=None,
+        timeline_weeks=None,
+        budget_band="custom",
+        status=status,
+        ranomics_contact=None,
+        notes_internal=None,
+        created_at=None,
+        reviewed_at=None,
+        name="smoke",
+        submission_source="api",
+    )
+
+
+def test_withdraw_deletes_waiting_experiment():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "tools.platform_api.routes.delete_api_campaign", return_value=True
+    ) as delete_mock:
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["experiment_id"] == "exp-smoke-1"
+    assert body["status"] == "Withdrawn"
+    assert delete_mock.called
+
+
+def test_withdraw_rejects_experiment_past_initial_review():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("Sorting"),
+    ), patch(
+        "tools.platform_api.routes.delete_api_campaign", return_value=True
+    ) as delete_mock:
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 409
+    assert resp.get_json()["error"]["code"] == "not_withdrawable"
+    # A row that has moved into lab work must never be deleted.
+    assert not delete_mock.called
+
+
+def test_withdraw_unknown_experiment_returns_404():
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch("tools.platform_api.routes.get_campaign", return_value=None):
+        resp = client.delete(
+            "/api/v1/experiments/does-not-exist",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]["code"] == "experiment_not_found"
+
+
+def test_withdraw_requires_member_key():
+    app = _build_app()
+    client = app.test_client()
+    with patch("shared.api_auth.resolve_token", return_value=_viewer_ctx()):
+        resp = client.delete(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_view"},
+        )
+    assert resp.status_code == 403
+    assert resp.get_json()["error"]["code"] == "forbidden_role"
+
+
+def test_openapi_documents_withdraw():
+    app = _build_app()
+    client = app.test_client()
+    body = client.get("/api/v1/openapi.json").get_json()
+    path = body["paths"]["/experiments/{experiment_id}"]
+    assert "delete" in path
+    assert path["delete"]["responses"].get("409") is not None
+
+
+def test_get_experiment_unknown_returns_404_not_500():
+    """Regression: an unknown/not-owned id must 404, not 500.
+
+    _load_owned_campaign returns an error Response on a miss; the handlers
+    previously checked ``isinstance(campaign, tuple)``, which never matches a
+    Response, so the 404 fell through into campaign_to_status_view and raised
+    AttributeError -> 500. All four read/confirm handlers now share the fixed
+    ``not isinstance(campaign, Campaign)`` check."""
+    app = _build_app()
+    client = app.test_client()
+    with patch(
+        "shared.api_auth.resolve_token", return_value=_valid_ctx()
+    ), patch("tools.platform_api.routes.get_campaign", return_value=None):
+        resp = client.get(
+            "/api/v1/experiments/does-not-exist",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]["code"] == "experiment_not_found"

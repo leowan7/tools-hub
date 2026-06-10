@@ -623,6 +623,39 @@ def transition_api_status(
     )
 
 
+def delete_api_campaign(campaign_id: str, *, user_id: str) -> bool:
+    """Hard-delete an API-direct campaign row, scoped to its owner.
+
+    Backs the Platform API "withdraw" path: a caller removes their own
+    not-yet-started experiment. The route enforces the status guard
+    (Draft / WaitingForConfirmation only); this function adds a ``user_id``
+    equality on the delete itself as defence in depth, so a delete can never
+    touch another user's row even if the route ownership check regressed.
+
+    Returns True when a row was deleted, False otherwise (id not found,
+    wrong owner, or DB failure).
+    """
+    client = get_service_client()
+    if client is None:
+        logger.error("delete_api_campaign: service client unavailable")
+        return False
+    try:
+        response = (
+            client.table(_TABLE)
+            .delete()
+            .eq("id", campaign_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception:
+        logger.error(
+            "delete_api_campaign failed for %s", campaign_id, exc_info=True
+        )
+        return False
+    rows = list(getattr(response, "data", None) or [])
+    return len(rows) > 0
+
+
 # ---------------------------------------------------------------------------
 # Public API view shaping
 # ---------------------------------------------------------------------------

@@ -4,14 +4,15 @@ Usage:
     RK_LIVE_KEY=rk_live_... python scripts/smoke_platform_api.py
     RK_LIVE_KEY=rk_live_... PLATFORM_API_BASE_URL=https://tools.ranomics.com/api/v1 python scripts/smoke_platform_api.py
 
-Exercises the live submit -> persist -> read loop without going through
-the MCP transport. Covers the gap between tests/test_platform_api.py
-(unit, mocked Supabase) and a manual one-off curl session.
+Exercises the live submit -> persist -> read -> withdraw loop without
+going through the MCP transport. Covers the gap between
+tests/test_platform_api.py (unit, mocked Supabase) and a manual one-off
+curl session.
 
-The script does NOT clean up after itself. Each run leaves one row in
-public.lab_campaigns at status WaitingForConfirmation; the experiment_id
-is printed at the end so it can be set to Cancelled (admin UI) or deleted
-in Supabase directly. See the cleanup note in the final summary.
+The final step withdraws (DELETE /experiments/{id}) the experiment it
+created, so a passing run leaves no row behind. If the withdraw step
+fails, the summary prints the leftover experiment_id and the SQL to drop
+it by hand.
 
 Exit code: 0 on all-pass, 1 on any failure (suitable for CI).
 """
@@ -307,6 +308,31 @@ def step_get_experiment(experiment_id: str) -> Step:
     return Step("GET /experiments/{id}", True, elapsed, f"status={body['status']} results_status={body['results_status']}")
 
 
+def step_withdraw(experiment_id: str) -> Step:
+    """Withdraw the experiment created above, then confirm it is gone.
+
+    Exercises DELETE /experiments/{id} (must be in Draft /
+    WaitingForConfirmation) and verifies the row is actually deleted by
+    asserting a follow-up read 404s. This both tests the withdraw endpoint
+    and leaves the smoke self-cleaning (no lab_campaigns row accrues)."""
+    label = "DELETE /experiments/{id} (withdraw)"
+    t0 = time.perf_counter()
+    resp = _http("DELETE", f"/experiments/{experiment_id}")
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    if resp.status != 200:
+        return Step(label, False, elapsed, f"expected 200, got {resp.status}: {resp.body!r}")
+    body = resp.body
+    if not isinstance(body, dict) or body.get("experiment_id") != experiment_id:
+        return Step(label, False, elapsed, f"unexpected body: {body!r}")
+    if body.get("status") != "Withdrawn":
+        return Step(label, False, elapsed, f"expected status Withdrawn, got {body.get('status')!r}")
+    # Confirm the row is actually gone: a follow-up read must 404.
+    check = _http("GET", f"/experiments/{experiment_id}")
+    if check.status != 404:
+        return Step(label, False, elapsed, f"row still readable after withdraw (GET returned {check.status})")
+    return Step(label, True, elapsed, "withdrawn; read-back 404 (auto-cleanup OK)")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -318,11 +344,12 @@ def main() -> int:
 
     steps: list[Step] = []
     experiment_id: str | None = None
+    cleaned = False
 
     targets_step, targets_body = step_get_targets()
     steps.append(targets_step)
     if not targets_step.passed:
-        return _summarise(steps, experiment_id, started_clean=False)
+        return _summarise(steps, experiment_id, cleaned=cleaned, started_clean=False)
 
     cost_step = step_cost_estimate_custom()
     steps.append(cost_step)
@@ -340,10 +367,17 @@ def main() -> int:
         get_step = step_get_experiment(experiment_id)
         steps.append(get_step)
 
-    return _summarise(steps, experiment_id, started_clean=True)
+        # Always attempt cleanup of the row we just created, even if an
+        # earlier step failed: the withdraw endpoint is itself under test,
+        # and a passing withdraw leaves nothing to sweep by hand.
+        withdraw_step = step_withdraw(experiment_id)
+        steps.append(withdraw_step)
+        cleaned = withdraw_step.passed
+
+    return _summarise(steps, experiment_id, cleaned=cleaned, started_clean=True)
 
 
-def _summarise(steps: list[Step], experiment_id: str | None, *, started_clean: bool) -> int:
+def _summarise(steps: list[Step], experiment_id: str | None, *, cleaned: bool, started_clean: bool) -> int:
     print("=" * 72)
     print("RESULTS")
     print("=" * 72)
@@ -356,15 +390,14 @@ def _summarise(steps: list[Step], experiment_id: str | None, *, started_clean: b
         print(f"  [{marker}] {s.name.ljust(width)}  {s.elapsed_ms:>5} ms   {s.note}")
 
     print()
-    if experiment_id:
-        print(f"experiment_id created: {experiment_id}")
+    if experiment_id and cleaned:
+        print(f"experiment_id {experiment_id} created and withdrawn; no leftover row.")
+    elif experiment_id:
+        # Withdraw did not run or did not pass — the row is still present.
+        print(f"experiment_id created but NOT cleaned up: {experiment_id}")
         print("  -> review at https://tools.ranomics.com/admin/campaigns")
-        print("  -> Supabase row: SELECT * FROM lab_campaigns WHERE id = '{0}';".format(experiment_id))
-        print()
-        print("CLEANUP (manual): there is no public DELETE endpoint. To drop the test row:")
-        print("  1. Supabase SQL editor (preferred for smoke rows):")
+        print("  -> the withdraw step did not pass; drop the row by hand:")
         print(f"     DELETE FROM lab_campaigns WHERE id = '{experiment_id}';")
-        print("  2. OR set status='Cancelled' via SQL (preserves the audit row).")
     elif not started_clean:
         print("(no experiment created; smoke aborted before submit)")
     else:
