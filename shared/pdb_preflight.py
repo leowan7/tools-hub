@@ -206,9 +206,17 @@ PREFLIGHT_TOOLS: frozenset[str] = BINDER_DESIGN_TOOLS | frozenset({"boltz2"})
 # So boltz2 runs its own checks below rather than preflight_for_tool's.
 # ---------------------------------------------------------------------------
 
-# Generous so only a genuinely too-large antigen is rejected; Modal's own
-# OOM/timeout is the residual net.
-BOLTZ2_ANTIGEN_HARD_CAP_AA = 1500
+# Boltz-2 cofold size envelope, applied to the TOTAL complex (antigen +
+# the longest binder), since pair-representation memory scales with the
+# whole token count, not the antigen alone. Anchors: standard open-source
+# Boltz handles ~1600 tokens on 24GB VRAM (LMI4Boltz, bioRxiv 2025); on
+# our A100-40GB that headroom covers ~1800 residues with margin. AF3-class
+# models reach ~4352 tokens on 40GB only with host-memory spill, which the
+# Modal boltz CLI does not enable, so 1800 stays conservative. The biggest
+# realistic complex is well under this: the largest binder-design targets
+# in the literature run ~600 to 700 aa (RFdiffusion/BindCraft: transferrin
+# receptor, HER2 ECD, hemagglutinin) plus a binder up to 400 aa.
+BOLTZ2_COMPLEX_HARD_CAP_AA = 1800
 BOLTZ2_GPU = "A100-40GB"
 
 
@@ -242,8 +250,15 @@ def _ca_residue_counts(pdb_bytes: bytes) -> dict:
 
 def _preflight_boltz2(
     pdb_bytes: bytes, *, target_chain: str, hotspots: list,
+    binder_max_aa: Optional[int] = None,
 ) -> PreflightVerdict:
-    """Structural preflight for the Boltz-2 cofold tool. Never raises."""
+    """Structural preflight for the Boltz-2 cofold tool. Never raises.
+
+    ``binder_max_aa`` is the longest binder sequence to be folded against
+    the antigen; the size cap is on the combined complex. When it is None
+    (e.g. an AJAX preflight fired before binders are entered) the cap falls
+    back to the antigen alone.
+    """
     antigen_chain = (target_chain or "A").strip() or "A"
     counts = _ca_residue_counts(pdb_bytes)
 
@@ -279,15 +294,27 @@ def _preflight_boltz2(
             suggested_fix=fix,
         )
 
-    if n_antigen > BOLTZ2_ANTIGEN_HARD_CAP_AA:
+    binder_aa = binder_max_aa if (binder_max_aa and binder_max_aa > 0) else 0
+    total_aa = n_antigen + binder_aa
+    if total_aa > BOLTZ2_COMPLEX_HARD_CAP_AA:
+        if binder_aa:
+            reason = (
+                f"The antigen (chain {antigen_chain}, {n_antigen} residues) "
+                f"plus the largest binder ({binder_aa} residues) is "
+                f"{total_aa} residues, above the {BOLTZ2_COMPLEX_HARD_CAP_AA}"
+                f"-residue Boltz-2 cofold envelope on {BOLTZ2_GPU}. The "
+                f"complex would likely run out of GPU memory."
+            )
+        else:
+            reason = (
+                f"Antigen chain {antigen_chain} has {n_antigen} residues, "
+                f"above the {BOLTZ2_COMPLEX_HARD_CAP_AA}-residue Boltz-2 "
+                f"cofold envelope on {BOLTZ2_GPU}. The complex would likely "
+                f"run out of GPU memory."
+            )
         return _verdict(
             VerdictKind.NEEDS_FIX,
-            reason=(
-                f"Antigen chain {antigen_chain} has {n_antigen} residues, "
-                f"above the {BOLTZ2_ANTIGEN_HARD_CAP_AA}-residue cofold "
-                f"envelope for Boltz-2 on {BOLTZ2_GPU}. The complex would "
-                f"likely run out of GPU memory."
-            ),
+            reason=reason,
             suggested_fix=(
                 f"Trim chain {antigen_chain} to the epitope domain you want "
                 f"to fold against, or fold a smaller antigen."
@@ -380,10 +407,11 @@ def preflight_for_tool(
     """
     if tool_slug == "boltz2":
         # Dedicated evaluator: sequence-position hotspots, optional
-        # hotspots, single antigen chain. binder_max_aa / num_designs do
-        # not apply.
+        # hotspots, single antigen chain. binder_max_aa caps the combined
+        # complex; num_designs does not apply.
         return _preflight_boltz2(
             pdb_bytes, target_chain=target_chain, hotspots=hotspots,
+            binder_max_aa=binder_max_aa,
         )
     if tool_slug not in BINDER_DESIGN_TOOLS:
         # Defensive: if a caller asks us to gate a tool not in the list,
