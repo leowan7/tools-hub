@@ -5799,6 +5799,11 @@ def create_app() -> Flask:
         elif request.args.get("quote_error") == "1":
             flash_msg = "Quote could not be saved. Check the values and retry."
             flash_kind = "error"
+        elif request.args.get("results_saved") == "1":
+            flash_msg = "Results saved."
+        elif request.args.get("results_error") == "1":
+            flash_msg = "Results could not be saved. Check the JSON, and keep each upload under 20 MB total, then retry."
+            flash_kind = "error"
         # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
         # web-funnel campaigns on the short one. Offer the right status set so
         # the admin form posts a value the backend will accept.
@@ -5839,27 +5844,81 @@ def create_app() -> Flask:
         new_status      = request.form.get("status", "").strip()
         contact         = request.form.get("ranomics_contact", "").strip() or None
         notes_internal  = request.form.get("notes_internal", "").strip() or None
+        notes_customer  = request.form.get("notes_customer", "").strip() or None
+        notify_customer = request.form.get("notify_customer") == "1"
 
         # API-direct (MCP/REST) campaigns run on the Adaptyv-style FSM and must
         # transition through the atomic RPC (update_status only accepts the web
-        # enum and would reject an API status). Per product decision the admin
-        # status change does NOT fire the customer webhook or a status email —
-        # the customer's agent observes it on its next status poll. Contact /
-        # internal notes are persisted separately since the RPC ignores them.
+        # enum and would reject an API status). Admin changes are SILENT by
+        # default — the customer's agent observes them on its next poll. Phase 3
+        # adds an opt-in: tick "Notify customer" and, on a real transition into
+        # a customer-relevant state (QuoteSent / Done / Cancelled) with a
+        # webhook_url set, fire one signed webhook carrying notes_customer.
+        # Contact / internal / customer notes are persisted separately since the
+        # RPC ignores them.
         if campaign.submission_source == "api":
+            transitioned = None
             if new_status and new_status != prev_status:
                 try:
-                    transition_api_status(
+                    transitioned = transition_api_status(
                         campaign_id, new_status=new_status, by="admin"
                     )
                 except ValueError:
                     # Invalid API status — ignore and fall through to redirect.
-                    pass
-            set_campaign_admin_fields(
+                    transitioned = None
+            saved = set_campaign_admin_fields(
                 campaign_id,
                 ranomics_contact=contact,
                 notes_internal=notes_internal,
+                notes_customer=notes_customer,
             )
+            # If the operator attached a customer note but the persist failed
+            # (service client down / RLS / migration 0032 absent), do NOT fire a
+            # webhook carrying a note the stored record never received.
+            notes_persist_failed = notes_customer is not None and saved is None
+
+            _NOTIFY_STATUSES = {"QuoteSent", "Done", "Cancelled"}
+            if (
+                notify_customer
+                and not notes_persist_failed
+                and transitioned is not None
+                and transitioned.moved
+                and transitioned.campaign is not None
+                and transitioned.campaign.status in _NOTIFY_STATUSES
+                and transitioned.campaign.webhook_url
+            ):
+                try:
+                    from shared.webhooks import dispatch_webhook  # noqa: PLC0415
+
+                    payload = {
+                        "event_type": "experiment.status_changed",
+                        "experiment_id": transitioned.campaign.id,
+                        "prev_status": transitioned.prev_status,
+                        "new_status": transitioned.campaign.status,
+                        "results_status": transitioned.campaign.results_status,
+                        "timestamp": transitioned.campaign.last_transition_at,
+                    }
+                    # Source the note from the persisted row so the payload
+                    # never diverges from what GET /experiments returns. Include
+                    # it whenever the stored row carries a customer note, not
+                    # only when this submission set one (a blank form field
+                    # leaves a prior note in place, and the customer should see
+                    # it on the notification too).
+                    if saved is not None and saved.notes_customer:
+                        payload["notes_customer"] = saved.notes_customer
+                    dispatch_webhook(
+                        campaign_id=transitioned.campaign.id,
+                        event_type="experiment.status_changed",
+                        target_url=transitioned.campaign.webhook_url,
+                        owner_user_id=transitioned.campaign.user_id,
+                        payload=payload,
+                    )
+                except Exception:
+                    logger.warning(
+                        "admin status-change webhook dispatch raised for %s",
+                        campaign_id,
+                        exc_info=True,
+                    )
             return redirect(
                 url_for("admin_campaign_detail", campaign_id=campaign_id)
                 + "?updated=1"
@@ -6025,6 +6084,169 @@ def create_app() -> Flask:
 
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"
+        )
+
+    @flask_app.route("/admin/campaigns/<campaign_id>/results", methods=["POST"])
+    def admin_campaign_save_results(campaign_id: str):
+        """Attach results to an API-FSM campaign (gap G2).
+
+        Accepts up to three result files (enrichment CSV, hits FASTA, raw
+        reads FASTQ) uploaded to Supabase Storage under
+        lab-campaigns/{id}/results/, and/or a pasted YDS results JSON
+        (rounds + sequences, optional external downloads). File uploads are
+        additive: each save merges newly uploaded paths onto any previously
+        stored download_paths, and a blank JSON box leaves prior rounds /
+        sequences intact. The results_status picker gates whether the API
+        serves the envelope. When results_status first leaves 'none' (or
+        changes among partial/all) and the row has a webhook_url, a
+        results-ready webhook fires; otherwise this is silent like every
+        other admin change.
+        """
+        import json as _json  # noqa: PLC0415
+        import posixpath as _posixpath  # noqa: PLC0415
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import (  # noqa: PLC0415
+            RESULTS_STATUSES,
+            get_campaign,
+            set_campaign_results,
+        )
+        from shared.storage import StorageError, upload_campaign_result  # noqa: PLC0415
+
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login"))
+        if email not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        campaign = get_campaign(campaign_id)
+        if campaign is None:
+            return render_template("404.html"), 404
+        if campaign.submission_source != "api":
+            return render_template("404.html"), 404
+
+        prev_results_status = campaign.results_status
+
+        results_status = request.form.get("results_status", "").strip() or "none"
+        if results_status not in RESULTS_STATUSES:
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?results_error=1"
+            )
+
+        # Start from the existing envelope so uploads are additive and a
+        # blank JSON box preserves prior rounds/sequences.
+        envelope: dict = dict(campaign.results or {})
+        download_paths: dict = dict(envelope.get("download_paths") or {})
+
+        # Optional pasted YDS JSON: validate FIRST (before any upload) so a
+        # typo can't orphan a freshly stored file. Present -> replaces
+        # rounds/sequences (and external downloads); blank keeps prior values.
+        raw_json = request.form.get("results_json", "").strip()
+        if raw_json:
+            try:
+                parsed = _json.loads(raw_json)
+            except ValueError:
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            if not isinstance(parsed, dict):
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            if isinstance(parsed.get("rounds"), list):
+                envelope["rounds"] = parsed["rounds"]
+            if isinstance(parsed.get("sequences"), list):
+                envelope["sequences"] = parsed["sequences"]
+            if isinstance(parsed.get("downloads"), dict):
+                envelope["downloads"] = parsed["downloads"]
+
+        # The three documented download slots; each optional. Uploaded only
+        # after JSON validation so a bad paste never leaves an orphaned object.
+        slot_content_types = {
+            "enrichment_table_csv": "text/csv",
+            "hits_fasta": "text/plain",
+            "raw_reads_fastq": "application/octet-stream",
+        }
+        for slot, default_ct in slot_content_types.items():
+            uploaded = request.files.get(slot)
+            if uploaded is None or not uploaded.filename:
+                continue
+            data = uploaded.read()
+            if not data:
+                continue
+            # Name the stored object by the slot so re-uploads overwrite the
+            # same path; keep the original extension.
+            ext = _posixpath.splitext(uploaded.filename)[1]
+            stored_name = f"{slot}{ext}" if ext else slot
+            try:
+                path = upload_campaign_result(
+                    campaign_id=campaign_id,
+                    filename=stored_name,
+                    data=data,
+                    content_type=uploaded.mimetype or default_ct,
+                )
+            except StorageError:
+                logger.warning(
+                    "results upload failed for %s slot %s",
+                    campaign_id,
+                    slot,
+                    exc_info=True,
+                )
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            download_paths[slot] = path
+
+        if download_paths:
+            envelope["download_paths"] = download_paths
+
+        saved = set_campaign_results(
+            campaign_id,
+            results=envelope,
+            results_status=results_status,
+        )
+        if saved is None:
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?results_error=1"
+            )
+
+        # Notify the agent only when results genuinely became available.
+        if (
+            saved.results_status != "none"
+            and saved.results_status != prev_results_status
+            and saved.webhook_url
+        ):
+            try:
+                from shared.webhooks import dispatch_webhook  # noqa: PLC0415
+
+                dispatch_webhook(
+                    campaign_id=saved.id,
+                    event_type="experiment.results_ready",
+                    target_url=saved.webhook_url,
+                    owner_user_id=saved.user_id,
+                    payload={
+                        "event_type": "experiment.results_ready",
+                        "experiment_id": saved.id,
+                        "prev_status": saved.status,
+                        "new_status": saved.status,
+                        "results_status": saved.results_status,
+                        "timestamp": saved.last_transition_at,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "results-ready webhook dispatch raised for %s",
+                    saved.id,
+                    exc_info=True,
+                )
+
+        return redirect(
+            url_for("admin_campaign_detail", campaign_id=campaign_id)
+            + "?results_saved=1"
         )
 
     # ------------------------------------------------------------------
@@ -6382,6 +6604,31 @@ def create_app() -> Flask:
     def server_error(_):
         """Render the branded 500 page for unhandled exceptions."""
         return render_template("500.html"), 500
+
+    @flask_app.errorhandler(413)
+    def request_too_large(_):
+        """Friendly handling for an over-cap upload (MAX_CONTENT_LENGTH).
+
+        The 413 is raised by Werkzeug during multipart parsing, before a
+        route body runs, so the results-attach form cannot catch it itself.
+        Routing has already happened, so request.endpoint / view_args are
+        available: send the operator back to the campaign with the same
+        '?results_error=1' path every other results failure uses, instead of
+        a raw error page. All other routes get a clean plain-text 413.
+        """
+        view_args = request.view_args or {}
+        if (
+            request.endpoint == "admin_campaign_save_results"
+            and view_args.get("campaign_id")
+        ):
+            return redirect(
+                url_for(
+                    "admin_campaign_detail",
+                    campaign_id=view_args["campaign_id"],
+                )
+                + "?results_error=1"
+            )
+        return ("Upload too large. The request limit is 20 MB.", 413)
 
     # ------------------------------------------------------------------
     # CLI commands — invoked by Railway cron or local `flask` runner

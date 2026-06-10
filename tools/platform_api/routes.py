@@ -772,25 +772,48 @@ def get_experiment_results(experiment_id: str):
             results_status=campaign.results_status,
         )
 
-    # Alpha stub. The contract below is the documented YDS shape; the
-    # download URLs are signed Supabase links that the scoping team
-    # attaches via the admin tooling at the end of an experiment.
-    # Until those tools are wired, we surface whatever's been written
-    # to library_design['results'] (operator-uploaded JSON).
-    library_design = campaign.library_design or {}
-    results_payload = library_design.get("results") if isinstance(library_design, dict) else None
-    if not isinstance(results_payload, dict):
-        results_payload = {
-            "rounds": [],
-            "sequences": [],
-            "downloads": {},
-        }
+    # Operator-attached results (migration 0031 dedicated ``results``
+    # column, written by the admin UI). The stored envelope carries the
+    # YDS rounds + sequences plus an internal download_paths map (logical
+    # name -> storage object path). We mint a FRESH signed URL for each
+    # path at read time so a customer never receives a link that already
+    # expired in storage, then merge any operator-supplied external
+    # downloads (e.g. large raw reads linked rather than uploaded).
+    from shared.storage import StorageError, presigned_campaign_url  # noqa: PLC0415
+
+    envelope = campaign.results if isinstance(campaign.results, dict) else {}
+    rounds = envelope.get("rounds") or []
+    sequences = envelope.get("sequences") or []
+
+    downloads: dict[str, str] = {}
+    download_paths = envelope.get("download_paths")
+    if isinstance(download_paths, dict):
+        for logical_name, object_path in download_paths.items():
+            if not object_path:
+                continue
+            try:
+                downloads[logical_name] = presigned_campaign_url(str(object_path))
+            except StorageError:
+                logger.warning(
+                    "results: could not sign %s for %s",
+                    object_path,
+                    campaign.id,
+                    exc_info=True,
+                )
+    external = envelope.get("downloads")
+    if isinstance(external, dict):
+        for key, value in external.items():
+            if value:
+                downloads.setdefault(key, str(value))
+
     return jsonify(
         {
             "experiment_id": campaign.id,
             "status": campaign.status,
             "results_status": campaign.results_status,
-            **results_payload,
+            "rounds": rounds,
+            "sequences": sequences,
+            "downloads": downloads,
         }
     )
 
