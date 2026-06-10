@@ -361,19 +361,20 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="af2",
-    label="AlphaFold2 — structure prediction from sequence",
+    label="AlphaFold2",
     blurb=(
-        "Paste a FASTA (monomer or multimer), get a predicted structure "
-        "with pLDDT, PAE, and pTM/ipTM. ~5-10 min per run."
+        "Structure prediction from sequence. Paste a FASTA (monomer or "
+        "multimer), get a predicted structure with pLDDT, PAE, and "
+        "pTM/ipTM. ~5 to 10 min per run."
     ),
     presets=(
         Preset(
             slug="standalone",
-            label="Standalone — your FASTA",
+            label="Standalone with your FASTA",
             description=(
                 "Paste or upload FASTA (single chain or multimer). "
-                "ColabFold MMseqs2 MSA + AF2. Up to 1500 AA total across "
-                "chains. ~5-10 min on A100-80GB."
+                "ColabFold MMseqs2 MSA plus AF2. Up to 1500 AA total "
+                "across chains. ~5 to 10 min on A100-80GB."
             ),
             # FASTA ships inline in the payload, not via PDB upload —
             # leave requires_pdb False.
@@ -381,14 +382,14 @@ adapter = ToolAdapter(
         ),
         Preset(
             slug="batch",
-            label="Batch — many fold targets",
+            label="Batch for many fold targets",
             description=(
                 "Fold many independent targets in one job (up to "
                 "50 records). Each record can be a monomer or a "
                 "multimer (use ``:`` to separate chains inside a record). "
                 "Per-design results stream into the job page as folds "
-                "complete. Slowest of the structure-prediction tools — "
-                "expect ~5-10 min per fold."
+                "complete. Slowest of the structure-prediction tools. "
+                "Expect ~5 to 10 min per fold."
             ),
             requires_pdb=False,
             long_running=True,

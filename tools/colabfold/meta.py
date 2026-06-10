@@ -21,17 +21,17 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "1-2"},
+    "standalone": {"typical_minutes": "1 to 2"},
 }
 
 paper_citation: str = "Mirdita et al., Nature Methods 2022"
 paper_url: str = "https://www.nature.com/articles/s41592-022-01488-1"
 github_url: str = "https://github.com/sokrypton/ColabFold"
 comparison_one_liner: str = (
-    "Pick ColabFold when you need a fast no-MSA fold — 1-2 min per run, "
-    "no MMseqs2 round-trip. Pair with AF2 standalone (D2) when you want "
-    "full MSA + templates, or with ESMFold (D4) for single-sequence "
-    "monomers on an even smaller GPU."
+    "Pick ColabFold when you need a fast no-MSA fold. 1 to 2 min per "
+    "run, no MMseqs2 round-trip. Pair with AF2 standalone (D2) when "
+    "you want full MSA and templates, or with ESMFold (D4) for "
+    "single-sequence monomers on an even smaller GPU."
 )
 example_output_id: Optional[str] = None
 
@@ -46,13 +46,13 @@ about: dict = {
         "you need a structure quickly and the target has a tractable fold."
     ),
     "when_to_use": [
-        "You need a structure in 1&ndash;2 minutes and can tolerate slightly lower accuracy than full-MSA AF2.",
+        "You need a structure in 1 to 2 minutes and can tolerate slightly lower accuracy than full-MSA AF2.",
         "You're folding many sequences sequentially and need throughput.",
         "Your target is a well-folded monomer or small multimer with no exotic chemistry.",
     ],
     "prerequisites": [
         "Single-letter FASTA sequence(s).",
-        "Targets with deep evolutionary signal &mdash; multi-domain or low-information sequences underperform without MSA.",
+        "Targets with deep evolutionary signal. Multi-domain or low-information sequences underperform without MSA.",
     ],
     "inputs": [
         {
@@ -71,7 +71,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "standalone", "typical": "1&ndash;2 min"},
+        {"preset": "standalone", "typical": "1 to 2 min"},
     ],
     "output_summary": (
         "Predicted PDB with per-residue pLDDT and PAE. Download as "

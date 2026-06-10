@@ -235,25 +235,26 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="esmfold",
-    label="ESMFold — single-sequence fold",
+    label="ESMFold",
     blurb=(
-        "Paste a FASTA, get a predicted structure with pLDDT. "
-        "ESM-2 language-model fold, monomer-only — ~30 s per run."
+        "Single-sequence fold. Paste a FASTA, get a predicted structure "
+        "with pLDDT. ESM-2 language-model fold, monomer only, ~30 s per "
+        "run."
     ),
     presets=(
         Preset(
             slug="standalone",
-            label="Standalone - your FASTA",
+            label="Standalone with your FASTA",
             description=(
-                "Paste a single-chain FASTA (10-400 aa monomer) and get "
-                "pLDDT + predicted structure. ~30 s on A100-40GB once the "
-                "3B model is warm. No MSA, no multimer - pair with "
-                "ColabFold (D3) or AF2 (D2) when you need those."
+                "Paste a single-chain FASTA (10 to 400 aa monomer) and "
+                "get pLDDT plus predicted structure. ~30 s on A100-40GB "
+                "once the 3B model is warm. No MSA, no multimer. Pair "
+                "with ColabFold (D3) or AF2 (D2) when you need those."
             ),
         ),
         Preset(
             slug="batch",
-            label="Batch - many monomers",
+            label="Batch for many monomers",
             description=(
                 "Fold many monomer sequences (FASTA records or one per "
                 "line) in a single job, up to 500 records. Each fold is "

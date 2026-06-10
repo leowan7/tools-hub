@@ -23,7 +23,7 @@ from typing import Optional
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # Standalone: user FASTA, MMseqs2 MSA + 3 recycles. MSA fetch
     # dominates for short sequences; fold time scales with length.
-    "standalone": {"typical_minutes": "5-10"},
+    "standalone": {"typical_minutes": "5 to 10"},
 }
 
 paper_citation: str = "Jumper et al., Nature 2021 (AF2); Mirdita et al., Nature Methods 2022 (ColabFold)"
@@ -46,7 +46,7 @@ seo_faq: list[dict] = [
     {
         "q": "How is this different from running ColabFold yourself?",
         "a": (
-            "Same underlying weights and pipeline — but you skip CUDA "
+            "Same underlying weights and pipeline, but you skip CUDA "
             "setup, MMseqs2 round-trip on your laptop, and the wait for "
             "the public Colab queue. You also get a persistent job page "
             "you can share or hand off into ProteinMPNN or BindCraft."
@@ -65,7 +65,7 @@ seo_faq: list[dict] = [
 
 comparison_one_liner: str = (
     "Pick AF2 when you need the gold-standard structure prediction with "
-    "calibrated pLDDT + PAE. For faster single-sequence folds use "
+    "calibrated pLDDT and PAE. For faster single-sequence folds use "
     "ESMFold (D4); for affinity-aware folds use Boltz-2 (D6)."
 )
 example_output_id: Optional[str] = None
@@ -81,13 +81,13 @@ about: dict = {
         "pLDDT and PAE, monomer or multimer."
     ),
     "when_to_use": [
-        "You need the gold-standard fold with full MSA + templates and calibrated confidence.",
-        "Your target is monomeric or a small multimer (2&ndash;4 chains).",
-        "You can wait ~5&ndash;10 min per run for MMseqs2 MSA fetch + 3 recycles.",
+        "You need the gold-standard fold with full MSA and templates and calibrated confidence.",
+        "Your target is monomeric or a small multimer (2 to 4 chains).",
+        "You can wait roughly 5 to 10 min per run for MMseqs2 MSA fetch plus 3 recycles.",
     ],
     "prerequisites": [
         "Single-letter FASTA sequence(s). Multimers separated by <code>:</code> or pasted as multi-record FASTA.",
-        "A stable target topology &mdash; AF2 underperforms on intrinsically disordered or flexible regions.",
+        "A stable target topology. AF2 underperforms on intrinsically disordered or flexible regions.",
     ],
     "inputs": [
         {
@@ -106,12 +106,12 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "standalone", "typical": "5&ndash;10 min"},
+        {"preset": "standalone", "typical": "5 to 10 min"},
     ],
     "output_summary": (
-        "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM / "
-        "ipTM (multimers). Download PDB or PAE matrix for downstream "
-        "filtering and analysis."
+        "Predicted PDB with per-residue pLDDT, pairwise PAE, and pTM "
+        "or ipTM (for multimers). Download PDB or PAE matrix for "
+        "downstream filtering and analysis."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

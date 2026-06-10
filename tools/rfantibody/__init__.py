@@ -95,7 +95,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="rfantibody",
-    label="RFantibody — VHH (nanobody) design",
+    label="RFantibody",
     blurb=(
         "Structure-based VHH (nanobody) binder design. Generates "
         "single-domain antibody candidates against a target epitope, "
@@ -107,8 +107,8 @@ adapter = ToolAdapter(
             label="Your target, ~30 min start to first results",
             description=(
                 "Real RFantibody design against your uploaded target PDB. "
-                "Pick 1-1000 final VHH candidates. Start with a small "
-                "batch (4 designs, ~30-60 min) to confirm your target "
+                "Pick 1 to 1000 final VHH candidates. Start with a small "
+                "batch (4 designs, ~30 to 60 min) to confirm your target "
                 "and hotspots, then scale to 100+ once outputs look "
                 "real. Results emailed when run completes; A100-80GB."
             ),

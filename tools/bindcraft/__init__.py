@@ -104,10 +104,10 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="bindcraft",
-    label="BindCraft — de novo binder design",
+    label="BindCraft",
     blurb=(
-        "Structure-based de novo binder design on JAX + AlphaFold2 "
-        "multimer + ColabDesign. 4-hour max session; results are "
+        "Structure-based de novo binder design on JAX, AlphaFold2 "
+        "multimer, and ColabDesign. Four hour max session; results are "
         "emailed on completion."
     ),
     presets=(
@@ -116,8 +116,8 @@ adapter = ToolAdapter(
             label="Your target, ~30 min start to first results",
             description=(
                 "BindCraft against your uploaded PDB on A100-80GB. "
-                "Pick 1-500 trajectories. Start with a small batch "
-                "(4 trajectories, ~30-45 min) to confirm your target "
+                "Pick 1 to 500 trajectories. Start with a small batch "
+                "(4 trajectories, ~30 to 45 min) to confirm your target "
                 "and hotspots, then scale to 100+ once the small batch "
                 "looks reasonable. Results emailed on completion."
             ),

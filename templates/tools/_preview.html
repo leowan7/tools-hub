@@ -22,10 +22,10 @@
 #}
 {% extends "base.html" %}
 
-{% set _short_name = short_name or (adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label) %}
+{% set _short_name = short_name or adapter.label %}
 
 {% block title %}{{ _short_name }} Online | {{ title_phrase }} | Ranomics{% endblock %}
-{% block description %}Run {{ _short_name }} online on a dedicated GPU through your browser — no install, no local CUDA. {{ seo_long }}.{% endblock %}
+{% block description %}Run {{ _short_name }} online on a dedicated GPU through your browser. No install, no local CUDA. {{ seo_long }}.{% endblock %}
 
 {% block jsonld_extra %}
 {% set _desc_src = (meta.comparison_one_liner if meta and meta.comparison_one_liner else adapter.blurb) %}
@@ -68,7 +68,7 @@
   {% block preview_hero %}
     <div class="hero">
       <h1>Run {{ _short_name }} online</h1>
-      <p class="subtitle">{{ adapter.label }} — {{ adapter.blurb }}</p>
+      <p class="subtitle">{{ adapter.blurb }}</p>
       <p style="margin: 0.85rem 0 0; color: var(--text-secondary); line-height: 1.6; max-width: 60ch;">
         {{ _short_name }} is a {{ seo_phrase }} you can run through
         tools.ranomics.com on a dedicated GPU. {{ seo_long }}.
@@ -208,9 +208,9 @@
           <div class="panel-body">
             <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
               We keep a plain-English overview of {{ _short_name }} on the
-              main Ranomics site — what the model does under the hood, the
-              kinds of targets it works on, and where it fits inside a
-              full design-to-wet-lab campaign.
+              main Ranomics site. It covers what the model does under the
+              hood, the kinds of targets it works on, and where it fits
+              inside a full design-to-wet-lab campaign.
             </p>
             <a href="{{ learn_more_url }}"
                class="btn-secondary"

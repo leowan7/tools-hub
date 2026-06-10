@@ -184,11 +184,11 @@
                      {% if active_preset == 'standalone' %}checked{% endif %}
                      onchange="document.getElementById('af2-mode').dataset.mode='standalone'">
               <span>
-                <span class="preset-title">Standalone — one FASTA</span>
+                <span class="preset-title">Standalone, one FASTA</span>
                 <span class="preset-desc">
                   Paste or upload FASTA. Multi-record FASTA is treated as
                   one multimer fold (chains joined). Up to 1500 AA total.
-                  ~5-10 min on A100-80GB.
+                  ~5 to 10 min on A100-80GB.
                 </span>
               </span>
             </label>
@@ -197,12 +197,12 @@
                      {% if active_preset == 'batch' %}checked{% endif %}
                      onchange="document.getElementById('af2-mode').dataset.mode='batch'">
               <span>
-                <span class="preset-title">Batch — many fold targets</span>
+                <span class="preset-title">Batch for many fold targets</span>
                 <span class="preset-desc">
                   Fold up to 50 independent targets in one job. Each
                   record can be a monomer or a multimer (use <code>:</code>
                   inside a record to break chains). Slowest of the three
-                  structure-prediction tools — expect ~5-10 min per fold.
+                  structure-prediction tools. Expect ~5 to 10 min per fold.
                 </span>
               </span>
             </label>

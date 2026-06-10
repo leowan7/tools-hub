@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
-{% set _short_name = short_name or (adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label) %}
-{% block title %}How to run {{ _short_name }} — guide | Ranomics Tools{% endblock %}
+{% set _short_name = short_name or adapter.label %}
+{% block title %}How to run {{ _short_name }} guide | Ranomics Tools{% endblock %}
 {% block description %}How to run {{ _short_name }} online on Ranomics Tools: what it is for, the inputs it needs, and how to read the scores it returns. No install, no local GPU.{% endblock %}
 
 {% block jsonld_extra %}

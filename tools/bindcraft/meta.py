@@ -45,7 +45,7 @@ seo_faq: list[dict] = [
         ),
     },
     {
-        "q": "BindCraft vs RFdiffusion — which should I pick?",
+        "q": "BindCraft vs RFdiffusion: which should I pick?",
         "a": (
             "Both design de novo binders against your target. BindCraft "
             "hallucinates sequences and backbones jointly inside AF2; "
@@ -67,7 +67,7 @@ seo_faq: list[dict] = [
 
 comparison_one_liner: str = (
     "Pick BindCraft when you have a target PDB plus known hotspot "
-    "residues and want de novo 60-150 aa protein binders."
+    "residues and want de novo 60 to 150 aa protein binders."
 )
 example_output_id: Optional[str] = None
 
@@ -83,7 +83,7 @@ about: dict = {
     ),
     "when_to_use": [
         "You have a target PDB and at least one hotspot residue you want the binder to contact.",
-        "You want de novo 50&ndash;150 aa protein binders (not antibodies).",
+        "You want de novo 50 to 150 aa protein binders (not antibodies).",
         "You can wait ~45 min per pilot run and want filtered hits with ipTM and pLDDT above the BindCraft default thresholds.",
     ],
     "prerequisites": [
@@ -105,14 +105,14 @@ about: dict = {
             "name": "Binder length (min/max)",
             "explanation": (
                 "Residue-count window for the generated binder chain "
-                "(50&ndash;150). Shorter binders are easier to validate "
+                "(50 to 150). Shorter binders are easier to validate "
                 "in yeast display; longer ones can target larger interfaces."
             ),
         },
         {
             "name": "Number of designs",
             "explanation": (
-                "How many final filtered designs to return (1&ndash;5). "
+                "How many final filtered designs to return (1 to 5). "
                 "Each passes AF2 re-prediction with ipTM and pLDDT above "
                 "the BindCraft default thresholds. Pipeline cost floor "
                 "is ~45 min regardless of count."

@@ -20,8 +20,9 @@ from __future__ import annotations
 paper_citation: str = (
     "Watson, J. L., Juergens, D., Bennett, N. R., et al. "
     "\"De novo design of protein structure and function with RFdiffusion.\" "
-    "Nature 620, 1089-1100 (2023). "
-    "Composite pipeline: RFdiffusion backbones + ProteinMPNN sequences + AF2 multimer validation."
+    "Nature 620, 1089 to 1100 (2023). "
+    "Composite pipeline: RFdiffusion backbones, ProteinMPNN sequences, "
+    "and AF2 multimer validation."
 )
 
 paper_url: str = "https://www.nature.com/articles/s41586-023-06415-8"
@@ -51,7 +52,7 @@ seo_faq: list[dict] = [
     {
         "q": "Do I need to choose hotspots before running RFdiffusion?",
         "a": (
-            "Hotspots are strongly recommended — they tell RFdiffusion "
+            "Hotspots are strongly recommended. They tell RFdiffusion "
             "which residues on the target the binder should contact. If you "
             "do not have a hotspot guess, run Epitope Scout first to score "
             "the target surface, then hand off the picked residues into "
@@ -64,7 +65,7 @@ seo_faq: list[dict] = [
 # One-line decision helper shown in the "About" panel.
 comparison_one_liner: str = (
     "Pick RFdiffusion when you want general de novo binder design "
-    "scored by AF2 multimer (ipTM / pLDDT / i_pAE). For antibody and "
+    "scored by AF2 multimer (ipTM, pLDDT, i_pAE). For antibody and "
     "nanobody scaffolds use RFantibody, for AF2-IG initial-guess "
     "scoring use PXDesign, and for hallucination-driven binders "
     "without AF2 filtering use BindCraft."
@@ -81,7 +82,7 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
-        "runtime": "15-30 min",
+        "runtime": "15 to 30 min",
         "target": "Your uploaded target",
     },
 )
@@ -94,8 +95,8 @@ about: dict = {
         "RFdiffusion (Watson et al., <em>Nature</em> 2023). "
         "Diffusion-based backbone generator. The Ranomics composite "
         "pipeline pairs it with ProteinMPNN sequence design and AF2 "
-        "multimer scoring, so every candidate carries real ipTM / "
-        "pLDDT / i_pAE statistics from the AF2 re-prediction stage."
+        "multimer scoring, so every candidate carries real ipTM, "
+        "pLDDT, and i_pAE statistics from the AF2 re-prediction stage."
     ),
     "when_to_use": [
         "You want general de novo binder design with AF2-grounded scoring.",
@@ -118,7 +119,7 @@ about: dict = {
         {
             "name": "Binder length (min/max)",
             "explanation": (
-                "Residue-count window. 55&ndash;65 is a sane default for "
+                "Residue-count window. 55 to 65 is a sane default for "
                 "compact PD-L1-style targets; longer binders work for "
                 "larger interfaces."
             ),
@@ -132,12 +133,12 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15&ndash;30 min"},
+        {"preset": "pilot", "typical": "15 to 30 min"},
     ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, i_pAE, and downloadable "
-        "PDBs. Aim for at least 1/5 ipTM &ge; 0.65 on a tractable "
-        "target before committing to a full pilot."
+        "PDBs. Aim for at least 1 in 5 with ipTM &ge; 0.65 on a "
+        "tractable target before committing to a full pilot."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

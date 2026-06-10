@@ -26,7 +26,7 @@ Usage:
 {% macro about_panel(adapter, about) %}
   <aside class="panel about-panel" aria-labelledby="about-panel-title-{{ adapter.slug }}">
     <div class="panel-header">
-      <span class="panel-title" id="about-panel-title-{{ adapter.slug }}">About {{ adapter.label.split('—')[0].strip() if '—' in adapter.label else adapter.label }}</span>
+      <span class="panel-title" id="about-panel-title-{{ adapter.slug }}">About {{ adapter.label }}</span>
     </div>
     <div class="panel-body">
       {% if about.what_it_is %}
@@ -60,7 +60,7 @@ Usage:
         <h3>Input glossary</h3>
         <ul>
           {% for item in about.inputs %}
-            <li><strong>{{ item.name }}</strong> — {{ item.explanation|safe }}</li>
+            <li><strong>{{ item.name }}.</strong> {{ item.explanation|safe }}</li>
           {% endfor %}
         </ul>
       {% endif %}

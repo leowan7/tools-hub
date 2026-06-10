@@ -308,31 +308,31 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="colabfold",
-    label="ColabFold — fast no-MSA fold",
+    label="ColabFold",
     blurb=(
-        "Paste a FASTA, get a predicted structure with pLDDT and PAE. "
-        "No-MSA speed tier — ~1-2 min per run."
+        "Fast no-MSA fold. Paste a FASTA, get a predicted structure with "
+        "pLDDT and PAE. No-MSA speed tier, ~1 to 2 min per run."
     ),
     presets=(
         Preset(
             slug="standalone",
-            label="Standalone — your FASTA",
+            label="Standalone with your FASTA",
             description=(
                 "Paste a FASTA (monomer or multimer up to 600 aa total) "
-                "and get pLDDT + PAE + pTM/ipTM. ~1-2 min on A100-40GB. "
-                "No MSA, no templates — pair with D2 AF2 if you need the "
-                "full MSA-backed fold."
+                "and get pLDDT, PAE, and pTM/ipTM. ~1 to 2 min on "
+                "A100-40GB. No MSA, no templates. Pair with D2 AF2 if "
+                "you need the full MSA-backed fold."
             ),
         ),
         Preset(
             slug="batch",
-            label="Batch — many fold targets",
+            label="Batch for many fold targets",
             description=(
                 "Fold many independent targets in one job (up to 200 "
                 "records). Each record can be a monomer or a multimer "
                 "(use ``:`` inside a record to break chains). Per-design "
                 "results stream into the job page as folds complete. "
-                "Fast no-MSA tier — ~1-2 min per fold."
+                "Fast no-MSA tier, ~1 to 2 min per fold."
             ),
             long_running=True,
         ),

@@ -238,7 +238,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="esmfold2-design",
-    label="ESMFold2 design — scFv CDRs + minibinders",
+    label="ESMFold2 design",
     blurb=(
         "Gradient-based binder design via ESMFold2 inversion. Pick a "
         "paper-validated target preset, choose minibinder or scFv mode, "
@@ -247,12 +247,12 @@ adapter = ToolAdapter(
     presets=(
         Preset(
             slug="minibinder",
-            label="De novo minibinder (60-200 aa)",
+            label="De novo minibinder (60 to 200 aa)",
             description=(
-                "Free 60-200 aa scaffold generated with an isoelectric-"
+                "Free 60 to 200 aa scaffold generated with an isoelectric "
                 "point filter (pI &lt; 6) baked in. No framework "
-                "constraints. Equivalent goal to RFdiffusion + ProteinMPNN "
-                "but in one gradient pass through ESMFold2."
+                "constraints. Equivalent goal to RFdiffusion plus "
+                "ProteinMPNN but in one gradient pass through ESMFold2."
             ),
             requires_pdb=False,
             long_running=True,

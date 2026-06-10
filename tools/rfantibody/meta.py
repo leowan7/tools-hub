@@ -27,7 +27,7 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15-60"},
+    "pilot": {"typical_minutes": "15 to 60"},
 }
 
 paper_citation: str = "Bennett et al., bioRxiv 2024"
@@ -77,7 +77,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15&ndash;60 min"},
+        {"preset": "pilot", "typical": "15 to 60 min"},
     ],
     "output_summary": (
         "Ranked VHH candidates with pAE, pLDDT, ipAE, and "

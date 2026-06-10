@@ -207,17 +207,17 @@
             general-purpose binder path; pick nanobody / antibody for
             immunoglobulin scaffolds, or peptide for short cyclic /
             linear binders. Typical binder lengths:
-            mini-protein 50&ndash;100, nanobody 110&ndash;130,
-            antibody 110&ndash;200, peptide 5&ndash;30.
+            mini-protein 50 to 100, nanobody 110 to 130,
+            antibody 110 to 200, peptide 5 to 30.
           </div>
 
           <div id="pilot-fields">
             {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
             <div style="border-top: 1px solid var(--border); padding-top: 1.25rem; margin-bottom: 1rem;">
               <p style="color: var(--text-secondary); font-size: 0.9rem; max-width: 62ch; margin: 0 0 1rem 0;">
-                Runs against your own target — upload PDB, optionally
+                Runs against your own target. Upload PDB, optionally
                 pick hotspots, set binder length. Results emailed
-                (~15-60 min on A100-40GB).
+                (~15 to 60 min on A100-40GB).
               </p>
             </div>
 
@@ -241,7 +241,7 @@
             <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                    style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-              Optional — leave blank for unconstrained. Comma-separated
+              Optional. Leave blank for unconstrained. Comma-separated
               residue indices the binder should contact (e.g. <code>54,56,115</code>).
               Click residues in the 3D viewer below to toggle them in and out of this list.
             </div>
@@ -273,7 +273,7 @@
               Top-N final candidates returned (1 to 50). Each refolded with RMSD + ipTM.
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              First time on this target? Start with 4 designs (~15-30 min)
+              First time on this target? Start with 4 designs (~15 to 30 min)
               to confirm your binder length and protocol, then scale up
               once the small batch looks reasonable. Billed by actual GPU
               consumed; cancellation does not refund time already used.

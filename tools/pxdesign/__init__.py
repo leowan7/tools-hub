@@ -109,20 +109,22 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="pxdesign",
-    label="PXDesign — JAX AF2-IG binder design",
+    label="PXDesign",
     blurb=(
-        "Binder design with JAX AF2 Initial Guess validation — real "
-        "ipTM / pLDDT / pAE from the AF2 monomer model run in "
-        "initial-guess mode against the target. Pilot ~30–60 min."
+        "Binder design with JAX AF2 Initial Guess validation. Real "
+        "ipTM, pLDDT, and pAE from the AF2 monomer model run in "
+        "initial-guess mode against the target. Pilot runs in roughly "
+        "30 to 60 min."
     ),
     presets=(
         Preset(
             slug="pilot",
-            label="Pilot — your target, ~45 min",
+            label="Pilot run on your target, ~45 min",
             description=(
                 "Real PXDesign run against your uploaded target with "
-                "AF2-IG validation. Up to 24 candidates with real ipTM/pLDDT/pAE "
-                "scores; results emailed when complete (~30-60 min on A100-80GB)."
+                "AF2-IG validation. Up to 24 candidates with real "
+                "ipTM, pLDDT, and pAE scores; results emailed when "
+                "complete (~30 to 60 min on A100-80GB)."
             ),
             requires_pdb=True,
             long_running=True,

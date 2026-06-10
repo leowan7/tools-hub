@@ -32,9 +32,10 @@ paper_url: str = "https://www.biorxiv.org/content/10.1101/2025.06.14.659707v2"
 github_url: str = "https://github.com/jwohlwend/boltz"
 comparison_one_liner: str = (
     "Pick Boltz-2 to validate a designed binder against your antigen. "
-    "Single-sequence cofold + interface confidence (ipTM), antibody-trained "
-    "and orthogonal to AF2-multimer. For sequence design, use ProteinMPNN; "
-    "for de novo backbones, use RFantibody, BindCraft, or BoltzGen first."
+    "Single-sequence cofold with interface confidence (ipTM), "
+    "antibody-trained and orthogonal to AF2-multimer. For sequence "
+    "design, use ProteinMPNN; for de novo backbones, use RFantibody, "
+    "BindCraft, or BoltzGen first."
 )
 example_output_id: Optional[str] = None
 
@@ -48,7 +49,7 @@ about: dict = {
         "with a calibrated confidence head. Single-sequence mode is "
         "orthogonal to AF2-multimer: when both agree, the predicted "
         "complex is real; when they disagree, the disagreement itself is "
-        "informative. Returns a folded complex PDB + ipTM + pTM + "
+        "informative. Returns a folded complex PDB plus ipTM, pTM, and "
         "complex_pLDDT per design."
     ),
     "when_to_use": [
@@ -61,9 +62,9 @@ about: dict = {
         "channel from a different architecture before ordering DNA.",
     ],
     "prerequisites": [
-        "Antigen PDB / mmCIF (single chain — the binder is added separately).",
+        "Antigen PDB or mmCIF (single chain; the binder is added separately).",
         "One or more binder sequences (scFv, nanobody, peptide, anything "
-        "that folds as a single protein chain), 20-400 aa each.",
+        "that folds as a single protein chain), 20 to 400 aa each.",
         "Optional: a list of antigen hotspot residue numbers to count "
         "contacts against (1-indexed on the chosen antigen chain).",
     ],
@@ -96,18 +97,18 @@ about: dict = {
             "explanation": (
                 "Paste one sequence per line, or upload as FASTA "
                 "(<code>&gt;name</code> headers). Each sequence folds "
-                "independently against the antigen. 20-400 aa per binder, "
-                "up to 50 binders per run."
+                "independently against the antigen. 20 to 400 aa per "
+                "binder, up to 50 binders per run."
             ),
         },
         {
             "name": "Preset",
             "explanation": (
                 "<strong>Single-sequence</strong> (default) folds in "
-                "<code>msa: empty</code> mode &mdash; the right choice "
+                "<code>msa: empty</code> mode, the right choice "
                 "for designed sequences. <strong>With MSA</strong> "
                 "fetches MSAs from the public ColabFold MMseqs2 endpoint "
-                "&mdash; slower but more accurate on natural sequences."
+                "and is slower but more accurate on natural sequences."
             ),
         },
     ],
@@ -161,7 +162,7 @@ examples: list[dict] = [
             "HHR23A (PDB 1WR1 chain B, 58 aa). Natural ubiquitin-binding "
             "complex; hotspots target the canonical Ile44 hydrophobic "
             "patch. Defaults to the MSA preset because the small UBA "
-            "interface needs the evolutionary signal — expect "
+            "interface needs the evolutionary signal. Expect "
             "strict_pass with ipTM ~0.89, complex_pLDDT ~0.93, and all "
             "four hotspots contacted in ~3 min."
         ),

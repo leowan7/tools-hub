@@ -21,14 +21,14 @@ from typing import Optional
 
 # Typical wall-clock per preset. Used by the About panel runtime table.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "standalone": {"typical_minutes": "0.5-1"},
+    "standalone": {"typical_minutes": "0.5 to 1"},
 }
 
 paper_citation: str = "Lin et al., Science 2023"
 paper_url: str = "https://www.science.org/doi/10.1126/science.ade2574"
 github_url: str = "https://github.com/facebookresearch/esm"
 comparison_one_liner: str = (
-    "Pick ESMFold when you need the fastest possible monomer fold - no "
+    "Pick ESMFold when you need the fastest possible monomer fold. No "
     "MSA, no multimer, single-sequence ESM-2 language-model prediction. "
     "Pair with ColabFold (D3) for multimers or AF2 standalone (D2) for "
     "full MSA-backed accuracy."
@@ -42,8 +42,8 @@ about: dict = {
     "what_it_is": (
         "ESMFold (Lin et al., <em>Science</em> 2023). Single-sequence "
         "monomer structure prediction from the ESM-2 language model. "
-        "No MSA, no multimer support &mdash; fastest fold available "
-        "when an MSA is unavailable or unhelpful."
+        "No MSA, no multimer support. Fastest fold available when an "
+        "MSA is unavailable or unhelpful."
     ),
     "when_to_use": [
         "You need a monomer fold in well under a minute.",
@@ -59,7 +59,7 @@ about: dict = {
             "name": "Sequence",
             "explanation": (
                 "Single-chain FASTA. Multimers and non-canonical residues "
-                "are not supported &mdash; use ColabFold or AF2 instead."
+                "are not supported. Use ColabFold or AF2 instead."
             ),
         },
     ],

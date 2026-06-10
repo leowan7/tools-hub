@@ -44,8 +44,8 @@ comparison_one_liner: str = (
     "Pick ESMFold2 design for scFv CDR design (the only catalog tool "
     "that does paired heavy + light scFvs) or as a gradient-based "
     "alternative to RFdiffusion's diffusion sampler for minibinders. "
-    "Run alongside RFdiffusion / BindCraft / BoltzGen / PXDesign for "
-    "orthogonal candidate pools. For nanobody / VHH formats use "
+    "Run alongside RFdiffusion, BindCraft, BoltzGen, or PXDesign for "
+    "orthogonal candidate pools. For nanobody or VHH formats use "
     "RFantibody instead."
 )
 example_output_id: Optional[str] = None
@@ -68,7 +68,7 @@ about: dict = {
         "You need a paired heavy + light scFv with all six CDRs designed "
         "jointly against your target. No other catalog tool does this.",
         "You want a gradient-based minibinder alternative to RFdiffusion "
-        "diffusion sampling — a different fold prior often surfaces "
+        "diffusion sampling. A different fold prior often surfaces "
         "different binders for a stuck target.",
         "You want to compare CDR designs across three validated humanized "
         "frameworks (trastuzumab, atezolizumab, ocankitug).",
@@ -77,17 +77,17 @@ about: dict = {
     ],
     "prerequisites": [
         "Target sequence: pick one of five paper-validated presets or "
-        "paste a single chain (30-800 aa).",
+        "paste a single chain (30 to 800 aa).",
         "Pick minibinder mode or scFv mode. For scFv, pick a framework "
-        "(trastuzumab / atezolizumab / ocankitug).",
-        "No PDB required — the gradient loop is sequence-only.",
+        "(trastuzumab, atezolizumab, or ocankitug).",
+        "No PDB required. The gradient loop is sequence-only.",
     ],
     "inputs": [
         {
             "name": "Preset",
             "explanation": (
                 "<strong>De novo minibinder</strong> generates a free "
-                "60-200 aa scaffold with an isoelectric-point filter "
+                "60 to 200 aa scaffold with an isoelectric-point filter "
                 "(pI &lt; 6). <strong>scFv</strong> designs all six CDRs "
                 "on a locked humanized framework. Same model, different "
                 "binder factory."
@@ -97,9 +97,10 @@ about: dict = {
             "name": "Target",
             "explanation": (
                 "Pick one of five paper-validated presets (CD45, CTLA4, "
-                "EGFR, PD-L1, PDGFR — sequences from UniProt cropped to "
-                "the relevant ectodomain) or paste your own protein "
-                "sequence (30-800 aa, canonical amino acids only)."
+                "EGFR, PD-L1, or PDGFR, with sequences from UniProt "
+                "cropped to the relevant ectodomain) or paste your own "
+                "protein sequence (30 to 800 aa, canonical amino acids "
+                "only)."
             ),
         },
         {
@@ -127,22 +128,22 @@ about: dict = {
         {
             "name": "Seeds to run",
             "explanation": (
-                "Number of parallel seeds to sweep (1-64). Each seed "
+                "Number of parallel seeds to sweep (1 to 64). Each seed "
                 "gets its own H100 worker, all run in parallel, so a "
                 "16-seed sweep finishes in the same wall-clock as one "
-                "seed (~10-15 min). Results from every seed merge into "
-                "one globally-ranked table. Use this when you need to "
-                "build a candidate library against a target. Cost "
+                "seed (~10 to 15 min). Results from every seed merge "
+                "into one globally-ranked table. Use this when you need "
+                "to build a candidate library against a target. Cost "
                 "scales linearly with seeds x batch size."
             ),
         },
         {
             "name": "Batch size",
             "explanation": (
-                "Designs produced per gradient run (1-6). All designs "
+                "Designs produced per gradient run (1 to 6). All designs "
                 "share one ~10 min H100 pass, so a higher batch "
                 "multiplies candidates without multiplying wall-clock. "
-                "<strong>Default 3</strong> — single-design runs often "
+                "<strong>Default 3.</strong> Single-design runs often "
                 "return <code>drop</code> after the iPTM and pI gates. "
                 "Bump to 6 for first-pass exploration; drop to 1 only "
                 "when you already know the target gives clean hits."

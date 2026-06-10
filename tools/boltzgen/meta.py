@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "pilot": {"typical_minutes": "15-60"},
+    "pilot": {"typical_minutes": "15 to 60"},
 }
 
 paper_citation: str = "Wohlwend et al., MIT (2024)"
@@ -73,8 +73,8 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "BoltzGen (Wohlwend et al., MIT 2024). Boltz-2 binder design "
-        "&mdash; jointly generates a binder backbone against a target, "
+        "BoltzGen (Wohlwend et al., MIT 2024). Boltz-2 binder design. "
+        "Jointly generates a binder backbone against a target, "
         "refolds each candidate end-to-end, and scores affinity via "
         "ipTM and pLDDT. Ships four design protocols (mini-protein, "
         "nanobody, antibody, peptide) and handles glycans, "
@@ -85,7 +85,7 @@ about: dict = {
         "You want one model that can target the same epitope with mini-proteins, nanobodies, antibodies, or peptides.",
         "Your target has glycans, PTMs, modified residues, or non-canonical chemistry.",
         "You want refolding RMSD as a self-consistency signal alongside ipTM and pLDDT.",
-        "You need ~5 to 60 min per run and a budget-tunable number of candidates.",
+        "You need roughly 5 to 60 min per run and a budget-tunable number of candidates.",
     ],
     "prerequisites": [
         "Target structure (<code>.pdb</code> / <code>.cif</code>).",
@@ -115,9 +115,8 @@ about: dict = {
             "name": "Binder length (min/max)",
             "explanation": (
                 "Residue-count window for the generated binder. Typical "
-                "starting ranges: mini-protein 50&ndash;100, nanobody "
-                "110&ndash;130, antibody 110&ndash;200, peptide "
-                "5&ndash;30."
+                "starting ranges: mini-protein 50 to 100, nanobody "
+                "110 to 130, antibody 110 to 200, peptide 5 to 30."
             ),
         },
         {
@@ -129,7 +128,7 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "15&ndash;60 min"},
+        {"preset": "pilot", "typical": "15 to 60 min"},
     ],
     "output_summary": (
         "Ranked candidate binders with ipTM, pLDDT, refolding RMSD, "

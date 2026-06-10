@@ -119,7 +119,7 @@
               <input type="radio" name="preset" value="minibinder" data-esmd-preset
                      {{ pre_checked(pre_fill, 'preset', 'minibinder', is_first=True) }}>
               <span>
-                <span class="opt-title">De novo minibinder (60-200 aa)</span>
+                <span class="opt-title">De novo minibinder (60 to 200 aa)</span>
                 <span class="opt-desc">
                   Free scaffold, isoelectric-point filter (pI&nbsp;&lt;&nbsp;6)
                   baked in. Goal-equivalent to RFdiffusion + ProteinMPNN
@@ -175,7 +175,7 @@
               <span>
                 <span class="opt-title">Paste a target sequence</span>
                 <span class="opt-desc">
-                  Single chain, 30-800 aa, canonical amino acids only.
+                  Single chain, 30 to 800 aa, canonical amino acids only.
                   Crop to the ectodomain or binding surface for best
                   results.
                 </span>
@@ -187,11 +187,11 @@
           <div class="esmd-conditional" data-esmd-preset-target-only hidden>
             <label for="target_name" class="label" style="display:block; margin-bottom: 0.4rem;">Target preset</label>
             <select name="target_name" id="target_name" class="esmd-select">
-              <option value="cd45"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'cd45'   %}selected{% endif %}>CD45 (P08575, 389-574) — receptor-type tyrosine-phosphatase</option>
-              <option value="ctla4"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'ctla4'  %}selected{% endif %}>CTLA4 (P16410, 37-155) — immune checkpoint</option>
-              <option value="egfr"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'egfr'   %}selected{% endif %}>EGFR (P00533, 333-524) — receptor tyrosine kinase</option>
-              <option value="pd-l1"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pd-l1'  %}selected{% endif %}>PD-L1 (Q9NZQ7, 17-132) — immune checkpoint</option>
-              <option value="pdgfr"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pdgfr'  %}selected{% endif %}>PDGFR (P09619, 125-312) — receptor tyrosine kinase</option>
+              <option value="cd45"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'cd45'   %}selected{% endif %}>CD45 (P08575, 389 to 574), receptor-type tyrosine-phosphatase</option>
+              <option value="ctla4"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'ctla4'  %}selected{% endif %}>CTLA4 (P16410, 37 to 155), immune checkpoint</option>
+              <option value="egfr"   {% if (pre_fill.get('target_name') if pre_fill else '') == 'egfr'   %}selected{% endif %}>EGFR (P00533, 333 to 524), receptor tyrosine kinase</option>
+              <option value="pd-l1"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pd-l1'  %}selected{% endif %}>PD-L1 (Q9NZQ7, 17 to 132), immune checkpoint</option>
+              <option value="pdgfr"  {% if (pre_fill.get('target_name') if pre_fill else '') == 'pdgfr'  %}selected{% endif %}>PDGFR (P09619, 125 to 312), receptor tyrosine kinase</option>
             </select>
           </div>
 
@@ -203,7 +203,7 @@
                       spellcheck="false"
                       class="esmd-target-textarea">{{ (pre_fill.get('target_sequence') if pre_fill else '') or '' }}</textarea>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch;">
-              Single-chain protein sequence. 30-800 aa. Whitespace and
+              Single-chain protein sequence. 30 to 800 aa. Whitespace and
               line breaks are stripped. Non-canonical residues will be
               rejected.
             </div>

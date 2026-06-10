@@ -183,11 +183,11 @@
                      {% if active_preset == 'standalone' %}checked{% endif %}
                      onchange="document.getElementById('colabfold-mode').dataset.mode='standalone'">
               <span>
-                <span class="preset-title">Standalone — one FASTA</span>
+                <span class="preset-title">Standalone, one FASTA</span>
                 <span class="preset-desc">
                   Paste a FASTA. Multi-record FASTA is treated as one
                   multimer fold (chains joined). Up to 600 aa total.
-                  ~1-2 min on A100-40GB.
+                  ~1 to 2 min on A100-40GB.
                 </span>
               </span>
             </label>
@@ -196,7 +196,7 @@
                      {% if active_preset == 'batch' %}checked{% endif %}
                      onchange="document.getElementById('colabfold-mode').dataset.mode='batch'">
               <span>
-                <span class="preset-title">Batch — many fold targets</span>
+                <span class="preset-title">Batch for many fold targets</span>
                 <span class="preset-desc">
                   Fold up to 200 independent targets in one job. Each
                   record can be a monomer or a multimer (use
@@ -217,9 +217,9 @@
                         spellcheck="false">{{ (pre_fill.get('fasta_text') if pre_fill else '') or '' }}</textarea>
               <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
                 Paste one or more chains in FASTA format. Monomer or multimer
-                (up to 600 aa total). Canonical 20 amino acids + <code>X</code>
-                for unknown. No MSA will be computed — pair with AF2 (D2) if
-                you need the full MSA-backed fold.
+                (up to 600 aa total). Canonical 20 amino acids plus
+                <code>X</code> for unknown. No MSA will be computed. Pair
+                with AF2 (D2) if you need the full MSA-backed fold.
               </div>
             </div>
 

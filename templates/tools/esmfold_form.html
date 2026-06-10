@@ -183,10 +183,11 @@
                      {% if active_preset == 'standalone' %}checked{% endif %}
                      onchange="document.getElementById('esmfold-mode').dataset.mode='standalone'">
               <span>
-                <span class="preset-title">Standalone — one FASTA</span>
+                <span class="preset-title">Standalone, one FASTA</span>
                 <span class="preset-desc">
-                  Paste a single-chain monomer (10-400 aa). One fold, inline
-                  result. ~30 s on A100-40GB once the 3B model is warm.
+                  Paste a single-chain monomer (10 to 400 aa). One fold,
+                  inline result. ~30 s on A100-40GB once the 3B model is
+                  warm.
                 </span>
               </span>
             </label>
@@ -195,7 +196,7 @@
                      {% if active_preset == 'batch' %}checked{% endif %}
                      onchange="document.getElementById('esmfold-mode').dataset.mode='batch'">
               <span>
-                <span class="preset-title">Batch — many monomers</span>
+                <span class="preset-title">Batch for many monomers</span>
                 <span class="preset-desc">
                   Fold many monomer sequences in one job, up to 500 records.
                   Per-design results stream into the job page as they
@@ -213,9 +214,9 @@
                         placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."
                         spellcheck="false">{{ (pre_fill.get('fasta_text') if pre_fill else '') or '' }}</textarea>
               <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
-                Paste one monomer sequence in FASTA format (single chain only, 10-400 aa).
-                Canonical 20 amino acids + <code>X</code> for unknown.
-                ESMFold v1 is <strong>monomer-only</strong> - for multimers use
+                Paste one monomer sequence in FASTA format (single chain only, 10 to 400 aa).
+                Canonical 20 amino acids plus <code>X</code> for unknown.
+                ESMFold v1 is <strong>monomer-only</strong>. For multimers use
                 ColabFold (D3) or AF2 standalone (D2). No MSA is computed;
                 the fold comes straight from the ESM-2 language model.
               </div>
@@ -233,8 +234,8 @@
                  over-billed. #}
               <input type="hidden" name="n_designs_total" id="batch-n-designs" value="">
               <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin: 0.35rem 0 1.25rem;">
-                Up to <strong>500</strong> monomer sequences per submit, 10-400 aa each.
-                Canonical 20 amino acids + <code>X</code> for unknown.
+                Up to <strong>500</strong> monomer sequences per submit, 10 to 400 aa each.
+                Canonical 20 amino acids plus <code>X</code> for unknown.
                 Lines beginning with <code>&gt;</code> are treated as FASTA headers; lines
                 without a header are auto-named <code>design_0</code>, <code>design_1</code>, …
                 Detected records: <strong id="batch-count">0</strong>.

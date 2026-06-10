@@ -151,7 +151,7 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="boltzgen",
-    label="BoltzGen — structure + affinity design",
+    label="BoltzGen",
     blurb=(
         "Boltz-2 binder design. Generates mini-protein, nanobody, "
         "antibody, or peptide backbones against a target, refolds each "
@@ -163,8 +163,8 @@ adapter = ToolAdapter(
             label="Your target, ~30 min start to first results",
             description=(
                 "Real BoltzGen run against your uploaded target. Pick "
-                "1 to 50 final candidates with refolding RMSD + ipTM "
-                "scores. Start with 4 designs (~15-30 min) to confirm "
+                "1 to 50 final candidates with refolding RMSD and ipTM "
+                "scores. Start with 4 designs (~15 to 30 min) to confirm "
                 "your target and binder length, then scale up once the "
                 "small batch looks reasonable. Results emailed when "
                 "complete; A100-40GB."

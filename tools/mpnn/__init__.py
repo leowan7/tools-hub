@@ -128,18 +128,19 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="mpnn",
-    label="ProteinMPNN — sequence design from backbone",
+    label="ProteinMPNN",
     blurb=(
-        "Upload a backbone PDB, get N candidate sequences with MPNN "
-        "scores and per-sequence recovery. ~30 s per run."
+        "Sequence design from a backbone. Upload a backbone PDB, get N "
+        "candidate sequences with MPNN scores and per-sequence recovery. "
+        "~30 s per run."
     ),
     presets=(
         Preset(
             slug="standalone",
-            label="Standalone — your backbone",
+            label="Standalone with your backbone",
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
-                "up to 200 candidate sequences. ~30-60 s on A10G-24GB."
+                "up to 200 candidate sequences. ~30 to 60 s on A10G-24GB."
             ),
             requires_pdb=True,
         ),

@@ -36,7 +36,7 @@ github_url: str = ""
 # One-line decision helper shown in the "About" panel.
 comparison_one_liner: str = (
     "Pick PXDesign when AF2 confidence against a defined target "
-    "matters and you want real ipTM / pLDDT / pAE on every candidate. "
+    "matters and you want real ipTM, pLDDT, and pAE on every candidate. "
     "For hallucination-driven binder design without AF2 filtering use "
     "BindCraft, for antibody and nanobody CDRs use RFantibody, and for "
     "target structure generation without binder design use BoltzGen."
@@ -54,7 +54,7 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
     {
         "slug": "pilot",
         "label": "Pilot",
-        "runtime": "30–60 min",
+        "runtime": "30 to 60 min",
         "target": "Your uploaded target",
     },
 )
@@ -64,14 +64,14 @@ preset_runtime_rows: tuple[dict[str, str], ...] = (
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "PXDesign &mdash; Ranomics in-house binder-design pipeline. An "
+        "PXDesign is a Ranomics in-house binder-design pipeline. An "
         "RFdiffusion-style backbone generator paired with JAX AF2 in "
         "Initial Guess mode for fast, accurate scoring (Bennett et al., "
         "<em>Nature Communications</em> 2023). Every candidate carries "
         "real ipTM, pLDDT, and pAE from the AF2-IG stage."
     ),
     "when_to_use": [
-        "AF2 confidence against a defined target matters and you want real ipTM / pLDDT / pAE on every candidate.",
+        "AF2 confidence against a defined target matters and you want real ipTM, pLDDT, and pAE on every candidate.",
         "You want faster scoring than full AF2 multimer (Initial Guess shortcut).",
         "You want the same scoring pipeline that drives Ranomics' wet-lab campaigns.",
     ],
@@ -105,11 +105,11 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "pilot", "typical": "30&ndash;60 min"},
+        {"preset": "pilot", "typical": "30 to 60 min"},
     ],
     "output_summary": (
         "Ranked candidates with ipTM, pLDDT, pAE, and downloadable PDBs. "
-        "Target ipTM &ge; 0.70 on 1&ndash;2 of 5 designs for a tractable "
+        "Target ipTM &ge; 0.70 on 1 to 2 of 5 designs for a tractable "
         "epitope."
     ),
     "paper_citation": paper_citation,

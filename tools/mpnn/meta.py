@@ -34,7 +34,8 @@ seo_faq: list[dict] = [
         "a": (
             "Yes. Upload a backbone PDB and Ranomics Tools runs ProteinMPNN "
             "on a dedicated GPU in seconds. You get ranked sequence "
-            "redesigns plus per-position recovery — no install, no CUDA."
+            "redesigns plus per-position recovery, with no install and no "
+            "CUDA setup."
         ),
     },
     {
@@ -49,8 +50,8 @@ seo_faq: list[dict] = [
     {
         "q": "Does ProteinMPNN need an MSA?",
         "a": (
-            "No. ProteinMPNN is a structure-conditioned sequence model — "
-            "it takes the backbone coordinates directly and never queries "
+            "No. ProteinMPNN is a structure-conditioned sequence model. "
+            "It takes the backbone coordinates directly and never queries "
             "an MSA. That makes it the fastest route from a designed "
             "backbone to a sequence you can synthesise."
         ),
@@ -83,7 +84,7 @@ about: dict = {
         "You want to thread alternative sequences through a curated PDB before ordering.",
     ],
     "prerequisites": [
-        "Backbone PDB / mmCIF — only C&alpha; and backbone atoms are used.",
+        "Backbone PDB or mmCIF (only C&alpha; and backbone atoms are used).",
         "Chain ID(s) of the region(s) to redesign. Other chains stay fixed as context.",
     ],
     "inputs": [
@@ -106,8 +107,9 @@ about: dict = {
         {
             "name": "Sampling temperature",
             "explanation": (
-                "Lower = more conservative (closer to argmax); higher = "
-                "more diverse. Defaults to 0.1 per the upstream README."
+                "Lower means more conservative (closer to argmax); higher "
+                "means more diverse. Defaults to 0.1 per the upstream "
+                "README."
             ),
         },
     ],
@@ -117,7 +119,7 @@ about: dict = {
     "output_summary": (
         "Ranked candidate sequences with per-position score and overall "
         "ProteinMPNN recovery, downloadable as FASTA. Pair downstream "
-        "with AlphaFold2 / ColabFold to confirm the predicted fold."
+        "with AlphaFold2 or ColabFold to confirm the predicted fold."
     ),
     "paper_citation": paper_citation,
     "paper_url": paper_url,

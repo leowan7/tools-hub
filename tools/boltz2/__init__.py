@@ -201,11 +201,11 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="boltz2",
-    label="Boltz-2 — cofold validation",
+    label="Boltz-2",
     blurb=(
-        "Validate designed binders against your antigen with an "
-        "antibody-trained cofold model — ~15 s per design "
-        "(single-sequence)."
+        "Cofold validation. Validate designed binders against your "
+        "antigen with an antibody-trained cofold model. ~15 s per design "
+        "in single-sequence mode."
     ),
     presets=(
         Preset(

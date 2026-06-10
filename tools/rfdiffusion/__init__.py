@@ -127,11 +127,12 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
 
 adapter = ToolAdapter(
     slug="rfdiffusion",
-    label="RFdiffusion — de novo binder design",
+    label="RFdiffusion",
     blurb=(
-        "Composite binder design: RFdiffusion backbones + ProteinMPNN "
-        "sequences + AF2 multimer validation. Candidates carry real "
-        "ipTM / pLDDT / i_pAE scores. Pilot ~15-30 min on caller targets."
+        "De novo binder design. Composite pipeline combining RFdiffusion "
+        "backbones, ProteinMPNN sequences, and AF2 multimer validation. "
+        "Candidates carry real ipTM, pLDDT, and i_pAE scores. Pilot runs "
+        "in roughly 15 to 30 min on caller targets."
     ),
     presets=(
         Preset(
@@ -139,7 +140,7 @@ adapter = ToolAdapter(
             label="Your target, ~30 min start to first results",
             description=(
                 "Real RFdiffusion run against your uploaded target PDB "
-                "with AF2 multimer validation. Pick 1-1000 candidates. "
+                "with AF2 multimer validation. Pick 1 to 1000 candidates. "
                 "Start with a small batch (4 designs, ~30 min) to "
                 "confirm your target and hotspots, then scale to 100+ "
                 "once the small batch looks reasonable. Results emailed "
