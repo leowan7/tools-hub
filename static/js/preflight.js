@@ -38,11 +38,12 @@
     form.querySelector('input[type="file"][name="target_pdb"]');
   const chainInput = form.querySelector('input[name="target_chain"]');
   const hotspotInput = form.querySelector('input[name="hotspot_residues"]');
-  // Binder-size fields (optional, tool-dependent): pxdesign has a numeric
-  // binder_length; boltz2 carries a binder_sequences textarea. Forwarding
-  // these to the preflight endpoint makes the live combined / total-complex
-  // size check match the submit-side gate, which sees the validated value.
-  const binderLenInput = form.querySelector('input[name="binder_length"]');
+  // boltz2 carries a binder_sequences textarea; we forward the longest
+  // binder to the preflight endpoint so the live total-complex size check
+  // matches the submit-side gate (which sees the validated sequences).
+  // pxdesign's binder_length is deliberately NOT forwarded: its combined
+  // cap sits behind a lower target cap and can never trip, so forwarding it
+  // would be a no-op (see appendBinderFields).
   const binderSeqInput =
     form.querySelector('textarea[name="binder_sequences"]');
   const submitBtn = document.getElementById("tool-submit-btn") ||
@@ -184,18 +185,25 @@
     const hasHeaders = lines.some((l) => l.trim().charAt(0) === ">");
     let max = 0;
     if (hasHeaders) {
+      // Mirror the server parser (tools/boltz2 _parse_binder_text): a record
+      // is committed only once a ">" header has been seen, so any orphan
+      // sequence content before the first header is dropped rather than
+      // counted. Without this the live panel could over-count and falsely
+      // block a complex the submit gate would accept.
       let cur = 0;
+      let seen = false;
       for (const raw of lines) {
         const ln = raw.trim();
         if (!ln) continue;
         if (ln.charAt(0) === ">") {
-          if (cur > max) max = cur;
+          if (seen && cur > max) max = cur;
           cur = 0;
-        } else {
+          seen = true;
+        } else if (seen) {
           cur += ln.replace(/\s+/g, "").length;
         }
       }
-      if (cur > max) max = cur;
+      if (seen && cur > max) max = cur;
     } else {
       for (const raw of lines) {
         const ln = raw.trim().replace(/\s+/g, "");
@@ -206,10 +214,6 @@
   }
 
   function appendBinderFields(fd) {
-    // pxdesign: numeric binder_length, forwarded as-is.
-    if (binderLenInput && binderLenInput.value) {
-      fd.append("binder_length", binderLenInput.value);
-    }
     // boltz2: forward the longest binder as binder_length_max, the field
     // _parse_preflight_size_params reads directly. The raw textarea string
     // is ignored server-side (the parser only handles the list shape).
@@ -299,8 +303,9 @@
   if (fileInput) {
     fileInput.addEventListener("change", runPreflightFromUpload);
   }
-  // Re-run when chain / hotspots / binder size change AND a file is attached.
-  for (const inp of [chainInput, hotspotInput, binderLenInput, binderSeqInput]) {
+  // Re-run when chain / hotspots / binder sequences change AND a file is
+  // attached.
+  for (const inp of [chainInput, hotspotInput, binderSeqInput]) {
     if (!inp) continue;
     let t = 0;
     inp.addEventListener("input", () => {
