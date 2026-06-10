@@ -216,11 +216,37 @@ _BOLTZGEN = ToolRules(
 )
 
 
+_PXDESIGN = ToolRules(
+    slug="pxdesign",
+    gpu="A100-80GB",                 # matches tools/pxdesign/__init__.py docstring
+    multi_chain_supported=True,
+    hotspots_required=True,          # pxdesign requires >=1 hotspot
+    min_target_aa=30,
+    size=SizeEnvelope(
+        hard_cap_target_aa=600,      # A100-80GB headroom (matches boltzgen)
+        soft_warn_target_aa=360,
+        hard_cap_combined_aa=750,    # 600 target + 150 max binder length
+        runtime_base_min=300.0,      # AF2-IG validation per design
+        runtime_alpha=1.3,
+        runtime_baseline_designs=8,  # pxdesign default num_designs
+    ),
+    gap=GapThresholds(
+        # pxdesign renumbers the target chain to 1..N, so a numbering gap
+        # closes but the physical backbone break remains near the epitope.
+        # Warn early; hard-fail a sizeable gap within reach of a hotspot.
+        warn_length=5,
+        needs_fix_length=10,
+        needs_fix_hotspot_distance=8,
+    ),
+)
+
+
 TOOL_RULES: dict[str, ToolRules] = {
     _RFANTIBODY.slug: _RFANTIBODY,
     _RFDIFFUSION.slug: _RFDIFFUSION,
     _BINDCRAFT.slug: _BINDCRAFT,
     _BOLTZGEN.slug: _BOLTZGEN,
+    _PXDESIGN.slug: _PXDESIGN,
 }
 
 

@@ -106,10 +106,18 @@ from shared.pdb_inspect import (
     validate_target_chain,
 )
 from shared.pdb_preflight import (
-    BINDER_DESIGN_TOOLS,
+    PREFLIGHT_TOOLS,
     PreflightVerdict,
     VerdictKind,
     preflight_for_tool,
+)
+
+# Tools whose form template renders the rich preflight panel (the JS
+# verdict UI). For the others (pxdesign, boltz2) a hard-gate rejection is
+# surfaced as a plain actionable ``error`` string in the form instead, so
+# the message is never silently swallowed.
+_PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
+    {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen"}
 )
 from shared.uniprot_lookup import alphafold_api_url
 
@@ -3766,7 +3774,7 @@ def create_app() -> Flask:
         adapter, err = _require_tool(tool)
         if err:
             return ({"error": "Unknown tool"}, 404)
-        if adapter.slug not in BINDER_DESIGN_TOOLS:
+        if adapter.slug not in PREFLIGHT_TOOLS:
             return ({
                 "kind": "ready", "ok": True,
                 "tool_slug": adapter.slug,
@@ -4022,7 +4030,12 @@ def create_app() -> Flask:
                         workspace_ctx=workspace_ctx,
                     )
                 hotspots = inputs.get("hotspot_residues") or []
-                if hotspots:
+                # boltz2 hotspots are 1-indexed SEQUENCE positions, not
+                # original PDB numbering; they are range-checked against the
+                # antigen length in boltz2's own preflight, so skip the
+                # original-numbering check here (it would false-reject an
+                # antigen whose numbering does not start at 1).
+                if hotspots and adapter.slug != "boltz2":
                     in_range, out_of_range = validate_hotspots(
                         inspection, target_chain, hotspots,
                     )
@@ -4114,7 +4127,7 @@ def create_app() -> Flask:
         # before clicking. The gate here is the safety net for direct-POST
         # / curl / form-resubmit-without-JS paths.
         if (
-            adapter.slug in BINDER_DESIGN_TOOLS
+            adapter.slug in PREFLIGHT_TOOLS
             and pdb_bytes is not None
         ):
             preflight_target_chain = (inputs.get("target_chain") or "").strip()
@@ -4152,6 +4165,23 @@ def create_app() -> Flask:
                 source_label = converted_filename or (
                     uploaded.filename if uploaded is not None else None
                 ) or ""
+                if adapter.slug not in _PREFLIGHT_PANEL_FORMS:
+                    # pxdesign / boltz2 forms have no rich panel — surface a
+                    # plain actionable message so the rejection is visible.
+                    plain = (
+                        preflight_verdict.reason
+                        or "This target can't run as-is."
+                    )
+                    if preflight_verdict.suggested_fix:
+                        plain = f"{plain} {preflight_verdict.suggested_fix}"
+                    return render_template(
+                        adapter.form_template,
+                        adapter=adapter,
+                        error=plain,
+                        pre_fill=inputs,
+                        pdb_source=None,
+                        workspace_ctx=workspace_ctx,
+                    )
                 return render_template(
                     adapter.form_template,
                     adapter=adapter,

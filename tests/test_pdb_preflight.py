@@ -12,8 +12,10 @@ import pytest
 
 from shared.pdb_preflight import (
     BINDER_DESIGN_TOOLS,
+    BOLTZ2_ANTIGEN_HARD_CAP_AA,
     HOTSPOTS_REQUIRED,
     MIN_TARGET_RESIDUES,
+    PREFLIGHT_TOOLS,
     PreflightVerdict,
     VerdictKind,
     preflight_for_tool,
@@ -59,14 +61,24 @@ END
 # ---------------------------------------------------------------------------
 
 def test_binder_design_tools_locked():
+    # pxdesign joined the binder-design gate (gap 1): it takes a target +
+    # required hotspots and runs the same normalizer dry-run + structural
+    # checks.
     assert BINDER_DESIGN_TOOLS == frozenset({
-        "rfantibody", "rfdiffusion", "bindcraft", "boltzgen",
+        "rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign",
     })
 
 
-def test_hotspots_required_for_three_tools():
+def test_preflight_tools_includes_boltz2():
+    # boltz2 gets a hard-gate too, but via its own evaluator, so it is not
+    # a "binder design tool".
+    assert PREFLIGHT_TOOLS == BINDER_DESIGN_TOOLS | frozenset({"boltz2"})
+    assert "boltz2" not in BINDER_DESIGN_TOOLS
+
+
+def test_hotspots_required_for_four_tools():
     assert HOTSPOTS_REQUIRED == frozenset({
-        "rfantibody", "rfdiffusion", "bindcraft",
+        "rfantibody", "rfdiffusion", "bindcraft", "pxdesign",
     })
 
 
@@ -562,3 +574,110 @@ def test_runtime_estimate_omitted_without_num_designs():
         "rfantibody", data, target_chain="A", hotspots=[50],
     )
     assert v.size_envelope.runtime_estimate_min is None
+
+
+# ---------------------------------------------------------------------------
+# pxdesign hard-gate (gap 1) — original-PDB-numbering hotspots, same machinery
+# as the other binder tools.
+# ---------------------------------------------------------------------------
+
+def test_pxdesign_missing_chain_blocks():
+    v = preflight_for_tool(
+        "pxdesign", CLEAN_FOUR_RES_PDB, target_chain="Z", hotspots=[10],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert "Z" in v.reason
+
+
+def test_pxdesign_requires_hotspots():
+    data = _chain_pdb("A", list(range(1, 101)))   # 100 aa, clean
+    v = preflight_for_tool(
+        "pxdesign", data, target_chain="A", hotspots=[],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert "hotspot" in v.reason.lower()
+
+
+def test_pxdesign_oversized_target_blocks():
+    """pxdesign hard_cap_target_aa=600 → a 650-aa target is rejected upfront."""
+    data = _chain_pdb("A", list(range(1, 651)))   # 650 aa
+    v = preflight_for_tool(
+        "pxdesign", data, target_chain="A", hotspots=[100, 200],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_hard_cap
+    assert "GPU envelope" in v.reason or "out of memory" in v.reason.lower()
+
+
+def test_pxdesign_internal_gap_near_hotspot_blocks():
+    """A sizeable internal gap within reach of a hotspot hard-fails."""
+    # gap 51..64 (14 residues) adjacent to hotspot 50.
+    data = _chain_pdb("A", list(range(1, 51)) + list(range(65, 131)))
+    v = preflight_for_tool(
+        "pxdesign", data, target_chain="A", hotspots=[50],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.gap_analysis is not None and v.gap_analysis.causes_hard_fail
+
+
+def test_pxdesign_clean_target_ready():
+    data = _chain_pdb("A", list(range(1, 121)))   # 120 aa, contiguous
+    v = preflight_for_tool(
+        "pxdesign", data, target_chain="A", hotspots=[40, 60, 80],
+        binder_max_aa=120, num_designs=8,
+    )
+    assert v.ok
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK)
+
+
+# ---------------------------------------------------------------------------
+# boltz2 dedicated preflight (gap 1) — 1-indexed SEQUENCE-position hotspots,
+# optional hotspots, single antigen chain.
+# ---------------------------------------------------------------------------
+
+def test_boltz2_clean_antigen_ready():
+    data = _chain_pdb("A", list(range(1, 121)))   # 120 residues
+    v = preflight_for_tool(
+        "boltz2", data, target_chain="A", hotspots=[10, 55, 120],
+    )
+    assert v.ok
+    assert v.kind is VerdictKind.READY
+
+
+def test_boltz2_empty_hotspots_ok():
+    """boltz2 hotspots are optional."""
+    data = _chain_pdb("A", list(range(1, 121)))
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[])
+    assert v.ok
+
+
+def test_boltz2_hotspot_uses_sequence_position_not_resnum():
+    """The defining boltz2 distinction: a 101-residue antigen numbered
+    20..120 accepts hotspot position 5 (the 5th residue) even though
+    resnum 5 does not exist, and rejects position 200."""
+    data = _chain_pdb("A", list(range(20, 121)))   # 101 residues, numbered 20..120
+    ok = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[5])
+    assert ok.kind is VerdictKind.READY      # 5 <= 101, valid position
+    bad = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[200])
+    assert bad.kind is VerdictKind.NEEDS_FIX
+    assert "200" in bad.reason
+    assert "sequence position" in bad.suggested_fix.lower()
+    assert "101" in bad.suggested_fix  # names the valid upper bound
+
+
+def test_boltz2_missing_chain_blocks():
+    data = _chain_pdb("A", list(range(1, 121)))
+    v = preflight_for_tool("boltz2", data, target_chain="Q", hotspots=[5])
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert "Q" in v.reason
+    # Names the chain that IS present so the user can correct.
+    assert "A" in v.suggested_fix
+
+
+def test_boltz2_oversized_antigen_blocks():
+    over = BOLTZ2_ANTIGEN_HARD_CAP_AA + 1
+    data = _chain_pdb("A", list(range(1, over + 1)))   # cap + 1 residues
+    v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[])
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert "trim" in v.suggested_fix.lower()
+    assert str(BOLTZ2_ANTIGEN_HARD_CAP_AA) in v.reason
