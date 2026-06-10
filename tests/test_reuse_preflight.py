@@ -159,3 +159,29 @@ def test_boltz2_reuse_clean_single_chain_passes():
         target_chain="A", hotspots=[5, 50], filename="clone.pdb",
     )
     assert err is None
+
+
+# ---------------------------------------------------------------------------
+# Combined-complex binder size derivation (drives boltz2 / pxdesign caps)
+# ---------------------------------------------------------------------------
+
+def test_size_params_derive_binder_from_boltz2_sequences():
+    bmax, _ = app_mod._parse_preflight_size_params(
+        {"binder_sequences": [
+            {"name": "a", "sequence": "A" * 120},
+            {"name": "b", "sequence": "A" * 250},
+        ]}
+    )
+    assert bmax == 250  # longest binder
+
+
+def test_size_params_derive_binder_from_pxdesign_length():
+    bmax, _ = app_mod._parse_preflight_size_params({"binder_length": "140"})
+    assert bmax == 140
+
+
+def test_size_params_prefer_binder_length_max_when_present():
+    bmax, _ = app_mod._parse_preflight_size_params(
+        {"binder_length_max": "90", "binder_length": "140"}
+    )
+    assert bmax == 90  # explicit max wins over the fallbacks

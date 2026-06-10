@@ -282,10 +282,25 @@ def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
             return None
         return n if n > 0 else None
 
-    return (
-        _maybe_int(source.get("binder_length_max")),
-        _maybe_int(source.get("num_designs")),
-    )
+    # Binder size for the combined-complex cap. Tools name the field
+    # differently: the binder-design forms use ``binder_length_max``;
+    # pxdesign uses ``binder_length``; boltz2 carries ``binder_sequences``
+    # (a list of {name, sequence}) and we take the longest.
+    binder_max = _maybe_int(source.get("binder_length_max"))
+    if binder_max is None:
+        seqs = source.get("binder_sequences")
+        if isinstance(seqs, list) and seqs:
+            lengths = [
+                len(s.get("sequence", ""))
+                for s in seqs
+                if isinstance(s, dict) and s.get("sequence")
+            ]
+            if lengths:
+                binder_max = max(lengths)
+    if binder_max is None:
+        binder_max = _maybe_int(source.get("binder_length"))
+
+    return (binder_max, _maybe_int(source.get("num_designs")))
 
 
 def _verify_reuse_pdb_bytes(
