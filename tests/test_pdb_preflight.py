@@ -525,14 +525,16 @@ def test_bindcraft_tighter_cap_blocks_what_rfdiffusion_allows():
 def test_size_envelope_gpu_field_populated():
     """GPU label is plumbed through so the panel can display it.
 
-    Week 2 calibration: rfantibody is A100-80GB (Modal log confirmed),
-    not A100-40GB as Week 1's rules incorrectly claimed.
+    rfantibody runs on A100-40GB, the GPU configured for the deployed
+    ranomics-rfantibody-prod app (llm-pd infrastructure/modal/
+    rfantibody_app.py _GPU, corroborated by base_image.py and
+    backend/pipelines/rfantibody.py).
     """
     data = _chain_pdb("A", list(range(1, 101)))
     v = preflight_for_tool(
         "rfantibody", data, target_chain="A", hotspots=[50],
     )
-    assert v.size_envelope.gpu == "A100-80GB"
+    assert v.size_envelope.gpu == "A100-40GB"
     v_bg = preflight_for_tool(
         "boltzgen", data, target_chain="A", hotspots=[],
     )
