@@ -223,6 +223,7 @@ def build_spec() -> dict[str, Any]:
                             },
                         },
                         "401": {"$ref": "#/components/responses/Error401"},
+                        "403": {"$ref": "#/components/responses/Error403"},
                         "404": {"$ref": "#/components/responses/Error404"},
                         "409": {"$ref": "#/components/responses/Error409"},
                     },

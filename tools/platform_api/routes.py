@@ -34,7 +34,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from flask import Blueprint, g, jsonify, make_response, request
+from flask import Blueprint, Response, g, jsonify, make_response, request
 
 from shared.api_auth import api_auth_required
 from shared.campaigns import (
@@ -625,9 +625,32 @@ def withdraw_experiment(experiment_id: str):
             current_status=campaign.status,
         )
 
-    if not delete_api_campaign(experiment_id, user_id=g.api_user_id):
-        # We loaded the row a moment ago, so a False here is a race or a DB
-        # fault, not a client error.
+    # Status-guarded delete: the predicate (owner + api-source + withdrawable
+    # status) lives on the DELETE itself, so a row that moved out of the
+    # withdrawable window between the load above and here (TOCTOU — e.g. the
+    # scoping team issues a quote concurrently) is NOT erased; the delete
+    # simply matches nothing.
+    if not delete_api_campaign(
+        experiment_id,
+        user_id=g.api_user_id,
+        allowed_statuses=_WITHDRAWABLE_STATUSES,
+    ):
+        # Matched no row: the campaign changed under us between load and
+        # delete. Re-resolve to answer honestly instead of a blanket 500.
+        recheck = _load_owned_campaign(experiment_id)
+        if not isinstance(recheck, Campaign):
+            return recheck  # gone — withdrawn concurrently (404)
+        if recheck.status not in _WITHDRAWABLE_STATUSES:
+            return _error(
+                409,
+                "not_withdrawable",
+                "This experiment changed state during the request (a quote "
+                "or lab work began) and can no longer be withdrawn. Re-check "
+                "its status.",
+                current_status=recheck.status,
+            )
+        # Still owned and still withdrawable, yet nothing was deleted: a
+        # genuine DB fault, not a client error.
         return _error(
             500,
             "withdraw_failed",
@@ -849,11 +872,15 @@ def _preflight(_anything: str = ""):
 # ---------------------------------------------------------------------------
 
 
-def _load_owned_campaign(experiment_id: str) -> Campaign | tuple:
+def _load_owned_campaign(experiment_id: str) -> "Campaign | Response":
     """Resolve an experiment id scoped to the authenticated user.
 
-    Returns the Campaign on success, or a Flask response tuple ready to
-    return on miss / wrong-user. Caller checks ``isinstance(... , tuple)``.
+    Returns the Campaign on success, or a Flask error ``Response`` (404) on
+    miss / wrong-user / non-API row. Callers MUST branch on
+    ``not isinstance(result, Campaign)`` and return the Response as-is — NOT
+    ``isinstance(result, tuple)``: ``_error`` returns a Response object, never
+    a tuple, and that stale check silently 500'd the 404 path until it was
+    corrected across the experiment endpoints.
     """
     campaign = get_campaign(experiment_id, user_id=g.api_user_id)
     if campaign is None:
