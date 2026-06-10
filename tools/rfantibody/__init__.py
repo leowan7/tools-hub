@@ -15,6 +15,77 @@ from typing import Any, Mapping, Optional
 from tools.base import Preset, ToolAdapter, register
 
 
+# RFantibody designs a VHH (single heavy chain), so only H1/H2/H3 are
+# valid CDRs. Lengths feed RFdiffusion's contig builder, which asserts on
+# malformed / out-of-envelope values mid-run, so reject them at submit.
+_CDR_SPEC_EXAMPLE = "H1:8,H2:7,H3:10-16"
+_CDR_BOUNDS: dict = {"H1": (1, 20), "H2": (1, 20), "H3": (5, 20)}
+
+
+def _validate_cdr_lengths(spec: str) -> Optional[str]:
+    """Validate the CDR length spec; return None when valid else a message.
+
+    Accepts comma-separated ``KEY:VALUE`` entries where KEY is one of
+    H1/H2/H3 and VALUE is a single length or a ``lo-hi`` range. The hyphen
+    in ``10-16`` is required input syntax (the GPU pipeline parses it);
+    error prose still renders numeric ranges as "X to Y".
+    """
+    text = (spec or "").strip()
+    if not text:
+        return None  # caller defaults this; empty means "use the default"
+    seen: set = set()
+    for raw_entry in text.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            return (
+                f'CDR spec entry "{entry}" must look like KEY:LENGTH. '
+                f'Example: "{_CDR_SPEC_EXAMPLE}".'
+            )
+        key, _, value = entry.partition(":")
+        key = key.strip().upper()
+        value = value.strip()
+        if key not in _CDR_BOUNDS:
+            return (
+                f'Unknown CDR "{key}". Use H1, H2, or H3 only '
+                f'(RFantibody designs a VHH heavy chain). '
+                f'Example: "{_CDR_SPEC_EXAMPLE}".'
+            )
+        if key in seen:
+            return f'CDR "{key}" is specified more than once.'
+        seen.add(key)
+        lo_s, sep, hi_s = value.partition("-")
+        lo_s, hi_s = lo_s.strip(), hi_s.strip()
+        if sep and not hi_s:
+            return (
+                f'CDR {key} range "{value}" is missing its upper bound '
+                f'(write it low to high, e.g. "10-16").'
+            )
+        try:
+            lo = int(lo_s)
+            hi = int(hi_s) if sep else lo
+        except ValueError:
+            return (
+                f'CDR {key} length "{value}" must be a whole number or a '
+                f'range written low to high (e.g. "10-16").'
+            )
+        if lo > hi:
+            return (
+                f"CDR {key} range is backwards: {lo} to {hi}. "
+                f"Write it low to high."
+            )
+        floor, ceil = _CDR_BOUNDS[key]
+        if lo < floor or hi > ceil:
+            return (
+                f"CDR {key} length must be between {floor} and {ceil} "
+                f"(got {value})."
+            )
+    if not seen:
+        return f'CDR spec is empty. Example: "{_CDR_SPEC_EXAMPLE}".'
+    return None
+
+
 def validate(
     form: Mapping[str, Any], files: Mapping[str, Any]
 ) -> tuple[Optional[dict], Optional[str]]:
@@ -47,6 +118,9 @@ def validate(
         return None, "At least one hotspot residue is required."
 
     cdr_lengths = (form.get("cdr_lengths") or "H1:8,H2:7,H3:10-16").strip()
+    cdr_err = _validate_cdr_lengths(cdr_lengths)
+    if cdr_err:
+        return None, cdr_err
 
     raw_num_designs = (form.get("num_designs") or "4").strip()
     try:
