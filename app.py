@@ -99,6 +99,7 @@ from typing import Optional
 from shared.pdb_inspect import (
     CifConversionError,
     convert_cif_to_pdb_bytes,
+    hotspot_range_message,
     inspect_pdb_bytes,
     summarize_for_log,
     validate_hotspots,
@@ -4026,15 +4027,10 @@ def create_app() -> Flask:
                         inspection, target_chain, hotspots,
                     )
                     if out_of_range:
-                        chain = inspection.chain(target_chain)
                         return render_template(
                             adapter.form_template, adapter=adapter,
-                            error=(
-                                f"Hotspot residue(s) {out_of_range} are not "
-                                f"in chain {target_chain} "
-                                f"(residue range: "
-                                f"{chain.min_resnum}..{chain.max_resnum}). "
-                                f"Use original PDB numbering."
+                            error=hotspot_range_message(
+                                inspection, target_chain, out_of_range,
                             ),
                             pre_fill=inputs, pdb_source=None,
                             workspace_ctx=workspace_ctx,

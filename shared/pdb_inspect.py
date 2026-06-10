@@ -340,6 +340,33 @@ def validate_hotspots(
     return in_range, out_of_range
 
 
+def hotspot_range_message(
+    report: InspectionReport, target_chain: str, out_of_range: list,
+) -> str:
+    """Build the user-facing "hotspots out of range" error string.
+
+    ``target_chain`` may be multi-token (``"A B"`` for a ProteinMPNN
+    multi-chain design). ``report.chain("A B")`` returns None, so reading
+    ``.min_resnum`` off it would raise AttributeError. We resolve the
+    first token for the displayed range and omit the range entirely when
+    the chain is absent or carries no protein residues, rather than crash.
+    """
+    tokens = (target_chain or "").split()
+    primary = tokens[0] if tokens else (target_chain or "")
+    chain = report.chain(primary)
+    if chain is not None and chain.min_resnum is not None:
+        rng = (
+            f" Chain {primary} covers residues "
+            f"{chain.min_resnum} to {chain.max_resnum}."
+        )
+    else:
+        rng = ""
+    return (
+        f"Hotspot residue(s) {out_of_range} are not in chain "
+        f"{target_chain}.{rng} Use original PDB numbering."
+    )
+
+
 def summarize_for_log(report: InspectionReport) -> str:
     """Compact one-line summary suitable for ``logger.info``."""
     parts: list = [

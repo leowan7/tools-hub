@@ -13,6 +13,7 @@ import pytest
 from shared.pdb_inspect import (
     InspectionReport,
     MAX_INSPECT_BYTES,
+    hotspot_range_message,
     inspect_pdb_bytes,
     summarize_for_log,
     validate_hotspots,
@@ -260,6 +261,43 @@ def test_hotspots_against_missing_chain_all_rejected():
     in_range, out = validate_hotspots(report, "Z", [1, 2, 3])
     assert in_range == []
     assert out == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Tests: hotspot_range_message (gap 5 — multi-token target_chain must not 500)
+# ---------------------------------------------------------------------------
+
+def test_hotspot_range_message_single_chain_shows_range():
+    report = inspect_pdb_bytes(CLEAN_TWO_RES_PDB)  # chain A, residues 20-21
+    msg = hotspot_range_message(report, "A", [100])
+    assert "100" in msg
+    assert "20 to 21" in msg
+    assert "original PDB numbering" in msg.lower() or "original" in msg.lower()
+
+
+def test_hotspot_range_message_multi_token_chain_does_not_raise():
+    """The latent 500: inspection.chain("A B") is None.
+
+    The old code read ``.min_resnum`` off that None -> AttributeError -> 500.
+    The helper must resolve the first token for the range and never raise.
+    """
+    report = inspect_pdb_bytes(TWO_PROTEIN_CHAINS_PDB)  # chain A (20), chain B (30)
+    assert report.chain("A B") is None  # documents the bug premise
+    msg = hotspot_range_message(report, "A B", [999])
+    assert "999" in msg
+    assert "A B" in msg
+    # Range resolves off the first token (chain A starts/ends at 20).
+    assert "20 to 20" in msg
+
+
+def test_hotspot_range_message_absent_chain_omits_range():
+    """When the primary chain is absent, omit the range rather than crash."""
+    report = inspect_pdb_bytes(CLEAN_TWO_RES_PDB)  # only chain A
+    msg = hotspot_range_message(report, "Z", [5])
+    assert "5" in msg
+    assert "Z" in msg
+    # No "residues None to None" leakage.
+    assert "None" not in msg
 
 
 # ---------------------------------------------------------------------------
