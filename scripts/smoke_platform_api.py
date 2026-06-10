@@ -339,6 +339,84 @@ def step_withdraw(experiment_id: str) -> Step:
     return Step(label, True, elapsed, "withdrawn; read-back 404 (auto-cleanup OK)")
 
 
+def _have_service_creds() -> bool:
+    return bool(
+        os.environ.get("SUPABASE_URL")
+        and os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    )
+
+
+def step_quote_roundtrip(experiment_id: str) -> Step | None:
+    """Optional: post a quote via the service client, then read it back
+    through the public API and assert real numbers come back.
+
+    Skipped (returns None) unless SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+    are present — CI runs with only RK_LIVE_KEY and no DB access, so the
+    quote (admin-only to set) cannot be exercised there. Requires the repo
+    importable (run from the repo root). The row is moved to QuoteSent,
+    which the API withdraw path can no longer delete, so the caller cleans
+    up via the service client (`_service_cleanup`)."""
+    if not _have_service_creds():
+        return None
+    label = "GET /experiments/{id}/quote (service round-trip)"
+    t0 = time.perf_counter()
+    try:
+        from shared.campaigns import (  # noqa: PLC0415
+            set_campaign_quote,
+            transition_api_status,
+        )
+    except Exception as exc:  # repo not importable from this CWD
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return Step(label, False, elapsed, f"repo import failed: {exc!r}")
+
+    total = 12345.67
+    set_campaign_quote(
+        experiment_id,
+        total_usd=total,
+        currency="USD",
+        line_items=[{"name": "Smoke line", "amount_usd": total}],
+        valid_until="2099-01-01T23:59:59+00:00",
+        notes="smoke quote",
+    )
+    transition_api_status(experiment_id, new_status="QuoteSent", by="smoke")
+
+    resp = _http("GET", f"/experiments/{experiment_id}/quote")
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    if resp.status != 200:
+        return Step(label, False, elapsed, f"HTTP {resp.status}: {resp.body!r}")
+    body = resp.body
+    if not isinstance(body, dict):
+        return Step(label, False, elapsed, f"non-dict body: {body!r}")
+    if body.get("total_usd") != total:
+        return Step(label, False, elapsed, f"total_usd mismatch: {body.get('total_usd')!r}")
+    if body.get("currency") != "USD":
+        return Step(label, False, elapsed, f"currency mismatch: {body.get('currency')!r}")
+    if not body.get("line_items"):
+        return Step(label, False, elapsed, "line_items empty after set")
+    return Step(
+        label,
+        True,
+        elapsed,
+        f"total_usd={body['total_usd']} line_items={len(body['line_items'])}",
+    )
+
+
+def _service_cleanup(experiment_id: str) -> bool:
+    """Delete the smoke row via the service client. Used after the quote
+    round-trip, which leaves the row at QuoteSent (no longer withdrawable
+    through the API)."""
+    try:
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        client = get_service_client()
+        if client is None:
+            return False
+        client.table("lab_campaigns").delete().eq("id", experiment_id).execute()
+        return True
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -373,12 +451,22 @@ def main() -> int:
         get_step = step_get_experiment(experiment_id)
         steps.append(get_step)
 
-        # Always attempt cleanup of the row we just created, even if an
-        # earlier step failed: the withdraw endpoint is itself under test,
-        # and a passing withdraw leaves nothing to sweep by hand.
-        withdraw_step = step_withdraw(experiment_id)
-        steps.append(withdraw_step)
-        cleaned = withdraw_step.passed
+        # Optional quote round-trip, only when service creds are present.
+        # It moves the row to QuoteSent (past the API-withdrawable states),
+        # so when it runs we clean up via the service client instead of the
+        # withdraw endpoint. Without service creds it is skipped and the
+        # withdraw path both tests itself and self-cleans the row.
+        quote_step = step_quote_roundtrip(experiment_id)
+        if quote_step is not None:
+            steps.append(quote_step)
+            cleaned = _service_cleanup(experiment_id)
+        else:
+            # Always attempt cleanup of the row we just created, even if an
+            # earlier step failed: the withdraw endpoint is itself under
+            # test, and a passing withdraw leaves nothing to sweep by hand.
+            withdraw_step = step_withdraw(experiment_id)
+            steps.append(withdraw_step)
+            cleaned = withdraw_step.passed
 
     return _summarise(steps, experiment_id, cleaned=cleaned, started_clean=True)
 

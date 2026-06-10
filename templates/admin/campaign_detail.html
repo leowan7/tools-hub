@@ -15,9 +15,15 @@
 </div>
 
 {% if flash_msg %}
-  <div style="background:rgba(43,158,126,.12);border:1px solid rgba(43,158,126,.4);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;">
-    {{ flash_msg }}
-  </div>
+  {% if flash_kind == 'error' %}
+    <div style="background:rgba(214,77,77,.12);border:1px solid rgba(214,77,77,.45);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;">
+      {{ flash_msg }}
+    </div>
+  {% else %}
+    <div style="background:rgba(43,158,126,.12);border:1px solid rgba(43,158,126,.4);border-radius:var(--radius-md);padding:.75rem 1rem;margin-bottom:1rem;">
+      {{ flash_msg }}
+    </div>
+  {% endif %}
 {% endif %}
 
 <div style="display:grid;grid-template-columns:1fr 340px;gap:1.25rem;align-items:start;">
@@ -118,6 +124,73 @@
               <dd style="margin:0;">{{ v }}</dd>
             {% endfor %}
           </dl>
+        </div>
+      </div>
+    {% endif %}
+
+    {# API — operator quote editor. Persisted values are returned verbatim
+       by GET /api/v1/experiments/{id}/quote once status is QuoteSent. #}
+    {% if is_api %}
+      <div class="panel" style="margin-bottom:1rem;">
+        <div class="panel-header"><span class="panel-title">Quote</span></div>
+        <div class="panel-body">
+          <form action="/admin/campaigns/{{ campaign.id }}/quote" method="POST">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.85rem;margin-bottom:.85rem;">
+              <div class="form-field">
+                <label for="quote_total_usd" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Total (USD)</label>
+                <input type="number" id="quote_total_usd" name="quote_total_usd" class="form-control"
+                       step="0.01" min="0" inputmode="decimal"
+                       value="{{ '%.2f'|format(campaign.quote_total_usd) if campaign.quote_total_usd is not none else '' }}"
+                       placeholder="e.g. 48000.00">
+              </div>
+              <div class="form-field">
+                <label for="quote_valid_until" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+                  Valid until <span style="color:var(--text-secondary);font-weight:400;">(optional)</span>
+                </label>
+                <input type="date" id="quote_valid_until" name="quote_valid_until" class="form-control"
+                       value="{{ campaign.quote_valid_until[:10] if campaign.quote_valid_until else '' }}">
+              </div>
+            </div>
+
+            <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+              Line items <span style="color:var(--text-secondary);font-weight:400;">(optional breakdown; blank rows are ignored)</span>
+            </label>
+            <div style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.85rem;">
+              {% for item in campaign.quote_line_items or [] %}
+                <div style="display:grid;grid-template-columns:1fr 120px 1fr;gap:.4rem;">
+                  <input type="text"   name="line_name"   class="form-control" value="{{ item.get('name', '') }}" placeholder="Description">
+                  <input type="number" name="line_amount" class="form-control" step="0.01" min="0" value="{{ item.get('amount_usd', '') }}" placeholder="USD">
+                  <input type="text"   name="line_notes"  class="form-control" value="{{ item.get('notes', '') }}" placeholder="Notes (optional)">
+                </div>
+              {% endfor %}
+              {% for _ in range(4) %}
+                <div style="display:grid;grid-template-columns:1fr 120px 1fr;gap:.4rem;">
+                  <input type="text"   name="line_name"   class="form-control" placeholder="Description">
+                  <input type="number" name="line_amount" class="form-control" step="0.01" min="0" placeholder="USD">
+                  <input type="text"   name="line_notes"  class="form-control" placeholder="Notes (optional)">
+                </div>
+              {% endfor %}
+            </div>
+
+            <div class="form-field" style="margin-bottom:.85rem;">
+              <label for="quote_notes" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+                Quote notes <span style="color:var(--text-secondary);font-weight:400;">(shown to customer)</span>
+              </label>
+              <textarea id="quote_notes" name="quote_notes" class="form-control" rows="3"
+                        placeholder="Scope summary, assumptions, what the price covers...">{{ campaign.quote_notes or '' }}</textarea>
+            </div>
+
+            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem;font-size:.85rem;">
+              <input type="checkbox" name="set_quote_sent" value="1"
+                     {% if campaign.status == 'WaitingForConfirmation' %}checked{% endif %}>
+              Move status to QuoteSent on save
+            </label>
+
+            <button type="submit" class="btn-primary" style="width:100%;">Save quote</button>
+            <p style="font-size:.75rem;color:var(--text-secondary);margin:.5rem 0 0;line-height:1.4;">
+              Returned by GET /api/v1/experiments/{id}/quote once status is QuoteSent. No webhook or email fires from here.
+            </p>
+          </form>
         </div>
       </div>
     {% endif %}

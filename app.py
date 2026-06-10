@@ -5787,7 +5787,15 @@ def create_app() -> Flask:
         campaign = get_campaign(campaign_id)
         if campaign is None:
             return render_template("404.html"), 404
-        flash_msg = request.args.get("updated") == "1" and "Status updated."
+        flash_msg = None
+        flash_kind = "success"
+        if request.args.get("updated") == "1":
+            flash_msg = "Status updated."
+        elif request.args.get("quoted") == "1":
+            flash_msg = "Quote saved."
+        elif request.args.get("quote_error") == "1":
+            flash_msg = "Quote could not be saved. Check the values and retry."
+            flash_kind = "error"
         # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
         # web-funnel campaigns on the short one. Offer the right status set so
         # the admin form posts a value the backend will accept.
@@ -5801,6 +5809,7 @@ def create_app() -> Flask:
             campaign=campaign,
             statuses=statuses,
             flash_msg=flash_msg or None,
+            flash_kind=flash_kind,
         )
 
     @flask_app.route("/admin/campaigns/<campaign_id>/status", methods=["POST"])
@@ -5886,6 +5895,133 @@ def create_app() -> Flask:
 
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?updated=1"
+        )
+
+    @flask_app.route("/admin/campaigns/<campaign_id>/quote", methods=["POST"])
+    def admin_campaign_save_quote(campaign_id: str):
+        """Persist an operator-entered quote on an API-FSM campaign.
+
+        Quotes apply only to API-direct (MCP/REST) campaigns; web-funnel
+        rows have no quote concept and run on the short status enum, so a
+        non-API row 404s. set_campaign_quote writes all quote columns (the
+        form is the full source of truth). If "Move status to QuoteSent on
+        save" is checked and the row is still pre-quote, we advance the FSM
+        via the atomic RPC — silently, like every other admin transition
+        (no webhook/email; the customer's agent observes it on its next
+        poll). Phase 3 adds opt-in customer notification.
+        """
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import (  # noqa: PLC0415
+            get_campaign,
+            set_campaign_quote,
+            transition_api_status,
+        )
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login"))
+        if email not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        campaign = get_campaign(campaign_id)
+        if campaign is None:
+            return render_template("404.html"), 404
+        if campaign.submission_source != "api":
+            return render_template("404.html"), 404
+
+        # Authoritative total. Blank -> None (and possibly summed below).
+        raw_total = request.form.get("quote_total_usd", "").strip()
+        total_usd = None
+        if raw_total:
+            try:
+                parsed = float(raw_total)
+            except ValueError:
+                parsed = None
+            if parsed is not None and parsed >= 0:
+                total_usd = parsed
+
+        # Line items come in as three parallel arrays (one row each). Each
+        # rendered row always emits all three inputs, so the lists stay
+        # index-aligned; drop rows that are entirely blank.
+        names = request.form.getlist("line_name")
+        amounts = request.form.getlist("line_amount")
+        line_notes = request.form.getlist("line_notes")
+        line_items: list[dict] = []
+        for i, raw_name in enumerate(names):
+            name = (raw_name or "").strip()
+            raw_amt = (amounts[i] if i < len(amounts) else "").strip()
+            note = (line_notes[i] if i < len(line_notes) else "").strip()
+            if not name and not raw_amt and not note:
+                continue
+            item: dict = {"name": name}
+            if raw_amt:
+                try:
+                    amt = float(raw_amt)
+                except ValueError:
+                    amt = None
+                if amt is not None and amt >= 0:
+                    item["amount_usd"] = amt
+            if note:
+                item["notes"] = note
+            line_items.append(item)
+
+        # Convenience: no explicit total but the line items carry amounts ->
+        # use their sum so the customer still sees a total.
+        if total_usd is None and line_items:
+            summed = sum(it["amount_usd"] for it in line_items if "amount_usd" in it)
+            if summed > 0:
+                total_usd = float(summed)
+
+        # A bare date input means "valid through end of that day" (UTC).
+        # Validate it here: an invalid/forged value must NOT reach the
+        # timestamptz column, where a cast error would be swallowed by
+        # set_campaign_quote and look like a silent no-save.
+        from datetime import date as _date  # noqa: PLC0415
+        raw_valid = request.form.get("quote_valid_until", "").strip()
+        valid_until = None
+        if raw_valid:
+            try:
+                parsed_valid = _date.fromisoformat(raw_valid)
+            except ValueError:
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?quote_error=1"
+                )
+            valid_until = f"{parsed_valid.isoformat()}T23:59:59+00:00"
+
+        quote_notes = request.form.get("quote_notes", "").strip() or None
+
+        saved = set_campaign_quote(
+            campaign_id,
+            total_usd=total_usd,
+            currency="USD",
+            line_items=line_items,
+            valid_until=valid_until,
+            notes=quote_notes,
+        )
+        if saved is None:
+            # Write failed (service client down, RLS, CHECK violation, …).
+            # Do NOT advance the FSM or claim success — surface an error.
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?quote_error=1"
+            )
+
+        # Quote is persisted, so a customer fetching /quote the instant the
+        # status flips already sees real numbers. Only now advance the FSM.
+        # transition_api_status is forward-only and a no-op past QuoteSent.
+        if request.form.get("set_quote_sent") == "1" and campaign.status in (
+            "Draft",
+            "WaitingForConfirmation",
+        ):
+            try:
+                transition_api_status(
+                    campaign_id, new_status="QuoteSent", by="admin"
+                )
+            except ValueError:
+                pass
+
+        return redirect(
+            url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"
         )
 
     # ------------------------------------------------------------------

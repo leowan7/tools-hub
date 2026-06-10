@@ -681,25 +681,29 @@ def get_experiment_quote(experiment_id: str):
             current_status=campaign.status,
         )
 
-    # The alpha hands back a stub. A future migration writes real quote
-    # line items into a related table (or onto lab_campaigns via a
-    # dedicated jsonb column). The shape stays stable.
-    return jsonify(
-        {
-            "experiment_id": campaign.id,
-            "quote_id": campaign.id,  # 1:1 in the alpha
-            "status": campaign.status,
-            "issued_at": campaign.last_transition_at,
-            "line_items": [],
-            "total_usd": None,
-            "valid_until": None,
-            "terms_url": _terms_url(),
-            "note": (
-                "Alpha-mode stub. The line-item shape is documented in "
-                "the OpenAPI spec under /openapi.json."
-            ),
-        }
-    )
+    # Persisted quote (migration 0030), written by the operator in the
+    # admin UI via set_campaign_quote. The shape matches the OpenAPI Quote
+    # schema. quote_id == experiment_id in the alpha (1:1). issued_at is the
+    # QuoteSent transition time (last_transition_at).
+    body = {
+        "experiment_id": campaign.id,
+        "quote_id": campaign.id,
+        "status": campaign.status,
+        "issued_at": campaign.last_transition_at,
+        "line_items": campaign.quote_line_items or [],
+        "total_usd": campaign.quote_total_usd,
+        "currency": campaign.quote_currency or "USD",
+        "valid_until": campaign.quote_valid_until,
+        "terms_url": _terms_url(),
+    }
+    # Status reached QuoteSent but the operator has not posted a price yet.
+    # Surface a soft note rather than implying a $0 / empty quote is final.
+    if campaign.quote_total_usd is None:
+        body["note"] = (
+            "The quote is being finalised. total_usd and line_items will "
+            "populate once the scoping team posts the price."
+        )
+    return jsonify(body)
 
 
 # ---------------------------------------------------------------------------

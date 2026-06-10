@@ -99,6 +99,12 @@ class Campaign:
     results_status: str = "none"
     last_transition_at: Optional[str] = None
     status_log: list[dict[str, Any]] = field(default_factory=list)
+    # Operator quote (migration 0030). API rows only.
+    quote_total_usd: Optional[float] = None
+    quote_currency: str = "USD"
+    quote_line_items: list[dict[str, Any]] = field(default_factory=list)
+    quote_valid_until: Optional[str] = None
+    quote_notes: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Campaign":
@@ -129,6 +135,15 @@ class Campaign:
             results_status=row.get("results_status") or "none",
             last_transition_at=row.get("last_transition_at"),
             status_log=list(row.get("status_log") or []),
+            quote_total_usd=(
+                float(row["quote_total_usd"])
+                if row.get("quote_total_usd") is not None
+                else None
+            ),
+            quote_currency=row.get("quote_currency") or "USD",
+            quote_line_items=list(row.get("quote_line_items") or []),
+            quote_valid_until=row.get("quote_valid_until"),
+            quote_notes=row.get("quote_notes"),
         )
 
 
@@ -322,6 +337,55 @@ def set_campaign_admin_fields(
         logger.error(
             "set_campaign_admin_fields failed for %s", campaign_id, exc_info=True
         )
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return None
+    return Campaign.from_row(rows[0])
+
+
+def set_campaign_quote(
+    campaign_id: str,
+    *,
+    total_usd: Optional[float] = None,
+    currency: str = "USD",
+    line_items: Optional[list[dict[str, Any]]] = None,
+    valid_until: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> Optional[Campaign]:
+    """Persist the operator-entered quote onto an API-source campaign
+    (migration 0030 columns).
+
+    Unlike :func:`set_campaign_admin_fields` — which writes only the fields
+    you pass and leaves blanks untouched — the admin quote form is the full
+    source of truth for the quote, so every quote column is written on each
+    save. A cleared field clears the stored value. Status is deliberately
+    NOT touched here; the route moves the row to 'QuoteSent' via
+    :func:`transition_api_status` separately so the FSM stays on its atomic
+    RPC path.
+
+    Returns the refreshed Campaign, or None on DB failure.
+    """
+    client = get_service_client()
+    if client is None:
+        logger.error("set_campaign_quote: service client unavailable")
+        return None
+    patch: dict = {
+        "quote_total_usd": total_usd,
+        "quote_currency": (currency or "USD"),
+        "quote_line_items": list(line_items or []),
+        "quote_valid_until": valid_until,
+        "quote_notes": notes,
+    }
+    try:
+        response = (
+            client.table(_TABLE)
+            .update(patch)
+            .eq("id", campaign_id)
+            .execute()
+        )
+    except Exception:
+        logger.error("set_campaign_quote failed for %s", campaign_id, exc_info=True)
         return None
     rows = list(getattr(response, "data", None) or [])
     if not rows:
