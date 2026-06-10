@@ -195,6 +195,63 @@
       </div>
     {% endif %}
 
+    {# API — operator results delivery (gap G2) #}
+    {% if is_api %}
+      <div class="panel" style="margin-bottom:1rem;">
+        <div class="panel-header"><span class="panel-title">Results</span></div>
+        <div class="panel-body">
+          <form action="/admin/campaigns/{{ campaign.id }}/results" method="POST" enctype="multipart/form-data">
+            <div class="form-field" style="margin-bottom:.85rem;">
+              <label for="results_status" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Results status</label>
+              <select id="results_status" name="results_status" class="form-control">
+                {% for rs in ['none', 'partial', 'all'] %}
+                  <option value="{{ rs }}" {% if rs == campaign.results_status %}selected{% endif %}>{{ rs }}</option>
+                {% endfor %}
+              </select>
+              <p style="font-size:.75rem;color:var(--text-secondary);margin:.4rem 0 0;line-height:1.4;">
+                GET /api/v1/experiments/{id}/results stays 404 until this leaves "none". Moving it off "none" fires a results-ready webhook when the row has one.
+              </p>
+            </div>
+
+            <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+              Result files <span style="color:var(--text-secondary);font-weight:400;">(optional; re-upload a slot to replace it)</span>
+            </label>
+            <div style="display:grid;grid-template-columns:max-content 1fr;gap:.45rem 1rem;align-items:center;margin-bottom:.6rem;font-size:.85rem;">
+              <label for="enrichment_table_csv" style="color:var(--text-secondary);">Enrichment CSV</label>
+              <input type="file" id="enrichment_table_csv" name="enrichment_table_csv" class="form-control" accept=".csv,text/csv">
+              <label for="hits_fasta" style="color:var(--text-secondary);">Hits FASTA</label>
+              <input type="file" id="hits_fasta" name="hits_fasta" class="form-control" accept=".fasta,.fa,.txt">
+              <label for="raw_reads_fastq" style="color:var(--text-secondary);">Raw reads FASTQ</label>
+              <input type="file" id="raw_reads_fastq" name="raw_reads_fastq" class="form-control">
+            </div>
+            {% if campaign.results and campaign.results.get('download_paths') %}
+              <p style="font-size:.78rem;color:var(--text-secondary);margin:0 0 .85rem;">
+                Stored files: {{ campaign.results.get('download_paths').keys() | join(', ') }}
+              </p>
+            {% else %}
+              <p style="font-size:.78rem;color:var(--text-secondary);margin:0 0 .85rem;">
+                Files over 25 MB (raw reads) should be linked in the JSON "downloads" map below instead of uploaded.
+              </p>
+            {% endif %}
+
+            <div class="form-field" style="margin-bottom:.85rem;">
+              <label for="results_json" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">
+                Results JSON <span style="color:var(--text-secondary);font-weight:400;">(optional; Adaptyv YDS envelope)</span>
+              </label>
+              <textarea id="results_json" name="results_json" class="form-control" rows="6" spellcheck="false"
+                        style="font-family:'Geist Mono',monospace;font-size:.78rem;"
+                        placeholder='{"rounds": [...], "sequences": [...], "downloads": {"raw_reads_fastq": "https://..."}}'>{% if campaign.results %}{{ {'rounds': campaign.results.get('rounds', []), 'sequences': campaign.results.get('sequences', []), 'downloads': campaign.results.get('downloads', {})} | tojson }}{% endif %}</textarea>
+              <p style="font-size:.75rem;color:var(--text-secondary);margin:.4rem 0 0;line-height:1.4;">
+                Leave blank to keep the stored rounds/sequences. "downloads" is for external links not uploaded above.
+              </p>
+            </div>
+
+            <button type="submit" class="btn-primary" style="width:100%;">Save results</button>
+          </form>
+        </div>
+      </div>
+    {% endif %}
+
     {# API — status history #}
     {% if is_api and campaign.status_log %}
       <div class="panel" style="margin-bottom:1rem;">

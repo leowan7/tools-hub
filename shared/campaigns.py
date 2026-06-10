@@ -105,6 +105,8 @@ class Campaign:
     quote_line_items: list[dict[str, Any]] = field(default_factory=list)
     quote_valid_until: Optional[str] = None
     quote_notes: Optional[str] = None
+    # Operator results envelope (migration 0031). API rows only.
+    results: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Campaign":
@@ -144,6 +146,7 @@ class Campaign:
             quote_line_items=list(row.get("quote_line_items") or []),
             quote_valid_until=row.get("quote_valid_until"),
             quote_notes=row.get("quote_notes"),
+            results=row.get("results"),
         )
 
 
@@ -386,6 +389,51 @@ def set_campaign_quote(
         )
     except Exception:
         logger.error("set_campaign_quote failed for %s", campaign_id, exc_info=True)
+        return None
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return None
+    return Campaign.from_row(rows[0])
+
+
+def set_campaign_results(
+    campaign_id: str,
+    *,
+    results: Optional[dict[str, Any]],
+    results_status: str,
+) -> Optional[Campaign]:
+    """Persist the operator results envelope (migration 0031 ``results``
+    column) and the ``results_status`` flag in one write.
+
+    ``results`` is the full envelope (rounds, sequences, download_paths,
+    optional external downloads) that GET /experiments/{id}/results reads;
+    pass the merged envelope each save (the route owns the merge of newly
+    uploaded files onto any prior ``download_paths``). Stored in a dedicated
+    column rather than ``library_design`` so the internal download paths
+    never leak through the experiment_spec.library_design passthrough.
+
+    ``results_status`` must be one of RESULTS_STATUSES; it gates whether the
+    API serves the envelope. Status (the FSM) is not touched here.
+    """
+    if results_status not in RESULTS_STATUSES:
+        raise ValueError(f"invalid results_status: {results_status!r}")
+    client = get_service_client()
+    if client is None:
+        logger.error("set_campaign_results: service client unavailable")
+        return None
+    patch: dict = {
+        "results": results,
+        "results_status": results_status,
+    }
+    try:
+        response = (
+            client.table(_TABLE)
+            .update(patch)
+            .eq("id", campaign_id)
+            .execute()
+        )
+    except Exception:
+        logger.error("set_campaign_results failed for %s", campaign_id, exc_info=True)
         return None
     rows = list(getattr(response, "data", None) or [])
     if not rows:

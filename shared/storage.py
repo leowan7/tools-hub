@@ -240,6 +240,76 @@ def stage_campaign_candidates(
     return written
 
 
+# Campaign results size cap. Modestly larger than the input cap: enrichment
+# tables and hit FASTAs are small, but a slice of NGS output can run bigger.
+# Large raw FASTQ should be linked externally via the results "downloads"
+# map rather than uploaded through the form.
+MAX_CAMPAIGN_RESULT_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+def upload_campaign_result(
+    *,
+    campaign_id: str,
+    filename: str,
+    data: bytes,
+    content_type: str = "application/octet-stream",
+) -> str:
+    """Upload an operator-attached result file under
+    ``lab-campaigns/{campaign_id}/results/{filename}`` and return the object
+    path.
+
+    The path (not a URL) is what the campaign's results envelope stores in
+    ``download_paths``; GET /experiments/{id}/results mints a fresh signed
+    URL from it at read time so the link never expires in storage. Raises
+    StorageError on an empty, oversized, or failed upload.
+    """
+    if len(data) == 0:
+        raise StorageError("Refusing to upload empty result file.")
+    if len(data) > MAX_CAMPAIGN_RESULT_BYTES:
+        raise StorageError(
+            f"Result file exceeds {MAX_CAMPAIGN_RESULT_BYTES} byte cap "
+            f"({len(data)} bytes). Link large raw reads externally instead."
+        )
+    safe = _safe_filename(filename)
+    path = f"{campaign_id}/results/{safe}"
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(CAMPAIGN_BUCKET)
+        bucket.upload(
+            path=path,
+            file=data,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+    except Exception as exc:
+        logger.error("Campaign result upload failed for %s", path, exc_info=True)
+        raise StorageError(f"campaign result upload failed: {exc}") from exc
+    return path
+
+
+def presigned_campaign_url(object_path: str, *, expires_seconds: int = 3600) -> str:
+    """Mint a short-lived signed download URL for a ``lab-campaigns`` object.
+
+    Used by GET /experiments/{id}/results to resolve stored result-file
+    paths into fresh links on every read (default 1 hour), so a customer
+    never receives a URL that has already expired in storage.
+    """
+    client = get_service_client()
+    if client is None:
+        raise StorageError("Supabase service client unavailable.")
+    try:
+        bucket = client.storage.from_(CAMPAIGN_BUCKET)
+        result = bucket.create_signed_url(object_path, expires_seconds)
+    except Exception as exc:
+        logger.error("Campaign signed URL failed for %s", object_path, exc_info=True)
+        raise StorageError(f"campaign signed URL failed: {exc}") from exc
+    url = _extract_signed_url(result)
+    if url:
+        return url
+    raise StorageError(f"unexpected campaign signed URL response: {result!r}")
+
+
 OUTPUT_BUCKET = "tool-outputs"
 
 # Default TTLs for output-side signed URLs.

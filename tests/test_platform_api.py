@@ -257,11 +257,14 @@ def _api_campaign(
     quote_valid_until=None,
     quote_currency="USD",
     last_transition_at=None,
+    results_status="none",
+    results=None,
+    webhook_url=None,
 ):
     """Minimal API-source Campaign for route tests.
 
-    Quote fields default to the empty/unquoted state; pass them to exercise
-    the populated-quote path.
+    Quote / results fields default to the empty state; pass them to
+    exercise the populated paths.
     """
     from shared.campaigns import Campaign
 
@@ -283,11 +286,14 @@ def _api_campaign(
         reviewed_at=None,
         name="smoke",
         submission_source="api",
+        webhook_url=webhook_url,
+        results_status=results_status,
         last_transition_at=last_transition_at,
         quote_total_usd=quote_total_usd,
         quote_currency=quote_currency,
         quote_line_items=quote_line_items or [],
         quote_valid_until=quote_valid_until,
+        results=results,
     )
 
 
@@ -781,6 +787,164 @@ def test_openapi_documents_quote_currency():
     quote_props = body["components"]["schemas"]["Quote"]["properties"]
     assert "currency" in quote_props
     assert "total_usd" in quote_props
+
+
+# ---------------------------------------------------------------------------
+# GET /experiments/{id}/results — results delivery (Phase 2)
+# ---------------------------------------------------------------------------
+
+
+def test_results_not_ready_when_status_none():
+    app = _build_app()
+    client = app.test_client()
+    with patch("shared.api_auth.resolve_token", return_value=_valid_ctx()), patch(
+        "tools.platform_api.routes._load_owned_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="none"),
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1/results",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 404
+    assert resp.get_json()["error"]["code"] == "results_not_ready"
+
+
+def test_results_returns_envelope_with_fresh_signed_urls():
+    """download_paths resolve to fresh signed URLs; external downloads merge;
+    rounds + sequences pass through; internal paths never leak to the client."""
+    app = _build_app()
+    client = app.test_client()
+    campaign = _api_campaign(
+        "Done",
+        results_status="all",
+        results={
+            "rounds": [{"round_id": "r1", "sort_gate": "top1pct"}],
+            "sequences": [
+                {"user_key": "d1", "log2_enrichment": 3.2, "called_hit": True}
+            ],
+            "download_paths": {
+                "enrichment_table_csv": "exp-smoke-1/results/enrichment_table_csv.csv"
+            },
+            "downloads": {"raw_reads_fastq": "https://example.com/raw.fastq.gz"},
+        },
+    )
+    with patch("shared.api_auth.resolve_token", return_value=_valid_ctx()), patch(
+        "tools.platform_api.routes._load_owned_campaign", return_value=campaign
+    ), patch(
+        "shared.storage.presigned_campaign_url",
+        return_value="https://signed.example/enrichment.csv?token=abc",
+    ):
+        resp = client.get(
+            "/api/v1/experiments/exp-smoke-1/results",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["results_status"] == "all"
+    assert body["rounds"][0]["round_id"] == "r1"
+    assert body["sequences"][0]["called_hit"] is True
+    # Uploaded file -> fresh signed URL.
+    assert body["downloads"]["enrichment_table_csv"].startswith("https://signed.example")
+    # External link merged through.
+    assert body["downloads"]["raw_reads_fastq"] == "https://example.com/raw.fastq.gz"
+    # Internal storage paths never leak.
+    assert "download_paths" not in body
+
+
+def test_set_campaign_results_writes_column_and_status():
+    from shared import campaigns as campaigns_mod
+
+    captured: dict = {}
+
+    class _Resp:
+        data = [
+            {
+                "id": "exp-smoke-1",
+                "user_id": "u1",
+                "source_job_id": None,
+                "candidate_indices": [0],
+                "target_name": "x",
+                "assay_type": "yeast_display",
+                "budget_band": "custom",
+                "status": "Done",
+                "submission_source": "api",
+                "results_status": "all",
+                "results": {"rounds": [], "sequences": []},
+            }
+        ]
+
+    class _Table:
+        def update(self, patch):
+            captured["patch"] = patch
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return _Resp()
+
+    class _Client:
+        def table(self, _name):
+            return _Table()
+
+    with patch.object(campaigns_mod, "get_service_client", return_value=_Client()):
+        result = campaigns_mod.set_campaign_results(
+            "exp-smoke-1",
+            results={"rounds": [], "sequences": []},
+            results_status="all",
+        )
+    assert set(captured["patch"].keys()) == {"results", "results_status"}
+    assert captured["patch"]["results_status"] == "all"
+    assert result is not None
+    assert result.results_status == "all"
+
+
+def test_set_campaign_results_rejects_bad_status():
+    from shared import campaigns as campaigns_mod
+
+    with pytest.raises(ValueError):
+        campaigns_mod.set_campaign_results("x", results={}, results_status="bogus")
+
+
+def test_results_save_route_persists_and_redirects():
+    client = _full_app_client()
+    saved = _api_campaign("DataAnalysis", results_status="all")
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="none"),
+    ), patch(
+        "shared.campaigns.set_campaign_results", return_value=saved
+    ) as set_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/results",
+            data={
+                "results_status": "all",
+                "results_json": '{"rounds": [], "sequences": []}',
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert "results_saved=1" in resp.headers["Location"]
+    assert set_mock.called
+
+
+def test_results_save_route_rejects_bad_json_before_write():
+    client = _full_app_client()
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="none"),
+    ), patch("shared.campaigns.set_campaign_results") as set_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/results",
+            data={"results_status": "partial", "results_json": "{not valid json"},
+        )
+    assert resp.status_code in (302, 303)
+    assert "results_error=1" in resp.headers["Location"]
+    assert not set_mock.called
 
 
 # ---------------------------------------------------------------------------

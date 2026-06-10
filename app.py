@@ -5796,6 +5796,11 @@ def create_app() -> Flask:
         elif request.args.get("quote_error") == "1":
             flash_msg = "Quote could not be saved. Check the values and retry."
             flash_kind = "error"
+        elif request.args.get("results_saved") == "1":
+            flash_msg = "Results saved."
+        elif request.args.get("results_error") == "1":
+            flash_msg = "Results could not be saved. Check the files and JSON, then retry."
+            flash_kind = "error"
         # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
         # web-funnel campaigns on the short one. Offer the right status set so
         # the admin form posts a value the backend will accept.
@@ -6022,6 +6027,169 @@ def create_app() -> Flask:
 
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"
+        )
+
+    @flask_app.route("/admin/campaigns/<campaign_id>/results", methods=["POST"])
+    def admin_campaign_save_results(campaign_id: str):
+        """Attach results to an API-FSM campaign (gap G2).
+
+        Accepts up to three result files (enrichment CSV, hits FASTA, raw
+        reads FASTQ) uploaded to Supabase Storage under
+        lab-campaigns/{id}/results/, and/or a pasted YDS results JSON
+        (rounds + sequences, optional external downloads). File uploads are
+        additive: each save merges newly uploaded paths onto any previously
+        stored download_paths, and a blank JSON box leaves prior rounds /
+        sequences intact. The results_status picker gates whether the API
+        serves the envelope. When results_status first leaves 'none' (or
+        changes among partial/all) and the row has a webhook_url, a
+        results-ready webhook fires; otherwise this is silent like every
+        other admin change.
+        """
+        import json as _json  # noqa: PLC0415
+        import posixpath as _posixpath  # noqa: PLC0415
+        from shared.auth import STAFF_EMAILS  # noqa: PLC0415
+        from shared.campaigns import (  # noqa: PLC0415
+            RESULTS_STATUSES,
+            get_campaign,
+            set_campaign_results,
+        )
+        from shared.storage import StorageError, upload_campaign_result  # noqa: PLC0415
+
+        email = session.get("user_email", "")
+        if not email:
+            return redirect(url_for("login"))
+        if email not in STAFF_EMAILS:
+            return render_template("404.html"), 404
+
+        campaign = get_campaign(campaign_id)
+        if campaign is None:
+            return render_template("404.html"), 404
+        if campaign.submission_source != "api":
+            return render_template("404.html"), 404
+
+        prev_results_status = campaign.results_status
+
+        results_status = request.form.get("results_status", "").strip() or "none"
+        if results_status not in RESULTS_STATUSES:
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?results_error=1"
+            )
+
+        # Start from the existing envelope so uploads are additive and a
+        # blank JSON box preserves prior rounds/sequences.
+        envelope: dict = dict(campaign.results or {})
+        download_paths: dict = dict(envelope.get("download_paths") or {})
+
+        # Optional pasted YDS JSON: validate FIRST (before any upload) so a
+        # typo can't orphan a freshly stored file. Present -> replaces
+        # rounds/sequences (and external downloads); blank keeps prior values.
+        raw_json = request.form.get("results_json", "").strip()
+        if raw_json:
+            try:
+                parsed = _json.loads(raw_json)
+            except ValueError:
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            if not isinstance(parsed, dict):
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            if isinstance(parsed.get("rounds"), list):
+                envelope["rounds"] = parsed["rounds"]
+            if isinstance(parsed.get("sequences"), list):
+                envelope["sequences"] = parsed["sequences"]
+            if isinstance(parsed.get("downloads"), dict):
+                envelope["downloads"] = parsed["downloads"]
+
+        # The three documented download slots; each optional. Uploaded only
+        # after JSON validation so a bad paste never leaves an orphaned object.
+        slot_content_types = {
+            "enrichment_table_csv": "text/csv",
+            "hits_fasta": "text/plain",
+            "raw_reads_fastq": "application/octet-stream",
+        }
+        for slot, default_ct in slot_content_types.items():
+            uploaded = request.files.get(slot)
+            if uploaded is None or not uploaded.filename:
+                continue
+            data = uploaded.read()
+            if not data:
+                continue
+            # Name the stored object by the slot so re-uploads overwrite the
+            # same path; keep the original extension.
+            ext = _posixpath.splitext(uploaded.filename)[1]
+            stored_name = f"{slot}{ext}" if ext else slot
+            try:
+                path = upload_campaign_result(
+                    campaign_id=campaign_id,
+                    filename=stored_name,
+                    data=data,
+                    content_type=uploaded.mimetype or default_ct,
+                )
+            except StorageError:
+                logger.warning(
+                    "results upload failed for %s slot %s",
+                    campaign_id,
+                    slot,
+                    exc_info=True,
+                )
+                return redirect(
+                    url_for("admin_campaign_detail", campaign_id=campaign_id)
+                    + "?results_error=1"
+                )
+            download_paths[slot] = path
+
+        if download_paths:
+            envelope["download_paths"] = download_paths
+
+        saved = set_campaign_results(
+            campaign_id,
+            results=envelope,
+            results_status=results_status,
+        )
+        if saved is None:
+            return redirect(
+                url_for("admin_campaign_detail", campaign_id=campaign_id)
+                + "?results_error=1"
+            )
+
+        # Notify the agent only when results genuinely became available.
+        if (
+            saved.results_status != "none"
+            and saved.results_status != prev_results_status
+            and saved.webhook_url
+        ):
+            try:
+                from shared.webhooks import dispatch_webhook  # noqa: PLC0415
+
+                dispatch_webhook(
+                    campaign_id=saved.id,
+                    event_type="experiment.results_ready",
+                    target_url=saved.webhook_url,
+                    owner_user_id=saved.user_id,
+                    payload={
+                        "event_type": "experiment.results_ready",
+                        "experiment_id": saved.id,
+                        "prev_status": saved.status,
+                        "new_status": saved.status,
+                        "results_status": saved.results_status,
+                        "timestamp": saved.last_transition_at,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "results-ready webhook dispatch raised for %s",
+                    saved.id,
+                    exc_info=True,
+                )
+
+        return redirect(
+            url_for("admin_campaign_detail", campaign_id=campaign_id)
+            + "?results_saved=1"
         )
 
     # ------------------------------------------------------------------
