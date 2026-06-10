@@ -113,11 +113,14 @@ from shared.pdb_preflight import (
 )
 
 # Tools whose form template renders the rich preflight panel (the JS
-# verdict UI). For the others (pxdesign, boltz2) a hard-gate rejection is
-# surfaced as a plain actionable ``error`` string in the form instead, so
-# the message is never silently swallowed.
+# verdict UI). All PDB-input design tools now carry the panel, so this set
+# covers every slug in PREFLIGHT_TOOLS (enforced by
+# test_every_preflight_tool_has_a_panel). It stays a separate constant
+# because it guards a different thing (panel markup present in the template)
+# than PREFLIGHT_TOOLS (an evaluator exists). The plain ``error`` string
+# fallback in tool_submit is kept as a defensive net.
 _PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
-    {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen"}
+    {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "boltz2"}
 )
 from shared.uniprot_lookup import alphafold_api_url
 
