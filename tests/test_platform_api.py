@@ -1056,6 +1056,33 @@ def test_admin_no_webhook_for_non_customer_status():
     assert not dispatch_mock.called
 
 
+def test_results_upload_over_cap_redirects_gracefully():
+    """An upload over MAX_CONTENT_LENGTH raises 413 during form parsing,
+    before the route body; the 413 handler must degrade it to the friendly
+    ?results_error=1 redirect instead of a raw error page."""
+    import app as appmod
+
+    flask_app = appmod.app
+    client = flask_app.test_client()
+    orig_cap = flask_app.config.get("MAX_CONTENT_LENGTH")
+    flask_app.config["MAX_CONTENT_LENGTH"] = 64  # bytes — force the 413
+    try:
+        with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+            "shared.campaigns.get_campaign",
+            return_value=_api_campaign("DataAnalysis", results_status="none"),
+        ):
+            with client.session_transaction() as sess:
+                sess["user_email"] = STAFF
+            resp = client.post(
+                "/admin/campaigns/exp-smoke-1/results",
+                data={"results_status": "all", "results_json": "x" * 2000},
+            )
+    finally:
+        flask_app.config["MAX_CONTENT_LENGTH"] = orig_cap
+    assert resp.status_code in (302, 303)
+    assert "results_error=1" in resp.headers["Location"]
+
+
 # ---------------------------------------------------------------------------
 # POST /admin/campaigns/{id}/quote — operator quote save (full-app route)
 #

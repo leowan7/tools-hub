@@ -240,11 +240,13 @@ def stage_campaign_candidates(
     return written
 
 
-# Campaign results size cap. Modestly larger than the input cap: enrichment
-# tables and hit FASTAs are small, but a slice of NGS output can run bigger.
-# Large raw FASTQ should be linked externally via the results "downloads"
-# map rather than uploaded through the form.
-MAX_CAMPAIGN_RESULT_BYTES = 25 * 1024 * 1024  # 25 MB
+# Campaign results per-file cap. The whole admin upload (all file slots plus
+# the JSON box) is ALSO bounded by the app's global MAX_CONTENT_LENGTH (20 MB,
+# enforced by Werkzeug during multipart parsing). This per-file guard is set
+# to the same ceiling so it never promises more than a single request can
+# carry. Uploads are additive across saves, and large raw FASTQ should be
+# linked externally via the results "downloads" map rather than uploaded.
+MAX_CAMPAIGN_RESULT_BYTES = 20 * 1024 * 1024  # 20 MB (matches MAX_CONTENT_LENGTH)
 
 
 def upload_campaign_result(

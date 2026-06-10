@@ -5799,7 +5799,7 @@ def create_app() -> Flask:
         elif request.args.get("results_saved") == "1":
             flash_msg = "Results saved."
         elif request.args.get("results_error") == "1":
-            flash_msg = "Results could not be saved. Check the files and JSON, then retry."
+            flash_msg = "Results could not be saved. Check the JSON, and keep each upload under 20 MB total, then retry."
             flash_kind = "error"
         # API-direct (MCP/REST) campaigns live on the longer Adaptyv-style FSM;
         # web-funnel campaigns on the short one. Offer the right status set so
@@ -6590,6 +6590,31 @@ def create_app() -> Flask:
     def server_error(_):
         """Render the branded 500 page for unhandled exceptions."""
         return render_template("500.html"), 500
+
+    @flask_app.errorhandler(413)
+    def request_too_large(_):
+        """Friendly handling for an over-cap upload (MAX_CONTENT_LENGTH).
+
+        The 413 is raised by Werkzeug during multipart parsing, before a
+        route body runs, so the results-attach form cannot catch it itself.
+        Routing has already happened, so request.endpoint / view_args are
+        available: send the operator back to the campaign with the same
+        '?results_error=1' path every other results failure uses, instead of
+        a raw error page. All other routes get a clean plain-text 413.
+        """
+        view_args = request.view_args or {}
+        if (
+            request.endpoint == "admin_campaign_save_results"
+            and view_args.get("campaign_id")
+        ):
+            return redirect(
+                url_for(
+                    "admin_campaign_detail",
+                    campaign_id=view_args["campaign_id"],
+                )
+                + "?results_error=1"
+            )
+        return ("Upload too large. The request limit is 20 MB.", 413)
 
     # ------------------------------------------------------------------
     # CLI commands — invoked by Railway cron or local `flask` runner
