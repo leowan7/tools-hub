@@ -198,9 +198,15 @@
             Job timed out before producing a result.
           </p>
         {% elif job.status == 'cancelled' %}
-          <p class="subtitle" style="color: var(--text-secondary);">
-            Cancelled. Your wallet was not charged for this run.
-          </p>
+          {% if job.gpu_seconds_used and job.gpu_seconds_used > 0 %}
+            <p class="subtitle" style="color: var(--text-secondary);">
+              Cancelled after consuming {{ job.gpu_seconds_used }} GPU-seconds. Your wallet was charged for time used. Any surplus from the original hold was returned.
+            </p>
+          {% else %}
+            <p class="subtitle" style="color: var(--text-secondary);">
+              Cancelled before the first heartbeat. Full hold returned to your wallet.
+            </p>
+          {% endif %}
         {% endif %}
       </div>
 
@@ -397,7 +403,7 @@
         if (!btn) return;
         var statusNote = document.getElementById('cancel-status');
         btn.addEventListener('click', function () {
-          if (!window.confirm('Cancel this run? Your wallet will not be charged for it.')) return;
+          if (!window.confirm('Cancel this run? Your wallet will be charged for GPU minutes already consumed. Time already used is not refunded.')) return;
           btn.disabled = true;
           statusNote.textContent = 'Cancelling...';
           fetch('/jobs/' + btn.dataset.jobId + '/cancel', {

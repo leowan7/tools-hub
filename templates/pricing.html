@@ -242,9 +242,13 @@
       <article class="why-card">
         <h3 class="why-card-title">Failed jobs</h3>
         <p class="why-card-body">
-          You are charged for compute used even on failed jobs, because we
-          pay our compute provider for that time. Per tool hard caps limit
-          how much any single failure can cost.
+          It depends on the cause. Infrastructure failures on our side
+          (Modal pod crash, tool image bug, a no progress timeout, or our
+          preflight letting bad input through) refund the full hold. Jobs
+          that completed normally but produced zero passing designs, or
+          jobs you cancelled mid run, are billed for the GPU consumed.
+          Ambiguous cases default to refund. Per tool hard caps limit how
+          much any single run can cost.
         </p>
       </article>
       <article class="why-card">
@@ -314,10 +318,13 @@
       <article class="why-card">
         <h3 class="why-card-title">What happens if a job fails?</h3>
         <p class="why-card-body">
-          You are charged for the compute the job consumed, even on failure.
-          Per tool hard caps limit how much any single job can cost in the
-          worst case. The hard cap also kills runs that drift far past the
-          estimate.
+          It depends on the cause. If the failure is on our side, like a
+          Modal pod crash, a bug in our tool image, our preflight letting
+          bad input through, or a no progress timeout, the full hold is
+          refunded. If the job completed normally but produced zero passing
+          designs, or you cancelled it mid run, you pay for the GPU
+          consumed. Ambiguous cases default to refund. Per tool hard caps
+          also limit how much any single run can cost in the worst case.
         </p>
       </article>
       <article class="why-card">

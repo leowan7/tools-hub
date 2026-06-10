@@ -37,9 +37,16 @@
   </p>
   <p>
     <strong>No refunds.</strong> Wallet top-ups are non-refundable except
-    where required by law. GPU jobs that fail before any compute is
-    consumed are not charged; jobs that fail mid-run are charged for actual
-    compute time used. Disputed charges should be raised with us at
+    where required by law. GPU jobs that fail on our side, including
+    infrastructure errors, tool image bugs, gaps in our input validation,
+    and progress timeouts where no heartbeat was received, are not charged
+    and the full pre run hold is returned to your wallet. Jobs that
+    complete normally but produce zero passing designs, jobs you cancel
+    while running, and jobs terminated by our overrun safety system are
+    charged for the GPU compute time actually consumed. A cancellation
+    received before the first heartbeat reports zero GPU consumed and
+    settles at zero, with the full hold returned. Ambiguous cases default
+    to refund. Disputed charges should be raised with us at
     <a href="mailto:hello@ranomics.com">hello@ranomics.com</a> before
     contacting your card issuer.
   </p>

@@ -16,7 +16,7 @@
   {"q": "Are there subscriptions?",
    "a": "No. There are no subscriptions, seats, or tiers, and no minimum monthly spend. You pay only for the compute your jobs use. Top ups are final and unused balance does not expire."},
   {"q": "What happens if a job fails?",
-   "a": "It depends on the cause. If the failure is on our side (Modal pod crash, our tool image bug, our preflight letting bad input through, no-progress timeout), the full hold is refunded. If the job completed normally but produced zero passing designs, or you cancelled it mid-run, you pay for the GPU consumed. Ambiguous cases default to refund."},
+   "a": "It depends on the cause. If the failure is on our side (Modal pod crash, our tool image bug, our preflight letting bad input through, no progress timeout), the full hold is refunded. If the job completed normally but produced zero passing designs, if you cancelled it mid run, or if our overrun safety system stopped a runaway job, you pay for the GPU consumed. Ambiguous cases default to refund."},
   {"q": "More on pricing",
    "a": "The full billing model, example costs per tool, and the safety caps that prevent surprise bills are on the pricing page."},
   {"q": "How do I create an account?",
@@ -115,10 +115,11 @@
         <p class="why-card-body">
           It depends on the cause. If the failure is on our side (Modal pod
           crash, our tool image bug, our preflight letting bad input
-          through, no-progress timeout), the full hold is refunded. If the
-          job completed normally but produced zero passing designs, or you
-          cancelled it mid-run, you pay for the GPU consumed. Ambiguous
-          cases default to refund.
+          through, no progress timeout), the full hold is refunded. If the
+          job completed normally but produced zero passing designs, if you
+          cancelled it mid run, or if our overrun safety system stopped a
+          runaway job, you pay for the GPU consumed. Ambiguous cases
+          default to refund.
         </p>
       </article>
       <article class="why-card">
