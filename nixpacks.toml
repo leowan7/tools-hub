@@ -15,5 +15,9 @@ nixPkgs = ["gcc"]
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
 
+# Worker count and timeout live in gunicorn.conf.py (read from
+# WEB_CONCURRENCY / GUNICORN_TIMEOUT) so a single wedged request cannot
+# take the whole site down. Do NOT add --workers here; a CLI flag would
+# override the config. See gunicorn.conf.py.
 [start]
-cmd = "gunicorn app:app --workers 1 --bind 0.0.0.0:$PORT --timeout 120 --preload"
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --preload"
