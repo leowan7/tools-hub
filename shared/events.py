@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -41,11 +41,16 @@ logger = logging.getLogger(__name__)
 # Supabase insert in the request path once pinned the (single) gunicorn
 # worker for the full client timeout when a pooled connection stalled,
 # taking the whole site down (incident 2026-06-10, POST /api/track ->
-# log_event). Analytics must never be able to block a user request. A
-# small bounded pool caps how many in-flight inserts a Supabase stall can
-# accumulate; the bounded client timeout (see shared.supabase_client)
-# drains them. daemon threads so this never holds up shutdown.
-_EVENT_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="user_event")
+# log_event). Analytics must never be able to block a user request.
+#
+# Each insert runs in its own daemon thread — daemon so a stalled insert
+# never holds up worker shutdown / graceful restart (a non-daemon thread
+# would be joined at interpreter exit). A bounded semaphore caps how many
+# inserts may be in flight at once; when a Supabase stall fills every slot,
+# further events are SHED rather than queued, so a downstream stall can
+# never accumulate unbounded threads or memory. The bounded client timeout
+# (see shared.supabase_client) drains stuck slots within ~30s.
+_EVENT_INFLIGHT = threading.BoundedSemaphore(4)
 
 
 # Allowed reason codes for signup_rejections (validated client-side
@@ -142,26 +147,39 @@ def log_event(
         "user_agent": (user_agent or "")[:500] or None,
     }
 
-    def _write() -> None:
-        from shared.credits import get_service_client  # noqa: PLC0415
+    if not _EVENT_INFLIGHT.acquire(blocking=False):
+        # Every insert slot is busy — a Supabase stall is in progress.
+        # Shed this event rather than queue it: analytics is best-effort
+        # and must never accumulate unbounded work behind a downstream
+        # stall.
+        return
 
-        client = get_service_client()
-        if client is None:
-            return
+    def _write() -> None:
         try:
+            from shared.credits import get_service_client  # noqa: PLC0415
+
+            client = get_service_client()
+            if client is None:
+                return
             client.table("user_events").insert(payload).execute()
         except Exception:
             logger.warning(
                 "Failed to log user_event (type=%s user=%s)",
                 event_type, user_id, exc_info=True,
             )
+        finally:
+            _EVENT_INFLIGHT.release()
 
     try:
-        _EVENT_POOL.submit(_write)
-    except RuntimeError:
-        # Pool is shutting down (process exit). Drop the event rather
-        # than raise into the request path.
-        pass
+        threading.Thread(
+            target=_write, name="user_event", daemon=True
+        ).start()
+    except Exception:
+        # Could not start the worker thread (e.g. OS resource limit).
+        # Release the slot we just took so it is not leaked permanently,
+        # and drop the event.
+        _EVENT_INFLIGHT.release()
+        logger.warning("Could not start user_event thread", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
