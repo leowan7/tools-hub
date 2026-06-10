@@ -10,6 +10,7 @@ campaigns flow (create → poll → results) gets its own test once the
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -261,6 +262,7 @@ def _api_campaign(
     results=None,
     webhook_url=None,
     notes_customer=None,
+    notes_internal=None,
 ):
     """Minimal API-source Campaign for route tests.
 
@@ -282,7 +284,7 @@ def _api_campaign(
         budget_band="custom",
         status=status,
         ranomics_contact=None,
-        notes_internal=None,
+        notes_internal=notes_internal,
         created_at=None,
         reviewed_at=None,
         name="smoke",
@@ -949,6 +951,84 @@ def test_results_save_route_rejects_bad_json_before_write():
     assert not set_mock.called
 
 
+def test_results_save_fires_results_ready_webhook():
+    """T2: when results genuinely become available (results_status leaves
+    'none') and a webhook_url is set, the route fires one results_ready
+    webhook."""
+    client = _full_app_client()
+    saved = _api_campaign(
+        "DataAnalysis",
+        results_status="all",
+        webhook_url="https://hook.example/x",
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="none"),
+    ), patch(
+        "shared.campaigns.set_campaign_results", return_value=saved
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/results",
+            data={
+                "results_status": "all",
+                "results_json": '{"rounds": [], "sequences": []}',
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs["event_type"] == "experiment.results_ready"
+    assert kwargs["payload"]["results_status"] == "all"
+
+
+def test_results_save_no_webhook_without_url():
+    """T2 negative: results became available but no webhook_url is set — no
+    dispatch."""
+    client = _full_app_client()
+    saved = _api_campaign("DataAnalysis", results_status="all", webhook_url=None)
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="none"),
+    ), patch(
+        "shared.campaigns.set_campaign_results", return_value=saved
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/results",
+            data={"results_status": "all", "results_json": ""},
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
+
+
+def test_results_save_no_webhook_when_status_unchanged():
+    """T2 negative: results_status did not change (already 'all') — no
+    results_ready dispatch even with a webhook_url set."""
+    client = _full_app_client()
+    saved = _api_campaign(
+        "DataAnalysis",
+        results_status="all",
+        webhook_url="https://hook.example/x",
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("DataAnalysis", results_status="all"),
+    ), patch(
+        "shared.campaigns.set_campaign_results", return_value=saved
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/results",
+            data={"results_status": "all", "results_json": ""},
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
+
+
 # ---------------------------------------------------------------------------
 # Customer notification (Phase 3): notes_customer + notify-on-transition
 # ---------------------------------------------------------------------------
@@ -969,6 +1049,74 @@ def test_status_view_includes_notes_customer():
     assert resp.get_json()["notes_customer"] == "Quote covers one sort round."
 
 
+def test_notes_internal_never_leaves_internal_surface():
+    """Headline product invariant: notes_internal is operator-only and must
+    NEVER reach the customer — not via the experiment status view, and not via
+    a notification webhook payload. Only notes_customer may surface. This is
+    the project's central data-leak guard; it previously had zero coverage."""
+    SENTINEL = "INTERNAL-ONLY do-not-leak 9z8y7x"
+
+    # (1) Status view: GET /experiments/{id} must not echo notes_internal even
+    # when the row carries it alongside a customer-safe note.
+    app = _build_app()
+    api_client = app.test_client()
+    camp = _api_campaign(
+        "QuoteSent",
+        notes_internal=SENTINEL,
+        notes_customer="Customer-safe summary.",
+    )
+    with patch("shared.api_auth.resolve_token", return_value=_valid_ctx()), patch(
+        "tools.platform_api.routes._load_owned_campaign", return_value=camp
+    ):
+        resp = api_client.get(
+            "/api/v1/experiments/exp-smoke-1",
+            headers={"Authorization": "Bearer rk_live_xxx"},
+        )
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert "notes_internal" not in body
+    assert SENTINEL not in resp.get_data(as_text=True)
+    assert body.get("notes_customer") == "Customer-safe summary."
+
+    # (2) Webhook payload: even when the PERSISTED row carries notes_internal,
+    # the status-change payload must never include it.
+    full_client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    persisted = _api_campaign(
+        "QuoteSent",
+        webhook_url="https://hook.example/x",
+        notes_customer="Customer-safe summary.",
+        notes_internal=SENTINEL,
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=persisted
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with full_client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        full_client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={
+                "status": "QuoteSent",
+                "notify_customer": "1",
+                "notes_internal": SENTINEL,
+                "notes_customer": "Customer-safe summary.",
+            },
+        )
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    payload = kwargs["payload"]
+    assert "notes_internal" not in payload
+    assert SENTINEL not in json.dumps(payload)
+    assert payload.get("notes_customer") == "Customer-safe summary."
+
+
 def _transition_result(*, moved, status, webhook_url, prev_status="WaitingForConfirmation"):
     from shared.campaigns import TransitionResult
 
@@ -981,13 +1129,21 @@ def test_admin_notify_fires_webhook_on_quotesent():
     tr = _transition_result(
         moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
     )
+    # M1: the webhook note is sourced from the PERSISTED row (the refreshed
+    # Campaign returned by set_campaign_admin_fields), not the raw form field,
+    # so the payload can never diverge from what GET /experiments returns.
+    persisted = _api_campaign(
+        "QuoteSent",
+        webhook_url="https://hook.example/x",
+        notes_customer="Ready to confirm.",
+    )
     with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
         "shared.campaigns.get_campaign",
         return_value=_api_campaign("WaitingForConfirmation"),
     ), patch(
         "shared.campaigns.transition_api_status", return_value=tr
     ), patch(
-        "shared.campaigns.set_campaign_admin_fields", return_value=tr.campaign
+        "shared.campaigns.set_campaign_admin_fields", return_value=persisted
     ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
@@ -1005,6 +1161,36 @@ def test_admin_notify_fires_webhook_on_quotesent():
     assert kwargs["event_type"] == "experiment.status_changed"
     assert kwargs["payload"]["new_status"] == "QuoteSent"
     assert kwargs["payload"]["notes_customer"] == "Ready to confirm."
+
+
+def test_admin_no_webhook_when_notes_persist_fails():
+    """M1: if the operator attaches a customer note but the persist fails
+    (set_campaign_admin_fields returns None), the webhook must NOT fire — it
+    would otherwise carry a note the stored record never received."""
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True, status="QuoteSent", webhook_url="https://hook.example/x"
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=None
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={
+                "status": "QuoteSent",
+                "notify_customer": "1",
+                "notes_customer": "Ready to confirm.",
+            },
+        )
+    assert resp.status_code in (302, 303)
+    assert not dispatch_mock.called
 
 
 def test_admin_no_webhook_when_notify_unchecked():

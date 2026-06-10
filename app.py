@@ -5863,16 +5863,21 @@ def create_app() -> Flask:
                 except ValueError:
                     # Invalid API status — ignore and fall through to redirect.
                     transitioned = None
-            set_campaign_admin_fields(
+            saved = set_campaign_admin_fields(
                 campaign_id,
                 ranomics_contact=contact,
                 notes_internal=notes_internal,
                 notes_customer=notes_customer,
             )
+            # If the operator attached a customer note but the persist failed
+            # (service client down / RLS / migration 0032 absent), do NOT fire a
+            # webhook carrying a note the stored record never received.
+            notes_persist_failed = notes_customer is not None and saved is None
 
             _NOTIFY_STATUSES = {"QuoteSent", "Done", "Cancelled"}
             if (
                 notify_customer
+                and not notes_persist_failed
                 and transitioned is not None
                 and transitioned.moved
                 and transitioned.campaign is not None
@@ -5890,8 +5895,13 @@ def create_app() -> Flask:
                         "results_status": transitioned.campaign.results_status,
                         "timestamp": transitioned.campaign.last_transition_at,
                     }
+                    # Source the note from the persisted row when available so
+                    # the payload never diverges from what GET /experiments
+                    # will later return.
                     if notes_customer:
-                        payload["notes_customer"] = notes_customer
+                        payload["notes_customer"] = (
+                            saved.notes_customer if saved is not None else notes_customer
+                        )
                     dispatch_webhook(
                         campaign_id=transitioned.campaign.id,
                         event_type="experiment.status_changed",

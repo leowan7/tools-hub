@@ -549,6 +549,7 @@ def build_spec() -> dict[str, Any]:
                         "experiment_spec": {
                             "$ref": "#/components/schemas/ExperimentSpec"
                         },
+                        "notes_customer": {"type": "string"},
                         "webhook_url": {"type": "string"},
                         "created_at": {"type": "string", "format": "date-time"},
                         "last_transition_at": {
@@ -577,6 +578,7 @@ def build_spec() -> dict[str, Any]:
                         "results_status": {
                             "$ref": "#/components/schemas/ResultsStatusEnum"
                         },
+                        "notes_customer": {"type": "string"},
                         "last_transition_at": {
                             "type": "string",
                             "format": "date-time",
@@ -804,6 +806,14 @@ def build_spec() -> dict[str, Any]:
                         "timestamp": {
                             "type": "string",
                             "format": "date-time",
+                        },
+                        "notes_customer": {
+                            "type": "string",
+                            "description": (
+                                "Optional operator note. Present only when the "
+                                "operator opted in for this transition; never "
+                                "carries internal notes."
+                            ),
                         },
                     },
                 },
