@@ -203,13 +203,34 @@ behaviour rather than a research guess.
 
 ## Observed results (2026-06-05)
 
+> **Correction (2026-06-10).** The "A100-80GB" entries in the table and
+> findings below are wrong. The deployed `ranomics-rfantibody-prod` app
+> requests **A100-40GB** and always has. `_GPU = "A100-40GB"` in
+> `infrastructure/modal/rfantibody_app.py` has not changed since the first
+> commit on 2026-04-22, and `base_image.py`,
+> `backend/pipelines/rfantibody.py`, and `docker/rfantibody/run_pipeline.py`
+> all state 40GB. Modal does not hand an 80GB card to a 40GB request, so the
+> `NVIDIA A100-SXM4-80GB` line recorded here was a misattribution, most
+> likely the bindcraft or pxdesign job from the same batch (both genuinely
+> run on 80GB).
+>
+> What this changes:
+> 1. The rule keeps `gpu="A100-40GB"`, which is correct. The "label fix to
+>    80GB" claimed in finding #1 was never applied to the rule, and should
+>    not be.
+> 2. The 412aa success is real, but it ran on a 40GB request, not 80GB.
+> 3. `hard_cap_target_aa = 600` is therefore an extrapolation from the
+>    literature, not a boundary measured on any GPU. Only 412aa is
+>    validated. 600aa stays in place by decision on 2026-06-10; the first
+>    target above roughly 412aa is what will actually test it.
+
 5 jobs dispatched against `tools.ranomics.com` production. 2 reached
 informative terminal state; 1 gave the size-cap data point we needed;
 2 were cancelled after the literature signal made further spend redundant.
 
 | # | Tool | Fixture | Status | Wall | What it told us |
 |---|---|---|---|---|---|
-| 1 | rfantibody | oversized 1JFF/A 412aa | **succeeded** | 2489s | 412aa runs clean on **A100-80GB** (Week 1 said 40GB — wrong) → caps too tight |
+| 1 | rfantibody | oversized 1JFF/A 412aa | **succeeded** | 2489s | 412aa runs clean on the deployed A100-40GB request. See the 2026-06-10 correction above. |
 | 2 | rfdiffusion | oversized 1JFF/A 412aa | **failed (ASSERTION)** | 60s | `('A', 35) is not in pdb file!` — 1JFF has unresolved res 35; confirms any-gap rule |
 | 3 | bindcraft | oversized 1JFF/A 412aa | cancelled | 2717s | (cancelled after lit signal) |
 | 4 | boltzgen | oversized 1JFF/A 412aa | cancelled | 2707s | (cancelled after lit signal) |
@@ -217,12 +238,14 @@ informative terminal state; 1 gave the size-cap data point we needed;
 
 ### Key findings
 
-1. **rfantibody GPU label was wrong.** Modal log shows
-   `NVIDIA A100-SXM4-80GB`, Week 1 had `gpu="A100-40GB"`. Fixed.
+1. **rfantibody GPU.** The deployed app runs on A100-40GB
+   (`gpu="A100-40GB"` in `rfantibody_app.py`, unchanged since 2026-04-22).
+   The `NVIDIA A100-SXM4-80GB` reading first recorded here was a
+   misattribution. See the 2026-06-10 correction above.
 
 2. **All size caps were too conservative.** Literature (Watson 2023,
    Pacesa 2024, Adaptyv 2024) plus the rfantibody 412aa success show
-   400-500aa targets are routinely designed against on A100-80GB.
+   400-500aa targets are routinely designed against on A100 GPUs.
    Updated caps:
 
    | Tool | Old hard_cap | New hard_cap |
@@ -256,7 +279,7 @@ informative terminal state; 1 gave the size-cap data point we needed;
 
 ### Files updated post-calibration
 
-- `shared/pdb_preflight_rules.py` — TOOL_RULES updated per table above + GPU label fix + new `runtime_hard_cap_min` field
+- `shared/pdb_preflight_rules.py` — TOOL_RULES caps updated per table above + new `runtime_hard_cap_min` field. GPU label stays `A100-40GB` (the "80GB fix" was not applied; see the 2026-06-10 correction).
 - `shared/pdb_preflight.py` — `_check_size_envelope` enforces runtime cap; dispatcher short-circuits on `over_runtime_cap`
 - `app.py` — JSON serializer exposes `over_runtime_cap` + `runtime_hard_cap_min`
 - `templates/components/preflight_panel.html` — renders runtime line in size envelope row
