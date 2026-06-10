@@ -12,6 +12,75 @@ import os
 logger = logging.getLogger(__name__)
 
 
+def _force_supabase_http1() -> None:
+    """Force supabase-py's httpx clients onto HTTP/1.1.
+
+    supabase-py hardcodes ``http2=True`` on every httpx client it builds
+    (PostgREST, GoTrue auth, and Storage). Over Railway's egress to Supabase,
+    idle HTTP/2 connections go stale and *reads* hang: the TCP connect and TLS
+    handshake succeed, but the response body never arrives, so the call blocks
+    until the httpx timeout fires. This took down PostgREST first (the
+    worker-wedge incident) and then GoTrue login (ReadTimeout) on 2026-06-10,
+    while the same endpoints answer in ~0.1s over HTTP/1.1. The http2 flag is
+    not reachable through ClientOptions, so we replace the ``Client`` symbol
+    each sub-client instantiates with a thin subclass that forces
+    ``http2=False`` and otherwise behaves identically; base-url and request
+    logic are untouched.
+
+    Best-effort and version-guarded: on any failure (e.g. a future supabase
+    release that moves these private module paths) we log and leave the library
+    as shipped rather than crash the worker on boot.
+    """
+    try:
+        import httpx  # noqa: PLC0415
+
+        class _Http1Client(httpx.Client):
+            def __init__(self, *args, **kwargs):
+                kwargs["http2"] = False
+                super().__init__(*args, **kwargs)
+
+        import importlib  # noqa: PLC0415
+
+        forced = []
+        for modname in (
+            "postgrest._sync.client",
+            "supabase_auth._sync.gotrue_base_api",
+            "storage3._sync.client",
+        ):
+            try:
+                mod = importlib.import_module(modname)
+            except Exception:
+                logger.warning(
+                    "Supabase HTTP/1.1 patch: could not import %s",
+                    modname,
+                    exc_info=True,
+                )
+                continue
+            if getattr(mod, "Client", None) is not None:
+                mod.Client = _Http1Client
+                forced.append(modname)
+        if forced:
+            logger.info(
+                "Forced supabase clients onto HTTP/1.1: %s", ", ".join(forced)
+            )
+        else:
+            logger.warning(
+                "Supabase HTTP/1.1 patch found no Client symbols to replace; "
+                "clients will use the library default (http2=True)."
+            )
+    except Exception:  # pragma: no cover - defensive
+        logger.warning(
+            "Could not force supabase onto HTTP/1.1; leaving library default.",
+            exc_info=True,
+        )
+
+
+# Apply the HTTP/1.1 patch once, at import, before any Supabase client is
+# constructed. shared.credits imports from this module, so both the anon
+# (auth) and service-role client paths inherit the patch.
+_force_supabase_http1()
+
+
 # Bound every Supabase table (PostgREST) call. The library default is 120s
 # (postgrest.constants.DEFAULT_POSTGREST_CLIENT_TIMEOUT) — long enough for a
 # single stalled connection to pin a gunicorn worker until its own --timeout
