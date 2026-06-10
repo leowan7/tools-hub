@@ -5895,13 +5895,14 @@ def create_app() -> Flask:
                         "results_status": transitioned.campaign.results_status,
                         "timestamp": transitioned.campaign.last_transition_at,
                     }
-                    # Source the note from the persisted row when available so
-                    # the payload never diverges from what GET /experiments
-                    # will later return.
-                    if notes_customer:
-                        payload["notes_customer"] = (
-                            saved.notes_customer if saved is not None else notes_customer
-                        )
+                    # Source the note from the persisted row so the payload
+                    # never diverges from what GET /experiments returns. Include
+                    # it whenever the stored row carries a customer note, not
+                    # only when this submission set one (a blank form field
+                    # leaves a prior note in place, and the customer should see
+                    # it on the notification too).
+                    if saved is not None and saved.notes_customer:
+                        payload["notes_customer"] = saved.notes_customer
                     dispatch_webhook(
                         campaign_id=transitioned.campaign.id,
                         event_type="experiment.status_changed",

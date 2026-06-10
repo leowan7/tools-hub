@@ -1116,6 +1116,22 @@ def test_notes_internal_never_leaves_internal_surface():
     assert SENTINEL not in json.dumps(payload)
     assert payload.get("notes_customer") == "Customer-safe summary."
 
+    # (3) Serialization guard: campaign_to_api_view is the POST /experiments
+    # 201 creation body and the GET detail body. It must include notes_customer
+    # but never notes_internal, even when the row carries both. This catches a
+    # future edit that adds notes_internal to the view (which the route-level
+    # assertions above would not).
+    from shared.campaigns import campaign_to_api_view, campaign_to_status_view
+
+    api_view = campaign_to_api_view(camp)
+    assert "notes_internal" not in api_view
+    assert SENTINEL not in json.dumps(api_view)
+    assert api_view.get("notes_customer") == "Customer-safe summary."
+
+    status_view = campaign_to_status_view(camp)
+    assert "notes_internal" not in status_view
+    assert SENTINEL not in json.dumps(status_view)
+
 
 def _transition_result(*, moved, status, webhook_url, prev_status="WaitingForConfirmation"):
     from shared.campaigns import TransitionResult
@@ -1191,6 +1207,43 @@ def test_admin_no_webhook_when_notes_persist_fails():
         )
     assert resp.status_code in (302, 303)
     assert not dispatch_mock.called
+
+
+def test_admin_notify_includes_stored_note_when_form_blank():
+    """#2: a notify transition with a blank note field still carries the note
+    already stored on the row, so the webhook payload never diverges from what
+    GET /experiments returns (set_campaign_admin_fields returns the row with
+    its prior note untouched)."""
+    client = _full_app_client()
+    tr = _transition_result(
+        moved=True,
+        status="Done",
+        webhook_url="https://hook.example/x",
+        prev_status="InReview",
+    )
+    persisted = _api_campaign(
+        "Done",
+        webhook_url="https://hook.example/x",
+        notes_customer="Stored from a prior save.",
+    )
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("InReview"),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields", return_value=persisted
+    ), patch("shared.webhooks.dispatch_webhook") as dispatch_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+        resp = client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "Done", "notify_customer": "1"},
+        )
+    assert resp.status_code in (302, 303)
+    assert dispatch_mock.called
+    _, kwargs = dispatch_mock.call_args
+    assert kwargs["payload"]["notes_customer"] == "Stored from a prior save."
 
 
 def test_admin_no_webhook_when_notify_unchecked():
