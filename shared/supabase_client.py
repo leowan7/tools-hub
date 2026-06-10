@@ -59,14 +59,27 @@ def _force_supabase_http1() -> None:
             if getattr(mod, "Client", None) is not None:
                 mod.Client = _Http1Client
                 forced.append(modname)
-        if forced:
+        expected = 3
+        if len(forced) == expected:
             logger.info(
                 "Forced supabase clients onto HTTP/1.1: %s", ", ".join(forced)
             )
         else:
-            logger.warning(
-                "Supabase HTTP/1.1 patch found no Client symbols to replace; "
-                "clients will use the library default (http2=True)."
+            # Fewer than all three sub-client modules were patched. The
+            # unpatched ones revert to the library's hardcoded http2=True and
+            # can stale-read-hang a worker (the 2026-06-10 incident) on the
+            # next Railway egress hiccup while /health stays green. That is a
+            # silent re-arm, so log at ERROR (not WARNING) and name the gap so
+            # it surfaces in alerting. The requirements.txt supabase pin should
+            # keep this from firing; if it does, a supabase release moved these
+            # private module paths and the patch needs updating.
+            logger.error(
+                "Supabase HTTP/1.1 patch incomplete: patched %d/%d clients "
+                "(%s); unpatched supabase sub-clients will use http2=True and "
+                "may stale-read-hang a worker.",
+                len(forced),
+                expected,
+                ", ".join(forced) or "none",
             )
     except Exception:  # pragma: no cover - defensive
         logger.warning(
@@ -100,6 +113,22 @@ def _timeout_env(name: str, default: float) -> float:
 
 
 _CLIENT_TIMEOUT_S = _timeout_env("SUPABASE_CLIENT_TIMEOUT_S", 30.0)
+# Floor + ceiling. Unlike the gunicorn int knobs (workers/timeout), this float
+# was unguarded: SUPABASE_CLIENT_TIMEOUT_S=0 makes every Supabase call time out
+# instantly, and =inf/=nan reinstates the unbounded read-hang that is the
+# literal root cause of the 2026-06-10 worker-wedge incident. Reject
+# non-positive / non-finite values and cap absurd highs so a stray override
+# can never re-arm it. (`not (x > 0)` also catches NaN, whose comparisons are
+# all False.)
+if not (_CLIENT_TIMEOUT_S > 0) or _CLIENT_TIMEOUT_S == float("inf"):
+    logger.warning(
+        "SUPABASE_CLIENT_TIMEOUT_S=%r is not a positive finite number; "
+        "using 30s.",
+        _CLIENT_TIMEOUT_S,
+    )
+    _CLIENT_TIMEOUT_S = 30.0
+else:
+    _CLIENT_TIMEOUT_S = min(_CLIENT_TIMEOUT_S, 300.0)
 
 
 def _client_options():
@@ -132,11 +161,28 @@ def _client_options():
                 ClientOptions as _Options,
             )
 
-        return _Options(
+        options = _Options(
             postgrest_client_timeout=httpx.Timeout(
                 _CLIENT_TIMEOUT_S, connect=5.0
             ),
         )
+        # Storage (storage3) uses a SEPARATE timeout that
+        # postgrest_client_timeout does not cover. In the installed
+        # supabase-py / storage3 it already defaults to a short 20s
+        # (storage3.constants.DEFAULT_TIMEOUT), but that default is
+        # version-dependent. shared.storage upload_input +
+        # presigned_input_url run inside the job-submit request path, so we
+        # pin Storage to the same SUPABASE_CLIENT_TIMEOUT_S budget that
+        # bounds PostgREST: one env knob governs every Supabase sub-client,
+        # and a future storage3 default bump can never silently reintroduce
+        # a long, worker-pinning timeout (the Mode A failure class). storage3
+        # takes a scalar int, so there is no separate 5s connect cap as there
+        # is for PostgREST; the HTTP/1.1 forcing above already removes the
+        # stale-h2 read-hang that originally motivated this bound. hasattr
+        # guard keeps the PostgREST bound intact on any version lacking it.
+        if hasattr(options, "storage_client_timeout"):
+            options.storage_client_timeout = int(_CLIENT_TIMEOUT_S)
+        return options
     except Exception:  # pragma: no cover - version/shape guard
         logger.warning(
             "Could not build bounded Supabase ClientOptions; "

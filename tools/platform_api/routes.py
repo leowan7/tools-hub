@@ -441,7 +441,29 @@ def create_experiment():
             prev_status=result.prev_status or "Draft",
         )
 
-    resp = jsonify(campaign_to_api_view(campaign))
+    view = campaign_to_api_view(campaign)
+
+    # Operator growth-signal alert (best-effort, fire-and-forget): a real
+    # customer submission via the MCP server / REST API should never sit
+    # unseen. Runs off the request thread so the 201 is never delayed or
+    # failed by email latency — the analytics-off-the-hot-path rule from the
+    # 2026-06-10 incident, applied to notifications. Only fires here on a
+    # genuine create; the idempotent-replay path returned 200 above.
+    try:
+        from shared.email import notify_operator_new_submission  # noqa: PLC0415
+
+        notify_operator_new_submission(
+            experiment_id=view.get("experiment_id"),
+            name=view.get("name"),
+            experiment_type=experiment_type,
+            target_name=target_name,
+            sequence_count=len(sequences),
+            submitter_user_id=g.api_user_id,
+        )
+    except Exception:  # never let an alert break a successful submission
+        logger.debug("operator submission alert dispatch failed", exc_info=True)
+
+    resp = jsonify(view)
     resp.status_code = 201
     return resp
 

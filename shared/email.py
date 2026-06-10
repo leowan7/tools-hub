@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Optional
 
 import requests
@@ -1201,6 +1202,98 @@ def _post_resend(
         "Email sent: %s to=%s (resend id=%s)", log_tag, to_email, resend_id
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Operator alert: new Platform API submission
+# ---------------------------------------------------------------------------
+
+# Operator-alert fan-out runs off the request thread, capped so a burst of
+# Platform API submissions (or a stalled Resend) can never pile up unbounded
+# threads — the same shed-when-full rule shared.events uses for analytics.
+_OPERATOR_ALERT_INFLIGHT = threading.BoundedSemaphore(2)
+
+
+def notify_operator_new_submission(
+    *,
+    experiment_id: Optional[str],
+    name: Optional[str],
+    experiment_type: Optional[str],
+    target_name: Optional[str],
+    sequence_count: int,
+    submitter_user_id: Optional[str],
+) -> None:
+    """Fire-and-forget operator alert for a new Platform API submission.
+
+    A customer submission via the MCP server / REST API
+    (POST /api/v1/experiments) should never sit unseen. Emails
+    OPERATOR_ALERT_EMAIL (default leo@ranomics.com) in a daemon thread so the
+    API response is never delayed or failed by email latency; bounded by
+    ``_post_resend``'s 10s timeout; a no-op without RESEND_API_KEY.
+    Best-effort: every failure is swallowed and logged.
+
+    Call only on a genuine create (HTTP 201), not on an idempotent replay —
+    the caller is responsible for that distinction.
+    """
+    operator = (
+        os.environ.get("OPERATOR_ALERT_EMAIL", "").strip()
+        or "leo@ranomics.com"
+    )
+
+    if not _OPERATOR_ALERT_INFLIGHT.acquire(blocking=False):
+        # Every slot busy — a Resend stall is in progress. Shed rather than
+        # queue: an operator alert is best-effort and must never accumulate
+        # work behind a downstream stall.
+        logger.warning("operator submission alert shed (inflight full)")
+        return
+
+    def _send() -> None:
+        try:
+            from html import escape  # noqa: PLC0415
+
+            exp = escape(str(experiment_id or "(unknown)"))
+            disp_name = escape(str(name or "(unnamed)"))
+            etype = escape(str(experiment_type or "unknown"))
+            target = escape(str(target_name or "unknown"))
+            submitter = escape(str(submitter_user_id or "unknown"))
+            subject = f"New Platform API submission: {name or '(unnamed)'}"[:200]
+            html_body = (
+                "<p>A new experiment was submitted via the Ranomics "
+                "Platform API (MCP / REST).</p>"
+                "<ul>"
+                f"<li><strong>Experiment:</strong> {disp_name} ({exp})</li>"
+                f"<li><strong>Type:</strong> {etype}</li>"
+                f"<li><strong>Target:</strong> {target}</li>"
+                f"<li><strong>Sequences:</strong> {int(sequence_count)}</li>"
+                f"<li><strong>Submitter user_id:</strong> {submitter}</li>"
+                "</ul>"
+                '<p>Review at '
+                '<a href="https://tools.ranomics.com/admin/campaigns">'
+                "/admin/campaigns</a>.</p>"
+            )
+            _post_resend(
+                to_email=operator,
+                subject=subject,
+                html_body=html_body,
+                log_tag="platform_submission_alert",
+            )
+        except Exception:
+            logger.warning(
+                "notify_operator_new_submission failed", exc_info=True
+            )
+        finally:
+            _OPERATOR_ALERT_INFLIGHT.release()
+
+    try:
+        threading.Thread(
+            target=_send, name="platform_submission_alert", daemon=True
+        ).start()
+    except Exception:
+        # Could not start the thread — release the slot so it is not leaked.
+        _OPERATOR_ALERT_INFLIGHT.release()
+        logger.warning(
+            "Could not start platform_submission_alert thread", exc_info=True
+        )
 
 
 # ---------------------------------------------------------------------------

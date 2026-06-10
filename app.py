@@ -1850,6 +1850,38 @@ def create_app() -> Flask:
         """Unauthenticated health check for Railway port scanner."""
         return jsonify({"status": "ok"}), 200
 
+    @flask_app.route("/readyz", methods=["GET"])
+    def readyz():
+        """Deep readiness probe (catches incident 2026-06-10 Mode B).
+
+        /health is static and DB-free, so it stays green even when the
+        Supabase client fails to build and the entire authenticated surface
+        (login, wallet, credits, Platform API) is down. /readyz does ONE
+        cheap, bounded Supabase read so an external uptime monitor catches
+        that mode directly. Bounded by SUPABASE_CLIENT_TIMEOUT_S (30s) and
+        >1 gunicorn worker, so the probe itself can never wedge the site.
+
+        Uses the service-role client because user_events is service-role-only
+        under RLS. A None client (construction failed) or any read error
+        returns 503 so the monitor's keyword check ("ready") and status code
+        both fail. Unauthenticated by design: an external prober cannot log
+        in, and it is placed above the login_required routes for that reason.
+        """
+        from shared.credits import get_service_client  # noqa: PLC0415
+
+        try:
+            client = get_service_client()
+            if client is None:
+                return (
+                    jsonify({"status": "degraded", "reason": "no_client"}),
+                    503,
+                )
+            client.table("user_events").select("id").limit(1).execute()
+            return jsonify({"status": "ready"}), 200
+        except Exception as exc:  # noqa: BLE001 - any failure means not ready
+            logger.warning("readyz degraded: %s", exc)
+            return jsonify({"status": "degraded", "reason": "db_error"}), 503
+
     # ------------------------------------------------------------------
     # Protected routes
     # ------------------------------------------------------------------

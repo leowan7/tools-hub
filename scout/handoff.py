@@ -46,7 +46,12 @@ def _get_service_client():
         return None
     try:
         from supabase import create_client  # noqa: PLC0415
-        return create_client(url, key)
+        from shared.supabase_client import _client_options  # noqa: PLC0415
+
+        # Bound the PostgREST/Storage timeout (and inherit the HTTP/1.1 patch)
+        # so a stalled scout read cannot pin a worker for the 120s library
+        # default — the 2026-06-10 worker-wedge class. Matches shared.credits.
+        return create_client(url, key, options=_client_options())
     except Exception:
         logger.warning("Could not create service-role client.", exc_info=True)
         return None

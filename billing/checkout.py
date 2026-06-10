@@ -244,6 +244,28 @@ def _stripe_client():
         logger.error("stripe package is not installed.")
         return None
     stripe.api_key = api_key
+    # Bound the Stripe HTTP client so a slow/stale Stripe connection cannot pin
+    # a gunicorn worker on the wallet/topup/billing-portal request path (same
+    # wedge class as the 2026-06-10 Supabase incident). The SDK default is an
+    # ~80s socket timeout + 2 network retries; 15s is generous for a Checkout
+    # Session create/retrieve and sits well under the gunicorn timeout floor so
+    # a worker is never force-killed mid-call. Best-effort + version-guarded:
+    # the http-client module is `stripe.http_client` on older SDKs and
+    # `stripe._http_client` on newer ones; if the shape differs, fall back to
+    # SDK defaults rather than crash.
+    try:
+        stripe.max_network_retries = 1
+        http_client_mod = getattr(stripe, "http_client", None) or getattr(
+            stripe, "_http_client", None
+        )
+        requests_client = getattr(http_client_mod, "RequestsClient", None)
+        if requests_client is not None:
+            stripe.default_http_client = requests_client(timeout=15)
+    except Exception:  # pragma: no cover - SDK shape guard
+        logger.warning(
+            "Could not bound the Stripe HTTP client; using SDK defaults.",
+            exc_info=True,
+        )
     return stripe
 
 
