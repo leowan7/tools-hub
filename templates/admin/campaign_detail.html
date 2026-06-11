@@ -186,9 +186,14 @@
               Move status to QuoteSent on save
             </label>
 
+            <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem;font-size:.85rem;">
+              <input type="checkbox" name="notify_customer" value="1">
+              Notify customer (fires a webhook when this moves to QuoteSent)
+            </label>
+
             <button type="submit" class="btn-primary" style="width:100%;">Save quote</button>
             <p style="font-size:.75rem;color:var(--text-secondary);margin:.5rem 0 0;line-height:1.4;">
-              Returned by GET /api/v1/experiments/{id}/quote once status is QuoteSent. No webhook or email fires from here.
+              Returned by GET /api/v1/experiments/{id}/quote once status is QuoteSent. A webhook fires only when "Notify customer" is ticked and the row has a webhook_url.
             </p>
           </form>
         </div>
