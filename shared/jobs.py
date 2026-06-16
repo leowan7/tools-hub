@@ -582,6 +582,48 @@ def cancel_job(
 # Terminal-state orchestration: prorated refund + email notification
 # ---------------------------------------------------------------------------
 
+def _slim_result_for_persist(result: Optional[dict]) -> Optional[dict]:
+    """Drop redundant inline ``pdb_content_b64`` before persisting a result.
+
+    Composite-tool webhooks inline a base64 PDB per candidate AND upload the
+    same structure to tool-outputs Storage. With ~50 designs the result blob
+    is multi-MB, so the single PostgREST UPDATE in ``_cas_update`` throws and
+    the job never leaves "running" even though the webhook returned 200. Those
+    structures resolve from Storage via a ``designs/<file>`` ``pdb_key`` (the
+    candidate PDB route + export.zip), so the inline copy is dead weight and is
+    dropped. Candidates that are NOT Storage-backed keep their inline copy (the
+    only one): smoke/mini_pilot tiers carry a bare-filename ``pdb_key`` with no
+    upload, and any design whose upload failed is listed in ``failed_uploads``.
+    Returns a shallow copy; the input is never mutated.
+    """
+    if not isinstance(result, dict):
+        return result
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return result
+
+    import posixpath  # noqa: PLC0415
+
+    failed = {
+        posixpath.basename(str(name))
+        for name in (result.get("failed_uploads") or [])
+        if name
+    }
+    slimmed = []
+    for cand in candidates:
+        pdb_key = cand.get("pdb_key") if isinstance(cand, dict) else None
+        if (
+            isinstance(pdb_key, str)
+            and pdb_key.startswith("designs/")
+            and cand.get("pdb_content_b64")
+            and posixpath.basename(pdb_key) not in failed
+        ):
+            cand = {k: v for k, v in cand.items() if k != "pdb_content_b64"}
+        slimmed.append(cand)
+    out = dict(result)
+    out["candidates"] = slimmed
+    return out
+
 
 def complete_job(
     job_id: str,
@@ -635,7 +677,7 @@ def complete_job(
     if terminal_status == "succeeded":
         transitioned = mark_succeeded(
             job_id,
-            result=result or {},
+            result=_slim_result_for_persist(result or {}),
             gpu_seconds_used=gpu_seconds_used,
             allowed_current=_NON_TERMINAL,
         )

@@ -33,7 +33,7 @@ Output shape (``/tmp/smoke_results.json``)::
       "tier": "standalone",
       "pdb_b64": "...",
       "plddt_per_residue": [92.1, 93.0, ...],
-      "pae_matrix_b64": "<base64-encoded .npy>",
+      "pae_matrix_b64": "<base64-encoded .npz, key 'pae'>",
       "pae_shape": [L, L],
       "iptm": 0.82,
       "ptm": 0.79,
@@ -652,9 +652,13 @@ def parse_af2_output(
     try:
         import numpy as np  # noqa: PLC0415
 
-        pae_np = np.asarray(pae, dtype=np.float32)
+        # PAE packed as a compressed npz (float16) to keep the inline
+        # payload small: an uncompressed float32 .npy is ~12 MB at the
+        # 1500 aa cap, which overflows the result jsonb write. Mirrors the
+        # ColabFold/ESMFold encoding; consumers load np.load(...)["pae"].
+        pae_np = np.asarray(pae, dtype=np.float16)
         buf = io.BytesIO()
-        np.save(buf, pae_np, allow_pickle=False)
+        np.savez_compressed(buf, pae=pae_np)
         pae_matrix_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         pae_shape: list[int] = list(pae_np.shape)
     except Exception as exc:  # pragma: no cover

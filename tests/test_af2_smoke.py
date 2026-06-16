@@ -434,7 +434,7 @@ def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
 
 
 def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
-    """/jobs/<id>/af2_pae.npy returns the base64-decoded .npy bytes."""
+    """/jobs/<id>/af2_pae.npz returns the base64-decoded .npz bytes."""
     from types import SimpleNamespace
 
     monkeypatch.setattr(
@@ -443,20 +443,20 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
     )
-    # Build a real .npy buffer
+    # Build a real compressed .npz buffer (matches run_pipeline's encoding).
     try:
         import numpy as np
     except ImportError:
         pytest.skip("numpy not available")
     buf = io.BytesIO()
-    np.save(buf, np.ones((4, 4), dtype=np.float32))
-    npy_bytes = buf.getvalue()
+    np.savez_compressed(buf, pae=np.ones((4, 4), dtype=np.float16))
+    npz_bytes = buf.getvalue()
     job = SimpleNamespace(
         id="af2-job-2",
         tool="af2",
         status="succeeded",
         inputs={},
-        result={"pae_matrix_b64": base64.b64encode(npy_bytes).decode("ascii")},
+        result={"pae_matrix_b64": base64.b64encode(npz_bytes).decode("ascii")},
     )
     monkeypatch.setattr(
         "app.get_job",
@@ -464,10 +464,10 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
     )
     client = app_with_af2_flag.test_client()
     _login_session(client)
-    resp = client.get("/jobs/af2-job-2/af2_pae.npy")
+    resp = client.get("/jobs/af2-job-2/af2_pae.npz")
     assert resp.status_code == 200
     # Can round-trip via numpy.load
-    loaded = np.load(io.BytesIO(resp.get_data()))
+    loaded = np.load(io.BytesIO(resp.get_data()))["pae"]
     assert loaded.shape == (4, 4)
 
 
@@ -686,10 +686,10 @@ class TestRunPipelineParser:
         import base64 as _b64
         pdb_text = _b64.b64decode(parsed["pdb_b64"]).decode("ascii")
         assert "ATOM" in pdb_text
-        # PAE .npy round-trips via numpy.load
+        # PAE .npz round-trips via numpy.load (key 'pae')
         import numpy as _np
         pae_bytes = _b64.b64decode(parsed["pae_matrix_b64"])
-        arr = _np.load(io.BytesIO(pae_bytes))
+        arr = _np.load(io.BytesIO(pae_bytes))["pae"]
         assert arr.shape == (5, 5)
 
     def test_parser_carries_iptm_on_multimer(self, tmp_path):

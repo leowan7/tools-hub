@@ -192,18 +192,21 @@ def stage_campaign_candidates(
     campaign_id: str,
     candidates: list[dict],
     indices: list[int],
+    user_id: str,
+    job_id: str,
 ) -> list[str]:
     """Copy the shortlisted candidates' PDB payloads into the
     ``lab-campaigns/{campaign_id}/`` folder so Ranomics staff can read
     them independently of the source job's payload.
 
-    ``candidates`` is ``job.result["candidates"]``; each entry carries
-    a base64-encoded ``pdb_content_b64`` blob (see any *_results.html).
-    ``indices`` is the 0-based shortlist selected on the results page.
+    ``candidates`` is ``job.result["candidates"]``; each entry resolves to
+    bytes the same two ways the download routes use — inline
+    ``pdb_content_b64`` if present, otherwise the ``tool-outputs`` Storage
+    object behind ``pdb_key`` (``user_id``/``job_id`` locate it). ``indices``
+    is the 0-based shortlist selected on the results page.
 
-    Returns the list of storage object paths written. Silently skips
-    candidates without a ``pdb_content_b64`` field (shouldn't happen on
-    a completed job, but we don't want one bad row to fail the submit).
+    Returns the list of storage object paths written. Silently skips a
+    candidate that resolves via neither path rather than failing the submit.
     """
     import base64  # noqa: PLC0415
 
@@ -216,15 +219,29 @@ def stage_campaign_candidates(
         if idx < 0 or idx >= len(candidates):
             continue
         cand = candidates[idx] or {}
-        encoded = cand.get("pdb_content_b64")
-        if not encoded:
-            continue
-        try:
-            data = base64.b64decode(encoded)
-        except Exception:
-            logger.warning("Candidate %s has un-decodable pdb_content_b64.", idx)
-            continue
         raw_key = cand.get("pdb_key") or f"candidate_{idx}.pdb"
+        encoded = cand.get("pdb_content_b64")
+        data = None
+        if encoded:
+            try:
+                data = base64.b64decode(encoded)
+            except Exception:
+                logger.warning("Candidate %s has un-decodable pdb_content_b64.", idx)
+                continue
+        elif cand.get("pdb_key"):
+            # Inline copy was slimmed off the row — fetch from Storage.
+            try:
+                data = download_output(
+                    user_id=user_id, job_id=job_id, filename=cand["pdb_key"],
+                )
+            except StorageError:
+                logger.warning(
+                    "Campaign stage: storage miss for %s/%s",
+                    job_id, raw_key, exc_info=True,
+                )
+                continue
+        if data is None:
+            continue
         filename = _safe_filename(raw_key)
         path = f"{campaign_id}/{filename}"
         try:

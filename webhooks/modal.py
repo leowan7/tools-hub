@@ -73,6 +73,7 @@ from flask import Flask, Response, jsonify, request
 
 from shared.credits import get_service_client
 from shared.jobs import (
+    TERMINAL_STATUSES,
     ToolJob,
     complete_job,
     get_job,
@@ -135,14 +136,7 @@ def _handle_result(job_id: str, job_token: str) -> Any:
             result=payload.get("output") or {},
             error=None,
         )
-        # CAS race: a user cancel (or inline-poll writer) landed between
-        # our SELECT and _apply_terminal's UPDATE. complete_job is a
-        # no-op in that case and returns the existing terminal row.
-        if fresh is not None and fresh.status != "succeeded":
-            return jsonify({
-                "status": "already_terminal", "current": fresh.status,
-            })
-        return jsonify({"status": "recorded", "terminal": "succeeded"})
+        return _finalize_response(fresh, "succeeded", job_id)
 
     if status_raw == "FAILED":
         err = payload.get("error") or {
@@ -155,11 +149,7 @@ def _handle_result(job_id: str, job_token: str) -> Any:
             result=None,
             error=err,
         )
-        if fresh is not None and fresh.status != "failed":
-            return jsonify({
-                "status": "already_terminal", "current": fresh.status,
-            })
-        return jsonify({"status": "recorded", "terminal": "failed"})
+        return _finalize_response(fresh, "failed", job_id)
 
     # Anything else — refuse to update state on an ambiguous status.
     logger.warning(
@@ -207,6 +197,28 @@ def _apply_terminal(
         _emit_job_completed(fresh)
 
     return fresh
+
+
+def _finalize_response(fresh: ToolJob | None, target: str, job_id: str) -> Any:
+    """Map a post-``complete_job`` row to the webhook HTTP response.
+
+    Reaching ``target`` is a 200 ``recorded``. A *different* terminal state
+    means a concurrent writer (user cancel, inline poll) won the CAS — also a
+    legitimate 200 ``already_terminal``. But a row that is STILL non-terminal
+    (or vanished) means the terminal write itself failed — e.g. an oversized
+    ``result`` jsonb that threw inside ``_cas_update``. Surface that as a 500
+    so Modal records ``delivered: False`` instead of masking a stuck job.
+    """
+    if fresh is not None and fresh.status == target:
+        return jsonify({"status": "recorded", "terminal": target})
+    if fresh is not None and fresh.status in TERMINAL_STATUSES:
+        return jsonify({"status": "already_terminal", "current": fresh.status})
+    logger.error(
+        "Modal webhook: job %s did not finalize (target=%s, current=%s); "
+        "the terminal write failed.",
+        job_id, target, getattr(fresh, "status", None),
+    )
+    return jsonify({"status": "error", "reason": "finalize_failed"}), 500
 
 
 def _count_succeeded_jobs(user_id: str) -> int:

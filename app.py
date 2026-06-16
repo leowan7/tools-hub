@@ -5526,15 +5526,15 @@ def create_app() -> Flask:
             },
         )
 
-    @flask_app.route("/jobs/<job_id>/af2_pae.npy", methods=["GET"])
+    @flask_app.route("/jobs/<job_id>/af2_pae.npz", methods=["GET"])
     @login_required
     def af2_download_pae(job_id: str):
-        """Stream the AF2 PAE matrix as a .npy download.
+        """Stream the AF2 PAE matrix as a compressed .npz download.
 
         D2 atomic tool. Result payload carries ``pae_matrix_b64`` which
-        is a base64-encoded numpy .npy file (written by run_pipeline.py
-        via ``numpy.save``). We hand it back as-is — the client can
-        ``numpy.load`` it directly.
+        is a base64-encoded numpy .npz file (written by run_pipeline.py
+        via ``numpy.savez_compressed``). We hand it back as-is — the client
+        loads it with ``numpy.load(...)["pae"]``.
         """
         import base64  # noqa: PLC0415
         from flask import Response  # noqa: PLC0415
@@ -5564,7 +5564,7 @@ def create_app() -> Flask:
             mimetype="application/octet-stream",
             headers={
                 "Content-Disposition": (
-                    f"attachment; filename=af2_{job_id[:8]}_pae.npy"
+                    f"attachment; filename=af2_{job_id[:8]}_pae.npz"
                 )
             },
         )
@@ -5701,6 +5701,8 @@ def create_app() -> Flask:
                 campaign_id=campaign.id,
                 candidates=candidates,
                 indices=candidate_indices,
+                user_id=ctx.user_id,
+                job_id=source_job_id,
             )
         except StorageError:
             logger.warning("stage_campaign_candidates failed for %s", campaign.id)
