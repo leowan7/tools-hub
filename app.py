@@ -1302,11 +1302,13 @@ def create_app() -> Flask:
         from shared.auth import login_required  # noqa: PLC0415
 
         # FIX HI-03 (fresh-review): per-session CSRF token for the
-        # /account/api-keys/* POST handlers. SameSite=Strict blocks the
-        # cross-site case browser-side; this guards against same-site
-        # XSS-leveraged forgeries and any pre-Strict legacy browser.
-        # Stored in session as a hex string; rotated when the cookie
-        # rotates (login/logout/secret change).
+        # /account/api-keys/* POST handlers. The session cookie is now
+        # SameSite=Lax (set unconditionally in create_app — FIX M2), which
+        # blocks the cross-site form/AJAX POST vector browser-side; this
+        # token additionally guards against same-site XSS-leveraged
+        # forgeries and is what lets us use Lax rather than Strict here
+        # without exposing this surface. Stored in session as a hex string;
+        # rotated when the cookie rotates (login/logout/secret change).
         import hmac as _hmac  # noqa: PLC0415
         import secrets as _secrets  # noqa: PLC0415
 
