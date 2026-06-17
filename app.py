@@ -1034,6 +1034,11 @@ def create_app() -> Flask:
         # Blueprint routes manage their own posture: scout_bp (free tier,
         # owned separately) and platform_api_bp (/api/v1/*, bearer-token auth
         # — not cookie-driven, so structurally CSRF-immune).
+        # FORWARD-LOOKING CAVEAT: this blanket blueprint exemption assumes
+        # every blueprint route is non-cookie-authenticated. If a future
+        # blueprint adds a session-cookie-authenticated state-changing route,
+        # it would be silently UNPROTECTED here — give it its own CSRF check
+        # or narrow this exemption to the specific blueprints.
         if request.blueprint is not None:
             return True
         path = request.path
