@@ -950,6 +950,40 @@ def create_app() -> Flask:
         "SESSION_SECRET_KEY", os.urandom(32)
     )
 
+    # FIX M2 (cso audit 2026-06-17): harden the Flask session cookie
+    # UNCONDITIONALLY. This cookie authenticates the entire web UI
+    # (wallet, account, admin) — not just the platform API. These flags
+    # were previously set only inside the ENABLE_PLATFORM_API block, so
+    # with that flag off (the prod default) every authenticated POST
+    # surface ran with Flask defaults: no Secure flag and SameSite unset
+    # (browser-default Lax). HttpOnly already defaults True in Flask but
+    # is pinned here for intent. Set them here so the hardening is
+    # independent of any feature flag.
+    #
+    # SameSite=Lax (not Strict): Strict drops the session cookie on the
+    # first cross-site top-level navigation, which breaks the post-login
+    # ``?next=`` redirect (e.g. following an emailed link to a protected
+    # page). Lax still blocks cross-site POST/AJAX, which is the CSRF
+    # vector that matters here. The /account/api-keys POSTs additionally
+    # carry a per-session CSRF token.
+    flask_app.config["SESSION_COOKIE_HTTPONLY"] = True
+    flask_app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+    # Secure ONLY when actually served over HTTPS. A Secure cookie is
+    # never sent back over plain http, so forcing it on unconditionally
+    # silently breaks local dev login (127.0.0.1 over http). Neither
+    # flask_app.debug (still False here — app.run(debug=True) sets it
+    # AFTER create_app under `python app.py`, and prod uses gunicorn) nor
+    # a defaulted PUBLIC_BASE_URL read can tell local from prod. Gate on a
+    # positive HTTPS signal instead: an explicit https PUBLIC_BASE_URL, or
+    # Railway's injected RAILWAY_ENVIRONMENT (present in prod, absent
+    # locally). Local dev hits neither and stays Secure=False.
+    _public_base = os.environ.get("PUBLIC_BASE_URL", "").strip().lower()
+    _serves_https = _public_base.startswith("https://") or bool(
+        os.environ.get("RAILWAY_ENVIRONMENT", "").strip()
+    )
+    flask_app.config["SESSION_COOKIE_SECURE"] = _serves_https
+
     # GPU label sync: best-effort refresh of TOOL_RULES.gpu from Modal-side
     # metadata. Today this is a stub that always falls back to the hardcoded
     # values; the hook exists so a future Modal API query or vendored
@@ -1152,19 +1186,13 @@ def create_app() -> Flask:
                 "webhook delivery will fail closed until it is configured."
             )
 
-        # FIX HI-03 (fresh-review): harden session cookies before any
-        # API-key surface goes live. Flask's default
-        # SESSION_COOKIE_SAMESITE is None (== browser default "Lax"),
-        # which still permits top-level POST navigations to send the
-        # cookie — so a malicious page can submit a hidden form to
-        # /account/api-keys/create on the user's behalf. Strict blocks
-        # cross-site requests entirely. Secure flag is harmless here
-        # because the app runs behind HTTPS in prod (Railway provides
-        # TLS). Direct assignment — Flask's default_config pre-populates
-        # these keys with None/False so .setdefault() is a no-op.
-        flask_app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
-        flask_app.config["SESSION_COOKIE_SECURE"] = True
-        flask_app.config["SESSION_COOKIE_HTTPONLY"] = True
+        # Session-cookie hardening (HttpOnly / SameSite / Secure) now runs
+        # UNCONDITIONALLY in create_app above (FIX M2), so it no longer
+        # depends on this flag. The cross-site forgery vector for the
+        # /account/api-keys/* POSTs is additionally covered by the
+        # per-session CSRF token enforced in those handlers below; that is
+        # what makes SameSite=Lax (rather than Strict) safe here while
+        # keeping the post-login ``?next=`` redirect working.
 
         from tools.platform_api import platform_api_bp  # noqa: PLC0415
 
