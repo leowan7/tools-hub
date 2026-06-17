@@ -374,6 +374,7 @@
     </p>
 
     <form action="/campaigns/submit" method="POST">
+      {{ csrf_input() }}
       <input type="hidden" name="source_job_id"       value="{{ job_id }}">
       <input type="hidden" name="candidate_indices"   value="[]">
 

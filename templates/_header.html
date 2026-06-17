@@ -45,6 +45,7 @@
         {% endif %}
         <a href="{{ url_for('account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
         <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
+          {{ csrf_input() }}
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
       {% else %}

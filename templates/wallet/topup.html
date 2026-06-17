@@ -149,6 +149,7 @@
             data-topup-route="/account/wallet/checkout"
             class="wallet-topup-form"
             id="wallet-topup-form">
+        {{ csrf_input() }}
         {% if next_url %}
           <input type="hidden" name="next" value="{{ next_url }}">
         {% endif %}
@@ -243,6 +244,7 @@
             action="/account/wallet/auto-reload"
             data-auto-reload-route="/account/wallet/auto-reload"
             class="wallet-autoreload-form">
+        {{ csrf_input() }}
         <div class="wallet-autoreload-grid">
           <div class="field-group">
             <label for="auto_reload_enabled" class="field-label">Enable auto reload</label>

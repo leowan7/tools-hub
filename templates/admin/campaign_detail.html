@@ -135,6 +135,7 @@
         <div class="panel-header"><span class="panel-title">Quote</span></div>
         <div class="panel-body">
           <form action="/admin/campaigns/{{ campaign.id }}/quote" method="POST">
+            {{ csrf_input() }}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.85rem;margin-bottom:.85rem;">
               <div class="form-field">
                 <label for="quote_total_usd" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Total (USD)</label>
@@ -206,6 +207,7 @@
         <div class="panel-header"><span class="panel-title">Results</span></div>
         <div class="panel-body">
           <form action="/admin/campaigns/{{ campaign.id }}/results" method="POST" enctype="multipart/form-data">
+            {{ csrf_input() }}
             <div class="form-field" style="margin-bottom:.85rem;">
               <label for="results_status" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Results status</label>
               <select id="results_status" name="results_status" class="form-control">
@@ -289,6 +291,7 @@
     <div class="panel-header"><span class="panel-title">Update status</span></div>
     <div class="panel-body">
       <form action="/admin/campaigns/{{ campaign.id }}/status" method="POST">
+        {{ csrf_input() }}
         <div class="form-field" style="margin-bottom:.85rem;">
           <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">New status</label>
           <select name="status" class="form-control">

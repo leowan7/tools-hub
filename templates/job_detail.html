@@ -363,7 +363,7 @@
           fetch('/jobs/' + btn.dataset.jobId + '/share', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '' },
           })
             .then(function (r) { return r.json().then(function (b) { return [r.ok, b]; }); })
             .then(function (pair) {
@@ -409,7 +409,7 @@
           fetch('/jobs/' + btn.dataset.jobId + '/cancel', {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '' },
           })
             .then(function (r) { return r.json().then(function (b) { return [r.ok, b]; }); })
             .then(function (pair) {

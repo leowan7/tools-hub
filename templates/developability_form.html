@@ -28,6 +28,7 @@
       {% endif %}
 
       <form method="POST" action="{{ url_for('developability_score') }}" class="dev-form">
+        {{ csrf_input() }}
         <div class="field">
           <label for="sequence">Variable region sequence</label>
           <textarea

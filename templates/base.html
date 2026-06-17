@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  {# CSRF token for fetch/XHR POSTs — read via document.querySelector('meta[name=csrf-token]'). #}
+  <meta name="csrf-token" content="{{ csrf_meta_value() }}">
   <title>{% block title %}Ranomics Tools — Protein Engineering & Binder Design Utilities{% endblock %}</title>
   <meta name="description" content="{% block description %}Free scientific tools for protein engineers — binder developability, epitope identification, library planning, and AI binder design pipelines from Ranomics.{% endblock %}">
   <meta name="robots" content="{% block robots %}index,follow{% endblock %}">

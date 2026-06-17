@@ -42,6 +42,7 @@ import json
 from flask import (
     Flask,
     Response,
+    abort,
     g,
     jsonify,
     redirect,
@@ -52,6 +53,7 @@ from flask import (
     url_for,
 )
 from flask_compress import Compress
+from markupsafe import Markup
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from gpu.modal_client import ModalClient
@@ -983,6 +985,112 @@ def create_app() -> Flask:
         os.environ.get("RAILWAY_ENVIRONMENT", "").strip()
     )
     flask_app.config["SESSION_COOKIE_SECURE"] = _serves_https
+
+    # ------------------------------------------------------------------
+    # FIX M2 (cso audit 2026-06-17, second half): app-wide CSRF protection
+    # for the cookie-authenticated web UI.
+    #
+    # SameSite=Lax (above) blocks the cross-site form/AJAX POST vector in
+    # modern browsers, but a per-session CSRF token is the defence-in-depth
+    # layer that also covers same-site XSS-leveraged forgeries and older
+    # browsers. The token previously existed ONLY for /account/api-keys/*
+    # (inside the ENABLE_PLATFORM_API block); every other authenticated POST
+    # surface (wallet, account, admin, jobs, tools, campaigns, workspaces)
+    # had none. This hoists a single token + a request-time enforcer to the
+    # whole app, independent of any feature flag.
+    #
+    # Model: double-submit via the signed session cookie. A random token is
+    # minted into the session on first render (the csrf_input()/
+    # csrf_meta_value() Jinja globals) and required back on every state-
+    # changing request, either as the ``_csrf`` form field or the
+    # ``X-CSRF-Token`` header (for fetch/XHR).
+    import hmac as _hmac  # noqa: PLC0415
+    import secrets as _secrets  # noqa: PLC0415
+
+    _CSRF_SESSION_KEY = "_csrf_token"
+    _CSRF_PROTECT_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def _ensure_app_csrf_token() -> str:
+        """Return the session CSRF token, minting + persisting one if absent."""
+        token = session.get(_CSRF_SESSION_KEY)
+        if not isinstance(token, str) or not token:
+            token = _secrets.token_urlsafe(32)
+            session[_CSRF_SESSION_KEY] = token
+        return token
+
+    # Jinja helpers. csrf_input() drops a hidden field into a <form>;
+    # csrf_meta_value() feeds the <meta name="csrf-token"> tag that fetch/
+    # XHR callers read. Named to avoid colliding with the ``csrf_token``
+    # *context variable* that the /account/api-keys templates already pass.
+    flask_app.jinja_env.globals["csrf_input"] = lambda: Markup(
+        '<input type="hidden" name="_csrf" value="'
+        + _ensure_app_csrf_token()
+        + '">'
+    )
+    flask_app.jinja_env.globals["csrf_meta_value"] = _ensure_app_csrf_token
+
+    def _csrf_request_is_exempt() -> bool:
+        """True for requests that must NOT be subject to the web-UI CSRF check."""
+        # Blueprint routes manage their own posture: scout_bp (free tier,
+        # owned separately) and platform_api_bp (/api/v1/*, bearer-token auth
+        # — not cookie-driven, so structurally CSRF-immune).
+        if request.blueprint is not None:
+            return True
+        path = request.path
+        # Server-to-server ingress — verified by per-message token/HMAC, no
+        # session cookie in play: Modal callbacks, heartbeat, Stripe, and the
+        # Modal-facing upload-URL minter.
+        if path.startswith("/webhooks/") or path.startswith("/api/upload-urls/"):
+            return True
+        # Anonymous analytics beacon (navigator.sendBeacon cannot set headers).
+        if path == "/api/track":
+            return True
+        # Side-effect-free input validation: no DB write, no billing, no job.
+        if path.startswith("/tools/") and path.endswith("/preflight"):
+            return True
+        # /account/api-keys/* already enforce their own per-session CSRF token
+        # (FIX HI-03) using a distinct field; leave that working path intact.
+        if path.startswith("/account/api-keys"):
+            return True
+        return False
+
+    @flask_app.before_request
+    def _enforce_csrf():  # noqa: ANN202
+        if request.method not in _CSRF_PROTECT_METHODS:
+            return None
+        # Operational kill-switch (default ON). Read at request time so an
+        # operator can disable enforcement without a redeploy if this blanket
+        # control unexpectedly breaks a form in prod. The test suite sets
+        # CSRF_PROTECT=0 globally (tests/conftest.py) and the dedicated CSRF
+        # suite flips it back on per-test.
+        if os.environ.get("CSRF_PROTECT", "1").strip() == "0":
+            return None
+        # No matched route → let Flask raise its own 404/405 instead of 403.
+        if request.endpoint is None:
+            return None
+        if _csrf_request_is_exempt():
+            return None
+        expected = session.get(_CSRF_SESSION_KEY)
+        submitted = (
+            request.form.get("_csrf")
+            or request.headers.get("X-CSRF-Token")
+            or ""
+        )
+        if (
+            not expected
+            or not submitted
+            or not _hmac.compare_digest(str(expected), str(submitted))
+        ):
+            logger.warning(
+                "CSRF validation failed: path=%s endpoint=%s "
+                "session_token=%s submitted=%s",
+                request.path,
+                request.endpoint,
+                bool(expected),
+                bool(submitted),
+            )
+            abort(403, description="CSRF token missing or invalid.")
+        return None
 
     # GPU label sync: best-effort refresh of TOOL_RULES.gpu from Modal-side
     # metadata. Today this is a stub that always falls back to the hardcoded

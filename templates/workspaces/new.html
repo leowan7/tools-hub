@@ -22,6 +22,7 @@
 
       {# ─── Left: upload form ──────────────────────────────────── #}
       <form method="POST" action="/workspaces/new" enctype="multipart/form-data" class="workspace-new-form">
+        {{ csrf_input() }}
         <input type="hidden" name="sku" value="{{ sku }}">
 
         <div class="form-section">

@@ -39,6 +39,7 @@
         {% endif %}
 
         <form method="POST" action="{{ url_for('login') }}">
+          {{ csrf_input() }}
           {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
           <div class="field">
@@ -69,6 +70,7 @@
         {% endif %}
 
         <form method="POST" action="{{ url_for('signup') }}" autocomplete="on">
+          {{ csrf_input() }}
           {# Signed timestamp + honeypot pair: server rejects submits
              whose timestamp arrives <2s after render (bot speed) or
              >1h later (stale token), or whose hidden honeypot field
@@ -137,6 +139,7 @@
         </p>
 
         <form method="POST" action="{{ url_for('forgot_password') }}">
+          {{ csrf_input() }}
           {# Signed timestamp + honeypot pair — same gauntlet as /signup.
              Server silently drops submits whose timestamp arrives <2s
              after render (bot speed) or >1h later (stale token), or
@@ -173,6 +176,7 @@
         </div>
 
         <form method="POST" action="{{ url_for('reset_password_update') }}" id="update-password-form" style="display:none;">
+          {{ csrf_input() }}
           <input type="hidden" name="access_token" id="update-access-token" value="{{ access_token or '' }}">
           <input type="hidden" name="refresh_token" id="update-refresh-token" value="{{ refresh_token or '' }}">
 

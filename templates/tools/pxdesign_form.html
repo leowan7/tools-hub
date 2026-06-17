@@ -184,6 +184,7 @@
       </div>
       <div class="panel-body">
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ csrf_input() }}
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <input type="hidden" name="preset" value="pilot">
 
