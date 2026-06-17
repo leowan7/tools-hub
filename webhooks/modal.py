@@ -34,11 +34,21 @@ time and written to both (a) the Modal payload as ``job_token``, and
 (b) the tool_jobs row. The receiver compares the path-segment token to
 the stored token; a mismatch returns 403.
 
-Heartbeat: best-effort telemetry only. The heartbeat body carries
-``job_id``; we look up the job and update its status/stage metadata.
-No token verification — the worst case is a spoofed heartbeat writes
-a fake stage string, which has no security consequence. If we ever
-need stronger guarantees, add the token to the heartbeat URL too.
+Heartbeat: best-effort telemetry only, and the body itself is NOT
+authenticated. Two consequences follow, both defended here:
+
+  * Anything attacker-controlled in the body must be inert. The benign
+    stage string is harmless to spoof. Live ``new_candidate`` injection
+    is rendered back to the user, so it is gated behind the per-job
+    ``job_token`` shared secret (see below).
+  * The cost-overrun / kill / billing decision must never trust the
+    body. It uses a SERVER-SIDE wall-clock measurement
+    (``_elapsed_running_seconds``) only; the request-body
+    ``cumulative_gpu_seconds`` is ignored for billing/kill. Otherwise a
+    forged heartbeat with a huge figure could cancel a victim's running
+    job and settle a billed ``safety_kill`` charge up to the per-tool
+    hard cap. If we ever need stronger guarantees still, add the token
+    to the heartbeat URL too.
 
 Idempotency & race safety
 -------------------------
@@ -348,13 +358,18 @@ def _handle_heartbeat() -> Any:
         new_candidate=new_candidate,
     )
 
-    # Cost-overrun safety. Kendrew heartbeats do not currently carry an
-    # explicit cumulative_gpu_seconds figure, so we fall back to
-    # wall-clock since started_at. Modal bills wall-clock on the GPU
-    # container, so this is a fair approximation for the warn/kill bands.
-    cumulative_secs = float(body.get("cumulative_gpu_seconds") or 0)
-    if cumulative_secs <= 0:
-        cumulative_secs = _elapsed_running_seconds(job)
+    # Cost-overrun safety. The billing/kill decision MUST use a
+    # server-side measurement only. The heartbeat is unauthenticated on
+    # this path, so a client-supplied ``cumulative_gpu_seconds`` is
+    # attacker-controlled: a forged heartbeat carrying a huge figure
+    # would otherwise drive mid_run_monitor_check past the kill band,
+    # cancelling a victim's job and settling a billed ``safety_kill``
+    # charge clamped to the per-tool hard cap. We therefore derive
+    # cumulative seconds purely from wall-clock since started_at and
+    # ignore the request-body value for billing/kill entirely. Modal
+    # bills wall-clock on the GPU container, so this is also a fair cost
+    # approximation for the warn/kill bands.
+    cumulative_secs = _elapsed_running_seconds(job)
     if cumulative_secs > 0:
         _run_overrun_check(job_id, cumulative_secs)
 
