@@ -33,7 +33,7 @@ from flask import (
 
 from shared.auth import login_required
 
-from scout.jobs import cleanup_old_jobs, create_job_dir
+from scout.jobs import cleanup_old_jobs, create_job_dir, resolve_owned_job_dir
 from scout.parser import parse_pdb
 from scout.quota import (
     FREE_TIER_RUN_CAP,
@@ -53,6 +53,18 @@ scout_bp = Blueprint(
     url_prefix="/scout",
     template_folder="../templates/scout",
 )
+
+
+def _current_owner_key() -> str:
+    """Stable per-user key used to stamp and gate scout job directories.
+
+    Prefers the Supabase auth uid (set in the session at login when
+    available) and falls back to the email, which ``@login_required``
+    guarantees is present. The same key is written when a job dir is
+    created and checked on every read, so the fallback stays internally
+    consistent within a session.
+    """
+    return (session.get("user_id") or session.get("user_email") or "").strip()
 
 
 def _extract_structure_title(path: Path, suffix: str) -> str:
@@ -175,7 +187,7 @@ def upload():
         }), 400
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir()
+    job_id, job_dir = create_job_dir(_current_owner_key())
 
     save_path = job_dir / f"input{suffix}"
     uploaded_file.save(str(save_path))
@@ -231,7 +243,7 @@ def fetch_pdb():
         }), 404
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir()
+    job_id, job_dir = create_job_dir(_current_owner_key())
     save_path = job_dir / f"input{suffix}"
     save_path.write_bytes(content)
 
@@ -260,7 +272,7 @@ def example():
         return jsonify({"error": "Example protein file not found on server."}), 500
 
     cleanup_old_jobs()
-    job_id, job_dir = create_job_dir()
+    job_id, job_dir = create_job_dir(_current_owner_key())
     dest = job_dir / "input.pdb"
     shutil.copy2(str(example_src), str(dest))
 
@@ -296,7 +308,9 @@ def analyze():
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
 
-    job_dir = Path("tmp") / job_id
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Job not found or expired. Please re-upload your file."}), 404
     pdb_path = _find_input_file(job_dir)
     if pdb_path is None:
         return jsonify({"error": "Job not found or expired. Please re-upload your file."}), 404
@@ -304,7 +318,7 @@ def analyze():
     known_binders = []
     ppi_interfaces = []
     try:
-        csv_path_prelim = Path("tmp") / job_id / "results.csv"
+        csv_path_prelim = job_dir / "results.csv"
         if not csv_path_prelim.exists():
             from scout.pipeline import run_pipeline  # noqa: PLC0415
             run_pipeline(pdb_path, chain_id)
@@ -357,7 +371,7 @@ def analyze():
 
     all_rows = []
     all_epitopes = []
-    csv_path = Path("tmp") / job_id / "results.csv"
+    csv_path = job_dir / "results.csv"
     if csv_path.exists():
         with csv_path.open(newline="") as csv_file:
             reader = csv_module.DictReader(csv_file)
@@ -453,7 +467,7 @@ def analyze():
             is_plddt=_is_plddt,
         )
 
-    epitopes_annotated_path = Path("tmp") / job_id / "epitopes_annotated.csv"
+    epitopes_annotated_path = job_dir / "epitopes_annotated.csv"
     if top3:
         with epitopes_annotated_path.open("w", newline="") as csv_file:
             writer = csv_module.DictWriter(csv_file, fieldnames=CSV_COLUMNS_ANNOTATED)
@@ -464,7 +478,7 @@ def analyze():
                 row["quality_flags"] = epitope["quality_flags"]
                 writer.writerow(row)
 
-    results_annotated_path = Path("tmp") / job_id / "results_annotated.csv"
+    results_annotated_path = job_dir / "results_annotated.csv"
     with results_annotated_path.open("w", newline="") as csv_file:
         writer = csv_module.DictWriter(csv_file, fieldnames=CSV_COLUMNS_ANNOTATED)
         writer.writeheader()
@@ -473,7 +487,7 @@ def analyze():
             row["quality_flags"] = e["quality_flags"]
             writer.writerow(row)
 
-    epitopes_csv_path = Path("tmp") / job_id / "epitopes.csv"
+    epitopes_csv_path = job_dir / "epitopes.csv"
     if top3 and fieldnames:
         with epitopes_csv_path.open("w", newline="") as csv_file:
             writer = csv_module.DictWriter(csv_file, fieldnames=fieldnames)
@@ -530,7 +544,10 @@ def analyze():
 @scout_bp.route("/pdb/<job_id>", methods=["GET"])
 @login_required
 def serve_pdb(job_id):
-    input_path = _find_input_file(Path("tmp") / job_id)
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Structure file not found. Please re-upload your file."}), 404
+    input_path = _find_input_file(job_dir)
     if input_path is None:
         return jsonify({"error": "Structure file not found. Please re-upload your file."}), 404
     return send_file(str(input_path), mimetype="chemical/x-pdb")
@@ -539,21 +556,25 @@ def serve_pdb(job_id):
 @scout_bp.route("/download/<job_id>", methods=["GET"])
 @login_required
 def download(job_id):
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Results not found. Please run analysis first."}), 404
+
     full = request.args.get("full", "0") == "1"
     if full:
-        csv_path = Path("tmp") / job_id / "results_annotated.csv"
-        fallback_path = Path("tmp") / job_id / "results.csv"
+        csv_path = job_dir / "results_annotated.csv"
+        fallback_path = job_dir / "results.csv"
         download_name = "all_patches.csv"
     else:
-        csv_path = Path("tmp") / job_id / "epitopes_annotated.csv"
-        fallback_path = Path("tmp") / job_id / "epitopes.csv"
+        csv_path = job_dir / "epitopes_annotated.csv"
+        fallback_path = job_dir / "epitopes.csv"
         download_name = "top3_epitopes.csv"
 
     if not csv_path.exists():
         csv_path = fallback_path
     if not csv_path.exists():
         return jsonify({"error": "Results not found. Please run analysis first."}), 404
-    return send_file(str(csv_path.resolve()), as_attachment=True, download_name=download_name)
+    return send_file(str(csv_path), as_attachment=True, download_name=download_name)
 
 
 @scout_bp.route("/progress", methods=["GET"])
@@ -565,8 +586,8 @@ def progress():
     job_id = request.args.get("job_id", "").strip()
     chain_id = request.args.get("chain", "").strip()
 
-    job_dir = Path("tmp") / job_id
-    pdb_path = _find_input_file(job_dir) if job_id else None
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key()) if job_id else None
+    pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not chain_id or pdb_path is None:
         def _error_stream():
@@ -673,8 +694,10 @@ def feasibility_analyze():
     if not job_id or not chain_id:
         return jsonify({"error": "job_id and chain are required."}), 400
 
-    job_dir = Path("tmp") / job_id
-    pdb_path = _find_input_file(job_dir) if job_id else None
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
+    pdb_path = _find_input_file(job_dir)
     if pdb_path is None:
         return jsonify({"error": "Job not found or expired. Please re-upload."}), 404
 
@@ -764,8 +787,8 @@ def feasibility_progress():
     epitope_str = request.args.get("epitope_residues", "").strip()
     epitope_id = request.args.get("epitope_id", "").strip()
 
-    job_dir = Path("tmp") / job_id
-    pdb_path = _find_input_file(job_dir) if job_id else None
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key()) if job_id else None
+    pdb_path = _find_input_file(job_dir) if job_dir else None
 
     if not job_id or not chain_id or pdb_path is None:
         def _error_stream():
@@ -871,12 +894,15 @@ def feasibility_progress():
 @scout_bp.route("/feasibility/download/<job_id>", methods=["GET"])
 @login_required
 def feasibility_download(job_id):
-    csv_path = Path("tmp") / job_id / "feasibility_results.csv"
+    job_dir = resolve_owned_job_dir(job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
+    csv_path = job_dir / "feasibility_results.csv"
     if not csv_path.exists():
         return jsonify({"error": "Feasibility results not found. Run analysis first."}), 404
 
     return send_file(
-        str(csv_path.resolve()),
+        str(csv_path),
         as_attachment=True,
         download_name=f"feasibility_{job_id[:8]}.csv",
         mimetype="text/csv",
@@ -906,6 +932,14 @@ def handoff_to_tool():
     if not scout_job_id:
         return jsonify({"error": "scout_job_id is required"}), 400
 
+    # Validate + confine + ownership-check before touching the filesystem,
+    # then hand the confined PDB path to create_handoff so it never builds
+    # a path from the raw, user-supplied scout_job_id.
+    job_dir = resolve_owned_job_dir(scout_job_id, _current_owner_key())
+    if job_dir is None:
+        return jsonify({"error": "Scout job not found or expired."}), 404
+    input_pdb = job_dir / "input.pdb"
+
     hotspots: list[int] = []
     if hotspots_raw:
         try:
@@ -926,6 +960,7 @@ def handoff_to_tool():
         target_chain=target_chain,
         hotspot_residues=hotspots,
         scout_epitope_id=scout_epitope_id,
+        pdb_path=input_pdb,
     )
     if not handoff_id:
         return (

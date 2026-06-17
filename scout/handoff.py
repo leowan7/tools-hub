@@ -142,7 +142,19 @@ def create_handoff(
         return None
 
     handoff_id = str(uuid.uuid4())
-    path = pdb_path or (Path("tmp") / scout_job_id / "input.pdb")
+    # Prefer the caller-supplied (already confined) path. Otherwise derive
+    # one from scout_job_id, but only after UUID-validating + safe_join'ing
+    # it so a malicious id cannot traverse out of tmp/ (defence in depth —
+    # the route already validates + ownership-checks before calling here).
+    if pdb_path is not None:
+        path = pdb_path
+    else:
+        from scout.jobs import safe_job_dir  # noqa: PLC0415
+
+        job_dir = safe_job_dir(scout_job_id)
+        if job_dir is None:
+            return None
+        path = job_dir / "input.pdb"
     storage_path = stage_pdb(
         user_id=user_id,
         handoff_id=handoff_id,
