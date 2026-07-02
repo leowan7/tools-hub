@@ -600,3 +600,39 @@ def test_safe_gpu_seconds_int_bounds_and_coerces():
     # Absurd values are clamped to the 24h ceiling, never persisted raw.
     assert f(10**12) == jobs_mod._MAX_GPU_SECONDS
     assert f(math.inf) <= jobs_mod._MAX_GPU_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# _stash_wallet_flag re-reads fresh inputs (REVIEW #16 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_stash_wallet_flag_merges_onto_fresh_inputs(monkeypatch):
+    # The `job` handed in is a stale snapshot from the top of the
+    # heartbeat handler — it predates the heartbeat's _partial_candidates
+    # append. The flag write must merge onto the CURRENT row, not the
+    # snapshot, or it silently drops the concurrent heartbeat state.
+    stale = ToolJob.from_row(_row(inputs={"_wallet": {}}))
+    fresh = ToolJob.from_row(
+        _row(
+            id=stale.id,
+            inputs={
+                "_wallet": {},
+                "_partial_candidates": [{"pdb_key": "a"}],
+                "_hb_version": 3,
+            },
+        )
+    )
+    monkeypatch.setattr(jobs_mod, "get_job", lambda jid, **k: fresh)
+    captured: dict = {}
+    monkeypatch.setattr(
+        jobs_mod, "update_inputs",
+        lambda jid, inp: captured.update(inp) or True,
+    )
+
+    jobs_mod._stash_wallet_flag(stale, "overrun_warned", True)
+
+    assert captured["_wallet"]["overrun_warned"] is True
+    # Heartbeat state survives (would be dropped if it merged onto `stale`).
+    assert captured["_partial_candidates"] == [{"pdb_key": "a"}]
+    assert captured["_hb_version"] == 3

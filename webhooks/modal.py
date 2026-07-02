@@ -492,6 +492,54 @@ def _sanitize_candidate(cand: dict) -> dict | None:
     }
 
 
+def _hb_merge_inputs(
+    current_inputs: dict,
+    *,
+    stage: str,
+    designs_completed: int,
+    designs_total: int,
+    new_candidate: dict | None,
+) -> dict:
+    """Return a new inputs dict with this heartbeat's progress folded in.
+
+    Pure merge — no I/O — so the caller can retry it against a fresh read
+    under optimistic concurrency. ``_progress`` is last-writer-wins (a
+    monotonic snapshot, harmless to overwrite); ``_partial_candidates`` is
+    an append that must NOT drop a concurrent sibling's row.
+    """
+    merged = dict(current_inputs) if isinstance(current_inputs, dict) else {}
+    merged["_progress"] = {
+        "stage": stage,
+        "designs_completed": designs_completed,
+        "designs_total": designs_total,
+    }
+    if isinstance(new_candidate, dict):
+        partials = merged.get("_partial_candidates")
+        if not isinstance(partials, list):
+            partials = []
+        else:
+            partials = list(partials)
+
+        def _cand_key(cand: Any) -> Any:
+            if not isinstance(cand, dict):
+                return None
+            return cand.get("pdb_key") or cand.get("rank")
+
+        # Dedup by pdb_key (fallback rank) so a heartbeat retry does not
+        # duplicate a candidate row in the live table. Cap as a safety bound.
+        seen = {_cand_key(c) for c in partials}
+        if _cand_key(new_candidate) not in seen:
+            partials.append(new_candidate)
+        merged["_partial_candidates"] = partials[:1000]
+    return merged
+
+
+# Bounded optimistic-CAS retries for the heartbeat merge. Small on purpose:
+# the fallback write below is correct (just last-writer-wins) so we never
+# need to spin hard on contention.
+_HB_CAS_MAX_RETRIES = 3
+
+
 def _append_heartbeat_state(
     *,
     job_id: str,
@@ -505,50 +553,91 @@ def _append_heartbeat_state(
     Always writes ``inputs._progress`` (stage + design counts). When the
     heartbeat carries a token-verified ``new_candidate`` dict, appends it
     to ``inputs._partial_candidates`` so the status page can stream
-    results as each design completes. Keeping both inside the inputs blob
-    avoids a schema change, and a single read-modify-write means progress
-    and candidate appends never clobber each other.
+    results as each design completes.
+
+    Concurrency: two heartbeats for the same job (e.g. a per-candidate
+    beat overlapping the 15-min monitor beat across gunicorn workers) can
+    both read the same ``inputs`` and clobber each other's candidate
+    append. We guard the write with an optimistic compare-and-swap on a
+    private ``inputs._hb_version`` counter and retry on a lost race, so
+    concurrent appends serialise instead of dropping rows. If the CAS
+    filter is unavailable, or retries are exhausted, we fall back to a
+    plain last-writer-wins write — never worse than the original
+    read-modify-write, and the authoritative candidate list still comes
+    from the terminal webhook regardless.
     """
     client = get_service_client()
     if client is None:
         return
-    try:
-        existing = (
-            client.table("tool_jobs")
-            .select("inputs")
-            .eq("id", job_id)
-            .single()
-            .execute()
+
+    def _read_inputs() -> "dict | None":
+        try:
+            existing = (
+                client.table("tool_jobs")
+                .select("inputs")
+                .eq("id", job_id)
+                .single()
+                .execute()
+            )
+            return (getattr(existing, "data", None) or {}).get("inputs") or {}
+        except Exception:
+            return None
+
+    for _ in range(_HB_CAS_MAX_RETRIES):
+        current_inputs = _read_inputs()
+        if current_inputs is None:
+            break  # read failed — drop to the best-effort fallback write
+        old_version = current_inputs.get("_hb_version")
+        old_version = old_version if isinstance(old_version, int) else None
+        merged = _hb_merge_inputs(
+            current_inputs,
+            stage=stage,
+            designs_completed=designs_completed,
+            designs_total=designs_total,
+            new_candidate=new_candidate,
         )
-        current_inputs = (getattr(existing, "data", None) or {}).get("inputs") or {}
-    except Exception:
-        current_inputs = {}
+        merged["_hb_version"] = (old_version or 0) + 1
+        try:
+            query = client.table("tool_jobs").update({"inputs": merged}).eq(
+                "id", job_id
+            )
+            # CAS: only land if the version has not moved since we read it.
+            # Pre-existing rows have no version yet -> match IS NULL.
+            if old_version is None:
+                query = query.is_("inputs->>_hb_version", "null")
+            else:
+                query = query.eq("inputs->>_hb_version", str(old_version))
+            resp = query.execute()
+        except Exception:
+            # jsonb filter unsupported / transient error — stop CASing and
+            # fall back to the unconditional write below.
+            logger.debug(
+                "Heartbeat CAS update failed for %s; falling back", job_id,
+                exc_info=True,
+            )
+            break
+        if len(getattr(resp, "data", None) or []) > 0:
+            return  # won the race
+        # Lost the race: a sibling heartbeat wrote between our read and
+        # write. Loop to re-read and re-merge onto the fresher row.
 
-    current_inputs["_progress"] = {
-        "stage": stage,
-        "designs_completed": designs_completed,
-        "designs_total": designs_total,
-    }
-
-    if isinstance(new_candidate, dict):
-        partials = current_inputs.get("_partial_candidates")
-        if not isinstance(partials, list):
-            partials = []
-
-        def _cand_key(cand: Any) -> Any:
-            if not isinstance(cand, dict):
-                return None
-            return cand.get("pdb_key") or cand.get("rank")
-
-        # Dedup by pdb_key (fallback rank) so a heartbeat retry does not
-        # duplicate a candidate row in the live table. Cap as a safety bound.
-        seen = {_cand_key(c) for c in partials}
-        if _cand_key(new_candidate) not in seen:
-            partials.append(new_candidate)
-        current_inputs["_partial_candidates"] = partials[:1000]
-
+    # Fallback: retries exhausted, read failed, or CAS unavailable. A plain
+    # merge write keeps progress advancing (last-writer-wins, exactly the
+    # pre-fix behaviour).
+    current_inputs = _read_inputs() or {}
+    merged = _hb_merge_inputs(
+        current_inputs,
+        stage=stage,
+        designs_completed=designs_completed,
+        designs_total=designs_total,
+        new_candidate=new_candidate,
+    )
+    prior_version = current_inputs.get("_hb_version")
+    merged["_hb_version"] = (
+        prior_version if isinstance(prior_version, int) else 0
+    ) + 1
     try:
-        client.table("tool_jobs").update({"inputs": current_inputs}).eq(
+        client.table("tool_jobs").update({"inputs": merged}).eq(
             "id", job_id
         ).execute()
     except Exception:

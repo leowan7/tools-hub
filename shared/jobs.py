@@ -1192,8 +1192,19 @@ def mid_run_monitor_check(
 
 
 def _stash_wallet_flag(job: "ToolJob", key: str, value) -> None:  # noqa: ANN001
-    """Merge a flag into ``inputs._wallet`` and persist."""
-    new_inputs = dict(job.inputs or {})
+    """Merge a flag into ``inputs._wallet`` and persist.
+
+    Re-read the row's current inputs first rather than merging onto the
+    (possibly stale) ``job`` snapshot: this whole-blob write is reachable
+    from the same heartbeat request that just ran ``_append_heartbeat_state``,
+    so merging onto a pre-heartbeat snapshot would clobber the freshly
+    written ``_progress`` / ``_partial_candidates`` / ``_hb_version`` that
+    REVIEW #16 protects. This fires at most once per job, so a bounded
+    re-read (not a full CAS) is the proportionate guard.
+    """
+    fresh = get_job(job.id)
+    base = (fresh.inputs if fresh is not None else None) or job.inputs or {}
+    new_inputs = dict(base)
     wallet_ctx = dict(new_inputs.get("_wallet") or {})
     wallet_ctx[key] = value
     new_inputs["_wallet"] = wallet_ctx
