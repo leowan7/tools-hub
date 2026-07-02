@@ -35,6 +35,7 @@ try:
 except ImportError:
     pass
 
+import click
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 import json
@@ -5935,6 +5936,31 @@ def create_app() -> Flask:
     # Admin routes — /admin/campaigns/*
     # ------------------------------------------------------------------
 
+    def _audit_staff_action(action: str, *, target_id: str, props: dict | None = None) -> None:
+        """Append a staff/admin state change to the user_events audit trail
+        (cso audit L2). Best-effort — log_event never raises. Captures who
+        (staff email + user_id), what (action + props), and which entity."""
+        from shared.events import log_event  # noqa: PLC0415
+        try:
+            log_event(
+                event_type=f"staff_action:{action}"[:64],
+                user_id=session.get("user_id"),
+                session_id=session.get("anon_session_id"),
+                path=request.path,
+                props={
+                    "staff_email": session.get("user_email") or "",
+                    "target_id": target_id,
+                    **(props or {}),
+                },
+                ip=(
+                    request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                    or request.remote_addr
+                ),
+                user_agent=request.headers.get("User-Agent"),
+            )
+        except Exception:  # noqa: BLE001 — audit logging must never break the action
+            logger.warning("staff audit log failed for %s", action, exc_info=True)
+
     @flask_app.route("/admin/campaigns", methods=["GET"])
     def admin_campaigns_list():
         from shared.auth import require_staff, STAFF_EMAILS  # noqa: PLC0415
@@ -6128,6 +6154,17 @@ def create_app() -> Flask:
                         campaign_id,
                         exc_info=True,
                     )
+            _audit_staff_action(
+                "campaign_status",
+                target_id=campaign_id,
+                props={
+                    "source": "api",
+                    "prev_status": prev_status,
+                    "new_status": new_status,
+                    "moved": bool(transitioned and transitioned.moved),
+                    "notify_customer": notify_customer,
+                },
+            )
             return redirect(
                 url_for("admin_campaign_detail", campaign_id=campaign_id)
                 + "?updated=1"
@@ -6164,6 +6201,15 @@ def create_app() -> Flask:
                 except Exception:
                     logger.warning("campaign status email failed", exc_info=True)
 
+        _audit_staff_action(
+            "campaign_status",
+            target_id=campaign_id,
+            props={
+                "source": "web",
+                "prev_status": prev_status,
+                "new_status": (updated.status if updated else new_status),
+            },
+        )
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?updated=1"
         )
@@ -6347,6 +6393,14 @@ def create_app() -> Flask:
                     exc_info=True,
                 )
 
+        _audit_staff_action(
+            "campaign_quote",
+            target_id=campaign_id,
+            props={
+                "quote_total_usd": total_usd,
+                "moved_to_quotesent": bool(transitioned and transitioned.moved),
+            },
+        )
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"
         )
@@ -6509,6 +6563,11 @@ def create_app() -> Flask:
                     exc_info=True,
                 )
 
+        _audit_staff_action(
+            "campaign_results",
+            target_id=campaign_id,
+            props={"results_status": saved.results_status},
+        )
         return redirect(
             url_for("admin_campaign_detail", campaign_id=campaign_id)
             + "?results_saved=1"
@@ -6957,6 +7016,36 @@ def create_app() -> Flask:
         print(
             f"jobs:sweep-stuck pending={summary['pending_swept']} "
             f"running={summary['running_swept']} "
+            f"errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
+    @flask_app.cli.command("pii:purge-old")
+    @click.option(
+        "--dry-run", is_flag=True, default=False,
+        help="Count matching rows without deleting anything.",
+    )
+    def cli_pii_purge_old(dry_run: bool):
+        """Purge PII event rows older than the retention window (cso L5).
+
+        Deletes public.user_events + public.signup_rejections rows past
+        PII_RETENTION_DAYS (default 365, floored at 30). Usage::
+
+            flask pii:purge-old
+            flask pii:purge-old --dry-run
+        """
+        from cron.purge_old_events import purge_old_events  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = purge_old_events(dry_run=dry_run)
+        verb = "would purge" if dry_run else "purged"
+        print(
+            f"pii:purge-old ({'dry-run' if dry_run else 'live'}) "
+            f"cutoff<{summary['cutoff']} retention_days={summary['retention_days']} "
+            f"{verb}: user_events={summary['user_events']} "
+            f"signup_rejections={summary['signup_rejections']} "
             f"errors={len(summary['errors'])}",
             flush=True,
         )

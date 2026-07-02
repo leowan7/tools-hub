@@ -270,6 +270,49 @@ class UnsafeWebhookURLError(ValueError):
     """Raised when a webhook_url fails the SSRF guard."""
 
 
+def _resolve_addrinfo_bounded(host: str, timeout: float) -> list:
+    """Resolve ``host`` with a hard wall-clock cap, thread-safely.
+
+    ``socket.getaddrinfo`` has no per-call timeout and the only global
+    knob (``socket.setdefaulttimeout``) is process-wide, so bounding it
+    that way races across concurrent dispatch threads and can corrupt the
+    default for unrelated sockets. Instead we run the lookup in a daemon
+    worker joined for ``timeout`` seconds. On timeout we raise and let the
+    orphaned worker finish on its own (bounded by the OS resolver, and
+    only reachable for a deliberately-slow malicious host, which is
+    rejected regardless). No process-wide state is touched.
+    """
+    box: dict = {}
+
+    def _worker() -> None:
+        try:
+            box["addrinfo"] = socket.getaddrinfo(
+                host, None, proto=socket.IPPROTO_TCP
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced via box below
+            box["error"] = exc
+
+    worker = threading.Thread(
+        target=_worker, name="webhook-dns", daemon=True
+    )
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise UnsafeWebhookURLError(
+            f"webhook_url DNS lookup timed out after {timeout}s"
+        )
+    exc = box.get("error")
+    if isinstance(exc, socket.gaierror):
+        raise UnsafeWebhookURLError(
+            f"webhook_url host could not be resolved: {exc}"
+        )
+    if exc is not None:
+        raise UnsafeWebhookURLError(
+            f"webhook_url host resolution failed: {exc}"
+        )
+    return box.get("addrinfo") or []
+
+
 def validate_webhook_url_safe(url: str) -> None:
     """Validate that ``url`` is safe to POST to from the server.
 
@@ -323,31 +366,16 @@ def validate_webhook_url_safe(url: str) -> None:
                 "webhook_url targets a private or special-use IP"
             )
     else:
-        # FIX HI-05 (fresh-review): socket.getaddrinfo has no per-call
-        # timeout argument and inherits the OS resolver's default (often
-        # 30s on Linux). A malicious caller can submit a hostname whose
-        # authoritative DNS is intentionally slow and stall the request
-        # thread for the full default. Cap the lookup to 2 seconds via
-        # the process-wide default socket timeout — narrowly scoped so
-        # we restore the previous value on the way out and don't affect
-        # any other socket op on this thread.
-        prior_default = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(_DNS_LOOKUP_TIMEOUT_SECONDS)
-        try:
-            addrinfo = socket.getaddrinfo(
-                host, None, proto=socket.IPPROTO_TCP
-            )
-        except socket.gaierror as exc:
-            raise UnsafeWebhookURLError(
-                f"webhook_url host could not be resolved: {exc}"
-            )
-        except socket.timeout as exc:
-            raise UnsafeWebhookURLError(
-                f"webhook_url DNS lookup timed out after "
-                f"{_DNS_LOOKUP_TIMEOUT_SECONDS}s: {exc}"
-            )
-        finally:
-            socket.setdefaulttimeout(prior_default)
+        # FIX HI-05: socket.getaddrinfo has no per-call timeout argument and
+        # inherits the OS resolver's default (often 30s on Linux). A
+        # malicious caller can submit a hostname whose authoritative DNS is
+        # intentionally slow and stall the request thread for the full
+        # default. FIX #15 (cso/REVIEW audit): bound the lookup in a worker
+        # thread joined with a timeout, NOT via socket.setdefaulttimeout —
+        # that is process-wide, and under concurrent webhook dispatch the
+        # save/restore raced and could leave every other socket op in the
+        # process (Supabase/Stripe/Modal) stuck with a 2s default.
+        addrinfo = _resolve_addrinfo_bounded(host, _DNS_LOOKUP_TIMEOUT_SECONDS)
         # Every record must be public. A multi-A response with a single
         # private entry is treated as unsafe (a sometimes-public DNS
         # rebinding attack lands here).

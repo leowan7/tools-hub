@@ -1767,3 +1767,36 @@ def test_status_dropdown_allows_quotesent_with_price():
     assert resp.status_code in (302, 303)
     assert "updated=1" in resp.headers["Location"]
     assert trans_mock.called
+
+
+def test_admin_status_change_is_audit_logged():
+    """cso L2: an admin campaign-status change writes a staff_action audit
+    row (who + what + which entity) to the user_events trail."""
+    client = _full_app_client()
+    tr = _transition_result(moved=True, status="QuoteSent", webhook_url=None)
+    with patch("shared.auth.STAFF_EMAILS", {STAFF}), patch(
+        "shared.campaigns.get_campaign",
+        return_value=_api_campaign("WaitingForConfirmation", quote_total_usd=48000.0),
+    ), patch(
+        "shared.campaigns.transition_api_status", return_value=tr
+    ), patch(
+        "shared.campaigns.set_campaign_admin_fields",
+        return_value=_api_campaign("QuoteSent"),
+    ), patch("shared.events.log_event") as log_mock:
+        with client.session_transaction() as sess:
+            sess["user_email"] = STAFF
+            sess["user_id"] = "staff-uid"
+        client.post(
+            "/admin/campaigns/exp-smoke-1/status",
+            data={"status": "QuoteSent"},
+        )
+
+    audit = [
+        kw for _, kw in log_mock.call_args_list
+        if kw.get("event_type") == "staff_action:campaign_status"
+    ]
+    assert audit, "no staff_action audit row was logged"
+    props = audit[0]["props"]
+    assert props["staff_email"] == STAFF
+    assert props["target_id"] == "exp-smoke-1"
+    assert props["new_status"] == "QuoteSent"

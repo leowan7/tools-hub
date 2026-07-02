@@ -670,41 +670,67 @@ def test_api_key_prefix_carries_no_plaintext_randomness():
 # ---------------------------------------------------------------------------
 
 
-def test_webhook_url_dns_lookup_has_timeout(monkeypatch):
-    """``validate_webhook_url_safe`` must not stall on a slow resolver.
+def test_webhook_url_dns_lookup_bounded_by_timeout(monkeypatch):
+    """A slow resolver must not stall the caller past the DNS timeout cap.
 
-    We replace ``socket.getaddrinfo`` with one that observes the current
-    default socket timeout and asserts a sub-10s cap.
+    FIX #15: the lookup is now bounded by a worker-thread join, so a
+    resolver that blocks far longer than the cap still returns control to
+    the caller near the cap (and rejects the URL).
     """
-    import socket as _socket
+    import time as _time
 
     from shared import webhooks as wh
 
-    seen_timeout = {}
-
-    def _fake_getaddrinfo(host, port, **_kw):
-        seen_timeout["t"] = _socket.getdefaulttimeout()
-        return [(_socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
-
-    monkeypatch.setattr(wh.socket, "getaddrinfo", _fake_getaddrinfo)
-
-    wh.validate_webhook_url_safe("https://example.com/hook")
-    assert seen_timeout["t"] is not None
-    assert seen_timeout["t"] <= 10.0  # cap should be small (default 2.0)
-
-
-def test_webhook_url_dns_lookup_timeout_rejects(monkeypatch):
-    """When the resolver times out, the URL is REJECTED, not accepted."""
-    import socket as _socket
-
-    from shared import webhooks as wh
+    monkeypatch.setattr(wh, "_DNS_LOOKUP_TIMEOUT_SECONDS", 0.2)
 
     def _slow_getaddrinfo(host, port, **_kw):
-        raise _socket.timeout("simulated slow DNS")
+        _time.sleep(1.5)  # far longer than the 0.2s cap
+        return [(0, 0, 0, "", ("93.184.216.34", 0))]
 
     monkeypatch.setattr(wh.socket, "getaddrinfo", _slow_getaddrinfo)
 
+    start = _time.monotonic()
     with pytest.raises(wh.UnsafeWebhookURLError, match="DNS lookup timed out"):
+        wh.validate_webhook_url_safe("https://example.com/hook")
+    elapsed = _time.monotonic() - start
+    assert elapsed < 1.0  # returned near the 0.2s cap, not the 1.5s sleep
+
+
+def test_webhook_url_dns_lookup_does_not_touch_global_default(monkeypatch):
+    """FIX #15: the bounded lookup must NOT mutate the process-wide socket
+    default timeout — the previous setdefaulttimeout approach raced across
+    concurrent dispatch threads and leaked a 2s default onto unrelated
+    sockets (Supabase/Stripe/Modal)."""
+    import socket as _socket
+
+    from shared import webhooks as wh
+
+    before = _socket.getdefaulttimeout()
+    observed = {}
+
+    def _fake_getaddrinfo(host, port, **_kw):
+        # Our code must not have changed the global default to bound us.
+        observed["inside"] = _socket.getdefaulttimeout()
+        return [(_socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _fake_getaddrinfo)
+    wh.validate_webhook_url_safe("https://example.com/hook")
+
+    assert observed["inside"] == before  # untouched during the lookup
+    assert _socket.getdefaulttimeout() == before  # and after
+
+
+def test_webhook_url_dns_gaierror_rejects(monkeypatch):
+    """An unresolvable host is rejected with a clear reason."""
+    import socket as _socket
+
+    from shared import webhooks as wh
+
+    def _boom(host, port, **_kw):
+        raise _socket.gaierror("name or service not known")
+
+    monkeypatch.setattr(wh.socket, "getaddrinfo", _boom)
+    with pytest.raises(wh.UnsafeWebhookURLError, match="could not be resolved"):
         wh.validate_webhook_url_safe("https://example.com/hook")
 
 

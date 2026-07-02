@@ -1,0 +1,46 @@
+name: pip-audit (dependency CVE scan)
+
+# cso audit T1: requirements.txt uses floor-only pins with no CVE scanning.
+# This job resolves the dependency tree and checks every package against the
+# PyPI Advisory + OSV databases. A vulnerable dependency fails the job, and
+# GitHub emails the repo owner the failed run (same notification path as the
+# synthetic-smoke tier-2 monitor). Runs weekly and on any change to the
+# dependency set, plus manual dispatch.
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'   # weekly, Monday 12:00 UTC
+  pull_request:
+    paths:
+      - 'requirements.txt'
+      - '.github/workflows/pip-audit.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: pip-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Scan requirements.txt for known CVEs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      # Resolves requirements.txt and audits the full tree. Non-zero exit on
+      # any known vulnerability fails the job (and notifies the owner).
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt --desc
