@@ -202,7 +202,13 @@ def cost_band(entry: dict, experiment_type: str) -> Optional[list[int]]:
     band = bands.get(experiment_type)
     if not band or len(band) != 2:
         return None
-    return [int(band[0]), int(band[1])]
+    try:
+        return [int(band[0]), int(band[1])]
+    except (TypeError, ValueError):
+        # Malformed catalog entry (None / non-numeric band bound) —
+        # honour the Optional[list[int]] contract rather than raising a
+        # 500 out of the cost-estimate endpoint.
+        return None
 
 
 def supported_experiment_types(entry: dict) -> list[str]:

@@ -985,6 +985,29 @@ MID_RUN_MONITOR_INTERVAL_MINUTES = 15
 _MID_RUN_WARN_RATIO = 1.5
 _MID_RUN_KILL_RATIO = 2.0
 
+# Upper bound for a single job's persisted GPU seconds (24h). Guards the
+# billing column against a malformed/NaN/inf heartbeat value being
+# int()-cast into the ledger.
+_MAX_GPU_SECONDS = 24 * 60 * 60
+
+
+def _safe_gpu_seconds_int(value) -> int:  # noqa: ANN001
+    """Coerce a heartbeat GPU-seconds value to a bounded, finite int.
+
+    NaN/inf/negative/garbage collapse to 0; anything above the 24h
+    ceiling is clamped. Prevents a bad heartbeat from corrupting the
+    ``gpu_seconds_used`` billing column or raising on ``int()``.
+    """
+    import math  # noqa: PLC0415
+
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(f) or f <= 0:
+        return 0
+    return int(min(f, _MAX_GPU_SECONDS))
+
 
 def mid_run_monitor_check(
     job_id: str,
@@ -1044,7 +1067,7 @@ def mid_run_monitor_check(
             # authoritative gpu_seconds_used the terminal webhook wrote.
             _cas_update(
                 job_id,
-                {"gpu_seconds_used": int(cumulative_gpu_seconds)},
+                {"gpu_seconds_used": _safe_gpu_seconds_int(cumulative_gpu_seconds)},
                 allowed_current=("pending", "running"),
             )
         except Exception:
@@ -1141,7 +1164,7 @@ def mid_run_monitor_check(
                         "job cancelled by the mid run monitor"
                     ),
                 },
-                gpu_seconds_used=int(cumulative_gpu_seconds or 0),
+                gpu_seconds_used=_safe_gpu_seconds_int(cumulative_gpu_seconds),
             )
         except Exception:
             logger.warning(

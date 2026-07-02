@@ -138,6 +138,20 @@ def test_cost_band_returns_two_ints():
     assert band[0] < band[1]
 
 
+def test_cost_band_returns_none_on_malformed_band():
+    # A corrupted / non-numeric band bound must yield None (the
+    # Optional[list[int]] contract), not raise a TypeError that would
+    # 500 the cost-estimate endpoint. Audit REVIEW.md #10.
+    assert ct.cost_band(
+        {"typical_campaign_range_usd": {"yeast_display": [None, 500]}},
+        "yeast_display",
+    ) is None
+    assert ct.cost_band(
+        {"typical_campaign_range_usd": {"yeast_display": ["low", "high"]}},
+        "yeast_display",
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/targets
 # ---------------------------------------------------------------------------

@@ -949,7 +949,7 @@ def create_app() -> Flask:
     # in the deployment environment. Random fallback means sessions do not
     # survive restarts, which is acceptable for an internal tool.
     flask_app.config["SECRET_KEY"] = os.environ.get(
-        "SESSION_SECRET_KEY", os.urandom(32)
+        "SESSION_SECRET_KEY", os.urandom(32).hex()
     )
 
     # FIX M2 (cso audit 2026-06-17): harden the Flask session cookie
@@ -5465,6 +5465,8 @@ def create_app() -> Flask:
         buf = io.StringIO()
         all_score_keys: list[str] = []
         for cand in candidates:
+            if not isinstance(cand, dict):
+                continue
             for k in (cand.get("scores") or {}):
                 if k not in all_score_keys:
                     all_score_keys.append(k)
@@ -5472,6 +5474,8 @@ def create_app() -> Flask:
                                 extrasaction="ignore")
         writer.writeheader()
         for i, cand in enumerate(candidates):
+            if not isinstance(cand, dict):
+                continue
             scores = cand.get("scores") or {}
             row = {"rank": cand.get("rank", i + 1), "pdb_key": cand.get("pdb_key", "")}
             row.update(scores)
@@ -5501,6 +5505,8 @@ def create_app() -> Flask:
         # sequence-design primitive and returns ``sequences`` (seq +
         # score + recovery), so the header+body shape has to differ.
         for i, cand in enumerate(candidates):
+            if not isinstance(cand, dict):
+                continue
             seq = cand.get("sequence") or cand.get("binder_sequence") or ""
             if not seq:
                 continue
@@ -5511,6 +5517,8 @@ def create_app() -> Flask:
             for start in range(0, len(seq), 80):
                 lines.append(seq[start:start + 80])
         for i, seq_obj in enumerate(mpnn_sequences):
+            if not isinstance(seq_obj, dict):
+                continue
             seq = seq_obj.get("seq") or ""
             if not seq:
                 continue
@@ -5751,7 +5759,7 @@ def create_app() -> Flask:
                 encoded = cand.get("pdb_content_b64")
                 if encoded:
                     try:
-                        data = base64.b64decode(encoded)
+                        data = base64.b64decode(encoded, validate=True)
                     except Exception:
                         data = None
 
@@ -5801,10 +5809,16 @@ def create_app() -> Flask:
         target_context = request.form.get("target_context", "").strip()
 
         raw_kd = request.form.get("affinity_goal_kd_nm", "").strip()
-        affinity_goal_kd_nm = float(raw_kd) if raw_kd else None
+        try:
+            affinity_goal_kd_nm = float(raw_kd) if raw_kd else None
+        except ValueError:
+            affinity_goal_kd_nm = None
 
         raw_weeks = request.form.get("timeline_weeks", "").strip()
-        timeline_weeks = int(raw_weeks) if raw_weeks else None
+        try:
+            timeline_weeks = int(raw_weeks) if raw_weeks else None
+        except ValueError:
+            timeline_weeks = None
 
         raw_indices = request.form.get("candidate_indices", "[]").strip()
         try:

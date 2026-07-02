@@ -558,8 +558,11 @@ def list_keys(user_id: str) -> list[APIKeyContext]:
         )
         for r in rows
     ]
-    # Active first, newest first within each group.
-    contexts.sort(key=lambda c: (c.revoked_at is not None, c.created_at or ""), reverse=False)
+    # Active first, newest first within each group. Two stable passes:
+    # newest-first by created_at, then active-first — the stable sort
+    # preserves the newest-first ordering inside each group.
+    contexts.sort(key=lambda c: c.created_at or "", reverse=True)
+    contexts.sort(key=lambda c: c.revoked_at is not None)
     return contexts
 
 

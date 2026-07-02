@@ -478,6 +478,16 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
     </div>
     """.strip()
 
+    staff_text = (
+        f"New scoping request\n\n"
+        f"Target: {campaign.target_name}\n"
+        f"From: {user_email}\n"
+        f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
+        f"Candidates: {len(campaign.candidate_indices)}\n"
+        f"Budget: {campaign.budget_band.title()}\n\n"
+        f"Review in admin: {admin_url}\n"
+    )
+
     if not api_key:
         logger.info(
             "EMAIL (no key) campaign_submitted: user=%s target=%s id=%s",
@@ -487,7 +497,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
 
     for to_addr, subject, html_body, text_body in [
         (user_email, user_subject, user_html, user_text),
-        (list(STAFF_EMAILS), staff_subject, staff_html, staff_html),
+        (list(STAFF_EMAILS), staff_subject, staff_html, staff_text),
     ]:
         try:
             to_list = to_addr if isinstance(to_addr, list) else [to_addr]

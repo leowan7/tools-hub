@@ -576,3 +576,27 @@ class TestCompleteJobInvokesSettle:
         # running any post completion hooks.
         settle_hook.assert_not_called()
         assert out.status == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# _safe_gpu_seconds_int — heartbeat GPU-seconds sanitisation (REVIEW.md #17)
+# ---------------------------------------------------------------------------
+
+
+def test_safe_gpu_seconds_int_bounds_and_coerces():
+    import math
+
+    f = jobs_mod._safe_gpu_seconds_int
+    # Normal values pass through as int.
+    assert f(0) == 0
+    assert f(12.7) == 12
+    assert f("30") == 30
+    # Non-finite / garbage / negative collapse to 0 rather than raising.
+    assert f(float("nan")) == 0
+    assert f(float("inf")) == 0
+    assert f(-5) == 0
+    assert f(None) == 0
+    assert f("not-a-number") == 0
+    # Absurd values are clamped to the 24h ceiling, never persisted raw.
+    assert f(10**12) == jobs_mod._MAX_GPU_SECONDS
+    assert f(math.inf) <= jobs_mod._MAX_GPU_SECONDS

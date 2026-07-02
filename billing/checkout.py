@@ -537,7 +537,11 @@ def create_off_session_payment_intent(
             "Stripe is not configured.", retryable=True, reason="card_declined"
         )
 
-    unit_amount_cents = int(amount * 100)
+    unit_amount_cents = int(
+        (amount * _CENTS_PER_DOLLAR).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
     try:
         intent = stripe.PaymentIntent.create(
             amount=unit_amount_cents,

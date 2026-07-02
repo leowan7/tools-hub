@@ -462,7 +462,11 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
             return {
                 "status": "succeeded",
                 "result": output,
-                "gpu_seconds_used": smoke.get("runtime_seconds") or smoke.get("gpu_seconds"),
+                "gpu_seconds_used": (
+                    smoke.get("runtime_seconds")
+                    if smoke.get("runtime_seconds") is not None
+                    else smoke.get("gpu_seconds")
+                ),
                 "error": None,
             }
         if status_raw == "FAILED":

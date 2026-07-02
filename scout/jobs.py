@@ -9,6 +9,7 @@ cleanup tasks. Uses pathlib throughout — no os.path usage.
 """
 
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -172,11 +173,11 @@ def cleanup_old_jobs(base_dir: Path = Path("tmp"), max_age_seconds: int = 3600) 
 
         if dir_mtime < cutoff_time:
             try:
-                # Remove the directory and all its contents
-                for child in entry.rglob("*"):
-                    if child.is_file():
-                        child.unlink()
-                entry.rmdir()
+                # Remove the directory and all its contents. rmtree is
+                # depth-first, so nested subdirectories (e.g. designs/)
+                # are removed too — a plain rmdir() would fail on any
+                # non-empty subtree and leak the job dir forever.
+                shutil.rmtree(entry)
                 deleted_count += 1
             except OSError:
                 # Deletion failed (e.g. permissions) — skip, don't abort

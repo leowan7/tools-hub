@@ -985,7 +985,6 @@ def _nearest_clean_residues(
                 dist = abs(r - d)
                 if prev is None or dist < prev:
                     candidates[r] = dist
-                break
     ranked = sorted(candidates.items(), key=lambda kv: (kv[1], kv[0]))
     return [r for r, _ in ranked[:max_suggestions]]
 

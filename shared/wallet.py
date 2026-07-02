@@ -455,7 +455,9 @@ def wallet_preflight(
             estimated_cost_usd=estimated_cost_usd,
             balance_usd=balance,
             deficit_usd=deficit,
-            hard_cap_usd=hard_cap,
+            # The ceiling — not the per-tool scaled cap — is what blocked
+            # this job, so the capped-job email must show $1000.
+            hard_cap_usd=SELF_SERVE_CEILING_USD,
         )
     if estimated_cost_usd > hard_cap:
         return PreflightResult(
