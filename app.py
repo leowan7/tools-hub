@@ -1645,8 +1645,15 @@ def create_app() -> Flask:
             session["user_email"] = email
             if user_id:
                 session["user_id"] = user_id
-            # Restrict redirect to same-origin paths to prevent open redirect.
-            if not next_url.startswith("/"):
+            # Restrict redirect to same-origin paths to prevent open
+            # redirect. A leading "/" alone is not enough: browsers treat
+            # "//host" (protocol-relative) and "/\host" as absolute URLs
+            # to another origin, so reject those too.
+            if (
+                not next_url.startswith("/")
+                or next_url.startswith("//")
+                or next_url.startswith("/\\")
+            ):
                 next_url = "/"
             try:
                 from shared.events import log_event  # noqa: PLC0415
@@ -2503,10 +2510,23 @@ def create_app() -> Flask:
         """Redirect the user to their Stripe Billing Portal session."""
         from billing.checkout import create_portal_session  # noqa: PLC0415
 
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+
         base = request.url_root.rstrip("/")
         return_url = base + url_for("account")
 
-        url, error = create_portal_session(return_url=return_url)
+        # create_portal_session requires the wallet's Stripe customer id;
+        # omitting it previously raised a TypeError -> hard 500 on every
+        # click. Resolve it here and let the helper return a friendly
+        # error (redirected below) when the wallet has no saved card.
+        wallet = get_or_create_wallet(ctx.user_id) or {}
+        customer_id = wallet.get("stripe_customer_id") or ""
+
+        url, error = create_portal_session(
+            customer_id=customer_id, return_url=return_url
+        )
         if error or not url:
             logger.warning("Portal creation failed: %s", error)
             return redirect(url_for("account") + "?portal_error=1")
