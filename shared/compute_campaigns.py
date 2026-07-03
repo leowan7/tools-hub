@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping, Optional
 
@@ -82,6 +83,16 @@ DEFAULT_MAX_ATTEMPTS = 2
 # refunds whatever is not consumed, so a conservative budget never
 # overcharges — it only gates admission.
 BUDGET_BUFFER = Decimal("1.15")
+
+# Money guardrails ("Open" posture, Leo 2026-07-03). The $1000 single-job
+# self-serve ceiling does NOT apply to campaigns; these replace it.
+#   * Prepaid gate: a campaign will not run unless balance covers the full
+#     authorized budget (checked in campaign_preauth; no debit there).
+#   * Velocity cap: total campaign budgets authorized per user per UTC day.
+#   * Verification: authorizations above the threshold require an approved
+#     account (per_job_cap_override_usd >= budget) rather than a hard block.
+DAILY_CAMPAIGN_CAP_USD = Decimal("25000")
+VERIFICATION_THRESHOLD_USD = Decimal("5000")
 
 # Campaign lifecycle states (mirror the CHECK in migration 0034).
 CAMPAIGN_STATUSES: frozenset[str] = frozenset({
@@ -458,3 +469,125 @@ def get_progress_counts(campaign_id: str) -> dict:
             counts[status] += 1
         counts["total"] += 1
     return counts
+
+
+# ---------------------------------------------------------------------------
+# Billing: prepaid pre-authorization + per-child estimate + admission
+# ---------------------------------------------------------------------------
+#
+# Billing model (see docs/COMPUTE-CAMPAIGNS-PLAN.md): NO escrow debit. The
+# pre-auth is a pure gate (balance + frozen + velocity + verification); it
+# does NOT move money. Real money moves as ordinary per-child wallet holds
+# placed by the driver via the UNCHANGED reserve_hold path and settled by
+# the UNCHANGED settle path, so balance == SUM(ledger) holds automatically
+# and delivered-only billing falls out for free. Phase 1 ships small
+# campaigns whose children stay well under the $200 single-job daily cap,
+# so the unchanged reserve_hold is safe; Phase 2 adds a daily-cap-exempt
+# child-hold RPC before campaigns scale past that cap.
+
+
+PREAUTH_OK = "ok"
+PREAUTH_NO_WALLET = "wallet_unavailable"
+PREAUTH_FROZEN = "wallet_frozen"
+PREAUTH_INSUFFICIENT = "insufficient_balance"
+PREAUTH_VERIFICATION = "verification_required"
+PREAUTH_VELOCITY = "daily_campaign_cap"
+
+
+@dataclass(frozen=True)
+class PreauthResult:
+    """Outcome of the campaign prepaid pre-authorization gate."""
+
+    ok: bool
+    reason: str
+    balance_usd: Decimal
+    budget_usd: Decimal
+
+
+def campaign_preauth(user_id: str, budget_usd: Decimal) -> PreauthResult:
+    """Prepaid gate for a campaign. Checks but never debits.
+
+    A campaign will not run unless the wallet is unfrozen and holds at
+    least the full authorized ``budget_usd`` (prepaid), the per-user daily
+    campaign velocity cap is not exceeded, and — above the verification
+    threshold — the account is approved (``per_job_cap_override_usd`` set
+    high enough). The real money moves later, per child, via reserve_hold.
+    """
+    budget_usd = Decimal(str(budget_usd))
+    from shared.wallet import get_or_create_wallet  # noqa: PLC0415
+
+    wallet = get_or_create_wallet(user_id)
+    if not wallet:
+        return PreauthResult(False, PREAUTH_NO_WALLET, Decimal("0"), budget_usd)
+    balance = Decimal(str(wallet.get("balance_usd") or 0))
+    if wallet.get("wallet_frozen"):
+        return PreauthResult(False, PREAUTH_FROZEN, balance, budget_usd)
+    if balance < budget_usd:
+        return PreauthResult(False, PREAUTH_INSUFFICIENT, balance, budget_usd)
+    if budget_usd > VERIFICATION_THRESHOLD_USD:
+        override = wallet.get("per_job_cap_override_usd")
+        approved = override is not None and Decimal(str(override)) >= budget_usd
+        if not approved:
+            return PreauthResult(False, PREAUTH_VERIFICATION, balance, budget_usd)
+    spent_today = _campaign_spend_today(user_id)
+    if spent_today + budget_usd > DAILY_CAMPAIGN_CAP_USD:
+        return PreauthResult(False, PREAUTH_VELOCITY, balance, budget_usd)
+    return PreauthResult(True, PREAUTH_OK, balance, budget_usd)
+
+
+def _campaign_spend_today(user_id: str) -> Decimal:
+    """Sum of budgets authorized for this user's campaigns since UTC midnight.
+
+    Draft and cancelled campaigns are excluded (a draft never funded; a
+    cancelled campaign refunded its unspent budget). Feeds the velocity cap.
+    """
+    client = get_service_client()
+    if client is None:
+        return Decimal("0")
+    start = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+    try:
+        resp = (
+            client.table(_TABLE)
+            .select("budget_usd,status")
+            .eq("user_id", user_id)
+            .gte("created_at", start)
+            .execute()
+        )
+        rows = list(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning("_campaign_spend_today failed for %s", user_id, exc_info=True)
+        return Decimal("0")
+    total = Decimal("0")
+    for r in rows:
+        if r.get("status") in ("draft", "cancelled"):
+            continue
+        total += Decimal(str(r.get("budget_usd") or 0))
+    return total
+
+
+def estimate_child_cost(tool: str, design_count: int) -> Decimal:
+    """USD estimate for one sub-job at ``design_count`` designs.
+
+    Used by the driver to size each per-child wallet hold. boltzgen is
+    flat per job (fixed 200-pool); the linear tools scale by the count.
+    """
+    return _estimate_chunk_cost(tool, int(design_count))
+
+
+def can_dispatch_more(
+    campaign: "ComputeCampaign", counts: Mapping[str, int], dispatched_count: int
+) -> bool:
+    """Pure admission predicate: is there room to launch another sub-job?
+
+    True iff undispatched chunks remain AND the in-flight (pending +
+    running) count is under the campaign's concurrency target. The budget
+    is respected structurally (``total_subjobs`` chunks priced into
+    ``budget_usd`` at create) and, per child, by the atomic balance +
+    hard-cap guards inside reserve_hold.
+    """
+    if dispatched_count >= campaign.total_subjobs:
+        return False
+    in_flight = int(counts.get("pending", 0)) + int(counts.get("running", 0))
+    return in_flight < campaign.concurrency_target

@@ -186,6 +186,10 @@ class _Query:
         self._filters.append((col, val))
         return self
 
+    def gte(self, *_a, **_k):
+        # Date-window filter; accept-all keeps tests date-independent.
+        return self
+
     def order(self, *_a, **_k):
         return self
 
@@ -301,3 +305,102 @@ def test_module_helpers_return_empty_without_client(monkeypatch):
     assert get_campaign("x") is None
     assert get_progress_counts("x")["total"] == 0
     assert create_campaign(user_id="u", tool="rfdiffusion", params={}, requested_designs=12) is None
+
+
+# ---------------------------------------------------------------------------
+# Billing: prepaid pre-auth + estimate + admission
+# ---------------------------------------------------------------------------
+
+
+def _patch_wallet(monkeypatch, **fields):
+    wallet = {
+        "balance_usd": fields.get("balance_usd", "1000"),
+        "wallet_frozen": fields.get("wallet_frozen", False),
+        "per_job_cap_override_usd": fields.get("per_job_cap_override_usd"),
+    }
+    import shared.wallet as w
+    monkeypatch.setattr(w, "get_or_create_wallet", lambda _uid: wallet)
+    return wallet
+
+
+def test_preauth_ok(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="100")
+    res = cc.campaign_preauth("u", Decimal("50"))
+    assert res.ok and res.reason == cc.PREAUTH_OK
+
+
+def test_preauth_insufficient_balance(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="10")
+    res = cc.campaign_preauth("u", Decimal("50"))
+    assert not res.ok and res.reason == cc.PREAUTH_INSUFFICIENT
+
+
+def test_preauth_frozen(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="1000", wallet_frozen=True)
+    res = cc.campaign_preauth("u", Decimal("50"))
+    assert not res.ok and res.reason == cc.PREAUTH_FROZEN
+
+
+def test_preauth_verification_required_over_threshold(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="100000")  # plenty of balance
+    over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1")
+    res = cc.campaign_preauth("u", over)
+    assert not res.ok and res.reason == cc.PREAUTH_VERIFICATION
+
+
+def test_preauth_verification_passes_with_override(fake_client, monkeypatch):
+    over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1000")
+    _patch_wallet(monkeypatch, balance_usd="100000", per_job_cap_override_usd=str(over))
+    res = cc.campaign_preauth("u", over)
+    assert res.ok and res.reason == cc.PREAUTH_OK
+
+
+def test_preauth_velocity_cap(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="100000")
+    monkeypatch.setattr(cc, "DAILY_CAMPAIGN_CAP_USD", Decimal("30"))
+    # Seed a funded campaign today worth $20.
+    fake_client.store["compute_campaigns"] = [
+        {"user_id": "u", "status": "funded", "budget_usd": "20",
+         "created_at": "2026-07-03T00:00:00Z"},
+    ]
+    res = cc.campaign_preauth("u", Decimal("15"))  # 20 + 15 = 35 > 30
+    assert not res.ok and res.reason == cc.PREAUTH_VELOCITY
+
+
+def test_campaign_spend_today_excludes_draft_and_cancelled(fake_client):
+    fake_client.store["compute_campaigns"] = [
+        {"user_id": "u", "status": "funded", "budget_usd": "10", "created_at": "2026-07-03T00:00:00Z"},
+        {"user_id": "u", "status": "running", "budget_usd": "5", "created_at": "2026-07-03T00:00:00Z"},
+        {"user_id": "u", "status": "draft", "budget_usd": "99", "created_at": "2026-07-03T00:00:00Z"},
+        {"user_id": "u", "status": "cancelled", "budget_usd": "99", "created_at": "2026-07-03T00:00:00Z"},
+    ]
+    assert cc._campaign_spend_today("u") == Decimal("15")
+
+
+def test_estimate_child_cost_boltzgen_flat_others_scale():
+    # boltzgen: budget does not change per-job GPU cost -> flat.
+    assert cc.estimate_child_cost("boltzgen", 5) == cc.estimate_child_cost("boltzgen", 50)
+    # rfdiffusion: cost scales with the design count.
+    assert cc.estimate_child_cost("rfdiffusion", 24) > cc.estimate_child_cost("rfdiffusion", 12)
+
+
+def _campaign(total_subjobs=4, concurrency_target=2):
+    return ComputeCampaign.from_row({
+        "id": "c", "user_id": "u", "tool": "rfdiffusion", "preset": "pilot",
+        "status": "running", "requested_designs": total_subjobs * 12,
+        "chunk_size": 12, "total_subjobs": total_subjobs,
+        "concurrency_target": concurrency_target,
+        "budget_usd": "10", "reserved_usd": "0", "spent_usd": "0", "refunded_usd": "0",
+    })
+
+
+def test_can_dispatch_more():
+    camp = _campaign(total_subjobs=4, concurrency_target=2)
+    # Room: 0 dispatched, nothing in flight.
+    assert cc.can_dispatch_more(camp, {"pending": 0, "running": 0}, 0) is True
+    # Concurrency saturated.
+    assert cc.can_dispatch_more(camp, {"pending": 1, "running": 1}, 2) is False
+    # All chunks dispatched.
+    assert cc.can_dispatch_more(camp, {"pending": 0, "running": 0}, 4) is False
+    # Room again after some finished (2 dispatched, 1 in flight, target 2).
+    assert cc.can_dispatch_more(camp, {"pending": 0, "running": 1}, 2) is True
