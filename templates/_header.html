@@ -16,6 +16,7 @@
       <a href="{{ url_for('tools_comparison') }}" class="nav-link-public">All tools</a>
       {% if session.get('user_email') %}
         <a href="{{ url_for('jobs_list') }}" class="nav-link-public">My runs</a>
+        <a href="{{ url_for('compute_campaigns_list') }}" class="nav-link-public">Campaigns</a>
       {% endif %}
       <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
       <a href="{{ url_for('help_index') }}" class="nav-link-public">Help</a>

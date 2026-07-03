@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% block title %}New campaign — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block head_extra %}
+<style>
+  .runs-form-wrap { max-width: 900px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  .runs-form-wrap h1 { font-family: var(--font-display, 'Source Serif 4', serif); font-size: 1.8rem; margin: 0 0 0.4rem; color: var(--text-primary, #fafafa); }
+  .runs-form-wrap .lead { color: var(--text-secondary, #b8c0c8); font-size: 0.9rem; max-width: 62ch; margin-bottom: 1.75rem; }
+  .runs-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 1.75rem; align-items: start; }
+  @media (max-width: 760px) { .runs-grid { grid-template-columns: 1fr; } }
+  .runs-field { margin-bottom: 1.05rem; }
+  .runs-field label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-primary, #fafafa); margin-bottom: 0.35rem; }
+  .runs-field .hint { font-size: 0.72rem; color: var(--text-secondary, #b8c0c8); margin-top: 0.25rem; }
+  .runs-field input, .runs-field select { width: 100%; background: var(--surface, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 6px; color: var(--text-primary, #fafafa); padding: 0.5rem 0.65rem; font-size: 0.88rem; font-family: inherit; }
+  .runs-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  .runs-panel { border: 1px solid var(--border, rgba(255,255,255,0.12)); border-radius: 8px; padding: 1.1rem 1.15rem; position: sticky; top: 1rem; background: linear-gradient(180deg, rgba(43,158,126,0.06), transparent); }
+  .runs-panel h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-text, #2B9E7E); margin: 0 0 0.85rem; }
+  .runs-stat { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.85rem; padding: 0.32rem 0; border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.06)); }
+  .runs-stat .k { color: var(--text-secondary, #b8c0c8); }
+  .runs-stat .v { color: var(--text-primary, #fafafa); font-family: var(--font-mono, monospace); }
+  .runs-budget { font-size: 1.5rem; font-family: var(--font-mono, monospace); color: var(--text-primary, #fafafa); margin: 0.6rem 0 0.2rem; }
+  .runs-note { font-size: 0.75rem; margin-top: 0.7rem; padding: 0.55rem 0.7rem; border-radius: 6px; }
+  .runs-note.warn { background: rgba(232,132,107,0.12); color: #e8846b; }
+  .runs-note.ok { background: rgba(43,158,126,0.10); color: #2B9E7E; }
+  .runs-confirm { display: flex; gap: 0.55rem; align-items: flex-start; margin: 1rem 0 0.6rem; font-size: 0.8rem; color: var(--text-secondary, #b8c0c8); }
+  .runs-confirm input { width: auto; margin-top: 0.15rem; }
+  .runs-submit { width: 100%; background: var(--accent-text, #2B9E7E); color: #05110d; border: none; border-radius: 6px; padding: 0.7rem; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
+  .runs-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+  .runs-err { background: rgba(232,132,107,0.12); color: #e8846b; border-radius: 6px; padding: 0.7rem 0.9rem; font-size: 0.85rem; margin-bottom: 1.25rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="runs-form-wrap">
+  <h1>New campaign</h1>
+  <p class="lead">Design many candidates against one target. We split the request into
+    GPU sub-jobs (currently up to {{ max_subjobs }} per campaign), run them in parallel,
+    and bill only for the compute delivered. Compute only, no wet-lab validation.</p>
+
+  {% if error %}<div class="runs-err">{{ error }}</div>{% endif %}
+
+  <form method="POST" action="{{ url_for('compute_campaign_create') }}" enctype="multipart/form-data" id="runs-form">
+    {{ csrf_input() }}
+    <div class="runs-grid">
+      <div>
+        <div class="runs-field">
+          <label for="name">Campaign name</label>
+          <input type="text" id="name" name="name" maxlength="80" value="{{ pre_fill.get('name','') }}" placeholder="e.g. HER2 binder sweep">
+        </div>
+        <div class="runs-field">
+          <label for="tool">Design tool</label>
+          <select id="tool" name="tool">
+            {% for t in supported_tools %}
+              <option value="{{ t }}" {% if pre_fill.get('tool')==t %}selected{% endif %}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="runs-field">
+          <label for="target_pdb">Target structure (.pdb / .cif)</label>
+          <input type="file" id="target_pdb" name="target_pdb" accept=".pdb,.cif,.mmcif" required>
+        </div>
+        <div class="runs-row">
+          <div class="runs-field">
+            <label for="target_name">Target name</label>
+            <input type="text" id="target_name" name="target_name" value="{{ pre_fill.get('target_name','') }}" placeholder="e.g. HER2">
+          </div>
+          <div class="runs-field">
+            <label for="target_chain">Target chain</label>
+            <input type="text" id="target_chain" name="target_chain" maxlength="4" value="{{ pre_fill.get('target_chain','A') }}">
+          </div>
+        </div>
+        <div class="runs-field">
+          <label for="hotspot_residues">Hotspot residues</label>
+          <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
+          <div class="hint">Comma-separated target-chain residues the binder should contact.</div>
+        </div>
+        <div class="runs-row">
+          <div class="runs-field">
+            <label for="binder_length_min">Binder length min</label>
+            <input type="number" id="binder_length_min" name="binder_length_min" value="{{ pre_fill.get('binder_length_min','55') }}">
+          </div>
+          <div class="runs-field">
+            <label for="binder_length_max">Binder length max</label>
+            <input type="number" id="binder_length_max" name="binder_length_max" value="{{ pre_fill.get('binder_length_max','65') }}">
+          </div>
+        </div>
+        <div class="runs-field" id="protocol-field">
+          <label for="protocol">Protocol (BoltzGen)</label>
+          <select id="protocol" name="protocol">
+            <option value="protein-anything">protein-anything</option>
+            <option value="nanobody-anything">nanobody-anything</option>
+            <option value="antibody-anything">antibody-anything</option>
+            <option value="peptide-anything">peptide-anything</option>
+          </select>
+        </div>
+        <div class="runs-field">
+          <label for="requested_designs">Number of designs</label>
+          <input type="number" id="requested_designs" name="requested_designs" min="1" value="{{ pre_fill.get('requested_designs','24') }}">
+          <div class="hint">Total candidates across the whole campaign.</div>
+        </div>
+      </div>
+
+      <aside class="runs-panel">
+        <h2>Cost preview</h2>
+        <div class="runs-budget" id="rp-budget">$—</div>
+        <div class="runs-stat"><span class="k">Designs</span><span class="v" id="rp-designs">—</span></div>
+        <div class="runs-stat"><span class="k">Sub-jobs</span><span class="v" id="rp-subjobs">—</span></div>
+        <div class="runs-stat"><span class="k">Per sub-job</span><span class="v" id="rp-perchunk">—</span></div>
+        <div class="runs-stat"><span class="k">Your balance</span><span class="v" id="rp-balance">—</span></div>
+        <div class="runs-note" id="rp-note" style="display:none;"></div>
+        <label class="runs-confirm">
+          <input type="checkbox" id="rp-confirm">
+          <span id="rp-confirm-label">I authorize this campaign.</span>
+        </label>
+        <button type="submit" class="runs-submit" id="rp-submit" disabled>Start campaign</button>
+        <p class="hint" style="margin-top:0.6rem;">You are billed only for compute delivered.
+          Unused budget is never charged; failed sub-jobs are refunded.</p>
+      </aside>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  var estURL = "{{ url_for('api_runs_estimate') }}";
+  var tool = document.getElementById('tool');
+  var count = document.getElementById('requested_designs');
+  var confirm = document.getElementById('rp-confirm');
+  var submit = document.getElementById('rp-submit');
+  var protoField = document.getElementById('protocol-field');
+  var latest = { ok: false, affordable: false, budget: 0 };
+
+  function money(x) { return '$' + Number(x).toFixed(2); }
+
+  function refreshProtocol() {
+    protoField.style.display = (tool.value === 'boltzgen') ? '' : 'none';
+  }
+
+  function setNote(cls, text) {
+    var n = document.getElementById('rp-note');
+    if (!text) { n.style.display = 'none'; return; }
+    n.style.display = ''; n.className = 'runs-note ' + cls; n.textContent = text;
+  }
+
+  function syncSubmit() {
+    submit.disabled = !(latest.ok && latest.affordable && confirm.checked);
+  }
+
+  function fetchEstimate() {
+    var q = estURL + '?tool=' + encodeURIComponent(tool.value) +
+            '&requested_designs=' + encodeURIComponent(count.value || '0');
+    fetch(q, { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        latest = d;
+        if (!d.ok) {
+          document.getElementById('rp-budget').textContent = '$—';
+          document.getElementById('rp-designs').textContent = '—';
+          document.getElementById('rp-subjobs').textContent = '—';
+          document.getElementById('rp-perchunk').textContent = '—';
+          setNote('warn', d.error || 'Cannot plan this campaign.');
+          syncSubmit();
+          return;
+        }
+        document.getElementById('rp-budget').textContent = money(d.budget_usd);
+        document.getElementById('rp-designs').textContent = d.requested_designs;
+        document.getElementById('rp-subjobs').textContent = d.total_subjobs;
+        document.getElementById('rp-perchunk').textContent = money(d.per_chunk_usd);
+        document.getElementById('rp-balance').textContent = money(d.balance_usd);
+        document.getElementById('rp-confirm-label').textContent =
+          'I authorize up to ' + money(d.budget_usd) + ' for this campaign.';
+        if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
+          setNote('warn', 'Campaigns this large need an approved account. Contact us to raise your limit.');
+        } else if (!d.affordable && d.reason === 'insufficient_balance') {
+          setNote('warn', 'Top up your wallet to cover this budget before starting.');
+        } else if (!d.affordable) {
+          setNote('warn', 'This campaign cannot start yet (' + d.reason + ').');
+        } else {
+          setNote('ok', 'Ready to run. ' + d.total_subjobs + ' sub-jobs will fan out.');
+        }
+        syncSubmit();
+      })
+      .catch(function () { setNote('warn', 'Estimate unavailable.'); });
+  }
+
+  var t;
+  function debounced() { clearTimeout(t); t = setTimeout(fetchEstimate, 250); }
+  tool.addEventListener('change', function () { refreshProtocol(); debounced(); });
+  count.addEventListener('input', debounced);
+  confirm.addEventListener('change', syncSubmit);
+  refreshProtocol();
+  fetchEstimate();
+})();
+</script>
+{% endblock %}

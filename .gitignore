@@ -23,3 +23,6 @@ design-refs/
 # Local deploy/run logs (per-run output; never tracked)
 .deploy-logs/
 runs/
+# ...but the compute-campaign UI templates live under templates/runs/ and MUST be tracked.
+!templates/runs/
+!templates/runs/**
