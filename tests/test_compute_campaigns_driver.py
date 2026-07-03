@@ -343,6 +343,38 @@ def test_drive_skips_draft_and_terminal(driver_env):
         assert len(_children(client)) == 0  # nothing dispatched
 
 
+def test_hold_refusal_skips_and_retries(driver_env, monkeypatch):
+    """A chunk whose hold is refused creates no row and is retried later."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, requested=24, concurrency_target=8)
+
+    # Refuse the very first hold, then succeed for all subsequent calls.
+    import shared.wallet as w
+    calls = {"n": 0}
+
+    def flaky_hold(user_id, tool, job_id, estimate, params):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None  # refused (e.g. daily cap / balance)
+        hid = f"hold-{calls['n']}"
+        state["holds"].append({"id": hid})
+        return hid
+
+    monkeypatch.setattr(w, "reserve_hold", flaky_hold)
+
+    drive_campaign("camp-1")
+    # First pass: one chunk skipped (no row), one launched.
+    assert len(_children(client)) == 1
+
+    drive_campaign("camp-1")
+    # Second pass: the skipped chunk is retried and now lands.
+    kids = _children(client)
+    assert len(kids) == 2
+    assert {k["chunk_index"] for k in kids} == {0, 1}
+    # No stranded holds: the refused attempt placed none.
+    assert state["released"] == []
+
+
 def test_cancel_campaign(driver_env, monkeypatch):
     client, state = driver_env
     _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,

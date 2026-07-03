@@ -109,15 +109,22 @@ hand-applied. Do NOT re-add a stricter tool_jobs.status CHECK (live 0005 omits
 
 ## Phased roadmap
 
-- **Phase 1 (L) — Correctness foundation + honest limits.** Small campaigns
-  (<= ~60 designs / <= MAX_SUBJOBS_PER_CAMPAIGN) end-to-end on rfdiffusion, bindcraft,
-  boltzgen. Real fan-out via admission control, aggregate progress + results, EXACT
-  delivered-only billing. Fixes num_designs-vs-timeout mismatch (chunk size from
-  TOOL_SPECS gpu_s/design vs container timeout, not the loose validator cap). Ships
-  value alone. rfantibody/pxdesign GATED out (1/chunk and validator-cap 24 make 20k
-  absurd until Phase 4).
-- **Phase 2 (L) — Robust driver at ~150-500 sub-jobs.** Self-heals from stalls, lost
-  drives, transient failures; concurrency fairness (reserve interactive slots);
+- **Phase 1 (L) — Correctness foundation + honest limits. SHIPPED (branch
+  feat/compute-campaigns, not merged/deployed).** Small campaigns end-to-end on
+  rfdiffusion, bindcraft, boltzgen. Real fan-out via admission control, aggregate
+  progress + results, EXACT delivered-only billing. Fixes num_designs-vs-timeout
+  mismatch (chunk size from TOOL_SPECS gpu_s/design vs container timeout, not the
+  loose validator cap). rfantibody/pxdesign GATED out (1/chunk and validator-cap 24
+  make 20k absurd until Phase 4). `MAX_SUBJOBS_PER_CAMPAIGN = 20` (not 50): child
+  holds use the UNCHANGED reserve_hold, which enforces the $200/day single-job cap
+  (SQL, 0020); 20 sub-jobs keeps even boltzgen (~$8.74/chunk -> ~$175) under $200 so
+  a solo campaign never stalls on the daily cap.
+- **Phase 2 (L) — Robust driver at ~150-500 sub-jobs.** Daily-cap-EXEMPT child-hold
+  RPC (raise MAX_SUBJOBS past the $200/day cap), a STALL REAPER (a campaign whose
+  remaining chunks can never hold — persistent balance/cap refusal — must finalize as
+  completed_with_failures rather than sit 'running' forever), a per-campaign advisory
+  lock (eliminate the transient racing-driver hold churn), self-heal from stalls/lost
+  drives/transient failures; concurrency fairness (reserve interactive slots);
   freeze/cancel edge cases; retry REFUNDED-class children as fresh sibling rows;
   tighter campaign-child stuck cutoff; suppress per-child post-settle hooks, fire one
   campaign-level summary.

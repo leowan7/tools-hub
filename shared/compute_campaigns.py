@@ -70,9 +70,14 @@ BOLTZGEN_DESIGNS_PER_JOB = 50
 _CONTAINER_UTILIZATION = 0.8
 
 # Phase 1 ships SMALL campaigns to prove the state machine + money
-# invariants before the driver is hardened for scale. Phase 2 raises this
-# (and the driver's concurrency handling) for true ~150-500 sub-job runs.
-MAX_SUBJOBS_PER_CAMPAIGN = 50
+# invariants before the driver is hardened for scale. The cap is 20 (not
+# 50) for a concrete Phase-1 reason: child holds go through the UNCHANGED
+# reserve_hold, which enforces the $200/day single-job cap (SQL, 0020). At
+# 20 sub-jobs even the priciest Phase-1 tool (boltzgen ~$8.74/chunk ->
+# ~$175) stays under $200, so a solo campaign never stalls on the daily
+# cap. Phase 2 adds a daily-cap-exempt child-hold RPC + a stall reaper and
+# raises this for true ~150-500 sub-job runs.
+MAX_SUBJOBS_PER_CAMPAIGN = 20
 
 # Driver defaults persisted on the campaign row. Phase 1 keeps the
 # concurrency target modest so the first wave (dispatched synchronously
@@ -684,12 +689,17 @@ def fund_campaign(campaign_id: str) -> None:
     _update_campaign(campaign_id, {"status": "funded", "confirmed_at": _now_iso()})
 
 
-def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
+def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     """Reserve a per-child hold, create the sub-job, and spawn it on Modal.
 
-    Returns True iff a Modal run was launched. On any failure the hold is
-    released (or the child is failed through the normal terminal path so
-    its hold settles) so no reservation is stranded.
+    Returns one of:
+      * ``"launched"`` — a child row was created and a Modal run started.
+      * ``"failed"``   — a child row exists but reached a terminal failure
+                          (modal submit failed); the chunk IS dispatched.
+      * ``"skipped"``  — NO child row was created (hold refused, duplicate,
+                          transient insert failure); the chunk should be
+                          retried on a later drive pass.
+    On any failure the hold is released so no reservation is stranded.
     """
     from shared.wallet import release_hold, reserve_hold  # noqa: PLC0415
     from shared.jobs import (  # noqa: PLC0415
@@ -703,11 +713,11 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
     adapter = tool_base.get(campaign.tool)
     if adapter is None:
         logger.error("campaign %s: no adapter for %s", campaign.id, campaign.tool)
-        return False
+        return "skipped"
 
     design_count = campaign.designs_for_chunk(chunk_index)
     if design_count <= 0:
-        return False
+        return "skipped"
 
     # Reconstruct the validated tool inputs for this chunk: shared params
     # + the per-chunk design count under the tool's design key + preset.
@@ -719,10 +729,10 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
     hold_tx_id = reserve_hold(campaign.user_id, campaign.tool, None, estimate, base_inputs)
     if not hold_tx_id:
         logger.info(
-            "campaign %s chunk %s: hold not placed (balance/cap); skipping",
+            "campaign %s chunk %s: hold not placed (balance/cap); will retry",
             campaign.id, chunk_index,
         )
-        return False
+        return "skipped"
 
     child_inputs = dict(base_inputs)
     child_inputs["_wallet"] = {
@@ -744,12 +754,15 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
     if child is None:
         # Duplicate (campaign_id, chunk_index, attempt) from a racing driver
         # (UNIQUE violation) or a transient insert failure. Release the hold
-        # so nothing is stranded; the winning row keeps its own hold.
+        # so nothing is stranded; the winning row keeps its own hold. Report
+        # "skipped": if it was a duplicate the winner's row shows up in the
+        # next pass's existing_idx (so we won't re-try it); if it was
+        # transient, retrying is correct.
         try:
             release_hold(hold_tx_id, reason="campaign_chunk_create_failed")
         except Exception:
             logger.warning("release_hold after create fail raised", exc_info=True)
-        return False
+        return "skipped"
 
     presigned_url = ""
     if campaign.target_storage_path:
@@ -793,12 +806,12 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
             release_hold(hold_tx_id, reason="campaign_modal_submit_failed")
         except Exception:
             logger.warning("release_hold after submit fail raised", exc_info=True)
-        return False
+        return "failed"
 
     fc_id = submit_result.get("function_call_id")
     if fc_id:
         set_modal_call(child.id, fc_id)
-    return True
+    return "launched"
 
 
 def drive_campaign(campaign_id: str) -> None:
@@ -820,26 +833,35 @@ def drive_campaign(campaign_id: str) -> None:
         c["chunk_index"] for c in children if c.get("chunk_index") is not None
     }
     counts = _tally(children)
-    dispatched = len(children)
     in_flight = counts["pending"] + counts["running"]
 
     if campaign.status == "funded":
         _update_campaign(campaign_id, {"status": "running", "started_at": _now_iso()})
         campaign.status = "running"
 
-    # Admission loop: fill open slots with the lowest undispatched chunks.
-    next_idx = 0
-    while dispatched < campaign.total_subjobs and in_flight < campaign.concurrency_target:
-        while next_idx < campaign.total_subjobs and next_idx in existing_idx:
-            next_idx += 1
-        if next_idx >= campaign.total_subjobs:
+    # Admission loop: fill open slots with the lowest chunk that has no row
+    # yet. ``attempted`` guards against re-trying the same chunk in this pass
+    # (a "skipped" chunk stays out of existing_idx so a LATER drive retries
+    # it, but must not spin here). A chunk only counts toward existing_idx /
+    # in_flight once a row actually exists — a refused hold wastes no slot.
+    attempted: set = set()
+    while in_flight < campaign.concurrency_target:
+        idx = None
+        for i in range(campaign.total_subjobs):
+            if i not in existing_idx and i not in attempted:
+                idx = i
+                break
+        if idx is None:
             break
-        launched = _dispatch_chunk(campaign, next_idx)
-        existing_idx.add(next_idx)
-        dispatched += 1
-        if launched:
+        attempted.add(idx)
+        outcome = _dispatch_chunk(campaign, idx)
+        if outcome == "launched":
+            existing_idx.add(idx)
             in_flight += 1
-        next_idx += 1
+        elif outcome == "failed":
+            # A (failed) child row exists for this chunk; it is dispatched.
+            existing_idx.add(idx)
+        # "skipped": no row created; leave for a later drive pass.
 
     _update_campaign(campaign_id, {"last_tick_at": _now_iso()})
     _maybe_finalize(campaign)
