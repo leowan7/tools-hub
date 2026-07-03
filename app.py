@@ -4931,6 +4931,273 @@ def create_app() -> Flask:
             selected_campaign=raw_campaign,
         )
 
+    # -- Compute campaigns ("Campaigns") ---------------------------------
+    # Self-serve batched design: split a large request into many sub-jobs.
+    # Namespaced /runs/* to avoid the wet-lab /campaigns/* (lab_campaigns)
+    # funnel; the customer-facing label is "Campaigns" (the wet-lab funnel
+    # is relabelled "Lab projects" in the nav).
+
+    _CAMPAIGN_PREAUTH_MESSAGES = {
+        "wallet_unavailable": "Your wallet is unavailable. Try again in a moment.",
+        "wallet_frozen": "Your wallet is on hold. Contact support to resume.",
+        "insufficient_balance": (
+            "Your balance does not cover this campaign's budget. "
+            "Top up your wallet and try again."
+        ),
+        "verification_required": (
+            "Campaigns above ${threshold} need an approved account. "
+            "Contact us to raise your limit."
+        ),
+        "daily_campaign_cap": (
+            "This would exceed your daily campaign spending limit. "
+            "Try again tomorrow or with a smaller campaign."
+        ),
+    }
+
+    def _campaign_preauth_message(pre) -> str:
+        from shared import compute_campaigns as _cc  # noqa: PLC0415
+        msg = _CAMPAIGN_PREAUTH_MESSAGES.get(
+            pre.reason, "This campaign cannot start right now."
+        )
+        return msg.replace("${threshold}", str(_cc.VERIFICATION_THRESHOLD_USD))
+
+    @flask_app.route("/runs", methods=["GET"])
+    @login_required
+    def compute_campaigns_list():
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        campaigns = cc.list_campaigns_for_user(ctx.user_id)
+        return render_template("runs/list.html", campaigns=campaigns)
+
+    @flask_app.route("/runs/new", methods=["GET"])
+    @login_required
+    def compute_campaign_new():
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        return render_template(
+            "runs/new.html",
+            supported_tools=cc.SUPPORTED_TOOLS,
+            max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
+            verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
+            pre_fill={},
+        )
+
+    @flask_app.route("/api/runs/estimate", methods=["GET"])
+    @login_required
+    def api_runs_estimate():
+        """Live budget + chunk-plan preview for the campaign create form."""
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        tool = (request.args.get("tool") or "").strip()
+        try:
+            requested = int(request.args.get("requested_designs") or "0")
+        except ValueError:
+            requested = 0
+        try:
+            plan = cc.plan_chunks(tool, requested)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc)})
+        pre = cc.campaign_preauth(session.get("user_id"), plan.budget_usd)
+        return jsonify({
+            "ok": True,
+            "tool": tool,
+            "requested_designs": plan.requested_designs,
+            "chunk_size": plan.chunk_size,
+            "total_subjobs": plan.total_subjobs,
+            "per_chunk_usd": str(plan.est_cost_per_chunk),
+            "budget_usd": str(plan.budget_usd),
+            "balance_usd": str(pre.balance_usd),
+            "affordable": pre.ok,
+            "reason": pre.reason,
+            "needs_verification": plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD,
+        })
+
+    @flask_app.route("/runs", methods=["POST"])
+    @login_required
+    def compute_campaign_create():
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+
+        tool = (request.form.get("tool") or "").strip()
+        name = (request.form.get("name") or "").strip()
+        try:
+            requested = int(request.form.get("requested_designs") or "0")
+        except ValueError:
+            requested = 0
+
+        def _err(msg, code=400):
+            return render_template(
+                "runs/new.html",
+                supported_tools=cc.SUPPORTED_TOOLS,
+                max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
+                verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
+                error=msg,
+                pre_fill=request.form.to_dict(),
+            ), code
+
+        # 1. Plan (validates tool + count + sub-job cap).
+        try:
+            plan = cc.plan_chunks(tool, requested)
+        except ValueError as exc:
+            return _err(str(exc))
+
+        # 2. Validate the tool params by reusing the adapter validator with
+        #    an in-cap placeholder design count (the real per-chunk count is
+        #    injected by the driver).
+        adapter = tool_base.get(tool)
+        if adapter is None:
+            return _err("Unknown tool.")
+        form_for_validate = dict(request.form)
+        form_for_validate[plan.design_param_key] = "1"
+        validated, verr = adapter.validate(form_for_validate, request.files)
+        if validated is None:
+            return _err(verr or "Invalid parameters.")
+
+        # 3. Require + inspect the target PDB (one target for the campaign).
+        uploaded = request.files.get("target_pdb")
+        if uploaded is None or not uploaded.filename:
+            return _err("Upload a target PDB file.")
+        pdb_bytes = uploaded.read()
+        inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
+        if not inspection.ok:
+            return _err(inspection.error)
+        target_chain = (validated.get("target_chain") or "").strip()
+        if target_chain:
+            chain_err = validate_target_chain(inspection, target_chain)
+            if chain_err:
+                return _err(chain_err)
+        staged_filename = uploaded.filename
+        fl = uploaded.filename.lower()
+        if fl.endswith(".cif") or fl.endswith(".mmcif"):
+            try:
+                pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
+            except CifConversionError as exc:
+                return _err(str(exc))
+            staged_filename = uploaded.filename.rsplit(".", 1)[0] + ".pdb"
+
+        # 4. Prepaid pre-authorization gate (checks, never debits).
+        pre = cc.campaign_preauth(ctx.user_id, plan.budget_usd)
+        if not pre.ok:
+            return _err(_campaign_preauth_message(pre))
+
+        # 5. Stage the shared target once, then create + fund + first wave.
+        import uuid as _uuid  # noqa: PLC0415
+        target_key = f"campaign-{_uuid.uuid4().hex}"
+        try:
+            staged_path = upload_input(
+                user_id=ctx.user_id, job_id=target_key,
+                filename=staged_filename, data=pdb_bytes,
+                content_type="chemical/x-pdb",
+            )
+        except StorageError as exc:
+            return _err(f"Upload failed: {exc}")
+
+        campaign = cc.create_campaign(
+            user_id=ctx.user_id, tool=tool, params=validated,
+            requested_designs=requested, name=name or None,
+            target_storage_path=staged_path,
+            target_name=(request.form.get("target_name") or "").strip() or None,
+        )
+        if campaign is None:
+            return _err("Could not create the campaign. Try again in a moment.")
+
+        cc.fund_campaign(campaign.id)
+        try:
+            cc.drive_campaign(campaign.id)
+        except Exception:
+            logger.warning(
+                "initial drive_campaign raised for %s", campaign.id, exc_info=True
+            )
+        return redirect(url_for("compute_campaign_detail", campaign_id=campaign.id))
+
+    @flask_app.route("/runs/<campaign_id>", methods=["GET"])
+    @login_required
+    def compute_campaign_detail(campaign_id):
+        ctx = load_user_context()
+        if ctx is None:
+            return redirect(url_for("login"))
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
+        if campaign is None:
+            return redirect(url_for("compute_campaigns_list"))
+        counts = cc.get_progress_counts(campaign_id)
+        return render_template("runs/detail.html", campaign=campaign, counts=counts)
+
+    @flask_app.route("/runs/<campaign_id>/status.json", methods=["GET"])
+    @login_required
+    def compute_campaign_status(campaign_id):
+        ctx = load_user_context()
+        if ctx is None:
+            return jsonify({"error": "auth"}), 401
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
+        if campaign is None:
+            return jsonify({"error": "not_found"}), 404
+        counts = cc.get_progress_counts(campaign_id)
+        payload = campaign.to_dict()
+        payload["subjobs"] = counts
+        payload["designs_delivered"] = _campaign_designs_delivered(campaign_id)
+        payload["terminal"] = campaign.status in (
+            "completed", "completed_with_failures", "failed", "cancelled",
+        )
+        # Paused = non-terminal, nothing in flight, but chunks still
+        # undispatched. This is normally a per-user daily-spend-cap / balance
+        # refusal (Phase 1 uses the unchanged reserve_hold). It resumes
+        # automatically once the cap window resets; surfaced so the UI shows
+        # "paused" instead of an opaque perpetual "running".
+        in_flight = counts.get("pending", 0) + counts.get("running", 0)
+        payload["paused"] = (
+            campaign.status in ("funded", "running")
+            and in_flight == 0
+            and counts.get("total", 0) < campaign.total_subjobs
+        )
+        return jsonify(payload)
+
+    def _campaign_designs_delivered(campaign_id: str) -> int:
+        """Sum len(result.candidates) across a campaign's succeeded children."""
+        client = get_service_client()
+        if client is None:
+            return 0
+        try:
+            rows = (
+                client.table("tool_jobs")
+                .select("result")
+                .eq("campaign_id", campaign_id)
+                .eq("status", "succeeded")
+                .execute()
+                .data
+                or []
+            )
+        except Exception:
+            return 0
+        from shared.jobs import _normalize_result_shape  # noqa: PLC0415
+        total = 0
+        for r in rows:
+            # Normalize so a legacy wrapped shape (result.output.candidates)
+            # is counted like the flat shape, mirroring every other consumer.
+            result = _normalize_result_shape(r.get("result")) or {}
+            cands = result.get("candidates") if isinstance(result, dict) else None
+            if isinstance(cands, list):
+                total += len(cands)
+        return total
+
+    @flask_app.route("/runs/<campaign_id>/cancel", methods=["POST"])
+    @login_required
+    def compute_campaign_cancel(campaign_id):
+        ctx = load_user_context()
+        if ctx is None:
+            return jsonify({"error": "auth"}), 401
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        ok = cc.cancel_campaign(campaign_id, ctx.user_id)
+        if request.is_json or request.headers.get("X-CSRF-Token"):
+            return jsonify({"ok": ok})
+        return redirect(url_for("compute_campaign_detail", campaign_id=campaign_id))
+
     @flask_app.route("/jobs/compare", methods=["GET"])
     @login_required
     def jobs_compare():
@@ -7016,6 +7283,28 @@ def create_app() -> Flask:
         print(
             f"jobs:sweep-stuck pending={summary['pending_swept']} "
             f"running={summary['running_swept']} "
+            f"errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
+    @flask_app.cli.command("campaigns:tick")
+    def cli_campaigns_tick():
+        """Re-drive in-flight compute campaigns (dispatch + reconcile + finalize).
+
+        Backstop for the inline drive hook. Usage::
+
+            flask campaigns:tick
+
+        Scheduled via Railway cron (~60-90s).
+        """
+        from cron.tick_campaigns import tick_campaigns  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = tick_campaigns()
+        print(
+            f"campaigns:tick driven={summary['driven']} "
             f"errors={len(summary['errors'])}",
             flush=True,
         )

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Campaigns — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block head_extra %}
+<style>
+  .runs-wrap { max-width: 980px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  .runs-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .runs-head h1 { font-family: var(--font-display, 'Source Serif 4', serif); font-size: 1.9rem; margin: 0; color: var(--text-primary, #fafafa); }
+  .runs-sub { color: var(--text-secondary, #b8c0c8); font-size: 0.9rem; margin-top: 0.35rem; max-width: 60ch; }
+  .runs-new-btn { background: var(--accent-text, #2B9E7E); color: #05110d; padding: 0.55rem 1.05rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem; text-decoration: none; white-space: nowrap; }
+  .runs-card { display: block; border: 1px solid var(--border, rgba(255,255,255,0.10)); border-radius: 8px; padding: 1rem 1.15rem; margin-bottom: 0.85rem; text-decoration: none; color: inherit; transition: border-color .15s; }
+  .runs-card:hover { border-color: var(--accent-text, #2B9E7E); }
+  .runs-card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; }
+  .runs-card-name { font-weight: 600; color: var(--text-primary, #fafafa); font-size: 1rem; }
+  .runs-card-meta { color: var(--text-secondary, #b8c0c8); font-size: 0.8rem; font-family: var(--font-mono, monospace); margin-top: 0.3rem; }
+  .runs-badge { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.18rem 0.5rem; border-radius: 999px; border: 1px solid var(--border, rgba(255,255,255,0.15)); color: var(--text-secondary, #b8c0c8); white-space: nowrap; }
+  .runs-badge.running, .runs-badge.funded { color: #2B9E7E; border-color: #2B9E7E; }
+  .runs-badge.completed { color: #6fb3ff; border-color: #6fb3ff; }
+  .runs-badge.failed, .runs-badge.cancelled { color: #e8846b; border-color: #e8846b; }
+  .runs-empty { border: 1px dashed var(--border, rgba(255,255,255,0.14)); border-radius: 8px; padding: 2.5rem 1.5rem; text-align: center; color: var(--text-secondary, #b8c0c8); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="runs-wrap">
+  <div class="runs-head">
+    <div>
+      <h1>Campaigns</h1>
+      <p class="runs-sub">Design thousands of candidates against one target. A campaign
+        splits your request into many GPU sub-jobs, runs them in parallel, and bills
+        only for the compute delivered. Compute only — validate your top hits in the lab
+        as a next step.</p>
+    </div>
+    <a href="{{ url_for('compute_campaign_new') }}" class="runs-new-btn">New campaign</a>
+  </div>
+
+  {% if campaigns %}
+    {% for c in campaigns %}
+      <a href="{{ url_for('compute_campaign_detail', campaign_id=c.id) }}" class="runs-card">
+        <div class="runs-card-top">
+          <span class="runs-card-name">{{ c.name or c.target_name or c.tool }}</span>
+          <span class="runs-badge {{ c.status }}">{{ c.status.replace('_', ' ') }}</span>
+        </div>
+        <div class="runs-card-meta">
+          {{ c.tool }} · {{ c.requested_designs }} designs · {{ c.total_subjobs }} sub-jobs · budget ${{ '%.2f'|format(c.budget_usd) }}
+        </div>
+      </a>
+    {% endfor %}
+  {% else %}
+    <div class="runs-empty">
+      <p>No campaigns yet.</p>
+      <p style="margin-top:0.75rem;"><a href="{{ url_for('compute_campaign_new') }}" class="runs-new-btn">Start your first campaign</a></p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

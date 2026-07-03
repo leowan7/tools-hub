@@ -88,6 +88,11 @@ class ToolJob:
     completed_at: Optional[str]
     campaign_label: Optional[str] = None
     failure_class: Optional[str] = None
+    # Compute-campaign sub-job linkage (migration 0034). NULL on ordinary
+    # single jobs; set only on sub-jobs created by the campaign driver.
+    campaign_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    attempt: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ToolJob":
@@ -108,6 +113,9 @@ class ToolJob:
             completed_at=row.get("completed_at"),
             campaign_label=row.get("campaign_label"),
             failure_class=row.get("failure_class"),
+            campaign_id=(str(row["campaign_id"]) if row.get("campaign_id") else None),
+            chunk_index=row.get("chunk_index"),
+            attempt=row.get("attempt"),
         )
 
     def to_dict(self) -> dict:
@@ -124,6 +132,9 @@ class ToolJob:
             "completed_at": self.completed_at,
             "campaign_label": self.campaign_label,
             "failure_class": self.failure_class,
+            "campaign_id": self.campaign_id,
+            "chunk_index": self.chunk_index,
+            "attempt": self.attempt,
         }
 
 
@@ -256,6 +267,9 @@ def create_job(
     target_pdb_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     campaign_label: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    chunk_index: Optional[int] = None,
+    attempt: Optional[int] = None,
 ) -> Optional[ToolJob]:
     """Insert a new tool_jobs row in pending status. Returns None on failure.
 
@@ -270,6 +284,13 @@ def create_job(
     related submissions on /jobs (e.g. "HER2-binder-v3"). NULL when the
     user left the field blank. Empty/whitespace strings are normalized to
     NULL so the index stays tight.
+
+    ``campaign_id`` / ``chunk_index`` / ``attempt`` are the compute-campaign
+    linkage (migration 0034), set only by the campaign driver. Unlike the
+    cosmetic ``campaign_label``, ``campaign_id`` is load-bearing (it wires
+    the sub-job to its coordinator + admission accounting), so it is NOT
+    dropped-and-retried on a schema gap: a campaign simply cannot run until
+    0034 is applied, and failing the insert is the correct, loud behaviour.
     """
     client = get_service_client()
     if client is None:
@@ -311,6 +332,16 @@ def create_job(
     # lands, so skipping the key is semantically identical.
     if label is not None:
         row["campaign_label"] = label
+    # Campaign sub-job linkage (migration 0034). Included only for
+    # driver-created sub-jobs; single jobs never set these, so their
+    # inserts are unaffected until the migration lands. campaign_id is
+    # load-bearing and deliberately NOT part of the schema-gap retry below.
+    if campaign_id is not None:
+        row["campaign_id"] = campaign_id
+        if chunk_index is not None:
+            row["chunk_index"] = chunk_index
+        if attempt is not None:
+            row["attempt"] = attempt
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
@@ -575,6 +606,8 @@ def cancel_job(
     fresh = get_job(job_id, user_id=user_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
+        if fresh.campaign_id:
+            _drive_campaign_after_terminal(fresh)
     return fresh, None
 
 
@@ -710,8 +743,32 @@ def complete_job(
 
     _charge_workspace_for_completed_job(fresh)
     _settle_wallet_hold_for_completed_job(fresh)
-    _send_completion_email(fresh)
+    if fresh.campaign_id:
+        # Compute-campaign sub-job: suppress the per-child completion email
+        # (the campaign owns its own summary) and re-drive the campaign so
+        # the just-freed slot pulls the next chunk. Best-effort — never let
+        # the drive hook break the terminal write.
+        _drive_campaign_after_terminal(fresh)
+    else:
+        _send_completion_email(fresh)
     return fresh
+
+
+def _drive_campaign_after_terminal(job: "ToolJob") -> None:
+    """Fire the compute-campaign driver after a sub-job reaches terminal.
+
+    Lazily imported to avoid an import cycle; swallows every error so a
+    campaign-side fault can never corrupt the child's terminal write.
+    """
+    try:
+        from shared.compute_campaigns import (  # noqa: PLC0415
+            maybe_drive_campaign_for_job,
+        )
+        maybe_drive_campaign_for_job(job)
+    except Exception:
+        logger.warning(
+            "campaign drive hook raised for job %s", job.id, exc_info=True
+        )
 
 
 def _charge_workspace_for_completed_job(job: "ToolJob") -> None:

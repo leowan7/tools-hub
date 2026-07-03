@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}{{ campaign.name or 'Campaign' }} — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block head_extra %}
+<style>
+  .rd-wrap { max-width: 900px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  .rd-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .rd-head h1 { font-family: var(--font-display, 'Source Serif 4', serif); font-size: 1.7rem; margin: 0; color: var(--text-primary, #fafafa); }
+  .rd-meta { color: var(--text-secondary, #b8c0c8); font-size: 0.82rem; font-family: var(--font-mono, monospace); margin-top: 0.35rem; }
+  .rd-badge { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; padding: 0.22rem 0.6rem; border-radius: 999px; border: 1px solid var(--border, rgba(255,255,255,0.15)); color: var(--text-secondary, #b8c0c8); }
+  .rd-badge.running, .rd-badge.funded { color: #2B9E7E; border-color: #2B9E7E; }
+  .rd-badge.completed { color: #6fb3ff; border-color: #6fb3ff; }
+  .rd-badge.completed_with_failures { color: #d9b34a; border-color: #d9b34a; }
+  .rd-badge.failed, .rd-badge.cancelled { color: #e8846b; border-color: #e8846b; }
+  .rd-bar-outer { height: 12px; border-radius: 999px; background: var(--surface, rgba(255,255,255,0.06)); overflow: hidden; margin: 1.5rem 0 0.5rem; }
+  .rd-bar-inner { height: 100%; width: 0; background: var(--accent-text, #2B9E7E); transition: width .4s; }
+  .rd-progress-label { font-size: 0.85rem; color: var(--text-secondary, #b8c0c8); font-family: var(--font-mono, monospace); }
+  .rd-paused { margin-top: 0.75rem; padding: 0.6rem 0.85rem; border-radius: 6px; font-size: 0.82rem; background: rgba(217,179,74,0.12); color: #d9b34a; }
+  .rd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.75rem; margin: 1.75rem 0; }
+  .rd-card { border: 1px solid var(--border, rgba(255,255,255,0.10)); border-radius: 8px; padding: 0.85rem 0.9rem; }
+  .rd-card .n { font-size: 1.5rem; font-family: var(--font-mono, monospace); color: var(--text-primary, #fafafa); }
+  .rd-card .l { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary, #b8c0c8); margin-top: 0.2rem; }
+  .rd-money { border: 1px solid var(--border, rgba(255,255,255,0.10)); border-radius: 8px; padding: 1rem 1.15rem; margin: 1.5rem 0; }
+  .rd-money .row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 0.3rem 0; }
+  .rd-money .row .k { color: var(--text-secondary, #b8c0c8); }
+  .rd-money .row .v { font-family: var(--font-mono, monospace); color: var(--text-primary, #fafafa); }
+  .rd-actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }
+  .rd-btn { padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.83rem; font-weight: 600; text-decoration: none; cursor: pointer; border: 1px solid var(--border, rgba(255,255,255,0.16)); background: none; color: var(--text-primary, #fafafa); }
+  .rd-btn.danger { color: #e8846b; border-color: rgba(232,132,107,0.5); }
+  .rd-upsell { margin-top: 2rem; border: 1px solid var(--border, rgba(255,255,255,0.10)); border-left: 3px solid var(--accent-text, #2B9E7E); border-radius: 6px; padding: 1rem 1.15rem; font-size: 0.85rem; color: var(--text-secondary, #b8c0c8); }
+  .rd-upsell a { color: var(--accent-text, #2B9E7E); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="rd-wrap" data-status-url="{{ url_for('compute_campaign_status', campaign_id=campaign.id) }}"
+     data-cancel-url="{{ url_for('compute_campaign_cancel', campaign_id=campaign.id) }}">
+  <div class="rd-head">
+    <div>
+      <h1>{{ campaign.name or campaign.target_name or campaign.tool }}</h1>
+      <div class="rd-meta">{{ campaign.tool }} · {{ campaign.requested_designs }} designs · {{ campaign.total_subjobs }} sub-jobs</div>
+    </div>
+    <span class="rd-badge {{ campaign.status }}" id="rd-status">{{ campaign.status.replace('_',' ') }}</span>
+  </div>
+
+  <div class="rd-bar-outer"><div class="rd-bar-inner" id="rd-bar"></div></div>
+  <div class="rd-progress-label"><span id="rd-delivered">0</span> / {{ campaign.requested_designs }} designs delivered</div>
+  <div class="rd-paused" id="rd-paused" style="display:none;">Paused — waiting on your daily spending limit or balance. This resumes automatically once the limit resets.</div>
+
+  <div class="rd-cards">
+    <div class="rd-card"><div class="n" id="rd-running">{{ counts.running }}</div><div class="l">Running</div></div>
+    <div class="rd-card"><div class="n" id="rd-pending">{{ counts.pending }}</div><div class="l">Queued</div></div>
+    <div class="rd-card"><div class="n" id="rd-succeeded">{{ counts.succeeded }}</div><div class="l">Done</div></div>
+    <div class="rd-card"><div class="n" id="rd-failed">{{ counts.failed }}</div><div class="l">Failed</div></div>
+  </div>
+
+  <div class="rd-money">
+    <div class="row"><span class="k">Authorized budget</span><span class="v">${{ '%.2f'|format(campaign.budget_usd) }}</span></div>
+    <div class="row"><span class="k">Billing</span><span class="v">only for compute delivered</span></div>
+  </div>
+
+  <div class="rd-actions">
+    {% if campaign.status in ('funded','running','completing') %}
+      <button class="rd-btn danger" id="rd-cancel">Cancel campaign</button>
+    {% endif %}
+    <a class="rd-btn" href="{{ url_for('jobs_list') }}?campaign={{ campaign.name or '' }}">View sub-jobs</a>
+    <a class="rd-btn" href="{{ url_for('compute_campaigns_list') }}">All campaigns</a>
+  </div>
+
+  <div class="rd-upsell">
+    Compute campaigns generate and score candidates. When you have your top hits,
+    <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener">validate them in the lab</a>
+    with the Ranomics wet-lab pipeline.
+  </div>
+</div>
+
+<script>
+(function () {
+  var wrap = document.querySelector('.rd-wrap');
+  var statusUrl = wrap.getAttribute('data-status-url');
+  var cancelUrl = wrap.getAttribute('data-cancel-url');
+  var requested = {{ campaign.requested_designs }};
+  var TERMINAL = ['completed', 'completed_with_failures', 'failed', 'cancelled'];
+
+  function csrf() {
+    var m = document.querySelector('meta[name=csrf-token]');
+    return m ? m.getAttribute('content') : '';
+  }
+
+  function apply(d) {
+    if (d.error) return;
+    document.getElementById('rd-status').textContent = (d.status || '').replace(/_/g, ' ');
+    document.getElementById('rd-status').className = 'rd-badge ' + d.status;
+    var sj = d.subjobs || {};
+    document.getElementById('rd-running').textContent = sj.running || 0;
+    document.getElementById('rd-pending').textContent = sj.pending || 0;
+    document.getElementById('rd-succeeded').textContent = sj.succeeded || 0;
+    document.getElementById('rd-failed').textContent = (sj.failed || 0) + (sj.timeout || 0);
+    var delivered = d.designs_delivered || 0;
+    document.getElementById('rd-delivered').textContent = delivered;
+    var pct = requested > 0 ? Math.min(100, Math.round(100 * delivered / requested)) : 0;
+    document.getElementById('rd-bar').style.width = pct + '%';
+    var pausedEl = document.getElementById('rd-paused');
+    if (pausedEl) pausedEl.style.display = d.paused ? '' : 'none';
+  }
+
+  function poll() {
+    fetch(statusUrl, { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        apply(d);
+        if (d.terminal || TERMINAL.indexOf(d.status) !== -1) {
+          var c = document.getElementById('rd-cancel');
+          if (c) c.style.display = 'none';
+          return;  // stop polling
+        }
+        setTimeout(poll, 5000);
+      })
+      .catch(function () { setTimeout(poll, 8000); });
+  }
+
+  var cancelBtn = document.getElementById('rd-cancel');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function () {
+      if (!window.confirm('Cancel this campaign? In-flight sub-jobs stop and unused budget is refunded.')) return;
+      cancelBtn.disabled = true;
+      fetch(cancelUrl, { method: 'POST', headers: { 'X-CSRF-Token': csrf() } })
+        .then(function () { window.location.reload(); })
+        .catch(function () { cancelBtn.disabled = false; });
+    });
+  }
+
+  setTimeout(poll, 3000);
+})();
+</script>
+{% endblock %}
