@@ -107,9 +107,13 @@ def test_sanitize_shared_params_strips_private_and_design_keys():
         },
     )
     assert out == {"target_chain": "A", "hotspot_residues": [10, 20]}
-    # boltzgen drops 'budget', keeps 'num_designs' irrelevant here.
+    # boltzgen drops its own design key 'budget'.
     out2 = sanitize_shared_params("boltzgen", {"budget": 50, "protocol": "nanobody-anything"})
     assert out2 == {"protocol": "nanobody-anything"}
+    # Cross-tool hardening: a stray num_designs on a boltzgen campaign is
+    # ALSO stripped (else it would inflate boltzgen's num_designs-scaled cap).
+    out3 = sanitize_shared_params("boltzgen", {"budget": 50, "num_designs": 99999, "protocol": "x"})
+    assert out3 == {"protocol": "x"}
 
 
 # ---------------------------------------------------------------------------
@@ -142,19 +146,23 @@ def test_campaign_from_row_and_to_dict_roundtrip():
     assert camp.reserved_usd == Decimal("1.75")
     d = camp.to_dict()
     assert d["budget_usd"] == pytest.approx(4.02)
-    # remaining = budget - reserved - spent = 4.02 - 1.75 - 0.50 = 1.77
-    assert d["remaining_usd"] == pytest.approx(1.77)
     assert d["status"] == "running"
+    # Advisory spend fields are intentionally omitted in Phase 1 (emitting a
+    # flat $0 spent while a campaign bills would mislead).
+    assert "remaining_usd" not in d and "spent_usd" not in d
 
 
-def test_campaign_remaining_never_negative():
+def test_to_dict_omits_advisory_money_fields():
     row = {
         "id": "c", "user_id": "u", "tool": "rfdiffusion", "preset": "pilot",
         "status": "completed", "requested_designs": 12, "chunk_size": 12,
         "total_subjobs": 1, "budget_usd": "1.00", "reserved_usd": "0",
         "spent_usd": "5.00", "refunded_usd": "0",
     }
-    assert ComputeCampaign.from_row(row).to_dict()["remaining_usd"] == 0.0
+    d = ComputeCampaign.from_row(row).to_dict()
+    assert d["budget_usd"] == pytest.approx(1.00)
+    for k in ("spent_usd", "reserved_usd", "refunded_usd", "remaining_usd"):
+        assert k not in d
 
 
 # ---------------------------------------------------------------------------

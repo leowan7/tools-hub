@@ -72,11 +72,14 @@ _CONTAINER_UTILIZATION = 0.8
 # Phase 1 ships SMALL campaigns to prove the state machine + money
 # invariants before the driver is hardened for scale. The cap is 20 (not
 # 50) for a concrete Phase-1 reason: child holds go through the UNCHANGED
-# reserve_hold, which enforces the $200/day single-job cap (SQL, 0020). At
-# 20 sub-jobs even the priciest Phase-1 tool (boltzgen ~$8.74/chunk ->
-# ~$175) stays under $200, so a solo campaign never stalls on the daily
-# cap. Phase 2 adds a daily-cap-exempt child-hold RPC + a stall reaper and
-# raises this for true ~150-500 sub-job runs.
+# reserve_hold, which enforces the $200/day single-job cap (SQL, 0020),
+# summed across ALL of the user's jobs that day. At 20 sub-jobs the
+# priciest tool's whole campaign (boltzgen ~$8.74/chunk -> ~$175) fits
+# under $200 ON ITS OWN — but if the user also ran other jobs today, a
+# later child's hold can still be refused and that chunk PAUSES until the
+# UTC daily window resets (surfaced as "paused" in status.json, retried by
+# the cron; it never overspends, only defers). Phase 2 adds a daily-cap-
+# exempt child-hold RPC + a stall reaper and raises this cap.
 MAX_SUBJOBS_PER_CAMPAIGN = 20
 
 # Driver defaults persisted on the campaign row. Phase 1 keeps the
@@ -233,14 +236,19 @@ def sanitize_shared_params(tool: str, params: Mapping[str, object]) -> dict:
     the design-count key (injected per chunk), and ``preset`` (carried on
     the campaign row).
     """
-    design_key = _DESIGN_PARAM_KEY.get(tool)
+    # Strip EVERY tool's design key (not just this tool's) plus preset.
+    # A stray cross-tool key must not survive into job.inputs: e.g. a bogus
+    # num_designs field on a boltzgen campaign (whose own design key is
+    # `budget`) would otherwise reach compute_hard_cap, whose boltzgen
+    # scaling_param IS num_designs, and inflate the per-child hard cap.
+    design_keys = set(_DESIGN_PARAM_KEY.values())
     out: dict = {}
     for key, value in dict(params or {}).items():
         if not isinstance(key, str):
             continue
         if key.startswith("_"):
             continue
-        if key == design_key or key == "preset":
+        if key in design_keys or key == "preset":
             continue
         out[key] = value
     return out
@@ -329,12 +337,11 @@ class ComputeCampaign:
             "total_subjobs": self.total_subjobs,
             "target_name": self.target_name,
             "budget_usd": float(self.budget_usd),
-            "reserved_usd": float(self.reserved_usd),
-            "spent_usd": float(self.spent_usd),
-            "refunded_usd": float(self.refunded_usd),
-            "remaining_usd": float(
-                max(Decimal("0"), self.budget_usd - self.reserved_usd - self.spent_usd)
-            ),
+            # NOTE: spent/reserved/refunded are advisory columns the Phase-1
+            # driver does not populate (the wallet ledger is the source of
+            # truth), so they are deliberately NOT emitted here — reporting a
+            # flat $0 spent while a campaign is billing would be misleading.
+            # Phase 3 reconciles them from the ledger and restores them.
             "created_at": self.created_at,
             "completed_at": self.completed_at,
         }
@@ -776,11 +783,14 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
                 exc_info=True,
             )
 
-    job_spec = adapter.build_payload(child_inputs, presigned_url)
-    webhook_url = _webhook_url(child.id, child.job_token)
-    upload_urls_endpoint = _upload_urls_endpoint(child.id, child.job_token)
-
+    # Build the payload + submit under ONE guard: a build_payload or
+    # URL-build failure here (after the row + hold already exist) must take
+    # the same fail-and-refund path as a submit failure, or the child would
+    # orphan as pending holding money until the 30-min sweeper.
     try:
+        job_spec = adapter.build_payload(child_inputs, presigned_url)
+        webhook_url = _webhook_url(child.id, child.job_token)
+        upload_urls_endpoint = _upload_urls_endpoint(child.id, child.job_token)
         submit_result = ModalClient().submit(
             campaign.tool,
             campaign.preset,
@@ -795,7 +805,7 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
             webhook_url=webhook_url,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("campaign %s chunk %s: Modal submit failed", campaign.id, chunk_index)
+        logger.exception("campaign %s chunk %s: dispatch failed", campaign.id, chunk_index)
         # Mirror tool_submit: fail the child row and release its hold
         # explicitly. Deliberately NOT complete_job — that would re-fire the
         # inline drive hook and recurse through the remaining chunks if Modal

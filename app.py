@@ -5145,6 +5145,17 @@ def create_app() -> Flask:
         payload["terminal"] = campaign.status in (
             "completed", "completed_with_failures", "failed", "cancelled",
         )
+        # Paused = non-terminal, nothing in flight, but chunks still
+        # undispatched. This is normally a per-user daily-spend-cap / balance
+        # refusal (Phase 1 uses the unchanged reserve_hold). It resumes
+        # automatically once the cap window resets; surfaced so the UI shows
+        # "paused" instead of an opaque perpetual "running".
+        in_flight = counts.get("pending", 0) + counts.get("running", 0)
+        payload["paused"] = (
+            campaign.status in ("funded", "running")
+            and in_flight == 0
+            and counts.get("total", 0) < campaign.total_subjobs
+        )
         return jsonify(payload)
 
     def _campaign_designs_delivered(campaign_id: str) -> int:
@@ -5164,9 +5175,12 @@ def create_app() -> Flask:
             )
         except Exception:
             return 0
+        from shared.jobs import _normalize_result_shape  # noqa: PLC0415
         total = 0
         for r in rows:
-            result = r.get("result") or {}
+            # Normalize so a legacy wrapped shape (result.output.candidates)
+            # is counted like the flat shape, mirroring every other consumer.
+            result = _normalize_result_shape(r.get("result")) or {}
             cands = result.get("candidates") if isinstance(result, dict) else None
             if isinstance(cands, list):
                 total += len(cands)

@@ -16,6 +16,7 @@
   .rd-bar-outer { height: 12px; border-radius: 999px; background: var(--surface, rgba(255,255,255,0.06)); overflow: hidden; margin: 1.5rem 0 0.5rem; }
   .rd-bar-inner { height: 100%; width: 0; background: var(--accent-text, #2B9E7E); transition: width .4s; }
   .rd-progress-label { font-size: 0.85rem; color: var(--text-secondary, #b8c0c8); font-family: var(--font-mono, monospace); }
+  .rd-paused { margin-top: 0.75rem; padding: 0.6rem 0.85rem; border-radius: 6px; font-size: 0.82rem; background: rgba(217,179,74,0.12); color: #d9b34a; }
   .rd-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.75rem; margin: 1.75rem 0; }
   .rd-card { border: 1px solid var(--border, rgba(255,255,255,0.10)); border-radius: 8px; padding: 0.85rem 0.9rem; }
   .rd-card .n { font-size: 1.5rem; font-family: var(--font-mono, monospace); color: var(--text-primary, #fafafa); }
@@ -45,6 +46,7 @@
 
   <div class="rd-bar-outer"><div class="rd-bar-inner" id="rd-bar"></div></div>
   <div class="rd-progress-label"><span id="rd-delivered">0</span> / {{ campaign.requested_designs }} designs delivered</div>
+  <div class="rd-paused" id="rd-paused" style="display:none;">Paused — waiting on your daily spending limit or balance. This resumes automatically once the limit resets.</div>
 
   <div class="rd-cards">
     <div class="rd-card"><div class="n" id="rd-running">{{ counts.running }}</div><div class="l">Running</div></div>
@@ -99,6 +101,8 @@
     document.getElementById('rd-delivered').textContent = delivered;
     var pct = requested > 0 ? Math.min(100, Math.round(100 * delivered / requested)) : 0;
     document.getElementById('rd-bar').style.width = pct + '%';
+    var pausedEl = document.getElementById('rd-paused');
+    if (pausedEl) pausedEl.style.display = d.paused ? '' : 'none';
   }
 
   function poll() {
