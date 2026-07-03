@@ -7022,6 +7022,28 @@ def create_app() -> Flask:
         for err in summary["errors"]:
             print(f"  err: {err}", flush=True)
 
+    @flask_app.cli.command("campaigns:tick")
+    def cli_campaigns_tick():
+        """Re-drive in-flight compute campaigns (dispatch + reconcile + finalize).
+
+        Backstop for the inline drive hook. Usage::
+
+            flask campaigns:tick
+
+        Scheduled via Railway cron (~60-90s).
+        """
+        from cron.tick_campaigns import tick_campaigns  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = tick_campaigns()
+        print(
+            f"campaigns:tick driven={summary['driven']} "
+            f"errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
     @flask_app.cli.command("pii:purge-old")
     @click.option(
         "--dry-run", is_flag=True, default=False,

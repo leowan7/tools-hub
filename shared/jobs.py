@@ -606,6 +606,8 @@ def cancel_job(
     fresh = get_job(job_id, user_id=user_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
+        if fresh.campaign_id:
+            _drive_campaign_after_terminal(fresh)
     return fresh, None
 
 
@@ -741,8 +743,32 @@ def complete_job(
 
     _charge_workspace_for_completed_job(fresh)
     _settle_wallet_hold_for_completed_job(fresh)
-    _send_completion_email(fresh)
+    if fresh.campaign_id:
+        # Compute-campaign sub-job: suppress the per-child completion email
+        # (the campaign owns its own summary) and re-drive the campaign so
+        # the just-freed slot pulls the next chunk. Best-effort — never let
+        # the drive hook break the terminal write.
+        _drive_campaign_after_terminal(fresh)
+    else:
+        _send_completion_email(fresh)
     return fresh
+
+
+def _drive_campaign_after_terminal(job: "ToolJob") -> None:
+    """Fire the compute-campaign driver after a sub-job reaches terminal.
+
+    Lazily imported to avoid an import cycle; swallows every error so a
+    campaign-side fault can never corrupt the child's terminal write.
+    """
+    try:
+        from shared.compute_campaigns import (  # noqa: PLC0415
+            maybe_drive_campaign_for_job,
+        )
+        maybe_drive_campaign_for_job(job)
+    except Exception:
+        logger.warning(
+            "campaign drive hook raised for job %s", job.id, exc_info=True
+        )
 
 
 def _charge_workspace_for_completed_job(job: "ToolJob") -> None:

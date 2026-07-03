@@ -74,8 +74,12 @@ _CONTAINER_UTILIZATION = 0.8
 # (and the driver's concurrency handling) for true ~150-500 sub-job runs.
 MAX_SUBJOBS_PER_CAMPAIGN = 50
 
-# Driver defaults persisted on the campaign row.
-DEFAULT_CONCURRENCY_TARGET = 20
+# Driver defaults persisted on the campaign row. Phase 1 keeps the
+# concurrency target modest so the first wave (dispatched synchronously
+# from POST /runs) stays well inside the request budget; Phase 2 raises it
+# alongside async dispatch + fairness controls. (The 0034 column default
+# is 20 but create_campaign always writes this value explicitly.)
+DEFAULT_CONCURRENCY_TARGET = 8
 DEFAULT_MAX_ATTEMPTS = 2
 
 # Head-room multiplier on the summed chunk estimate so the authorized
@@ -591,3 +595,334 @@ def can_dispatch_more(
         return False
     in_flight = int(counts.get("pending", 0)) + int(counts.get("running", 0))
     return in_flight < campaign.concurrency_target
+
+
+# ---------------------------------------------------------------------------
+# Driver: fund -> dispatch -> reconcile -> finalize
+# ---------------------------------------------------------------------------
+#
+# The driver is READ + LAUNCH + RECONCILE. It reads aggregate child state,
+# creates NEW sub-job rows, and updates the campaign row — it NEVER flips
+# an existing child's terminal state (that stays with the poll / webhook /
+# heartbeat / cancel / sweeper writers). Idempotency against concurrent
+# drivers rests on the DB UNIQUE(campaign_id, chunk_index, attempt) index
+# plus the CAS launch (set_modal_call only on a NULL function_call_id row);
+# a per-campaign advisory lock + retries are Phase 2.
+
+_TERMINAL_CHILD = ("succeeded", "failed", "timeout", "cancelled")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _public_base() -> str:
+    import os  # noqa: PLC0415
+    return os.environ.get("PUBLIC_BASE_URL", "https://tools.ranomics.com").rstrip("/")
+
+
+def _webhook_url(job_id: str, job_token: str) -> str:
+    return f"{_public_base()}/webhooks/modal/{job_id}/{job_token}"
+
+
+def _upload_urls_endpoint(job_id: str, job_token: str) -> str:
+    return f"{_public_base()}/api/upload-urls/{job_id}/{job_token}"
+
+
+def _ensure_adapters() -> None:
+    """Import the supported tool packages so their adapters are registered.
+
+    Cheap + idempotent; a no-op when app.py has already imported them.
+    """
+    try:
+        import tools.rfdiffusion  # noqa: F401,PLC0415
+        import tools.bindcraft  # noqa: F401,PLC0415
+        import tools.boltzgen  # noqa: F401,PLC0415
+    except Exception:
+        logger.warning("_ensure_adapters: tool import failed", exc_info=True)
+
+
+def _campaign_children(campaign_id: str) -> list[dict]:
+    """Return ``[{chunk_index, status}, ...]`` for a campaign's sub-jobs."""
+    client = get_service_client()
+    if client is None:
+        return []
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("chunk_index,status")
+            .eq("campaign_id", campaign_id)
+            .execute()
+        )
+        return list(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning("_campaign_children failed for %s", campaign_id, exc_info=True)
+        return []
+
+
+def _tally(children: list[dict]) -> dict:
+    counts = {status: 0 for status in _CHILD_STATUSES}
+    for c in children:
+        s = c.get("status")
+        if s in counts:
+            counts[s] += 1
+    return counts
+
+
+def _update_campaign(campaign_id: str, fields: dict) -> None:
+    client = get_service_client()
+    if client is None:
+        return
+    try:
+        client.table(_TABLE).update(fields).eq("id", campaign_id).execute()
+    except Exception:
+        logger.warning("_update_campaign failed for %s", campaign_id, exc_info=True)
+
+
+def fund_campaign(campaign_id: str) -> None:
+    """Mark a draft campaign funded (called by the route after preauth)."""
+    _update_campaign(campaign_id, {"status": "funded", "confirmed_at": _now_iso()})
+
+
+def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> bool:
+    """Reserve a per-child hold, create the sub-job, and spawn it on Modal.
+
+    Returns True iff a Modal run was launched. On any failure the hold is
+    released (or the child is failed through the normal terminal path so
+    its hold settles) so no reservation is stranded.
+    """
+    from shared.wallet import release_hold, reserve_hold  # noqa: PLC0415
+    from shared.jobs import (  # noqa: PLC0415
+        create_job, mark_failed, set_modal_call,
+    )
+    from shared.storage import presigned_input_url  # noqa: PLC0415
+    from gpu.modal_client import ModalClient  # noqa: PLC0415
+    from tools import base as tool_base  # noqa: PLC0415
+
+    _ensure_adapters()
+    adapter = tool_base.get(campaign.tool)
+    if adapter is None:
+        logger.error("campaign %s: no adapter for %s", campaign.id, campaign.tool)
+        return False
+
+    design_count = campaign.designs_for_chunk(chunk_index)
+    if design_count <= 0:
+        return False
+
+    # Reconstruct the validated tool inputs for this chunk: shared params
+    # + the per-chunk design count under the tool's design key + preset.
+    base_inputs = dict(campaign.params or {})
+    base_inputs[_DESIGN_PARAM_KEY[campaign.tool]] = design_count
+    base_inputs["preset"] = campaign.preset
+
+    estimate = estimate_child_cost(campaign.tool, design_count)
+    hold_tx_id = reserve_hold(campaign.user_id, campaign.tool, None, estimate, base_inputs)
+    if not hold_tx_id:
+        logger.info(
+            "campaign %s chunk %s: hold not placed (balance/cap); skipping",
+            campaign.id, chunk_index,
+        )
+        return False
+
+    child_inputs = dict(base_inputs)
+    child_inputs["_wallet"] = {
+        "hold_tx_id": hold_tx_id,
+        "estimate_usd": str(estimate),
+        "tool_slug": campaign.tool,
+    }
+
+    child = create_job(
+        user_id=campaign.user_id,
+        tool=campaign.tool,
+        preset=campaign.preset,
+        inputs=child_inputs,
+        campaign_id=campaign.id,
+        chunk_index=chunk_index,
+        attempt=1,
+        campaign_label=campaign.name or None,
+    )
+    if child is None:
+        # Duplicate (campaign_id, chunk_index, attempt) from a racing driver
+        # (UNIQUE violation) or a transient insert failure. Release the hold
+        # so nothing is stranded; the winning row keeps its own hold.
+        try:
+            release_hold(hold_tx_id, reason="campaign_chunk_create_failed")
+        except Exception:
+            logger.warning("release_hold after create fail raised", exc_info=True)
+        return False
+
+    presigned_url = ""
+    if campaign.target_storage_path:
+        try:
+            presigned_url = presigned_input_url(
+                campaign.target_storage_path, expires_seconds=7200
+            )
+        except Exception:
+            logger.warning(
+                "campaign %s chunk %s: presign failed", campaign.id, chunk_index,
+                exc_info=True,
+            )
+
+    job_spec = adapter.build_payload(child_inputs, presigned_url)
+    webhook_url = _webhook_url(child.id, child.job_token)
+    upload_urls_endpoint = _upload_urls_endpoint(child.id, child.job_token)
+
+    try:
+        submit_result = ModalClient().submit(
+            campaign.tool,
+            campaign.preset,
+            inputs={
+                **job_spec,
+                "_input_pdb_url": presigned_url,
+                "_input_presigned_url": presigned_url,
+                "_upload_urls_endpoint": upload_urls_endpoint,
+            },
+            job_id=child.id,
+            job_token=child.job_token,
+            webhook_url=webhook_url,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("campaign %s chunk %s: Modal submit failed", campaign.id, chunk_index)
+        # Mirror tool_submit: fail the child row and release its hold
+        # explicitly. Deliberately NOT complete_job — that would re-fire the
+        # inline drive hook and recurse through the remaining chunks if Modal
+        # is down. The child is terminal-failed (modal-submit) with a full
+        # refund; the cron tick reconciles + finalizes.
+        mark_failed(child.id, error={"bucket": "modal-submit", "detail": str(exc)})
+        try:
+            release_hold(hold_tx_id, reason="campaign_modal_submit_failed")
+        except Exception:
+            logger.warning("release_hold after submit fail raised", exc_info=True)
+        return False
+
+    fc_id = submit_result.get("function_call_id")
+    if fc_id:
+        set_modal_call(child.id, fc_id)
+    return True
+
+
+def drive_campaign(campaign_id: str) -> None:
+    """Reconcile a campaign and dispatch as many sub-jobs as admission allows.
+
+    Safe to call repeatedly and concurrently (the DB uniqueness + CAS
+    launch make double-dispatch impossible). Triggered at create, by the
+    inline hook on child completion, and by the cron backstop.
+    """
+    campaign = get_campaign(campaign_id)
+    if campaign is None:
+        return
+    if campaign.status in ("draft", "completed", "completed_with_failures",
+                           "failed", "cancelled"):
+        return
+
+    children = _campaign_children(campaign_id)
+    existing_idx = {
+        c["chunk_index"] for c in children if c.get("chunk_index") is not None
+    }
+    counts = _tally(children)
+    dispatched = len(children)
+    in_flight = counts["pending"] + counts["running"]
+
+    if campaign.status == "funded":
+        _update_campaign(campaign_id, {"status": "running", "started_at": _now_iso()})
+        campaign.status = "running"
+
+    # Admission loop: fill open slots with the lowest undispatched chunks.
+    next_idx = 0
+    while dispatched < campaign.total_subjobs and in_flight < campaign.concurrency_target:
+        while next_idx < campaign.total_subjobs and next_idx in existing_idx:
+            next_idx += 1
+        if next_idx >= campaign.total_subjobs:
+            break
+        launched = _dispatch_chunk(campaign, next_idx)
+        existing_idx.add(next_idx)
+        dispatched += 1
+        if launched:
+            in_flight += 1
+        next_idx += 1
+
+    _update_campaign(campaign_id, {"last_tick_at": _now_iso()})
+    _maybe_finalize(campaign)
+
+
+def _maybe_finalize(campaign: "ComputeCampaign") -> None:
+    """Set the terminal campaign status once every chunk is dispatched + done."""
+    children = _campaign_children(campaign.id)
+    if len(children) < campaign.total_subjobs:
+        return
+    counts = _tally(children)
+    terminal = sum(counts[s] for s in _TERMINAL_CHILD)
+    if terminal < campaign.total_subjobs:
+        return
+    succeeded = counts["succeeded"]
+    if succeeded >= campaign.total_subjobs:
+        final = "completed"
+    elif succeeded > 0:
+        final = "completed_with_failures"
+    else:
+        final = "failed"
+    _update_campaign(campaign.id, {"status": final, "completed_at": _now_iso()})
+
+
+def maybe_drive_campaign_for_job(job) -> None:  # noqa: ANN001
+    """Inline-hook entry point called from a child's terminal write.
+
+    Best-effort: never raises into the terminal-write path. Re-drives the
+    owning campaign so a finishing child immediately frees its slot for the
+    next chunk.
+    """
+    campaign_id = getattr(job, "campaign_id", None)
+    if not campaign_id:
+        return
+    try:
+        drive_campaign(campaign_id)
+    except Exception:
+        logger.warning(
+            "maybe_drive_campaign_for_job: drive failed for campaign %s",
+            campaign_id, exc_info=True,
+        )
+
+
+def cancel_campaign(campaign_id: str, user_id: str) -> bool:
+    """Cancel a campaign: stop dispatch, cancel in-flight children, refund.
+
+    Each in-flight child is cancelled through the owner-scoped cancel_job
+    CAS path, which bills consumed GPU and refunds the surplus. Undispatched
+    chunks simply never run. Returns True if the campaign was cancellable.
+    """
+    campaign = get_campaign(campaign_id, user_id=user_id)
+    if campaign is None:
+        return False
+    if campaign.status in ("completed", "completed_with_failures", "failed", "cancelled"):
+        return False
+
+    _update_campaign(campaign_id, {"status": "cancelled", "completed_at": _now_iso()})
+
+    from shared.jobs import cancel_job  # noqa: PLC0415
+    from gpu.modal_client import ModalClient  # noqa: PLC0415
+
+    client = get_service_client()
+    if client is None:
+        return True
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("id,status")
+            .eq("campaign_id", campaign_id)
+            .in_("status", ["pending", "running"])
+            .execute()
+        )
+        rows = list(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning("cancel_campaign: child query failed for %s", campaign_id, exc_info=True)
+        rows = []
+    mc = ModalClient()
+    for r in rows:
+        try:
+            cancel_job(str(r["id"]), user_id=user_id, modal_client=mc)
+        except Exception:
+            logger.warning(
+                "cancel_campaign: cancel_job raised for child %s", r.get("id"),
+                exc_info=True,
+            )
+    return True
