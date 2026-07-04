@@ -36,7 +36,6 @@ from shared.wallet import (
     GPU_USD_PER_SECOND,
     LOW_BALANCE_EMAIL_THRESHOLD,
     PER_JOB_HARD_CAP_USD,
-    REASON_DAILY_CAP,
     REASON_INSUFFICIENT,
     REASON_OK,
     REASON_PER_TOOL_CAP,
@@ -685,7 +684,13 @@ def test_preflight_blocks_when_per_tool_cap_exceeded(store):
     assert pre.reason == REASON_PER_TOOL_CAP
 
 
-def test_preflight_blocks_when_daily_cap_reached(store):
+def test_preflight_no_longer_blocks_on_daily_spend(store):
+    """Phase 2 fund-and-drain retired the per-day spend cap.
+
+    A job that would have tripped the old $10 daily cap (a prior $9.50 hold
+    today plus a new $2.00 job) now passes as long as the prepaid balance
+    covers it. The prepaid balance is the only spend ceiling.
+    """
     _seed_wallet(
         store, USER_A,
         balance=Decimal("1000.00"),
@@ -699,24 +704,22 @@ def test_preflight_blocks_when_daily_cap_reached(store):
         "amount_usd": -9.50,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    # Use bindcraft so the per-tool cap does not trip first.
+    # Use bindcraft so the per-tool cap does not trip.
     pre = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
-    assert pre.allow is False
-    assert pre.reason == REASON_DAILY_CAP
+    assert pre.allow is True
+    assert pre.reason == REASON_OK
 
 
 def test_spent_today_nets_holds_releases_and_charges(store):
-    """Daily-cap spend nets each job's settlement against its hold.
+    """_spent_today_usd nets each job's settlement against its hold.
 
     Spend = |holds| - |releases| + |charges|. A job that settles under
-    estimate is refunded a surplus the figure nets out; an overrun adds
-    a charge.
+    estimate has its surplus netted out; an overrun adds a charge. This is
+    the figure shown as "Spent today" on the wallet overview. The per-day
+    spend cap that once consumed it was retired in Phase 2 fund-and-drain,
+    so this now just verifies the netting math the display relies on.
     """
-    _seed_wallet(
-        store, USER_A,
-        balance=Decimal("1000.00"),
-        daily_cap=Decimal("10.00"),
-    )
+    _seed_wallet(store, USER_A, balance=Decimal("1000.00"))
     now = datetime.now(timezone.utc).isoformat()
 
     def _add(kind, amount):
@@ -734,15 +737,9 @@ def test_spent_today_nets_holds_releases_and_charges(store):
     # Job 2 held $3, overran to $4: hold -3, charge -1 -> net $4.
     _add("hold", -3.00)
     _add("charge", -1.00)
-    # Net spend today is $3 + $4 = $7.
 
-    # $7 + $2 estimate stays under the $10 cap.
-    allowed = wallet_preflight(USER_A, "bindcraft", Decimal("2.00"), {})
-    assert allowed.allow is True
-    # $7 + $4 estimate exceeds the $10 cap.
-    blocked = wallet_preflight(USER_A, "bindcraft", Decimal("4.00"), {})
-    assert blocked.allow is False
-    assert blocked.reason == REASON_DAILY_CAP
+    # Net spend today = |holds|(8) - |releases|(2) + |charges|(1) = $7.
+    assert wallet._spent_today_usd(USER_A) == Decimal("7.00")
 
 
 def test_net_spend_usd_nets_and_excludes_non_job_rows(store):
@@ -1259,19 +1256,3 @@ def test_preflight_email_fires_on_cap_block(store, email_log):
     assert any(name == "send_job_capped_email" for name, _ in email_log)
 
 
-def test_preflight_email_fires_on_daily_cap_block(store, email_log):
-    _seed_wallet(
-        store, USER_A,
-        balance=Decimal("1000.00"),
-        daily_cap=Decimal("5.00"),
-    )
-    store.tables["wallet_transactions"].append({
-        "id": store.fresh_id(),
-        "user_id": USER_A,
-        "kind": "hold",
-        "amount_usd": -4.50,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    # Use bindcraft so the per-tool cap does not trip first.
-    reserve_hold(USER_A, "bindcraft", 1, Decimal("1.00"), {})
-    assert any(name == "send_daily_cap_email" for name, _ in email_log)

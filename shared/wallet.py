@@ -468,17 +468,12 @@ def wallet_preflight(
             deficit_usd=deficit,
             hard_cap_usd=hard_cap,
         )
-    spent_today = _spent_today_usd(user_id)
-    daily_cap = Decimal(str(wallet.get("daily_spend_cap_usd") or DEFAULT_DAILY_CAP_USD))
-    if spent_today + estimated_cost_usd > daily_cap:
-        return PreflightResult(
-            allow=False,
-            reason=REASON_DAILY_CAP,
-            estimated_cost_usd=estimated_cost_usd,
-            balance_usd=balance,
-            deficit_usd=deficit,
-            hard_cap_usd=hard_cap,
-        )
+    # Phase 2 fund-and-drain retired the per-day spend cap (migration 0035
+    # drops the matching block from try_hold_for_job). The prepaid balance is
+    # the only spend ceiling: the balance check below and the in-lock refusal
+    # in try_hold_for_job mean total spend can never exceed funded money. A
+    # daily rate limit within already-funded balance only got in the way of
+    # metered campaign compute.
     if balance < estimated_cost_usd:
         return PreflightResult(
             allow=False,
@@ -510,10 +505,10 @@ def reserve_hold(
     Returns the ``hold_tx_id`` on success, ``None`` if the hold cannot
     be placed. The SQL function re-checks wallet-frozen state, the
     parameter-scaled hard cap, and sufficient balance under a row lock,
-    so those three are race-safe. The daily spend cap and self-serve
-    ceiling are enforced only by :func:`wallet_preflight` in Python, so
-    a concurrent submission could slip a job past the daily cap; the
-    balance check still bounds total exposure.
+    so those three are race-safe. The self-serve ceiling is enforced only
+    by :func:`wallet_preflight` in Python; the in-lock balance check here
+    still bounds total exposure. Phase 2 fund-and-drain retired the per-day
+    spend cap, so the prepaid balance is the only spend ceiling.
 
     The route layer should also call :func:`wallet_preflight` first to
     surface a friendly reason for the user. ``reserve_hold`` is the
@@ -938,8 +933,8 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
     Clamped at zero so a stray release without an in-window hold cannot
     produce a negative spend.
 
-    This is the one canonical spend definition; the daily-cap check, the
-    wallet overview, and the sales funnel all consume it.
+    This is the one canonical spend definition; the wallet overview and
+    the sales funnel consume it.
     """
     client = get_service_client()
     if client is None:
@@ -973,7 +968,7 @@ def _net_spend_usd(user_id: str, since: datetime) -> Decimal:
 
 
 def _spent_today_usd(user_id: str) -> Decimal:
-    """Net USD spent on jobs since UTC midnight (feeds the daily cap)."""
+    """Net USD spent on jobs since UTC midnight (the "Spent today" figure)."""
     start_of_day = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
