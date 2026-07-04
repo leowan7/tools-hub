@@ -1679,42 +1679,6 @@ def send_overrun_kill_email(
     )
 
 
-def send_daily_cap_email(
-    *,
-    user_id: str,
-    cap_usd,
-    **_extra: Any,
-) -> bool:
-    """Daily spend cap reached.
-
-    Trigger: ``wallet_preflight`` returns ``daily_cap_reached``. Caller
-    throttles to one per day per user.
-    """
-    email = _resolve_user_email(user_id)
-    if not email:
-        logger.info(
-            "send_daily_cap_email: no email for user %s", user_id
-        )
-        return False
-    base_url = _base_url()
-    default_cap = _money(
-        os.environ.get("WALLET_DEFAULT_DAILY_CAP_USD", "200")
-    )
-    subject = "You hit your daily spend cap on Ranomics tools"
-    html = _render_template(
-        "send_daily_cap.html",
-        base_url=base_url,
-        cap_usd=_money(cap_usd),
-        default_cap=default_cap,
-    )
-    return _post_resend(
-        to_email=email,
-        subject=subject,
-        html_body=html,
-        log_tag=f"daily_cap user={user_id}",
-    )
-
-
 def send_pilot_intro_email(
     *,
     user_id: str,

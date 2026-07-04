@@ -64,7 +64,6 @@ from shared.credits import (
 )
 from shared.wallet import (
     MIN_TOPUP_USD,
-    REASON_DAILY_CAP,
     REASON_INSUFFICIENT,
     REASON_OK,
     REASON_PER_TOOL_CAP,

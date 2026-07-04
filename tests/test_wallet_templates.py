@@ -60,7 +60,6 @@ def _wallet_fixture(balance=42.50, frozen=False, auto_reload_on=False):
     return {
         "user_id": "u-smoke",
         "balance_usd": Decimal(str(balance)),
-        "daily_spend_cap_usd": Decimal("200.00"),
         "auto_reload_enabled": auto_reload_on,
         "auto_reload_threshold_usd": Decimal("10.00"),
         "auto_reload_amount_usd": Decimal("50.00"),
