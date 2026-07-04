@@ -125,3 +125,36 @@ acceptable (a cost-overrunning-but-progressing job SHOULD finish now that the
 customer is capped by the hold), and truly stuck jobs still hit the container
 timeout. If we want zero gap, step 4's stall kill can be pulled forward to land
 in the same wave as step 3.
+
+## 9. Implementation notes (build 2026-07-04)
+
+Two refinements landed during the build; both preserve the decided outcomes.
+
+**(a) Hard cap realized as a clamp, not a raise.** Decision 2 said
+`max(tool_cap, cushion)`. Working through the settle mechanics, the hold is
+implemented as `cushioned_hold_usd = min(1.5 x point_estimate, tool_cap)` (clamp
+DOWN to the tool cap) rather than raising the cap to the cushion. This gives
+IDENTICAL billing and absorption: the customer is capped at the tool cap either
+way (settle clamps there, Ranomics absorbs above), so reserving beyond the cap
+would only lock up wallet funds with no billing benefit. The clamp reserves
+strictly less (better under a shared wallet) and keeps the tool cap as the one
+true ceiling, so it touches NO gate: `reserve_hold`, `wallet_preflight`, and the
+settle path are all unchanged (a cushion clamped to the cap always passes the
+existing per-tool-cap and SQL guards, and every tool cap is <= $500 so it never
+trips the $1000 self-serve ceiling). Net for boltzgen: hold clamps to the $10
+tool cap (a real cushion above the ~$8.74 point estimate), not the ~$13 raw 1.5x.
+
+**(b) Step 3 split into 3a and 3b.** The cushion (3a) is independent of the
+cost-kill removal (3b), and 3b has a much wider test and security-test surface
+(`test_jobs.py` kill cases, `test_cancel_race`, `test_heartbeat_security`, the
+safety_kill classifier routing). So 3a ships the cushion alone and 3b removes
+the cost-kill as a focused follow-up. During the 3a->3b gap the cost-kill still
+fires, but more leniently: the mid-run monitor still reads `estimate_usd` = the
+point estimate (unchanged), so its ratio is unchanged from before this step.
+
+**3a footprint (this PR):** `shared/wallet_estimates.py`
+(`HOLD_CUSHION_MULTIPLIER`, `cushioned_hold_usd`); `shared/compute_campaigns.py`
+(`child_hold_usd`, `_dispatch_chunk` reserves the cushioned hold, stores the
+point estimate as `estimate_usd`); `app.py` single-job submit reserves the
+cushioned hold; `tests/test_cushioned_hold.py`. No change to `shared/wallet.py`,
+`shared/jobs.py`, the settle path, or any migration.
