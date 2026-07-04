@@ -736,6 +736,160 @@ def _render_topup_gate(
     )
 
 
+def _build_tx_lineage_annotations(client, user_id, page_rows):  # noqa: ANN001
+    """Compute per-row lineage annotations for the ledger view.
+
+    Presentation only. This reads the ledger; it never writes, never
+    changes an amount or a balance, and never touches the
+    SUM(amount_usd) invariant. It returns a dict keyed by transaction
+    id whose values tell the template how to render each row so a hold
+    plus its later settlement read as one true cost, not two charges.
+
+    For every hold referenced by the current page (a hold row on the
+    page, or the parent of a settle row on the page) we fetch the whole
+    lineage (the hold plus every row whose parent_tx_id is that hold)
+    even when the hold and its settlement fall on different pages, and
+    compute the group net = SUM(amount_usd) = negative of the actual
+    compute cost.
+
+    Annotation shape per row id:
+        role      one of 'hold', 'release', 'settlement'
+        settled   True when the hold has at least one settle child
+        reserved  the amount the hold reserved (positive), for holds
+        net       group net = SUM(amount_usd) over the lineage, on the
+                  settlement row (the charge, or the release when there
+                  is no charge); this is negative of the actual cost
+
+    On any failure the function returns an empty dict so the template
+    falls back to plain rendering and the ledger page never 500s.
+    """
+    annotations: dict = {}
+    if client is None or not page_rows:
+        return annotations
+    try:
+        # Collect the hold ids this page touches: ids of hold rows on the
+        # page, plus parents of any settle rows on the page.
+        hold_ids: set = set()
+        for row in page_rows:
+            if row.get("kind") == "hold" and row.get("id") is not None:
+                hold_ids.add(row.get("id"))
+            parent = row.get("parent_tx_id")
+            if parent is not None:
+                hold_ids.add(parent)
+        if not hold_ids:
+            return annotations
+
+        hold_id_list = list(hold_ids)
+        # Full lineage: the hold rows themselves plus their children,
+        # scoped to this user. Two cheap queries keep the OR simple and
+        # avoid depending on a specific PostgREST or_ filter syntax.
+        lineage: dict = {}
+
+        def _absorb(resp):  # noqa: ANN001
+            for r in list(getattr(resp, "data", None) or []):
+                rid = r.get("id")
+                if rid is not None:
+                    lineage[rid] = r
+
+        holds_resp = (
+            client.table("wallet_transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("id", hold_id_list)
+            .execute()
+        )
+        _absorb(holds_resp)
+        children_resp = (
+            client.table("wallet_transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .in_("parent_tx_id", hold_id_list)
+            .execute()
+        )
+        _absorb(children_resp)
+
+        # Group rows by their hold id (a hold groups on its own id; a
+        # child groups on parent_tx_id).
+        groups: dict = {hid: {"hold": None, "children": []} for hid in hold_ids}
+        for r in lineage.values():
+            rid = r.get("id")
+            parent = r.get("parent_tx_id")
+            if r.get("kind") == "hold" and rid in groups:
+                groups[rid]["hold"] = r
+            elif parent in groups:
+                groups[parent]["children"].append(r)
+
+        for hid, grp in groups.items():
+            children = grp["children"]
+            hold_row = grp["hold"]
+            settled = len(children) > 0
+
+            # Group net = SUM(amount_usd) over the hold and all children.
+            net = Decimal("0")
+            have_net = False
+            if hold_row is not None:
+                net += _tx_amount_decimal(hold_row.get("amount_usd"))
+                have_net = True
+            for c in children:
+                net += _tx_amount_decimal(c.get("amount_usd"))
+                have_net = True
+
+            reserved = None
+            if hold_row is not None:
+                reserved = abs(_tx_amount_decimal(hold_row.get("amount_usd")))
+
+            # Annotate the hold row.
+            if hold_row is not None and hold_row.get("id") is not None:
+                annotations[hold_row["id"]] = {
+                    "role": "hold",
+                    "settled": settled,
+                    "reserved": reserved,
+                }
+
+            # Pick the settlement row that carries the net label: prefer
+            # the charge / absorbed_variance row; otherwise the release.
+            settlement_row = None
+            for c in children:
+                if c.get("kind") in ("charge", "absorbed_variance"):
+                    settlement_row = c
+                    break
+            if settlement_row is None:
+                for c in children:
+                    if c.get("kind") == "hold_release":
+                        settlement_row = c
+                        break
+
+            for c in children:
+                cid = c.get("id")
+                if cid is None:
+                    continue
+                if c is settlement_row and have_net:
+                    annotations[cid] = {"role": "settlement", "net": net}
+                elif c.get("kind") == "hold_release":
+                    annotations[cid] = {"role": "release"}
+                else:
+                    annotations[cid] = {"role": "settlement", "net": net}
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "wallet_transactions: lineage annotation failed for %s",
+            user_id, exc_info=True,
+        )
+        return {}
+    return annotations
+
+
+def _tx_amount_decimal(value) -> Decimal:  # noqa: ANN001
+    """Coerce a ledger amount to Decimal; 0 on any bad value."""
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
+
+
 def requires_wallet(view_func=None, *, tool_slug=None):
     """Flask decorator that gates a tool submit POST on the wallet.
 
@@ -3037,10 +3191,23 @@ def create_app() -> Flask:
                     ctx.user_id, exc_info=True,
                 )
 
+        # Read-side lineage annotation. Presentation only: no amount,
+        # balance, or ledger row is changed. For every hold on this page
+        # (or referenced by a settle row on this page) we fetch the full
+        # lineage (the hold plus every row whose parent_tx_id is the
+        # hold) so the true net cost of a job can be shown even when the
+        # hold and its settlement straddle a page boundary. Any failure
+        # falls back to plain rendering; the ledger page must never 500
+        # because of this extra query.
+        tx_annotations = _build_tx_lineage_annotations(
+            client, ctx.user_id, transactions,
+        )
+
         return render_template(
             "wallet/transactions.html",
             wallet=wallet,
             transactions=transactions,
+            tx_annotations=tx_annotations,
             filter_kind=filter_kind,
             page=page,
             page_size=page_size,

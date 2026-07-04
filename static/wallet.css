@@ -237,6 +237,41 @@
 .wallet-tx-legend dt { align-self: start; }
 .wallet-tx-legend dd { color: var(--text-secondary); }
 
+/* Holds-are-not-charges callout */
+.wallet-tx-callout {
+  border-left: 3px solid var(--accent);
+  background: rgba(43, 158, 126, 0.05);
+}
+.wallet-tx-callout-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.35rem;
+}
+.wallet-tx-callout-body {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* Reserved (hold) rows read as muted, temporary reservations */
+.wallet-tx-row-reserved {
+  opacity: 0.72;
+}
+.wallet-tx-hint {
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  font-style: italic;
+}
+
+/* Net for this job label on the settlement row */
+.wallet-tx-net {
+  color: var(--accent-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* --------------------------------------------------------------------------
    Top up form page
    -------------------------------------------------------------------------- */

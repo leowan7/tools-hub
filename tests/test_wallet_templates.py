@@ -371,6 +371,145 @@ class TestWalletTransactionsTemplate:
             )
         assert "Transaction history" in html
 
+    # ---- Net per job cost display (presentation only) --------------------
+
+    def _tx(self, tx_id, kind, amount, balance_after,
+            parent_tx_id=None, notes=None):
+        """Ledger row with an explicit id + parent for lineage tests."""
+        return {
+            "id": tx_id,
+            "kind": kind,
+            "amount_usd": Decimal(str(amount)),
+            "balance_after_usd": Decimal(str(balance_after)),
+            "created_at": datetime(2026, 5, 14, 12, 0, 0, tzinfo=timezone.utc),
+            "tool_slug": "mpnn" if kind in ("hold", "charge", "hold_release") else None,
+            "job_id": None,
+            "parent_tx_id": parent_tx_id,
+            "notes": notes,
+            "stripe_event_id": None,
+        }
+
+    def test_hold_plus_charge_shows_single_net_not_two_charges(self, app):
+        """hold (-1.75) + charge (-1.45) for one job: net = actual 3.20.
+
+        The row pair must read as one true cost, not two independent
+        charges. The hold is relabeled 'reserved' and the charge row
+        carries the 'net for this job' equal to the actual.
+        """
+        rows = [
+            # settlement row is newest-first (charge above its hold)
+            self._tx("c-1", "charge", -1.45, 48.80, parent_tx_id="h-1"),
+            self._tx("h-1", "hold", -1.75, 50.25),
+        ]
+        # Group net = -1.75 + -1.45 = -3.20 => actual 3.20.
+        annotations = {
+            "h-1": {"role": "hold", "settled": True, "reserved": Decimal("1.75")},
+            "c-1": {"role": "settlement", "net": Decimal("-3.20")},
+        }
+        with app.test_request_context("/account/wallet/transactions"):
+            html = render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations=annotations,
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=2,
+            )
+        # One clear net for the job equal to the actual.
+        assert "net for this job $3.20" in html
+        # Hold reads as a reservation, not a charge.
+        assert "reserved" in html
+        # There is exactly one net-for-this-job label (not two charges).
+        assert html.count("net for this job") == 1
+
+    def test_hold_plus_release_surplus_shows_net_and_returned_label(self, app):
+        """hold (-2.00) + hold_release (+0.60): net = actual 1.40.
+
+        No charge row, so the release is the settlement row and carries
+        the net; it is also labeled as a returned reservation.
+        """
+        rows = [
+            self._tx("r-1", "hold_release", 0.60, 50.60, parent_tx_id="h-2"),
+            self._tx("h-2", "hold", -2.00, 50.00),
+        ]
+        # Group net = -2.00 + 0.60 = -1.40 => actual 1.40.
+        annotations = {
+            "h-2": {"role": "hold", "settled": True, "reserved": Decimal("2.00")},
+            "r-1": {"role": "settlement", "net": Decimal("-1.40")},
+        }
+        with app.test_request_context("/account/wallet/transactions"):
+            html = render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations=annotations,
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=2,
+            )
+        assert "net for this job $1.40" in html
+        # The hold is a reservation and its surplus was returned.
+        assert "reserved" in html
+        assert "returned" in html
+
+    def test_pending_hold_no_children_labeled_reserved_not_charged(self, app):
+        """A hold with no settle child is a pending reservation.
+
+        It must read as reserved / pending settlement, never as a charge.
+        """
+        rows = [self._tx("h-3", "hold", -4.00, 46.00)]
+        annotations = {
+            "h-3": {"role": "hold", "settled": False, "reserved": Decimal("4.00")},
+        }
+        with app.test_request_context("/account/wallet/transactions"):
+            html = render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations=annotations,
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=1,
+            )
+        assert "reserved (pending settlement)" in html
+        # A pending hold is not a settled net cost.
+        assert "net for this job" not in html
+
+    def test_notes_render_regression_note_to_notes(self, app):
+        """The column is notes (plural). tx.notes must render.
+
+        The old template read tx.note (singular), always empty. This
+        guards the note => notes fix.
+        """
+        rows = [
+            self._tx("a-1", "adjustment", -0.50, 49.50,
+                     notes="manual correction by ops"),
+        ]
+        with app.test_request_context("/account/wallet/transactions"):
+            html = render_template(
+                "wallet/transactions.html",
+                wallet=_wallet_fixture(),
+                transactions=rows,
+                tx_annotations={},
+                filter_kind=None,
+                page=1,
+                page_size=50,
+                has_next=False,
+                has_prev=False,
+                total_count=1,
+            )
+        assert "manual correction by ops" in html
+
 
 # ---------------------------------------------------------------------------
 # pricing.html
