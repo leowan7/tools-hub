@@ -7,6 +7,7 @@ run offline.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
@@ -148,13 +149,25 @@ def email_log():
 USER = "00000000-0000-0000-0000-0000000000aa"
 
 
-def _add_spend(client: _FakeClient, amount_usd: float, created_at: str = "2026-05-12T00:00:00+00:00") -> None:
+def _add_spend(
+    client: _FakeClient, amount_usd: float, created_at: str | None = None
+) -> None:
     """Seed a job's hold row -- where job spend lands in the ledger.
 
     The funnel reads net spend via shared.wallet._net_spend_usd, which
     sums holds (net of releases and charges); a bare charge row is not a
     realistic stand-in for job spend.
+
+    ``created_at`` defaults to one day ago so the row always lands inside
+    the funnel's rolling 30-day lookback window (see
+    ``shared.wallet._net_spend_usd``). A hardcoded absolute date would
+    silently fall out of the window as the calendar advances, which is
+    exactly the time-bomb this default avoids.
     """
+    if created_at is None:
+        created_at = (
+            datetime.now(timezone.utc) - timedelta(days=1)
+        ).isoformat()
     client.store["wallet_transactions"].append(
         {
             "user_id": USER,
