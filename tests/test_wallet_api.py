@@ -738,7 +738,6 @@ class TestWalletTopupFrozenGuard:
         return {
             "user_id": "u-wallet",
             "balance_usd": 10.0,
-            "daily_spend_cap_usd": 200.0,
             "auto_reload_enabled": False,
             "auto_reload_threshold_usd": 10.0,
             "auto_reload_amount_usd": 50.0,

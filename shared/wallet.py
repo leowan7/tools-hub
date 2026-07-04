@@ -75,7 +75,10 @@ WALLET_MARKUP = Decimal("1.70")
 # Minimum top-up amount allowed via Stripe Checkout.
 MIN_TOPUP_USD = Decimal("20.00")
 
-# Default daily spend cap applied to fresh wallets.
+# DB default for the (now inert) daily_spend_cap_usd column. Phase 2
+# fund-and-drain retired the daily cap (migration 0035 dropped the block
+# from try_hold_for_job); this value is no longer written on the
+# wallet-creation path and only mirrors the schema default for tests.
 DEFAULT_DAILY_CAP_USD = Decimal("200.00")
 
 # Default monthly auto-reload safety cap.
@@ -141,7 +144,6 @@ REASON_WALLET_FROZEN = "wallet_frozen"
 REASON_INSUFFICIENT = "insufficient_balance"
 REASON_PER_TOOL_CAP = "per_tool_cap_exceeded"
 REASON_SELF_SERVE_CEILING = "self_serve_ceiling_exceeded"
-REASON_DAILY_CAP = "daily_cap_reached"
 
 
 @dataclass(frozen=True)
@@ -255,7 +257,6 @@ def _create_wallet_with_signup_credit(client, user_id: str) -> Optional[dict]:
                 {
                     "user_id": user_id,
                     "balance_usd": 0,
-                    "daily_spend_cap_usd": float(DEFAULT_DAILY_CAP_USD),
                     "auto_reload_enabled": False,
                     "auto_reload_monthly_cap_usd": float(
                         DEFAULT_AUTO_RELOAD_MONTHLY_CAP_USD
@@ -899,8 +900,6 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
                     )
                 if pre.reason == REASON_WALLET_FROZEN:
                     return redirect(url_for("account") + "?wallet_frozen=1")
-                if pre.reason == REASON_DAILY_CAP:
-                    return redirect(url_for("account") + "?daily_cap=1")
                 return redirect(
                     url_for("account") + f"?wallet_blocked={pre.reason}"
                 )
@@ -1065,12 +1064,6 @@ def _emit_preflight_email(
             user_id=user_id,
             tool_slug=tool_slug,
             attempted_usd=pre.estimated_cost_usd,
-            cap_usd=pre.hard_cap_usd,
-        )
-    elif pre.reason == REASON_DAILY_CAP:
-        _send_email_safe(
-            "send_daily_cap_email",
-            user_id=user_id,
             cap_usd=pre.hard_cap_usd,
         )
 

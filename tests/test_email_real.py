@@ -45,7 +45,6 @@ def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setenv("EMAIL_FROM", "Ranomics Tools <noreply@tools.ranomics.com>")
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://tools.ranomics.com")
     monkeypatch.setenv("WALLET_SIGNUP_CREDIT_USD", "5")
-    monkeypatch.setenv("WALLET_DEFAULT_DAILY_CAP_USD", "200")
     monkeypatch.setenv("SUPPORT_EMAIL", "support@ranomics.com")
     # Clear Slack webhooks by default so the Slack tests can flip per-test.
     monkeypatch.delenv("SLACK_SALES_WEBHOOK_URL", raising=False)
@@ -294,19 +293,6 @@ class TestJobCapped:
         assert ok is True
 
 
-class TestDailyCap:
-    def test_renders_and_sends(self, env, resolve_email, mock_resend):
-        ok = email_mod.send_daily_cap_email(
-            user_id=TEST_USER_ID,
-            cap_usd=200,
-        )
-        assert ok is True
-        _assert_resend_call_shape(mock_resend, "daily_cap")
-        body = mock_resend["json"]
-        assert "$200" in body["html"]
-        _assert_dash_free(body["html"], "daily_cap")
-
-
 class TestPilotIntro:
     def test_renders_and_sends(self, env, resolve_email, mock_resend):
         ok = email_mod.send_pilot_intro_email(
@@ -366,8 +352,6 @@ class TestResendContract:
         ("send_job_capped_email",
          {"user_id": TEST_USER_ID, "tool_slug": "boltzgen",
           "attempted_usd": 200, "cap_usd": 150}),
-        ("send_daily_cap_email",
-         {"user_id": TEST_USER_ID, "cap_usd": 200}),
         ("send_pilot_intro_email",
          {"user_id": TEST_USER_ID, "spent_30d_usd": 1200}),
         ("send_wallet_frozen_email",
