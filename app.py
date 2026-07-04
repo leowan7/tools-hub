@@ -5141,7 +5141,22 @@ def create_app() -> Flask:
         counts = cc.get_progress_counts(campaign_id)
         payload = campaign.to_dict()
         payload["subjobs"] = counts
-        payload["designs_delivered"] = _campaign_designs_delivered(campaign_id)
+        # Terminal sub-jobs (succeeded + failed + timeout) are the accurate
+        # progress signal: every sub-job that finished has a downloadable
+        # result regardless of how many candidates passed the quality filter.
+        payload["subjobs_complete"] = (
+            counts.get("succeeded", 0)
+            + counts.get("failed", 0)
+            + counts.get("timeout", 0)
+        )
+        payload["subjobs_total"] = campaign.total_subjobs
+        # ``hits`` is the number of candidates that PASSED the quality filter,
+        # summed over succeeded children. It is NOT the number of designs
+        # produced (small batches often pass nothing). ``designs_delivered``
+        # is kept as a back-compat alias for the same value.
+        hits = _campaign_designs_delivered(campaign_id)
+        payload["hits"] = hits
+        payload["designs_delivered"] = hits
         payload["terminal"] = campaign.status in (
             "completed", "completed_with_failures", "failed", "cancelled",
         )
