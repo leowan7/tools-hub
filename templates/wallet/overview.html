@@ -87,9 +87,6 @@
         <div class="wallet-stat">
           <span class="wallet-stat-label">Spent today</span>
           <span class="wallet-stat-value">${{ '%.2f'|format(wallet.spent_today_usd|float if wallet and wallet.spent_today_usd is not none else 0) }}</span>
-          {% if wallet and wallet.daily_spend_cap_usd is not none %}
-            <span class="wallet-stat-foot">Daily cap ${{ '%.0f'|format(wallet.daily_spend_cap_usd|float) }}</span>
-          {% endif %}
         </div>
         <div class="wallet-stat">
           <span class="wallet-stat-label">Auto reload</span>

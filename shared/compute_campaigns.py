@@ -496,10 +496,10 @@ def get_progress_counts(campaign_id: str) -> dict:
 # does NOT move money. Real money moves as ordinary per-child wallet holds
 # placed by the driver via the UNCHANGED reserve_hold path and settled by
 # the UNCHANGED settle path, so balance == SUM(ledger) holds automatically
-# and delivered-only billing falls out for free. Phase 1 ships small
-# campaigns whose children stay well under the $200 single-job daily cap,
-# so the unchanged reserve_hold is safe; Phase 2 adds a daily-cap-exempt
-# child-hold RPC before campaigns scale past that cap.
+# and delivered-only billing falls out for free. Phase 2 migration 0035
+# retired the per-day spend cap, so per-child holds via the unchanged
+# reserve_hold path are bounded only by the prepaid wallet balance; a
+# campaign pauses when the balance cannot fund the next chunk.
 
 
 PREAUTH_OK = "ok"
