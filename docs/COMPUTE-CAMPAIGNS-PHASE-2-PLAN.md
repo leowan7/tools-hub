@@ -98,6 +98,23 @@ New gate: `not frozen` AND `balance >= first_wave_worst_case`, where
 campaign meaningfully instead of pausing on chunk one. No per-campaign
 "authorized budget" is stored or shown as a ceiling.
 
+**Build status (2026-07-04): SHIPPED as step 5, app-layer only, no migration.**
+`campaign_preauth(user_id, budget_usd, first_wave_usd=None)` now gates the
+balance on `first_wave_usd` (new helper `first_wave_hold_usd(plan)` =
+`min(total_subjobs, DEFAULT_CONCURRENCY_TARGET) x child_hold_usd(tool,
+chunk_size)`), not the full budget; `PreauthResult.required_usd` carries it. The
+create + estimate routes pass it; the estimate JSON adds `first_wave_usd`; the
+create screen is reframed to a non-binding forecast ("Estimated total", "Enough
+to start", "you pay only for compute that runs, we pause if your balance runs
+low") and the "I authorize up to $X" ceiling checkbox is gone. Paired with step
+4a's pause/resume, a campaign now starts on a first-wave fund and drains.
+**Interim (NOT retired this step):** `budget_usd` is still computed as a forecast
+and still feeds the verification (`> $5k`) and velocity (`$25k/day`) gates, so
+KYC coverage is unchanged and there is no gap. Retiring those two gates and
+re-anchoring verification to the top-up side (section 7) is a separate follow-up,
+because removing the campaign-path verification before the top-up-path check
+exists would open a KYC hole.
+
 **New campaign state `paused_insufficient_funds`** (migration alters the 0034
 CHECK constraint; current states: draft, funded, running, completing,
 completed, completed_with_failures, failed, cancelled).
@@ -298,8 +315,10 @@ verify each before merge:
    Build status note under section 4). 4b (14-day TTL + proactive
    auto-reload-on-pause) DEFERRED, needs a `paused_at` migration.**
 5. Preauth simplification (fund-the-first-wave gate) + non-binding forecast on
-   the create screen. Retire the authorized-budget/velocity/verification gates;
-   re-anchor verification to top-ups.
+   the create screen. **SHIPPED 2026-07-04, app-layer only (see the Build status
+   note under section 4).** DEFERRED (own follow-up): retire the
+   velocity/verification gates and re-anchor verification to top-ups (kept
+   interim to avoid a KYC gap).
 6. Raise MAX_SUBJOBS + DEFAULT_CONCURRENCY_TARGET; add the global per-user
    in-flight cap; async first-wave dispatch + per-campaign advisory lock.
 7. Round-robin cross-campaign dispatch fairness in the cron.

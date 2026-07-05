@@ -69,6 +69,8 @@ def test_estimate_ok(client):
     assert data["ok"] is True
     assert data["total_subjobs"] == 2
     assert float(data["budget_usd"]) > 0
+    # Fund-and-drain: the start gate is the first wave, surfaced to the UI.
+    assert float(data["first_wave_usd"]) > 0
     assert data["affordable"] is True
 
 

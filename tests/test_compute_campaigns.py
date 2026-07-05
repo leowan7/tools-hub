@@ -375,6 +375,49 @@ def test_preauth_velocity_cap(fake_client, monkeypatch):
     assert not res.ok and res.reason == cc.PREAUTH_VELOCITY
 
 
+def test_preauth_first_wave_starts_below_full_budget(fake_client, monkeypatch):
+    """Fund-and-drain: a balance covering the first wave starts the campaign
+    even when it does not cover the full forecast budget."""
+    _patch_wallet(monkeypatch, balance_usd="25")
+    res = cc.campaign_preauth("u", Decimal("100"), first_wave_usd=Decimal("20"))
+    assert res.ok and res.reason == cc.PREAUTH_OK
+    assert res.required_usd == Decimal("20")
+    # Legacy (no first-wave arg) gates on the full budget -> insufficient here.
+    res_legacy = cc.campaign_preauth("u", Decimal("100"))
+    assert not res_legacy.ok and res_legacy.reason == cc.PREAUTH_INSUFFICIENT
+
+
+def test_preauth_insufficient_first_wave(fake_client, monkeypatch):
+    _patch_wallet(monkeypatch, balance_usd="10")
+    res = cc.campaign_preauth("u", Decimal("100"), first_wave_usd=Decimal("20"))
+    assert not res.ok and res.reason == cc.PREAUTH_INSUFFICIENT
+    assert res.required_usd == Decimal("20")
+
+
+def test_preauth_small_first_wave_does_not_bypass_verification(fake_client, monkeypatch):
+    """A small first wave must NOT let a large-budget campaign skip verification."""
+    _patch_wallet(monkeypatch, balance_usd="100000")
+    over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1")
+    res = cc.campaign_preauth("u", over, first_wave_usd=Decimal("20"))
+    assert not res.ok and res.reason == cc.PREAUTH_VERIFICATION
+
+
+def test_first_wave_hold_usd_bounds_by_concurrency():
+    cs = cc._chunk_size_for("rfdiffusion")
+    per_chunk = cc.child_hold_usd("rfdiffusion", cs)
+    # 10 sub-jobs > concurrency 8: the first wave holds only 8 chunks' worth.
+    plan_big = cc.plan_chunks("rfdiffusion", cs * 10)
+    assert plan_big.total_subjobs == 10
+    assert cc.first_wave_hold_usd(plan_big) == cc._quantize_usd(
+        per_chunk * cc.DEFAULT_CONCURRENCY_TARGET
+    )
+    assert cc.first_wave_hold_usd(plan_big) < per_chunk * 10  # not the whole thing
+    # 1 sub-job < concurrency: the first wave is that single chunk.
+    plan_small = cc.plan_chunks("rfdiffusion", cs)
+    assert plan_small.total_subjobs == 1
+    assert cc.first_wave_hold_usd(plan_small) == cc._quantize_usd(per_chunk)
+
+
 def test_campaign_spend_today_excludes_draft_and_cancelled(fake_client):
     fake_client.store["compute_campaigns"] = [
         {"user_id": "u", "status": "funded", "budget_usd": "10", "created_at": "2026-07-03T00:00:00Z"},
