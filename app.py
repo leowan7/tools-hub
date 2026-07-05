@@ -5299,12 +5299,10 @@ def create_app() -> Flask:
             return _err("Could not create the campaign. Try again in a moment.")
 
         cc.fund_campaign(campaign.id)
-        try:
-            cc.drive_campaign(campaign.id)
-        except Exception:
-            logger.warning(
-                "initial drive_campaign raised for %s", campaign.id, exc_info=True
-            )
+        # Kick the first wave off the request path (daemon thread); the cron
+        # tick backstops if the thread dies. At the raised concurrency an inline
+        # drive would make many Modal + Supabase round-trips before responding.
+        cc.drive_campaign_async(campaign.id)
         return redirect(url_for("compute_campaign_detail", campaign_id=campaign.id))
 
     @flask_app.route("/runs/<campaign_id>", methods=["GET"])

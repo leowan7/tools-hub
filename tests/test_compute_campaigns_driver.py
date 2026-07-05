@@ -550,3 +550,39 @@ def test_transient_refusal_does_not_pause(driver_env, monkeypatch):
 def test_cron_active_states_includes_paused():
     from cron.tick_campaigns import _ACTIVE_STATES
     assert "paused_insufficient_funds" in _ACTIVE_STATES
+
+
+# ---------------------------------------------------------------------------
+# Global per-user in-flight cap (step 6)
+# ---------------------------------------------------------------------------
+
+
+def _seed_other_inflight(client, n, *, user_id="user-1"):
+    """Seed n in-flight sub-jobs for the user from a different campaign."""
+    for i in range(n):
+        client.store["tool_jobs"].append({
+            "id": f"other-{i}", "user_id": user_id, "campaign_id": "other",
+            "chunk_index": i, "attempt": 1, "status": "running",
+        })
+
+
+def test_drive_respects_global_inflight_cap(driver_env):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=10, chunk_size=12, requested=120,
+                   concurrency_target=8)
+    # The user is already at the global cap from other campaigns' in-flight work.
+    _seed_other_inflight(client, cc.GLOBAL_USER_INFLIGHT_CAP)
+    drive_campaign("camp-1")
+    mine = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
+    assert mine == []  # no headroom -> dispatch nothing
+
+
+def test_drive_global_cap_leaves_headroom(driver_env):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=10, chunk_size=12, requested=120,
+                   concurrency_target=8)
+    # Two slots of global headroom (concurrency 8 would otherwise dispatch more).
+    _seed_other_inflight(client, cc.GLOBAL_USER_INFLIGHT_CAP - 2)
+    drive_campaign("camp-1")
+    mine = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
+    assert len(mine) == 2  # the global cap binds before the concurrency target

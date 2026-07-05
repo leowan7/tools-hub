@@ -405,17 +405,41 @@ def test_preauth_small_first_wave_does_not_bypass_verification(fake_client, monk
 def test_first_wave_hold_usd_bounds_by_concurrency():
     cs = cc._chunk_size_for("rfdiffusion")
     per_chunk = cc.child_hold_usd("rfdiffusion", cs)
-    # 10 sub-jobs > concurrency 8: the first wave holds only 8 chunks' worth.
-    plan_big = cc.plan_chunks("rfdiffusion", cs * 10)
-    assert plan_big.total_subjobs == 10
-    assert cc.first_wave_hold_usd(plan_big) == cc._quantize_usd(
-        per_chunk * cc.DEFAULT_CONCURRENCY_TARGET
-    )
-    assert cc.first_wave_hold_usd(plan_big) < per_chunk * 10  # not the whole thing
+    conc = cc.DEFAULT_CONCURRENCY_TARGET
+    # More sub-jobs than the concurrency target: the first wave holds only
+    # `conc` chunks' worth, not the whole campaign.
+    n = conc + 4
+    plan_big = cc.plan_chunks("rfdiffusion", cs * n)
+    assert plan_big.total_subjobs == n
+    assert cc.first_wave_hold_usd(plan_big) == cc._quantize_usd(per_chunk * conc)
+    assert cc.first_wave_hold_usd(plan_big) < per_chunk * n  # not the whole thing
     # 1 sub-job < concurrency: the first wave is that single chunk.
     plan_small = cc.plan_chunks("rfdiffusion", cs)
     assert plan_small.total_subjobs == 1
     assert cc.first_wave_hold_usd(plan_small) == cc._quantize_usd(per_chunk)
+
+
+def test_drive_campaign_async_spawns_daemon_and_drives(monkeypatch):
+    """The first-wave kick runs off the request path in a daemon thread."""
+    calls = []
+    monkeypatch.setattr(cc, "drive_campaign", lambda cid: calls.append(cid))
+    captured = {}
+
+    class _FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self._target = target
+            captured["name"] = name
+            captured["daemon"] = daemon
+
+        def start(self):
+            self._target()  # run inline so the test is deterministic
+
+    import threading
+    monkeypatch.setattr(threading, "Thread", _FakeThread)
+    cc.drive_campaign_async("camp-async")
+    assert calls == ["camp-async"]
+    assert captured["daemon"] is True
+    assert captured["name"].startswith("campaign-drive-")
 
 
 def test_campaign_spend_today_excludes_draft_and_cancelled(fake_client):
