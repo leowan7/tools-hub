@@ -522,37 +522,50 @@ class PreauthResult:
     reason: str
     balance_usd: Decimal
     budget_usd: Decimal
+    required_usd: Decimal = Decimal("0")  # balance needed to START (first wave)
 
 
-def campaign_preauth(user_id: str, budget_usd: Decimal) -> PreauthResult:
-    """Prepaid gate for a campaign. Checks but never debits.
+def campaign_preauth(
+    user_id: str,
+    budget_usd: Decimal,
+    first_wave_usd: Optional[Decimal] = None,
+) -> PreauthResult:
+    """Prepaid START gate for a campaign. Checks but never debits.
 
-    A campaign will not run unless the wallet is unfrozen and holds at
-    least the full authorized ``budget_usd`` (prepaid), the per-user daily
-    campaign velocity cap is not exceeded, and — above the verification
-    threshold — the account is approved (``per_job_cap_override_usd`` set
-    high enough). The real money moves later, per child, via reserve_hold.
+    Under fund-and-drain the wallet balance IS the ceiling, so the start gate is
+    "can the wallet fund the FIRST WAVE" (``first_wave_usd`` = concurrency_target
+    x per-chunk hold), not the full budget. The rest is funded as the campaign
+    drains: it pauses (``paused_insufficient_funds``) when the balance cannot
+    cover the next chunk and resumes on a top-up. ``budget_usd`` stays a
+    non-binding forecast, used only for the (interim) verification + velocity
+    gates. When ``first_wave_usd`` is None the gate falls back to the full budget
+    (legacy callers).
     """
     budget_usd = Decimal(str(budget_usd))
+    gate_usd = (
+        Decimal(str(first_wave_usd)) if first_wave_usd is not None else budget_usd
+    )
     from shared.wallet import get_or_create_wallet  # noqa: PLC0415
 
     wallet = get_or_create_wallet(user_id)
     if not wallet:
-        return PreauthResult(False, PREAUTH_NO_WALLET, Decimal("0"), budget_usd)
+        return PreauthResult(False, PREAUTH_NO_WALLET, Decimal("0"), budget_usd, gate_usd)
     balance = Decimal(str(wallet.get("balance_usd") or 0))
     if wallet.get("wallet_frozen"):
-        return PreauthResult(False, PREAUTH_FROZEN, balance, budget_usd)
-    if balance < budget_usd:
-        return PreauthResult(False, PREAUTH_INSUFFICIENT, balance, budget_usd)
+        return PreauthResult(False, PREAUTH_FROZEN, balance, budget_usd, gate_usd)
+    if balance < gate_usd:
+        return PreauthResult(False, PREAUTH_INSUFFICIENT, balance, budget_usd, gate_usd)
     if budget_usd > VERIFICATION_THRESHOLD_USD:
         override = wallet.get("per_job_cap_override_usd")
         approved = override is not None and Decimal(str(override)) >= budget_usd
         if not approved:
-            return PreauthResult(False, PREAUTH_VERIFICATION, balance, budget_usd)
+            return PreauthResult(
+                False, PREAUTH_VERIFICATION, balance, budget_usd, gate_usd
+            )
     spent_today = _campaign_spend_today(user_id)
     if spent_today + budget_usd > DAILY_CAMPAIGN_CAP_USD:
-        return PreauthResult(False, PREAUTH_VELOCITY, balance, budget_usd)
-    return PreauthResult(True, PREAUTH_OK, balance, budget_usd)
+        return PreauthResult(False, PREAUTH_VELOCITY, balance, budget_usd, gate_usd)
+    return PreauthResult(True, PREAUTH_OK, balance, budget_usd, gate_usd)
 
 
 def _campaign_spend_today(user_id: str) -> Decimal:
@@ -615,6 +628,21 @@ def child_hold_usd(tool: str, design_count: int) -> Decimal:
     return cushioned_hold_usd(
         None, tool, {"num_designs": designs_for_estimate, "preset": "pilot"}
     )
+
+
+def first_wave_hold_usd(
+    plan: "ChunkPlan", concurrency_target: int = DEFAULT_CONCURRENCY_TARGET
+) -> Decimal:
+    """Wallet amount needed to START a campaign under fund-and-drain.
+
+    Enough to hold the first concurrency wave of sub-jobs (worst case: a full
+    wave of full-size chunks at the cushioned per-chunk hold). The remaining
+    chunks are funded as the campaign drains; it pauses if the balance runs low
+    and resumes on a top-up. This is a START gate, NOT a ceiling.
+    """
+    waves = min(int(plan.total_subjobs), int(concurrency_target))
+    waves = max(waves, 1)
+    return _quantize_usd(child_hold_usd(plan.tool, plan.chunk_size) * waves)
 
 
 def can_dispatch_more(

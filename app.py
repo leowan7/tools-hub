@@ -5121,8 +5121,10 @@ def create_app() -> Flask:
         "wallet_unavailable": "Your wallet is unavailable. Try again in a moment.",
         "wallet_frozen": "Your wallet is on hold. Contact support to resume.",
         "insufficient_balance": (
-            "Your balance does not cover this campaign's budget. "
-            "Top up your wallet and try again."
+            "Your balance does not cover the first batch of this campaign "
+            "(about ${required} to start). Top up your wallet and try again. "
+            "You only pay for compute that runs, and the campaign pauses if "
+            "your balance runs low."
         ),
         "verification_required": (
             "Campaigns above ${threshold} need an approved account. "
@@ -5139,7 +5141,11 @@ def create_app() -> Flask:
         msg = _CAMPAIGN_PREAUTH_MESSAGES.get(
             pre.reason, "This campaign cannot start right now."
         )
-        return msg.replace("${threshold}", str(_cc.VERIFICATION_THRESHOLD_USD))
+        required = getattr(pre, "required_usd", None)
+        return (
+            msg.replace("${threshold}", str(_cc.VERIFICATION_THRESHOLD_USD))
+               .replace("${required}", f"{required:.2f}" if required else "the first batch")
+        )
 
     @flask_app.route("/runs", methods=["GET"])
     @login_required
@@ -5180,7 +5186,8 @@ def create_app() -> Flask:
             plan = cc.plan_chunks(tool, requested)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)})
-        pre = cc.campaign_preauth(session.get("user_id"), plan.budget_usd)
+        first_wave = cc.first_wave_hold_usd(plan)
+        pre = cc.campaign_preauth(session.get("user_id"), plan.budget_usd, first_wave)
         return jsonify({
             "ok": True,
             "tool": tool,
@@ -5189,6 +5196,7 @@ def create_app() -> Flask:
             "total_subjobs": plan.total_subjobs,
             "per_chunk_usd": str(plan.est_cost_per_chunk),
             "budget_usd": str(plan.budget_usd),
+            "first_wave_usd": str(first_wave),
             "balance_usd": str(pre.balance_usd),
             "affordable": pre.ok,
             "reason": pre.reason,
@@ -5260,8 +5268,12 @@ def create_app() -> Flask:
                 return _err(str(exc))
             staged_filename = uploaded.filename.rsplit(".", 1)[0] + ".pdb"
 
-        # 4. Prepaid pre-authorization gate (checks, never debits).
-        pre = cc.campaign_preauth(ctx.user_id, plan.budget_usd)
+        # 4. Prepaid START gate (checks, never debits): the wallet only has to
+        #    cover the first wave; the rest funds as the campaign drains, and it
+        #    pauses/resumes on balance (fund-and-drain).
+        pre = cc.campaign_preauth(
+            ctx.user_id, plan.budget_usd, cc.first_wave_hold_usd(plan)
+        )
         if not pre.ok:
             return _err(_campaign_preauth_message(pre))
 

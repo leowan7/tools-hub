@@ -104,18 +104,20 @@
       <aside class="runs-panel">
         <h2>Cost preview</h2>
         <div class="runs-budget" id="rp-budget">$—</div>
+        <div class="hint" style="margin:0 0 0.6rem;">Estimated total. You pay only for compute that runs; we pause if your balance runs low.</div>
         <div class="runs-stat"><span class="k">Designs</span><span class="v" id="rp-designs">—</span></div>
         <div class="runs-stat"><span class="k">Sub-jobs</span><span class="v" id="rp-subjobs">—</span></div>
         <div class="runs-stat"><span class="k">Per sub-job</span><span class="v" id="rp-perchunk">—</span></div>
+        <div class="runs-stat"><span class="k">Enough to start</span><span class="v" id="rp-firstwave">—</span></div>
         <div class="runs-stat"><span class="k">Your balance</span><span class="v" id="rp-balance">—</span></div>
         <div class="runs-note" id="rp-note" style="display:none;"></div>
         <label class="runs-confirm">
           <input type="checkbox" id="rp-confirm">
-          <span id="rp-confirm-label">I authorize this campaign.</span>
+          <span id="rp-confirm-label">I understand I pay only for compute that runs.</span>
         </label>
         <button type="submit" class="runs-submit" id="rp-submit" disabled>Start campaign</button>
         <p class="hint" style="margin-top:0.6rem;">You are billed only for compute delivered.
-          Unused budget is never charged; failed sub-jobs are refunded.</p>
+          It starts once your balance covers the first batch, then funds itself as it runs; failed sub-jobs are refunded.</p>
       </aside>
     </div>
   </form>
@@ -167,17 +169,18 @@
         document.getElementById('rp-designs').textContent = d.requested_designs;
         document.getElementById('rp-subjobs').textContent = d.total_subjobs;
         document.getElementById('rp-perchunk').textContent = money(d.per_chunk_usd);
+        document.getElementById('rp-firstwave').textContent = money(d.first_wave_usd);
         document.getElementById('rp-balance').textContent = money(d.balance_usd);
         document.getElementById('rp-confirm-label').textContent =
-          'I authorize up to ' + money(d.budget_usd) + ' for this campaign.';
+          'I understand I pay only for compute that runs, and it pauses if my balance runs low.';
         if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
           setNote('warn', 'Campaigns this large need an approved account. Contact us to raise your limit.');
         } else if (!d.affordable && d.reason === 'insufficient_balance') {
-          setNote('warn', 'Top up your wallet to cover this budget before starting.');
+          setNote('warn', 'Top up to cover the first batch (' + money(d.first_wave_usd) + ') to start.');
         } else if (!d.affordable) {
           setNote('warn', 'This campaign cannot start yet (' + d.reason + ').');
         } else {
-          setNote('ok', 'Ready to run. ' + d.total_subjobs + ' sub-jobs will fan out.');
+          setNote('ok', 'Ready to run. Starts on ' + money(d.first_wave_usd) + '; ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
         }
         syncSubmit();
       })
