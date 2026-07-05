@@ -960,16 +960,26 @@ def _user_inflight_subjobs(user_id: str) -> int:
     return sum(1 for r in rows if r.get("campaign_id"))
 
 
-def _count_children(campaign_id: str, statuses: "tuple | list | None" = None) -> int:
+def _count_children(
+    campaign_id: str,
+    statuses: "tuple | list | None" = None,
+    default: int = 0,
+) -> int:
     """COUNT of a campaign's sub-jobs, optionally filtered to ``statuses``.
 
     A head + exact count (no row transfer) over the partial (campaign_id, status)
     index, so it is O(1)-ish regardless of campaign size. This is what keeps the
     driver from loading every sub-job row on each tick.
+
+    Returns ``default`` on any read failure (or a missing count). Callers pass a
+    fail-safe default: dispatch reads 0 (a failed count just retries next pass),
+    while finalize reads a value that PREVENTS finalizing on a failed count, so a
+    transient error can never terminalize a campaign whose children are still
+    running.
     """
     client = get_service_client()
     if client is None:
-        return 0
+        return default
     try:
         q = (
             client.table("tool_jobs")
@@ -979,10 +989,64 @@ def _count_children(campaign_id: str, statuses: "tuple | list | None" = None) ->
         if statuses:
             q = q.in_("status", list(statuses))
         resp = q.execute()
-        return int(getattr(resp, "count", 0) or 0)
+        cnt = getattr(resp, "count", None)
+        return int(cnt) if cnt is not None else default
     except Exception:
         logger.warning("_count_children failed for %s", campaign_id, exc_info=True)
-        return 0
+        return default
+
+
+def _chunk_row_exists(campaign_id: str, chunk_index: int) -> bool:
+    """True if a sub-job row already exists at ``chunk_index`` (indexed count)."""
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("id", count="exact", head=True)
+            .eq("campaign_id", campaign_id)
+            .eq("chunk_index", chunk_index)
+            .execute()
+        )
+        cnt = getattr(resp, "count", None)
+        return int(cnt) > 0 if cnt is not None else False
+    except Exception:
+        logger.warning(
+            "_chunk_row_exists failed for %s/%s", campaign_id, chunk_index,
+            exc_info=True,
+        )
+        return False
+
+
+def _lowest_missing_chunk_index(campaign_id: str, total: int) -> "int | None":
+    """Lowest chunk_index in ``[0, total)`` with no row, or None if none.
+
+    O(N) — the ONLY non-O(1) path in the driver, and it runs solely to REPAIR a
+    non-contiguous campaign (a legacy/anomalous gap). The count-based driver
+    never creates gaps for campaigns it started, so this is a safety net for rows
+    that predate it, not a hot path.
+    """
+    client = get_service_client()
+    if client is None:
+        return None
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("chunk_index")
+            .eq("campaign_id", campaign_id)
+            .execute()
+        )
+        present = {r.get("chunk_index") for r in getattr(resp, "data", None) or []}
+    except Exception:
+        logger.warning(
+            "_lowest_missing_chunk_index failed for %s", campaign_id, exc_info=True
+        )
+        return None
+    for i in range(total):
+        if i not in present:
+            return i
+    return None
 
 
 def drive_campaign(campaign_id: str) -> None:
@@ -1044,13 +1108,26 @@ def drive_campaign(campaign_id: str) -> None:
         elif outcome == "duplicate":
             # create_job returned None: a concurrent driver claimed this index
             # (real duplicate) OR a transient insert error. Resync the frontier
-            # from the authoritative count: if it advanced, someone claimed the
-            # index, so move to the next hole; if it did NOT advance, the row was
-            # never created (transient), so stop and retry this index next pass.
+            # from the authoritative count.
             resynced = _count_children(campaign_id)
-            if resynced <= dispatched:
+            if resynced > dispatched:
+                # The count advanced: a concurrent driver claimed the frontier;
+                # move to the next hole.
+                dispatched = resynced
+            elif not _chunk_row_exists(campaign_id, dispatched):
+                # Count unchanged and this index is still empty: the None was a
+                # transient insert error, not a duplicate. Stop and retry this
+                # same index on the next drive (no hole forms).
                 break
-            dispatched = resynced
+            else:
+                # Count unchanged yet this index IS filled: the rows are NOT a
+                # contiguous prefix (a legacy/anomalous gap below the frontier;
+                # the count-based driver never creates one). Repair it by jumping
+                # to the true lowest hole. O(N), but only on a real gap.
+                hole = _lowest_missing_chunk_index(campaign_id, total)
+                if hole is None or hole >= total or hole == dispatched:
+                    break
+                dispatched = hole
         elif outcome == "insufficient_funds":
             hit_insufficient = True
             break
@@ -1115,18 +1192,32 @@ def _maybe_finalize(campaign: "ComputeCampaign") -> None:
     never finalizes while a chunk is still running or undispatched.
     """
     total = campaign.total_subjobs
-    if _count_children(campaign.id) < total:
+    # Fail-safe defaults: any count read failure must PREVENT finalizing, never
+    # cause it. dispatched<total (default 0) returns; in_flight>0 (default 1)
+    # returns; a failed succeeded read (default -1) returns. So a transient
+    # count error can never terminalize a campaign with children still running.
+    if _count_children(campaign.id, default=0) < total:
         return
-    if _count_children(campaign.id, ("pending", "running")) > 0:
+    if _count_children(campaign.id, ("pending", "running"), default=1) > 0:
         return
-    succeeded = _count_children(campaign.id, ("succeeded",))
+    succeeded = _count_children(campaign.id, ("succeeded",), default=-1)
+    if succeeded < 0:
+        return
     if succeeded >= total:
         final = "completed"
     elif succeeded > 0:
         final = "completed_with_failures"
     else:
         final = "failed"
-    _update_campaign(campaign.id, {"status": final, "completed_at": _now_iso()})
+    # CAS from a non-terminal state only, so a concurrent cancel (or another
+    # driver's finalize) is never overwritten: finalizing a campaign a user just
+    # cancelled would resurrect it out of "cancelled".
+    _cas_transition(
+        campaign.id,
+        final,
+        ("funded", "running", "completing", "paused_insufficient_funds"),
+        {"completed_at": _now_iso()},
+    )
 
 
 def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:

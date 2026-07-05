@@ -650,3 +650,36 @@ def test_drive_dispatches_first_wave_for_large_campaign(driver_env):
     kids = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
     assert len(kids) == 16
     assert {k["chunk_index"] for k in kids} == set(range(16))
+
+
+def test_drive_repairs_legacy_gap(driver_env):
+    """A NON-contiguous campaign (a hole from the old skip-past driver) is
+    repaired: the missing index is filled instead of stalling forever."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=5, chunk_size=12, requested=60,
+                   concurrency_target=8, status="running")
+    # Pre-existing rows with a HOLE at index 2 (indices 0, 1, 3 present).
+    for idx in (0, 1, 3):
+        client.store["tool_jobs"].append({
+            "id": f"pre-{idx}", "user_id": "user-1", "campaign_id": "camp-1",
+            "chunk_index": idx, "attempt": 1, "status": "succeeded",
+        })
+    drive_campaign("camp-1")
+    idxs = {k["chunk_index"] for k in _children(client)
+            if k.get("campaign_id") == "camp-1"}
+    assert idxs == {0, 1, 2, 3, 4}  # the gap at 2 (and the missing 4) were filled
+
+
+def test_maybe_finalize_does_not_overwrite_cancelled(driver_env):
+    """A CAS finalize must not resurrect a campaign a user just cancelled."""
+    from shared.compute_campaigns import _maybe_finalize, get_campaign
+    client, _ = driver_env
+    _seed_campaign(client, total_subjobs=2, requested=24, status="cancelled")
+    client.store["tool_jobs"] = [
+        {"id": "j0", "campaign_id": "camp-1", "chunk_index": 0, "attempt": 1,
+         "status": "cancelled"},
+        {"id": "j1", "campaign_id": "camp-1", "chunk_index": 1, "attempt": 1,
+         "status": "cancelled"},
+    ]
+    _maybe_finalize(get_campaign("camp-1"))
+    assert _campaign_status(client) == "cancelled"
