@@ -345,9 +345,9 @@ verify each before merge:
 ## 10. Decisions (locked 2026-07-04)
 
 - **"Enough to start" threshold:** FUND THE FIRST WAVE. A campaign starts once
-  the wallet covers the first concurrency wave (`DEFAULT_CONCURRENCY_TARGET` = 8
-  sub-jobs). It enters `paused_insufficient_funds` only if a later wave outruns
-  the balance; a top-up resumes it.
+  the wallet covers the first concurrency wave (`DEFAULT_CONCURRENCY_TARGET`,
+  raised 8 -> 16 in step 6a). It enters `paused_insufficient_funds` only if a
+  later wave outruns the balance; a top-up resumes it.
 - **Hold sizing:** CUSHIONED ESTIMATE CLAMPED TO HARD CAP. Reserve a cushioned
   per-child estimate, raising the estimate AND the hard cap in lockstep so the
   `min(marked_up, cap)` clamp does not swallow the cushion; never the full cap.
@@ -355,9 +355,9 @@ verify each before merge:
   transparent, so the tighter reservation is safe on a shared wallet.
 - **Pause TTL:** 14 DAYS. A campaign starved for funds auto-finalizes as partial
   after 14 days paused (surfaces produced designs, releases outstanding holds).
-- **Global per-user in-flight sub-job cap:** 32 (about 4 campaigns at the default
-  concurrency of 8). Round-robin fairness across a user's active campaigns under
-  this cap.
+- **Global per-user in-flight sub-job cap:** 32 (about 2 campaigns at the default
+  concurrency of 16, shipped in step 6a). Round-robin fairness across a user's
+  active campaigns under this cap (step 7).
 - **Verification (KYC) re-anchor:** a SINGLE TOP-UP of >= $5k triggers
   verification. Reuse the old $5k threshold, now on wallet top-up size (where the
   money enters) since campaign size no longer gates. Move
