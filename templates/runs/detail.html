@@ -53,7 +53,7 @@
   <div class="rd-bar-outer"><div class="rd-bar-inner" id="rd-bar"
        style="width: {% if campaign.total_subjobs > 0 %}{{ (100 * terminal_subjobs // campaign.total_subjobs) }}{% else %}0{% endif %}%;"></div></div>
   <div class="rd-progress-label"><span id="rd-subjobs-complete">{{ terminal_subjobs }}</span> of <span id="rd-subjobs-total">{{ campaign.total_subjobs }}</span> sub-jobs complete</div>
-  <div class="rd-paused" id="rd-paused" style="display:none;">Paused, waiting on your daily spending limit or balance. This resumes automatically once the limit resets.</div>
+  <div class="rd-paused" id="rd-paused" style="display:none;">Paused: your wallet cannot fund the next batch. Batches already finished stay downloadable below. <a href="/account" style="color:inherit;text-decoration:underline;">Add funds</a> and the campaign resumes automatically.</div>
 
   <div class="rd-cards">
     <div class="rd-card"><div class="n" id="rd-running">{{ counts.running }}</div><div class="l">Running</div></div>

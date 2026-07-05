@@ -1555,6 +1555,42 @@ def send_low_balance_email(
     )
 
 
+def send_campaign_paused_email(
+    *,
+    user_id: str,
+    campaign_id: str,
+    campaign_name: str = "",
+    **_extra: Any,
+) -> bool:
+    """A compute campaign paused because the wallet cannot fund the next chunk.
+
+    Trigger: the campaign driver pauses a campaign into
+    ``paused_insufficient_funds`` (fires once per pause event). The user tops up
+    to resume; designs already produced stay downloadable meanwhile.
+    """
+    email = _resolve_user_email(user_id)
+    if not email:
+        logger.info(
+            "send_campaign_paused_email: no email for user %s", user_id
+        )
+        return False
+    base_url = _base_url()
+    label = campaign_name.strip() or "Your campaign"
+    subject = f"{label} is paused: add funds to continue"
+    html = _render_template(
+        "send_campaign_paused.html",
+        base_url=base_url,
+        campaign_name=label,
+        campaign_url=f"{base_url}/runs/{campaign_id}",
+    )
+    return _post_resend(
+        to_email=email,
+        subject=subject,
+        html_body=html,
+        log_tag=f"campaign_paused user={user_id} campaign={campaign_id}",
+    )
+
+
 def send_job_capped_email(
     *,
     user_id: str,

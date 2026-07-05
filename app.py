@@ -5340,16 +5340,21 @@ def create_app() -> Flask:
         payload["terminal"] = campaign.status in (
             "completed", "completed_with_failures", "failed", "cancelled",
         )
-        # Paused = non-terminal, nothing in flight, but chunks still
-        # undispatched. This is normally a per-user daily-spend-cap / balance
-        # refusal (Phase 1 uses the unchanged reserve_hold). It resumes
-        # automatically once the cap window resets; surfaced so the UI shows
-        # "paused" instead of an opaque perpetual "running".
+        # Paused = the wallet cannot fund the next chunk, so undispatched work
+        # waits for a top-up. The driver now sets this explicitly
+        # (paused_insufficient_funds) and resumes automatically once the balance
+        # is restored; the legacy heuristic (nothing in flight, chunks still
+        # undispatched) is kept as a fallback for any campaign that predates the
+        # explicit state. Surfaced so the UI shows "paused" instead of an opaque
+        # perpetual "running".
         in_flight = counts.get("pending", 0) + counts.get("running", 0)
         payload["paused"] = (
-            campaign.status in ("funded", "running")
-            and in_flight == 0
-            and counts.get("total", 0) < campaign.total_subjobs
+            campaign.status == "paused_insufficient_funds"
+            or (
+                campaign.status in ("funded", "running")
+                and in_flight == 0
+                and counts.get("total", 0) < campaign.total_subjobs
+            )
         )
         return jsonify(payload)
 

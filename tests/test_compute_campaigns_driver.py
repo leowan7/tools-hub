@@ -85,10 +85,14 @@ class _Query:
             self._store[self._table].append(self._insert)
             return _Result([self._insert])
         if self._update is not None:
-            for r in rows:
-                if self._match(r):
-                    r.update(self._update)
-            return _Result([r for r in rows if self._match(r)])
+            # Real Postgrest evaluates the WHERE on the pre-update row and
+            # RETURNs the rows it updated, so a conditional (CAS) update that
+            # changes the filtered column still returns its winners. Match
+            # first, then mutate.
+            matched = [r for r in rows if self._match(r)]
+            for r in matched:
+                r.update(self._update)
+            return _Result(matched)
         matched = [r for r in rows if self._match(r)]
         if self._single:
             if not matched:
@@ -115,22 +119,37 @@ def driver_env(monkeypatch):
     client = _Client()
     monkeypatch.setattr(cc, "get_service_client", lambda: client)
 
-    state = {"holds": [], "released": [], "modal_calls": [], "submits": 0}
+    # wallet_balance drives the balance-aware hold seam below. Default is high
+    # so tests that do not care about funds never trip a refusal; the pause /
+    # resume tests set it low to simulate a drained wallet.
+    state = {
+        "holds": [], "released": [], "modal_calls": [], "submits": 0,
+        "wallet_balance": Decimal("1000000"),
+    }
 
-    # Wallet seams.
+    # Wallet seams. fake_reserve_hold mirrors the real atomic hold: it refuses
+    # (returns None) when the balance cannot cover the estimate, else decrements.
     import shared.wallet as w
 
     def fake_reserve_hold(user_id, tool, job_id, estimate, params):
+        est = Decimal(str(estimate))
+        if state["wallet_balance"] < est:
+            return None  # insufficient balance (atomic in real reserve_hold)
+        state["wallet_balance"] -= est
         hid = f"hold-{len(state['holds'])}"
-        state["holds"].append({"id": hid, "tool": tool, "estimate": estimate})
+        state["holds"].append({"id": hid, "tool": tool, "estimate": est})
         return hid
 
     def fake_release_hold(hold_tx_id, reason="x"):
         state["released"].append(hold_tx_id)
         return True
 
+    def fake_get_or_create_wallet(user_id):
+        return {"balance_usd": str(state["wallet_balance"]), "wallet_frozen": False}
+
     monkeypatch.setattr(w, "reserve_hold", fake_reserve_hold)
     monkeypatch.setattr(w, "release_hold", fake_release_hold)
+    monkeypatch.setattr(w, "get_or_create_wallet", fake_get_or_create_wallet)
 
     # Job-creation seam: write a child row into the same store, enforcing the
     # UNIQUE(campaign_id, chunk_index, attempt) constraint by returning None.
@@ -394,3 +413,140 @@ def test_cancel_campaign(driver_env, monkeypatch):
     assert ok is True
     assert _campaign_status(client) == "cancelled"
     assert set(cancelled) == {"j0", "j1"}
+
+
+# ---------------------------------------------------------------------------
+# Fund-and-drain: pause on insufficient funds, resume on top-up (step 4a)
+# ---------------------------------------------------------------------------
+
+
+def _patch_pause_email(monkeypatch):
+    """Capture pause emails; return the list they are appended to."""
+    import shared.email as em
+    calls: list = []
+    monkeypatch.setattr(
+        em, "send_campaign_paused_email",
+        lambda **kw: (calls.append(kw), True)[1],
+    )
+    return calls
+
+
+def test_drive_pauses_when_wallet_cannot_fund_next_chunk(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,
+                   concurrency_target=8)
+    calls = _patch_pause_email(monkeypatch)
+    # Fund exactly one chunk hold.
+    state["wallet_balance"] = cc.child_hold_usd("rfdiffusion", 12)
+
+    drive_campaign("camp-1")
+
+    # One chunk launched, then the wallet is dry -> paused, one email.
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    assert len(_children(client)) == 1
+    assert len(calls) == 1
+    assert calls[0]["campaign_id"] == "camp-1"
+    # The refused chunk placed no hold, so nothing is stranded.
+    assert state["released"] == []
+
+
+def test_drive_pauses_before_any_chunk_when_broke(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, chunk_size=12, requested=24,
+                   concurrency_target=8)
+    calls = _patch_pause_email(monkeypatch)
+    state["wallet_balance"] = Decimal("0")
+
+    drive_campaign("camp-1")
+
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    assert len(_children(client)) == 0
+    assert len(calls) == 1
+
+
+def test_pause_email_sent_once_across_ticks(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, chunk_size=12, requested=24,
+                   concurrency_target=8)
+    calls = _patch_pause_email(monkeypatch)
+    state["wallet_balance"] = Decimal("0")
+
+    drive_campaign("camp-1")          # first pause -> email
+    drive_campaign("camp-1")          # cron re-tick, still broke -> no re-email
+    drive_campaign("camp-1")
+
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    assert len(calls) == 1
+
+
+def test_drive_resumes_after_topup(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,
+                   concurrency_target=8)
+    calls = _patch_pause_email(monkeypatch)
+    one_hold = cc.child_hold_usd("rfdiffusion", 12)
+    state["wallet_balance"] = one_hold  # only one chunk
+
+    drive_campaign("camp-1")
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    assert len(_children(client)) == 1
+    assert len(calls) == 1
+
+    # Top up: the cron re-drive dispatches the rest and flips back to running.
+    state["wallet_balance"] = one_hold * 10
+    drive_campaign("camp-1")
+
+    assert _campaign_status(client) == "running"
+    assert len(_children(client)) == 3
+    assert {k["chunk_index"] for k in _children(client)} == {0, 1, 2}
+    assert len(calls) == 1  # no second email on resume
+
+
+def test_paused_campaign_does_not_finalize_with_undispatched_chunks(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,
+                   concurrency_target=8)
+    _patch_pause_email(monkeypatch)
+    state["wallet_balance"] = cc.child_hold_usd("rfdiffusion", 12)
+
+    drive_campaign("camp-1")
+    assert _campaign_status(client) == "paused_insufficient_funds"
+    # The one dispatched child finishes; the campaign must NOT finalize while
+    # funded chunks remain undispatched — it waits for a top-up.
+    _children(client)[0]["status"] = "succeeded"
+    drive_campaign("camp-1")
+    assert _campaign_status(client) == "paused_insufficient_funds"
+
+
+def test_transient_refusal_does_not_pause(driver_env, monkeypatch):
+    """A hold refusal with balance still available is transient, not a pause."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, chunk_size=12, requested=24,
+                   concurrency_target=8)
+    calls = _patch_pause_email(monkeypatch)
+
+    import shared.wallet as w
+    n = {"c": 0}
+
+    def flaky_hold(user_id, tool, job_id, estimate, params):
+        # Refuse once despite a healthy balance (models a transient blip), then
+        # succeed. Balance stays high so classification says "skipped".
+        n["c"] += 1
+        if n["c"] == 1:
+            return None
+        hid = f"hold-{n['c']}"
+        state["holds"].append({"id": hid})
+        return hid
+
+    monkeypatch.setattr(w, "reserve_hold", flaky_hold)
+
+    drive_campaign("camp-1")
+    assert _campaign_status(client) != "paused_insufficient_funds"
+    assert len(calls) == 0
+    drive_campaign("camp-1")
+    assert len(_children(client)) == 2  # the transiently-skipped chunk retried
+
+
+def test_cron_active_states_includes_paused():
+    from cron.tick_campaigns import _ACTIVE_STATES
+    assert "paused_insufficient_funds" in _ACTIVE_STATES

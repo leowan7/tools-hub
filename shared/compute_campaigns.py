@@ -716,6 +716,63 @@ def _update_campaign(campaign_id: str, fields: dict) -> None:
         logger.warning("_update_campaign failed for %s", campaign_id, exc_info=True)
 
 
+def _cas_transition(
+    campaign_id: str,
+    to_status: str,
+    allowed_from: tuple,
+    extra: Optional[dict] = None,
+) -> bool:
+    """Atomically move ``status`` to ``to_status`` only from an allowed state.
+
+    Returns True iff this call actually performed the transition (i.e. the row
+    was in one of ``allowed_from`` when the UPDATE ran). Because the WHERE
+    filters on the pre-update status, exactly one of several concurrent drivers
+    wins the transition — this is what makes the pause email fire exactly once.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    fields = {"status": to_status}
+    if extra:
+        fields.update(extra)
+    try:
+        resp = (
+            client.table(_TABLE)
+            .update(fields)
+            .eq("id", campaign_id)
+            .in_("status", list(allowed_from))
+            .execute()
+        )
+        return bool(getattr(resp, "data", None))
+    except Exception:
+        logger.warning("_cas_transition failed for %s", campaign_id, exc_info=True)
+        return False
+
+
+def _wallet_balance_below(user_id: str, amount) -> bool:  # noqa: ANN001
+    """True if the wallet balance cannot cover ``amount`` (a fund pause).
+
+    Best-effort and advisory only (the authoritative refusal already happened
+    atomically inside reserve_hold). On any read failure return False so the
+    chunk is retried as a transient skip rather than mislabeled a fund pause.
+    """
+    from shared.wallet import get_or_create_wallet  # noqa: PLC0415
+    try:
+        wallet = get_or_create_wallet(user_id)
+    except Exception:
+        logger.warning(
+            "_wallet_balance_below read failed for %s", user_id, exc_info=True
+        )
+        return False
+    if not wallet:
+        return False
+    try:
+        balance = Decimal(str(wallet.get("balance_usd") or 0))
+        return balance < Decimal(str(amount))
+    except Exception:
+        return False
+
+
 def fund_campaign(campaign_id: str) -> None:
     """Mark a draft campaign funded (called by the route after preauth)."""
     _update_campaign(campaign_id, {"status": "funded", "confirmed_at": _now_iso()})
@@ -728,9 +785,12 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
       * ``"launched"`` — a child row was created and a Modal run started.
       * ``"failed"``   — a child row exists but reached a terminal failure
                           (modal submit failed); the chunk IS dispatched.
-      * ``"skipped"``  — NO child row was created (hold refused, duplicate,
-                          transient insert failure); the chunk should be
-                          retried on a later drive pass.
+      * ``"skipped"``  — NO child row was created (transient hold refusal,
+                          duplicate, transient insert failure); the chunk
+                          should be retried on a later drive pass.
+      * ``"insufficient_funds"`` — the wallet balance cannot cover this
+                          chunk's hold; the campaign should pause (the next
+                          chunk cannot be funded either) and resume on top-up.
     On any failure the hold is released so no reservation is stranded.
     """
     from shared.wallet import release_hold, reserve_hold  # noqa: PLC0415
@@ -763,8 +823,19 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         campaign.user_id, campaign.tool, None, hold_amount, base_inputs
     )
     if not hold_tx_id:
+        # Classify the refusal. reserve_hold already made the authoritative,
+        # atomic decision; this read only routes the campaign to the right
+        # state. A balance shortfall pauses the campaign (the next chunk costs
+        # the same or more, so spinning is pointless); a transient/duplicate/
+        # cap refusal is retried on a later pass.
+        if _wallet_balance_below(campaign.user_id, hold_amount):
+            logger.info(
+                "campaign %s chunk %s: insufficient funds for hold %s; pausing",
+                campaign.id, chunk_index, hold_amount,
+            )
+            return "insufficient_funds"
         logger.info(
-            "campaign %s chunk %s: hold not placed (balance/cap); will retry",
+            "campaign %s chunk %s: hold not placed (transient/cap); will retry",
             campaign.id, chunk_index,
         )
         return "skipped"
@@ -868,6 +939,8 @@ def drive_campaign(campaign_id: str) -> None:
                            "failed", "cancelled"):
         return
 
+    entry_status = campaign.status  # funded | running | paused_insufficient_funds
+
     children = _campaign_children(campaign_id)
     existing_idx = {
         c["chunk_index"] for c in children if c.get("chunk_index") is not None
@@ -875,16 +948,16 @@ def drive_campaign(campaign_id: str) -> None:
     counts = _tally(children)
     in_flight = counts["pending"] + counts["running"]
 
-    if campaign.status == "funded":
-        _update_campaign(campaign_id, {"status": "running", "started_at": _now_iso()})
-        campaign.status = "running"
-
     # Admission loop: fill open slots with the lowest chunk that has no row
     # yet. ``attempted`` guards against re-trying the same chunk in this pass
     # (a "skipped" chunk stays out of existing_idx so a LATER drive retries
     # it, but must not spin here). A chunk only counts toward existing_idx /
-    # in_flight once a row actually exists — a refused hold wastes no slot.
+    # in_flight once a row actually exists — a refused hold wastes no slot. An
+    # "insufficient_funds" refusal stops the pass (the next chunk cannot be
+    # funded either) and routes the campaign to paused below.
     attempted: set = set()
+    launched_any = False
+    hit_insufficient = False
     while in_flight < campaign.concurrency_target:
         idx = None
         for i in range(campaign.total_subjobs):
@@ -898,10 +971,35 @@ def drive_campaign(campaign_id: str) -> None:
         if outcome == "launched":
             existing_idx.add(idx)
             in_flight += 1
+            launched_any = True
         elif outcome == "failed":
             # A (failed) child row exists for this chunk; it is dispatched.
             existing_idx.add(idx)
+        elif outcome == "insufficient_funds":
+            hit_insufficient = True
+            break
         # "skipped": no row created; leave for a later drive pass.
+
+    undispatched_remain = any(
+        i not in existing_idx for i in range(campaign.total_subjobs)
+    )
+
+    # Fund-and-drain state machine. Pause when the wallet cannot fund the next
+    # chunk and work remains; resume when it can again. Pause takes precedence
+    # over the funded/paused -> running flip: a pass that launched some chunks
+    # but then ran the wallet dry still ends paused, waiting for a top-up. The
+    # CAS makes the pause email fire exactly once even under concurrent drives.
+    if hit_insufficient and undispatched_remain:
+        paused = _cas_transition(
+            campaign_id, "paused_insufficient_funds", ("funded", "running")
+        )
+        if paused:
+            _notify_campaign_paused(campaign)
+    elif launched_any and entry_status in ("funded", "paused_insufficient_funds"):
+        extra = {"started_at": _now_iso()} if entry_status == "funded" else None
+        _cas_transition(
+            campaign_id, "running", ("funded", "paused_insufficient_funds"), extra
+        )
 
     _update_campaign(campaign_id, {"last_tick_at": _now_iso()})
     _maybe_finalize(campaign)
@@ -924,6 +1022,25 @@ def _maybe_finalize(campaign: "ComputeCampaign") -> None:
     else:
         final = "failed"
     _update_campaign(campaign.id, {"status": final, "completed_at": _now_iso()})
+
+
+def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:
+    """Best-effort one-shot pause email. Never raises into the driver.
+
+    Called only on the winning CAS pause transition, so it fires once per pause
+    event (a later resume + re-pause is a new event and mails again).
+    """
+    try:
+        from shared.email import send_campaign_paused_email  # noqa: PLC0415
+        send_campaign_paused_email(
+            user_id=campaign.user_id,
+            campaign_id=campaign.id,
+            campaign_name=campaign.name or "",
+        )
+    except Exception:
+        logger.warning(
+            "campaign %s: pause email failed", campaign.id, exc_info=True
+        )
 
 
 def maybe_drive_campaign_for_job(job) -> None:  # noqa: ANN001

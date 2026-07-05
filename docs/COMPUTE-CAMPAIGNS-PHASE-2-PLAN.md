@@ -131,6 +131,40 @@ campaigns.
 **In-flight safety at pause:** only *undispatched* chunks pause. Chunks already
 running settle normally (release surplus). No stranded or partial money.
 
+**Build status (2026-07-04): split into 4a (shipped) + 4b (deferred), like
+3a/3b.** 4a is the core pause/resume loop and is APP-LAYER ONLY (the
+`paused_insufficient_funds` status is already an allowed value from migration
+0035, applied to prod, so 4a needs no migration and deploys on merge):
+- `_dispatch_chunk` now classifies a hold refusal: a balance shortfall returns
+  `"insufficient_funds"` (advisory read after reserve_hold's authoritative
+  atomic refusal), a transient/duplicate/cap refusal still returns `"skipped"`.
+- `drive_campaign` runs the state machine: an `insufficient_funds` refusal with
+  undispatched chunks remaining pauses the campaign via an atomic CAS
+  (`funded|running -> paused_insufficient_funds`); the CAS winner sends the pause
+  email exactly once even under concurrent inline-hook + cron drives. A later
+  pass that can fund a chunk resumes via CAS
+  (`funded|paused -> running`). Pause takes precedence over resume in a pass that
+  launches some chunks then runs dry. `_maybe_finalize` is unchanged and already
+  refuses to finalize while undispatched chunks remain (len(children) < total).
+- `cron/tick_campaigns.py` `_ACTIVE_STATES` gains `paused_insufficient_funds` so
+  the tick re-drives (and resumes) a paused campaign; nothing else triggers a
+  paused campaign since no in-flight child completes to fire the inline hook.
+- `shared/email.py` `send_campaign_paused_email` + `templates/email/send_campaign_paused.html`;
+  `/runs/<id>` status `payload["paused"]` honors the explicit state and the
+  detail-page banner links to top up.
+
+**4b (deferred), needs a `paused_at` migration:** the 14-day pause TTL
+auto-finalize and proactive auto-reload-on-pause. Both want a `paused_at`
+timestamp column (the TTL measures pause age; `last_tick_at` cannot, it updates
+every tick). Deferred so 4a stays migration-free and ships immediately. Until 4b,
+a never-funded paused campaign is not a hard zombie: it resumes the instant funds
+arrive and otherwise costs one no-op cron drive per tick.
+
+**Known gap (4a):** a *frozen* wallet (chargeback/dispute) refuses holds but
+reads a sufficient balance, so it classifies as a transient `"skipped"` and
+spins harmlessly rather than pausing. No money risk (frozen blocks all holds);
+it resolves when the wallet unfreezes. A `paused_frozen` state is out of scope.
+
 ## 5. Scale: raise MAX_SUBJOBS + async dispatch
 
 - **Raise `MAX_SUBJOBS_PER_CAMPAIGN`** from 20. With the daily cap gone and the
@@ -255,6 +289,9 @@ verify each before merge:
 3. Hold-sizing change (cushioned estimate clamped to hard cap) + ledger
    net-cost display fix.
 4. Pause/resume state machine + pause email + auto-reload resume + TTL.
+   **4a (pause/resume + email) SHIPPED 2026-07-04, app-layer only (see the
+   Build status note under section 4). 4b (14-day TTL + proactive
+   auto-reload-on-pause) DEFERRED, needs a `paused_at` migration.**
 5. Preauth simplification (fund-the-first-wave gate) + non-binding forecast on
    the create screen. Retire the authorized-budget/velocity/verification gates;
    re-anchor verification to top-ups.
