@@ -207,7 +207,10 @@ the shared balance across any number of concurrent campaigns.
 **Retire:**
 - The per-campaign "authorized budget" concept and its display as a ceiling.
 - Estimator-calibration-as-a-conservative-ceiling (the estimate is now internal
-  and only needs to be "usually enough").
+  and only needs to be "usually enough"). NOTE: calibration as an *accuracy*
+  improvement (learning the estimate from real runs) is still worth doing later,
+  as its own backlog piece; see section 11. That is different from calibration as
+  a customer-facing ceiling, which is what we retire here.
 - The `$25,000/day` campaign velocity cap (`DAILY_CAMPAIGN_CAP_USD`) and the
   `$5,000` `VERIFICATION_THRESHOLD_USD` gate, both of which were hooks on the
   authorized-budget number we are removing.
@@ -282,3 +285,48 @@ verify each before merge:
   verification. Reuse the old $5k threshold, now on wallet top-up size (where the
   money enters) since campaign size no longer gates. Move
   `VERIFICATION_THRESHOLD_USD` from the campaign path to the top-up path.
+
+## 11. Backlog: data-driven caps + estimate calibration (NOT Phase 2)
+
+This is a follow-up piece, not a Phase 2 step. It replaces hand-set per-tool
+numbers with learned ones. Land it after step 3a, once more tools cross the
+20-run p90 threshold. Step 3a (the cushion) does not depend on it.
+
+**Why it is only cosmetic/margin, never a safety issue.** The per-tool numbers
+in `TOOL_SPECS` (`expected_gpu_seconds`, `base_hard_cap_usd`, `absolute_cap_usd`,
+`baseline`) are hand-set. They drive the point estimate and the hard cap. They
+are NOT the money safety net. The prepaid wallet is: a hold is refused when
+`balance < hold`, and settle bills the real actual clamped at the cap. So a wrong
+hand-set number can never cause a customer to overspend. It only costs margin or
+ledger cosmetics. Concretely, each way a number can be wrong is bounded:
+- Estimate too LOW: settle takes a small variance charge (actual > hold).
+  Cosmetic, already softened by the net-per-job display (PR #49) and the step-3a
+  cushion.
+- Estimate too HIGH: the hold over-reserves the wallet. Matters only under a
+  shared wallet (section 6 churn); it frees on settle.
+- Cap too LOW: Ranomics absorbs the overage (`absorbed_variance`). A margin cost
+  to us, never a customer debit.
+- Cap too HIGH: a single unit's runaway bound is weaker, but total spend is still
+  bounded by the funded balance.
+
+**The cleaner design (when the data is there):**
+- LEARN the estimate from real runs. `tool_jobs_p90` (migration 0020) already
+  gives per-tool p90 GPU-seconds once a tool has 20+ runs, and the point estimate
+  already uses it there. Extend coverage as tools accumulate runs, so fewer tools
+  fall back to the hand-set `expected_gpu_seconds`.
+- DERIVE the cap from the learned estimate: `hard_cap = min(k x learned_estimate,
+  absolute_backstop)` (e.g. k = 3). This collapses two of the three hand-set cap
+  numbers into one learned number plus a single backstop.
+- KEEP one absolute backstop (per tool or one global) as a deliberate business
+  ceiling. Today's hand-set cap doubles as policy ("we do not want one self-serve
+  unit to bill more than $X"); a purely cost-tracking cap loses that lever, and
+  the backstop preserves it.
+
+**Trade-off.** A data-driven cap tracks cost, not policy, so it can drift up as a
+tool gets more expensive; the absolute backstop guards against that. Net: three
+hand-set numbers per tool shrink to roughly one (the backstop), and the estimate
+self-corrects as usage accrues.
+
+**Sequencing.** Do this as its own pass once enough tools have 20+ runs so the
+learned p90 is trustworthy. Until then the hand-set numbers are fine, because the
+wallet, not the numbers, is the safety net.

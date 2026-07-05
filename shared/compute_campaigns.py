@@ -33,7 +33,11 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Mapping, Optional
 
 from shared.credits import get_service_client
-from shared.wallet_estimates import estimated_cost_for_tool, get_tool_spec
+from shared.wallet_estimates import (
+    cushioned_hold_usd,
+    estimated_cost_for_tool,
+    get_tool_spec,
+)
 from gpu.modal_client import preset_gpu_seconds
 
 logger = logging.getLogger(__name__)
@@ -584,12 +588,33 @@ def _campaign_spend_today(user_id: str) -> Decimal:
 
 
 def estimate_child_cost(tool: str, design_count: int) -> Decimal:
-    """USD estimate for one sub-job at ``design_count`` designs.
+    """Point-estimate USD for one sub-job at ``design_count`` designs.
 
-    Used by the driver to size each per-child wallet hold. boltzgen is
-    flat per job (fixed 200-pool); the linear tools scale by the count.
+    The non-binding forecast input and the value stored on the child as
+    ``_wallet.estimate_usd``. boltzgen is flat per job (fixed 200-pool); the
+    linear tools scale by the count. The wallet HOLD (reservation) is sized
+    separately and cushioned, see :func:`child_hold_usd`.
     """
     return _estimate_chunk_cost(tool, int(design_count))
+
+
+def child_hold_usd(tool: str, design_count: int) -> Decimal:
+    """Cushioned USD to HOLD for one sub-job (the wallet reservation).
+
+    A cushion above the point estimate so actual usually settles under the
+    hold, releasing surplus (a clean ledger) instead of posting a variance
+    charge. Clamped to the per-tool hard cap by
+    :func:`shared.wallet_estimates.cushioned_hold_usd`. boltzgen prices at its
+    fixed-pool baseline; the linear tools scale by the design count.
+    """
+    spec = get_tool_spec(tool)
+    if tool == "boltzgen":
+        designs_for_estimate = spec.designs_per_run_baseline if spec else 2
+    else:
+        designs_for_estimate = int(design_count)
+    return cushioned_hold_usd(
+        None, tool, {"num_designs": designs_for_estimate, "preset": "pilot"}
+    )
 
 
 def can_dispatch_more(
@@ -732,8 +757,11 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     base_inputs[_DESIGN_PARAM_KEY[campaign.tool]] = design_count
     base_inputs["preset"] = campaign.preset
 
-    estimate = estimate_child_cost(campaign.tool, design_count)
-    hold_tx_id = reserve_hold(campaign.user_id, campaign.tool, None, estimate, base_inputs)
+    point_estimate = estimate_child_cost(campaign.tool, design_count)
+    hold_amount = child_hold_usd(campaign.tool, design_count)
+    hold_tx_id = reserve_hold(
+        campaign.user_id, campaign.tool, None, hold_amount, base_inputs
+    )
     if not hold_tx_id:
         logger.info(
             "campaign %s chunk %s: hold not placed (balance/cap); will retry",
@@ -744,7 +772,9 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     child_inputs = dict(base_inputs)
     child_inputs["_wallet"] = {
         "hold_tx_id": hold_tx_id,
-        "estimate_usd": str(estimate),
+        # The point estimate, NOT the cushioned hold: this is the job's
+        # forecast price and what the settle-monitor reconciles against.
+        "estimate_usd": str(point_estimate),
         "tool_slug": campaign.tool,
     }
 

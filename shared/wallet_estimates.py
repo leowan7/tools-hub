@@ -66,6 +66,14 @@ MIN_HISTORICAL_RUNS = 20
 # Lookback window for the p90 sample.
 HISTORICAL_LOOKBACK_DAYS = 30
 
+# Multiplier applied to the point estimate to size the wallet HOLD (the
+# reservation), so actual usually lands under the hold and settle releases
+# surplus instead of posting a variance charge. The reservation is clamped to
+# the per-tool hard cap in cushioned_hold_usd: the customer is capped at the
+# hard cap regardless (settle clamps there and Ranomics absorbs above), so
+# reserving beyond it would only lock up wallet funds with no billing benefit.
+HOLD_CUSHION_MULTIPLIER = Decimal("1.5")
+
 
 # ---------------------------------------------------------------------------
 # Per-tool specs
@@ -317,6 +325,29 @@ def compute_hard_cap(
     scale_factor = max(actual / float(spec.designs_per_run_baseline), 1.0)
     scaled = spec.base_hard_cap_usd * Decimal(str(scale_factor))
     return _quantize_usd(min(scaled, spec.absolute_cap_usd))
+
+
+def cushioned_hold_usd(
+    user_id: Optional[str],
+    tool_slug: str,
+    params: Optional[Mapping[str, object]] = None,
+) -> Decimal:
+    """Return the USD amount to HOLD for one job: a cushioned point estimate.
+
+    ``HOLD_CUSHION_MULTIPLIER`` times the point estimate
+    (:func:`estimated_cost_for_tool`), clamped to the parameter-scaled hard
+    cap (:func:`compute_hard_cap`). The cushion makes the reservation usually
+    cover actual, so settle releases the surplus (a clean ledger) instead of
+    posting a variance charge; the clamp keeps the hold at or below the tool's
+    charge ceiling, where the customer is capped and Ranomics absorbs overage
+    regardless, so reserving past it would just lock up wallet funds.
+
+    This sizes the reservation only. The point estimate stays the displayed
+    price and the value settle-monitoring reconciles against.
+    """
+    point = estimated_cost_for_tool(user_id, tool_slug, params)
+    cap = compute_hard_cap(tool_slug, params)
+    return _quantize_usd(min(HOLD_CUSHION_MULTIPLIER * point, cap))
 
 
 # ---------------------------------------------------------------------------

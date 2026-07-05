@@ -1003,13 +1003,27 @@ def requires_wallet(view_func=None, *, tool_slug=None):
                     form_snapshot=request.form.to_dict() or {},
                 )
 
+            # Reserve a cushioned hold (usually covers actual, so settle
+            # releases surplus) while ``estimate`` stays the point estimate
+            # shown to the user and stored as the job's forecast price. The
+            # cushion is clamped to the per-tool hard cap, so it never trips
+            # the preflight/SQL cap guards.
+            from shared.wallet_estimates import cushioned_hold_usd  # noqa: PLC0415
+            hold_amount = cushioned_hold_usd(user_id, resolved_slug, params)
             hold_tx_id = wallet_reserve_hold(
-                user_id, resolved_slug, None, estimate, params
+                user_id, resolved_slug, None, hold_amount, params
             )
             if not hold_tx_id:
                 # Lost a concurrent race or fell foul of a SQL guard.
+                # Re-preflight against the HELD (cushioned) amount, not the
+                # point estimate, so the gate shows the real deficit: a
+                # balance that covers the estimate but not the cushioned
+                # reservation must still top up the difference. Gating the
+                # fallback on the point estimate would report a $0 deficit
+                # and an "ok" reason, a dead-end where the form will not
+                # submit yet the gate says nothing is owed.
                 fresh = wallet_preflight(
-                    user_id, resolved_slug, estimate, params
+                    user_id, resolved_slug, hold_amount, params
                 )
                 return _render_topup_gate(
                     tool_slug=resolved_slug,
