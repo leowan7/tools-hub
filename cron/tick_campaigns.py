@@ -21,8 +21,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Campaign states the driver still has work to do on.
-_ACTIVE_STATES = ("funded", "running", "completing")
+# Campaign states the driver still has work to do on. Includes
+# ``paused_insufficient_funds`` so the tick re-drives a starved campaign and
+# resumes it the moment a top-up restores the balance (nothing else triggers a
+# paused campaign — no in-flight child completes to fire the inline hook).
+_ACTIVE_STATES = ("funded", "running", "completing", "paused_insufficient_funds")
 
 
 def tick_campaigns() -> dict:

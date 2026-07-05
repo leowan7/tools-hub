@@ -102,3 +102,25 @@ def test_partial_completion_does_not_overstate_generated_count(app):
         )
     assert "requested designs were generated" not in html
     assert "sub-jobs complete" in html
+
+
+def test_paused_campaign_shows_cancel_button(app):
+    """A paused (insufficient-funds) campaign is still cancellable from the page."""
+    with app.test_request_context("/runs/camp-smoke"):
+        html = render_template(
+            "runs/detail.html",
+            campaign=_campaign_fixture(status="paused_insufficient_funds"),
+            counts=_counts(succeeded=2, pending=0, running=0),
+        )
+    assert 'id="rd-cancel"' in html
+
+
+def test_terminal_campaign_hides_cancel_button(app):
+    """A completed campaign renders no server-side Cancel button."""
+    with app.test_request_context("/runs/camp-smoke"):
+        html = render_template(
+            "runs/detail.html",
+            campaign=_campaign_fixture(status="completed"),
+            counts=_counts(succeeded=6),
+        )
+    assert 'id="rd-cancel"' not in html
