@@ -26,8 +26,9 @@ from shared.compute_campaigns import (
 
 
 class _Result:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class _Query:
@@ -39,8 +40,12 @@ class _Query:
         self._insert = None
         self._update = None
         self._single = False
+        self._count = None
+        self._head = False
 
     def select(self, *_a, **_k):
+        self._count = _k.get("count")
+        self._head = bool(_k.get("head", False))
         return self
 
     def insert(self, row):
@@ -94,6 +99,9 @@ class _Query:
                 r.update(self._update)
             return _Result(matched)
         matched = [r for r in rows if self._match(r)]
+        if self._count is not None:
+            # count="exact" returns the row count; head=True omits the rows.
+            return _Result([] if self._head else matched, count=len(matched))
         if self._single:
             if not matched:
                 raise RuntimeError("no rows")
@@ -318,17 +326,39 @@ def test_drive_finalizes_all_failed(driver_env):
     assert _campaign_status(client) == "failed"
 
 
-def test_dispatch_releases_hold_on_duplicate(driver_env, monkeypatch):
+def test_dispatch_resyncs_frontier_on_concurrent_duplicate(driver_env, monkeypatch):
+    """A concurrent driver claiming the frontier index: create_job returns None,
+    the hold is released, and the driver resyncs the frontier (count advanced)
+    and moves to the next hole instead of stalling."""
     client, state = driver_env
-    _seed_campaign(client, total_subjobs=1, chunk_size=12, requested=12)
-    # Pre-create chunk 0 so create_job hits the UNIQUE violation path.
-    client.store["tool_jobs"].append({
-        "id": "pre", "campaign_id": "camp-1", "chunk_index": 0, "attempt": 1,
-        "status": "running",
-    })
+    _seed_campaign(client, total_subjobs=2, chunk_size=12, requested=24)
+
+    import shared.jobs as j
+    real_create = j.create_job  # the driver_env fake
+
+    def racing_create(*, chunk_index=None, **kw):
+        # Simulate a concurrent driver winning chunk 0: insert its row and
+        # return None (the UNIQUE-violation signal) for our first attempt on 0.
+        if chunk_index == 0 and not any(
+            r.get("chunk_index") == 0 for r in client.store["tool_jobs"]
+        ):
+            client.store["tool_jobs"].append({
+                "id": "concurrent-0", "campaign_id": "camp-1", "chunk_index": 0,
+                "attempt": 1, "status": "running",
+            })
+            return None
+        return real_create(chunk_index=chunk_index, **kw)
+
+    monkeypatch.setattr(j, "create_job", racing_create)
     drive_campaign("camp-1")
-    # The pre-existing chunk 0 blocks a new dispatch; no new child, no leaked hold.
-    assert len([k for k in _children(client) if k["id"] != "pre"]) == 0
+
+    kids = _children(client)
+    # Frontier resynced past the duplicate: chunk 0 is the concurrent row, chunk
+    # 1 is ours. No hole, no stall.
+    assert {k["chunk_index"] for k in kids} == {0, 1}
+    assert any(k["id"] == "concurrent-0" for k in kids)
+    # Exactly the duplicate's hold was released; our chunk 1 keeps its hold.
+    assert len(state["released"]) == 1
 
 
 def test_modal_submit_failure_marks_failed_and_releases_hold(driver_env, monkeypatch):
@@ -362,19 +392,23 @@ def test_drive_skips_draft_and_terminal(driver_env):
         assert len(_children(client)) == 0  # nothing dispatched
 
 
-def test_hold_refusal_skips_and_retries(driver_env, monkeypatch):
-    """A chunk whose hold is refused creates no row and is retried later."""
+def test_transient_hold_refusal_retries_same_index_next_pass(driver_env, monkeypatch):
+    """A transient hold refusal breaks the pass at the frontier (no skip-past,
+    so no hole forms) and the SAME chunk is retried on the next drive. Nothing
+    is lost."""
     client, state = driver_env
     _seed_campaign(client, total_subjobs=2, requested=24, concurrency_target=8)
 
-    # Refuse the very first hold, then succeed for all subsequent calls.
+    # Refuse the very first hold, then succeed for all subsequent calls. The
+    # wallet still reports a healthy balance (driver_env default), so the refusal
+    # classifies as transient ("skipped"), not insufficient funds.
     import shared.wallet as w
     calls = {"n": 0}
 
     def flaky_hold(user_id, tool, job_id, estimate, params):
         calls["n"] += 1
         if calls["n"] == 1:
-            return None  # refused (e.g. daily cap / balance)
+            return None  # transient refusal on the first attempt
         hid = f"hold-{calls['n']}"
         state["holds"].append({"id": hid})
         return hid
@@ -382,11 +416,11 @@ def test_hold_refusal_skips_and_retries(driver_env, monkeypatch):
     monkeypatch.setattr(w, "reserve_hold", flaky_hold)
 
     drive_campaign("camp-1")
-    # First pass: one chunk skipped (no row), one launched.
-    assert len(_children(client)) == 1
+    # First pass: the frontier chunk's hold is refused -> break, no rows created.
+    assert len(_children(client)) == 0
 
     drive_campaign("camp-1")
-    # Second pass: the skipped chunk is retried and now lands.
+    # Second pass: chunk 0 is retried and both chunks land, in order, no gap.
     kids = _children(client)
     assert len(kids) == 2
     assert {k["chunk_index"] for k in kids} == {0, 1}
@@ -586,3 +620,66 @@ def test_drive_global_cap_leaves_headroom(driver_env):
     drive_campaign("camp-1")
     mine = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
     assert len(mine) == 2  # the global cap binds before the concurrency target
+
+
+# ---------------------------------------------------------------------------
+# Large-N efficiency: count-based driver, contiguous frontier, raised cap
+# ---------------------------------------------------------------------------
+
+
+def test_count_children_filters_by_campaign_and_status(driver_env):
+    client, _ = driver_env
+    client.store["tool_jobs"] = [
+        {"id": "a", "campaign_id": "camp-1", "chunk_index": 0, "status": "running"},
+        {"id": "b", "campaign_id": "camp-1", "chunk_index": 1, "status": "succeeded"},
+        {"id": "c", "campaign_id": "other", "chunk_index": 0, "status": "running"},
+    ]
+    assert cc._count_children("camp-1") == 2
+    assert cc._count_children("camp-1", ("running",)) == 1
+    assert cc._count_children("camp-1", ("pending", "running")) == 1
+    assert cc._count_children("other") == 1
+
+
+def test_drive_dispatches_first_wave_for_large_campaign(driver_env):
+    """A campaign far larger than the old 20-subjob cap dispatches exactly the
+    concurrency target on the first pass, as a contiguous frontier [0, target)."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=500, chunk_size=12, requested=6000,
+                   concurrency_target=16)
+    drive_campaign("camp-1")
+    kids = [k for k in _children(client) if k.get("campaign_id") == "camp-1"]
+    assert len(kids) == 16
+    assert {k["chunk_index"] for k in kids} == set(range(16))
+
+
+def test_drive_repairs_legacy_gap(driver_env):
+    """A NON-contiguous campaign (a hole from the old skip-past driver) is
+    repaired: the missing index is filled instead of stalling forever."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=5, chunk_size=12, requested=60,
+                   concurrency_target=8, status="running")
+    # Pre-existing rows with a HOLE at index 2 (indices 0, 1, 3 present).
+    for idx in (0, 1, 3):
+        client.store["tool_jobs"].append({
+            "id": f"pre-{idx}", "user_id": "user-1", "campaign_id": "camp-1",
+            "chunk_index": idx, "attempt": 1, "status": "succeeded",
+        })
+    drive_campaign("camp-1")
+    idxs = {k["chunk_index"] for k in _children(client)
+            if k.get("campaign_id") == "camp-1"}
+    assert idxs == {0, 1, 2, 3, 4}  # the gap at 2 (and the missing 4) were filled
+
+
+def test_maybe_finalize_does_not_overwrite_cancelled(driver_env):
+    """A CAS finalize must not resurrect a campaign a user just cancelled."""
+    from shared.compute_campaigns import _maybe_finalize, get_campaign
+    client, _ = driver_env
+    _seed_campaign(client, total_subjobs=2, requested=24, status="cancelled")
+    client.store["tool_jobs"] = [
+        {"id": "j0", "campaign_id": "camp-1", "chunk_index": 0, "attempt": 1,
+         "status": "cancelled"},
+        {"id": "j1", "campaign_id": "camp-1", "chunk_index": 1, "attempt": 1,
+         "status": "cancelled"},
+    ]
+    _maybe_finalize(get_campaign("camp-1"))
+    assert _campaign_status(client) == "cancelled"
