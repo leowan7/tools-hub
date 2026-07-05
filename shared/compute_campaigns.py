@@ -987,8 +987,9 @@ def drive_campaign(campaign_id: str) -> None:
     # Fund-and-drain state machine. Pause when the wallet cannot fund the next
     # chunk and work remains; resume when it can again. Pause takes precedence
     # over the funded/paused -> running flip: a pass that launched some chunks
-    # but then ran the wallet dry still ends paused, waiting for a top-up. The
-    # CAS makes the pause email fire exactly once even under concurrent drives.
+    # but then ran the wallet dry still ends paused, waiting for a top-up. Only
+    # the CAS winner emails, so the pause email is at most once even under
+    # concurrent inline-hook + cron drives.
     if hit_insufficient and undispatched_remain:
         paused = _cas_transition(
             campaign_id, "paused_insufficient_funds", ("funded", "running")
@@ -1025,10 +1026,14 @@ def _maybe_finalize(campaign: "ComputeCampaign") -> None:
 
 
 def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:
-    """Best-effort one-shot pause email. Never raises into the driver.
+    """Best-effort pause email. Never raises into the driver.
 
-    Called only on the winning CAS pause transition, so it fires once per pause
-    event (a later resume + re-pause is a new event and mails again).
+    Called only on the winning CAS pause transition, so it is sent AT MOST ONCE
+    per pause event (a later resume + re-pause is a new event and mails again).
+    It is at-most-once, not exactly-once: the CAS commits the paused status
+    before this send, so a transient Resend failure drops the email and no later
+    pass re-wins the CAS to retry it. The UI paused banner is the backstop;
+    durable delivery (a notified-at flag + cron retry) is deferred to step 4b.
     """
     try:
         from shared.email import send_campaign_paused_email  # noqa: PLC0415

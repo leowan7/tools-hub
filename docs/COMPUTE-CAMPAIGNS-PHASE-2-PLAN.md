@@ -140,9 +140,11 @@ running settle normally (release surplus). No stranded or partial money.
   atomic refusal), a transient/duplicate/cap refusal still returns `"skipped"`.
 - `drive_campaign` runs the state machine: an `insufficient_funds` refusal with
   undispatched chunks remaining pauses the campaign via an atomic CAS
-  (`funded|running -> paused_insufficient_funds`); the CAS winner sends the pause
-  email exactly once even under concurrent inline-hook + cron drives. A later
-  pass that can fund a chunk resumes via CAS
+  (`funded|running -> paused_insufficient_funds`); only the CAS winner emails, so
+  the pause email is sent AT MOST ONCE even under concurrent inline-hook + cron
+  drives (at-most-once, not exactly-once: the CAS commits paused before the send,
+  so a transient Resend failure drops that email and is not retried — the UI
+  banner is the backstop). A later pass that can fund a chunk resumes via CAS
   (`funded|paused -> running`). Pause takes precedence over resume in a pass that
   launches some chunks then runs dry. `_maybe_finalize` is unchanged and already
   refuses to finalize while undispatched chunks remain (len(children) < total).
@@ -150,14 +152,17 @@ running settle normally (release surplus). No stranded or partial money.
   the tick re-drives (and resumes) a paused campaign; nothing else triggers a
   paused campaign since no in-flight child completes to fire the inline hook.
 - `shared/email.py` `send_campaign_paused_email` + `templates/email/send_campaign_paused.html`;
-  `/runs/<id>` status `payload["paused"]` honors the explicit state and the
-  detail-page banner links to top up.
+  `/runs/<id>` status `payload["paused"]` is the authoritative explicit state
+  (the old nothing-in-flight heuristic is dropped so a transient dispatch blip no
+  longer shows a false "add funds" prompt); the detail-page banner links to top
+  up and the Cancel button now also shows for a paused campaign.
 
 **4b (deferred), needs a `paused_at` migration:** the 14-day pause TTL
-auto-finalize and proactive auto-reload-on-pause. Both want a `paused_at`
-timestamp column (the TTL measures pause age; `last_tick_at` cannot, it updates
-every tick). Deferred so 4a stays migration-free and ships immediately. Until 4b,
-a never-funded paused campaign is not a hard zombie: it resumes the instant funds
+auto-finalize, proactive auto-reload-on-pause, and DURABLE pause-email delivery
+(a `pause_notified_at` flag + cron retry so a dropped Resend send is re-sent
+rather than lost). All want a new column, so they ride the same migration.
+Deferred so 4a stays migration-free and ships immediately. Until 4b, a
+never-funded paused campaign is not a hard zombie: it resumes the instant funds
 arrive and otherwise costs one no-op cron drive per tick.
 
 **Known gap (4a):** a *frozen* wallet (chargeback/dispute) refuses holds but

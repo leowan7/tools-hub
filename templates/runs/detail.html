@@ -81,7 +81,7 @@
   </div>
 
   <div class="rd-actions">
-    {% if campaign.status in ('funded','running','completing') %}
+    {% if campaign.status in ('funded','running','completing','paused_insufficient_funds') %}
       <button class="rd-btn danger" id="rd-cancel">Cancel campaign</button>
     {% endif %}
     <a class="rd-btn" href="{{ url_for('jobs_list') }}?campaign={{ campaign.name or '' }}">View sub-jobs</a>
