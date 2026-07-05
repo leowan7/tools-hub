@@ -219,6 +219,43 @@ CAS-launch already makes double-dispatch impossible, so the lock is only a
 duplicate-work optimization, not a correctness requirement). bindcraft's
 bigger-container preset stays step 8.
 
+### 5.1 Large-N efficiency + cap lift (SHIPPED 2026-07-05, app-layer, no migration)
+
+Design principle (Leo correction): campaigns are WALLET-BOUNDED and
+SIZE-AGNOSTIC. "20k" was only a reference target, never a ceiling; the size must
+not matter. The blocker was engine cost: the old driver loaded EVERY sub-job row
+on each tick (`_campaign_children` + a linear `range(total_subjobs)` scan for the
+next chunk), and the inline hook drives on every child completion, so a big
+campaign was O(N^2).
+
+The driver is now O(1) per tick, independent of N:
+- Chunks dispatch lowest-index-first and the frontier advances only when a row
+  is created, so the rows are always a CONTIGUOUS PREFIX `[0, dispatched)`. The
+  next chunk to launch is therefore exactly `dispatched_count`, found with an
+  indexed `COUNT` (`_count_children`, a head+exact count, no row transfer), not
+  an all-rows load.
+- A "skipped" (transient) refusal now BREAKS the pass at the frontier (retry the
+  same index next drive) instead of skipping past it, so no holes ever form. A
+  "duplicate" (a concurrent driver claimed the frontier index) resyncs the
+  frontier from the count: it advances only for a real duplicate, so a transient
+  create failure is retried, never skipped. A per-pass attempt bound guarantees
+  the loop terminates under contention.
+- `_maybe_finalize` is count-based too (`dispatched == total` AND
+  `in_flight == 0`), no all-rows load.
+- `_dispatch_chunk` gains a distinct `"duplicate"` return (create_job returns
+  None on a UNIQUE violation OR a transient error; the frontier-advance test
+  distinguishes them). Removed the now-dead `_campaign_children` / `_tally` /
+  `_TERMINAL_CHILD`.
+
+Cap lifted: `MAX_SUBJOBS_PER_CAMPAIGN` 2000 -> 50,000, reframed as a runaway
+guard (a typo of a billion designs), not a product ceiling. 50k sub-jobs is
+~2.5M designs (boltzgen) / 600k (rfdiffusion). Raise freely if ever needed.
+
+Not converted (follow-up): `get_progress_counts` (the UI status poll) still loads
+rows; it is O(N) per poll, not the O(N^2) driver problem, and converting it needs
+the second test fake reworked. Fine for now; convert if extreme-N campaigns are
+actively watched.
+
 ## 6. Multi-campaign edge case (one boltzgen + one rfdiffusion at once)
 
 The scenario: a user runs a boltzgen campaign and an rfdiffusion campaign

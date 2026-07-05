@@ -73,15 +73,20 @@ BOLTZGEN_DESIGNS_PER_JOB = 50
 # a cold-start / slow fold still finishes inside the container timeout.
 _CONTAINER_UTILIZATION = 0.8
 
-# Max sub-jobs per campaign. Phase 1 capped this at 20 because child holds
-# hit the $200/day SQL cap; step 2 removed that cap, and fund-and-drain
-# (steps 4a/5) means a large campaign is bounded only by the prepaid wallet
-# (it pauses when the balance cannot fund the next chunk). So Phase 2 raises
-# this toward true 20k: 2000 sub-jobs covers 20k designs for boltzgen
-# (50/chunk -> 400) and rfdiffusion (12/chunk -> 1667); bindcraft (3/chunk ->
-# 6667) still needs the bigger-container preset (step 8). 2000 is also the
-# request-size sanity bound (plan_chunks rejects a request over this).
-MAX_SUBJOBS_PER_CAMPAIGN = 2000
+# Max sub-jobs per campaign. This is a RUNAWAY GUARD, not a product ceiling:
+# fund-and-drain means campaign size is bounded by the prepaid wallet (it pauses
+# when the balance cannot fund the next chunk), and the driver is now O(1) per
+# tick (indexed COUNTs + contiguous-prefix dispatch, not an all-rows load), so a
+# large campaign no longer degrades the engine. 50,000 sub-jobs is ~2.5M designs
+# (boltzgen) / 600k (rfdiffusion), well past any real request; it only rejects
+# absurd input (a typo of a billion designs). Raise freely if ever needed.
+MAX_SUBJOBS_PER_CAMPAIGN = 50000
+
+# Slack on the per-pass dispatch-attempt bound, above the open admission slots.
+# The driver dispatches the next hole (idx = dispatched_count) and re-reads the
+# count on a duplicate (a concurrent driver claimed it); this slack absorbs a few
+# such collisions per pass while still bounding the loop so it can never spin.
+_DISPATCH_ATTEMPT_SLACK = 8
 
 # Driver defaults persisted on the campaign row. Concurrency is the per-campaign
 # in-flight target; the first wave is dispatched ASYNC (drive_campaign_async, a
@@ -677,9 +682,6 @@ def can_dispatch_more(
 # plus the CAS launch (set_modal_call only on a NULL function_call_id row);
 # a per-campaign advisory lock + retries are Phase 2.
 
-_TERMINAL_CHILD = ("succeeded", "failed", "timeout", "cancelled")
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -708,33 +710,6 @@ def _ensure_adapters() -> None:
         import tools.boltzgen  # noqa: F401,PLC0415
     except Exception:
         logger.warning("_ensure_adapters: tool import failed", exc_info=True)
-
-
-def _campaign_children(campaign_id: str) -> list[dict]:
-    """Return ``[{chunk_index, status}, ...]`` for a campaign's sub-jobs."""
-    client = get_service_client()
-    if client is None:
-        return []
-    try:
-        resp = (
-            client.table("tool_jobs")
-            .select("chunk_index,status")
-            .eq("campaign_id", campaign_id)
-            .execute()
-        )
-        return list(getattr(resp, "data", None) or [])
-    except Exception:
-        logger.warning("_campaign_children failed for %s", campaign_id, exc_info=True)
-        return []
-
-
-def _tally(children: list[dict]) -> dict:
-    counts = {status: 0 for status in _CHILD_STATUSES}
-    for c in children:
-        s = c.get("status")
-        if s in counts:
-            counts[s] += 1
-    return counts
 
 
 def _update_campaign(campaign_id: str, fields: dict) -> None:
@@ -816,9 +791,12 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
       * ``"launched"`` — a child row was created and a Modal run started.
       * ``"failed"``   — a child row exists but reached a terminal failure
                           (modal submit failed); the chunk IS dispatched.
-      * ``"skipped"``  — NO child row was created (transient hold refusal,
-                          duplicate, transient insert failure); the chunk
-                          should be retried on a later drive pass.
+      * ``"skipped"``  — NO child row was created (transient hold refusal or
+                          transient insert failure); retry this SAME index on a
+                          later drive pass (the frontier does not advance).
+      * ``"duplicate"`` — NO new row: a concurrent driver already created this
+                          (campaign_id, chunk_index). The index IS claimed, so
+                          the caller resyncs the frontier and moves on.
       * ``"insufficient_funds"`` — the wallet balance cannot cover this
                           chunk's hold; the campaign should pause (the next
                           chunk cannot be funded either) and resume on top-up.
@@ -891,17 +869,17 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         campaign_label=campaign.name or None,
     )
     if child is None:
-        # Duplicate (campaign_id, chunk_index, attempt) from a racing driver
-        # (UNIQUE violation) or a transient insert failure. Release the hold
-        # so nothing is stranded; the winning row keeps its own hold. Report
-        # "skipped": if it was a duplicate the winner's row shows up in the
-        # next pass's existing_idx (so we won't re-try it); if it was
-        # transient, retrying is correct.
+        # No row: a racing driver won the UNIQUE(campaign_id, chunk_index,
+        # attempt) (real duplicate), OR a transient insert error (create_job
+        # returns None for both). Release the hold so nothing is stranded; the
+        # winner (if any) keeps its own hold. Report "duplicate"; the caller
+        # resyncs the frontier from the count, which advances only for a real
+        # duplicate, so a transient failure is retried next pass, not skipped.
         try:
             release_hold(hold_tx_id, reason="campaign_chunk_create_failed")
         except Exception:
             logger.warning("release_hold after create fail raised", exc_info=True)
-        return "skipped"
+        return "duplicate"
 
     presigned_url = ""
     if campaign.target_storage_path:
@@ -982,6 +960,31 @@ def _user_inflight_subjobs(user_id: str) -> int:
     return sum(1 for r in rows if r.get("campaign_id"))
 
 
+def _count_children(campaign_id: str, statuses: "tuple | list | None" = None) -> int:
+    """COUNT of a campaign's sub-jobs, optionally filtered to ``statuses``.
+
+    A head + exact count (no row transfer) over the partial (campaign_id, status)
+    index, so it is O(1)-ish regardless of campaign size. This is what keeps the
+    driver from loading every sub-job row on each tick.
+    """
+    client = get_service_client()
+    if client is None:
+        return 0
+    try:
+        q = (
+            client.table("tool_jobs")
+            .select("id", count="exact", head=True)
+            .eq("campaign_id", campaign_id)
+        )
+        if statuses:
+            q = q.in_("status", list(statuses))
+        resp = q.execute()
+        return int(getattr(resp, "count", 0) or 0)
+    except Exception:
+        logger.warning("_count_children failed for %s", campaign_id, exc_info=True)
+        return 0
+
+
 def drive_campaign(campaign_id: str) -> None:
     """Reconcile a campaign and dispatch as many sub-jobs as admission allows.
 
@@ -989,6 +992,13 @@ def drive_campaign(campaign_id: str) -> None:
     launch make double-dispatch impossible). Triggered at create (async via
     :func:`drive_campaign_async`), by the inline hook on child completion, and
     by the cron backstop.
+
+    O(1) per tick regardless of campaign size: it reads a couple of indexed
+    COUNTs and dispatches the next hole, instead of loading every sub-job row.
+    Chunks are dispatched lowest-index-first and the frontier only advances when
+    a row is created, so the rows are always a CONTIGUOUS PREFIX ``[0,
+    dispatched)`` and the next chunk to launch is exactly ``dispatched_count``.
+    A duplicate (a concurrent driver claimed that index) just re-reads the count.
     """
     campaign = get_campaign(campaign_id)
     if campaign is None:
@@ -999,56 +1009,55 @@ def drive_campaign(campaign_id: str) -> None:
 
     entry_status = campaign.status  # funded | running | paused_insufficient_funds
 
-    children = _campaign_children(campaign_id)
-    existing_idx = {
-        c["chunk_index"] for c in children if c.get("chunk_index") is not None
-    }
-    counts = _tally(children)
-    in_flight = counts["pending"] + counts["running"]
+    total = campaign.total_subjobs
+    dispatched = _count_children(campaign_id)
+    in_flight = _count_children(campaign_id, ("pending", "running"))
 
-    # Admission loop: fill open slots with the lowest chunk that has no row
-    # yet. ``attempted`` guards against re-trying the same chunk in this pass
-    # (a "skipped" chunk stays out of existing_idx so a LATER drive retries
-    # it, but must not spin here). A chunk only counts toward existing_idx /
-    # in_flight once a row actually exists — a refused hold wastes no slot. An
-    # "insufficient_funds" refusal stops the pass (the next chunk cannot be
-    # funded either) and routes the campaign to paused below.
+    # Admission loop, count-based. ``dispatched`` is the frontier: rows exist for
+    # [0, dispatched), so the next chunk to launch is index ``dispatched``. The
+    # frontier only advances when a row is created, so no holes form.
     #
     # Two admission bounds: the per-campaign concurrency target AND the global
     # per-user in-flight cap across all the user's campaigns (a load guard, soft
     # under concurrent drivers). ``user_inflight`` already includes this
-    # campaign's own in-flight children, so we increment it as we launch.
+    # campaign's own in-flight children, so we increment it as we launch. The
+    # attempt bound guarantees the pass terminates even under contention.
     user_inflight = _user_inflight_subjobs(campaign.user_id)
-    attempted: set = set()
     launched_any = False
     hit_insufficient = False
+    attempts = 0
+    attempt_budget = (campaign.concurrency_target - in_flight) + _DISPATCH_ATTEMPT_SLACK
     while (in_flight < campaign.concurrency_target
-           and user_inflight < GLOBAL_USER_INFLIGHT_CAP):
-        idx = None
-        for i in range(campaign.total_subjobs):
-            if i not in existing_idx and i not in attempted:
-                idx = i
-                break
-        if idx is None:
-            break
-        attempted.add(idx)
-        outcome = _dispatch_chunk(campaign, idx)
+           and user_inflight < GLOBAL_USER_INFLIGHT_CAP
+           and dispatched < total
+           and attempts < attempt_budget):
+        attempts += 1
+        outcome = _dispatch_chunk(campaign, dispatched)
         if outcome == "launched":
-            existing_idx.add(idx)
+            dispatched += 1
             in_flight += 1
             user_inflight += 1
             launched_any = True
         elif outcome == "failed":
-            # A (failed) child row exists for this chunk; it is dispatched.
-            existing_idx.add(idx)
+            # A (failed) child row exists at this index; the frontier advances.
+            dispatched += 1
+        elif outcome == "duplicate":
+            # create_job returned None: a concurrent driver claimed this index
+            # (real duplicate) OR a transient insert error. Resync the frontier
+            # from the authoritative count: if it advanced, someone claimed the
+            # index, so move to the next hole; if it did NOT advance, the row was
+            # never created (transient), so stop and retry this index next pass.
+            resynced = _count_children(campaign_id)
+            if resynced <= dispatched:
+                break
+            dispatched = resynced
         elif outcome == "insufficient_funds":
             hit_insufficient = True
             break
-        # "skipped": no row created; leave for a later drive pass.
+        else:  # "skipped": transient, no row created; retry this index later.
+            break
 
-    undispatched_remain = any(
-        i not in existing_idx for i in range(campaign.total_subjobs)
-    )
+    undispatched_remain = dispatched < total
 
     # Fund-and-drain state machine. Pause when the wallet cannot fund the next
     # chunk and work remains; resume when it can again. Pause takes precedence
@@ -1098,16 +1107,20 @@ def drive_campaign_async(campaign_id: str) -> None:
 
 
 def _maybe_finalize(campaign: "ComputeCampaign") -> None:
-    """Set the terminal campaign status once every chunk is dispatched + done."""
-    children = _campaign_children(campaign.id)
-    if len(children) < campaign.total_subjobs:
+    """Set the terminal campaign status once every chunk is dispatched + done.
+
+    Count-based (no all-rows load): finalize only when every chunk has a row
+    (``dispatched == total``) AND none is still in flight (``in_flight == 0``,
+    i.e. all rows are terminal). The counts are authoritative reads, so this
+    never finalizes while a chunk is still running or undispatched.
+    """
+    total = campaign.total_subjobs
+    if _count_children(campaign.id) < total:
         return
-    counts = _tally(children)
-    terminal = sum(counts[s] for s in _TERMINAL_CHILD)
-    if terminal < campaign.total_subjobs:
+    if _count_children(campaign.id, ("pending", "running")) > 0:
         return
-    succeeded = counts["succeeded"]
-    if succeeded >= campaign.total_subjobs:
+    succeeded = _count_children(campaign.id, ("succeeded",))
+    if succeeded >= total:
         final = "completed"
     elif succeeded > 0:
         final = "completed_with_failures"
