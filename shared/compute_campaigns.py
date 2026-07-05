@@ -73,26 +73,29 @@ BOLTZGEN_DESIGNS_PER_JOB = 50
 # a cold-start / slow fold still finishes inside the container timeout.
 _CONTAINER_UTILIZATION = 0.8
 
-# Phase 1 ships SMALL campaigns to prove the state machine + money
-# invariants before the driver is hardened for scale. The cap is 20 (not
-# 50) for a concrete Phase-1 reason: child holds go through the UNCHANGED
-# reserve_hold, which enforces the $200/day single-job cap (SQL, 0020),
-# summed across ALL of the user's jobs that day. At 20 sub-jobs the
-# priciest tool's whole campaign (boltzgen ~$8.74/chunk -> ~$175) fits
-# under $200 ON ITS OWN — but if the user also ran other jobs today, a
-# later child's hold can still be refused and that chunk PAUSES until the
-# UTC daily window resets (surfaced as "paused" in status.json, retried by
-# the cron; it never overspends, only defers). Phase 2 adds a daily-cap-
-# exempt child-hold RPC + a stall reaper and raises this cap.
-MAX_SUBJOBS_PER_CAMPAIGN = 20
+# Max sub-jobs per campaign. Phase 1 capped this at 20 because child holds
+# hit the $200/day SQL cap; step 2 removed that cap, and fund-and-drain
+# (steps 4a/5) means a large campaign is bounded only by the prepaid wallet
+# (it pauses when the balance cannot fund the next chunk). So Phase 2 raises
+# this toward true 20k: 2000 sub-jobs covers 20k designs for boltzgen
+# (50/chunk -> 400) and rfdiffusion (12/chunk -> 1667); bindcraft (3/chunk ->
+# 6667) still needs the bigger-container preset (step 8). 2000 is also the
+# request-size sanity bound (plan_chunks rejects a request over this).
+MAX_SUBJOBS_PER_CAMPAIGN = 2000
 
-# Driver defaults persisted on the campaign row. Phase 1 keeps the
-# concurrency target modest so the first wave (dispatched synchronously
-# from POST /runs) stays well inside the request budget; Phase 2 raises it
-# alongside async dispatch + fairness controls. (The 0034 column default
-# is 20 but create_campaign always writes this value explicitly.)
-DEFAULT_CONCURRENCY_TARGET = 8
+# Driver defaults persisted on the campaign row. Concurrency is the per-campaign
+# in-flight target; the first wave is dispatched ASYNC (drive_campaign_async, a
+# daemon thread) so raising it does not block POST /runs. It is bounded by the
+# global per-user in-flight cap below (2 campaigns x 16 = the 32 cap). (The 0034
+# column default is 20 but create_campaign always writes this value explicitly.)
+DEFAULT_CONCURRENCY_TARGET = 16
 DEFAULT_MAX_ATTEMPTS = 2
+
+# Global per-user in-flight sub-job cap across ALL of a user's campaigns. A
+# load/fairness guard (stops one user flooding Modal), NOT a spend guard - the
+# prepaid wallet bounds spend. Soft: concurrent drivers may briefly overshoot,
+# which is harmless. ~2 campaigns at the default concurrency of 16.
+GLOBAL_USER_INFLIGHT_CAP = 32
 
 # Head-room multiplier on the summed chunk estimate so the authorized
 # budget comfortably covers historical drift. Delivered-only billing
@@ -953,12 +956,39 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     return "launched"
 
 
+def _user_inflight_subjobs(user_id: str) -> int:
+    """Count a user's in-flight (pending+running) campaign sub-jobs across ALL
+    their campaigns. Feeds the global per-user in-flight cap (a load/fairness
+    guard, not a spend guard). Best-effort: 0 on any read failure so a transient
+    read error never blocks dispatch.
+    """
+    client = get_service_client()
+    if client is None:
+        return 0
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("campaign_id")
+            .eq("user_id", user_id)
+            .in_("status", ["pending", "running"])
+            .execute()
+        )
+        rows = list(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning(
+            "_user_inflight_subjobs failed for %s", user_id, exc_info=True
+        )
+        return 0
+    return sum(1 for r in rows if r.get("campaign_id"))
+
+
 def drive_campaign(campaign_id: str) -> None:
     """Reconcile a campaign and dispatch as many sub-jobs as admission allows.
 
     Safe to call repeatedly and concurrently (the DB uniqueness + CAS
-    launch make double-dispatch impossible). Triggered at create, by the
-    inline hook on child completion, and by the cron backstop.
+    launch make double-dispatch impossible). Triggered at create (async via
+    :func:`drive_campaign_async`), by the inline hook on child completion, and
+    by the cron backstop.
     """
     campaign = get_campaign(campaign_id)
     if campaign is None:
@@ -983,10 +1013,17 @@ def drive_campaign(campaign_id: str) -> None:
     # in_flight once a row actually exists — a refused hold wastes no slot. An
     # "insufficient_funds" refusal stops the pass (the next chunk cannot be
     # funded either) and routes the campaign to paused below.
+    #
+    # Two admission bounds: the per-campaign concurrency target AND the global
+    # per-user in-flight cap across all the user's campaigns (a load guard, soft
+    # under concurrent drivers). ``user_inflight`` already includes this
+    # campaign's own in-flight children, so we increment it as we launch.
+    user_inflight = _user_inflight_subjobs(campaign.user_id)
     attempted: set = set()
     launched_any = False
     hit_insufficient = False
-    while in_flight < campaign.concurrency_target:
+    while (in_flight < campaign.concurrency_target
+           and user_inflight < GLOBAL_USER_INFLIGHT_CAP):
         idx = None
         for i in range(campaign.total_subjobs):
             if i not in existing_idx and i not in attempted:
@@ -999,6 +1036,7 @@ def drive_campaign(campaign_id: str) -> None:
         if outcome == "launched":
             existing_idx.add(idx)
             in_flight += 1
+            user_inflight += 1
             launched_any = True
         elif outcome == "failed":
             # A (failed) child row exists for this chunk; it is dispatched.
@@ -1032,6 +1070,31 @@ def drive_campaign(campaign_id: str) -> None:
 
     _update_campaign(campaign_id, {"last_tick_at": _now_iso()})
     _maybe_finalize(campaign)
+
+
+def drive_campaign_async(campaign_id: str) -> None:
+    """Kick the first-wave dispatch off the request path.
+
+    POST /runs returns immediately; this daemon thread runs the initial drive so
+    the first wave fans out without blocking the response (at the raised
+    concurrency an inline drive would make many Modal + Supabase round-trips
+    before returning). The cron tick is the reliable backstop if the thread dies
+    or the worker recycles before it finishes.
+    """
+    import threading  # noqa: PLC0415
+
+    def _run() -> None:
+        try:
+            drive_campaign(campaign_id)
+        except Exception:
+            logger.warning(
+                "drive_campaign_async: drive failed for %s", campaign_id,
+                exc_info=True,
+            )
+
+    threading.Thread(
+        target=_run, name=f"campaign-drive-{str(campaign_id)[:8]}", daemon=True
+    ).start()
 
 
 def _maybe_finalize(campaign: "ComputeCampaign") -> None:

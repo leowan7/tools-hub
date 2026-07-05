@@ -206,6 +206,19 @@ it resolves when the wallet unfreezes. A `paused_frozen` state is out of scope.
 - **Raise `DEFAULT_CONCURRENCY_TARGET`** from 8, bounded by the global per-user
   in-flight cap (section 6).
 
+**Build status (2026-07-05): SHIPPED as step 6a, app-layer only, no migration.**
+`MAX_SUBJOBS_PER_CAMPAIGN` 20 -> 2000 (also the request-size sanity bound);
+`DEFAULT_CONCURRENCY_TARGET` 8 -> 16; `GLOBAL_USER_INFLIGHT_CAP` = 32 enforced in
+the admission loop via `_user_inflight_subjobs(user_id)` (counts pending+running
+campaign sub-jobs across all the user's campaigns; a soft load guard, not a spend
+guard); first-wave dispatch is now async via `drive_campaign_async` (a named
+daemon thread, the house pattern from webhooks/events/email) with the 5-min cron
+as the reliable backstop. `POST /runs` returns immediately. The per-campaign
+advisory lock is DEFERRED to 6b (needs an RPC migration; the existing UNIQUE +
+CAS-launch already makes double-dispatch impossible, so the lock is only a
+duplicate-work optimization, not a correctness requirement). bindcraft's
+bigger-container preset stays step 8.
+
 ## 6. Multi-campaign edge case (one boltzgen + one rfdiffusion at once)
 
 The scenario: a user runs a boltzgen campaign and an rfdiffusion campaign
@@ -321,6 +334,9 @@ verify each before merge:
    interim to avoid a KYC gap).
 6. Raise MAX_SUBJOBS + DEFAULT_CONCURRENCY_TARGET; add the global per-user
    in-flight cap; async first-wave dispatch + per-campaign advisory lock.
+   **6a (MAX_SUBJOBS 2000 + concurrency 16 + in-flight cap 32 + async dispatch)
+   SHIPPED 2026-07-05, app-layer only (see the Build status note under section
+   5). 6b (per-campaign advisory lock) DEFERRED, needs an RPC migration.**
 7. Round-robin cross-campaign dispatch fairness in the cron.
 8. bindcraft bigger-container campaign preset.
 9. Bug 1 relabel ("0 / N delivered" -> "N designs produced", surface produced
@@ -329,9 +345,9 @@ verify each before merge:
 ## 10. Decisions (locked 2026-07-04)
 
 - **"Enough to start" threshold:** FUND THE FIRST WAVE. A campaign starts once
-  the wallet covers the first concurrency wave (`DEFAULT_CONCURRENCY_TARGET` = 8
-  sub-jobs). It enters `paused_insufficient_funds` only if a later wave outruns
-  the balance; a top-up resumes it.
+  the wallet covers the first concurrency wave (`DEFAULT_CONCURRENCY_TARGET`,
+  raised 8 -> 16 in step 6a). It enters `paused_insufficient_funds` only if a
+  later wave outruns the balance; a top-up resumes it.
 - **Hold sizing:** CUSHIONED ESTIMATE CLAMPED TO HARD CAP. Reserve a cushioned
   per-child estimate, raising the estimate AND the hard cap in lockstep so the
   `min(marked_up, cap)` clamp does not swallow the cushion; never the full cap.
@@ -339,9 +355,9 @@ verify each before merge:
   transparent, so the tighter reservation is safe on a shared wallet.
 - **Pause TTL:** 14 DAYS. A campaign starved for funds auto-finalizes as partial
   after 14 days paused (surfaces produced designs, releases outstanding holds).
-- **Global per-user in-flight sub-job cap:** 32 (about 4 campaigns at the default
-  concurrency of 8). Round-robin fairness across a user's active campaigns under
-  this cap.
+- **Global per-user in-flight sub-job cap:** 32 (about 2 campaigns at the default
+  concurrency of 16, shipped in step 6a). Round-robin fairness across a user's
+  active campaigns under this cap (step 7).
 - **Verification (KYC) re-anchor:** a SINGLE TOP-UP of >= $5k triggers
   verification. Reuse the old $5k threshold, now on wallet top-up size (where the
   money enters) since campaign size no longer gates. Move
