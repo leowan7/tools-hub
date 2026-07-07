@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import posixpath
 import sys
 
 # Allow `python scripts/finalize_stuck_job.py` from the repo root to import the
@@ -37,69 +36,10 @@ try:
 except ImportError:
     pass
 
-from shared.credits import get_service_client
 from shared.jobs import complete_job, get_job
-from shared.storage import OUTPUT_BUCKET, output_exists
-
-
-def _list_design_files(user_id: str, job_id: str) -> list[str]:
-    """Fallback: list the design filenames present under the job's prefix."""
-    client = get_service_client()
-    if client is None:
-        return []
-    prefix = f"{user_id}/{job_id}/designs"
-    try:
-        listing = client.storage.from_(OUTPUT_BUCKET).list(path=prefix)
-    except Exception:
-        return []
-    names = []
-    for item in listing or []:
-        name = item.get("name") if isinstance(item, dict) else None
-        if name and name.lower().endswith((".cif", ".pdb", ".mmcif")):
-            names.append(name)
-    return sorted(names)
-
-
-def _candidate_from_partial(part: dict) -> dict:
-    """Rebuild a result.candidate (nested scores) from a streamed partial."""
-    basename = posixpath.basename(str(part.get("pdb_key") or ""))
-    scores: dict = {}
-    if part.get("iptm") is not None:
-        scores["ipTM"] = part["iptm"]
-    if part.get("plddt") is not None:
-        scores["pLDDT"] = part["plddt"]
-    if part.get("filter_status"):
-        scores["filter_status"] = part["filter_status"]
-    return {
-        "rank": part.get("rank"),
-        "pdb_key": f"designs/{basename}",
-        "scores": scores,
-    }
-
-
-def reconstruct(job) -> list[dict]:
-    """Rebuild result.candidates, keeping only designs that exist in Storage."""
-    partials = (job.inputs or {}).get("_partial_candidates") or []
-    candidates = []
-    for part in partials:
-        if not isinstance(part, dict):
-            continue
-        basename = posixpath.basename(str(part.get("pdb_key") or ""))
-        if not basename:
-            continue
-        if not output_exists(
-            user_id=job.user_id, job_id=job.id, filename=basename
-        ):
-            continue
-        candidates.append(_candidate_from_partial(part))
-    if candidates:
-        return candidates
-    # Partials missing/empty — list Storage directly (no scores recoverable).
-    files = _list_design_files(job.user_id, job.id)
-    return [
-        {"rank": i + 1, "pdb_key": f"designs/{name}", "scores": {}}
-        for i, name in enumerate(files)
-    ]
+# The Storage reconstruction lives in shared.job_recovery so the stuck-job
+# sweeper and this manual tool share one proven implementation.
+from shared.job_recovery import reconstruct
 
 
 def main() -> int:

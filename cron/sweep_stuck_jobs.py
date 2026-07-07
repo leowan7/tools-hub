@@ -11,9 +11,13 @@ Jobs occasionally get marooned in a non-terminal state:
              ``running``) but the pipeline died without posting a
              terminal webhook, and no further heartbeats arrived.
 
-Both states leak a wallet hold. This module CAS-transitions stale rows
-to ``timeout`` and routes them through ``_settle_wallet_hold_for_completed_job``
-via the public ``timeout_stuck_job`` helper.
+Both states leak a wallet hold. This module routes stale rows through the
+public ``timeout_stuck_job`` helper, which first tries to RECOVER a job
+whose work actually completed but whose terminal webhook was lost (it
+finalizes such a job as ``succeeded`` through the normal ``complete_job``
+settle path). Only jobs with nothing recoverable are CAS-transitioned to
+``timeout`` and full-refunded. The summary counts recoveries separately so
+a lost-webhook incident is visible in the cron log.
 
 Configuration
 -------------
@@ -49,7 +53,12 @@ def sweep_stuck_jobs(
 
     Returns a summary dict suitable for logging::
 
-        {"pending_swept": N, "running_swept": M, "errors": [...]}
+        {"pending_swept": N, "running_swept": M, "recovered": K,
+         "errors": [...]}
+
+    ``pending_swept`` / ``running_swept`` count jobs timed out (full
+    refund). ``recovered`` counts jobs whose lost-webhook result was
+    finalized as succeeded instead of being discarded.
     """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.jobs import timeout_stuck_job  # noqa: PLC0415
@@ -72,6 +81,7 @@ def sweep_stuck_jobs(
     summary: dict = {
         "pending_swept": 0,
         "running_swept": 0,
+        "recovered": 0,
         "errors": [],
     }
 
@@ -102,7 +112,10 @@ def sweep_stuck_jobs(
         if not job_id:
             continue
         try:
-            if timeout_stuck_job(job_id):
+            outcome = timeout_stuck_job(job_id)
+            if outcome == "recovered":
+                summary["recovered"] += 1
+            elif outcome == "timed_out":
                 summary["pending_swept"] += 1
         except Exception as exc:
             logger.warning(
@@ -133,7 +146,10 @@ def sweep_stuck_jobs(
         if not job_id:
             continue
         try:
-            if timeout_stuck_job(job_id):
+            outcome = timeout_stuck_job(job_id)
+            if outcome == "recovered":
+                summary["recovered"] += 1
+            elif outcome == "timed_out":
                 summary["running_swept"] += 1
         except Exception as exc:
             logger.warning(
