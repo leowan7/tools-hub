@@ -1187,12 +1187,18 @@ def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
     # concurrent inline-hook + cron drives.
     if hit_insufficient and undispatched_remain:
         paused = _cas_transition(
-            campaign_id, "paused_insufficient_funds", ("funded", "running")
+            campaign_id, "paused_insufficient_funds", ("funded", "running"),
+            {"paused_at": _now_iso()},
         )
         if paused:
             _notify_campaign_paused(campaign)
     elif launched_any and entry_status in ("funded", "paused_insufficient_funds"):
-        extra = {"started_at": _now_iso()} if entry_status == "funded" else None
+        # Resume clears the pause bookkeeping so a later pause re-notifies and the
+        # 14-day TTL clock restarts. (paused_at was already NULL from a fresh
+        # funded start; writing NULL again is harmless.)
+        extra: dict = {"paused_at": None, "pause_notified_at": None}
+        if entry_status == "funded":
+            extra["started_at"] = _now_iso()
         _cas_transition(
             campaign_id, "running", ("funded", "paused_insufficient_funds"), extra
         )
@@ -1265,26 +1271,113 @@ def _maybe_finalize(campaign: "ComputeCampaign") -> None:
 
 
 def _notify_campaign_paused(campaign: "ComputeCampaign") -> None:
-    """Best-effort pause email. Never raises into the driver.
+    """Pause email with DURABLE delivery. Never raises into the driver.
 
-    Called only on the winning CAS pause transition, so it is sent AT MOST ONCE
-    per pause event (a later resume + re-pause is a new event and mails again).
-    It is at-most-once, not exactly-once: the CAS commits the paused status
-    before this send, so a transient Resend failure drops the email and no later
-    pass re-wins the CAS to retry it. The UI paused banner is the backstop;
-    durable delivery (a notified-at flag + cron retry) is deferred to step 4b.
+    Sends the email and, ONLY on a confirmed send (the sender returns True),
+    stamps ``pause_notified_at``. If the send is dropped (transient Resend
+    failure, or no address yet), the flag stays NULL and the cron's paused sweep
+    (:func:`sweep_paused_campaigns`) re-sends it — so a pause notification is not
+    lost (step 4b upgrades the old at-most-once behaviour). Called on the winning
+    CAS pause transition; a resume clears the flag so a later re-pause notifies
+    again. Proactive auto-reload-on-pause is already covered upstream: the wallet
+    settle hook calls ``auto_reload_if_needed`` when the funding chunk settled the
+    balance low, so no separate trigger is needed here.
     """
+    sent = False
     try:
         from shared.email import send_campaign_paused_email  # noqa: PLC0415
-        send_campaign_paused_email(
+        sent = bool(send_campaign_paused_email(
             user_id=campaign.user_id,
             campaign_id=campaign.id,
             campaign_name=campaign.name or "",
+        ))
+    except Exception:
+        logger.warning(
+            "campaign %s: pause email raised (cron will retry)", campaign.id,
+            exc_info=True,
+        )
+    if sent:
+        _update_campaign(campaign.id, {"pause_notified_at": _now_iso()})
+
+
+_PAUSE_TTL_DAYS = 14
+
+
+def _ttl_finalize_paused(campaign_id: str) -> bool:
+    """CAS-finalize a campaign starved past the pause TTL.
+
+    Produced designs stay on their sub-job pages (downloadable); undispatched
+    chunks never placed a hold, so there is nothing to release. Finalizes to
+    ``completed_with_failures`` when any chunk delivered, else ``cancelled``.
+    Fail-safe: a still-in-flight chunk (should not exist after the TTL) or a
+    failed count read leaves the campaign paused for the next sweep.
+    """
+    if _count_children(campaign_id, ("pending", "running"), default=1) > 0:
+        return False
+    succeeded = _count_children(campaign_id, ("succeeded",), default=-1)
+    if succeeded < 0:
+        return False
+    final = "completed_with_failures" if succeeded > 0 else "cancelled"
+    return _cas_transition(
+        campaign_id, final, ("paused_insufficient_funds",),
+        {"completed_at": _now_iso()},
+    )
+
+
+def sweep_paused_campaigns(*, now=None, ttl_days: int = _PAUSE_TTL_DAYS) -> dict:
+    """Cron housekeeping over paused campaigns: TTL auto-finalize + email retry.
+
+    * ``paused_at`` older than ``ttl_days`` -> finalize as partial
+      (:func:`_ttl_finalize_paused`), so a never-topped-up campaign does not
+      linger forever.
+    * ``pause_notified_at`` still NULL -> re-send the pause email (durable
+      delivery). Bounded: once the TTL finalizes the campaign it drops out of the
+      paused set, so a user with no address is retried only until the TTL.
+
+    Idempotent + CAS-guarded; safe alongside the drive tick and overlapping cron
+    ticks. Returns ``{"finalized": n, "renotified": m}``.
+    """
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
+    summary = {"finalized": 0, "renotified": 0}
+    client = get_service_client()
+    if client is None:
+        return summary
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=ttl_days)).isoformat()
+
+    try:
+        stale = (
+            client.table(_TABLE).select("id")
+            .eq("status", "paused_insufficient_funds")
+            .lt("paused_at", cutoff)
+            .execute().data or []
+        )
+    except Exception:
+        logger.warning("sweep_paused_campaigns: TTL query failed", exc_info=True)
+        stale = []
+    for row in stale:
+        cid = row.get("id")
+        if cid and _ttl_finalize_paused(str(cid)):
+            summary["finalized"] += 1
+
+    try:
+        unnotified = (
+            client.table(_TABLE).select("*")
+            .eq("status", "paused_insufficient_funds")
+            .is_("pause_notified_at", "null")
+            .execute().data or []
         )
     except Exception:
         logger.warning(
-            "campaign %s: pause email failed", campaign.id, exc_info=True
+            "sweep_paused_campaigns: renotify query failed", exc_info=True
         )
+        unnotified = []
+    for row in unnotified:
+        _notify_campaign_paused(ComputeCampaign.from_row(row))
+        summary["renotified"] += 1
+
+    return summary
 
 
 def maybe_drive_campaign_for_job(job) -> None:  # noqa: ANN001

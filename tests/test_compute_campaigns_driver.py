@@ -42,6 +42,8 @@ class _Query:
         self._single = False
         self._count = None
         self._head = False
+        self._lt = []
+        self._is = []
 
     def select(self, *_a, **_k):
         self._count = _k.get("count")
@@ -64,6 +66,14 @@ class _Query:
         self._in.append((col, list(vals)))
         return self
 
+    def lt(self, col, val):
+        self._lt.append((col, val))
+        return self
+
+    def is_(self, col, val):
+        self._is.append((col, val))  # val == "null" -> IS NULL
+        return self
+
     def gte(self, *_a, **_k):
         return self
 
@@ -82,6 +92,13 @@ class _Query:
             return False
         if not all(r.get(c) in vals for c, vals in self._in):
             return False
+        for c, v in self._lt:
+            rv = r.get(c)
+            if rv is None or not (str(rv) < str(v)):  # ISO timestamps sort lexically
+                return False
+        for c, v in self._is:
+            if v == "null" and r.get(c) is not None:
+                return False
         return True
 
     def execute(self):
@@ -642,6 +659,106 @@ def test_tick_round_robin_shares_balance(driver_env, monkeypatch):
     assert per_campaign.get("camp-A") == 4
     assert per_campaign.get("camp-B") == 4
     assert summary["driven"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 4b: pause bookkeeping (paused_at), durable email (pause_notified_at), TTL sweep
+# ---------------------------------------------------------------------------
+
+
+def test_pause_sets_paused_at_and_notified(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36)
+    _patch_pause_email(monkeypatch)  # returns True -> durable notify stamps the flag
+    state["wallet_balance"] = Decimal("0")
+
+    drive_campaign("camp-1")
+
+    row = client.store["compute_campaigns"][0]
+    assert row["status"] == "paused_insufficient_funds"
+    assert row.get("paused_at")          # stamped on pause (feeds the TTL)
+    assert row.get("pause_notified_at")  # send confirmed -> stamped
+
+
+def test_pause_leaves_notified_null_when_email_drops(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36)
+    import shared.email as em
+    monkeypatch.setattr(em, "send_campaign_paused_email", lambda **kw: False)  # dropped
+    state["wallet_balance"] = Decimal("0")
+
+    drive_campaign("camp-1")
+    row = client.store["compute_campaigns"][0]
+    assert row["status"] == "paused_insufficient_funds"
+    assert row.get("paused_at")
+    assert row.get("pause_notified_at") is None  # not confirmed -> cron will retry
+
+
+def test_resume_clears_pause_bookkeeping(driver_env, monkeypatch):
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36)
+    _patch_pause_email(monkeypatch)
+    one_hold = cc.child_hold_usd("rfdiffusion", 12)
+    state["wallet_balance"] = one_hold  # one chunk, then pause
+
+    drive_campaign("camp-1")
+    row = client.store["compute_campaigns"][0]
+    assert row["status"] == "paused_insufficient_funds" and row.get("paused_at")
+
+    state["wallet_balance"] = one_hold * 10  # top up -> resume
+    drive_campaign("camp-1")
+    row = client.store["compute_campaigns"][0]
+    assert row["status"] == "running"
+    assert row.get("paused_at") is None
+    assert row.get("pause_notified_at") is None
+
+
+def test_sweep_ttl_finalizes_long_paused_with_delivery(driver_env):
+    client, _ = driver_env
+    row = _seed_campaign(client, total_subjobs=3, status="paused_insufficient_funds")
+    row["paused_at"] = "2000-01-01T00:00:00+00:00"  # far past the 14-day TTL
+    client.store["tool_jobs"].append(
+        {"campaign_id": "camp-1", "chunk_index": 0, "status": "succeeded"})
+
+    summary = cc.sweep_paused_campaigns()
+    assert summary["finalized"] == 1
+    assert client.store["compute_campaigns"][0]["status"] == "completed_with_failures"
+
+
+def test_sweep_ttl_finalizes_empty_paused_as_cancelled(driver_env):
+    client, _ = driver_env
+    row = _seed_campaign(client, total_subjobs=3, status="paused_insufficient_funds")
+    row["paused_at"] = "2000-01-01T00:00:00+00:00"
+
+    summary = cc.sweep_paused_campaigns()
+    assert summary["finalized"] == 1
+    assert client.store["compute_campaigns"][0]["status"] == "cancelled"
+
+
+def test_sweep_leaves_recent_pause_alone(driver_env):
+    client, _ = driver_env
+    from datetime import datetime, timezone
+    row = _seed_campaign(client, total_subjobs=3, status="paused_insufficient_funds")
+    row["paused_at"] = datetime.now(timezone.utc).isoformat()   # just paused
+    row["pause_notified_at"] = "2026-07-06T00:00:00+00:00"      # already notified
+
+    summary = cc.sweep_paused_campaigns()
+    assert summary == {"finalized": 0, "renotified": 0}
+    assert client.store["compute_campaigns"][0]["status"] == "paused_insufficient_funds"
+
+
+def test_sweep_renotifies_unnotified_paused(driver_env, monkeypatch):
+    client, _ = driver_env
+    from datetime import datetime, timezone
+    calls = _patch_pause_email(monkeypatch)
+    row = _seed_campaign(client, total_subjobs=3, status="paused_insufficient_funds")
+    row["paused_at"] = datetime.now(timezone.utc).isoformat()
+    row["pause_notified_at"] = None  # dropped at pause time
+
+    summary = cc.sweep_paused_campaigns()
+    assert summary["renotified"] == 1
+    assert len(calls) == 1
+    assert client.store["compute_campaigns"][0].get("pause_notified_at")  # now stamped
 
 
 # ---------------------------------------------------------------------------

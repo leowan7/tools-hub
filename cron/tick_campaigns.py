@@ -106,5 +106,15 @@ def tick_campaigns() -> dict:
             if launched == 0:
                 break
 
+    # Housekeeping over paused campaigns: 14-day TTL auto-finalize + durable
+    # pause-email retry (a Resend drop at pause time is re-sent here).
+    try:
+        from shared.compute_campaigns import sweep_paused_campaigns  # noqa: PLC0415
+        sweep = sweep_paused_campaigns()
+        summary["finalized"] = sweep.get("finalized", 0)
+        summary["renotified"] = sweep.get("renotified", 0)
+    except Exception:
+        logger.warning("tick_campaigns: paused sweep failed", exc_info=True)
+
     summary["driven"] = len(driven_ids)
     return summary
