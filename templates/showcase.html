@@ -1,60 +1,156 @@
 {% extends "base.html" %}
 
-{% block title %}Showcase | Anonymized binder design runs on Ranomics Tools{% endblock %}
+{% block title %}Protein binder design showcase | Real BoltzGen and RFdiffusion runs | Ranomics Tools{% endblock %}
 
-{% block description %}Real internal benchmark runs of the design algorithms available on tools.ranomics.com. BoltzGen and RFdiffusion campaigns on public targets, validated with AlphaFold2, ProteinMPNN, and Boltz-2, with anonymized target descriptions and honest metrics.{% endblock %}
+{% block description %}Real internal benchmark runs of the AI protein binder design tools on tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns plus an RFdiffusion pilot on public targets, validated with AlphaFold2, ProteinMPNN, and Boltz-2. Honest metrics, anonymized targets.{% endblock %}
+
+{% block head_extra %}
+<style>
+  .showcase-hero-stats { display: flex; flex-wrap: wrap; gap: 1.75rem 2.5rem; justify-content: center; margin-top: 1.75rem; }
+  .showcase-hero-stat { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
+  .showcase-hero-stat .v { font-family: var(--font-display); font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 500; letter-spacing: -0.02em; line-height: 1; color: var(--warm-white); }
+  .showcase-hero-stat .l { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-secondary); }
+
+  .showcase-entry-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; color: var(--warm-white); margin: 0; }
+
+  .showcase-top { display: flex; gap: 1.25rem; align-items: flex-start; margin-bottom: 1.35rem; }
+  .showcase-visual { flex-shrink: 0; width: 96px; height: 96px; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.25); display: flex; align-items: center; justify-content: center; color: var(--accent-text); }
+  .showcase-visual svg { width: 52px; height: 52px; }
+  .showcase-meta { flex: 1; min-width: 0; }
+  .showcase-metarow { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin-bottom: 0.95rem; color: var(--text-secondary); font-size: 0.82rem; }
+  .showcase-metarow .k { color: var(--text-primary); font-weight: 600; margin-right: 0.3rem; }
+
+  .showcase-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.6rem; }
+  .showcase-stat { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.2rem; }
+  .showcase-stat-v { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 500; line-height: 1.1; color: var(--accent-text); }
+  .showcase-stat-l { font-size: 0.72rem; line-height: 1.3; color: var(--text-secondary); }
+
+  .showcase-prose { color: var(--text-secondary); font-size: 0.95rem; line-height: 1.65; max-width: 70ch; }
+  .showcase-prose p { margin: 0 0 0.85rem; }
+  .showcase-prose ul { margin: 0 0 1rem; padding-left: 1.15rem; }
+  .showcase-prose li { margin-bottom: 0.4rem; }
+  .showcase-subhead { color: var(--text-primary); font-weight: 600; margin: 1.15rem 0 0.5rem; }
+
+  .showcase-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.35rem; }
+
+  @media (max-width: 640px) {
+    .showcase-top { flex-direction: column; gap: 1rem; }
+    .showcase-visual { width: 72px; height: 72px; }
+    .showcase-visual svg { width: 40px; height: 40px; }
+  }
+</style>
+{% endblock %}
 
 {% block jsonld_extra %}
-{# Dataset JSON-LD per showcase entry. One <script> per entry so
-   crawlers index them as distinct datasets. #}
+{# Dataset JSON-LD per showcase entry so crawlers index each as a distinct
+   dataset, wrapped by an ItemList that ties the collection together. #}
 {% for e in entries %}
 <script type="application/ld+json">
 {{ {
   "@context": "https://schema.org",
   "@type": "Dataset",
   "name": e.meta.title,
-  "description": e.meta.title,
+  "description": (e.meta.title ~ ". Internal benchmark run on an anonymized public target."),
   "creator": {"@type": "Organization", "name": "Ranomics"},
   "isAccessibleForFree": True,
   "datePublished": e.meta.date|string,
   "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
-  "url": (request.url_root.rstrip('/') ~ url_for('tool_form', tool=e.meta.tool) if e.meta.tool not in ('scout',) else request.url_root.rstrip('/') ~ '/scout'),
+  "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug),
   "measurementTechnique": ("Top score: " ~ (e.meta.top_score|string)) if (e.meta.top_score is defined and e.meta.top_score != '') else "Internal benchmark run"
 } | tojson }}
 </script>
 {% endfor %}
+{% set _items = [] %}
+{% for e in entries %}
+  {% set _ = _items.append({
+    "@type": "ListItem",
+    "position": loop.index,
+    "name": e.meta.title,
+    "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
+  }) %}
+{% endfor %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "ItemList",
+  "name": "Ranomics Tools binder design showcase",
+  "itemListElement": _items
+} | tojson }}
+</script>
 {% endblock %}
 
 {% block content %}
 
-  <div class="hero">
-    <h1>Tools showcase</h1>
-    <p class="subtitle">Real internal benchmark runs of the design algorithms you can run on tools.ranomics.com, on public targets with anonymized descriptions.</p>
-  </div>
+  <section class="landing-hero">
+    <div class="landing-hero-inner">
+      <span class="landing-eyebrow">Real runs on the platform</span>
+      <h1>Real AI protein binder design runs</h1>
+      <p class="landing-hero-lede">
+        Every entry below is a real internal benchmark run of the design
+        algorithms on tools.ranomics.com. BoltzGen nanobody and de novo
+        minibinder campaigns and an RFdiffusion pilot, on public targets,
+        validated with AlphaFold2, ProteinMPNN, and Boltz-2. Anonymized targets,
+        honest metrics, and a deep link into the tool that produced each one.
+      </p>
+      <div class="landing-hero-cta">
+        <a href="{{ url_for('tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
+        <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">How billing works</a>
+      </div>
+      <div class="showcase-hero-stats">
+        <div class="showcase-hero-stat"><span class="v">3</span><span class="l">real campaigns</span></div>
+        <div class="showcase-hero-stat"><span class="v">22,060</span><span class="l">designs generated</span></div>
+        <div class="showcase-hero-stat"><span class="v">5</span><span class="l">algorithms exercised</span></div>
+      </div>
+    </div>
+  </section>
 
   {% for e in entries %}
-    <section class="section">
-      <div class="panel">
+    <section class="section showcase-entry">
+      <article class="panel">
         <div class="panel-header">
-          <h2 class="panel-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
+          <h2 class="showcase-entry-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
           {% if e.meta.internal_benchmark %}
             <span class="panel-badge">Internal benchmark run</span>
           {% endif %}
         </div>
         <div class="panel-body">
-          <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.88rem;">
-            <span><strong style="color: var(--text-primary);">Tool</strong> {{ e.meta.tool }}</span>
-            <span><strong style="color: var(--text-primary);">Target</strong> {{ e.meta.target_kind }}</span>
-            {% if e.meta.top_score is defined and e.meta.top_score != '' %}<span><strong style="color: var(--text-primary);">Top score</strong> {{ e.meta.top_score }}</span>{% endif %}
-            <span><strong style="color: var(--text-primary);">Date</strong> {{ e.meta.date }}</span>
+          <div class="showcase-top">
+            {% if e.glyph %}
+              <div class="showcase-visual" aria-hidden="true">{{ inline_category_glyph(e.glyph) }}</div>
+            {% endif %}
+            <div class="showcase-meta">
+              <div class="showcase-metarow">
+                <span><span class="k">Tool</span>{{ e.meta.tool }}</span>
+                <span><span class="k">Target</span>{{ e.meta.target_kind }}</span>
+                {% if e.meta.top_score is defined and e.meta.top_score != '' %}<span><span class="k">Top score</span>{{ e.meta.top_score }}</span>{% endif %}
+                <span><span class="k">Date</span>{{ e.meta.date }}</span>
+              </div>
+              {% if e.stats %}
+                <div class="showcase-stats">
+                  {% for s in e.stats %}
+                    <div class="showcase-stat">
+                      <span class="showcase-stat-v">{{ s.value }}</span>
+                      <span class="showcase-stat-l">{{ s.label }}</span>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </div>
           </div>
 
-          {# Body rendered as plaintext in a <pre> block so we avoid a
-             markdown dependency. The Markdown source is human-readable
-             and the <pre> preserves paragraph breaks and bullet shape. #}
-          <pre style="white-space: pre-wrap; font-family: var(--font-body, inherit); font-size: 0.96rem; line-height: 1.65; color: var(--text-secondary); margin: 0;">{{ e.body }}</pre>
+          <div class="showcase-prose">
+            {% for b in e.blocks %}
+              {% if b.type == 'subhead' %}
+                <p class="showcase-subhead">{{ b.text }}</p>
+              {% elif b.type == 'list' %}
+                <ul>{% for it in b.bullets %}<li>{{ it }}</li>{% endfor %}</ul>
+              {% else %}
+                <p>{{ b.text }}</p>
+              {% endif %}
+            {% endfor %}
+          </div>
 
-          <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
+          <div class="showcase-actions">
             {% if e.tool_url %}
               <a href="{{ e.tool_url }}" class="btn-primary">Open {{ e.meta.tool }} on tools.ranomics.com</a>
             {% endif %}
@@ -63,24 +159,24 @@
             {% endif %}
           </div>
         </div>
-      </div>
+      </article>
     </section>
   {% endfor %}
 
   <section class="section">
     <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">Run something like this</span>
-      </div>
       <div class="panel-body">
-        <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
-          Every showcase entry above pairs a design tool (BoltzGen,
-          RFdiffusion, BindCraft, RFantibody, or PXDesign) with an
-          independent structure prediction check (AlphaFold2, ColabFold,
-          ESMFold, or Boltz-2), the same tools you can run on
-          tools.ranomics.com.
+        <div class="section-head" style="margin-bottom: 1rem;">
+          <span class="section-eyebrow">Your turn</span>
+          <h2 class="section-title">Run something like this</h2>
+        </div>
+        <p style="margin: 0 0 0.95rem 0; color: var(--text-secondary); line-height: 1.65; max-width: 70ch;">
+          Every showcase entry above pairs a design tool (BoltzGen, RFdiffusion,
+          BindCraft, RFantibody, or PXDesign) with an independent structure
+          prediction check (AlphaFold2, ColabFold, ESMFold, or Boltz-2), the same
+          tools you can run on tools.ranomics.com.
         </p>
-        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+        <div class="showcase-actions">
           <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
           <a href="{{ url_for('pricing') }}" class="btn-secondary">How billing works</a>
           <a href="{{ url_for('signup') }}" class="btn-secondary">Create a free account</a>

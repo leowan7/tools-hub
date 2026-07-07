@@ -4,6 +4,8 @@ tool: rfdiffusion
 target_kind: de novo backbone pilot, executed through the platform
 date: 2026-07-06
 internal_benchmark: true
+glyph: De novo minibinders
+stats: 60=designs delivered | 5=parallel jobs | $11.58=total billed | $0.19=per design
 ---
 
 Internal benchmark run executed entirely through tools.ranomics.com, from

@@ -5,6 +5,8 @@ target_kind: VHH nanobody steered off the receptor functional face
 top_score: 0.81
 date: 2026-06-26
 internal_benchmark: true
+glyph: Antibodies (VHH)
+stats: 2000=designs generated | 0.974=best discovery ipTM | 12=validated panel | 10 of 12=strong on two scorers
 ---
 
 Internal benchmark run on a public target. We used BoltzGen to design VHH
