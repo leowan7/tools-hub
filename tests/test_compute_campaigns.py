@@ -35,8 +35,8 @@ from shared.compute_campaigns import (
 def test_chunk_size_per_tool():
     # rfdiffusion: 120 gpu_s/design, pilot cap 1800s, 0.8 util -> 12.
     assert _chunk_size_for("rfdiffusion") == 12
-    # bindcraft: 1800 gpu_s/design, pilot cap 7200s, 0.8 util -> 3.
-    assert _chunk_size_for("bindcraft") == 3
+    # bindcraft: 1800 gpu_s/design, campaign container 36000s, 0.8 util -> 16.
+    assert _chunk_size_for("bindcraft") == 16
     # boltzgen: budget-based, fixed 200-pool -> 50 delivered/job.
     assert _chunk_size_for("boltzgen") == BOLTZGEN_DESIGNS_PER_JOB
 
@@ -46,7 +46,7 @@ def test_chunk_size_per_tool():
     [
         ("rfdiffusion", 24, 2),
         ("rfdiffusion", 25, 3),   # 12+12+1
-        ("bindcraft", 9, 3),
+        ("bindcraft", 40, 3),   # 16+16+8
         ("boltzgen", 100, 2),
         ("boltzgen", 101, 3),
     ],
@@ -88,6 +88,16 @@ def test_plan_chunks_rejects_bad_count():
             plan_chunks("rfdiffusion", bad)
     with pytest.raises(ValueError):
         plan_chunks("rfdiffusion", "not-a-number")
+
+
+def test_bindcraft_campaign_bigger_chunk_and_session_budget():
+    # bindcraft campaigns size against a larger container than the 3/chunk pilot,
+    # and carry a matching session budget so the pipeline does not stop early.
+    assert cc._chunk_size_for("bindcraft") == 16
+    assert cc._campaign_session_inputs("bindcraft") == {"_total_budget_hours": 10.0}
+    # other tools keep the default 4h session budget (no override injected).
+    assert cc._campaign_session_inputs("rfdiffusion") == {}
+    assert cc._campaign_session_inputs("boltzgen") == {}
 
 
 def test_boltzgen_design_key_is_budget():

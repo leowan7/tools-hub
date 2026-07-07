@@ -160,12 +160,44 @@ class ChunkPlan:
         return max(0, min(self.chunk_size, self.requested_designs - start))
 
 
+# bindcraft's 3-designs/chunk pilot sizing (7200s container) is the worst-scaling
+# campaign tool (6667 sub-jobs for 20k designs). Its Modal function allows a 23h
+# session, so campaigns size bindcraft against a much larger container AND pass a
+# matching session budget (see _campaign_session_inputs), cutting its sub-job
+# count ~5x. Kept well under the 23h ceiling; bindcraft streams results per
+# candidate, so a slow chunk that reaches its budget still returns what it made.
+_BINDCRAFT_CAMPAIGN_CONTAINER_S = 36000  # 10h -> 16 designs/chunk at 0.8 util
+
+
+def _campaign_container_seconds(tool: str) -> int:
+    """GPU-seconds a campaign sizes ONE sub-job against.
+
+    Defaults to the pilot container; bindcraft campaigns use a bigger one because
+    its Modal session runs up to 23h.
+    """
+    if tool == "bindcraft":
+        return _BINDCRAFT_CAMPAIGN_CONTAINER_S
+    return preset_gpu_seconds(tool, "pilot")
+
+
+def _campaign_session_inputs(tool: str) -> dict:
+    """Extra Modal inputs so a bigger campaign chunk gets a matching session budget.
+
+    A bindcraft campaign chunk holds ~16 designs (vs the 3/chunk pilot), which
+    needs more than the default 4h ``_total_budget_hours`` or the pipeline stops
+    early. Other tools keep the default (their chunks are far shorter).
+    """
+    if tool == "bindcraft":
+        return {"_total_budget_hours": _BINDCRAFT_CAMPAIGN_CONTAINER_S / 3600}
+    return {}
+
+
 def _chunk_size_for(tool: str) -> int:
-    """Designs per sub-job for ``tool`` at the pilot container ceiling.
+    """Designs per sub-job for ``tool``, sized to one campaign container.
 
     boltzgen is special (budget-based, fixed pool). The linear tools derive
-    the size from GPU-seconds-per-design vs the pilot preset's GPU-seconds
-    cap, so a chunk comfortably fits one container.
+    the size from GPU-seconds-per-design vs the campaign container's GPU-seconds
+    budget, so a chunk comfortably fits one container.
     """
     if tool == "boltzgen":
         return BOLTZGEN_DESIGNS_PER_JOB
@@ -176,7 +208,7 @@ def _chunk_size_for(tool: str) -> int:
     gpu_s_per_design = float(spec.expected_gpu_seconds) / float(
         spec.designs_per_run_baseline
     )
-    container_s = preset_gpu_seconds(tool, "pilot")
+    container_s = _campaign_container_seconds(tool)
     if gpu_s_per_design <= 0 or container_s <= 0:
         return spec.designs_per_run_baseline
     size = int((container_s * _CONTAINER_UTILIZATION) / gpu_s_per_design)
@@ -907,6 +939,9 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
                 "_input_pdb_url": presigned_url,
                 "_input_presigned_url": presigned_url,
                 "_upload_urls_endpoint": upload_urls_endpoint,
+                # Bigger campaign chunks (bindcraft) need a matching session budget
+                # or the pipeline stops at the default 4h.
+                **_campaign_session_inputs(campaign.tool),
             },
             job_id=child.id,
             job_token=child.job_token,
