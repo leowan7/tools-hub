@@ -221,9 +221,10 @@ def driver_env(monkeypatch):
 
 
 def _seed_campaign(client, *, total_subjobs=2, chunk_size=12, requested=24,
-                   concurrency_target=8, status="funded", tool="rfdiffusion"):
+                   concurrency_target=8, status="funded", tool="rfdiffusion",
+                   campaign_id="camp-1", user_id="user-1"):
     row = {
-        "id": "camp-1", "user_id": "user-1", "tool": tool, "preset": "pilot",
+        "id": campaign_id, "user_id": user_id, "tool": tool, "preset": "pilot",
         "status": status, "requested_designs": requested, "chunk_size": chunk_size,
         "total_subjobs": total_subjobs, "concurrency_target": concurrency_target,
         "max_attempts": 2, "budget_usd": "10", "reserved_usd": "0",
@@ -584,6 +585,63 @@ def test_transient_refusal_does_not_pause(driver_env, monkeypatch):
 def test_cron_active_states_includes_paused():
     from cron.tick_campaigns import _ACTIVE_STATES
     assert "paused_insufficient_funds" in _ACTIVE_STATES
+
+
+# ---------------------------------------------------------------------------
+# Round-robin fairness (step 7): per-call dispatch cap + cross-campaign share
+# ---------------------------------------------------------------------------
+
+
+def test_drive_respects_max_dispatch(driver_env):
+    """max_dispatch caps a single drive; the rest defers to the next drive."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=10, chunk_size=12, requested=120,
+                   concurrency_target=8)
+
+    launched = drive_campaign("camp-1", max_dispatch=3)
+    assert launched == 3
+    assert {k["chunk_index"] for k in _children(client)} == {0, 1, 2}
+
+    # A second capped drive resumes at the frontier: 3 more, still contiguous.
+    launched2 = drive_campaign("camp-1", max_dispatch=3)
+    assert launched2 == 3
+    assert {k["chunk_index"] for k in _children(client)} == {0, 1, 2, 3, 4, 5}
+
+
+def test_drive_terminal_returns_zero(driver_env):
+    """A terminal / draft campaign launches nothing and reports 0."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, status="completed")
+    assert drive_campaign("camp-1") == 0
+    assert _children(client) == []
+
+
+def test_tick_round_robin_shares_balance(driver_env, monkeypatch):
+    """Two campaigns of one user split the shared wallet fairly, not first-come-all."""
+    client, state = driver_env
+    # The cron imports its service client from shared.credits (not cc), so patch
+    # that seam too; the drive it calls still uses the cc seam driver_env patched.
+    import shared.credits as credits
+    monkeypatch.setattr(credits, "get_service_client", lambda: client)
+    from cron.tick_campaigns import tick_campaigns
+
+    _seed_campaign(client, campaign_id="camp-A", total_subjobs=8, chunk_size=12,
+                   requested=96, concurrency_target=8)
+    _seed_campaign(client, campaign_id="camp-B", total_subjobs=8, chunk_size=12,
+                   requested=96, concurrency_target=8)
+    # Fund exactly 8 chunks of the shared wallet; each campaign wants 8. Without
+    # fairness the first campaign would take all 8 and starve the second.
+    one_hold = cc.child_hold_usd("rfdiffusion", 12)
+    state["wallet_balance"] = one_hold * 8
+
+    summary = tick_campaigns()
+
+    per_campaign: dict = {}
+    for k in _children(client):
+        per_campaign[k["campaign_id"]] = per_campaign.get(k["campaign_id"], 0) + 1
+    assert per_campaign.get("camp-A") == 4
+    assert per_campaign.get("camp-B") == 4
+    assert summary["driven"] == 2
 
 
 # ---------------------------------------------------------------------------

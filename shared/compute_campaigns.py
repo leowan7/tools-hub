@@ -1,9 +1,11 @@
 """Self-serve compute campaigns ("Campaigns").
 
-A campaign is a large design request (up to ~20k designs) that the system
-splits into many ordinary ``tool_jobs`` sub-jobs, each sized to fit one GPU
+A campaign is a large design request (wallet-bounded and size-agnostic: the
+prepaid balance is the ceiling, not any design count) that the system splits
+into many ordinary ``tool_jobs`` sub-jobs, each sized to fit one GPU
 container's timeout, fanned out on Modal's autoscaler with server-side
-admission control. The sub-jobs reach terminal state ONLY through the
+admission control. ``MAX_SUBJOBS_PER_CAMPAIGN`` is a runaway guard, not a
+product ceiling. The sub-jobs reach terminal state ONLY through the
 existing poll / webhook / heartbeat / cancel / sweeper writers; this layer
 is READ + LAUNCH + RECONCILE and never writes a child's terminal state.
 
@@ -469,33 +471,29 @@ def list_campaigns_for_user(
 def get_progress_counts(campaign_id: str) -> dict:
     """Aggregate sub-job counts by status for a campaign.
 
-    Returns ``{"total": n, <status>: count, ...}`` with every bucket in
-    :data:`_CHILD_STATUSES` present (0 when absent). Reads only the
-    ``status`` column over the partial (campaign_id, status) index.
+    Count-based: one indexed exact ``COUNT`` (head request, no row transfer) per
+    status bucket plus the total, over the partial (campaign_id, status) index.
+    This keeps the UI status poll O(1) per bucket for extreme-N campaigns instead
+    of loading every sub-job row (it was the last O(N) path; the driver is already
+    O(1)). Returns ``{"total": n, <status>: count, ...}`` with every bucket in
+    :data:`_CHILD_STATUSES` present (0 when absent).
+
+    The total is read FIRST with a sentinel default: if that read fails, return a
+    self-consistent all-zeros dict rather than risk buckets summing above a zero
+    total (the pre-count-based behavior). A per-bucket read failure then only
+    UNDER-counts that bucket (always <= total), so the dict stays internally
+    consistent.
     """
-    counts = {status: 0 for status in _CHILD_STATUSES}
-    counts["total"] = 0
-    client = get_service_client()
-    if client is None:
+    total = _count_children(campaign_id, default=-1)
+    if total < 0:
+        counts = {status: 0 for status in _CHILD_STATUSES}
+        counts["total"] = 0
         return counts
-    try:
-        response = (
-            client.table("tool_jobs")
-            .select("status")
-            .eq("campaign_id", campaign_id)
-            .execute()
-        )
-        rows = list(getattr(response, "data", None) or [])
-    except Exception:
-        logger.warning(
-            "get_progress_counts failed for %s", campaign_id, exc_info=True
-        )
-        return counts
-    for r in rows:
-        status = r.get("status")
-        if status in counts:
-            counts[status] += 1
-        counts["total"] += 1
+    counts = {
+        status: _count_children(campaign_id, (status,))
+        for status in _CHILD_STATUSES
+    }
+    counts["total"] = total
     return counts
 
 
@@ -1049,8 +1047,15 @@ def _lowest_missing_chunk_index(campaign_id: str, total: int) -> "int | None":
     return None
 
 
-def drive_campaign(campaign_id: str) -> None:
+def drive_campaign(campaign_id: str, max_dispatch: "int | None" = None) -> int:
     """Reconcile a campaign and dispatch as many sub-jobs as admission allows.
+
+    Returns the number of chunks launched on THIS call. ``max_dispatch`` caps how
+    many chunks a single call launches; the cron's round-robin fairness uses it to
+    interleave a user's concurrent campaigns over their shared wallet. ``None``
+    means no cap. The cap can only launch FEWER chunks, never more, and never
+    forces a pause, so it is money-neutral: a capped call simply defers the rest to
+    the next drive (cron backstop / inline hook).
 
     Safe to call repeatedly and concurrently (the DB uniqueness + CAS
     launch make double-dispatch impossible). Triggered at create (async via
@@ -1066,10 +1071,10 @@ def drive_campaign(campaign_id: str) -> None:
     """
     campaign = get_campaign(campaign_id)
     if campaign is None:
-        return
+        return 0
     if campaign.status in ("draft", "completed", "completed_with_failures",
                            "failed", "cancelled"):
-        return
+        return 0
 
     entry_status = campaign.status  # funded | running | paused_insufficient_funds
 
@@ -1088,13 +1093,15 @@ def drive_campaign(campaign_id: str) -> None:
     # attempt bound guarantees the pass terminates even under contention.
     user_inflight = _user_inflight_subjobs(campaign.user_id)
     launched_any = False
+    launched_count = 0
     hit_insufficient = False
     attempts = 0
     attempt_budget = (campaign.concurrency_target - in_flight) + _DISPATCH_ATTEMPT_SLACK
     while (in_flight < campaign.concurrency_target
            and user_inflight < GLOBAL_USER_INFLIGHT_CAP
            and dispatched < total
-           and attempts < attempt_budget):
+           and attempts < attempt_budget
+           and (max_dispatch is None or launched_count < max_dispatch)):
         attempts += 1
         outcome = _dispatch_chunk(campaign, dispatched)
         if outcome == "launched":
@@ -1102,6 +1109,7 @@ def drive_campaign(campaign_id: str) -> None:
             in_flight += 1
             user_inflight += 1
             launched_any = True
+            launched_count += 1
         elif outcome == "failed":
             # A (failed) child row exists at this index; the frontier advances.
             dispatched += 1
@@ -1156,6 +1164,7 @@ def drive_campaign(campaign_id: str) -> None:
 
     _update_campaign(campaign_id, {"last_tick_at": _now_iso()})
     _maybe_finalize(campaign)
+    return launched_count
 
 
 def drive_campaign_async(campaign_id: str) -> None:

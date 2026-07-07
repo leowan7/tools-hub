@@ -27,13 +27,28 @@ logger = logging.getLogger(__name__)
 # paused campaign — no in-flight child completes to fire the inline hook).
 _ACTIVE_STATES = ("funded", "running", "completing", "paused_insufficient_funds")
 
+# Round-robin fairness (plan section 6a): when ONE user runs several campaigns at
+# once, they share a single wallet balance and the per-user in-flight cap. Driving
+# them in a fixed order lets the first campaign grab the shared balance every tick
+# and starve the others. So we interleave a user's campaigns, letting each launch
+# at most _ROUND_ROBIN_DISPATCH_CAP chunks per round, cycling until a full round
+# launches nothing (all paused / at capacity / finalized). A lone campaign is
+# driven at full concurrency as before. _MAX_ROUNDS bounds the tick; the per-user
+# in-flight cap (GLOBAL_USER_INFLIGHT_CAP, enforced inside drive_campaign) binds
+# first in practice.
+_ROUND_ROBIN_DISPATCH_CAP = 4
+_MAX_ROUNDS = 16
+
 
 def tick_campaigns() -> dict:
-    """Re-drive every in-flight campaign once.
+    """Re-drive every in-flight campaign once, fair across a user's campaigns.
 
     Returns a summary dict suitable for logging::
 
         {"driven": N, "errors": [...]}
+
+    ``driven`` counts distinct campaigns processed this tick (not drive calls,
+    since round-robin drives a campaign across several rounds).
     """
     from shared.credits import get_service_client  # noqa: PLC0415
     from shared.compute_campaigns import drive_campaign  # noqa: PLC0415
@@ -47,7 +62,7 @@ def tick_campaigns() -> dict:
     try:
         rows = (
             client.table("compute_campaigns")
-            .select("id")
+            .select("id,user_id")
             .in_("status", list(_ACTIVE_STATES))
             .execute()
             .data
@@ -58,17 +73,38 @@ def tick_campaigns() -> dict:
         summary["errors"].append("active-campaign query failed")
         return summary
 
+    # Group active campaigns by owner: a user's concurrent campaigns share the
+    # round-robin over their common wallet; users are independent of each other.
+    by_user: dict = {}
     for row in rows:
         campaign_id = row.get("id")
         if not campaign_id:
             continue
+        by_user.setdefault(row.get("user_id"), []).append(str(campaign_id))
+
+    driven_ids: set = set()
+
+    def _drive(campaign_id: str, max_dispatch=None) -> int:
+        driven_ids.add(campaign_id)
         try:
-            drive_campaign(str(campaign_id))
-            summary["driven"] += 1
+            return drive_campaign(campaign_id, max_dispatch=max_dispatch) or 0
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "tick_campaigns: drive raised for %s", campaign_id, exc_info=True
             )
             summary["errors"].append(f"{campaign_id}:{exc}")
+            return 0
 
+    for campaign_ids in by_user.values():
+        if len(campaign_ids) == 1:
+            _drive(campaign_ids[0])
+            continue
+        for _ in range(_MAX_ROUNDS):
+            launched = 0
+            for campaign_id in campaign_ids:
+                launched += _drive(campaign_id, max_dispatch=_ROUND_ROBIN_DISPATCH_CAP)
+            if launched == 0:
+                break
+
+    summary["driven"] = len(driven_ids)
     return summary

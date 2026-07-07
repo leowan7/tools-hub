@@ -171,8 +171,9 @@ def test_to_dict_omits_advisory_money_fields():
 
 
 class _Result:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class _Query:
@@ -180,10 +181,15 @@ class _Query:
         self._store = store
         self._table = table
         self._filters = []
+        self._in_filters = []
         self._insert_row = None
         self._single = False
+        self._count = None
+        self._head = False
 
     def select(self, *_a, **_k):
+        self._count = _k.get("count")
+        self._head = bool(_k.get("head", False))
         return self
 
     def insert(self, row):
@@ -192,6 +198,10 @@ class _Query:
 
     def eq(self, col, val):
         self._filters.append((col, val))
+        return self
+
+    def in_(self, col, vals):
+        self._in_filters.append((col, {str(v) for v in vals}))
         return self
 
     def gte(self, *_a, **_k):
@@ -209,7 +219,9 @@ class _Query:
         return self
 
     def _matches(self, r):
-        return all(str(r.get(c)) == str(v) for c, v in self._filters)
+        if not all(str(r.get(c)) == str(v) for c, v in self._filters):
+            return False
+        return all(str(r.get(c)) in vals for c, vals in self._in_filters)
 
     def execute(self):
         rows = self._store.setdefault(self._table, [])
@@ -222,6 +234,9 @@ class _Query:
             rows.append(row)
             return _Result([row])
         matched = [r for r in rows if self._matches(r)]
+        if self._count == "exact":
+            # Mirror PostgREST head+exact count: count set, data omitted on head.
+            return _Result(None if self._head else matched, count=len(matched))
         if self._single:
             if not matched:
                 raise RuntimeError("no rows")
@@ -312,6 +327,17 @@ def test_module_helpers_return_empty_without_client(monkeypatch):
     assert list_campaigns_for_user("u") == []
     assert get_campaign("x") is None
     assert get_progress_counts("x")["total"] == 0
+
+
+def test_get_progress_counts_stays_consistent_when_total_read_fails(monkeypatch):
+    # If the total COUNT fails (sentinel default), return a self-consistent
+    # all-zeros dict rather than nonzero buckets over a zero total.
+    def fake_count(cid, statuses=None, default=0):
+        return default if statuses is None else 5  # total "fails", buckets "succeed"
+    monkeypatch.setattr(cc, "_count_children", fake_count)
+    counts = get_progress_counts("camp-x")
+    assert counts["total"] == 0
+    assert all(counts[s] == 0 for s in cc._CHILD_STATUSES)
     assert create_campaign(user_id="u", tool="rfdiffusion", params={}, requested_designs=12) is None
 
 
