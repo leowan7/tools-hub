@@ -55,7 +55,7 @@ def _counts(succeeded=0, failed=0, timeout=0, running=0, pending=0):
 
 def test_succeeded_zero_hits_does_not_render_dead_run_string(app):
     """A fully succeeded campaign with 0 hits must not say '0 / N delivered'."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="completed"),
@@ -69,7 +69,7 @@ def test_succeeded_zero_hits_does_not_render_dead_run_string(app):
 
 def test_subjob_completion_headline_renders(app):
     """The accurate sub-job completion headline is the primary signal."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="completed"),
@@ -81,7 +81,7 @@ def test_subjob_completion_headline_renders(app):
 
 def test_all_succeeded_surfaces_download_pointer(app):
     """Designs are downloadable; a prominent sub-jobs pointer is present."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="completed"),
@@ -94,7 +94,7 @@ def test_all_succeeded_surfaces_download_pointer(app):
 
 def test_partial_completion_does_not_overstate_generated_count(app):
     """When not all sub-jobs succeeded, do not claim all designs generated."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="running"),
@@ -106,7 +106,7 @@ def test_partial_completion_does_not_overstate_generated_count(app):
 
 def test_paused_campaign_shows_cancel_button(app):
     """A paused (insufficient-funds) campaign is still cancellable from the page."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="paused_insufficient_funds"),
@@ -117,7 +117,7 @@ def test_paused_campaign_shows_cancel_button(app):
 
 def test_terminal_campaign_hides_cancel_button(app):
     """A completed campaign renders no server-side Cancel button."""
-    with app.test_request_context("/runs/camp-smoke"):
+    with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="completed"),

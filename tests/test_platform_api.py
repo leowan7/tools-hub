@@ -981,7 +981,7 @@ def test_results_save_route_persists_and_redirects():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/results",
+            "/admin/lab-projects/exp-smoke-1/results",
             data={
                 "results_status": "all",
                 "results_json": '{"rounds": [], "sequences": []}',
@@ -1001,7 +1001,7 @@ def test_results_save_route_rejects_bad_json_before_write():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/results",
+            "/admin/lab-projects/exp-smoke-1/results",
             data={"results_status": "partial", "results_json": "{not valid json"},
         )
     assert resp.status_code in (302, 303)
@@ -1028,7 +1028,7 @@ def test_results_save_fires_results_ready_webhook():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/results",
+            "/admin/lab-projects/exp-smoke-1/results",
             data={
                 "results_status": "all",
                 "results_json": '{"rounds": [], "sequences": []}',
@@ -1055,7 +1055,7 @@ def test_results_save_no_webhook_without_url():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/results",
+            "/admin/lab-projects/exp-smoke-1/results",
             data={"results_status": "all", "results_json": ""},
         )
     assert resp.status_code in (302, 303)
@@ -1080,7 +1080,7 @@ def test_results_save_no_webhook_when_status_unchanged():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/results",
+            "/admin/lab-projects/exp-smoke-1/results",
             data={"results_status": "all", "results_json": ""},
         )
     assert resp.status_code in (302, 303)
@@ -1159,7 +1159,7 @@ def test_notes_internal_never_leaves_internal_surface():
         with full_client.session_transaction() as sess:
             sess["user_email"] = STAFF
         full_client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={
                 "status": "QuoteSent",
                 "notify_customer": "1",
@@ -1224,7 +1224,7 @@ def test_admin_notify_fires_webhook_on_quotesent():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={
                 "status": "QuoteSent",
                 "notify_customer": "1",
@@ -1258,7 +1258,7 @@ def test_admin_no_webhook_when_notes_persist_fails():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={
                 "status": "QuoteSent",
                 "notify_customer": "1",
@@ -1299,7 +1299,7 @@ def test_admin_notify_includes_stored_note_when_form_blank():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "Done", "notify_customer": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1324,7 +1324,7 @@ def test_admin_no_webhook_when_notify_unchecked():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "QuoteSent"},
         )
     assert resp.status_code in (302, 303)
@@ -1353,7 +1353,7 @@ def test_admin_no_webhook_for_non_customer_status():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "Sorting", "notify_customer": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1381,7 +1381,7 @@ def test_results_upload_over_cap_redirects_gracefully():
             with client.session_transaction() as sess:
                 sess["user_email"] = STAFF
             resp = client.post(
-                "/admin/campaigns/exp-smoke-1/results",
+                "/admin/lab-projects/exp-smoke-1/results",
                 data={"results_status": "all", "results_json": "x" * 2000},
             )
     finally:
@@ -1391,7 +1391,7 @@ def test_results_upload_over_cap_redirects_gracefully():
 
 
 # ---------------------------------------------------------------------------
-# POST /admin/campaigns/{id}/quote — operator quote save (full-app route)
+# POST /admin/lab-projects/{id}/quote — operator quote save (full-app route)
 #
 # These exercise the real admin route in app.py (not the API blueprint), so
 # they import the full app and drive it with a staff session. They lock in the
@@ -1421,7 +1421,7 @@ def test_quote_save_failure_does_not_transition_or_claim_success():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"quote_total_usd": "48000", "set_quote_sent": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1445,7 +1445,7 @@ def test_quote_save_success_transitions_and_redirects_quoted():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"quote_total_usd": "48000", "set_quote_sent": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1467,7 +1467,7 @@ def test_quote_save_rejects_malformed_valid_until_before_any_write():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"quote_valid_until": "2026-13-45", "set_quote_sent": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1489,7 +1489,7 @@ def test_quote_save_rejects_non_api_campaign():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"quote_total_usd": "100"},
         )
     assert resp.status_code == 404
@@ -1516,7 +1516,7 @@ def test_quote_save_fires_webhook_when_notify_and_moved():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={
                 "quote_total_usd": "48000",
                 "set_quote_sent": "1",
@@ -1550,7 +1550,7 @@ def test_quote_save_no_webhook_when_notify_unchecked():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"quote_total_usd": "48000", "set_quote_sent": "1"},
         )
     assert resp.status_code in (302, 303)
@@ -1574,7 +1574,7 @@ def test_quote_save_no_webhook_without_url():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={
                 "quote_total_usd": "48000",
                 "set_quote_sent": "1",
@@ -1600,7 +1600,7 @@ def test_quote_save_blocks_quotesent_without_price():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={"set_quote_sent": "1"},  # blank total
         )
     assert resp.status_code in (302, 303)
@@ -1623,7 +1623,7 @@ def test_quote_save_blocks_price_clobber_on_priced_row():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={},  # blank total
         )
     assert resp.status_code in (302, 303)
@@ -1651,7 +1651,7 @@ def test_quote_save_no_webhook_on_noop_transition():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/quote",
+            "/admin/lab-projects/exp-smoke-1/quote",
             data={
                 "quote_total_usd": "48000",
                 "set_quote_sent": "1",
@@ -1681,7 +1681,7 @@ def test_status_dropdown_blocks_quotesent_without_price():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "QuoteSent"},
         )
     assert resp.status_code in (302, 303)
@@ -1709,7 +1709,7 @@ def test_status_dropdown_blocks_skip_across_quote_line_without_price():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "WaitingForMaterials"},
         )
     assert resp.status_code in (302, 303)
@@ -1735,7 +1735,7 @@ def test_status_dropdown_allows_cancel_without_price():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "Cancelled"},
         )
     assert resp.status_code in (302, 303)
@@ -1761,7 +1761,7 @@ def test_status_dropdown_allows_quotesent_with_price():
         with client.session_transaction() as sess:
             sess["user_email"] = STAFF
         resp = client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "QuoteSent"},
         )
     assert resp.status_code in (302, 303)
@@ -1787,7 +1787,7 @@ def test_admin_status_change_is_audit_logged():
             sess["user_email"] = STAFF
             sess["user_id"] = "staff-uid"
         client.post(
-            "/admin/campaigns/exp-smoke-1/status",
+            "/admin/lab-projects/exp-smoke-1/status",
             data={"status": "QuoteSent"},
         )
 

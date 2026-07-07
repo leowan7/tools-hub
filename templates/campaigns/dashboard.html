@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}My Campaigns — Ranomics Tools{% endblock %}
+{% block title %}My Lab Projects — Ranomics Tools{% endblock %}
 {% block robots %}noindex,follow{% endblock %}
 
 {% block content %}
 <div class="hero">
-  <h1>Lab campaigns</h1>
+  <h1>Lab projects</h1>
   <p class="subtitle">Scoping requests you have submitted to the Ranomics CRO team.</p>
 </div>
 
@@ -54,7 +54,7 @@
                 </a>
               </td>
               <td style="padding:.55rem .75rem;">
-                <a href="/campaigns/{{ c.id }}" class="btn-secondary" style="padding:.2rem .55rem;font-size:.8rem;">
+                <a href="/lab-projects/{{ c.id }}" class="btn-secondary" style="padding:.2rem .55rem;font-size:.8rem;">
                   Details
                 </a>
               </td>

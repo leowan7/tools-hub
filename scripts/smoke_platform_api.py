@@ -489,7 +489,7 @@ def _summarise(steps: list[Step], experiment_id: str | None, *, cleaned: bool, s
     elif experiment_id:
         # Withdraw did not run or did not pass — the row is still present.
         print(f"experiment_id created but NOT cleaned up: {experiment_id}")
-        print("  -> review at https://tools.ranomics.com/admin/campaigns")
+        print("  -> review at https://tools.ranomics.com/admin/lab-projects")
         print("  -> the withdraw step did not pass; drop the row by hand:")
         print(f"     DELETE FROM lab_campaigns WHERE id = '{experiment_id}';")
     elif not started_clean:

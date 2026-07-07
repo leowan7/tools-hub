@@ -373,7 +373,7 @@
       and scopes a yeast display campaign. No commitment — this is a scoping request.
     </p>
 
-    <form action="/campaigns/submit" method="POST">
+    <form action="/lab-projects/submit" method="POST">
       {{ csrf_input() }}
       <input type="hidden" name="source_job_id"       value="{{ job_id }}">
       <input type="hidden" name="candidate_indices"   value="[]">
