@@ -35,7 +35,5 @@ Disallow: /forgot-password
 Disallow: /reset-password
 Disallow: /billing/
 Disallow: /api/
-Disallow: /talk
-Disallow: /talk/
 
 Sitemap: https://tools.ranomics.com/sitemap.xml

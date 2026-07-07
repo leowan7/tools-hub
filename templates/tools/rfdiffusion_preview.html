@@ -1,0 +1,23 @@
+{# Per-tool preview override for RFdiffusion. Identical to the shared shell
+   except the "A typical result" block links into the real RFdiffusion run on
+   the public showcase instead of the generic screenshot placeholder. #}
+{% extends "tools/_preview.html" %}
+
+{% block preview_visual %}
+    <section class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">A real RFdiffusion run</h2>
+        </div>
+        <div class="panel-body">
+          <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+            The showcase has a real RFdiffusion pilot run end to end on
+            tools.ranomics.com: 60 backbone designs across five parallel jobs for a
+            total billed cost of $11.58, with an automatic pause and resume on the
+            metered wallet. It is an honest cost and delivery reference.
+          </p>
+          <a href="{{ url_for('showcase') }}#03-rfdiffusion-platform-pilot" class="btn-secondary">See the RFdiffusion run in the showcase</a>
+        </div>
+      </div>
+    </section>
+{% endblock %}

@@ -2366,43 +2366,6 @@ def create_app() -> Flask:
             flask_app.static_folder, "robots.txt", mimetype="text/plain"
         )
 
-    @flask_app.route("/talk/<campaign>", methods=["GET"])
-    def talk_redirect(campaign: str):
-        """Conference short-link redirector (D5 of the growth plan).
-
-        Looks up ``campaign`` in ``CONFERENCE_LINKS`` and 302-redirects
-        to the configured destination with UTM params appended so the
-        click attributes back to the originating conference. Unknown
-        slugs fall back to the homepage but still carry a UTM tag so we
-        capture the click as ``conference-unknown``.
-        """
-        from urllib.parse import urlencode, urlsplit, urlunsplit  # noqa: PLC0415
-        from shared.conference_links import CONFERENCE_LINKS  # noqa: PLC0415
-
-        if campaign in CONFERENCE_LINKS and campaign != "default":
-            destination = CONFERENCE_LINKS[campaign]
-            utm_campaign = campaign
-            utm_source = f"conference-{campaign}"
-        else:
-            destination = CONFERENCE_LINKS.get(
-                "default", "https://tools.ranomics.com/"
-            )
-            utm_campaign = "unknown"
-            utm_source = "conference-unknown"
-
-        parts = urlsplit(destination)
-        existing = parts.query
-        utm = urlencode({
-            "utm_source": utm_source,
-            "utm_medium": "outbound",
-            "utm_campaign": utm_campaign,
-        })
-        new_query = f"{existing}&{utm}" if existing else utm
-        target = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
-        )
-        return redirect(target, code=302)
-
     # Register the IndexNow verification file route only when the env
     # var is set. IndexNow requires a key.txt file at the site root
     # whose body is the same key sent in the submission payload.

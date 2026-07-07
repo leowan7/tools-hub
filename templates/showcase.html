@@ -2,7 +2,7 @@
 
 {% block title %}Showcase | Anonymized binder design runs on Ranomics Tools{% endblock %}
 
-{% block description %}Anonymized BindCraft, RFantibody, RFdiffusion plus ProteinMPNN, ColabFold, and Epitope Scout runs on dedicated GPUs through tools.ranomics.com. Internal benchmark runs with score legend, runtime, and downstream handoff.{% endblock %}
+{% block description %}Real internal benchmark runs of the design algorithms available on tools.ranomics.com. BoltzGen and RFdiffusion campaigns on public targets, validated with AlphaFold2, ProteinMPNN, and Boltz-2, with anonymized target descriptions and honest metrics.{% endblock %}
 
 {% block jsonld_extra %}
 {# Dataset JSON-LD per showcase entry. One <script> per entry so
@@ -19,7 +19,7 @@
   "datePublished": e.meta.date|string,
   "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
   "url": (request.url_root.rstrip('/') ~ url_for('tool_form', tool=e.meta.tool) if e.meta.tool not in ('scout',) else request.url_root.rstrip('/') ~ '/scout'),
-  "measurementTechnique": "Top score: " ~ (e.meta.top_score|string)
+  "measurementTechnique": ("Top score: " ~ (e.meta.top_score|string)) if (e.meta.top_score is defined and e.meta.top_score != '') else "Internal benchmark run"
 } | tojson }}
 </script>
 {% endfor %}
@@ -29,13 +29,7 @@
 
   <div class="hero">
     <h1>Tools showcase</h1>
-    <p class="subtitle">Anonymized binder design runs on dedicated GPUs through tools.ranomics.com.</p>
-  </div>
-
-  <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-bottom: 1.5rem;">
-    <div class="panel-body">
-      <strong>Internal preview.</strong> Replace with real customer anonymized data before launch. Every entry below is an internal benchmark run with synthetic targets.
-    </div>
+    <p class="subtitle">Real internal benchmark runs of the design algorithms you can run on tools.ranomics.com, on public targets with anonymized descriptions.</p>
   </div>
 
   {% for e in entries %}
@@ -51,7 +45,7 @@
           <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.88rem;">
             <span><strong style="color: var(--text-primary);">Tool</strong> {{ e.meta.tool }}</span>
             <span><strong style="color: var(--text-primary);">Target</strong> {{ e.meta.target_kind }}</span>
-            <span><strong style="color: var(--text-primary);">Top score</strong> {{ e.meta.top_score }}</span>
+            {% if e.meta.top_score is defined and e.meta.top_score != '' %}<span><strong style="color: var(--text-primary);">Top score</strong> {{ e.meta.top_score }}</span>{% endif %}
             <span><strong style="color: var(--text-primary);">Date</strong> {{ e.meta.date }}</span>
           </div>
 
@@ -80,10 +74,11 @@
       </div>
       <div class="panel-body">
         <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
-          Every showcase entry above starts at Epitope Scout, runs through
-          a design tool (BindCraft, RFantibody, RFdiffusion, BoltzGen, or
-          PXDesign), and ends with a structure prediction sanity check
-          (AlphaFold2, ColabFold, ESMFold, or Boltz-2).
+          Every showcase entry above pairs a design tool (BoltzGen,
+          RFdiffusion, BindCraft, RFantibody, or PXDesign) with an
+          independent structure prediction check (AlphaFold2, ColabFold,
+          ESMFold, or Boltz-2), the same tools you can run on
+          tools.ranomics.com.
         </p>
         <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
           <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>

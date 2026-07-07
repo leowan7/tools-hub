@@ -1,0 +1,24 @@
+{# Per-tool preview override for BoltzGen. Identical to the shared shell
+   except the "A typical result" block links into the real BoltzGen runs on
+   the public showcase instead of the generic screenshot placeholder. #}
+{% extends "tools/_preview.html" %}
+
+{% block preview_visual %}
+    <section class="section">
+      <div class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">A real BoltzGen run</h2>
+        </div>
+        <div class="panel-body">
+          <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
+            The showcase has two real BoltzGen benchmark runs on public targets: a
+            nanobody discovery campaign that narrowed 2000 designs down to a
+            validated panel of 12, and a 20,000 design de novo minibinder run with
+            713 high confidence hits. Both report honest metrics with anonymized
+            target descriptions.
+          </p>
+          <a href="{{ url_for('showcase') }}#01-boltzgen-vhh-immune-coreceptor" class="btn-secondary">See real BoltzGen runs in the showcase</a>
+        </div>
+      </div>
+    </section>
+{% endblock %}
