@@ -22,6 +22,10 @@ Disallow: /jobs
 Disallow: /jobs/
 Disallow: /campaigns
 Disallow: /campaigns/
+Disallow: /lab-projects
+Disallow: /lab-projects/
+Disallow: /runs
+Disallow: /runs/
 Disallow: /admin
 Disallow: /admin/
 Disallow: /login

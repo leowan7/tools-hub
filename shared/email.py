@@ -416,7 +416,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
     from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
     api_key   = os.environ.get("RESEND_API_KEY", "").strip()
 
-    campaign_url = f"{base_url}/campaigns/{campaign.id}"
+    campaign_url = f"{base_url}/lab-projects/{campaign.id}"
 
     # User confirmation
     user_subject = f"Scoping request received — {campaign.target_name}"
@@ -451,7 +451,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
 
     # Staff notification
     staff_subject = f"New campaign: {campaign.target_name} from {user_email}"
-    admin_url = f"{base_url}/admin/campaigns/{campaign.id}"
+    admin_url = f"{base_url}/admin/lab-projects/{campaign.id}"
     staff_html = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
@@ -522,7 +522,7 @@ def send_campaign_status_email(*, campaign, user_email: str, prev_status: str) -
     from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
     api_key   = os.environ.get("RESEND_API_KEY", "").strip()
 
-    campaign_url = f"{base_url}/campaigns/{campaign.id}"
+    campaign_url = f"{base_url}/lab-projects/{campaign.id}"
     status_label = campaign.status.replace("_", " ").title()
     subject      = f"Your campaign has been {status_label.lower()} — {campaign.target_name}"
 
@@ -1278,8 +1278,8 @@ def notify_operator_new_submission(
                 f"<li><strong>Submitter user_id:</strong> {submitter}</li>"
                 "</ul>"
                 '<p>Review at '
-                '<a href="https://tools.ranomics.com/admin/campaigns">'
-                "/admin/campaigns</a>.</p>"
+                '<a href="https://tools.ranomics.com/admin/lab-projects">'
+                "/admin/lab-projects</a>.</p>"
             )
             _post_resend(
                 to_email=operator,
@@ -1581,7 +1581,7 @@ def send_campaign_paused_email(
         "send_campaign_paused.html",
         base_url=base_url,
         campaign_name=label,
-        campaign_url=f"{base_url}/runs/{campaign_id}",
+        campaign_url=f"{base_url}/campaigns/{campaign_id}",
     )
     return _post_resend(
         to_email=email,

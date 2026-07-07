@@ -5113,9 +5113,9 @@ def create_app() -> Flask:
 
     # -- Compute campaigns ("Campaigns") ---------------------------------
     # Self-serve batched design: split a large request into many sub-jobs.
-    # Namespaced /runs/* to avoid the wet-lab /campaigns/* (lab_campaigns)
-    # funnel; the customer-facing label is "Campaigns" (the wet-lab funnel
-    # is relabelled "Lab projects" in the nav).
+    # Served at /campaigns/* (the customer-facing product noun). The older
+    # wet-lab funnel moved to /lab-projects/* in the launch cutover; the old
+    # /runs/* compute paths 301-redirect here for already-sent email links.
 
     _CAMPAIGN_PREAUTH_MESSAGES = {
         "wallet_unavailable": "Your wallet is unavailable. Try again in a moment.",
@@ -5147,7 +5147,7 @@ def create_app() -> Flask:
                .replace("${required}", f"{required:.2f}" if required else "the first batch")
         )
 
-    @flask_app.route("/runs", methods=["GET"])
+    @flask_app.route("/campaigns", methods=["GET"])
     @login_required
     def compute_campaigns_list():
         ctx = load_user_context()
@@ -5157,7 +5157,7 @@ def create_app() -> Flask:
         campaigns = cc.list_campaigns_for_user(ctx.user_id)
         return render_template("runs/list.html", campaigns=campaigns)
 
-    @flask_app.route("/runs/new", methods=["GET"])
+    @flask_app.route("/campaigns/new", methods=["GET"])
     @login_required
     def compute_campaign_new():
         ctx = load_user_context()
@@ -5172,7 +5172,7 @@ def create_app() -> Flask:
             pre_fill={},
         )
 
-    @flask_app.route("/api/runs/estimate", methods=["GET"])
+    @flask_app.route("/api/campaigns/estimate", methods=["GET"])
     @login_required
     def api_runs_estimate():
         """Live budget + chunk-plan preview for the campaign create form."""
@@ -5203,7 +5203,7 @@ def create_app() -> Flask:
             "needs_verification": plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD,
         })
 
-    @flask_app.route("/runs", methods=["POST"])
+    @flask_app.route("/campaigns", methods=["POST"])
     @login_required
     def compute_campaign_create():
         ctx = load_user_context()
@@ -5305,7 +5305,7 @@ def create_app() -> Flask:
         cc.drive_campaign_async(campaign.id)
         return redirect(url_for("compute_campaign_detail", campaign_id=campaign.id))
 
-    @flask_app.route("/runs/<campaign_id>", methods=["GET"])
+    @flask_app.route("/campaigns/<campaign_id>", methods=["GET"])
     @login_required
     def compute_campaign_detail(campaign_id):
         ctx = load_user_context()
@@ -5314,11 +5314,20 @@ def create_app() -> Flask:
         from shared import compute_campaigns as cc  # noqa: PLC0415
         campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
         if campaign is None:
+            # Launch-cutover fallback: /campaigns/<id> used to be the wet-lab
+            # detail route (now /lab-projects/<id>). Already-sent wet-lab emails
+            # link here, so if this id is one of the user's wet-lab campaigns,
+            # forward it to its new home; otherwise fall back to the list.
+            from shared.campaigns import get_campaign as _get_lab_campaign  # noqa: PLC0415
+            if _get_lab_campaign(campaign_id, user_id=ctx.user_id) is not None:
+                return redirect(
+                    url_for("campaign_detail", campaign_id=campaign_id), code=301
+                )
             return redirect(url_for("compute_campaigns_list"))
         counts = cc.get_progress_counts(campaign_id)
         return render_template("runs/detail.html", campaign=campaign, counts=counts)
 
-    @flask_app.route("/runs/<campaign_id>/status.json", methods=["GET"])
+    @flask_app.route("/campaigns/<campaign_id>/status.json", methods=["GET"])
     @login_required
     def compute_campaign_status(campaign_id):
         ctx = load_user_context()
@@ -5387,7 +5396,7 @@ def create_app() -> Flask:
                 total += len(cands)
         return total
 
-    @flask_app.route("/runs/<campaign_id>/cancel", methods=["POST"])
+    @flask_app.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
     @login_required
     def compute_campaign_cancel(campaign_id):
         ctx = load_user_context()
@@ -5398,6 +5407,46 @@ def create_app() -> Flask:
         if request.is_json or request.headers.get("X-CSRF-Token"):
             return jsonify({"ok": ok})
         return redirect(url_for("compute_campaign_detail", campaign_id=campaign_id))
+
+    # -- Legacy URL redirects (launch cutover 2026-07) -------------------
+    # The compute product moved /runs/* -> /campaigns/* and the wet-lab
+    # funnel moved /campaigns/* -> /lab-projects/* (admin too). Links live in
+    # already-sent emails and user bookmarks, so the vacated GET paths 301 to
+    # their new homes, preserving any query string. JS-only poll/cancel paths
+    # are intentionally not stubbed (a stale tab self-heals on refresh). The
+    # old wet-lab /campaigns/<id> path is now the compute detail route; that
+    # collision is resolved inside compute_campaign_detail.
+
+    def _cutover_redirect(endpoint, **values):
+        target = url_for(endpoint, **values)
+        qs = request.query_string.decode("utf-8")
+        if qs:
+            target = f"{target}?{qs}"
+        return redirect(target, code=301)
+
+    @flask_app.route("/runs", methods=["GET"])
+    def legacy_runs_list():
+        return _cutover_redirect("compute_campaigns_list")
+
+    @flask_app.route("/runs/new", methods=["GET"])
+    def legacy_runs_new():
+        return _cutover_redirect("compute_campaign_new")
+
+    @flask_app.route("/api/runs/estimate", methods=["GET"])
+    def legacy_runs_estimate():
+        return _cutover_redirect("api_runs_estimate")
+
+    @flask_app.route("/runs/<campaign_id>", methods=["GET"])
+    def legacy_runs_detail(campaign_id):
+        return _cutover_redirect("compute_campaign_detail", campaign_id=campaign_id)
+
+    @flask_app.route("/admin/campaigns", methods=["GET"])
+    def legacy_admin_campaigns_list():
+        return _cutover_redirect("admin_campaigns_list")
+
+    @flask_app.route("/admin/campaigns/<campaign_id>", methods=["GET"])
+    def legacy_admin_campaign_detail(campaign_id):
+        return _cutover_redirect("admin_campaign_detail", campaign_id=campaign_id)
 
     @flask_app.route("/jobs/compare", methods=["GET"])
     @login_required
@@ -6278,10 +6327,11 @@ def create_app() -> Flask:
         )
 
     # ------------------------------------------------------------------
-    # Campaign routes — /campaigns/*
+    # Wet-lab campaign routes — /lab-projects/* (relabelled "Lab projects"
+    # in the launch cutover; the compute product now owns /campaigns/*).
     # ------------------------------------------------------------------
 
-    @flask_app.route("/campaigns/submit", methods=["POST"])
+    @flask_app.route("/lab-projects/submit", methods=["POST"])
     @login_required
     def campaigns_submit():
         import json  # noqa: PLC0415
@@ -6364,7 +6414,7 @@ def create_app() -> Flask:
 
         return redirect(url_for("campaign_detail", campaign_id=campaign.id) + "?submitted=1")
 
-    @flask_app.route("/campaigns", methods=["GET"])
+    @flask_app.route("/lab-projects", methods=["GET"])
     @login_required
     def campaigns_dashboard():
         from shared.campaigns import list_user_campaigns  # noqa: PLC0415
@@ -6374,7 +6424,7 @@ def create_app() -> Flask:
         campaigns = list_user_campaigns(ctx.user_id)
         return render_template("campaigns/dashboard.html", campaigns=campaigns)
 
-    @flask_app.route("/campaigns/<campaign_id>", methods=["GET"])
+    @flask_app.route("/lab-projects/<campaign_id>", methods=["GET"])
     @login_required
     def campaign_detail(campaign_id: str):
         from shared.campaigns import get_campaign  # noqa: PLC0415
@@ -6392,7 +6442,7 @@ def create_app() -> Flask:
         )
 
     # Legacy stub redirect — old results pages linked here.
-    @flask_app.route("/campaigns/new", methods=["GET"])
+    @flask_app.route("/lab-projects/new", methods=["GET"])
     @login_required
     def campaigns_new_stub():
         from_job = request.args.get("from_job", "")
@@ -6401,7 +6451,7 @@ def create_app() -> Flask:
         return redirect(url_for("campaigns_dashboard"))
 
     # ------------------------------------------------------------------
-    # Admin routes — /admin/campaigns/*
+    # Admin routes — /admin/lab-projects/* (wet-lab campaigns)
     # ------------------------------------------------------------------
 
     def _audit_staff_action(action: str, *, target_id: str, props: dict | None = None) -> None:
@@ -6429,7 +6479,7 @@ def create_app() -> Flask:
         except Exception:  # noqa: BLE001 — audit logging must never break the action
             logger.warning("staff audit log failed for %s", action, exc_info=True)
 
-    @flask_app.route("/admin/campaigns", methods=["GET"])
+    @flask_app.route("/admin/lab-projects", methods=["GET"])
     def admin_campaigns_list():
         from shared.auth import require_staff, STAFF_EMAILS  # noqa: PLC0415
         from shared.campaigns import list_all_campaigns, STATUSES  # noqa: PLC0415
@@ -6447,7 +6497,7 @@ def create_app() -> Flask:
             current_status=status_filter,
         )
 
-    @flask_app.route("/admin/campaigns/<campaign_id>", methods=["GET"])
+    @flask_app.route("/admin/lab-projects/<campaign_id>", methods=["GET"])
     def admin_campaign_detail(campaign_id: str):
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
         from shared.campaigns import (  # noqa: PLC0415
@@ -6499,7 +6549,7 @@ def create_app() -> Flask:
             flash_kind=flash_kind,
         )
 
-    @flask_app.route("/admin/campaigns/<campaign_id>/status", methods=["POST"])
+    @flask_app.route("/admin/lab-projects/<campaign_id>/status", methods=["POST"])
     def admin_campaign_update_status(campaign_id: str):
         from shared.auth import STAFF_EMAILS  # noqa: PLC0415
         from shared.campaigns import (  # noqa: PLC0415
@@ -6682,7 +6732,7 @@ def create_app() -> Flask:
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?updated=1"
         )
 
-    @flask_app.route("/admin/campaigns/<campaign_id>/quote", methods=["POST"])
+    @flask_app.route("/admin/lab-projects/<campaign_id>/quote", methods=["POST"])
     def admin_campaign_save_quote(campaign_id: str):
         """Persist an operator-entered quote on an API-FSM campaign.
 
@@ -6873,7 +6923,7 @@ def create_app() -> Flask:
             url_for("admin_campaign_detail", campaign_id=campaign_id) + "?quoted=1"
         )
 
-    @flask_app.route("/admin/campaigns/<campaign_id>/results", methods=["POST"])
+    @flask_app.route("/admin/lab-projects/<campaign_id>/results", methods=["POST"])
     def admin_campaign_save_results(campaign_id: str):
         """Attach results to an API-FSM campaign (gap G2).
 

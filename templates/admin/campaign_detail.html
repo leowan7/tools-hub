@@ -134,7 +134,7 @@
       <div class="panel" style="margin-bottom:1rem;">
         <div class="panel-header"><span class="panel-title">Quote</span></div>
         <div class="panel-body">
-          <form action="/admin/campaigns/{{ campaign.id }}/quote" method="POST">
+          <form action="/admin/lab-projects/{{ campaign.id }}/quote" method="POST">
             {{ csrf_input() }}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:.85rem;margin-bottom:.85rem;">
               <div class="form-field">
@@ -206,7 +206,7 @@
       <div class="panel" style="margin-bottom:1rem;">
         <div class="panel-header"><span class="panel-title">Results</span></div>
         <div class="panel-body">
-          <form action="/admin/campaigns/{{ campaign.id }}/results" method="POST" enctype="multipart/form-data">
+          <form action="/admin/lab-projects/{{ campaign.id }}/results" method="POST" enctype="multipart/form-data">
             {{ csrf_input() }}
             <div class="form-field" style="margin-bottom:.85rem;">
               <label for="results_status" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Results status</label>
@@ -277,7 +277,7 @@
     {% endif %}
 
     <div style="display:flex;gap:.65rem;flex-wrap:wrap;">
-      <a href="/admin/campaigns" class="btn-secondary">All campaigns</a>
+      <a href="/admin/lab-projects" class="btn-secondary">All lab projects</a>
       {% if not is_api and campaign.source_job_id %}
         <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">Source job</a>
         <a href="/jobs/{{ campaign.source_job_id }}/export.csv" class="btn-secondary">Export CSV</a>
@@ -290,7 +290,7 @@
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Update status</span></div>
     <div class="panel-body">
-      <form action="/admin/campaigns/{{ campaign.id }}/status" method="POST">
+      <form action="/admin/lab-projects/{{ campaign.id }}/status" method="POST">
         {{ csrf_input() }}
         <div class="form-field" style="margin-bottom:.85rem;">
           <label style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">New status</label>

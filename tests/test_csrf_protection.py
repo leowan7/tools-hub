@@ -51,7 +51,7 @@ def _seed_session(client, *, with_token=True):
 def test_post_without_token_is_rejected(app):
     client = app.test_client()
     _seed_session(client, with_token=False)
-    resp = client.post("/campaigns/submit", data={"source_job_id": "x"})
+    resp = client.post("/lab-projects/submit", data={"source_job_id": "x"})
     assert resp.status_code == 403
     assert b"CSRF" in resp.data
 
@@ -60,7 +60,7 @@ def test_post_with_wrong_token_is_rejected(app):
     client = app.test_client()
     _seed_session(client, with_token=True)
     resp = client.post(
-        "/campaigns/submit", data={"_csrf": "not-the-token", "source_job_id": "x"}
+        "/lab-projects/submit", data={"_csrf": "not-the-token", "source_job_id": "x"}
     )
     assert resp.status_code == 403
     assert b"CSRF" in resp.data
@@ -72,7 +72,7 @@ def test_post_with_valid_form_token_passes_csrf(app):
     client = app.test_client()
     _seed_session(client, with_token=True)
     resp = client.post(
-        "/campaigns/submit", data={"_csrf": _TOKEN, "source_job_id": "x"}
+        "/lab-projects/submit", data={"_csrf": _TOKEN, "source_job_id": "x"}
     )
     assert resp.status_code != 403
 
