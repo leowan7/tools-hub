@@ -494,21 +494,91 @@ def mark_timeout(
     )
 
 
-def timeout_stuck_job(job_id: str) -> bool:
-    """CAS-timeout a stuck job and release its wallet hold.
+def timeout_stuck_job(job_id: str) -> str:
+    """Recover a stuck job if its work survived, else CAS-timeout it.
 
-    Bundles ``mark_timeout`` with ``_settle_wallet_hold_for_completed_job``
-    so the cron sweeper does not reach into private internals. Returns
-    True iff this caller actually moved the row — a concurrent webhook
-    or user cancel that lands first leaves the wallet path to that
-    writer (it is CAS-guarded the same way ``cancel_job`` is).
+    Called by the stuck-job sweeper. Before discarding a marooned job as a
+    timeout, we check whether the work actually completed but its terminal
+    webhook was lost (app restart mid-deploy, transient 5xx, Supabase
+    HTTP/2 read-hang). ``recover_stuck_job_result`` inspects Modal (inline
+    ``FunctionCall.get``) and tool-outputs Storage; when it finds a real
+    result we finalize the job as ``succeeded`` through the SAME
+    ``complete_job`` terminal/settle path the webhook uses, so billing
+    settles against actual GPU consumed instead of full-refunding a run
+    that really executed. Only when nothing is recoverable do we time the
+    job out (full refund) as before.
+
+    Returns one of:
+
+    * ``"recovered"`` — this caller finalized the job as succeeded.
+    * ``"timed_out"`` — this caller timed the job out and settled the hold.
+    * ``""`` — no-op: the row was already terminal, or a concurrent writer
+      (a late webhook, a user cancel, an inline poll) won the CAS. That
+      writer owns the wallet settle; we do not touch it.
+
+    Idempotency/race safety rides entirely on the existing terminal-state
+    CAS. Both ``complete_job`` and ``mark_timeout`` constrain their UPDATE
+    to ``status IN ('pending','running')``, so a webhook that lands between
+    our recovery check and our write can never be double-settled: exactly
+    one of the racing writers moves the row, the other no-ops.
     """
+    job = get_job(job_id)
+    if job is None or job.status in TERMINAL_STATUSES:
+        # Already terminal (or vanished) — a concurrent writer owns it.
+        return ""
+
+    # Recovery gate: finalize as succeeded when the work provably survived.
+    from shared.job_recovery import recover_stuck_job_result  # noqa: PLC0415
+
+    try:
+        recovered = recover_stuck_job_result(job)
+    except Exception:
+        logger.warning(
+            "timeout_stuck_job: recovery probe raised for job %s; "
+            "falling back to timeout.",
+            job_id, exc_info=True,
+        )
+        recovered = None
+
+    if recovered is not None:
+        # Prefer a runtime carried on the recovered result (Modal poll path);
+        # otherwise settle against the row's heartbeat-persisted consumption
+        # so we bill actual GPU rather than clobbering it with NULL.
+        gpu_seconds_used: Optional[int] = None
+        if job.gpu_seconds_used and job.gpu_seconds_used > 0:
+            gpu_seconds_used = job.gpu_seconds_used
+        fresh = complete_job(
+            job_id,
+            terminal_status="succeeded",
+            result=recovered,
+            gpu_seconds_used=gpu_seconds_used,
+        )
+        if fresh is not None and fresh.status == "succeeded":
+            logger.info(
+                "timeout_stuck_job: recovered job %s as succeeded "
+                "(lost webhook); result finalized through complete_job.",
+                job_id,
+            )
+            return "recovered"
+        # complete_job did not land on succeeded — either a concurrent
+        # writer won the CAS (fresh is terminal, they own the settle) or the
+        # terminal write failed. Do NOT then time it out: if the row is
+        # already terminal, mark_timeout would no-op anyway, and if the write
+        # genuinely failed a later sweep will retry. Report the no-op.
+        logger.warning(
+            "timeout_stuck_job: recovery finalize for job %s did not reach "
+            "succeeded (status=%s); leaving to the next sweep or the winner.",
+            job_id, getattr(fresh, "status", None),
+        )
+        return ""
+
+    # Nothing recoverable — genuine stall. Time it out and settle (refund).
     if not mark_timeout(job_id):
-        return False
+        return ""
     fresh = get_job(job_id)
     if fresh is not None:
         _settle_wallet_hold_for_completed_job(fresh)
-    return True
+    return "timed_out"
 
 
 def mark_cancelled(

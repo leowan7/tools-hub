@@ -7534,6 +7534,7 @@ def create_app() -> Flask:
         print(
             f"jobs:sweep-stuck pending={summary['pending_swept']} "
             f"running={summary['running_swept']} "
+            f"recovered={summary.get('recovered', 0)} "
             f"errors={len(summary['errors'])}",
             flush=True,
         )

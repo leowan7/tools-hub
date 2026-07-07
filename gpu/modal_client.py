@@ -467,6 +467,7 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
                     if smoke.get("runtime_seconds") is not None
                     else smoke.get("gpu_seconds")
                 ),
+                "exit_code": exit_code,
                 "error": None,
             }
         if status_raw == "FAILED":
@@ -474,6 +475,7 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
                 "status": "failed",
                 "result": None,
                 "gpu_seconds_used": smoke.get("runtime_seconds"),
+                "exit_code": exit_code,
                 "error": _stringify_error(smoke.get("error")),
             }
         # Unknown status string — treat as error so we do not silently
@@ -492,16 +494,22 @@ def _interpret_pipeline_return(raw_result: Any) -> Dict[str, Any]:
     webhook_outcome = raw_result.get("webhook_outcome") or {}
     detail = webhook_outcome.get("detail") or "no webhook_outcome reported by pipeline"
     if exit_code == 0:
+        # Pipeline process exited cleanly but tools-hub never confirmed the
+        # terminal webhook. The run itself succeeded; the payload was
+        # delivered out-of-band. ``exit_code`` lets the stuck-job recovery
+        # path distinguish this (recoverable) case from a genuine crash.
         return {
             "status": "failed",
             "result": None,
             "gpu_seconds_used": None,
+            "exit_code": 0,
             "error": f"webhook delivery failed (pipeline exited 0): {detail}",
         }
     return {
         "status": "failed",
         "result": None,
         "gpu_seconds_used": None,
+        "exit_code": exit_code,
         "error": f"run_pipeline exited {exit_code} with no smoke_result; webhook detail: {detail}",
     }
 
