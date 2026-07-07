@@ -341,94 +341,92 @@ class TestMidRunMonitorWarn:
         assert result is None
 
 
-class TestMidRunMonitorKill:
-    def test_kill_ratio_with_cost_below_cap_no_op(self, fake_job_store):
-        """At 2x estimate but still inside the parameter scaled hard cap
-        the monitor does not kill the job. The hold itself will absorb
-        the variance via settle_hold when the job lands."""
-        job_id = _seed_running(fake_job_store)
-        # Drop num_designs back to the bindcraft baseline of 2 so the
-        # hard cap stays at the base $8 (compute_hard_cap scales it
-        # by num_designs/baseline).
-        fake_job_store[job_id]["inputs"]["num_designs"] = 2
-        # 1.00 estimate; 2x = $2.00 well below $8 cap. 2000s on
-        # A100-40GB at 0.001214/s with markup is ~$2.43: above 2x,
-        # still below cap, so no kill.
-        fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "1.00"
-        modal = MagicMock()
-        with patch("shared.email.send_overrun_warning_email"), patch(
-            "shared.email.send_overrun_kill_email"
-        ):
-            result = jobs_mod.mid_run_monitor_check(
-                job_id, 2000.0, modal_client=modal,
-            )
-        # No kill because cumulative_cost is below the per tool hard cap.
-        assert result != "killed"
-        modal.cancel.assert_not_called()
+class TestMidRunMonitorNoCostKill:
+    """The cost-based mid-run kill was removed: a runaway-cost job is
+    never terminated mid-run. Spend is bounded by the prepaid wallet +
+    per-job hold and wall-clock by the Modal container hard timeout, so
+    the monitor never cancels Modal, never flips the job to failed, and
+    never settles a hold inline. The terminal path owns settlement.
+    """
 
-    def test_kill_ratio_above_cap_cancels_modal(self, fake_job_store):
-        """When cumulative cost exceeds both 2x estimate AND the cap,
-        the monitor cancels Modal, flips the job to failed, and settles
-        the wallet hold against consumed GPU.
-
-        NOTE on the BILLED policy: safety_kill is in
-        _BILLED_FAILURE_CLASSES (the user IS charged for GPU consumed
-        before the kill). The monitor must therefore route the hold
-        through settle_hold, NOT release_hold. A previous version of
-        this test pinned release_hold which would full-refund the
-        user for an overrun run; that contradicted the failure-class
-        policy and leaked money on every kill. Do not naively revert.
-        """
+    def test_runaway_cost_does_not_kill_or_cancel(self, fake_job_store):
+        """Cumulative cost far above the old 2x kill ratio and any prior
+        hard cap: the monitor must NOT cancel Modal, mark the job failed,
+        or settle a hold. It only warns (never kills)."""
         job_id = _seed_running(fake_job_store)
-        # baseline params: hard cap stays at $8 for bindcraft.
+        # baseline params + tiny estimate so the ratio is ~170x, well past
+        # the old kill threshold.
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
-        # 7000s on A100-40GB gives ~$8.50 cumulative. Ratio is 170x;
-        # cost is over the $8 cap. Both kill conditions tripped.
         modal = MagicMock()
-        with patch("shared.email.send_overrun_kill_email") as kill_email, patch(
+        with patch("shared.email.send_overrun_warning_email"), patch(
             "shared.wallet.settle_hold"
         ) as settle, patch("shared.wallet.release_hold") as release:
             result = jobs_mod.mid_run_monitor_check(
                 job_id, 7000.0, modal_client=modal,
             )
-        assert result == "killed"
-        modal.cancel.assert_called_once()
-        # safety_kill is BILLED: settle_hold gets the consumed GPU and
-        # the failure_reason flows through for the audit trail. The
-        # full-refund release_hold path must NOT fire.
-        settle.assert_called_once()
+        # No kill: never returns "killed".
+        assert result != "killed"
+        # Modal is not cancelled and no terminal/settle side effects fire.
+        modal.cancel.assert_not_called()
+        settle.assert_not_called()
         release.assert_not_called()
-        args = settle.call_args.args
-        kwargs = settle.call_args.kwargs
-        assert args[0] == "tx-running"
-        assert kwargs["gpu_seconds"] == 7000.0
-        assert kwargs["gpu_class"] == "A100-40GB"
-        assert kwargs["failure_reason"] == "overrun_safety_kill"
-        # Job row flipped to failed with the safety-kill bucket and
-        # the classifier wrote failure_class so the settle hook routes
-        # the hold via the BILLED path.
-        kill_email.assert_called_once()
-        assert fake_job_store[job_id]["status"] == "failed"
-        assert (
-            fake_job_store[job_id]["error"]["bucket"] == "overrun_safety_kill"
-        )
-        assert fake_job_store[job_id]["failure_class"] == "safety_kill"
+        # The job stays running; the monitor did not flip it to failed.
+        assert fake_job_store[job_id]["status"] == "running"
 
-    def test_kill_skips_modal_when_no_function_call_id(self, fake_job_store):
+    def test_runaway_cost_above_old_kill_ratio_still_warns(self, fake_job_store):
+        """A runaway overrun ABOVE the old 2x kill ratio is no longer
+        silent: with the half-open warn band removed the monitor warns
+        once (email sent, "warned" returned) instead of killing. This is
+        the observability gap (F1) the kill removal opened."""
         job_id = _seed_running(fake_job_store)
-        fake_job_store[job_id]["modal_function_call_id"] = None
+        # 0.05 estimate; ~7000 gpu_seconds -> ~170x, far above the old 2.0x
+        # kill threshold. Previously this fell through to a silent None
+        # (after the kill), now it must warn.
         fake_job_store[job_id]["inputs"]["num_designs"] = 2
         fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
         modal = MagicMock()
-        with patch("shared.email.send_overrun_kill_email"), patch(
-            "shared.wallet.settle_hold"
-        ), patch("shared.wallet.release_hold"):
+        with patch("shared.email.send_overrun_warning_email") as warn_email:
             result = jobs_mod.mid_run_monitor_check(
                 job_id, 7000.0, modal_client=modal,
             )
-        assert result == "killed"
+        assert result == "warned"
+        warn_email.assert_called_once()
         modal.cancel.assert_not_called()
+        assert fake_job_store[job_id]["status"] == "running"
+        # Idempotency flag stashed so a second heartbeat does not re-email.
+        assert (
+            fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] is True
+        )
+
+    def test_runaway_cost_warns_only_once(self, fake_job_store):
+        """The overrun_warned flag makes the (now unbounded) warning fire
+        exactly once even as the ratio keeps climbing, so a persistently
+        runaway job does not spam the user."""
+        job_id = _seed_running(fake_job_store)
+        fake_job_store[job_id]["inputs"]["num_designs"] = 2
+        fake_job_store[job_id]["inputs"]["_wallet"]["estimate_usd"] = "0.05"
+        # Already warned on a prior heartbeat.
+        fake_job_store[job_id]["inputs"]["_wallet"]["overrun_warned"] = True
+        with patch("shared.email.send_overrun_warning_email") as warn_email:
+            result = jobs_mod.mid_run_monitor_check(job_id, 9000.0)
+        warn_email.assert_not_called()
+        assert result is None
+
+    def test_warns_at_or_above_warn_ratio(self, fake_job_store):
+        """At ~1.5x estimate (the warn threshold) the warning still fires;
+        that telemetry is unaffected by removing the kill."""
+        job_id = _seed_running(fake_job_store)
+        # 4.40 estimate; ~5500 gpu_seconds -> ~1.5x.
+        modal = MagicMock()
+        with patch("shared.email.send_overrun_warning_email") as warn_email:
+            result = jobs_mod.mid_run_monitor_check(
+                job_id, 5500.0, modal_client=modal,
+            )
+        assert result == "warned"
+        warn_email.assert_called_once()
+        modal.cancel.assert_not_called()
+        assert fake_job_store[job_id]["status"] == "running"
 
 
 class TestMidRunMonitorNoOps:

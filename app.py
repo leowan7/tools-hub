@@ -5200,7 +5200,7 @@ def create_app() -> Flask:
             "balance_usd": str(pre.balance_usd),
             "affordable": pre.ok,
             "reason": pre.reason,
-            "needs_verification": plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD,
+            "needs_verification": cc.CAMPAIGN_KYC_ENABLED and (plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD),
         })
 
     @flask_app.route("/campaigns", methods=["POST"])

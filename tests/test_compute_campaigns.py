@@ -385,7 +385,19 @@ def test_preauth_frozen(fake_client, monkeypatch):
     assert not res.ok and res.reason == cc.PREAUTH_FROZEN
 
 
-def test_preauth_verification_required_over_threshold(fake_client, monkeypatch):
+def test_preauth_no_verification_when_kyc_disabled(fake_client, monkeypatch):
+    """Default posture: KYC is OFF, so a large budget does NOT require
+    verification (the velocity cap remains the only budget-size gate)."""
+    monkeypatch.setattr(cc, "CAMPAIGN_KYC_ENABLED", False)
+    _patch_wallet(monkeypatch, balance_usd="100000")  # plenty of balance
+    over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1")
+    res = cc.campaign_preauth("u", over)
+    assert res.ok and res.reason == cc.PREAUTH_OK
+
+
+def test_preauth_verification_required_over_threshold_when_kyc_enabled(fake_client, monkeypatch):
+    """With the KYC flag ON, a large budget requires an approved account."""
+    monkeypatch.setattr(cc, "CAMPAIGN_KYC_ENABLED", True)
     _patch_wallet(monkeypatch, balance_usd="100000")  # plenty of balance
     over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1")
     res = cc.campaign_preauth("u", over)
@@ -393,6 +405,7 @@ def test_preauth_verification_required_over_threshold(fake_client, monkeypatch):
 
 
 def test_preauth_verification_passes_with_override(fake_client, monkeypatch):
+    monkeypatch.setattr(cc, "CAMPAIGN_KYC_ENABLED", True)
     over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1000")
     _patch_wallet(monkeypatch, balance_usd="100000", per_job_cap_override_usd=str(over))
     res = cc.campaign_preauth("u", over)
@@ -431,7 +444,9 @@ def test_preauth_insufficient_first_wave(fake_client, monkeypatch):
 
 
 def test_preauth_small_first_wave_does_not_bypass_verification(fake_client, monkeypatch):
-    """A small first wave must NOT let a large-budget campaign skip verification."""
+    """A small first wave must NOT let a large-budget campaign skip verification
+    (only relevant when the KYC flag is ON)."""
+    monkeypatch.setattr(cc, "CAMPAIGN_KYC_ENABLED", True)
     _patch_wallet(monkeypatch, balance_usd="100000")
     over = cc.VERIFICATION_THRESHOLD_USD + Decimal("1")
     res = cc.campaign_preauth("u", over, first_wave_usd=Decimal("20"))

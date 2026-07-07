@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -119,6 +120,13 @@ BUDGET_BUFFER = Decimal("1.15")
 #     account (per_job_cap_override_usd >= budget) rather than a hard block.
 DAILY_CAMPAIGN_CAP_USD = Decimal("25000")
 VERIFICATION_THRESHOLD_USD = Decimal("5000")
+
+# ID/verification (KYC) gate kill-switch. Default OFF (KYC disabled): a large
+# authorization no longer requires an approved account. Re-enable without a
+# code change by setting CAMPAIGN_KYC_ENABLED=1 (mirrors the CSRF_PROTECT env
+# kill-switch pattern in app.py). Applies to the campaign path only; the
+# velocity/daily-cap gate below is a separate guard and is always active.
+CAMPAIGN_KYC_ENABLED = os.environ.get("CAMPAIGN_KYC_ENABLED", "0").strip() == "1"
 
 # Campaign lifecycle states (mirror the CHECK in migration 0034).
 CAMPAIGN_STATUSES: frozenset[str] = frozenset({
@@ -593,7 +601,7 @@ def campaign_preauth(
         return PreauthResult(False, PREAUTH_FROZEN, balance, budget_usd, gate_usd)
     if balance < gate_usd:
         return PreauthResult(False, PREAUTH_INSUFFICIENT, balance, budget_usd, gate_usd)
-    if budget_usd > VERIFICATION_THRESHOLD_USD:
+    if CAMPAIGN_KYC_ENABLED and budget_usd > VERIFICATION_THRESHOLD_USD:
         override = wallet.get("per_job_cap_override_usd")
         approved = override is not None and Decimal(str(override)) >= budget_usd
         if not approved:

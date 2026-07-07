@@ -1102,15 +1102,15 @@ def _settle_wallet_hold_for_completed_job(job: "ToolJob") -> None:
 
 # Mid run progress monitoring interval. Modal pipelines emit a heartbeat
 # roughly every 15 minutes; the monitor reads cumulative gpu_seconds from
-# the heartbeat payload and decides whether to issue a soft warning or
-# trigger a safety kill.
+# the heartbeat payload and decides whether to issue a soft warning.
 MID_RUN_MONITOR_INTERVAL_MINUTES = 15
 
-# Ratios used by the mid run monitor. The 1.5x warning is non blocking;
-# the 2.0x ratio triggers a hard kill so a catastrophically wrong estimate
-# does not run unbounded.
+# Ratio used by the mid run monitor. The 1.5x warning is non blocking and
+# fires once per job at or above this ratio. The cost-based mid-run kill
+# (and its former 2.0x _MID_RUN_KILL_RATIO threshold) was removed: prepaid
+# wallet + per-job hold bound spend and the Modal container hard timeout
+# bounds wall-clock, so an overrun warns rather than being killed.
 _MID_RUN_WARN_RATIO = 1.5
-_MID_RUN_KILL_RATIO = 2.0
 
 # Upper bound for a single job's persisted GPU seconds (24h). Guards the
 # billing column against a malformed/NaN/inf heartbeat value being
@@ -1142,7 +1142,7 @@ def mid_run_monitor_check(
     *,
     modal_client=None,  # noqa: ANN001 avoid circular import of gpu.modal_client
 ) -> Optional[str]:
-    """Inspect a running job's cumulative cost and act on overrun ratios.
+    """Inspect a running job's cumulative cost and warn on overrun ratios.
 
     Called by the Modal heartbeat handler (or a scheduler) every 15
     minutes for any still-running job that owns a wallet hold. Returns
@@ -1152,19 +1152,13 @@ def mid_run_monitor_check(
       no hold on this job, or the job is no longer running).
     * ``"warned"``: soft warning email dispatched. Idempotent on the
       stashed ``_wallet.overrun_warned`` flag in the job inputs.
-    * ``"killed"``: projected cost exceeded the hard cap; the Modal
-      function call was cancelled, the job row was flipped to 'failed'
-      with failure_class='safety_kill', and the wallet hold was
-      settled inline against consumed GPU time. Cancel is best effort:
-      if Modal flakes the local terminal status still wins.
 
-    On the ``killed`` path the monitor settles the hold inline because
-    the kill closes the Modal connection and the terminal webhook may
-    never land. Settlement runs through the shared
-    ``_settle_wallet_hold_for_completed_job`` hook (idempotent), so a
-    follow-up ``complete_job`` triggered by a late webhook still
-    no-ops on the already-terminal status. The 'warned' path leaves
-    settlement to ``complete_job`` as usual.
+    The cost-based mid-run kill was removed: spend is bounded by the
+    prepaid wallet + per-job hold, and wall-clock by the Modal container
+    hard timeout, so a job is never terminated mid-run for cost. This
+    check now only issues the soft warning; settlement always happens on
+    the terminal path (``complete_job`` / cancel / timeout). ``modal_client``
+    is retained for signature compatibility and is no longer used here.
 
     Side effect: on every check, persists ``cumulative_gpu_seconds`` to
     ``tool_jobs.gpu_seconds_used`` so a user-initiated cancel can bill
@@ -1225,7 +1219,6 @@ def mid_run_monitor_check(
 
     try:
         from shared.wallet import compute_charge_usd  # noqa: PLC0415
-        from shared.wallet_estimates import compute_hard_cap  # noqa: PLC0415
     except Exception:
         logger.warning(
             "mid_run_monitor_check: wallet import failed for job %s",
@@ -1242,78 +1235,17 @@ def mid_run_monitor_check(
 
     ratio = cumulative_cost / estimate
 
-    params = {
-        k: v
-        for k, v in (job.inputs or {}).items()
-        if isinstance(k, str) and not k.startswith("_")
-    }
-    hard_cap = compute_hard_cap(job.tool, params)
-
-    # Soft warning at 1.5x estimate. Fires once per job, gated by the
-    # overrun_warned flag.
+    # Soft warning at or above 1.5x estimate. Fires once per job, gated by
+    # the overrun_warned flag, so any overrun (however large) still alerts
+    # the user exactly once. The cost-based mid-run kill was removed (prepaid
+    # wallet + per-job hold bound spend; the Modal container hard timeout
+    # bounds wall-clock), so there is no upper band: a runaway job warns
+    # rather than being silently killed.
     already_warned = bool(ws_ctx.get("overrun_warned"))
-    if (
-        _MID_RUN_WARN_RATIO <= ratio < _MID_RUN_KILL_RATIO
-        and not already_warned
-    ):
+    if ratio >= _MID_RUN_WARN_RATIO and not already_warned:
         _send_overrun_warning(job, cumulative_cost, estimate)
         _stash_wallet_flag(job, "overrun_warned", True)
         return "warned"
-
-    # Hard kill at 2x estimate. The kill is gated on the projected
-    # actual exceeding the parameter-scaled hard cap so legitimate
-    # tail-of-distribution runs are not aborted just for crossing the
-    # 2x bar. Without the cap gate, a $0.05 MPNN whose estimate is bad
-    # would be killed at $0.10 (still well below the $150 cap).
-    if ratio >= _MID_RUN_KILL_RATIO and cumulative_cost >= hard_cap:
-        _send_overrun_kill_notice(job, cumulative_cost, hard_cap)
-        if modal_client is not None and job.modal_function_call_id:
-            try:
-                modal_client.cancel(job.modal_function_call_id)
-            except Exception:
-                logger.warning(
-                    "mid_run_monitor_check: modal cancel raised for job %s",
-                    job_id, exc_info=True,
-                )
-        # Mark the job 'failed' with a known failure_reason so the
-        # terminal callback (or a follow-up call) settles the hold at
-        # the cap. We use CAS so a concurrent succeeded/failed webhook
-        # still wins. mark_failed writes failure_class='safety_kill'
-        # via classify_terminal_state, which is a BILLED class per
-        # _BILLED_FAILURE_CLASSES.
-        try:
-            mark_failed(
-                job_id,
-                error={
-                    "bucket": "overrun_safety_kill",
-                    "detail": (
-                        "projected cost exceeded the per tool hard cap; "
-                        "job cancelled by the mid run monitor"
-                    ),
-                },
-                gpu_seconds_used=_safe_gpu_seconds_int(cumulative_gpu_seconds),
-            )
-        except Exception:
-            logger.warning(
-                "mid_run_monitor_check: mark_failed raised for job %s",
-                job_id, exc_info=True,
-            )
-        # Settle the wallet hold inline against consumed GPU time. The
-        # classifier writes failure_class='safety_kill' which is BILLED:
-        # settle_hold charges the user for actual consumed GPU up to
-        # the parameter scaled hard cap and refunds the surplus. We
-        # mirror cancel_job / timeout_stuck_job here: re-fetch the
-        # now-terminal row and hand it to the shared settle hook.
-        # Doing this inline (instead of waiting for a Modal webhook
-        # that may never land after the kill closes the connection)
-        # closes a money leak where the hold would otherwise sit
-        # unsettled. _settle_wallet_hold_for_completed_job is
-        # idempotent, so a follow-up complete_job from a late webhook
-        # naturally no-ops on the already-terminal status.
-        fresh = get_job(job_id)
-        if fresh is not None:
-            _settle_wallet_hold_for_completed_job(fresh)
-        return "killed"
 
     return None
 
@@ -1357,27 +1289,6 @@ def _send_overrun_warning(
     except Exception:
         logger.warning(
             "overrun warning email failed for job %s", job.id, exc_info=True
-        )
-
-
-def _send_overrun_kill_notice(
-    job: "ToolJob", cumulative_cost, hard_cap
-) -> None:  # noqa: ANN001
-    """Send the 2x safety kill notice; best effort, never raises."""
-    if not job.user_id:
-        return
-    try:
-        from shared.email import send_overrun_kill_email  # noqa: PLC0415
-        send_overrun_kill_email(
-            user_id=job.user_id,
-            tool_slug=job.tool,
-            attempted_usd=cumulative_cost,
-            cap_usd=hard_cap,
-        )
-    except Exception:
-        logger.warning(
-            "overrun kill notice email failed for job %s",
-            job.id, exc_info=True,
         )
 
 
