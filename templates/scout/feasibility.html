@@ -277,8 +277,8 @@
    Feasibility Scorer — client-side logic
    ======================================================================== */
 
-var currentJobId = '{{ job_id }}' || '';
-var currentEpitopeId = '{{ epitope_id }}' || '';
+var currentJobId = {{ job_id | tojson }} || '';
+var currentEpitopeId = {{ epitope_id | tojson }} || '';
 var currentChain = new URLSearchParams(window.location.search).get('chain') || 'A';
 
 /* ------------------------------------------------------------------
