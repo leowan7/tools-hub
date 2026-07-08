@@ -1,15 +1,17 @@
 ---
 title: BoltzGen nanobody discovery against a lymphocyte surface receptor, 2000 designs narrowed to a validated panel of 12
 tool: boltzgen
+tool_name: BoltzGen
 target_kind: VHH nanobody steered off the receptor functional face
 top_score: 0.81
 date: 2026-06-26
 internal_benchmark: true
 glyph: Antibodies (VHH)
 stats: 2000=designs generated | 0.974=best discovery ipTM | 12=validated panel | 10 of 12=strong on two scorers
+outcome: One public target went from 2000 raw designs to a validated panel of 12 nanobodies, scored by two independent structure predictors. The same BoltzGen pipeline runs on your target.
 ---
 
-Internal benchmark run on a public target. We used BoltzGen to design VHH
+We used BoltzGen to design VHH
 nanobodies against a lymphocyte surface receptor, steering the binders toward a
 membrane distal surface so they land away from the receptor functional contact
 face and do not interfere with native signaling.

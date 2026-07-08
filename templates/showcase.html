@@ -31,7 +31,12 @@
   .showcase-prose li { margin-bottom: 0.4rem; }
   .showcase-subhead { color: var(--text-primary); font-weight: 600; margin: 1.15rem 0 0.5rem; }
 
-  .showcase-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.35rem; }
+  .showcase-outcome { font-family: var(--font-body); font-size: 1.02rem; line-height: 1.55; color: var(--text-primary); border-left: 2px solid var(--accent-text); padding-left: 0.9rem; margin: 0 0 1.35rem; max-width: 68ch; }
+
+  .showcase-runit { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.35rem; }
+  .showcase-runit-chip { font-size: 0.74rem; color: var(--text-secondary); background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 0.3rem 0.7rem; }
+
+  .showcase-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.75rem; }
 
   @media (max-width: 640px) {
     .showcase-top { flex-direction: column; gap: 1rem; }
@@ -114,13 +119,16 @@
           {% endif %}
         </div>
         <div class="panel-body">
+          {% if e.meta.outcome %}
+            <p class="showcase-outcome">{{ e.meta.outcome }}</p>
+          {% endif %}
           <div class="showcase-top">
             {% if e.glyph %}
               <div class="showcase-visual" aria-hidden="true">{{ inline_category_glyph(e.glyph) }}</div>
             {% endif %}
             <div class="showcase-meta">
               <div class="showcase-metarow">
-                <span><span class="k">Tool</span>{{ e.meta.tool }}</span>
+                <span><span class="k">Tool</span>{{ e.meta.tool_name or e.meta.tool }}</span>
                 <span><span class="k">Target</span>{{ e.meta.target_kind }}</span>
                 {% if e.meta.top_score is defined and e.meta.top_score != '' %}<span><span class="k">Top score</span>{{ e.meta.top_score }}</span>{% endif %}
                 <span><span class="k">Date</span>{{ e.meta.date }}</span>
@@ -150,12 +158,19 @@
             {% endfor %}
           </div>
 
+          <div class="showcase-runit">
+            <span class="showcase-runit-chip">Pay by the second of GPU</span>
+            <span class="showcase-runit-chip">New accounts start with $5</span>
+            <span class="showcase-runit-chip">No install, runs in your browser</span>
+          </div>
           <div class="showcase-actions">
             {% if e.tool_url %}
-              <a href="{{ e.tool_url }}" class="btn-primary">Open {{ e.meta.tool }} on tools.ranomics.com</a>
+              <a href="{{ e.tool_url }}" class="btn-primary">Run {{ e.meta.tool_name or e.meta.tool }} on your target</a>
+            {% else %}
+              <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
             {% endif %}
             {% if e.guide_url %}
-              <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool }} guide</a>
+              <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool_name or e.meta.tool }} guide</a>
             {% endif %}
           </div>
         </div>

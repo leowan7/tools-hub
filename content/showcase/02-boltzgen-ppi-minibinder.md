@@ -1,15 +1,17 @@
 ---
 title: BoltzGen de novo minibinders blocking a protein interaction interface, 20,000 designs with 713 high confidence hits
 tool: boltzgen
+tool_name: BoltzGen
 target_kind: de novo minibinder blocking a protein interaction interface
 top_score: 0.76
 date: 2026-06-14
 internal_benchmark: true
 glyph: De novo minibinders
 stats: 20,000=unique designs | 0.758=top binding confidence | 713=hits at 0.5 and up | 65 to 80=binder length in aa
+outcome: A single BoltzGen campaign turned a public interface into 713 ranked high confidence minibinder candidates to sample from, all from one target definition. Point it at your interface next.
 ---
 
-Internal benchmark run on a public target. We used BoltzGen to design de novo
+We used BoltzGen to design de novo
 minibinders aimed at one partner interface on a scaffolding protein, so a binder
 competes with the natural partner for the same surface.
 
