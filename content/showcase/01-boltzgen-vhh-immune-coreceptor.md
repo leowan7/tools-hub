@@ -7,7 +7,7 @@ date: 2026-06-26
 internal_benchmark: true
 glyph: Antibodies (VHH)
 stats: 2000=designs generated | 0.974=best discovery ipTM | 12=validated panel | 10 of 12=strong on two scorers
-outcome: A single BoltzGen run took a receptor target from 2000 raw designs to a validated panel of 12 nanobodies, scored by two independent structure predictors. The same pipeline runs on your target.
+outcome: A single BoltzGen run took a receptor target from 2000 raw designs to a validated panel of 12 nanobodies, scored by two independent structure predictors.
 ---
 
 We used BoltzGen to design VHH nanobodies against a lymphocyte surface receptor,

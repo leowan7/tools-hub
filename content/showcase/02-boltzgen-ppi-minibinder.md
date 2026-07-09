@@ -7,7 +7,7 @@ date: 2026-06-14
 internal_benchmark: true
 glyph: De novo minibinders
 stats: 20,000=unique designs | 0.98=top ipTM | 93%=epitope covered | 65 to 80=binder length in aa
-outcome: A single BoltzGen campaign turned one interface into 20,000 ranked de novo minibinders, with a top tier scoring ipTM 0.98. Point it at your interface next.
+outcome: A single BoltzGen campaign turned one interface into 20,000 ranked de novo minibinders, with a top tier scoring ipTM 0.98.
 ---
 
 We used BoltzGen to design de novo minibinders aimed at one partner interface on

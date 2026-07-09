@@ -8,11 +8,16 @@
 <style>
   .showcase-entry-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; color: var(--warm-white); margin: 0; }
 
-  .showcase-top { display: flex; gap: 1.25rem; align-items: flex-start; margin-bottom: 1.35rem; }
-  .showcase-visual { flex-shrink: 0; width: 108px; height: 108px; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.25); display: flex; align-items: center; justify-content: center; color: var(--accent-text); overflow: hidden; }
+  .showcase-layout { display: grid; grid-template-columns: 1fr minmax(260px, 340px); gap: 2rem; align-items: start; }
+  .showcase-main { min-width: 0; }
+  .showcase-aside { min-width: 0; }
+  .showcase-visual { width: 108px; height: 108px; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.25); display: flex; align-items: center; justify-content: center; color: var(--accent-text); overflow: hidden; margin: 0 auto; }
   .showcase-visual svg { width: 56px; height: 56px; }
-  .showcase-visual img { width: 100%; height: 100%; object-fit: contain; display: block; }
-  .showcase-meta { flex: 1; min-width: 0; }
+  .showcase-structure { width: 100%; aspect-ratio: 1 / 1; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.22); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .showcase-structure img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 0.75rem; box-sizing: border-box; }
+  .showcase-structure-cap { margin: 0.65rem 0 0; font-size: 0.75rem; line-height: 1.5; color: var(--text-secondary); text-align: center; }
+  .cap-green { color: var(--accent-text); font-weight: 600; }
+  .cap-gray { color: #9aa7b5; font-weight: 600; }
   .showcase-metarow { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin-bottom: 0.95rem; color: var(--text-secondary); font-size: 0.82rem; }
   .showcase-metarow .k { color: var(--text-primary); font-weight: 600; margin-right: 0.3rem; }
 
@@ -34,10 +39,11 @@
 
   .showcase-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.75rem; }
 
-  @media (max-width: 640px) {
-    .showcase-top { flex-direction: column; gap: 1rem; }
-    .showcase-visual { width: 72px; height: 72px; }
-    .showcase-visual svg { width: 40px; height: 40px; }
+  @media (max-width: 760px) {
+    .showcase-layout { grid-template-columns: 1fr; gap: 1.5rem; }
+    .showcase-aside { order: -1; max-width: 340px; }
+    .showcase-visual { width: 96px; height: 96px; }
+    .showcase-visual svg { width: 52px; height: 52px; }
   }
 </style>
 {% endblock %}
@@ -113,21 +119,14 @@
           <h2 class="showcase-entry-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
         </div>
         <div class="panel-body">
-          {% if e.meta.outcome %}
-            <p class="showcase-outcome">{{ e.meta.outcome }}</p>
-          {% endif %}
-          <div class="showcase-top">
-            {% if e.render_url %}
-              <div class="showcase-visual" aria-hidden="true"><img src="{{ e.render_url }}" alt="" loading="lazy"></div>
-            {% elif e.glyph %}
-              <div class="showcase-visual" aria-hidden="true">{{ inline_category_glyph(e.glyph) }}</div>
-            {% endif %}
-            <div class="showcase-meta">
+          <div class="showcase-layout">
+            <div class="showcase-main">
+              {% if e.meta.outcome %}
+                <p class="showcase-outcome">{{ e.meta.outcome }}</p>
+              {% endif %}
               <div class="showcase-metarow">
                 <span><span class="k">Tool</span>{{ e.meta.tool_name or e.meta.tool }}</span>
                 <span><span class="k">Target</span>{{ e.meta.target_kind }}</span>
-                {% if e.meta.top_score is defined and e.meta.top_score != '' %}<span><span class="k">Top score</span>{{ e.meta.top_score }}</span>{% endif %}
-                <span><span class="k">Date</span>{{ e.meta.date }}</span>
               </div>
               {% if e.stats %}
                 <div class="showcase-stats">
@@ -139,34 +138,43 @@
                   {% endfor %}
                 </div>
               {% endif %}
+              <div class="showcase-prose">
+                {% for b in e.blocks %}
+                  {% if b.type == 'subhead' %}
+                    <p class="showcase-subhead">{{ b.text }}</p>
+                  {% elif b.type == 'list' %}
+                    <ul>{% for it in b.bullets %}<li>{{ it }}</li>{% endfor %}</ul>
+                  {% else %}
+                    <p>{{ b.text }}</p>
+                  {% endif %}
+                {% endfor %}
+              </div>
+              <div class="showcase-runit">
+                <span class="showcase-runit-chip">Pay by the second of GPU</span>
+                <span class="showcase-runit-chip">New accounts start with $5</span>
+                <span class="showcase-runit-chip">No install, runs in your browser</span>
+              </div>
+              <div class="showcase-actions">
+                {% if e.tool_url %}
+                  <a href="{{ e.tool_url }}" class="btn-primary">Run {{ e.meta.tool_name or e.meta.tool }} on your target</a>
+                {% else %}
+                  <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
+                {% endif %}
+                {% if e.guide_url %}
+                  <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool_name or e.meta.tool }} guide</a>
+                {% endif %}
+              </div>
             </div>
-          </div>
 
-          <div class="showcase-prose">
-            {% for b in e.blocks %}
-              {% if b.type == 'subhead' %}
-                <p class="showcase-subhead">{{ b.text }}</p>
-              {% elif b.type == 'list' %}
-                <ul>{% for it in b.bullets %}<li>{{ it }}</li>{% endfor %}</ul>
-              {% else %}
-                <p>{{ b.text }}</p>
-              {% endif %}
-            {% endfor %}
-          </div>
-
-          <div class="showcase-runit">
-            <span class="showcase-runit-chip">Pay by the second of GPU</span>
-            <span class="showcase-runit-chip">New accounts start with $5</span>
-            <span class="showcase-runit-chip">No install, runs in your browser</span>
-          </div>
-          <div class="showcase-actions">
-            {% if e.tool_url %}
-              <a href="{{ e.tool_url }}" class="btn-primary">Run {{ e.meta.tool_name or e.meta.tool }} on your target</a>
-            {% else %}
-              <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
-            {% endif %}
-            {% if e.guide_url %}
-              <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool_name or e.meta.tool }} guide</a>
+            {% if e.render_url or e.glyph %}
+              <aside class="showcase-aside">
+                {% if e.render_url %}
+                  <div class="showcase-structure"><img src="{{ e.render_url }}" alt="Predicted structure of the designed binder bound to its target" loading="lazy"></div>
+                  <p class="showcase-structure-cap"><span class="cap-green">Designed binder</span> bound to its <span class="cap-gray">target</span></p>
+                {% else %}
+                  <div class="showcase-visual" aria-hidden="true">{{ inline_category_glyph(e.glyph) }}</div>
+                {% endif %}
+              </aside>
             {% endif %}
           </div>
         </div>
