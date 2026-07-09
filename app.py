@@ -3770,6 +3770,14 @@ def create_app() -> Flask:
                 value, _, label = item.partition("=")
                 stats.append({"value": value.strip(), "label": label.strip()})
             glyph = str(meta.get("glyph") or "").strip()
+            slug = filename[:-3]
+            render_rel = "img/showcase/" + slug + ".png"
+            render_url = None
+            if os.path.exists(os.path.join(flask_app.static_folder or "", render_rel)):
+                try:
+                    render_url = url_for("static", filename=render_rel)
+                except Exception:
+                    render_url = "/static/" + render_rel
             tool_slug = (meta.get("tool") or "").strip()
             tool_url: str | None = None
             guide_url: str | None = None
@@ -3797,7 +3805,8 @@ def create_app() -> Flask:
                 "blocks": _showcase_body_blocks(body),
                 "stats": stats,
                 "glyph": glyph,
-                "slug": filename[:-3],
+                "render_url": render_url,
+                "slug": slug,
                 "tool_url": tool_url,
                 "guide_url": guide_url,
             })
