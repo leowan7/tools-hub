@@ -2,15 +2,10 @@
 
 {% block title %}Protein binder design showcase | Real BoltzGen and RFdiffusion runs | Ranomics Tools{% endblock %}
 
-{% block description %}Real internal benchmark runs of the AI protein binder design tools on tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns plus an RFdiffusion pilot on public targets, validated with AlphaFold2, ProteinMPNN, and Boltz-2. Honest metrics, anonymized targets.{% endblock %}
+{% block description %}Real runs of the AI protein binder design tools on tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns plus an RFdiffusion pilot, validated with AlphaFold2, ProteinMPNN, and Boltz-2.{% endblock %}
 
 {% block head_extra %}
 <style>
-  .showcase-hero-stats { display: flex; flex-wrap: wrap; gap: 1.75rem 2.5rem; justify-content: center; margin-top: 1.75rem; }
-  .showcase-hero-stat { display: flex; flex-direction: column; align-items: center; gap: 0.2rem; }
-  .showcase-hero-stat .v { font-family: var(--font-display); font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 500; letter-spacing: -0.02em; line-height: 1; color: var(--warm-white); }
-  .showcase-hero-stat .l { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-secondary); }
-
   .showcase-entry-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; color: var(--warm-white); margin: 0; }
 
   .showcase-top { display: flex; gap: 1.25rem; align-items: flex-start; margin-bottom: 1.35rem; }
@@ -55,13 +50,12 @@
   "@context": "https://schema.org",
   "@type": "Dataset",
   "name": e.meta.title,
-  "description": (e.meta.title ~ ". Internal benchmark run on an anonymized public target."),
+  "description": (e.meta.title ~ ". A real binder design run on tools.ranomics.com."),
   "creator": {"@type": "Organization", "name": "Ranomics"},
   "isAccessibleForFree": True,
   "datePublished": e.meta.date|string,
   "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
-  "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug),
-  "measurementTechnique": ("Top score: " ~ (e.meta.top_score|string)) if (e.meta.top_score is defined and e.meta.top_score != '') else "Internal benchmark run"
+  "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
 } | tojson }}
 </script>
 {% endfor %}
@@ -91,20 +85,14 @@
       <span class="landing-eyebrow">Real runs on the platform</span>
       <h1>Real AI protein binder design runs</h1>
       <p class="landing-hero-lede">
-        Every entry below is a real internal benchmark run of the design
-        algorithms on tools.ranomics.com. BoltzGen nanobody and de novo
-        minibinder campaigns and an RFdiffusion pilot, on public targets,
-        validated with AlphaFold2, ProteinMPNN, and Boltz-2. Anonymized targets,
-        honest metrics, and a deep link into the tool that produced each one.
+        Every entry below is a real run of the design algorithms on
+        tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns
+        and an RFdiffusion pilot, validated with AlphaFold2, ProteinMPNN, and
+        Boltz-2, with a deep link into the tool that produced each one.
       </p>
       <div class="landing-hero-cta">
         <a href="{{ url_for('tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
         <a href="{{ url_for('pricing') }}" class="btn-ghost-lg">How billing works</a>
-      </div>
-      <div class="showcase-hero-stats">
-        <div class="showcase-hero-stat"><span class="v">3</span><span class="l">real campaigns</span></div>
-        <div class="showcase-hero-stat"><span class="v">22,060</span><span class="l">designs generated</span></div>
-        <div class="showcase-hero-stat"><span class="v">5</span><span class="l">algorithms exercised</span></div>
       </div>
     </div>
   </section>
@@ -114,9 +102,6 @@
       <article class="panel">
         <div class="panel-header">
           <h2 class="showcase-entry-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
-          {% if e.meta.internal_benchmark %}
-            <span class="panel-badge">Internal benchmark run</span>
-          {% endif %}
         </div>
         <div class="panel-body">
           {% if e.meta.outcome %}

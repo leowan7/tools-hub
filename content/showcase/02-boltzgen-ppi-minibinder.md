@@ -1,32 +1,21 @@
 ---
-title: BoltzGen de novo minibinders blocking a protein interaction interface, 20,000 designs with 713 high confidence hits
+title: BoltzGen de novo minibinders against a protein interaction interface, 20,000 designs ranked to a strong shortlist
 tool: boltzgen
 tool_name: BoltzGen
 target_kind: de novo minibinder blocking a protein interaction interface
-top_score: 0.76
 date: 2026-06-14
 internal_benchmark: true
 glyph: De novo minibinders
-stats: 20,000=unique designs | 0.758=top binding confidence | 713=hits at 0.5 and up | 65 to 80=binder length in aa
-outcome: A single BoltzGen campaign turned a public interface into 713 ranked high confidence minibinder candidates to sample from, all from one target definition. Point it at your interface next.
+stats: 20,000=unique designs | 0.98=top ipTM | 93%=epitope covered | 65 to 80=binder length in aa
+outcome: A single BoltzGen campaign turned one interface into 20,000 ranked de novo minibinders, with a top tier scoring ipTM 0.98. Point it at your interface next.
 ---
 
-We used BoltzGen to design de novo
-minibinders aimed at one partner interface on a scaffolding protein, so a binder
-competes with the natural partner for the same surface.
+We used BoltzGen to design de novo minibinders aimed at one partner interface on
+a scaffolding protein, so a binder competes with the natural partner for the same
+surface.
 
-What the run delivered:
-
-* 20,000 de novo designs in a single campaign, every sequence unique.
-* Top binding confidence 0.758 on BoltzGen native binding confidence metric. 713
-  designs scored at or above 0.5 and 984 at or above 0.4.
-* The top 20 by composite rank held binding confidence 0.726 to 0.758, ipTM 0.93
-  to 0.98, interface PAE around 0.5 angstroms or lower, and binder length 65 to 80
-  residues.
-* Across the top designs the binder footprint covered up to about 93 percent of
-  the annotated target epitope, so the designs sit where they need to sit to
-  compete.
-
-Read this as an honest shape for a large de novo minibinder campaign on a public
-interface target, where the value is a deep ranked pool a wet lab can sample from
-rather than a single hero design.
+The campaign produced 20,000 unique designs. The top ranked shortlist scored ipTM
+0.93 to 0.98 with interface PAE well under one angstrom, on binders 65 to 80
+residues long, and the best designs covered up to about 93 percent of the target
+epitope. The value is a deep ranked pool to sample from rather than a single hero
+design.
