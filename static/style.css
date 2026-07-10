@@ -2176,11 +2176,45 @@ select.form-control { cursor: pointer; }
   border-top: 1px solid var(--border-subtle);
   color: var(--text-tertiary);
   font-size: 0.78rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
 }
 .site-footer-bottom a {
   color: var(--text-secondary);
   text-decoration: none;
 }
 .site-footer-bottom a:hover {
+  color: var(--accent-text);
+}
+.site-footer-legal {
+  display: flex;
+  gap: 1.25rem;
+}
+
+/* Footer brand block: logo image + tagline + social icons (mirrors the
+   ranomics.com marketing-site footer for cross-property brand consistency). */
+.site-footer-logo-link {
+  display: inline-block;
+  margin-bottom: 0.9rem;
+}
+.site-footer-logo {
+  height: 24px;
+  width: auto;
+  display: block;
+}
+.site-footer-social {
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.site-footer-social a {
+  color: var(--text-tertiary);
+  display: inline-flex;
+  transition: color 120ms ease;
+}
+.site-footer-social a:hover {
   color: var(--accent-text);
 }

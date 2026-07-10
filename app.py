@@ -2366,43 +2366,6 @@ def create_app() -> Flask:
             flask_app.static_folder, "robots.txt", mimetype="text/plain"
         )
 
-    @flask_app.route("/talk/<campaign>", methods=["GET"])
-    def talk_redirect(campaign: str):
-        """Conference short-link redirector (D5 of the growth plan).
-
-        Looks up ``campaign`` in ``CONFERENCE_LINKS`` and 302-redirects
-        to the configured destination with UTM params appended so the
-        click attributes back to the originating conference. Unknown
-        slugs fall back to the homepage but still carry a UTM tag so we
-        capture the click as ``conference-unknown``.
-        """
-        from urllib.parse import urlencode, urlsplit, urlunsplit  # noqa: PLC0415
-        from shared.conference_links import CONFERENCE_LINKS  # noqa: PLC0415
-
-        if campaign in CONFERENCE_LINKS and campaign != "default":
-            destination = CONFERENCE_LINKS[campaign]
-            utm_campaign = campaign
-            utm_source = f"conference-{campaign}"
-        else:
-            destination = CONFERENCE_LINKS.get(
-                "default", "https://tools.ranomics.com/"
-            )
-            utm_campaign = "unknown"
-            utm_source = "conference-unknown"
-
-        parts = urlsplit(destination)
-        existing = parts.query
-        utm = urlencode({
-            "utm_source": utm_source,
-            "utm_medium": "outbound",
-            "utm_campaign": utm_campaign,
-        })
-        new_query = f"{existing}&{utm}" if existing else utm
-        target = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment)
-        )
-        return redirect(target, code=302)
-
     # Register the IndexNow verification file route only when the env
     # var is set. IndexNow requires a key.txt file at the site root
     # whose body is the same key sent in the submission payload.
@@ -3745,6 +3708,35 @@ def create_app() -> Flask:
         body = "\n".join(lines[i + 1:]).strip("\n")
         return meta, body
 
+    def _showcase_body_blocks(body: str) -> list[dict]:
+        """Split a showcase body into render blocks for the template.
+
+        Returns ``{"type": ...}`` dicts: ``subhead`` (a lead-in line ending
+        in a colon), ``list`` (with a ``bullets`` list), or ``para`` (joined
+        text). Wrapped source lines are joined so the template renders real
+        paragraphs and bullet lists instead of a raw ``<pre>`` dump.
+        """
+        blocks: list[dict] = []
+        for chunk in (body or "").strip().split("\n\n"):
+            stripped = [ln.strip() for ln in chunk.split("\n") if ln.strip()]
+            if not stripped:
+                continue
+            if any(ln.startswith("* ") for ln in stripped):
+                items: list[str] = []
+                for ln in stripped:
+                    if ln.startswith("* "):
+                        items.append(ln[2:].strip())
+                    elif items:
+                        items[-1] += " " + ln
+                    else:
+                        items.append(ln)
+                blocks.append({"type": "list", "bullets": items})
+            elif len(stripped) == 1 and stripped[0].endswith(":"):
+                blocks.append({"type": "subhead", "text": stripped[0]})
+            else:
+                blocks.append({"type": "para", "text": " ".join(stripped)})
+        return blocks
+
     def _load_showcase_entries() -> list[dict]:
         """Read every .md file under content/showcase/, sorted by filename.
 
@@ -3770,6 +3762,22 @@ def create_app() -> Flask:
                 continue
             meta, body = _parse_showcase_frontmatter(raw)
             meta.setdefault("internal_benchmark", True)
+            stats: list[dict] = []
+            for item in str(meta.get("stats") or "").split("|"):
+                item = item.strip()
+                if not item:
+                    continue
+                value, _, label = item.partition("=")
+                stats.append({"value": value.strip(), "label": label.strip()})
+            glyph = str(meta.get("glyph") or "").strip()
+            slug = filename[:-3]
+            render_rel = "img/showcase/" + slug + ".png"
+            render_url = None
+            if os.path.exists(os.path.join(flask_app.static_folder or "", render_rel)):
+                try:
+                    render_url = url_for("static", filename=render_rel)
+                except Exception:
+                    render_url = "/static/" + render_rel
             tool_slug = (meta.get("tool") or "").strip()
             tool_url: str | None = None
             guide_url: str | None = None
@@ -3794,7 +3802,11 @@ def create_app() -> Flask:
             entries.append({
                 "meta": meta,
                 "body": body,
-                "slug": filename[:-3],
+                "blocks": _showcase_body_blocks(body),
+                "stats": stats,
+                "glyph": glyph,
+                "render_url": render_url,
+                "slug": slug,
                 "tool_url": tool_url,
                 "guide_url": guide_url,
             })
@@ -3823,10 +3835,18 @@ def create_app() -> Flask:
             top_score: number
             date: YYYY-MM-DD
             internal_benchmark: bool (default True)
+            glyph: <category label for inline_category_glyph, optional>
+            stats: value=label | value=label | ...  (optional stat chips)
             ---
         """
         entries = _load_showcase_entries()
-        return render_template("showcase.html", entries=entries)
+        breadcrumbs = [
+            {"name": "Home", "url": url_for("index", _external=True)},
+            {"name": "Showcase", "url": url_for("showcase", _external=True)},
+        ]
+        return render_template(
+            "showcase.html", entries=entries, breadcrumbs=breadcrumbs
+        )
 
     # ------------------------------------------------------------------
     # Help / docs hub — public (no login required).

@@ -1,11 +1,22 @@
-{# Shared footer for the Ranomics tools hub. Expands the back-link to
-   ranomics.com into a "Wet-lab validation" column so a user with a
-   designed binder can find the right CRO program in one click. #}
+{# Shared footer for the Ranomics tools hub. Brand block (logo, tagline,
+   social) mirrors the ranomics.com marketing-site footer for cross-property
+   consistency; the link columns stay tools-specific (self-serve tools, the
+   wet-lab-validation CRO upsell, resources). #}
 <footer class="site-footer">
   <div class="site-footer-inner">
     <div class="site-footer-brand">
-      <strong>Ranomics</strong>
-      <span class="site-footer-tag">AI protein design and yeast display CRO &middot; Toronto, Canada</span>
+      <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer" class="site-footer-logo-link">
+        <img src="{{ url_for('static', filename='logo-dark.webp') }}" alt="Ranomics" class="site-footer-logo">
+      </a>
+      <span class="site-footer-tag">AI-driven protein and cell engineering.<br>Toronto, Canada.</span>
+      <div class="site-footer-social">
+        <a href="https://www.linkedin.com/company/ranomics/" target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+        </a>
+        <a href="https://x.com/ranomics" target="_blank" rel="noopener noreferrer" aria-label="X">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        </a>
+      </div>
     </div>
 
     <div class="site-footer-cols">
@@ -14,6 +25,7 @@
         <ul>
           <li><a href="{{ url_for('index') }}">Tools home</a></li>
           <li><a href="{{ url_for('tools_comparison') }}">All tools</a></li>
+          <li><a href="{{ url_for('showcase') }}">Showcase</a></li>
           <li><a href="{{ url_for('pricing') }}">Pricing</a></li>
           {% if session.get('user_email') %}
             <li><a href="{{ url_for('jobs_list') }}">My runs</a></li>
@@ -43,19 +55,14 @@
           <li><a href="https://www.ranomics.com/applications" target="_blank" rel="noopener noreferrer">Applications</a></li>
         </ul>
       </div>
-
-      <div>
-        <span class="site-footer-col-title">Legal</span>
-        <ul>
-          <li><a href="{{ url_for('terms') }}">Terms of Service</a></li>
-          <li><a href="{{ url_for('privacy') }}">Privacy Policy</a></li>
-        </ul>
-      </div>
     </div>
   </div>
 
   <div class="site-footer-bottom">
-    Ranomics &middot;
-    <a href="https://www.ranomics.com" target="_blank" rel="noopener noreferrer">ranomics.com</a>
+    <span>&copy; {{ now.year }} Ranomics Inc. All rights reserved.</span>
+    <span class="site-footer-legal">
+      <a href="{{ url_for('terms') }}">Terms of Service</a>
+      <a href="{{ url_for('privacy') }}">Privacy Policy</a>
+    </span>
   </div>
 </footer>

@@ -124,8 +124,8 @@ Prefix: `/admin`. Owns:
 ### `public_bp` — marketing, SEO, help, health, misc unauthenticated
 Prefix: none. Owns:
 - `/` (`index`), `/pricing`, `/terms`, `/privacy`, `/showcase`
-- `/robots.txt`, `/sitemap.xml`, `/<indexnow_key>.txt`, `/talk/<campaign>`
-  (`robots_txt`, `sitemap_xml`, `indexnow_key_file`, `talk_redirect`)
+- `/robots.txt`, `/sitemap.xml`, `/<indexnow_key>.txt`
+  (`robots_txt`, `sitemap_xml`, `indexnow_key_file`)
 - `/help`, `/help/getting-started`, `/help/tools/<tool>`, `/help/faq`, `/help/troubleshooting`
   (`help_index`, `help_getting_started`, `help_tool_guide`, `help_faq`, `help_troubleshooting`)
 - `/health`, `/readyz` (`health`, `readyz`)

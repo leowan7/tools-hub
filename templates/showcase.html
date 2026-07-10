@@ -1,91 +1,201 @@
 {% extends "base.html" %}
 
-{% block title %}Showcase | Anonymized binder design runs on Ranomics Tools{% endblock %}
+{% block title %}Protein binder design showcase | Real BoltzGen and RFdiffusion runs | Ranomics Tools{% endblock %}
 
-{% block description %}Anonymized BindCraft, RFantibody, RFdiffusion plus ProteinMPNN, ColabFold, and Epitope Scout runs on dedicated GPUs through tools.ranomics.com. Internal benchmark runs with score legend, runtime, and downstream handoff.{% endblock %}
+{% block description %}Real runs of the AI protein binder design tools on tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns plus an RFdiffusion pilot, validated with AlphaFold2, ProteinMPNN, and Boltz-2.{% endblock %}
+
+{% block head_extra %}
+<style>
+  .showcase-entry-title { font-family: var(--font-display); font-size: 1.2rem; font-weight: 400; line-height: 1.2; letter-spacing: -0.01em; color: var(--warm-white); margin: 0; }
+
+  .showcase-layout { display: grid; grid-template-columns: 1fr minmax(260px, 340px); gap: 2rem; align-items: start; }
+  .showcase-main { min-width: 0; }
+  .showcase-aside { min-width: 0; }
+  .showcase-visual { width: 108px; height: 108px; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.25); display: flex; align-items: center; justify-content: center; color: var(--accent-text); overflow: hidden; margin: 0 auto; }
+  .showcase-visual svg { width: 56px; height: 56px; }
+  .showcase-structure { width: 100%; aspect-ratio: 1 / 1; border-radius: var(--radius-md); background: var(--accent-glow); border: 1px solid rgba(43, 158, 126, 0.22); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .showcase-structure img { width: 100%; height: 100%; object-fit: contain; display: block; padding: 0.75rem; box-sizing: border-box; }
+  .showcase-structure-cap { margin: 0.65rem 0 0; font-size: 0.75rem; line-height: 1.5; color: var(--text-secondary); text-align: center; }
+  .cap-green { color: var(--accent-text); font-weight: 600; }
+  .cap-gray { color: #9aa7b5; font-weight: 600; }
+  .showcase-metarow { display: flex; flex-wrap: wrap; gap: 0.35rem 1.25rem; margin-bottom: 0.95rem; color: var(--text-secondary); font-size: 0.82rem; }
+  .showcase-metarow .k { color: var(--text-primary); font-weight: 600; margin-right: 0.3rem; }
+
+  .showcase-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.6rem; }
+  .showcase-stat { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 0.6rem 0.75rem; display: flex; flex-direction: column; gap: 0.2rem; }
+  .showcase-stat-v { font-family: var(--font-mono); font-size: 1.1rem; font-weight: 500; line-height: 1.1; color: var(--accent-text); }
+  .showcase-stat-l { font-size: 0.72rem; line-height: 1.3; color: var(--text-secondary); }
+
+  .showcase-prose { color: var(--text-secondary); font-size: 0.95rem; line-height: 1.65; max-width: 70ch; }
+  .showcase-prose p { margin: 0 0 0.85rem; }
+  .showcase-prose ul { margin: 0 0 1rem; padding-left: 1.15rem; }
+  .showcase-prose li { margin-bottom: 0.4rem; }
+  .showcase-subhead { color: var(--text-primary); font-weight: 600; margin: 1.15rem 0 0.5rem; }
+
+  .showcase-outcome { font-family: var(--font-body); font-size: 1.02rem; line-height: 1.55; color: var(--text-primary); border-left: 2px solid var(--accent-text); padding-left: 0.9rem; margin: 0 0 1.35rem; max-width: 68ch; }
+
+  .showcase-runit { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.35rem; }
+  .showcase-runit-chip { font-size: 0.74rem; color: var(--text-secondary); background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 0.3rem 0.7rem; }
+
+  .showcase-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.75rem; }
+
+  @media (max-width: 760px) {
+    .showcase-layout { grid-template-columns: 1fr; gap: 1.5rem; }
+    .showcase-aside { order: -1; max-width: 340px; }
+    .showcase-visual { width: 96px; height: 96px; }
+    .showcase-visual svg { width: 52px; height: 52px; }
+  }
+</style>
+{% endblock %}
 
 {% block jsonld_extra %}
-{# Dataset JSON-LD per showcase entry. One <script> per entry so
-   crawlers index them as distinct datasets. #}
+{# Dataset JSON-LD per showcase entry so crawlers index each as a distinct
+   dataset, wrapped by an ItemList that ties the collection together. #}
 {% for e in entries %}
 <script type="application/ld+json">
 {{ {
   "@context": "https://schema.org",
   "@type": "Dataset",
   "name": e.meta.title,
-  "description": e.meta.title,
+  "description": (e.meta.title ~ ". A real binder design run on tools.ranomics.com."),
   "creator": {"@type": "Organization", "name": "Ranomics"},
   "isAccessibleForFree": True,
   "datePublished": e.meta.date|string,
   "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
-  "url": (request.url_root.rstrip('/') ~ url_for('tool_form', tool=e.meta.tool) if e.meta.tool not in ('scout',) else request.url_root.rstrip('/') ~ '/scout'),
-  "measurementTechnique": "Top score: " ~ (e.meta.top_score|string)
+  "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
 } | tojson }}
 </script>
 {% endfor %}
+{% set _items = [] %}
+{% for e in entries %}
+  {% set _ = _items.append({
+    "@type": "ListItem",
+    "position": loop.index,
+    "name": e.meta.title,
+    "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
+  }) %}
+{% endfor %}
+<script type="application/ld+json">
+{{ {
+  "@context": "https://schema.org",
+  "@type": "ItemList",
+  "name": "Ranomics Tools binder design showcase",
+  "itemListElement": _items
+} | tojson }}
+</script>
 {% endblock %}
 
 {% block content %}
 
-  <div class="hero">
-    <h1>Tools showcase</h1>
-    <p class="subtitle">Anonymized binder design runs on dedicated GPUs through tools.ranomics.com.</p>
-  </div>
-
-  <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3); margin-bottom: 1.5rem;">
-    <div class="panel-body">
-      <strong>Internal preview.</strong> Replace with real customer anonymized data before launch. Every entry below is an internal benchmark run with synthetic targets.
+  <section class="landing-hero">
+    <div class="landing-hero-inner">
+      <span class="landing-eyebrow">Real runs on the platform</span>
+      <h1>See real binder design runs, then run yours</h1>
+      <p class="landing-hero-lede">
+        Every entry below is a real run of the design algorithms on
+        tools.ranomics.com. BoltzGen nanobody and de novo minibinder campaigns
+        and an RFdiffusion pilot, validated with AlphaFold2, ProteinMPNN, and
+        Boltz-2, with a deep link into the tool that produced each one.
+      </p>
+      <div class="landing-hero-cta">
+        {% if session.get('user_email') %}
+          <a href="{{ url_for('tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
+        {% else %}
+          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free with $5</a>
+          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
+        {% endif %}
+      </div>
+      <p class="landing-hero-help" style="margin-top: 1.1rem; font-size: 0.9rem; color: var(--text-secondary);">
+        New accounts start with a $5 wallet. Pay by the second, no subscription.
+        <a href="{{ url_for('pricing') }}" style="color: var(--accent-text);">How billing works</a>.
+      </p>
     </div>
-  </div>
+  </section>
 
   {% for e in entries %}
-    <section class="section">
-      <div class="panel">
+    <section class="section showcase-entry">
+      <article class="panel">
         <div class="panel-header">
-          <h2 class="panel-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
-          {% if e.meta.internal_benchmark %}
-            <span class="panel-badge">Internal benchmark run</span>
-          {% endif %}
+          <h2 class="showcase-entry-title" id="{{ e.slug }}">{{ e.meta.title }}</h2>
         </div>
         <div class="panel-body">
-          <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin-bottom: 1rem; color: var(--text-secondary); font-size: 0.88rem;">
-            <span><strong style="color: var(--text-primary);">Tool</strong> {{ e.meta.tool }}</span>
-            <span><strong style="color: var(--text-primary);">Target</strong> {{ e.meta.target_kind }}</span>
-            <span><strong style="color: var(--text-primary);">Top score</strong> {{ e.meta.top_score }}</span>
-            <span><strong style="color: var(--text-primary);">Date</strong> {{ e.meta.date }}</span>
-          </div>
+          <div class="showcase-layout">
+            <div class="showcase-main">
+              {% if e.meta.outcome %}
+                <p class="showcase-outcome">{{ e.meta.outcome }}</p>
+              {% endif %}
+              <div class="showcase-metarow">
+                <span><span class="k">Tool</span>{{ e.meta.tool_name or e.meta.tool }}</span>
+                <span><span class="k">Target</span>{{ e.meta.target_kind }}</span>
+              </div>
+              {% if e.stats %}
+                <div class="showcase-stats">
+                  {% for s in e.stats %}
+                    <div class="showcase-stat">
+                      <span class="showcase-stat-v">{{ s.value }}</span>
+                      <span class="showcase-stat-l">{{ s.label }}</span>
+                    </div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              <div class="showcase-prose">
+                {% for b in e.blocks %}
+                  {% if b.type == 'subhead' %}
+                    <p class="showcase-subhead">{{ b.text }}</p>
+                  {% elif b.type == 'list' %}
+                    <ul>{% for it in b.bullets %}<li>{{ it }}</li>{% endfor %}</ul>
+                  {% else %}
+                    <p>{{ b.text }}</p>
+                  {% endif %}
+                {% endfor %}
+              </div>
+              <div class="showcase-runit">
+                <span class="showcase-runit-chip">Pay by the second of GPU</span>
+                <span class="showcase-runit-chip">New accounts start with $5</span>
+                <span class="showcase-runit-chip">No install, runs in your browser</span>
+              </div>
+              <div class="showcase-actions">
+                {% if e.tool_url %}
+                  <a href="{{ e.tool_url }}" class="btn-primary">Run {{ e.meta.tool_name or e.meta.tool }} on your target</a>
+                {% else %}
+                  <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
+                {% endif %}
+                {% if e.guide_url %}
+                  <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool_name or e.meta.tool }} guide</a>
+                {% endif %}
+              </div>
+            </div>
 
-          {# Body rendered as plaintext in a <pre> block so we avoid a
-             markdown dependency. The Markdown source is human-readable
-             and the <pre> preserves paragraph breaks and bullet shape. #}
-          <pre style="white-space: pre-wrap; font-family: var(--font-body, inherit); font-size: 0.96rem; line-height: 1.65; color: var(--text-secondary); margin: 0;">{{ e.body }}</pre>
-
-          <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
-            {% if e.tool_url %}
-              <a href="{{ e.tool_url }}" class="btn-primary">Open {{ e.meta.tool }} on tools.ranomics.com</a>
-            {% endif %}
-            {% if e.guide_url %}
-              <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool }} guide</a>
+            {% if e.render_url or e.glyph %}
+              <aside class="showcase-aside">
+                {% if e.render_url %}
+                  <div class="showcase-structure"><img src="{{ e.render_url }}" alt="Predicted structure of the designed binder bound to its target" loading="lazy"></div>
+                  <p class="showcase-structure-cap"><span class="cap-green">Designed binder</span> bound to its <span class="cap-gray">target</span></p>
+                {% else %}
+                  <div class="showcase-visual" aria-hidden="true">{{ inline_category_glyph(e.glyph) }}</div>
+                {% endif %}
+              </aside>
             {% endif %}
           </div>
         </div>
-      </div>
+      </article>
     </section>
   {% endfor %}
 
   <section class="section">
     <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">Run something like this</span>
-      </div>
       <div class="panel-body">
-        <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
-          Every showcase entry above starts at Epitope Scout, runs through
-          a design tool (BindCraft, RFantibody, RFdiffusion, BoltzGen, or
-          PXDesign), and ends with a structure prediction sanity check
-          (AlphaFold2, ColabFold, ESMFold, or Boltz-2).
+        <div class="section-head" style="margin-bottom: 1rem;">
+          <span class="section-eyebrow">Your turn</span>
+          <h2 class="section-title">Run something like this</h2>
+        </div>
+        <p style="margin: 0 0 0.95rem 0; color: var(--text-secondary); line-height: 1.65; max-width: 70ch;">
+          Every showcase entry above pairs a design tool (BoltzGen, RFdiffusion,
+          BindCraft, RFantibody, or PXDesign) with an independent structure
+          prediction check (AlphaFold2, ColabFold, ESMFold, or Boltz-2), the same
+          tools you can run on tools.ranomics.com.
         </p>
-        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
+        <div class="showcase-actions">
           <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
           <a href="{{ url_for('pricing') }}" class="btn-secondary">How billing works</a>
           <a href="{{ url_for('signup') }}" class="btn-secondary">Create a free account</a>
