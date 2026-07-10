@@ -110,34 +110,10 @@ def lookup_sku(price_id: str) -> Optional[WorkspaceSKU]:
 
 
 # ---------------------------------------------------------------------------
-# Display helpers — used by templates/pricing.html and the workspace dashboard
+# Customer-facing Workspace SKU display strings (headline prices, ledes)
+# were RETIRED with the USD-wallet pivot. The tiered $499 / $2,499
+# per-target Workspace product is no longer sold; the wallet is the sole
+# money path, so nothing renders these strings anymore. The SKU config
+# above (caps, durations, list_price_usd) is retained only for internal
+# margin accounting and the compute lifecycle in shared/workspaces.py.
 # ---------------------------------------------------------------------------
-
-
-_DISPLAY = {
-    "workspace_standard": {
-        "display_name": "Target Workspace",
-        "headline_price": "$499",
-        "duration_label": "30 days",
-        "scale_label": "~500–2,000 designs",
-        "lede": (
-            "Activate one target. 30 days of unlimited design runs "
-            "across every pipeline on tools-hub."
-        ),
-    },
-    "workspace_xl": {
-        "display_name": "Target Workspace XL",
-        "headline_price": "$2,499",
-        "duration_label": "30 days",
-        "scale_label": "~2,500–10,000+ designs",
-        "lede": (
-            "Industrial-scale exploration on one target. 5× the compute "
-            "budget of Standard, plus priority queue."
-        ),
-    },
-}
-
-
-def display_for(sku: str) -> dict:
-    """Customer-facing display strings for a SKU (template-safe)."""
-    return _DISPLAY.get(sku, {})
