@@ -4030,6 +4030,16 @@ def create_app() -> Flask:
         wallet_for_form = get_or_create_wallet(ctx.user_id) or {}
 
         from shared.examples import list_examples  # noqa: PLC0415
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        # D1: single-container design ceiling. When a campaign-supported tool's
+        # requested design count exceeds this, the form re-points the submit to
+        # the campaign chunker (client-side) and the tool_submit backstop rejects
+        # a doomed single job. None for tools without a campaign path.
+        campaign_ceiling = (
+            cc.single_container_ceiling(adapter.slug)
+            if adapter.slug in cc.SUPPORTED_TOOLS
+            else None
+        )
         return render_template(
             adapter.form_template,
             adapter=adapter,
@@ -4040,6 +4050,7 @@ def create_app() -> Flask:
             wallet=wallet_for_form,
             examples=list_examples(adapter.slug),
             active_example_id=example_id or None,
+            single_container_ceiling=campaign_ceiling,
         )
 
     @flask_app.route("/tools/<tool>/preflight", methods=["POST"])
@@ -4222,6 +4233,34 @@ def create_app() -> Flask:
                 pdb_source=None,
                 workspace_ctx=workspace_ctx,
             )
+
+        # D1 backstop: a count above one container's worth for a
+        # campaign-supported tool must not run as a doomed single job. The
+        # form re-points such submits to the campaign chunker client-side; this
+        # catches the JS-off / reuse-token path. Returning here (before
+        # create_job) leaves g.wallet_hold_consumed False, so requires_wallet
+        # auto-releases the hold — no money-path change. boltzgen has no
+        # num_designs key (its budget maxes at one chunk), so it is skipped.
+        from shared import compute_campaigns as cc  # noqa: PLC0415
+        if tool in cc.SUPPORTED_TOOLS:
+            requested_n = inputs.get("num_designs")
+            ceiling = cc.single_container_ceiling(tool)
+            if isinstance(requested_n, int) and requested_n > ceiling:
+                return render_template(
+                    adapter.form_template,
+                    adapter=adapter,
+                    error=(
+                        f"{requested_n} designs is more than one GPU container "
+                        f"runs for {tool} (max {ceiling} per single job). "
+                        f"Large requests run as a campaign: open /campaigns/new "
+                        f"to fan this out across GPUs with no per-job ceiling. "
+                        f"Your wallet was not charged."
+                    ),
+                    pre_fill=inputs,
+                    pdb_source=None,
+                    workspace_ctx=workspace_ctx,
+                    single_container_ceiling=ceiling,
+                )
 
         # Workspace gate (when context present). Rejects expired,
         # refunded, or cap-exhausted workspaces BEFORE the job row is

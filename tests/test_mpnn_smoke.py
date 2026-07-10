@@ -116,20 +116,21 @@ class TestValidate:
         assert err is not None
 
     def test_standalone_rejects_num_seq_over_cap(self):
-        """Cap is now 200: 200 is accepted, 201 is rejected."""
+        """The cap == NUM_SEQ_MAX: the cap is accepted, cap+1 is rejected."""
+        cap = mpnn_mod.NUM_SEQ_MAX
         ok_form = {
             "preset": "standalone",
             "chains_to_design": "A",
-            "num_seq_per_target": "200",
+            "num_seq_per_target": str(cap),
         }
         inputs_ok, err_ok = mpnn_mod.validate(ok_form, {})
         assert err_ok is None, err_ok
-        assert inputs_ok["num_seq_per_target"] == 200
+        assert inputs_ok["num_seq_per_target"] == cap
 
         over_form = {
             "preset": "standalone",
             "chains_to_design": "A",
-            "num_seq_per_target": "201",
+            "num_seq_per_target": str(cap + 1),
         }
         inputs, err = mpnn_mod.validate(over_form, {})
         assert inputs is None
