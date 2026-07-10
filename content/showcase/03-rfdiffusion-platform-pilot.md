@@ -1,5 +1,5 @@
 ---
-title: RFdiffusion de novo backbones, 60 designs delivered end to end on the platform
+title: RFdiffusion de novo binder backbones against a target, 60 designs ready for sequence design
 tool: rfdiffusion
 tool_name: RFdiffusion
 target_kind: de novo binder backbone against a target
@@ -7,7 +7,7 @@ date: 2026-07-06
 internal_benchmark: true
 glyph: De novo minibinders
 stats: 60=de novo backbones delivered | 5=parallel jobs | 5 of 5=jobs completed
-outcome: A full de novo backbone pilot, start to finish in the browser. No cluster, no install, no subscription.
+outcome: A single RFdiffusion run produced 60 de novo binder backbones against a target, each fold shaped by diffusion rather than grafted onto a known scaffold.
 ---
 
 We used RFdiffusion to generate de novo binder backbones against a target,
