@@ -86,7 +86,7 @@ def test_estimate_over_cap(client):
 def test_estimate_unsupported_tool(client):
     _login(client)
     with patch("app.load_user_context", return_value=_ctx()):
-        resp = client.get("/api/campaigns/estimate?tool=rfantibody&requested_designs=10")
+        resp = client.get("/api/campaigns/estimate?tool=mpnn&requested_designs=10")
     data = resp.get_json()
     assert data["ok"] is False
 

@@ -71,8 +71,11 @@ def validate(
         num_designs = int(raw_num_designs)
     except (TypeError, ValueError):
         return None, "Number of designs must be an integer."
-    if num_designs < 1 or num_designs > 24:
-        return None, "Number of designs must be between 1 and 24."
+    # One pilot container does up to 24 designs; larger counts are not rejected
+    # here so the form's campaign auto-route (and the tool_submit backstop) can
+    # fan them out instead. 1000 is an absolute sanity bound.
+    if num_designs < 1 or num_designs > 1000:
+        return None, "Number of designs must be between 1 and 1000."
 
     return (
         {

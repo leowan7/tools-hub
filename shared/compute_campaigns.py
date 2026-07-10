@@ -52,11 +52,13 @@ _TABLE = "compute_campaigns"
 # Phase 1 constants
 # ---------------------------------------------------------------------------
 
-# Only tools that chunk sanely at the current pilot container ceiling are
-# self-serve in Phase 1. rfantibody (~1 design/pilot container) and
-# pxdesign (validator caps num_designs at 24) are gated behind Phase 4's
-# campaign_chunk preset. See the plan.
-SUPPORTED_TOOLS: tuple[str, ...] = ("rfdiffusion", "bindcraft", "boltzgen")
+# Tools available for self-serve campaigns. pxdesign chunks at its validated
+# 24-design pilot job (see _CHUNK_SIZE_OVERRIDE); rfantibody uses a bigger
+# campaign container + session budget (see _RFANTIBODY_CAMPAIGN_CONTAINER_S),
+# mirroring how bindcraft was scaled.
+SUPPORTED_TOOLS: tuple[str, ...] = (
+    "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "rfantibody",
+)
 
 # The tool-specific form field that carries the per-chunk design count.
 # boltzgen varies ``budget`` (top-N returned) rather than ``num_designs``
@@ -65,6 +67,8 @@ _DESIGN_PARAM_KEY: Mapping[str, str] = {
     "rfdiffusion": "num_designs",
     "bindcraft": "num_designs",
     "boltzgen": "budget",
+    "pxdesign": "num_designs",
+    "rfantibody": "num_designs",
 }
 
 # boltzgen returns up to ``budget`` designs (validator caps budget at 50)
@@ -175,16 +179,35 @@ class ChunkPlan:
 # count ~5x. Kept well under the 23h ceiling; bindcraft streams results per
 # candidate, so a slow chunk that reaches its budget still returns what it made.
 _BINDCRAFT_CAMPAIGN_CONTAINER_S = 36000  # 10h -> 16 designs/chunk at 0.8 util
+# rfantibody mirrors bindcraft: ranomics-rfantibody-prod's Modal function timeout
+# is 23h (_MAX_SESSION_S=82800), so a 10h chunk (16 designs at 0.8 util) sits well
+# under the ceiling. Its pipeline streams scores only (a chunk is all-or-nothing),
+# so this stays deliberately conservative rather than pushing toward 23h.
+_RFANTIBODY_CAMPAIGN_CONTAINER_S = 36000  # 10h -> 16 designs/chunk at 0.8 util
+
+# Tools sized against a bigger-than-pilot campaign container (GPU-seconds one
+# sub-job is planned against). Tools not listed use the pilot container.
+_CAMPAIGN_CONTAINER_S: Mapping[str, int] = {
+    "bindcraft": _BINDCRAFT_CAMPAIGN_CONTAINER_S,
+    "rfantibody": _RFANTIBODY_CAMPAIGN_CONTAINER_S,
+}
+
+# A campaign chunk that runs the tool's validated pilot job verbatim (no bigger
+# container). pxdesign's pilot does up to 24 designs in one 3600s container, but
+# the wallet spec's gpu_s/design is miscalibrated for it (it implies ~2), so pin
+# the chunk to the validated single-job maximum of 24.
+_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24}
 
 
 def _campaign_container_seconds(tool: str) -> int:
     """GPU-seconds a campaign sizes ONE sub-job against.
 
-    Defaults to the pilot container; bindcraft campaigns use a bigger one because
-    its Modal session runs up to 23h.
+    Defaults to the pilot container; tools in ``_CAMPAIGN_CONTAINER_S`` use a
+    bigger one because their Modal session runs up to 23h.
     """
-    if tool == "bindcraft":
-        return _BINDCRAFT_CAMPAIGN_CONTAINER_S
+    override = _CAMPAIGN_CONTAINER_S.get(tool)
+    if override is not None:
+        return override
     return preset_gpu_seconds(tool, "pilot")
 
 
@@ -193,20 +216,27 @@ def _campaign_session_inputs(tool: str) -> dict:
 
     A bindcraft campaign chunk holds ~16 designs (vs the 3/chunk pilot), which
     needs more than the default 4h ``_total_budget_hours`` or the pipeline stops
-    early. Other tools keep the default (their chunks are far shorter).
+    early; derive the budget from the enlarged container. rfantibody carries the
+    same input for parity (its pipeline currently ignores it and is bounded by
+    the 23h Modal timeout, but a future budget-aware pipeline picks it up free).
+    Other tools keep the default (their chunks are far shorter).
     """
-    if tool == "bindcraft":
-        return {"_total_budget_hours": _BINDCRAFT_CAMPAIGN_CONTAINER_S / 3600}
+    override = _CAMPAIGN_CONTAINER_S.get(tool)
+    if override is not None:
+        return {"_total_budget_hours": override / 3600}
     return {}
 
 
 def _chunk_size_for(tool: str) -> int:
     """Designs per sub-job for ``tool``, sized to one campaign container.
 
+    A tool in ``_CHUNK_SIZE_OVERRIDE`` pins the chunk to its validated pilot job.
     boltzgen is special (budget-based, fixed pool). The linear tools derive
     the size from GPU-seconds-per-design vs the campaign container's GPU-seconds
     budget, so a chunk comfortably fits one container.
     """
+    if tool in _CHUNK_SIZE_OVERRIDE:
+        return _CHUNK_SIZE_OVERRIDE[tool]
     if tool == "boltzgen":
         return BOLTZGEN_DESIGNS_PER_JOB
     spec = get_tool_spec(tool)
@@ -239,10 +269,16 @@ def single_container_ceiling(tool: str) -> int:
 def _estimate_chunk_cost(tool: str, chunk_size: int) -> Decimal:
     """USD estimate for ONE sub-job of ``tool`` at ``chunk_size`` designs."""
     spec = get_tool_spec(tool)
-    if tool == "boltzgen":
-        # One fixed 200-design pool per job — the returned-count (budget)
-        # does not change GPU cost, so estimate at the baseline (scale
-        # factor 1.0) rather than scaling by the chunk's budget.
+    # Fixed-container tools cost one container regardless of the chunk's design
+    # count, so estimate at the baseline (scale 1.0) rather than scaling by
+    # chunk_size:
+    #   * boltzgen — one fixed 200-design pool; the returned-count (budget)
+    #     does not change GPU cost.
+    #   * pxdesign — one 3600s pilot container does the whole 24-design chunk;
+    #     the spec's per-design rate is miscalibrated (it implies ~12 containers
+    #     for 24 designs), so scaling by chunk_size would inflate the budget +
+    #     first-wave hold ~12x. Baseline == one-container cost, which is right.
+    if tool in ("boltzgen", "pxdesign"):
         designs_for_estimate = spec.designs_per_run_baseline if spec else 2
     else:
         designs_for_estimate = chunk_size

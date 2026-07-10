@@ -185,3 +185,81 @@ def test_at_ceiling_single_job_not_rerouted(app):
     # Not the campaign backstop message — a normal single-job path (here it
     # re-renders asking for the required PDB upload).
     assert "more than one GPU container" not in body
+
+
+# ---------------------------------------------------------------------------
+# D2 — pxDesign + rfantibody join the campaign path (PR-2)
+# ---------------------------------------------------------------------------
+
+def test_pxdesign_rfantibody_ceilings():
+    # pxdesign's single-job pilot does exactly 24; rfantibody mirrors bindcraft.
+    assert cc.single_container_ceiling("pxdesign") == 24
+    assert cc.single_container_ceiling("rfantibody") == 16
+
+
+def test_pxdesign_validator_allows_over_ceiling():
+    # The 24-cap was raised so an over-ceiling count passes validation and can
+    # reach the reroute/backstop instead of being rejected outright.
+    from tools.pxdesign import validate as px_validate
+
+    inputs, err = px_validate(
+        {
+            "preset": "pilot",
+            "target_chain": "A",
+            "hotspot_residues": "54",
+            "binder_length": "80",
+            "num_designs": "100",
+        },
+        {},
+    )
+    assert err is None, err
+    assert inputs["num_designs"] == 100
+
+
+def test_pxdesign_over_ceiling_reroutes_to_campaign(app):
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+
+    create_job = MagicMock()
+    form = {
+        "preset": "pilot",
+        "target_chain": "A",
+        "hotspot_residues": "54",
+        "binder_length": "80",
+        "num_designs": "100",  # pxdesign ceiling is 24
+    }
+    with patch("app.load_user_context", return_value=_ctx()), patch(
+        "shared.idempotency.load_user_context", return_value=None
+    ), patch("app.tool_enabled", return_value=True), patch(
+        "app.estimated_cost_for_tool", return_value=Decimal("0")
+    ), patch("app.create_job", create_job):
+        resp = client.post("/tools/pxdesign/submit", data=form)
+
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert "campaign" in body.lower()
+    assert "/campaigns/new" in body
+    assert "max 24 per single job" in body
+    create_job.assert_not_called()
+
+
+def test_pxdesign_form_render_wires_reroute(app):
+    client = app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+
+    with patch("app.load_user_context", return_value=_ctx()), patch(
+        "app.tool_enabled", return_value=True
+    ), patch(
+        "app.get_or_create_wallet",
+        return_value={"balance_usd": "100", "wallet_frozen": False},
+    ):
+        resp = client.get("/tools/pxdesign")
+
+    body = resp.get_data(as_text=True)
+    assert resp.status_code == 200
+    assert 'data-campaign-ceiling="24"' in body
+    assert 'id="campaign-submit-btn"' in body
