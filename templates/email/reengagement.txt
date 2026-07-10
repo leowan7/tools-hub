@@ -1,9 +1,9 @@
 {# Plain-text version of reengagement.html. Same variables. #}
-You have credits sitting unused
+You have a balance sitting unused
 
-Your tools-hub wallet still has ${{ balance_usd }} of compute on it, and
-we have not seen a run from you in the last week. No pressure, but here
-are two tools you have not tried yet that the credit comfortably covers.
+Your tools-hub wallet still has ${{ balance_usd }} on it, and we have not
+seen a run from you in the last week. No pressure, but here are two tools
+you have not tried yet that your balance comfortably covers.
 {% for suggestion in suggestions %}
 {{ suggestion.label }}
 {{ suggestion.blurb }}

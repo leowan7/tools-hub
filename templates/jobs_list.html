@@ -121,7 +121,7 @@
 
           {% if _has_starter_credit %}
             <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">You have ${{ '%.2f'|format(nav_wallet_usd) }} in your wallet. Pick a tool to run your first design.</h2>
-            <p class="subtitle" style="margin: 0 0 1.75rem 0;">Free tools (Epitope Scout, Developability Scout, Library Planner) cost nothing. GPU tools start from a few cents per run.</p>
+            <p class="subtitle" style="margin: 0 0 1.75rem 0;">Free tools (Epitope Scout, Developability Scout, Library Planner) cost nothing. GPU tools draw from your wallet balance, with no per design charge and no limit on how many you run.</p>
           {% else %}
             <h2 style="margin: 0 0 0.5rem 0; font-size: 1.15rem;">Run your first job to see it here.</h2>
             <p class="subtitle" style="margin: 0 0 1.75rem 0;">Three steps to your first set of designs.</p>
@@ -144,7 +144,7 @@
               <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">3</span>
               {% if _has_starter_credit %}
                 <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Top up when you need more</strong>
-                <span style="color: var(--text-secondary); font-size: 0.9rem;">Add funds once your free credit runs low. Minimum top-up is $20.</span>
+                <span style="color: var(--text-secondary); font-size: 0.9rem;">Add funds once your starting balance runs low. Minimum top-up is $20.</span>
                 <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
               {% else %}
                 <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Add funds</strong>

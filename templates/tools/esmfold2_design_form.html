@@ -305,8 +305,8 @@
           if (form) form.appendChild(hidden);
         }
         // n_designs_total = parallel seeds * designs per seed. The
-        // wallet estimator bills one credit per design, so the user
-        // sees total cost climb with both axes.
+        // wallet estimator scales the cost with the total design count,
+        // so the user sees the estimate climb with both axes.
         hidden.value = String(bs * ns);
         if (typeof window.refreshWalletEstimate === 'function') {
           window.refreshWalletEstimate();

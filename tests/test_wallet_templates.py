@@ -525,12 +525,12 @@ class TestPricingTemplate:
             from flask import session as flask_session
             flask_session["user_email"] = "u@example.com"
             html = render_template("pricing.html")
-        assert "Pay for the compute you use" in html
-        assert "Top up your wallet" in html
+        assert "Your wallet is your budget" in html
+        assert "Fund your wallet" in html
 
     def test_pricing_renders_for_anonymous_user(self, app):
         """No session.user_email => signup CTA references $5 wallet balance."""
         with app.test_request_context("/pricing"):
             html = render_template("pricing.html")
-        assert "Pay for the compute you use" in html
+        assert "Your wallet is your budget" in html
         assert "Start with $5 in your wallet" in html

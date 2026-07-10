@@ -81,29 +81,30 @@
 
     {# Soft warning band — visible when estimate is near the scaled hard cap. #}
     <div class="wallet-estimate-warning" data-estimate-soft-warning hidden>
-      This run is near the per job cost ceiling for this tool. If compute
-      drifts past <span data-estimate-cap></span> the job is killed to
-      protect you from a runaway loop.
+      This run is near the per job cost ceiling for this tool. Your wallet
+      hold caps what it can spend, and you get a warning email if compute
+      drifts well past <span data-estimate-cap></span>.
     </div>
 
-    {# Hard block — scaled per tool cap exceeded. #}
+    {# Hard block — scaled per tool cap exceeded for a single container. #}
     <div class="wallet-estimate-block" data-estimate-hard-block hidden>
-      <strong>Estimate exceeds the per job ceiling for this tool.</strong>
-      Reduce the scale parameter or run this as a Binder Pilot engagement.
-      <a href="https://ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="wallet-estimate-pilot-link">
-        Talk about a Pilot &rarr;
+      <strong>Estimate exceeds the ceiling for a single job.</strong>
+      Run this as a campaign to fan the request out across GPUs, or reduce
+      the scale parameter.
+      <a href="/campaigns/new" class="wallet-estimate-pilot-link">
+        Run as a campaign &rarr;
       </a>
     </div>
 
-    {# Self serve ceiling — $1,000 absolute cap on any single submit. #}
+    {# Self serve ceiling — absolute cap on any single submit. #}
     <div class="wallet-estimate-block wallet-estimate-block-ceiling" data-estimate-ceiling-block hidden>
-      <strong>This estimate exceeds the $1,000 self serve ceiling.</strong>
-      For runs at this scale, a Binder Pilot engagement is the right path.
-      Fixed scope, single round, optional wet lab handoff.
-      <a href="https://ranomics.com/ranomics-contact?service=binder-pilot"
-         target="_blank" rel="noopener noreferrer"
+      <strong>This estimate is above the single job ceiling.</strong>
+      Run it as a campaign instead. Campaigns are wallet bounded and fan out
+      across GPUs with no per job ceiling, so you can design at any scale
+      your balance covers.
+      <a href="/campaigns/new"
          class="btn-primary wallet-estimate-pilot-cta">
-        Start a Pilot conversation
+        Run as a campaign
       </a>
     </div>
   </div>

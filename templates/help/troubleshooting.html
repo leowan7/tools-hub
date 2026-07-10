@@ -48,20 +48,19 @@
             <tr style="border-bottom: 1px solid var(--border);">
               <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Job failed or pipeline error</td>
               <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
-                Run a smoke run of the same tool first to confirm your inputs
-                are accepted, then reduce the scale and resubmit. If a smoke run
-                also fails, the inputs are the likely cause. Send us the job ID
-                and we will check the logs.
+                Check that the form accepted your inputs, then reduce the scale
+                and resubmit. If it still fails, the inputs are the likely
+                cause. Send us the job ID and we will check the logs.
                 <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
               </td>
             </tr>
             <tr style="border-bottom: 1px solid var(--border);">
               <td style="padding: 0.7rem 0.5rem; color: var(--text-primary); font-weight: 600;">Job timed out</td>
               <td style="padding: 0.7rem 0.5rem; color: var(--text-secondary); line-height: 1.6;">
-                The run exceeded its time budget, usually from too large a
-                design count or an oversized target. Lower the number of
-                designs or trim the input to the relevant chains, then resubmit
-                at a smaller scale.
+                The run exceeded its time budget, usually from an oversized
+                target. Trim the input to the relevant chains and resubmit.
+                A large design count is best run as a campaign, which fans the
+                request out across GPUs instead of one container.
                 <br><a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
               </td>
             </tr>

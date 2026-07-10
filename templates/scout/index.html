@@ -24,14 +24,6 @@
       border-color: rgba(204, 130, 40, 0.45);
       background: rgba(204, 130, 40, 0.08);
     }
-    .scout-quota-upgrade {
-      text-decoration: none;
-      font-weight: 600;
-      padding: 0.3rem 0.7rem;
-      border-radius: 6px;
-      border: 1px solid currentColor;
-      font-size: 0.8rem;
-    }
   </style>
   <script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
 {% endblock %}
@@ -44,13 +36,12 @@
         <p class="subtitle">Identify candidate surface epitopes for binder design. Upload a structure, select a chain, and get ranked patches scored by accessibility, hydrophobic exposure, rigidity, and hot-spot density.</p>
       </div>
 
-      <!-- Quota pill — populated live from /quota via fetch(). Hidden for
-           Pro-tier users, shown for free-tier users with runs remaining,
-           styled as a soft amber notice when the user is at or near the
-           cap. Graceful no-op if Supabase is unreachable. -->
+      <!-- Quota pill — populated live from /quota via fetch(). Epitope Scout
+           is free; this shows how many of the free runs have been used in the
+           rolling 30-day window, styled as a soft amber notice when the user
+           is at or near the cap. Graceful no-op if Supabase is unreachable. -->
       <div id="scout-quota-pill" class="scout-quota-pill" hidden>
         <span id="scout-quota-text"></span>
-        <a href="/pricing" id="scout-quota-upgrade" class="scout-quota-upgrade" hidden>Upgrade</a>
       </div>
       <script>
         (function () {
@@ -60,17 +51,15 @@
               if (!q) return;
               var pill = document.getElementById('scout-quota-pill');
               var text = document.getElementById('scout-quota-text');
-              var up = document.getElementById('scout-quota-upgrade');
               if (!pill || !text) return;
-              if (q.unlimited) return;  // Pro tier, no pill
+              if (q.unlimited) return;  // no cap in effect, no pill
               if (q.tier === 'anon') return;  // not signed in, no pill
               var used = q.runs_used || 0;
               var cap = q.runs_cap || 3;
               var remaining = Math.max(0, cap - used);
-              text.textContent = 'Free tier: ' + used + ' of ' + cap + ' runs used in the last 30 days.';
+              text.textContent = 'You have used ' + used + ' of ' + cap + ' free Scout runs in the last 30 days.';
               if (remaining <= 1) {
                 pill.classList.add('scout-quota-pill--warn');
-                up.hidden = false;
               }
               pill.hidden = false;
             })

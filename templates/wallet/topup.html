@@ -289,23 +289,17 @@
       <a href="/pricing" class="nav-link">Full pricing &rarr;</a>
     </div>
     <div class="panel-body">
-      <table class="wallet-cost-table">
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th class="wallet-cost-table-time">Typical compute time</th>
-            <th class="wallet-cost-table-cost">Cost per run</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>Epitope Scout</td><td>30 seconds</td><td>under $0.10</td></tr>
-          <tr><td>ProteinMPNN</td><td>1 minute (L4)</td><td>around $0.05</td></tr>
-          <tr><td>AlphaFold 2 (single fold)</td><td>5 minutes (A100)</td><td>around $0.50</td></tr>
-          <tr><td>ColabFold (MSA plus fold)</td><td>8 minutes (A100)</td><td>around $0.80</td></tr>
-          <tr><td>RFdiffusion pilot</td><td>20 minutes (A100)</td><td>around $1.60</td></tr>
-          <tr><td>BindCraft pilot</td><td>60 minutes (A100)</td><td>around $4.40</td></tr>
-        </tbody>
-      </table>
+      <p style="margin: 0 0 0.75rem 0; color: var(--text-secondary); line-height: 1.65;">
+        The amount you fund is your spend cap. There is no per design charge:
+        you pay only for the compute each job delivers, and whatever a job does
+        not use returns to your wallet. Design count is unlimited, so a large
+        request fans out into a campaign that pauses if your balance runs low.
+      </p>
+      <p style="margin: 0; color: var(--text-secondary); line-height: 1.65;">
+        Free tools (Epitope Scout, Developability Scout, Library Planner)
+        never touch your balance. Every form shows a live estimate
+        and your balance before you submit.
+      </p>
     </div>
   </div>
 

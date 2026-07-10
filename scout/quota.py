@@ -303,7 +303,7 @@ def requires_scout_quota(f):
     * Signed in on free tier, at or above cap:
         - JSON requests (Accept: application/json or XHR): returns HTTP 402
           with a JSON body describing the paywall.
-        - Plain-HTML requests: redirects to ``/upgrade``.
+        - Plain-HTML requests: redirects back to the Scout landing.
     * Supabase unreachable: passes through (fail open). Logged as a warning.
 
     Keep this decorator *below* ``@login_required`` and *above* the route
@@ -342,14 +342,13 @@ def requires_scout_quota(f):
         if wants_json:
             return jsonify({
                 "error": (
-                    "Free tier limit reached: "
-                    f"{status['runs_cap']} runs per 30 days. "
-                    "Upgrade to Scout Pro for unlimited runs."
+                    f"You have used all {status['runs_cap']} free Scout runs "
+                    "for the last 30 days. The limit resets as your earlier "
+                    "runs age out of the 30-day window."
                 ),
-                "upgrade_url": "/upgrade",
                 "runs_used": status["runs_used"],
                 "runs_cap": status["runs_cap"],
             }), 402
-        return redirect(url_for("upgrade"))
+        return redirect(url_for("scout.index"))
 
     return wrapped

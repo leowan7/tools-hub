@@ -159,66 +159,42 @@
           </div>
         </div>
 
-        <!-- Activate a Target Workspace -->
+        <!-- Design handoff: carry this target into a design tool -->
         <div class="panel" id="design-handoff-panel" style="border-color: rgba(43, 158, 126, 0.30);">
           <div class="panel-header">
             <span class="panel-title">Design binders against this target</span>
           </div>
           <div class="panel-body">
             <p style="color: var(--text-secondary); max-width: 62ch; margin: 0 0 1rem 0;">
-              Feasibility looks promising? Activate a <strong>Target
-              Workspace</strong> for this target and run every design pipeline
-              &mdash; RFdiffusion, BindCraft, RFantibody, BoltzGen, MPNN,
-              AF2 &mdash; for 30 days against a single Modal compute
-              budget. <strong>$499 for Standard ($100 compute cap,
-              ~500–2,000 designs)</strong>, <strong>$2,499 for XL ($500
-              cap, ~2,500–10,000+ designs)</strong>. 7-day money-back on
-              your first Workspace.
+              Feasibility looks promising? Carry this target straight into a
+              design pipeline. Run RFdiffusion, BindCraft, RFantibody,
+              BoltzGen, MPNN, and AF2 self-serve, funded from your wallet.
+              Design count is unlimited and you pay only for the compute each
+              job delivers.
             </p>
-            <div style="display: flex; gap: 0.65rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
-              <a href="/workspaces/new?sku=workspace_standard"
-                 class="btn-primary"
-                 id="activate-workspace-cta">
-                Activate Workspace · $499
-              </a>
-              <a href="/workspaces/new?sku=workspace_xl"
-                 class="btn-secondary">
-                Workspace XL · $2,499
-              </a>
-            </div>
+            <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 0.75rem;">
+              <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
+              <input type="hidden" name="scout_epitope_id" id="handoff-epitope-id" value="">
+              <input type="hidden" name="target_chain" id="handoff-chain" value="">
+              <input type="hidden" name="hotspot_residues" id="handoff-hotspots" value="">
+              <div style="flex: 1; min-width: 220px;">
+                <label for="handoff-tool" class="control-label" style="display:block; margin-bottom: 0.35rem;">Jump directly to a tool form</label>
+                <select name="tool" id="handoff-tool" required class="pdb-id-input" style="width: 100%;">
+                  <option value="rfantibody">RFantibody: VHH (nanobody)</option>
+                  <option value="bindcraft">BindCraft: de novo binder</option>
+                  <option value="pxdesign">PXDesign: AF2-IG validated</option>
+                  <option value="boltzgen">BoltzGen: Boltz-2 backbone</option>
+                </select>
+              </div>
+              <button type="submit" class="btn-primary" id="handoff-submit">
+                Open tool form
+              </button>
+            </form>
             <p style="color: var(--text-tertiary); font-size: 0.78rem; margin: 0;">
-              The PDB you just analysed is the target. Upload it again on
-              the Workspace activation form, then run any tool inside the
-              Workspace without per-run credit math.
+              Target PDB and hotspots flow over automatically. Each job is
+              funded from your wallet, and you only pay for the compute it
+              delivers.
             </p>
-
-            <details style="margin-top: 1.25rem; padding-top: 0.85rem; border-top: 1px solid var(--border-subtle, rgba(138, 148, 168, 0.18));">
-              <summary style="cursor: pointer; color: var(--text-tertiary); font-size: 0.82rem;">
-                Already have an active Workspace on this target?
-              </summary>
-              <form method="POST" action="/scout/handoff/tool" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-top: 0.85rem;">
-                <input type="hidden" name="scout_job_id" id="handoff-job-id" value="">
-                <input type="hidden" name="scout_epitope_id" id="handoff-epitope-id" value="">
-                <input type="hidden" name="target_chain" id="handoff-chain" value="">
-                <input type="hidden" name="hotspot_residues" id="handoff-hotspots" value="">
-                <div style="flex: 1; min-width: 220px;">
-                  <label for="handoff-tool" class="control-label" style="display:block; margin-bottom: 0.35rem;">Jump directly to a tool form</label>
-                  <select name="tool" id="handoff-tool" required class="pdb-id-input" style="width: 100%;">
-                    <option value="rfantibody">RFantibody — VHH (nanobody)</option>
-                    <option value="bindcraft">BindCraft — de novo binder</option>
-                    <option value="pxdesign">PXDesign — AF2-IG validated</option>
-                    <option value="boltzgen">BoltzGen — Boltz-2 backbone</option>
-                  </select>
-                </div>
-                <button type="submit" class="btn-secondary" id="handoff-submit">
-                  Open tool form
-                </button>
-              </form>
-              <p style="color: var(--text-tertiary); font-size: 0.78rem; margin-top: 0.5rem;">
-                The tool form will be gated by your Workspace's compute
-                budget. Target PDB and hotspots flow over automatically.
-              </p>
-            </details>
           </div>
         </div>
 

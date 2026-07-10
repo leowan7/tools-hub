@@ -2,7 +2,7 @@
 
 {% block title %}AI Protein Design Tools Online | RFdiffusion, MPNN, AF2{% endblock %}
 
-{% block description %}Design binders on dedicated GPUs. No shared batch queues. Prorated billing. Validate designs in Ranomics' yeast display lab. BindCraft, RFantibody, BoltzGen, PXDesign, Epitope Scout.{% endblock %}
+{% block description %}Design binders on dedicated GPUs. No shared batch queues. Fund a wallet, design without limits, pay only for compute delivered. Validate designs in Ranomics' yeast display lab. BindCraft, RFantibody, BoltzGen, PXDesign, Epitope Scout.{% endblock %}
 
 {% block head_extra %}
   <style>
@@ -205,13 +205,13 @@
   {# ─── Cinematic hero ──────────────────────────────────────────────── #}
   <section class="landing-hero">
     <div class="landing-hero-inner">
-      <span class="landing-eyebrow">AI protein design · self-serve · pay as you go</span>
+      <span class="landing-eyebrow">AI protein design · self-serve · unlimited design</span>
       <h1>Design binders against your target.</h1>
       <p class="landing-hero-lede">
-        Top up a USD wallet and run RFdiffusion, BindCraft, RFantibody,
-        BoltzGen, MPNN, and AF2 on the same target. <strong>New accounts
-        start with $5 in their wallet. No subscriptions, no seats,
-        no minimum monthly spend.</strong>
+        Fund a USD wallet and run RFdiffusion, BindCraft, RFantibody,
+        BoltzGen, MPNN, and AF2 on the same target. Your balance is your
+        cap and design count is unlimited. <strong>New accounts start with
+        $5 in their wallet. No credits, no tiers, no subscriptions.</strong>
       </p>
       <div class="landing-hero-cta">
         {% if authenticated %}
@@ -337,12 +337,12 @@
         <span class="why-card-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="4"/></svg>
         </span>
-        <h3 class="why-card-title">Prorated billing</h3>
+        <h3 class="why-card-title">Pay for compute delivered</h3>
         <p class="why-card-body">
-          Every job places a wallet hold against an estimated cost.
-          Jobs that finish early release the unused balance back to your
-          wallet automatically. You pay for compute consumed, not compute
-          reserved.
+          Every job places a wallet hold against a live estimate, then
+          settles at the actual compute consumed. Whatever the job did not
+          use returns to your wallet automatically. You pay for compute
+          delivered, not compute reserved.
         </p>
       </article>
       <article class="why-card">
@@ -407,11 +407,11 @@
     <div class="pricing-teaser">
       <div class="pricing-teaser-text">
         <span class="section-eyebrow">Pricing</span>
-        <span class="pricing-teaser-title">Pay for the compute you use.</span>
+        <span class="pricing-teaser-title">Your wallet is your budget.</span>
         <span class="pricing-teaser-body">
-          Top up a USD wallet, run jobs, see the cost. New accounts
-          start with $5 in their wallet on signup. No subscriptions,
-          no seats, no tiers, no minimum monthly spend.
+          Fund a USD wallet, design without limits, pay only for the compute
+          delivered. New accounts start with $5 in their wallet on signup.
+          No credits, no tiers, no subscriptions.
         </span>
       </div>
       <a href="{{ url_for('pricing') }}" class="btn-primary-lg">See pricing</a>
