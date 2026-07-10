@@ -8,18 +8,18 @@
 
   <div class="hero">
     <h1>Account</h1>
-    <p class="subtitle">Signed in to the Ranomics tools hub. One account works across every Workspace and tool.</p>
+    <p class="subtitle">Signed in to the Ranomics tools hub. One wallet funds every tool and campaign.</p>
   </div>
 
-  {% if request.args.get('success') %}
-    <div class="success-box" style="margin-bottom: 1rem;">
-      Payment received. Your new Workspace is below.
+  {% if request.args.get('topup') == 'cancelled' %}
+    <div class="error-box" style="margin-bottom: 1rem;">
+      Top up cancelled. Your wallet was not charged.
     </div>
   {% endif %}
 
   {% if request.args.get('portal_error') %}
     <div class="error-box" style="margin-bottom: 1rem;">
-      Could not open the Stripe Billing Portal. Activate a Workspace first, or contact leo@ranomics.com.
+      Could not open the Stripe Billing Portal. Top up your wallet first to create a billing profile, or contact leo@ranomics.com.
     </div>
   {% endif %}
 
@@ -34,20 +34,14 @@
           <span class="account-summary-value" style="font-family: var(--font-body); font-size: 0.9rem;">{{ user_email }}</span>
         </div>
         <div class="account-summary-item">
-          <span class="account-summary-label">Active Workspaces</span>
-          <span class="account-summary-value">{{ active_workspaces|length if active_workspaces else 0 }}</span>
-        </div>
-        <div class="account-summary-item">
-          <span class="account-summary-label">Total Workspaces</span>
-          <span class="account-summary-value">{{ workspace_history|length if workspace_history else 0 }}</span>
+          <span class="account-summary-label">Wallet balance</span>
+          <span class="account-summary-value">${{ '%.2f'|format(nav_wallet_usd or 0) }}</span>
         </div>
       </div>
 
       <div class="account-actions" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-        <a href="/pricing" class="btn-primary">+ Activate a target</a>
-        {% if workspace_history and workspace_history|length > 0 %}
-          <a href="{{ url_for('billing_portal') }}" class="btn-secondary">Stripe receipts</a>
-        {% endif %}
+        <a href="/campaigns/new" class="btn-primary">Start a campaign</a>
+        <a href="{{ url_for('billing_portal') }}" class="btn-secondary">Stripe receipts</a>
         {% if platform_api_enabled %}
           <a href="{{ url_for('account_api_keys') }}" class="btn-secondary">API keys</a>
         {% endif %}
@@ -59,98 +53,21 @@
     </div>
   </div>
 
-  {# ─── Active Workspaces ────────────────────────────────────────── #}
-  {% if active_workspaces and active_workspaces|length > 0 %}
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">Active Workspaces</span>
-        <a href="/workspaces" class="nav-link">View all →</a>
-      </div>
-      <div class="panel-body">
-        <div class="workspace-grid">
-          {% for ws in active_workspaces %}
-            <article class="workspace-card">
-              <div class="workspace-card-head">
-                <span class="workspace-sku-badge workspace-sku-{{ ws.sku }}">
-                  {% if ws.sku == 'workspace_xl' %}XL{% else %}STANDARD{% endif %}
-                </span>
-                <span class="workspace-target-label">
-                  {{ ws.target_label or ws.target_pdb_id[:30] }}
-                </span>
-              </div>
-              <div class="workspace-meter">
-                <div class="workspace-meter-bar">
-                  <div
-                    class="workspace-meter-fill workspace-meter-fill-{{ 'high' if ws.pct_used >= 80 else ('mid' if ws.pct_used >= 50 else 'low') }}"
-                    style="width: {{ '%.1f'|format(ws.pct_used) }}%;"
-                  ></div>
-                </div>
-                <div class="workspace-meter-meta">
-                  <span class="workspace-meter-spent">${{ '%.2f'|format(ws.modal_spent_usd) }}</span>
-                  <span class="workspace-meter-sep">/</span>
-                  <span class="workspace-meter-cap">${{ '%.2f'|format(ws.modal_cap_usd) }}</span>
-                </div>
-              </div>
-              <div class="workspace-card-footer">
-                <a href="/workspaces/{{ ws.id }}" class="workspace-card-cta">Open →</a>
-              </div>
-            </article>
-          {% endfor %}
-        </div>
-      </div>
+  {# ─── Wallet-funded design ──────────────────────────────────────── #}
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Design at any scale</span>
     </div>
-  {% endif %}
-
-  {# ─── Workspace history ─────────────────────────────────────────── #}
-  {% if workspace_history and workspace_history|length > 0 %}
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">Workspace history</span>
-        <span class="nav-link">Last 20</span>
-      </div>
-      <div class="panel-body">
-        <table class="workspace-history-table">
-          <thead>
-            <tr>
-              <th>Target</th>
-              <th>SKU</th>
-              <th>Status</th>
-              <th>Compute used</th>
-              <th>Activated</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for ws in workspace_history %}
-              <tr>
-                <td>{{ ws.target_label or ws.target_pdb_id[:40] }}</td>
-                <td><span class="workspace-sku-badge workspace-sku-{{ ws.sku }}">{% if ws.sku == 'workspace_xl' %}XL{% else %}STD{% endif %}</span></td>
-                <td><span class="workspace-status-{{ ws.status }}">{{ ws.status }}</span></td>
-                <td>${{ '%.2f'|format(ws.modal_spent_usd) }} / ${{ '%.2f'|format(ws.modal_cap_usd) }}</td>
-                <td>{{ ws.activated_at.strftime('%Y-%m-%d') if ws.activated_at else '' }}</td>
-                <td><a href="/workspaces/{{ ws.id }}" class="workspace-history-link">View →</a></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+    <div class="panel-body">
+      <p style="color: var(--text-secondary); font-size: 0.92rem; max-width: 56ch;">
+        Run any design tool self-serve, funded from your wallet. Design
+        count is unlimited, and a large request fans out into a campaign
+        that drains only for the compute it delivers.
+      </p>
+      <p style="margin-top: 0.85rem;">
+        <a href="/campaigns/new" class="btn-primary">Start a campaign</a>
+      </p>
     </div>
-  {% else %}
-    <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">No Workspaces yet</span>
-      </div>
-      <div class="panel-body">
-        <p style="color: var(--text-secondary); font-size: 0.92rem; max-width: 56ch;">
-          Activate a Target Workspace to run protein design pipelines.
-          $499 for Standard ($100 Modal cap), $2,499 for XL ($500 cap).
-          7-day money-back on your first Workspace.
-        </p>
-        <p style="margin-top: 0.85rem;">
-          <a href="/pricing" class="btn-primary">See Workspace pricing</a>
-        </p>
-      </div>
-    </div>
-  {% endif %}
+  </div>
 
 {% endblock %}
