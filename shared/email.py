@@ -579,9 +579,10 @@ def send_workspace_cap_warning(
     """Notify a customer that their Workspace has crossed 80% of cap.
 
     Triggered when ``shared.workspaces.charge_for_job`` reports a
-    crossed warning threshold. Pre-emptive — gives the user a chance to
-    upgrade to XL or activate a second Workspace before they hit the
-    hard 100% block mid-iteration.
+    crossed warning threshold. Pre-emptive: warns before the hard 100%
+    block so the user can wrap up in-flight design. Legacy Workspace
+    holders only (the Workspace product is retired); the forward path is
+    now a self-serve campaign funded from the wallet, not an XL upsell.
 
     Best-effort: returns False on missing config or send failure.
     """
@@ -602,18 +603,17 @@ def send_workspace_cap_warning(
         if workspace.sku == "workspace_xl"
         else "Target Workspace"
     )
-    upgrade_cta = ""
-    if workspace.sku == "workspace_standard":
-        upgrade_cta = """
+    campaigns_url = f"{base_url}/campaigns/new"
+    wallet_cta = f"""
       <p style="margin:18px 0 0 0; font-size:14px;">
-        Need more compute on this target? <strong>Target Workspace XL</strong>
-        gives you 5× the budget ($500 Modal cap), priority GPU queue, and a
-        30-minute onboarding call — $2,499 per target.
+        Want to keep designing beyond this target? Run any tool self-serve,
+        funded from your wallet, with unlimited design count. A large ask
+        fans out into a campaign on any target.
       </p>
       <p style="margin:10px 0 0 0;">
-        <a href="{pricing_url}" style="color:#2B9E7E;">See Workspace XL →</a>
+        <a href="{campaigns_url}" style="color:#2B9E7E;">Start a campaign →</a>
       </p>
-    """.format(pricing_url=f"{base_url}/pricing")
+    """
 
     html_body = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
@@ -633,7 +633,7 @@ def send_workspace_cap_warning(
           Open Workspace
         </a>
       </p>
-      {upgrade_cta}
+      {wallet_cta}
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
       <p style="font-size:12px;color:#999;">
         Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">
@@ -646,7 +646,8 @@ def send_workspace_cap_warning(
         f"Your {sku_label} for {target_label} is at {pct_used:.0f}% of "
         f"compute budget (${remaining_usd:.2f} remaining of ${cap_usd:.2f}).\n\n"
         f"Open the Workspace: {workspace_url}\n\n"
-        f"Need more compute? See Workspace XL: {base_url}/pricing\n\n"
+        f"Keep designing self-serve, funded from your wallet. "
+        f"Start a campaign: {base_url}/campaigns/new\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
 
@@ -684,15 +685,15 @@ def send_workspace_cap_exhausted(
     )
 
     subject = f"Workspace compute cap reached — {target_label}"
-    upgrade_block = ""
-    if workspace.sku == "workspace_standard":
-        upgrade_block = f"""
+    campaigns_url = f"{base_url}/campaigns/new"
+    wallet_cta = f"""
       <p style="margin:18px 0 0 0; font-size:14px;">
-        <strong>Need to keep going?</strong> Workspace XL gives you 5× the
-        compute budget on a new target — $2,499 per target.
+        <strong>Want to keep going?</strong> Run any tool self-serve, funded
+        from your wallet, with unlimited design count. A large ask fans out
+        into a campaign on any target.
       </p>
       <p style="margin:10px 0 0 0;">
-        <a href="{base_url}/pricing" style="color:#2B9E7E;">See Workspace XL →</a>
+        <a href="{campaigns_url}" style="color:#2B9E7E;">Start a campaign →</a>
       </p>
         """
 
@@ -711,7 +712,7 @@ def send_workspace_cap_exhausted(
           View results
         </a>
       </p>
-      {upgrade_block}
+      {wallet_cta}
       <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
       <p style="font-size:12px;color:#999;">
         Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">
@@ -724,7 +725,8 @@ def send_workspace_cap_exhausted(
         f"Your {sku_label} for {target_label} has used its full "
         f"${workspace.modal_cap_usd:.2f} compute budget.\n\n"
         f"View results: {workspace_url}\n\n"
-        f"Need to keep going? See Workspace XL: {base_url}/pricing\n\n"
+        f"Want to keep going? Design self-serve, funded from your wallet. "
+        f"Start a campaign: {base_url}/campaigns/new\n\n"
         "Ranomics Tools — tools.ranomics.com"
     )
 
