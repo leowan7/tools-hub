@@ -566,6 +566,59 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
             "tx-xyz", reason="handler_exception"
         )
 
+    def test_early_return_without_consume_releases_hold(self, client):
+        # The D1 over-ceiling backstop returns a campaign-pointer response
+        # BEFORE create_job runs, so g.wallet_hold_consumed stays False and the
+        # decorator must release the hold (reason="view_early_return"). This is
+        # the money-safety guarantee the backstop leans on; the reroute tests
+        # force a $0 estimate (no hold), so without this the release branch is
+        # never exercised and a future edit that strands the hold ships green.
+        from app import requires_wallet
+        from shared.wallet import PreflightResult, REASON_OK
+        from flask import g
+
+        @requires_wallet(tool_slug="rfdiffusion")
+        def handler():
+            # Over-ceiling backstop: return early, never mark the hold consumed.
+            assert getattr(g, "wallet_hold_tx_id", None) == "tx-early"
+            return ("open /campaigns/new", 400)
+
+        from flask import Flask
+        flask_app = Flask(__name__)
+        flask_app.config["SECRET_KEY"] = "k"
+        flask_app.config["TESTING"] = True
+        flask_app.add_url_rule("/early", view_func=handler, methods=["POST"])
+
+        ok = PreflightResult(
+            allow=True,
+            reason=REASON_OK,
+            estimated_cost_usd=Decimal("2.62"),
+            balance_usd=Decimal("100"),
+            deficit_usd=Decimal("0"),
+            hard_cap_usd=Decimal("150"),
+        )
+        with flask_app.test_client() as c, patch(
+            "app.load_user_context", return_value=_ctx()
+        ), patch(
+            "app.estimated_cost_for_tool", return_value=Decimal("2.62")
+        ), patch(
+            "app.get_or_create_wallet",
+            return_value={"balance_usd": 100.0, "wallet_frozen": False},
+        ), patch(
+            "app.wallet_preflight", return_value=ok
+        ), patch(
+            "app.wallet_reserve_hold", return_value="tx-early"
+        ), patch(
+            "app.wallet_release_hold"
+        ) as release:
+            with c.session_transaction() as sess:
+                sess["user_id"] = "u-1"
+            resp = c.post("/early", data={"num_designs": "100"})
+            assert resp.status_code == 400
+        release.assert_called_once_with(
+            "tx-early", reason="view_early_return"
+        )
+
 
 # ===========================================================================
 # /account/topup-complete

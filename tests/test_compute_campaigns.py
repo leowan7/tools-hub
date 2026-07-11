@@ -143,6 +143,24 @@ def test_pxdesign_chunk_cost_priced_per_container_not_per_design():
     assert cc._estimate_chunk_cost("pxdesign", 24) < scaled / 5
 
 
+def test_pxdesign_first_wave_gate_is_per_container_not_inflated():
+    # The campaign START gate (first_wave_hold_usd) is worst-case one cushioned
+    # per-container hold per wave. A 48-design pxdesign campaign is 2 sub-jobs,
+    # so the gate is ~2 containers (~$13), NOT the ~$157 a per-design hold would
+    # demand. Guards the estimate/hold parity end-to-end at the admission gate.
+    plan = plan_chunks("pxdesign", 48)
+    assert plan.total_subjobs == 2
+    per_container = cc.child_hold_usd("pxdesign", plan.chunk_size)
+    gate = cc.first_wave_hold_usd(plan)
+    assert gate == cc._quantize_usd(per_container * plan.total_subjobs)
+    # Well under the naive per-design gate (24x per chunk) that the pre-fix code
+    # produced.
+    naive_per_chunk = cc.cushioned_hold_usd(
+        None, "pxdesign", {"num_designs": plan.chunk_size, "preset": "pilot"}
+    )
+    assert gate < naive_per_chunk
+
+
 def test_rfantibody_campaign_bigger_chunk_and_session_budget():
     # rfantibody mirrors bindcraft: a 10h campaign container (36000s) sits under
     # the 23h Modal timeout, giving 16 designs/chunk with a matching session

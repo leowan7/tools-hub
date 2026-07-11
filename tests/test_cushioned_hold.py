@@ -69,3 +69,18 @@ def test_child_hold_is_cushioned_but_point_estimate_is_not():
 def test_child_hold_boltzgen_prices_at_fixed_pool_baseline():
     # boltzgen is flat per job: the hold does not scale with the design budget.
     assert child_hold_usd("boltzgen", 10) == child_hold_usd("boltzgen", 50)
+
+
+def test_child_hold_pxdesign_prices_at_fixed_container_baseline():
+    # pxdesign is fixed-container like boltzgen: one 3600s container runs the
+    # whole 24-design chunk, so the HOLD must not scale with the chunk's design
+    # count. Regression guard: pricing per-design here (as the estimate path was
+    # fixed but the hold path once was not) inflates the hold ~12x and the
+    # first-wave START gate with it (money-safe, but a bogus admission block).
+    assert child_hold_usd("pxdesign", 24) == child_hold_usd("pxdesign", 2)
+    # The per-container hold matches the cushioned baseline, far below the naive
+    # 24-design price a per-design hold would charge.
+    baseline = cushioned_hold_usd(None, "pxdesign", _pilot(2))
+    assert child_hold_usd("pxdesign", 24) == baseline
+    naive_per_design = cushioned_hold_usd(None, "pxdesign", _pilot(24))
+    assert child_hold_usd("pxdesign", 24) < naive_per_design / 5

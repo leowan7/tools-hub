@@ -198,6 +198,17 @@ _CAMPAIGN_CONTAINER_S: Mapping[str, int] = {
 # the chunk to the validated single-job maximum of 24.
 _CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24}
 
+# Tools whose GPU cost is one fixed container per sub-job regardless of the
+# chunk's design count, so BOTH the point estimate and the wallet hold price at
+# the baseline (scale 1.0) rather than scaling by chunk_size. Used by
+# _estimate_chunk_cost AND child_hold_usd; keep them reading the same set so the
+# estimate and the hold never drift (a per-design hold on a fixed-container tool
+# inflates the first-wave gate ~12x).
+#   * boltzgen: one fixed 200-design pool; returned-count (budget) is free.
+#   * pxdesign: one 3600s pilot container does the whole 24-design chunk; the
+#     spec's per-design rate is miscalibrated (implies ~12 containers for 24).
+_FIXED_CONTAINER_TOOLS: tuple[str, ...] = ("boltzgen", "pxdesign")
+
 
 def _campaign_container_seconds(tool: str) -> int:
     """GPU-seconds a campaign sizes ONE sub-job against.
@@ -269,16 +280,10 @@ def single_container_ceiling(tool: str) -> int:
 def _estimate_chunk_cost(tool: str, chunk_size: int) -> Decimal:
     """USD estimate for ONE sub-job of ``tool`` at ``chunk_size`` designs."""
     spec = get_tool_spec(tool)
-    # Fixed-container tools cost one container regardless of the chunk's design
-    # count, so estimate at the baseline (scale 1.0) rather than scaling by
-    # chunk_size:
-    #   * boltzgen — one fixed 200-design pool; the returned-count (budget)
-    #     does not change GPU cost.
-    #   * pxdesign — one 3600s pilot container does the whole 24-design chunk;
-    #     the spec's per-design rate is miscalibrated (it implies ~12 containers
-    #     for 24 designs), so scaling by chunk_size would inflate the budget +
-    #     first-wave hold ~12x. Baseline == one-container cost, which is right.
-    if tool in ("boltzgen", "pxdesign"):
+    # Fixed-container tools (see _FIXED_CONTAINER_TOOLS) cost one container
+    # regardless of the chunk's design count, so estimate at the baseline
+    # (scale 1.0) rather than scaling by chunk_size.
+    if tool in _FIXED_CONTAINER_TOOLS:
         designs_for_estimate = spec.designs_per_run_baseline if spec else 2
     else:
         designs_for_estimate = chunk_size
@@ -710,11 +715,12 @@ def child_hold_usd(tool: str, design_count: int) -> Decimal:
     A cushion above the point estimate so actual usually settles under the
     hold, releasing surplus (a clean ledger) instead of posting a variance
     charge. Clamped to the per-tool hard cap by
-    :func:`shared.wallet_estimates.cushioned_hold_usd`. boltzgen prices at its
-    fixed-pool baseline; the linear tools scale by the design count.
+    :func:`shared.wallet_estimates.cushioned_hold_usd`. Fixed-container tools
+    (see _FIXED_CONTAINER_TOOLS) price at their one-container baseline, matching
+    :func:`_estimate_chunk_cost`; the linear tools scale by the design count.
     """
     spec = get_tool_spec(tool)
-    if tool == "boltzgen":
+    if tool in _FIXED_CONTAINER_TOOLS:
         designs_for_estimate = spec.designs_per_run_baseline if spec else 2
     else:
         designs_for_estimate = int(design_count)
