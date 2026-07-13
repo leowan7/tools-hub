@@ -39,6 +39,10 @@ def test_chunk_size_per_tool():
     assert _chunk_size_for("bindcraft") == 16
     # boltzgen: budget-based, fixed 200-pool -> 50 delivered/job.
     assert _chunk_size_for("boltzgen") == BOLTZGEN_DESIGNS_PER_JOB
+    # pxdesign: pinned to its validated 24-design pilot job (override).
+    assert _chunk_size_for("pxdesign") == 24
+    # rfantibody: 1800 gpu_s/design, campaign container 36000s, 0.8 util -> 16.
+    assert _chunk_size_for("rfantibody") == 16
 
 
 @pytest.mark.parametrize(
@@ -49,6 +53,10 @@ def test_chunk_size_per_tool():
         ("bindcraft", 40, 3),   # 16+16+8
         ("boltzgen", 100, 2),
         ("boltzgen", 101, 3),
+        ("pxdesign", 48, 2),    # 24+24
+        ("pxdesign", 25, 2),    # 24+1
+        ("rfantibody", 32, 2),  # 16+16
+        ("rfantibody", 17, 2),  # 16+1
     ],
 )
 def test_plan_chunks_counts(tool, requested, expected_subjobs):
@@ -69,7 +77,8 @@ def test_plan_chunks_budget_scales_with_subjobs():
 
 
 def test_plan_chunks_rejects_unsupported_tool():
-    for tool in ("rfantibody", "pxdesign", "mpnn", "nonsense"):
+    # mpnn/af2 are real tools but not self-serve campaign design tools.
+    for tool in ("mpnn", "af2", "esmfold", "nonsense"):
         with pytest.raises(ValueError):
             plan_chunks(tool, 10)
 
@@ -98,6 +107,74 @@ def test_bindcraft_campaign_bigger_chunk_and_session_budget():
     # other tools keep the default 4h session budget (no override injected).
     assert cc._campaign_session_inputs("rfdiffusion") == {}
     assert cc._campaign_session_inputs("boltzgen") == {}
+
+
+def test_pxdesign_campaign_uses_validated_pilot_chunk():
+    # A pxdesign campaign chunk == its validated 24-design pilot job, so no
+    # bigger container and no session-budget override are needed.
+    assert cc._chunk_size_for("pxdesign") == 24
+    assert cc._campaign_session_inputs("pxdesign") == {}
+    assert cc._campaign_container_seconds("pxdesign") == cc.preset_gpu_seconds(
+        "pxdesign", "pilot"
+    )
+    plan = plan_chunks("pxdesign", 48)
+    assert plan.total_subjobs == 2
+    assert plan.chunk_size == 24
+    assert plan.design_param_key == "num_designs"
+    assert plan.budget_usd > 0
+    with pytest.raises(ValueError):
+        plan_chunks("pxdesign", 0)
+
+
+def test_pxdesign_chunk_cost_priced_per_container_not_per_design():
+    # One 3600s container does the whole 24-design chunk, so a chunk costs one
+    # container (baseline), NOT 24x the per-design spec rate. Pricing per-design
+    # would inflate the campaign budget + first-wave hold ~12x (money-safe but a
+    # bogus admission gate). Mirrors boltzgen's fixed-container treatment.
+    from shared.wallet_estimates import estimated_cost_for_tool
+    baseline = estimated_cost_for_tool(
+        None, "pxdesign", {"num_designs": 2, "preset": "pilot"}
+    )
+    assert cc._estimate_chunk_cost("pxdesign", 24) == baseline
+    # ... and far below the naive per-design price for a full chunk.
+    scaled = estimated_cost_for_tool(
+        None, "pxdesign", {"num_designs": 24, "preset": "pilot"}
+    )
+    assert cc._estimate_chunk_cost("pxdesign", 24) < scaled / 5
+
+
+def test_pxdesign_first_wave_gate_is_per_container_not_inflated():
+    # The campaign START gate (first_wave_hold_usd) is worst-case one cushioned
+    # per-container hold per wave. A 48-design pxdesign campaign is 2 sub-jobs,
+    # so the gate is ~2 containers (~$13), NOT the ~$157 a per-design hold would
+    # demand. Guards the estimate/hold parity end-to-end at the admission gate.
+    plan = plan_chunks("pxdesign", 48)
+    assert plan.total_subjobs == 2
+    per_container = cc.child_hold_usd("pxdesign", plan.chunk_size)
+    gate = cc.first_wave_hold_usd(plan)
+    assert gate == cc._quantize_usd(per_container * plan.total_subjobs)
+    # Well under the naive per-design gate (24x per chunk) that the pre-fix code
+    # produced.
+    naive_per_chunk = cc.cushioned_hold_usd(
+        None, "pxdesign", {"num_designs": plan.chunk_size, "preset": "pilot"}
+    )
+    assert gate < naive_per_chunk
+
+
+def test_rfantibody_campaign_bigger_chunk_and_session_budget():
+    # rfantibody mirrors bindcraft: a 10h campaign container (36000s) sits under
+    # the 23h Modal timeout, giving 16 designs/chunk with a matching session
+    # budget passed through _campaign_session_inputs.
+    assert cc._chunk_size_for("rfantibody") == 16
+    assert cc._campaign_container_seconds("rfantibody") == 36000
+    assert cc._campaign_session_inputs("rfantibody") == {"_total_budget_hours": 10.0}
+    plan = plan_chunks("rfantibody", 32)
+    assert plan.total_subjobs == 2
+    assert plan.chunk_size == 16
+    assert plan.design_param_key == "num_designs"
+    assert plan.budget_usd > 0
+    with pytest.raises(ValueError):
+        plan_chunks("rfantibody", 0)
 
 
 def test_boltzgen_design_key_is_budget():
@@ -297,7 +374,7 @@ def test_create_and_get_campaign(fake_client):
 def test_create_campaign_raises_on_unsupported(fake_client):
     with pytest.raises(ValueError):
         create_campaign(
-            user_id="u", tool="rfantibody", params={}, requested_designs=10,
+            user_id="u", tool="mpnn", params={}, requested_designs=10,
         )
 
 

@@ -4,6 +4,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
 
@@ -239,11 +240,18 @@
             </div>
 
             <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
-            <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "8") }} min="1" max="24"
+            <input type="number" name="num_designs" id="num_designs" {{ pre_value(pre_fill, "num_designs", "8") }} min="1" max="1000"
+                   {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
-            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-              Larger campaigns of hundreds to thousands of designs run through AI Binder Sprint or a custom campaign. Contact us.
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+              One run does up to {{ single_container_ceiling or 24 }} designs. No fixed ceiling: larger requests fan out automatically as a wallet-bounded campaign across GPUs.
             </div>
+            {% if single_container_ceiling %}
+            <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
+                 style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              More than {{ single_container_ceiling }} designs fans out across GPUs as a wallet-bounded campaign. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start campaign below; upload a target file so it carries over.
+            </div>
+            {% endif %}
           </div>
 
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1rem;">
@@ -276,6 +284,11 @@
                   {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
             Submit run
           </button>
+          {# D1: campaign-mode CTA (see tools/_campaign_reroute.html). type="button"
+             so the single-job wallet gate never disables it. #}
+          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
+            Start campaign
+          </button>
         </form>
       </div>
     </div>
@@ -306,4 +319,5 @@
   </script>
   {{ prefill_script(pre_fill) }}
   {{ wallet_partials_script() }}
+  {{ campaign_reroute_script() }}
 {% endblock %}
