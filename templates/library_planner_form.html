@@ -141,7 +141,6 @@
 
         <div class="dev-form-actions">
           <button type="submit" class="btn-primary">Plan library</button>
-          <button type="button" class="btn-secondary" data-fill-example>Try VHH 6 NNK 10 nM</button>
         </div>
 
         <details class="dev-help">
@@ -166,20 +165,5 @@
 
     </div>
   </div>
-
-  <script>
-    (function () {
-      var trigger = document.querySelector('[data-fill-example]');
-      if (!trigger) return;
-      trigger.addEventListener('click', function () {
-        document.getElementById('scaffold').value = 'VHH';
-        document.getElementById('positions').value = '6';
-        document.getElementById('scheme').value = 'NNK';
-        document.getElementById('kd_nm').value = '10';
-        document.getElementById('starting_material').value = 'naive';
-        document.getElementById('coverage_pct').value = '90';
-      });
-    })();
-  </script>
 
 {% endblock %}
