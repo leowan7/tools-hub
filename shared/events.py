@@ -204,7 +204,6 @@ class EVENTS:
     NTH_JOB_COMPLETED = "nth_job_completed"
     CROSS_TOOL_HANDOFF_CLICKED = "cross_tool_handoff_clicked"
     SHARE_CLICKED = "share_clicked"
-    EXAMPLE_LOADED = "example_loaded"
     REFOLD_SPAWNED = "refold_spawned"
     RESAMPLE_LOADED = "resample_loaded"
 

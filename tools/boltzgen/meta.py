@@ -139,24 +139,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# Sample binder-design targets the user can load in one click.
-examples: list[dict] = [
-    {
-        "id": "6m0j_E",
-        "label": "SARS-CoV-2 RBD (6m0j chain E)",
-        "description": (
-            "Boltz-2 binder design against the spike RBD. Same hotspots "
-            "as the BindCraft / RFdiffusion examples for easy comparison."
-        ),
-        "filename": "6m0j_E.pdb",
-        "params": {
-            "target_chain": "E",
-            "hotspot_residues": "417,453,486,493,501",
-            "binder_length_min": "50",
-            "binder_length_max": "70",
-            "budget": "8",
-        },
-    },
-]

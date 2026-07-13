@@ -81,34 +81,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# Sample sequences a first-time user can load in one click.
-examples: list[dict] = [
-    {
-        "id": "ubiquitin",
-        "label": "Ubiquitin (76 aa)",
-        "description": (
-            "Tiny monomer benchmark. ~1 min on the no-MSA ColabFold path; "
-            "useful for confirming the pipeline end-to-end."
-        ),
-        "filename": "ubiquitin.fasta",
-        "fasta_field": "fasta_text",
-        "params": {
-            "num_recycles": "1",
-        },
-    },
-    {
-        "id": "top7",
-        "label": "Top7 de novo design (93 aa)",
-        "description": (
-            "Canonical de novo designed protein. Shows ColabFold's "
-            "no-MSA path on a designed fold."
-        ),
-        "filename": "top7.fasta",
-        "fasta_field": "fasta_text",
-        "params": {
-            "num_recycles": "1",
-        },
-    },
-]

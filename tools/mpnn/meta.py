@@ -125,39 +125,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# Sample backbones a first-time user can load in one click. Each entry's
-# PDB lives at ``tools/mpnn/examples/<filename>``. ``params`` overrides
-# form fields via the ``?example=<id>`` prefill path; the chosen PDB is
-# fed in via the ``example:`` pdb_source token resolved at submit time.
-examples: list[dict] = [
-    {
-        "id": "1ubq",
-        "label": "Ubiquitin (1ubq)",
-        "description": (
-            "76-aa monomer benchmark. Fastest MPNN run, "
-            "classic sequence-recovery test."
-        ),
-        "filename": "1ubq.pdb",
-        "params": {
-            "chains_to_design": "A",
-            "num_seq_per_target": "20",
-            "sampling_temp": "0.1",
-        },
-    },
-    {
-        "id": "4lzt",
-        "label": "Hen egg-white lysozyme (4lzt)",
-        "description": (
-            "129-aa monomeric enzyme. Tests MPNN recovery on a "
-            "functional active-site fold."
-        ),
-        "filename": "4lzt.pdb",
-        "params": {
-            "chains_to_design": "A",
-            "num_seq_per_target": "20",
-            "sampling_temp": "0.1",
-        },
-    },
-]

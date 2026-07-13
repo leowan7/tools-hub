@@ -172,36 +172,6 @@
     </div>
   </section>
 
-  {# ─── Try these examples ─────────────────────────────────────────── #}
-  {% if meta and meta.examples %}
-    <section class="section">
-      <div class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Try these examples</h2>
-        </div>
-        <div class="panel-body">
-          <p style="margin: 0 0 0.85rem 0; color: var(--text-secondary); line-height: 1.65;">
-            One-click sample inputs that load straight into the run form.
-            Edit any field before submitting.
-          </p>
-          <dl style="margin: 0;">
-            {% for ex in meta.examples %}
-              <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.75rem;">
-                <a href="{{ url_for('tool_form', tool=tool, example=ex.id) }}"
-                   style="color: var(--accent-text); text-decoration: none;">
-                  {{ ex.label }}
-                </a>
-              </dt>
-              {% if ex.description %}
-                <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">{{ ex.description }}</dd>
-              {% endif %}
-            {% endfor %}
-          </dl>
-        </div>
-      </div>
-    </section>
-  {% endif %}
-
   {# ─── References and run ─────────────────────────────────────────── #}
   <section class="section">
     {% if meta and (meta.paper_citation or meta.paper_url or meta.github_url or meta.paper) %}

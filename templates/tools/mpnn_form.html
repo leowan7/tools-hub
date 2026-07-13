@@ -4,7 +4,6 @@
 {% from "components/submit_cta.html" import submit_cta, submit_cta_script %}
 {% from "components/tool_form_layout.html" import tool_form_layout %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
-{% from "components/examples_chip_group.html" import examples_chip_group %}
 {% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -41,7 +40,6 @@
           <input type="hidden" name="preset" value="standalone">
 
           <div id="pilot-fields">
-            {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
             {{ pdb_source_banner(pdb_source) }}
             <div class="field-group">
               <label for="target_pdb" class="field-label">Backbone PDB</label>

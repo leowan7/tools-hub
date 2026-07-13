@@ -88,23 +88,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# Sample VHH / nanobody design targets the user can load in one click.
-examples: list[dict] = [
-    {
-        "id": "6m0j_E",
-        "label": "SARS-CoV-2 RBD (6m0j chain E)",
-        "description": (
-            "Nanobody design against the spike RBD. Same target as "
-            "the canonical RFantibody paper benchmark."
-        ),
-        "filename": "6m0j_E.pdb",
-        "params": {
-            "target_chain": "E",
-            "hotspot_residues": "417,453,486,493,501",
-            "cdr_lengths": "H1:8,H2:7,H3:10-16",
-            "num_designs": "8",
-        },
-    },
-]

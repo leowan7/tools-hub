@@ -117,36 +117,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# Sample sequences a first-time user can load in one click. The FASTA
-# file's contents are read at prefill time and dropped into the form's
-# ``fasta`` textarea (the field name AF2 expects).
-examples: list[dict] = [
-    {
-        "id": "ubiquitin",
-        "label": "Ubiquitin (76 aa)",
-        "description": (
-            "Tiny monomer benchmark. Quick MSA-backed AF2 fold; useful "
-            "for confirming the pipeline end-to-end."
-        ),
-        "filename": "ubiquitin.fasta",
-        "fasta_field": "fasta",
-        "params": {
-            "num_recycles": "3",
-        },
-    },
-    {
-        "id": "top7",
-        "label": "Top7 de novo design (93 aa)",
-        "description": (
-            "The canonical de novo designed protein (Kuhlman et al. 2003). "
-            "Shows AF2 on a designed fold rather than a natural sequence."
-        ),
-        "filename": "top7.fasta",
-        "fasta_field": "fasta",
-        "params": {
-            "num_recycles": "3",
-        },
-    },
-]

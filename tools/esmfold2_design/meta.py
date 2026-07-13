@@ -12,7 +12,6 @@ Shapes
     paper_url            — paper PDF / preprint URL.
     github_url           — upstream repo.
     comparison_one_liner — positioning string vs the rest of the toolkit.
-    examples             — C2 "Load example" chip entries.
 
 Open thread
 -----------
@@ -178,68 +177,3 @@ about: dict = {
     "paper_url": paper_url,
     "github_url": github_url,
 }
-
-
-# C2 "Load example" chips. Both examples use preset targets so no PDB
-# upload is required and the chip works without bundled files.
-examples: list[dict] = [
-    {
-        "id": "ctla4-minibinder",
-        "label": "CTLA4 + minibinder",
-        "description": (
-            "Generate de novo minibinders against the human CTLA4 "
-            "ectodomain (UniProt P16410, 37 to 155). Three designs at "
-            "seed 0 in a single ~10 min gradient pass. CTLA4 was one "
-            "of the five targets validated in the paper."
-        ),
-        "filename": None,
-        "params": {
-            "preset": "minibinder",
-            "target_mode": "preset",
-            "target_name": "ctla4",
-            "seed": "0",
-            "n_seeds": "1",
-            "batch_size": "3",
-        },
-    },
-    {
-        "id": "pdl1-trastuzumab-scfv",
-        "label": "PD-L1 + trastuzumab scFv",
-        "description": (
-            "Design all six CDRs of a trastuzumab-framework scFv "
-            "against human PD-L1 (UniProt Q9NZQ7, 17 to 132). Three "
-            "designs at seed 0 in a single ~12 min gradient pass. "
-            "Reproduces the upstream notebook's Option 2 cell."
-        ),
-        "filename": None,
-        "params": {
-            "preset": "scfv",
-            "target_mode": "preset",
-            "target_name": "pd-l1",
-            "binder_framework": "trastuzumab_framework_vhvl",
-            "seed": "0",
-            "n_seeds": "1",
-            "batch_size": "3",
-        },
-    },
-    {
-        "id": "pdl1-minibinder-4seed-sweep",
-        "label": "PD-L1 minibinder 4-seed sweep",
-        "description": (
-            "Sweep seeds 0 to 3 against PD-L1 in one job (4 parallel H100 "
-            "workers, batch size 1 each). Same ~10 min wall-clock as a "
-            "single seed; results merge into one globally-ranked table "
-            "with per-design source seed. Demonstrates the multi-seed "
-            "fan-out path for building a candidate library."
-        ),
-        "filename": None,
-        "params": {
-            "preset": "minibinder",
-            "target_mode": "preset",
-            "target_name": "pd-l1",
-            "seed": "0",
-            "n_seeds": "4",
-            "batch_size": "1",
-        },
-    },
-]
