@@ -225,6 +225,17 @@ def _chunk_size_for(tool: str) -> int:
     return max(size, spec.designs_per_run_baseline)
 
 
+def single_container_ceiling(tool: str) -> int:
+    """Max designs one GPU container reliably does for ``tool``.
+
+    This is exactly the campaign chunk size: the point above which a single-job
+    submit would need more than one container and should instead fan out as a
+    campaign. Used by the tool forms (D1 auto-route threshold) and the
+    ``tool_submit`` backstop. Only meaningful for ``SUPPORTED_TOOLS``.
+    """
+    return _chunk_size_for(tool)
+
+
 def _estimate_chunk_cost(tool: str, chunk_size: int) -> Decimal:
     """USD estimate for ONE sub-job of ``tool`` at ``chunk_size`` designs."""
     spec = get_tool_spec(tool)

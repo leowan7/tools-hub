@@ -99,7 +99,7 @@ about: dict = {
         {
             "name": "Number of sequences",
             "explanation": (
-                "How many independent samples to draw (1 to 200). Each "
+                "How many independent samples to draw (1 to 1000). Each "
                 "sample is independent; rank by score and ProteinMPNN "
                 "recovery rate."
             ),

@@ -283,7 +283,13 @@
       // side (no re-upload from the browser needed).
       if (v && v.ok) {
         reuseTokenInput.value = reuseToken;
-        if (fileInput) fileInput.value = "";
+        if (fileInput) {
+          fileInput.value = "";
+          // The programmatic clear fires no native change event; dispatch one
+          // so listeners (wallet estimate refresh, the campaign auto-route
+          // which keys off a fresh upload) re-evaluate the now-empty file.
+          fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       }
     });
   }

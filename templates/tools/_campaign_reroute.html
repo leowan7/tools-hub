@@ -1,0 +1,110 @@
+{# D1 campaign auto-route (shared by the campaign-supported single-job forms).
+
+   When the requested design count exceeds the single-container ceiling
+   (data-campaign-ceiling on #num_designs) AND a fresh target_pdb file is
+   attached, the form is re-pointed at the campaign chunker
+   (compute_campaign_create) and a dedicated "Start campaign" CTA takes over.
+
+   The campaign CTA is type="button" so the single-job wallet gate — which
+   selects button[type="submit"] and disables it when the SINGLE-JOB estimate
+   exceeds the balance/ceiling — never disables it. An over-ceiling request is
+   bounded by the campaign's own preauth (fund-and-drain), not the single-job
+   estimate, so the single-job estimate panel + top-up gate are hidden while in
+   campaign mode. The single-job wallet hold is never taken (the POST goes to a
+   different endpoint entirely). A reuse-token-only submit (no fresh file) is
+   left on the single-job endpoint, where the server backstop returns the
+   campaign pointer. Money path is untouched. #}
+{% macro campaign_reroute_script() -%}
+<script>
+  (function () {
+    var numInput = document.getElementById('num_designs');
+    if (!numInput) return;
+    var ceilingAttr = numInput.getAttribute('data-campaign-ceiling');
+    var ceiling = ceilingAttr ? parseInt(ceilingAttr, 10) : NaN;
+    if (!ceiling || isNaN(ceiling)) return;  // tool not campaign-supported
+    var form = numInput.closest('form');
+    if (!form) return;
+    var notice = document.getElementById('campaign-reroute-notice');
+    var fileInput = form.querySelector('input[type="file"][name="target_pdb"]');
+    var toolSlug = form.getAttribute('data-tool-slug');
+    var campaignAction = '{{ url_for("compute_campaign_create") }}';
+    var singleAction = form.getAttribute('action');
+    var singleBtn = document.getElementById('tool-submit-btn');
+    var campaignBtn = document.getElementById('campaign-submit-btn');
+    var estimatePanel = document.getElementById('wallet-estimate-panel');
+    var topupGate = document.getElementById('wallet-topup-gate');
+
+    function overCeiling() {
+      var n = parseInt(numInput.value, 10);
+      return !isNaN(n) && n > ceiling;
+    }
+    function hasFreshFile() {
+      return !!(fileInput && fileInput.files && fileInput.files.length > 0);
+    }
+    function ensureHidden(name, value) {
+      var el = form.querySelector(
+        'input[type="hidden"][name="' + name + '"][data-campaign-field]');
+      if (!el) {
+        el = document.createElement('input');
+        el.type = 'hidden';
+        el.name = name;
+        el.setAttribute('data-campaign-field', '1');
+        form.appendChild(el);
+      }
+      el.value = value;
+    }
+    function pointAtCampaign() {
+      form.setAttribute('action', campaignAction);
+      ensureHidden('tool', toolSlug);
+      ensureHidden('requested_designs', numInput.value);
+    }
+    function removeCampaignFields() {
+      var els = form.querySelectorAll('input[data-campaign-field]');
+      for (var i = 0; i < els.length; i++) {
+        els[i].parentNode.removeChild(els[i]);
+      }
+    }
+    // Toggle inline display: display:none overrides the wallet gate's own
+    // hidden-attribute toggling, so there is no async race with its estimate
+    // fetch. '' restores the element's default so the gate resumes control.
+    function show(el, on) { if (el) el.style.display = on ? '' : 'none'; }
+
+    function apply() {
+      if (notice) notice.hidden = !overCeiling();
+      var campaign = overCeiling() && hasFreshFile();
+      if (campaign) {
+        pointAtCampaign();
+        show(singleBtn, false);
+        show(estimatePanel, false);
+        show(topupGate, false);
+        if (campaignBtn) campaignBtn.hidden = false;
+      } else {
+        form.setAttribute('action', singleAction);
+        removeCampaignFields();
+        show(singleBtn, true);
+        show(estimatePanel, true);
+        show(topupGate, true);
+        if (campaignBtn) campaignBtn.hidden = true;
+      }
+    }
+
+    numInput.addEventListener('input', apply);
+    if (fileInput) fileInput.addEventListener('change', apply);
+    apply();
+
+    if (campaignBtn) {
+      campaignBtn.addEventListener('click', function () {
+        apply();                       // fields + action already set
+        if (overCeiling() && hasFreshFile()) form.submit();
+      });
+    }
+
+    // Backstop: if the ordinary submit still fires while over-ceiling with a
+    // fresh file (e.g. Enter key on the single-job button), keep it pointed at
+    // the campaign endpoint rather than the doomed single job.
+    form.addEventListener('submit', function () {
+      if (overCeiling() && hasFreshFile()) pointAtCampaign();
+    });
+  })();
+</script>
+{%- endmacro %}

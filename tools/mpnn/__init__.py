@@ -7,7 +7,7 @@ The user uploads a backbone PDB + picks chain(s) to design, and receives
 ``num_seq_per_target`` candidate sequences with MPNN scores and per-
 sequence recovery. 1-credit loss leader on the pilot tier.
 
-D1 exposes a single ``standalone`` tier: caller-supplied PDB, up to 200
+D1 exposes a single ``standalone`` tier: caller-supplied PDB, up to 1000
 candidate sequences. It runs on the Modal function
 (``ranomics-mpnn-prod::run_tool``) and ``run_pipeline.py``.
 """
@@ -24,7 +24,11 @@ from tools.base import Preset, ToolAdapter, register
 # ---------------------------------------------------------------------------
 
 NUM_SEQ_MIN = 1
-NUM_SEQ_MAX = 200
+# Single-container ceiling: MPNN sampling is O(n) and the pipeline's diversity
+# filter is O(n^2) pairwise Hamming, so ~1000 seqs finish well inside the
+# ranomics-mpnn-prod 600s timeout. Keep in sync with run_pipeline.NUM_SEQ_MAX
+# (the pipeline re-clamps standalone and must not silently cap below this).
+NUM_SEQ_MAX = 1000
 TEMP_MIN = 0.01
 TEMP_MAX = 1.0
 
@@ -140,7 +144,7 @@ adapter = ToolAdapter(
             label="Standalone with your backbone",
             description=(
                 "Upload a backbone PDB, pick chain(s) to redesign, get "
-                "up to 200 candidate sequences. ~30 to 60 s on A10G-24GB."
+                "up to 1000 candidate sequences. ~30 to 60 s on A10G-24GB."
             ),
             requires_pdb=True,
         ),

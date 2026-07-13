@@ -72,8 +72,12 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 # Bounds enforced on the two numeric job_spec params. Mirrored from the
 # tools-hub adapter validate() but re-checked here because the pipeline
 # may be invoked directly (e.g. ``modal run`` for staging validation).
+# MUST stay in sync with tools/mpnn/__init__.py NUM_SEQ_MAX: this clamp runs
+# on every prod job, so a value below the adapter cap silently truncates the
+# user's requested sequence count (the pre-2026-07 bug: form promised 200,
+# prod delivered 20).
 NUM_SEQ_MIN = 1
-NUM_SEQ_MAX = 20
+NUM_SEQ_MAX = 1000
 TEMP_MIN = 0.01
 TEMP_MAX = 1.0
 
