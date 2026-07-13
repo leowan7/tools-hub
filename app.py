@@ -321,7 +321,7 @@ def _verify_reuse_pdb_bytes(
     """Re-run the upload gate on resolved reuse/handoff/resample bytes.
 
     Fresh uploads are inspected + gated at the upload boundary, but the
-    reuse-token paths (job:/handoff:/example:/resample:) stage bytes that
+    reuse-token paths (job:/handoff:/resample:) stage bytes that
     skipped both. This mirrors that gate (inspect + chain/hotspot
     validation + per-tool hard-gate preflight) so a mismatch is caught
     upfront instead of crashing on the GPU. Reuse bytes are already PDB,
@@ -3926,60 +3926,6 @@ def create_app() -> Flask:
                     "token": f"handoff:{ho.id}",
                 }
 
-        # C2 — "Load example" chip: a first-time user can populate the
-        # form with a known-good PDB / FASTA in one click. The example
-        # registry lives at tools/<slug>/meta.py:examples; the actual
-        # files live at tools/<slug>/examples/<filename>. Param overrides
-        # in the example dict are applied to pre_fill the same way
-        # clone_from does, then the form is decorated with either an
-        # "example:<tool>/<id>" pdb_source token (binder / sequence-
-        # design tools) or pre-populated FASTA text (AF2 / ColabFold /
-        # ESMFold). The submit-side resolver below stages the PDB
-        # exactly like a fresh upload.
-        example_id = request.args.get("example", "").strip()
-        if example_id and not pre_fill:
-            from shared.examples import (  # noqa: PLC0415
-                load_example, read_example_text,
-            )
-            entry = load_example(adapter.slug, example_id)
-            if entry is not None:
-                for k, v in (entry.get("params") or {}).items():
-                    pre_fill[k] = v
-                fasta_field = entry.get("fasta_field")
-                if fasta_field:
-                    fasta_content = read_example_text(
-                        adapter.slug, example_id
-                    )
-                    if fasta_content is not None:
-                        pre_fill[fasta_field] = fasta_content
-                else:
-                    pre_fill.setdefault("preset", "pilot")
-                    pdb_source = {
-                        "label": (
-                            f"Example: {entry.get('label', example_id)}"
-                        ),
-                        "filename": entry.get(
-                            "filename", f"{example_id}.pdb"
-                        ),
-                        "token": (
-                            f"example:{adapter.slug}/{example_id}"
-                        ),
-                    }
-
-                # D3 funnel fire. Only count entries that resolved to a
-                # real example dict; a typo'd ?example=foo silently
-                # falls through to the empty form and should not pollute
-                # the dashboard.
-                from shared.events import EVENTS, emit  # noqa: PLC0415
-                emit(
-                    EVENTS.EXAMPLE_LOADED,
-                    user_id=ctx.user_id,
-                    properties={
-                        "tool": adapter.slug,
-                        "example_id": example_id,
-                    },
-                )
-
         # AF2-resample chain: when the user lands on the MPNN form via a
         # "Resample with MPNN" button on an AF2 / ColabFold / ESMFold
         # result page, prefill the MPNN form with the source job's
@@ -4029,7 +3975,6 @@ def create_app() -> Flask:
         # service client is misconfigured.
         wallet_for_form = get_or_create_wallet(ctx.user_id) or {}
 
-        from shared.examples import list_examples  # noqa: PLC0415
         from shared import compute_campaigns as cc  # noqa: PLC0415
         # D1: single-container design ceiling. When a campaign-supported tool's
         # requested design count exceeds this, the form re-points the submit to
@@ -4048,8 +3993,6 @@ def create_app() -> Flask:
             pdb_source=pdb_source,
             workspace_ctx=workspace_ctx,
             wallet=wallet_for_form,
-            examples=list_examples(adapter.slug),
-            active_example_id=example_id or None,
             single_container_ceiling=campaign_ceiling,
         )
 
@@ -4307,7 +4250,6 @@ def create_app() -> Flask:
             (uploaded is not None and uploaded.filename)
             or reuse_token.startswith("job:")
             or reuse_token.startswith("handoff:")
-            or reuse_token.startswith("example:")
             or reuse_token.startswith("resample:")
             or reuse_token.startswith("alphafold:")
         ):
@@ -4619,7 +4561,7 @@ def create_app() -> Flask:
         presigned_url = ""
         staged_path = ""
         staged_filename = ""
-        # Bytes resolved in-memory by a reuse token (example: / resample:),
+        # Bytes resolved in-memory by a reuse token (resample:),
         # captured so the reuse verification below need not re-download them.
         reuse_resolved_bytes: bytes | None = None
         if needs_pdb:
@@ -4674,34 +4616,6 @@ def create_app() -> Flask:
                         filename=ho.pdb_filename,
                     )
                     mark_consumed(ho.id)
-                elif reuse_token.startswith("example:"):
-                    # C2 example: read local PDB bytes and stage as if
-                    # uploaded. Idempotent — examples on disk are immutable
-                    # so re-running the same example_id is safe.
-                    spec = reuse_token.split(":", 1)[1]  # "<tool>/<id>"
-                    if "/" not in spec:
-                        raise StorageError("malformed example token")
-                    ex_tool, ex_id = spec.split("/", 1)
-                    from shared.examples import (  # noqa: PLC0415
-                        load_example, read_example_bytes,
-                    )
-                    entry = load_example(ex_tool, ex_id)
-                    if entry is None:
-                        raise StorageError("example not found")
-                    example_bytes = read_example_bytes(ex_tool, ex_id)
-                    if example_bytes is None:
-                        raise StorageError("example file missing")
-                    reuse_resolved_bytes = example_bytes
-                    staged_filename = entry.get(
-                        "filename", f"{ex_id}.pdb"
-                    )
-                    staged_path = upload_input(
-                        user_id=ctx.user_id,
-                        job_id=job.id,
-                        filename=staged_filename,
-                        data=example_bytes,
-                        content_type="chemical/x-pdb",
-                    )
                 elif reuse_token.startswith("alphafold:"):
                     # AlphaFold fallback: pdb_bytes was already populated by
                     # the AF fetch above the preflight gate (so the gate
@@ -4802,7 +4716,7 @@ def create_app() -> Flask:
 
         # ---- Reuse-token inspection + hard-gate (gap 2) ----
         # Fresh uploads are inspected + gated at the boundary above, but the
-        # reuse tokens (job:/handoff:/example:/resample:) stage bytes that
+        # reuse tokens (job:/handoff:/resample:) stage bytes that
         # skipped both. Re-check the RESOLVED bytes here before any Modal
         # call so a mismatch (wrong chain, oversized, corrupt predicted PDB
         # piped into MPNN) is flagged upfront. alphafold: already populated

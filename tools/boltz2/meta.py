@@ -13,7 +13,6 @@ Shapes
     github_url           — upstream Boltz repository.
     comparison_one_liner — positioning string vs the rest of the toolkit.
     example_output_id    — optional job_id of a public demo run (None today).
-    examples             — C2 "Load example" chip entries.
 """
 
 from __future__ import annotations
@@ -129,49 +128,3 @@ about: dict = {
     "github_url": github_url,
 }
 
-
-# Sample inputs for the C2 "Load example" chips. Each entry's PDB lives
-# at ``tools/boltz2/examples/<filename>``. ``params`` overrides form
-# fields via the ``?example=<id>`` prefill path; the bundled PDB is fed
-# in via the ``example:`` pdb_source token resolved at submit time.
-#
-# All inputs are public-domain crystal structures so the demo carries no
-# proprietary information:
-#   - Antigen ubiquitin (PDB 1UBQ, Vijay-Kumar et al., J Mol Biol 1987)
-#     is the canonical small monomer used by every fold tool's demo.
-#   - The binder is the UBA1 domain of human HHR23A (PDB 1WR1 chain B,
-#     Mueller et al., Nat Struct Biol 2004), a natural ubiquitin-binding
-#     domain. Crystallized binding to the Ile44 hydrophobic patch on
-#     ubiquitin, the same surface most UBA / UIM / CUE / NZF / ZnF
-#     ubiquitin-binding domains target.
-#   - Hotspot residues 8, 44, 68, 70 are the canonical Ile44 patch
-#     (Beal et al., PNAS 1996), so the contact count answers a real
-#     biological question: does Boltz-2 place the UBA where the crystal
-#     puts it? On a successful prediction expect strict_pass with all
-#     four hotspots contacted.
-_HHR23A_UBA1 = (
-    "PGISGGGGGILDPEERYEHQLRQLNDMGFFDFDRNVAALRRSGGSVQGALDSLLNGDV"
-)
-
-examples: list[dict] = [
-    {
-        "id": "ubiquitin-hhr23a-uba1",
-        "label": "Ubiquitin + HHR23A UBA1",
-        "description": (
-            "Ubiquitin (PDB 1UBQ, 76 aa) + the UBA1 domain of human "
-            "HHR23A (PDB 1WR1 chain B, 58 aa). Natural ubiquitin-binding "
-            "complex; hotspots target the canonical Ile44 hydrophobic "
-            "patch. Defaults to the MSA preset because the small UBA "
-            "interface needs the evolutionary signal. Expect "
-            "strict_pass with ipTM ~0.89, complex_pLDDT ~0.93, and all "
-            "four hotspots contacted in ~3 min."
-        ),
-        "filename": "ubiquitin_1ubq.pdb",
-        "params": {
-            "preset": "msa_server",
-            "target_chain": "A",
-            "hotspot_residues": "8,44,68,70",
-            "binder_sequences": f">HHR23A_UBA1\n{_HHR23A_UBA1}",
-        },
-    },
-]

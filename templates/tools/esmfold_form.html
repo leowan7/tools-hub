@@ -2,7 +2,6 @@
 {% from "components/about_panel.html" import about_panel %}
 {% from "tools/_prefill.html" import pre_value, prefill_script, workspace_hidden_inputs %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
-{% from "components/examples_chip_group.html" import examples_chip_group %}
 {% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} - Ranomics Tools{% endblock %}
@@ -209,7 +208,6 @@
 
           <div id="esmfold-mode" data-mode="{{ active_preset }}">
             <div id="pilot-fields" data-show-when="standalone">
-              {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
               <label for="fasta_text" class="label" style="display:block; margin-bottom: 0.4rem;">FASTA (single chain)</label>
               <textarea name="fasta_text" id="fasta_text" class="esmfold-fasta"
                         placeholder=">my_protein&#10;MKWVTFISLLFLFSSAYSRGVFRRDAHKSEVAHRFKDLGEE..."

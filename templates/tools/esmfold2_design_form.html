@@ -2,7 +2,6 @@
 {% from "tools/_prefill.html" import pre_value, pre_checked, prefill_script, workspace_hidden_inputs %}
 {% from "components/about_panel.html" import about_panel %}
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
-{% from "components/examples_chip_group.html" import examples_chip_group %}
 {% from "components/field_group.html" import field_campaign %}
 
 {% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
@@ -110,8 +109,6 @@
         <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ csrf_input() }}
           {{ workspace_hidden_inputs(workspace_ctx) }}
-
-          {{ examples_chip_group(adapter.slug, examples, active_example_id) }}
 
           {# ----- Preset (binder mode) ----- #}
           <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder mode</label>
