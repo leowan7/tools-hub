@@ -703,7 +703,7 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not session.get("user_email"):
-            return redirect(url_for("login", next=request.path))
+            return redirect(url_for("auth.login", next=request.path))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -718,7 +718,7 @@ def require_staff(f):
     def decorated_function(*args, **kwargs):
         email = session.get("user_email")
         if not email:
-            return redirect(url_for("login", next=request.path))
+            return redirect(url_for("auth.login", next=request.path))
         if email not in STAFF_EMAILS:
             # Staff-only routes return 404 rather than 403 so their
             # existence is not revealed to authenticated non-staff users.

@@ -44,14 +44,14 @@
              style="color: var(--accent-text, #2B9E7E); border: 1px solid var(--accent-text, #2B9E7E); padding: 0.2rem 0.6rem; border-radius: 4px;"
              title="Staff-only admin">Admin</a>
         {% endif %}
-        <a href="{{ url_for('account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
-        <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
+        <a href="{{ url_for('auth.account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
+        <form method="POST" action="{{ url_for('auth.logout') }}" style="margin:0;">
           {{ csrf_input() }}
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
       {% else %}
-        <a href="{{ url_for('login') }}" class="nav-link-public">Sign in</a>
-        <a href="{{ url_for('signup') }}" class="btn-primary" style="padding: 0.35rem 0.9rem; font-size: 0.78rem;">Get started</a>
+        <a href="{{ url_for('auth.login') }}" class="nav-link-public">Sign in</a>
+        <a href="{{ url_for('auth.signup') }}" class="btn-primary" style="padding: 0.35rem 0.9rem; font-size: 0.78rem;">Get started</a>
       {% endif %}
     </div>
   </div>

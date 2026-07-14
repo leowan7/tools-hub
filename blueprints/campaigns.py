@@ -79,7 +79,7 @@ def _campaign_preauth_message(pre) -> str:
 def compute_campaigns_list():
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
     campaigns = cc.list_campaigns_for_user(ctx.user_id)
     return render_template("runs/list.html", campaigns=campaigns)
@@ -89,7 +89,7 @@ def compute_campaigns_list():
 def compute_campaign_new():
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
     return render_template(
         "runs/new.html",
@@ -135,7 +135,7 @@ def api_runs_estimate():
 def compute_campaign_create():
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
 
     tool = (request.form.get("tool") or "").strip()
@@ -237,7 +237,7 @@ def compute_campaign_create():
 def compute_campaign_detail(campaign_id):
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
     campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
     if campaign is None:

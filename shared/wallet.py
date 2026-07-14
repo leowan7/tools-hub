@@ -896,7 +896,7 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
 
             user_id = session.get("user_id")
             if not user_id:
-                return redirect(url_for("login"))
+                return redirect(url_for("auth.login"))
 
             params: dict = {}
             try:
@@ -913,12 +913,12 @@ def requires_wallet(tool_slug: str, *, allow_zero: bool = False) -> Callable:
                 _emit_preflight_email(user_id, tool_slug, pre)
                 if pre.reason == REASON_INSUFFICIENT:
                     return redirect(
-                        url_for("account") + "?insufficient_balance=1"
+                        url_for("auth.account") + "?insufficient_balance=1"
                     )
                 if pre.reason == REASON_WALLET_FROZEN:
-                    return redirect(url_for("account") + "?wallet_frozen=1")
+                    return redirect(url_for("auth.account") + "?wallet_frozen=1")
                 return redirect(
-                    url_for("account") + f"?wallet_blocked={pre.reason}"
+                    url_for("auth.account") + f"?wallet_blocked={pre.reason}"
                 )
             return f(*args, **kwargs)
 

@@ -293,7 +293,7 @@
             {% elif authenticated %}
               <a class="catalog-card" href="{{ tool.route }}">
             {% else %}
-              <a class="catalog-card" href="{{ url_for('login', next=tool.route) }}">
+              <a class="catalog-card" href="{{ url_for('auth.login', next=tool.route) }}">
             {% endif %}
               <div class="catalog-card-head">
                 <span class="catalog-card-name">{{ tool.name }}</span>

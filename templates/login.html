@@ -38,7 +38,7 @@
           <div class="error-box">{{ error }}</div>
         {% endif %}
 
-        <form method="POST" action="{{ url_for('login') }}">
+        <form method="POST" action="{{ url_for('auth.login') }}">
           {{ csrf_input() }}
           {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
 
@@ -55,7 +55,7 @@
           <button type="submit" class="btn-submit">Sign in</button>
         </form>
         <p class="auth-footer-link">
-          <a href="{{ url_for('forgot_password') }}">Forgot password?</a>
+          <a href="{{ url_for('auth.forgot_password') }}">Forgot password?</a>
         </p>
       </div>
 
@@ -69,7 +69,7 @@
           <div class="error-box">{{ error }}</div>
         {% endif %}
 
-        <form method="POST" action="{{ url_for('signup') }}" autocomplete="on">
+        <form method="POST" action="{{ url_for('auth.signup') }}" autocomplete="on">
           {{ csrf_input() }}
           {# Signed timestamp + honeypot pair: server rejects submits
              whose timestamp arrives <2s after render (bot speed) or
@@ -138,7 +138,7 @@
           Enter your email address and we will send you a link to reset your password.
         </p>
 
-        <form method="POST" action="{{ url_for('forgot_password') }}">
+        <form method="POST" action="{{ url_for('auth.forgot_password') }}">
           {{ csrf_input() }}
           {# Signed timestamp + honeypot pair — same gauntlet as /signup.
              Server silently drops submits whose timestamp arrives <2s
@@ -160,7 +160,7 @@
           <button type="submit" class="btn-submit">Send reset link</button>
         </form>
         <p class="auth-footer-link">
-          <a href="{{ url_for('login') }}">Back to sign in</a>
+          <a href="{{ url_for('auth.login') }}">Back to sign in</a>
         </p>
       </div>
 
@@ -172,10 +172,10 @@
 
         <div id="update-invalid" class="error-box" style="display:none;">
           This reset link is invalid or has expired.
-          <a href="{{ url_for('forgot_password') }}">Request a new password reset email</a>.
+          <a href="{{ url_for('auth.forgot_password') }}">Request a new password reset email</a>.
         </div>
 
-        <form method="POST" action="{{ url_for('reset_password_update') }}" id="update-password-form" style="display:none;">
+        <form method="POST" action="{{ url_for('auth.reset_password_update') }}" id="update-password-form" style="display:none;">
           {{ csrf_input() }}
           <input type="hidden" name="access_token" id="update-access-token" value="{{ access_token or '' }}">
           <input type="hidden" name="refresh_token" id="update-refresh-token" value="{{ refresh_token or '' }}">
@@ -195,7 +195,7 @@
         </form>
 
         <p class="auth-footer-link">
-          <a href="{{ url_for('login') }}">Back to sign in</a>
+          <a href="{{ url_for('auth.login') }}">Back to sign in</a>
         </p>
       </div>
 

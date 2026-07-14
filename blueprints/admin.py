@@ -61,7 +61,7 @@ def admin_campaigns_list():
     from shared.campaigns import list_all_campaigns, STATUSES  # noqa: PLC0415
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login", next=request.path))
+        return redirect(url_for("auth.login", next=request.path))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
     status_filter = request.args.get("status") or None
@@ -83,7 +83,7 @@ def admin_campaign_detail(campaign_id: str):
     )
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login", next=request.path))
+        return redirect(url_for("auth.login", next=request.path))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
     campaign = get_campaign(campaign_id)
@@ -138,7 +138,7 @@ def admin_campaign_update_status(campaign_id: str):
     from shared.email import send_campaign_status_email  # noqa: PLC0415
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
 
@@ -330,7 +330,7 @@ def admin_campaign_save_quote(campaign_id: str):
     )
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
 
@@ -527,7 +527,7 @@ def admin_campaign_save_results(campaign_id: str):
 
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
 
@@ -686,7 +686,7 @@ def admin_users_list():
 
     email = session.get("user_email", "")
     if not email:
-        return redirect(url_for("login", next=request.path))
+        return redirect(url_for("auth.login", next=request.path))
     if email not in STAFF_EMAILS:
         return render_template("404.html"), 404
 
@@ -802,7 +802,7 @@ def admin_user_detail(user_id: str):
 
     viewer = session.get("user_email", "")
     if not viewer:
-        return redirect(url_for("login", next=request.path))
+        return redirect(url_for("auth.login", next=request.path))
     if viewer not in STAFF_EMAILS:
         return render_template("404.html"), 404
 
@@ -962,7 +962,7 @@ def admin_signups_rejected():
 
     viewer = session.get("user_email", "")
     if not viewer:
-        return redirect(url_for("login", next=request.path))
+        return redirect(url_for("auth.login", next=request.path))
     if viewer not in STAFF_EMAILS:
         return render_template("404.html"), 404
 

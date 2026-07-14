@@ -45,7 +45,7 @@
         {% if platform_api_enabled %}
           <a href="{{ url_for('account_api_keys') }}" class="btn-secondary">API keys</a>
         {% endif %}
-        <form method="POST" action="{{ url_for('logout') }}" style="margin: 0;">
+        <form method="POST" action="{{ url_for('auth.logout') }}" style="margin: 0;">
           {{ csrf_input() }}
           <button type="submit" class="btn-secondary">Sign out</button>
         </form>

@@ -104,7 +104,7 @@ def _top_score_for_share(job) -> str | None:  # noqa: ANN001
 def jobs_list():
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     try:
         page = int(request.args.get("page", "1"))
     except ValueError:
@@ -175,7 +175,7 @@ def jobs_compare():
     from shared.jobs import list_jobs_by_ids  # local import avoids cycle
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     raw = request.args.getlist("ids")
     if len(raw) == 1 and "," in raw[0]:
         raw = [x.strip() for x in raw[0].split(",") if x.strip()]
@@ -199,7 +199,7 @@ def jobs_compare():
 def job_detail(job_id: str):
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
@@ -344,7 +344,7 @@ def job_refold(job_id: str):
     )
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
 
     src = get_job(job_id, user_id=ctx.user_id)
     if src is None:
@@ -664,7 +664,7 @@ def export_csv(job_id: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
@@ -699,7 +699,7 @@ def export_fasta(job_id: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
@@ -773,7 +773,7 @@ def job_candidate_pdb(job_id: str, filename: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
@@ -855,7 +855,7 @@ def af2_download_pdb(job_id: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None or job.tool != "af2":
         return render_template("404.html"), 404
@@ -898,7 +898,7 @@ def af2_download_pae(job_id: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None or job.tool != "af2":
         return render_template("404.html"), 404
@@ -949,7 +949,7 @@ def export_zip(job_id: str):
     from flask import Response  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404

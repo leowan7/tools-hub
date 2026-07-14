@@ -101,7 +101,7 @@
         {% if session.get('user_email') %}
           <a href="{{ url_for('tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
         {% else %}
-          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free with $5</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with $5</a>
           <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
         {% endif %}
       </div>
@@ -198,7 +198,7 @@
         <div class="showcase-actions">
           <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
           <a href="{{ url_for('public.pricing') }}" class="btn-secondary">How billing works</a>
-          <a href="{{ url_for('signup') }}" class="btn-secondary">Create a free account</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Create a free account</a>
         </div>
       </div>
     </div>

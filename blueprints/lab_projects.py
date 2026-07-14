@@ -42,7 +42,7 @@ def campaigns_submit():
     from shared.email import send_campaign_submitted_emails  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
 
     source_job_id = request.form.get("source_job_id", "").strip()
     target_name   = request.form.get("target_name", "").strip()
@@ -123,7 +123,7 @@ def campaigns_dashboard():
     from shared.campaigns import list_user_campaigns  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     campaigns = list_user_campaigns(ctx.user_id)
     return render_template("campaigns/dashboard.html", campaigns=campaigns)
 
@@ -133,7 +133,7 @@ def campaign_detail(campaign_id: str):
     from shared.campaigns import get_campaign  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     campaign = get_campaign(campaign_id, user_id=ctx.user_id)
     if campaign is None:
         return render_template("404.html"), 404
