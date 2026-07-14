@@ -1256,3 +1256,23 @@ def test_preflight_email_fires_on_cap_block(store, email_log):
     assert any(name == "send_job_capped_email" for name, _ in email_log)
 
 
+def test_round_up_topup_amount_boundaries():
+    """_round_up_topup_amount: ceil to nearest $5, floored at MIN_TOPUP_USD ($20).
+
+    Guards the Commit-0 relocation of this helper from app.py into shared.wallet.
+    """
+    from shared.wallet import MIN_TOPUP_USD, _round_up_topup_amount
+
+    assert MIN_TOPUP_USD == Decimal("20.00")
+    # deficit <= 0 short-circuits straight to the floor
+    assert _round_up_topup_amount(Decimal("0")) == Decimal("20.00")
+    assert _round_up_topup_amount(Decimal("-5")) == Decimal("20.00")
+    # small deficits round up to $5 then get floored to the $20 minimum
+    assert _round_up_topup_amount(Decimal("0.01")) == Decimal("20.00")
+    assert _round_up_topup_amount(Decimal("5.00")) == Decimal("20.00")
+    assert _round_up_topup_amount(Decimal("20.00")) == Decimal("20.00")
+    # above the floor: ceil to the next $5
+    assert _round_up_topup_amount(Decimal("20.01")) == Decimal("25.00")
+    assert _round_up_topup_amount(Decimal("22.00")) == Decimal("25.00")
+    assert _round_up_topup_amount(Decimal("25.00")) == Decimal("25.00")
+
