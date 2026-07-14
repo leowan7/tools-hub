@@ -145,11 +145,11 @@
               {% if _has_starter_credit %}
                 <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Top up when you need more</strong>
                 <span style="color: var(--text-secondary); font-size: 0.9rem;">Add funds once your starting balance runs low. Minimum top-up is $20.</span>
-                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
+                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
               {% else %}
                 <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Add funds</strong>
                 <span style="color: var(--text-secondary); font-size: 0.9rem;">Top up your USD wallet. The minimum top-up is $20.</span>
-                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
+                <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a></span>
               {% endif %}
             </li>
           </ol>

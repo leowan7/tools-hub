@@ -72,7 +72,7 @@ class TestEstimateEndpointShape:
     """The endpoint must return the canonical JSON shape on every call."""
 
     def test_returns_json_with_expected_keys(self, client):
-        with patch("app.get_or_create_wallet", return_value=None):
+        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             resp = client.get(
                 "/api/wallet/estimate?tool=mpnn&num_seq_per_target=8"
             )
@@ -104,7 +104,7 @@ class TestEstimateEndpointShape:
 
     def test_returns_zero_balance_for_anonymous(self, client):
         # No session, no wallet lookup expected.
-        with patch("app.get_or_create_wallet") as gow:
+        with patch("blueprints.wallet.get_or_create_wallet") as gow:
             resp = client.get(
                 "/api/wallet/estimate?tool=mpnn"
             )
@@ -116,7 +116,7 @@ class TestEstimateEndpointShape:
 
     def test_uses_form_params_for_estimate_scaling(self, client):
         """Pass num_designs=1000 and see a scaled estimate above baseline."""
-        with patch("app.get_or_create_wallet", return_value=None):
+        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             small = client.get(
                 "/api/wallet/estimate?tool=bindcraft&num_designs=100"
             ).get_json()
@@ -133,7 +133,7 @@ class TestEstimateEndpointShape:
     def test_balance_after_usd_reflects_estimate(self, client):
         # Stage a wallet with $50 balance.
         with patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 50.0, "wallet_frozen": False},
         ):
             _login(client)
@@ -147,7 +147,7 @@ class TestEstimateEndpointShape:
 
     def test_accepts_params_as_json_blob(self, client):
         """`params=<json>` query param overrides flat keys."""
-        with patch("app.get_or_create_wallet", return_value=None):
+        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             params_json = json.dumps({"num_designs": 500})
             resp = client.get(
                 "/api/wallet/estimate",
@@ -168,7 +168,7 @@ class TestEstimateAndCapFlags:
         # Estimate gets clamped by compute_hard_cap inside the estimator,
         # but the exceeds_self_serve_ceiling flag reflects the raw value
         # so the form can render the Pilot CTA path.
-        with patch("app.get_or_create_wallet", return_value=None):
+        with patch("blueprints.wallet.get_or_create_wallet", return_value=None):
             resp = client.get(
                 "/api/wallet/estimate",
                 query_string={"tool": "bindcraft", "num_designs": 10_000_000},
@@ -628,9 +628,9 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
 class TestTopupCompleteValid:
     def test_valid_session_renders_success(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 25.0},
         ), patch(
             "billing.checkout.retrieve_topup_session",
@@ -646,7 +646,7 @@ class TestTopupCompleteValid:
                 None,
             ),
         ), patch(
-            "app.render_template", return_value="TOPUP_SUCCESS"
+            "blueprints.wallet.render_template", return_value="TOPUP_SUCCESS"
         ) as render:
             _login(client)
             resp = client.get(
@@ -660,9 +660,9 @@ class TestTopupCompleteValid:
 
     def test_session_with_gate_return_tool_propagates(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 25.0},
         ), patch(
             "billing.checkout.retrieve_topup_session",
@@ -674,7 +674,7 @@ class TestTopupCompleteValid:
                 None,
             ),
         ), patch(
-            "app.render_template", return_value="OK"
+            "blueprints.wallet.render_template", return_value="OK"
         ) as render:
             _login(client)
             with client.session_transaction() as sess:
@@ -698,12 +698,12 @@ class TestTopupCompleteValid:
 class TestTopupCompleteInvalid:
     def test_missing_session_id_renders_fallback(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 0.0},
         ), patch(
-            "app.render_template", return_value="FALLBACK"
+            "blueprints.wallet.render_template", return_value="FALLBACK"
         ) as render:
             _login(client)
             resp = client.get("/account/topup-complete")
@@ -715,15 +715,15 @@ class TestTopupCompleteInvalid:
 
     def test_invalid_session_renders_fallback(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 0.0},
         ), patch(
             "billing.checkout.retrieve_topup_session",
             return_value=(None, "Could not look up the Checkout Session."),
         ), patch(
-            "app.render_template", return_value="STRIPE_ERR"
+            "blueprints.wallet.render_template", return_value="STRIPE_ERR"
         ) as render:
             _login(client)
             resp = client.get(
@@ -735,9 +735,9 @@ class TestTopupCompleteInvalid:
     def test_session_owner_mismatch_blocks_view(self, client):
         """A leaked session id from another user must not render success."""
         with patch(
-            "app.load_user_context", return_value=_ctx(user_id="u-mine")
+            "blueprints.wallet.load_user_context", return_value=_ctx(user_id="u-mine")
         ), patch(
-            "app.get_or_create_wallet",
+            "blueprints.wallet.get_or_create_wallet",
             return_value={"balance_usd": 50.0},
         ), patch(
             "billing.checkout.retrieve_topup_session",
@@ -749,7 +749,7 @@ class TestTopupCompleteInvalid:
                 None,
             ),
         ), patch(
-            "app.render_template", return_value="OWNER_MISMATCH"
+            "blueprints.wallet.render_template", return_value="OWNER_MISMATCH"
         ) as render:
             _login(client, user_id="u-mine")
             resp = client.get(
@@ -803,9 +803,9 @@ class TestWalletTopupFrozenGuard:
 
     def test_get_topup_redirects_when_wallet_frozen(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet", return_value=self._wallet(frozen=True),
+            "blueprints.wallet.get_or_create_wallet", return_value=self._wallet(frozen=True),
         ):
             _login(client)
             resp = client.get("/account/wallet/topup")
@@ -815,9 +815,9 @@ class TestWalletTopupFrozenGuard:
 
     def test_get_topup_renders_form_when_wallet_not_frozen(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet", return_value=self._wallet(frozen=False),
+            "blueprints.wallet.get_or_create_wallet", return_value=self._wallet(frozen=False),
         ):
             _login(client)
             resp = client.get("/account/wallet/topup")
@@ -826,9 +826,9 @@ class TestWalletTopupFrozenGuard:
 
     def test_post_checkout_redirects_when_wallet_frozen(self, client):
         with patch(
-            "app.load_user_context", return_value=_ctx()
+            "blueprints.wallet.load_user_context", return_value=_ctx()
         ), patch(
-            "app.get_or_create_wallet", return_value=self._wallet(frozen=True),
+            "blueprints.wallet.get_or_create_wallet", return_value=self._wallet(frozen=True),
         ), patch(
             "billing.checkout.create_topup_session"
         ) as create_session:

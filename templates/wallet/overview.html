@@ -64,12 +64,12 @@
           {% endif %}
         </div>
         <div class="wallet-balance-actions">
-          <a href="{{ url_for('wallet_topup') if 'wallet_topup' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/topup' }}"
+          <a href="{{ url_for('wallet.wallet_topup') if 'wallet_topup' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/topup' }}"
              class="btn-primary"
              data-topup-route="/account/wallet/topup">
             Top up
           </a>
-          <a href="{{ url_for('wallet_transactions') if 'wallet_transactions' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/transactions' }}"
+          <a href="{{ url_for('wallet.wallet_transactions') if 'wallet_transactions' in (config.get('KNOWN_ENDPOINTS') or []) else '/account/wallet/transactions' }}"
              class="btn-secondary">
             Full history
           </a>

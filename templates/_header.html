@@ -23,7 +23,7 @@
       {% if session.get('user_email') %}
         {% if nav_wallet_usd is not none %}
           {% set _low = nav_wallet_usd < 5 %}
-          <a href="{{ url_for('wallet_overview') }}"
+          <a href="{{ url_for('wallet.wallet_overview') }}"
              id="nav-wallet-chip"
              class="nav-link-public nav-wallet-chip{% if _low %} nav-wallet-low{% endif %}"
              data-wallet-usd="{{ nav_wallet_usd }}"
@@ -31,13 +31,13 @@
             ${{ '%.2f'|format(nav_wallet_usd) }}
           </a>
           {% if _low %}
-            <a href="{{ url_for('wallet_topup') }}"
+            <a href="{{ url_for('wallet.wallet_topup') }}"
                id="nav-wallet-topup"
                class="nav-link-public nav-wallet-topup"
                title="Wallet below $5">Top up</a>
           {% endif %}
         {% else %}
-          <a href="{{ url_for('wallet_overview') }}" class="nav-link-public">Wallet</a>
+          <a href="{{ url_for('wallet.wallet_overview') }}" class="nav-link-public">Wallet</a>
         {% endif %}
         {% if is_staff %}
           <a href="/admin/users" class="nav-link-public"
