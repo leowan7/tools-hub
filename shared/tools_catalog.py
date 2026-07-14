@@ -209,3 +209,16 @@ def _build_tools_catalog() -> list[dict]:
         )
 
     return catalog
+
+
+def _short_name_for_label(label: str) -> str:
+    """Return the algorithm name only — strip any 'X — descriptor' tail.
+
+    Accepts em-dash ('—'), double-dash ('--'), or bare label. Used
+    in SEO titles and h1s so the page leads with the searchable
+    algorithm name rather than the full marketing label.
+    """
+    for sep in (" — ", " -- ", " – "):
+        if sep in label:
+            return label.split(sep, 1)[0].strip()
+    return label.strip()

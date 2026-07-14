@@ -20,7 +20,7 @@
     <div class="pricing-hero-actions">
       {% if session.get('user_email') %}
         <a href="/account/wallet/topup" class="btn-primary-lg">Fund your wallet</a>
-        <a href="{{ url_for('index') }}" class="btn-secondary">Browse tools</a>
+        <a href="{{ url_for('public.index') }}" class="btn-secondary">Browse tools</a>
       {% else %}
         <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
         <a href="#how-billing-works" class="btn-secondary">How billing works</a>
@@ -184,7 +184,7 @@
           {% if not session.get('user_email') %}
             <a href="{{ url_for('signup') }}" class="btn-secondary">Open the tools hub</a>
           {% else %}
-            <a href="{{ url_for('index') }}" class="btn-secondary">Open the tools hub</a>
+            <a href="{{ url_for('public.index') }}" class="btn-secondary">Open the tools hub</a>
           {% endif %}
         </div>
       </div>

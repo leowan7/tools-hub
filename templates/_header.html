@@ -10,7 +10,7 @@
         <img src="{{ url_for('static', filename='logo-dark.webp') }}" alt="Ranomics — AI protein design tools" class="brand-logo-img">
       </a>
       <span class="brand-divider"></span>
-      <a href="{{ url_for('index') }}" class="brand-tool-link">Tools</a>
+      <a href="{{ url_for('public.index') }}" class="brand-tool-link">Tools</a>
     </div>
     <div class="navbar-right">
       <a href="{{ url_for('tools_comparison') }}" class="nav-link-public">All tools</a>
@@ -18,8 +18,8 @@
         <a href="{{ url_for('jobs_list') }}" class="nav-link-public">My runs</a>
         <a href="{{ url_for('compute_campaigns_list') }}" class="nav-link-public">Campaigns</a>
       {% endif %}
-      <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
-      <a href="{{ url_for('help_index') }}" class="nav-link-public">Help</a>
+      <a href="{{ url_for('public.pricing') }}" class="nav-link-public">Pricing</a>
+      <a href="{{ url_for('public.help_index') }}" class="nav-link-public">Help</a>
       {% if session.get('user_email') %}
         {% if nav_wallet_usd is not none %}
           {% set _low = nav_wallet_usd < 5 %}

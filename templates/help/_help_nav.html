@@ -4,10 +4,10 @@
 <nav class="help-nav" aria-label="Help navigation"
      style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.5rem;">
   {% set _pages = [
-    ('help_index', 'Overview'),
-    ('help_getting_started', 'Getting started'),
-    ('help_faq', 'FAQ'),
-    ('help_troubleshooting', 'Troubleshooting')
+    ('public.help_index', 'Overview'),
+    ('public.help_getting_started', 'Getting started'),
+    ('public.help_faq', 'FAQ'),
+    ('public.help_troubleshooting', 'Troubleshooting')
   ] %}
   {% for endpoint, label in _pages %}
     {% if help_active == endpoint %}
