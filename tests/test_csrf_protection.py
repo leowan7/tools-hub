@@ -152,3 +152,31 @@ def test_unmatched_post_route_404s_not_403(app):
     _seed_session(client, with_token=False)
     resp = client.post("/this/route/does/not/exist")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Blueprint allowlist: a NON-allowlisted blueprint's POST stays CSRF-enforced
+# (guards the app.py -> blueprints refactor from silently dropping CSRF)
+# ---------------------------------------------------------------------------
+
+
+def test_non_allowlisted_blueprint_post_is_enforced(app):
+    """The CSRF exemption is an allowlist ({scout, platform_api}), not a blanket
+    'any blueprint route is exempt' pass. When the cookie-authenticated web UI
+    (login, wallet, tools, jobs, admin) moves into blueprints, those
+    state-changing POSTs MUST stay CSRF-enforced. Register a fresh cookie-UI
+    blueprint and confirm a tokenless POST is rejected."""
+    from flask import Blueprint
+
+    bp = Blueprint("dummy_ui", __name__)
+
+    @bp.route("/dummy-ui/save", methods=["POST"])
+    def _save():  # pragma: no cover - CSRF blocks it before the body runs
+        return "saved", 200
+
+    app.register_blueprint(bp)
+    client = app.test_client()
+    _seed_session(client, with_token=False)
+    resp = client.post("/dummy-ui/save", data={})
+    assert resp.status_code == 403
+    assert b"CSRF" in resp.data
