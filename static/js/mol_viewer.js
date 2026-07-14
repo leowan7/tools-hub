@@ -93,6 +93,59 @@
     }
   }
 
+  // Sniff the structure format from the payload. Every tool's PDB
+  // endpoint serves PDB text today, but a few upstream pipelines can
+  // hand back mmCIF. Parsing mmCIF through the 'pdb' reader yields a
+  // zero-atom structure — a blank canvas with only the corner axis
+  // gizmo — so detect the format and give Mol* the right parser.
+  // Conservative: default to 'pdb', switch only on an unambiguous mmCIF
+  // signal (a leading ``data_`` block header or a line-anchored
+  // ``_atom_site.`` loop tag), so a normal PDB is never misclassified.
+  // Both signals are anchored to the start of a line: mmCIF emits them
+  // there, and this rules out a false positive from the token appearing
+  // mid-line inside a PDB REMARK/TITLE record.
+  function detectFormat(text) {
+    var head = (text || '').slice(0, 4000);
+    if (/^\s*data_\S/.test(head) || /(^|\n)\s*_atom_site\./.test(head)) {
+      return 'mmcif';
+    }
+    return 'pdb';
+  }
+
+  // Ask Mol* to re-frame the camera on the loaded structure. Mol* auto-
+  // resets the camera once on load, but that reset can fire before the
+  // structure geometry has committed to the scene (or while the row is
+  // still un-hiding / the canvas resizing), leaving the camera radius at
+  // 0: the structure is in the scene but out of view, so the viewport
+  // renders nothing but the corner axis gizmo. requestCameraReset waits
+  // for a valid bounding sphere before applying, so re-issuing it is safe.
+  function focusCamera(viewer) {
+    try {
+      var c3d = viewer && viewer.plugin && viewer.plugin.canvas3d;
+      if (c3d && typeof c3d.requestCameraReset === 'function') {
+        c3d.requestCameraReset();
+      }
+    } catch (e) { /* best-effort; Mol* internals may shift across builds */ }
+  }
+
+  // Current camera radius, or -1 when it can't be read (unknown build).
+  function cameraRadius(viewer) {
+    try { return viewer.plugin.canvas3d.camera.state.radius || 0; }
+    catch (e) { return -1; }
+  }
+
+  // Poll a camera reset until the structure bounds register (radius > 0)
+  // or we hit the cap. This rides out the geometry-commit race without
+  // betting on a single magic delay: as soon as the scene has committed
+  // real bounds, the reset snaps the camera onto them and we stop.
+  function focusUntilReady(viewer, tries) {
+    tries = tries || 0;
+    focusCamera(viewer);
+    if (cameraRadius(viewer) > 0) return;   // focused on real bounds — done
+    if (tries >= 16) return;                // ~2s cap — give up
+    setTimeout(function () { focusUntilReady(viewer, tries + 1); }, 120);
+  }
+
   function renderPdbText(container, pdbString) {
     loadMolstar(function () {
       container.innerHTML = '';
@@ -112,8 +165,24 @@
         // explicitly sized) container, and keep it correct on later
         // layout changes.
         attachResizeHandlers(container, viewer);
-        return viewer.loadStructureFromData(pdbString, 'pdb', false)
-          .then(function () { resizeViewer(viewer); });
+        // Paint the WebGL background to the dark surface token (var(--bg-deep),
+        // #08101B) so the viewport blends into the results panel instead of
+        // showing Mol*'s default near-white canvas.
+        try {
+          viewer.plugin.canvas3d.setProps({ renderer: { backgroundColor: 0x08101B } });
+        } catch (e) { /* older builds may nest renderer props differently */ }
+        return viewer.loadStructureFromData(pdbString, detectFormat(pdbString), false)
+          .then(function () {
+            // Size the canvas to the now-visible container, then re-frame
+            // the camera on a later frame once geometry has committed.
+            // Without this the structure can load off-camera and the
+            // viewport shows only the axis gizmo (blank-viewer bug).
+            resizeViewer(viewer);
+            requestAnimationFrame(function () {
+              resizeViewer(viewer);
+              focusUntilReady(viewer, 0);
+            });
+          });
       }).catch(function (err) {
         console.error('[mol_viewer] Viewer creation failed:', err);
         container.innerHTML =
