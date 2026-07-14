@@ -5177,7 +5177,7 @@ def create_app() -> Flask:
         # summed over succeeded children. It is NOT the number of designs
         # produced (small batches often pass nothing). ``designs_delivered``
         # is kept as a back-compat alias for the same value.
-        hits = _campaign_designs_delivered(campaign_id)
+        hits = _campaign_passed_filters(campaign_id)
         payload["hits"] = hits
         payload["designs_delivered"] = hits
         payload["terminal"] = campaign.status in (
@@ -5192,8 +5192,23 @@ def create_app() -> Flask:
         payload["paused"] = campaign.status == "paused_insufficient_funds"
         return jsonify(payload)
 
-    def _campaign_designs_delivered(campaign_id: str) -> int:
-        """Sum len(result.candidates) across a campaign's succeeded children."""
+    def _campaign_passed_filters(campaign_id: str) -> int:
+        """Sum candidates that PASSED the default quality filter across a
+        campaign's succeeded children.
+
+        Feeds the campaign detail page's "Passed filters" card, which used to
+        under-report because it summed ``len(result.candidates)`` — every
+        candidate, not just the passing ones — and only ever read
+        ``result["candidates"]``, missing tools that persist rows under
+        ``result["designs"]`` or nest ``filter_status`` under
+        ``candidate["scores"]``.
+
+        ``count_passed_candidates`` handles every shape and, per child, filters
+        by ``filter_status`` when the records carry one (pxdesign, rfdiffusion)
+        and falls back to the delivered count when they don't (the pre-filtered
+        bindcraft / rfantibody, and boltzgen) — so the total equals the sum of
+        what each child's own job page shows and no tool collapses to zero.
+        """
         client = get_service_client()
         if client is None:
             return 0
@@ -5209,16 +5224,8 @@ def create_app() -> Flask:
             )
         except Exception:
             return 0
-        from shared.jobs import _normalize_result_shape  # noqa: PLC0415
-        total = 0
-        for r in rows:
-            # Normalize so a legacy wrapped shape (result.output.candidates)
-            # is counted like the flat shape, mirroring every other consumer.
-            result = _normalize_result_shape(r.get("result")) or {}
-            cands = result.get("candidates") if isinstance(result, dict) else None
-            if isinstance(cands, list):
-                total += len(cands)
-        return total
+        from shared.jobs import count_passed_candidates  # noqa: PLC0415
+        return sum(count_passed_candidates(r.get("result")) for r in rows)
 
     @flask_app.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
     @login_required

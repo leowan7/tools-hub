@@ -68,6 +68,118 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     return merged
 
 
+# Filter-status strings that count as "passed the default quality filter".
+# Tools use two vocabularies: binder-design pipelines
+# (pxdesign/rfantibody/bindcraft/boltzgen) emit ``pass``; the cofold/design
+# tools (boltz2, esmfold2_design) emit the stricter ``strict_pass``. Both are
+# a pass; ``borderline`` / ``drop`` / ``fail`` are not.
+PASS_FILTER_STATUSES = frozenset({"pass", "strict_pass"})
+
+
+def candidate_records(result: Optional[dict]) -> list:
+    """Return a job result's per-candidate list, tolerant of the tool's shape.
+
+    The per-candidate array lives under one of two keys depending on which
+    pipeline produced the result:
+
+    * ``result["candidates"]`` — the canonical binder-design shape
+      (pxdesign/rfantibody/bindcraft/boltzgen), scores nested under
+      ``candidate["scores"]``.
+    * ``result["designs"]`` — the cofold/design shape (boltz2,
+      esmfold2_design), metrics inline at the candidate root. These rows carry
+      no ``candidates`` key, so a reader that only looks at ``candidates``
+      silently sees nothing.
+
+    ``candidates`` is preferred when both are present (esmfold2_design emits
+    both). The result is normalized for the legacy wrapped shape first, so a
+    ``result.output.candidates`` row is read the same as a flat one. Returns
+    ``[]`` for any other shape.
+    """
+    result = _normalize_result_shape(result)
+    if not isinstance(result, dict):
+        return []
+    for key in ("candidates", "designs"):
+        recs = result.get(key)
+        if isinstance(recs, list):
+            return recs
+    return []
+
+
+def _candidate_filter_status(cand: object) -> object:
+    """Resolved ``filter_status`` for a candidate, checking ``scores`` then
+    the candidate root. Returns None when neither carries it."""
+    if not isinstance(cand, dict):
+        return None
+    scores = cand.get("scores")
+    if isinstance(scores, dict) and scores.get("filter_status") is not None:
+        return scores.get("filter_status")
+    return cand.get("filter_status")
+
+
+def _candidate_passed_flag(cand: object) -> Optional[bool]:
+    """Explicit boolean ``passed`` flag from ``scores`` or the candidate root,
+    or None when no boolean flag is present."""
+    if not isinstance(cand, dict):
+        return None
+    scores = cand.get("scores")
+    if isinstance(scores, dict) and isinstance(scores.get("passed"), bool):
+        return scores.get("passed")
+    flag = cand.get("passed")
+    return flag if isinstance(flag, bool) else None
+
+
+def candidate_passed_filter(cand: object) -> bool:
+    """True iff a candidate/design record passed the default quality filter.
+
+    An explicit boolean ``passed`` flag (from ``scores`` or the candidate root)
+    wins when present; otherwise the record passes when its ``filter_status``
+    (checked in both locations) is one of :data:`PASS_FILTER_STATUSES`. Only
+    meaningful for records that actually carry a filter signal — use
+    :func:`count_passed_candidates` to aggregate, which falls back to the
+    delivered count for pipelines that emit no per-candidate filter at all.
+    """
+    flag = _candidate_passed_flag(cand)
+    if flag is not None:
+        return flag
+    status = _candidate_filter_status(cand)
+    return str(status or "").strip().lower() in PASS_FILTER_STATUSES
+
+
+def _record_has_filter_signal(cand: object) -> bool:
+    """True iff a record carries any per-candidate filter signal — a boolean
+    ``passed`` flag or a non-empty ``filter_status``."""
+    if _candidate_passed_flag(cand) is not None:
+        return True
+    return bool(str(_candidate_filter_status(cand) or "").strip())
+
+
+def count_passed_candidates(result: Optional[dict]) -> int:
+    """Number of a job's candidates that passed the default quality filter.
+
+    Shape-tolerant across the ``candidates[]`` / ``designs[]`` split. Two
+    regimes, decided per result:
+
+    * The records carry a filter signal (a ``filter_status`` on any record, or
+      an explicit ``passed`` boolean) — pxdesign / rfdiffusion emit one per
+      candidate. Only passing records count.
+    * NO record carries a filter signal — the pre-filtered binder tools
+      (bindcraft, rfantibody) return ONLY accepted designs and omit the field,
+      and boltzgen carries no per-candidate gate. Every delivered record counts,
+      since each is already a keeper (or the tool has no filter to fail). This
+      is the pre-fix delivered-count behaviour, so those tools do not collapse
+      to zero.
+
+    Keeps the campaign "Passed filters" total equal to the sum of what each
+    child's own job page shows.
+    """
+    records = candidate_records(result)
+    if not records:
+        return 0
+    if any(_record_has_filter_signal(c) for c in records):
+        return sum(1 for c in records if candidate_passed_filter(c))
+    return len(records)
+
+
 @dataclass(frozen=True)
 class ToolJob:
     """Immutable view of a tool_jobs row. Use ``to_dict()`` for templates."""
