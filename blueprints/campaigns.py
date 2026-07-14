@@ -248,7 +248,7 @@ def compute_campaign_detail(campaign_id):
         from shared.campaigns import get_campaign as _get_lab_campaign  # noqa: PLC0415
         if _get_lab_campaign(campaign_id, user_id=ctx.user_id) is not None:
             return redirect(
-                url_for("campaign_detail", campaign_id=campaign_id), code=301
+                url_for("lab_projects.campaign_detail", campaign_id=campaign_id), code=301
             )
         return redirect(url_for("campaigns.compute_campaigns_list"))
     counts = cc.get_progress_counts(campaign_id)

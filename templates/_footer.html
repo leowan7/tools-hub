@@ -29,7 +29,7 @@
           <li><a href="{{ url_for('public.pricing') }}">Pricing</a></li>
           {% if session.get('user_email') %}
             <li><a href="{{ url_for('jobs.jobs_list') }}">My runs</a></li>
-            <li><a href="{{ url_for('campaigns_dashboard') }}">Lab projects</a></li>
+            <li><a href="{{ url_for('lab_projects.campaigns_dashboard') }}">Lab projects</a></li>
           {% endif %}
         </ul>
       </div>
