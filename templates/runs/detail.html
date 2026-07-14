@@ -39,8 +39,8 @@
 {% endblock %}
 
 {% block content %}
-<div class="rd-wrap" data-status-url="{{ url_for('compute_campaign_status', campaign_id=campaign.id) }}"
-     data-cancel-url="{{ url_for('compute_campaign_cancel', campaign_id=campaign.id) }}">
+<div class="rd-wrap" data-status-url="{{ url_for('campaigns.compute_campaign_status', campaign_id=campaign.id) }}"
+     data-cancel-url="{{ url_for('campaigns.compute_campaign_cancel', campaign_id=campaign.id) }}">
   <div class="rd-head">
     <div>
       <h1>{{ campaign.name or campaign.target_name or campaign.tool }}</h1>
@@ -85,7 +85,7 @@
       <button class="rd-btn danger" id="rd-cancel">Cancel campaign</button>
     {% endif %}
     <a class="rd-btn" href="{{ url_for('jobs.jobs_list') }}?campaign={{ campaign.name or '' }}">View sub-jobs</a>
-    <a class="rd-btn" href="{{ url_for('compute_campaigns_list') }}">All campaigns</a>
+    <a class="rd-btn" href="{{ url_for('campaigns.compute_campaigns_list') }}">All campaigns</a>
   </div>
 
   <div class="rd-upsell">

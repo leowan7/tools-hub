@@ -27,7 +27,7 @@
     var notice = document.getElementById('campaign-reroute-notice');
     var fileInput = form.querySelector('input[type="file"][name="target_pdb"]');
     var toolSlug = form.getAttribute('data-tool-slug');
-    var campaignAction = '{{ url_for("compute_campaign_create") }}';
+    var campaignAction = '{{ url_for("campaigns.compute_campaign_create") }}';
     var singleAction = form.getAttribute('action');
     var singleBtn = document.getElementById('tool-submit-btn');
     var campaignBtn = document.getElementById('campaign-submit-btn');

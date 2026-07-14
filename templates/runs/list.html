@@ -32,12 +32,12 @@
         only for the compute delivered. Compute only — validate your top hits in the lab
         as a next step.</p>
     </div>
-    <a href="{{ url_for('compute_campaign_new') }}" class="runs-new-btn">New campaign</a>
+    <a href="{{ url_for('campaigns.compute_campaign_new') }}" class="runs-new-btn">New campaign</a>
   </div>
 
   {% if campaigns %}
     {% for c in campaigns %}
-      <a href="{{ url_for('compute_campaign_detail', campaign_id=c.id) }}" class="runs-card">
+      <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=c.id) }}" class="runs-card">
         <div class="runs-card-top">
           <span class="runs-card-name">{{ c.name or c.target_name or c.tool }}</span>
           <span class="runs-badge {{ c.status }}">{{ c.status.replace('_', ' ') }}</span>
@@ -50,7 +50,7 @@
   {% else %}
     <div class="runs-empty">
       <p>No campaigns yet.</p>
-      <p style="margin-top:0.75rem;"><a href="{{ url_for('compute_campaign_new') }}" class="runs-new-btn">Start your first campaign</a></p>
+      <p style="margin-top:0.75rem;"><a href="{{ url_for('campaigns.compute_campaign_new') }}" class="runs-new-btn">Start your first campaign</a></p>
     </div>
   {% endif %}
 </div>
