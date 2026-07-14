@@ -376,8 +376,8 @@ def legacy_runs_detail(campaign_id):
 
 @campaigns_bp.route("/admin/campaigns", methods=["GET"])
 def legacy_admin_campaigns_list():
-    return _cutover_redirect("admin_campaigns_list")
+    return _cutover_redirect("admin.admin_campaigns_list")
 
 @campaigns_bp.route("/admin/campaigns/<campaign_id>", methods=["GET"])
 def legacy_admin_campaign_detail(campaign_id):
-    return _cutover_redirect("admin_campaign_detail", campaign_id=campaign_id)
+    return _cutover_redirect("admin.admin_campaign_detail", campaign_id=campaign_id)
