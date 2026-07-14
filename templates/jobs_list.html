@@ -21,7 +21,7 @@
      labelled campaign, so the empty-state onboarding ladder for new
      users is not cluttered with a no-op select. #}
   {% if all_campaign_labels %}
-    <form method="GET" action="{{ url_for('jobs_list') }}" id="campaign-filter-form"
+    <form method="GET" action="{{ url_for('jobs.jobs_list') }}" id="campaign-filter-form"
           style="margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.88rem;">
       <label for="campaign" style="margin: 0;">Campaign</label>
       <select name="campaign" id="campaign" class="field-input"
@@ -34,7 +34,7 @@
         {% endfor %}
       </select>
       {% if selected_campaign %}
-        <a class="btn-secondary" href="{{ url_for('jobs_list') }}" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Clear filter</a>
+        <a class="btn-secondary" href="{{ url_for('jobs.jobs_list') }}" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Clear filter</a>
       {% endif %}
       <noscript>
         <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.7rem; font-size: 0.82rem;">Filter</button>
@@ -48,10 +48,10 @@
         {% for group in campaign_groups %}
           <h3 style="margin: {% if not loop.first %}1.75rem{% else %}0{% endif %} 0 0.5rem 0; font-size: 0.95rem; color: var(--text-secondary); font-weight: 500; letter-spacing: 0.02em;">
             {% if group.label %}
-              <a href="{{ url_for('jobs_list', campaign=group.label) }}" style="color: inherit; text-decoration: none;">{{ group.label }}</a>
+              <a href="{{ url_for('jobs.jobs_list', campaign=group.label) }}" style="color: inherit; text-decoration: none;">{{ group.label }}</a>
               <span style="color: var(--text-tertiary); font-size: 0.85rem; font-weight: 400;">&nbsp;({{ group.jobs|length }})</span>
             {% else %}
-              <a href="{{ url_for('jobs_list', campaign='__uncategorized__') }}" style="color: inherit; text-decoration: none;">Uncategorized</a>
+              <a href="{{ url_for('jobs.jobs_list', campaign='__uncategorized__') }}" style="color: inherit; text-decoration: none;">Uncategorized</a>
               <span style="color: var(--text-tertiary); font-size: 0.85rem; font-weight: 400;">&nbsp;({{ group.jobs|length }})</span>
             {% endif %}
           </h3>
@@ -75,7 +75,7 @@
                     {% endif %}
                   </td>
                   <td style="padding: 0.55rem 0.4rem;">
-                    <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
+                    <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
                   </td>
                   <td style="padding: 0.55rem 0.4rem;">{{ job.tool }}</td>
                   <td style="padding: 0.55rem 0.4rem;">{{ job.preset }}</td>
@@ -95,12 +95,12 @@
             </div>
             <div style="display: flex; gap: 0.5rem;">
               {% if page > 1 %}
-                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page-1, campaign=selected_campaign) if selected_campaign else url_for('jobs_list', page=page-1) }}">Previous</a>
+                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page-1, campaign=selected_campaign) if selected_campaign else url_for('jobs.jobs_list', page=page-1) }}">Previous</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Previous</span>
               {% endif %}
               {% if page < total_pages %}
-                <a class="btn-secondary" href="{{ url_for('jobs_list', page=page+1, campaign=selected_campaign) if selected_campaign else url_for('jobs_list', page=page+1) }}">Next</a>
+                <a class="btn-secondary" href="{{ url_for('jobs.jobs_list', page=page+1, campaign=selected_campaign) if selected_campaign else url_for('jobs.jobs_list', page=page+1) }}">Next</a>
               {% else %}
                 <span class="btn-secondary" aria-disabled="true" style="opacity: 0.45; pointer-events: none;">Next</span>
               {% endif %}

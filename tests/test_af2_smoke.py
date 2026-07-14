@@ -409,7 +409,7 @@ def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -423,7 +423,7 @@ def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
         result={"pdb_b64": base64.b64encode(fake_pdb).decode("ascii")},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "af2-job-1" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -438,7 +438,7 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -459,7 +459,7 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
         result={"pae_matrix_b64": base64.b64encode(npz_bytes).decode("ascii")},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "af2-job-2" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -478,7 +478,7 @@ def test_af2_download_rejects_non_af2_job(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -491,7 +491,7 @@ def test_af2_download_rejects_non_af2_job(app_with_af2_flag, monkeypatch):
         result={"candidates": []},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "bc-job-1" else None,
     )
     client = app_with_af2_flag.test_client()

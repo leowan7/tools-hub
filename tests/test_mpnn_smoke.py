@@ -290,7 +290,7 @@ def test_export_fasta_serializes_mpnn_sequence_schema(
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -311,7 +311,7 @@ def test_export_fasta_serializes_mpnn_sequence_schema(
         },
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: mpnn_job if job_id == "mpnn-job-1" else None,
     )
     client = app_with_mpnn_flag.test_client()

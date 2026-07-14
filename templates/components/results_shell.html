@@ -64,7 +64,7 @@
             diverge on AF2-overconfident ones.
           </p>
           <div style="display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;">
-            <form method="POST" action="{{ url_for('job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="colabfold">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>
@@ -74,7 +74,7 @@
               </select>
               <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with ColabFold</button>
             </form>
-            <form method="POST" action="{{ url_for('job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="esmfold">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>
@@ -84,7 +84,7 @@
               </select>
               <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with ESMFold</button>
             </form>
-            <form method="POST" action="{{ url_for('job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="boltz2">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>

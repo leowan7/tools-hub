@@ -72,7 +72,7 @@
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
       {% if sequences %}
-        <a href="{{ url_for('export_fasta', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download FASTA</a>
+        <a href="{{ url_for('jobs.export_fasta', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download FASTA</a>
       {% endif %}
     </div>
 

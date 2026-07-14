@@ -13,7 +13,7 @@
   {% if columns|length < 2 %}
     <div class="panel">
       <div class="panel-body">
-        <p class="subtitle">Pick at least two jobs from <a href="{{ url_for('jobs_list') }}">/jobs</a> to compare.</p>
+        <p class="subtitle">Pick at least two jobs from <a href="{{ url_for('jobs.jobs_list') }}">/jobs</a> to compare.</p>
       </div>
     </div>
   {% else %}
@@ -25,7 +25,7 @@
         <div class="panel" style="min-width: 240px;">
           <div class="panel-header">
             <span class="panel-title" style="font-size: 0.9rem;">
-              <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
+              <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}" style="color: var(--accent);">{{ job.id[:8] }}</a>
             </span>
             <span class="panel-badge">{{ job.status }}</span>
           </div>
@@ -137,7 +137,7 @@
       <div class="panel-body">
         {% if columns|length > 4 %}
           <p class="subtitle" style="margin-top: 0; margin-bottom: 0.75rem;">
-            Showing first 4 of {{ columns|length }}. Trim your selection on <a href="{{ url_for('jobs_list') }}" style="color: var(--accent);">/jobs</a>.
+            Showing first 4 of {{ columns|length }}. Trim your selection on <a href="{{ url_for('jobs.jobs_list') }}" style="color: var(--accent);">/jobs</a>.
           </p>
         {% endif %}
 
@@ -158,7 +158,7 @@
                 <th style="padding: 0.5rem 0.4rem;">Metric</th>
                 {% for col in visible_columns %}
                   <th style="padding: 0.5rem 0.4rem;">
-                    <a href="{{ url_for('job_detail', job_id=col.job.id) }}" style="color: var(--accent);">{{ col.job.id[:8] }}</a>
+                    <a href="{{ url_for('jobs.job_detail', job_id=col.job.id) }}" style="color: var(--accent);">{{ col.job.id[:8] }}</a>
                   </th>
                 {% endfor %}
               </tr>
@@ -187,6 +187,6 @@
   {% endif %}
 
   <div style="margin-top: 1.5rem;">
-    <a href="{{ url_for('jobs_list') }}" class="btn-secondary">Back to jobs</a>
+    <a href="{{ url_for('jobs.jobs_list') }}" class="btn-secondary">Back to jobs</a>
   </div>
 {% endblock %}

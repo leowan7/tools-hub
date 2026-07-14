@@ -241,7 +241,7 @@
           {% for job in recent_jobs %}
             <div class="home-recent-card">
               <div class="home-recent-row">
-                <a href="{{ url_for('job_detail', job_id=job.id) }}" class="home-recent-tool">{{ job.tool }}</a>
+                <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}" class="home-recent-tool">{{ job.tool }}</a>
                 <span class="home-recent-id">{{ job.id[:8] }}</span>
               </div>
               <div class="home-recent-meta">
@@ -250,14 +250,14 @@
                 <span>{{ job.status }}</span>
               </div>
               <div class="home-recent-actions">
-                <a href="{{ url_for('job_detail', job_id=job.id) }}">Open →</a>
+                <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}">Open →</a>
                 <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
               </div>
             </div>
           {% endfor %}
         </div>
         <div style="margin-top: 0.85rem; text-align: right;">
-          <a href="{{ url_for('jobs_list') }}" class="home-catalog-section-link">All runs →</a>
+          <a href="{{ url_for('jobs.jobs_list') }}" class="home-catalog-section-link">All runs →</a>
         </div>
       {% else %}
         <div class="home-recent-empty">
