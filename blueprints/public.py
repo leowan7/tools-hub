@@ -90,12 +90,10 @@ def index():
     # Match the grouped layout used by /tools — same categories,
     # same order, just rendered as wide tile sections instead of a
     # comparison matrix. Ordering walks the iteration loop:
-    # scope → design (4 scaffold-class buckets) → predict → QC.
+    # scope → design → sequence → predict → QC.
     category_order = (
         "Scope the target",
-        "De novo minibinders",
-        "Antibodies (VHH)",
-        "Dual capabilities (minibinder + antibody scaffolds)",
+        "Design binders",
         "Sequence on a backbone",
         "Structure prediction",
         "Check developability",

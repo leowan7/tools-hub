@@ -1590,12 +1590,10 @@ def tools_comparison():
 
     # Group catalog into workflow-stage sections in a stable order.
     # The order mirrors the iteration loop a scientist walks through:
-    # scope → design (4 scaffold-class buckets) → predict → QC.
+    # scope → design → sequence → predict → QC.
     category_order = (
         "Scope the target",
-        "De novo minibinders",
-        "Antibodies (VHH)",
-        "Dual capabilities (minibinder + antibody scaffolds)",
+        "Design binders",
         "Sequence on a backbone",
         "Structure prediction",
         "Check developability",

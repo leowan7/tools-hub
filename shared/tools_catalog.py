@@ -90,19 +90,18 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
 )
 
 
-# Maps each GPU tool slug to a workflow-stage category. The buckets
-# describe what each tool actually designs so a scientist scanning the
-# catalog can find the right scaffold class at a glance. The earlier
-# single "Design binders" bucket lumped six tools doing different jobs
-# (de novo minibinders vs antibody scaffolds vs sequence-on-backbone)
-# and forced readers to open each card to disambiguate.
+# Maps each GPU tool slug to a workflow-stage category. All binder and
+# antibody scaffold designers share one "Design binders" bucket so the
+# catalog reads as scope -> design -> sequence -> predict -> QC. (An
+# earlier revision split the designers into per-scaffold subsections;
+# that was reverted back to the single bucket.)
 _TOOL_CATEGORIES: dict[str, str] = {
-    "rfdiffusion": "De novo minibinders",
-    "bindcraft": "De novo minibinders",
-    "pxdesign": "De novo minibinders",
-    "rfantibody": "Antibodies (VHH)",
-    "esmfold2-design": "Antibodies (scFv) + minibinders",
-    "boltzgen": "Dual capabilities (minibinder + antibody scaffolds)",
+    "rfdiffusion": "Design binders",
+    "bindcraft": "Design binders",
+    "pxdesign": "Design binders",
+    "rfantibody": "Design binders",
+    "esmfold2-design": "Design binders",
+    "boltzgen": "Design binders",
     "mpnn": "Sequence on a backbone",
     "af2": "Structure prediction",
     "colabfold": "Structure prediction",
