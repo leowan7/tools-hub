@@ -210,17 +210,17 @@ class TestRequiresWalletPassesWhenBalanceCoversEstimate:
         )
 
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("0.05"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 100.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight"
+            "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
-            "app.wallet_reserve_hold", return_value="tx-001"
+            "shared.wallet_guard.wallet_reserve_hold", return_value="tx-001"
         ):
             from shared.wallet import PreflightResult, REASON_OK
             preflight.return_value = PreflightResult(
@@ -267,19 +267,19 @@ class TestRequiresWalletBlocksAtMoment2:
         )
 
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("4.40"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 1.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight"
+            "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
-            "app.wallet_reserve_hold"
+            "shared.wallet_guard.wallet_reserve_hold"
         ) as reserve, patch(
-            "app.render_template", return_value="GATE_RENDERED"
+            "shared.wallet_guard.render_template", return_value="GATE_RENDERED"
         ) as render:
             preflight.return_value = PreflightResult(
                 allow=False,
@@ -331,17 +331,17 @@ class TestRequiresWalletBlocksAtMoment3:
         )
 
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("600.00"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 1000.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight"
+            "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
-            "app.render_template", return_value="CAP_GATE"
+            "shared.wallet_guard.render_template", return_value="CAP_GATE"
         ) as render:
             preflight.return_value = PreflightResult(
                 allow=False,
@@ -382,17 +382,17 @@ class TestRequiresWalletBlocksAtMoment3:
         )
 
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("1500.00"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 5000.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight"
+            "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
-            "app.render_template", return_value="CEILING_GATE"
+            "shared.wallet_guard.render_template", return_value="CEILING_GATE"
         ) as render:
             preflight.return_value = PreflightResult(
                 allow=False,
@@ -434,14 +434,14 @@ class TestRequiresWalletMoment1NoGate:
         )
 
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("0"),
         ), patch(
-            "app.wallet_preflight"
+            "shared.wallet_guard.wallet_preflight"
         ) as preflight, patch(
-            "app.wallet_reserve_hold"
+            "shared.wallet_guard.wallet_reserve_hold"
         ) as reserve:
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"
@@ -484,19 +484,19 @@ class TestRequiresWalletReserveLost:
             hard_cap_usd=Decimal("8.00"),
         )
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("4.40"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 100.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight", return_value=ok
+            "shared.wallet_guard.wallet_preflight", return_value=ok
         ), patch(
-            "app.wallet_reserve_hold", return_value=None
+            "shared.wallet_guard.wallet_reserve_hold", return_value=None
         ), patch(
-            "app.render_template", return_value="LOST_RACE"
+            "shared.wallet_guard.render_template", return_value="LOST_RACE"
         ) as render:
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"
@@ -536,19 +536,19 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
             hard_cap_usd=Decimal("150"),
         )
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool",
+            "shared.wallet_guard.estimated_cost_for_tool",
             return_value=Decimal("0.05"),
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 100.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight", return_value=ok
+            "shared.wallet_guard.wallet_preflight", return_value=ok
         ), patch(
-            "app.wallet_reserve_hold", return_value="tx-xyz"
+            "shared.wallet_guard.wallet_reserve_hold", return_value="tx-xyz"
         ), patch(
-            "app.wallet_release_hold"
+            "shared.wallet_guard.wallet_release_hold"
         ) as release:
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"
@@ -598,18 +598,18 @@ class TestRequiresWalletHandlerExceptionReleasesHold:
             hard_cap_usd=Decimal("150"),
         )
         with flask_app.test_client() as c, patch(
-            "app.load_user_context", return_value=_ctx()
+            "shared.wallet_guard.load_user_context", return_value=_ctx()
         ), patch(
-            "app.estimated_cost_for_tool", return_value=Decimal("2.62")
+            "shared.wallet_guard.estimated_cost_for_tool", return_value=Decimal("2.62")
         ), patch(
-            "app.get_or_create_wallet",
+            "shared.wallet_guard.get_or_create_wallet",
             return_value={"balance_usd": 100.0, "wallet_frozen": False},
         ), patch(
-            "app.wallet_preflight", return_value=ok
+            "shared.wallet_guard.wallet_preflight", return_value=ok
         ), patch(
-            "app.wallet_reserve_hold", return_value="tx-early"
+            "shared.wallet_guard.wallet_reserve_hold", return_value="tx-early"
         ), patch(
-            "app.wallet_release_hold"
+            "shared.wallet_guard.wallet_release_hold"
         ) as release:
             with c.session_transaction() as sess:
                 sess["user_id"] = "u-1"

@@ -146,6 +146,23 @@ REASON_PER_TOOL_CAP = "per_tool_cap_exceeded"
 REASON_SELF_SERVE_CEILING = "self_serve_ceiling_exceeded"
 
 
+def _round_up_topup_amount(deficit: Decimal) -> Decimal:
+    """Round the deficit up to the nearest $5, with a floor of MIN_TOPUP_USD.
+
+    Mirrors the formula in the plan's Moment 2 spec:
+    ``ceil((estimate - balance) / 5) * 5`` with a $20 minimum.
+
+    Lives here (not in the route layer) so both the wallet-gate renderer
+    (:func:`shared.wallet_guard._render_topup_gate`) and the reactive
+    ``/api/wallet/estimate`` endpoint share one rounding rule.
+    """
+    if deficit <= 0:
+        return MIN_TOPUP_USD
+    five = Decimal("5")
+    bumped = (deficit / five).to_integral_value(rounding="ROUND_CEILING") * five
+    return max(bumped, MIN_TOPUP_USD)
+
+
 @dataclass(frozen=True)
 class PreflightResult:
     """Outcome of a wallet pre-flight check."""
