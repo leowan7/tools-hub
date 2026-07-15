@@ -5,10 +5,9 @@ workflow-stage category. The glyph helper renders a small SVG next to
 each category section title so a scientist scanning the catalog can
 identify the stage at a glance without reading the label.
 
-Five glyph designs cover seven displayed buckets — shared families
-(Scope / Developability) and (De novo minibinders / Dual capabilities)
-reuse the same glyph because they belong to the same workflow stage.
-"Other" returns no glyph (template falls back to text-only header).
+Scope and Developability share one glyph because they bookend the same
+workflow stage. "Other" returns no glyph (template falls back to a
+text-only header).
 
 Files live at ``static/img/categories/<slug>.svg``. The Flask layer
 returns just the slug; the template composes the full ``url_for``.
@@ -25,11 +24,7 @@ from markupsafe import Markup
 _CATEGORY_GLYPHS: dict[str, str] = {
     "Scope the target": "target-scoping",
     "Check developability": "target-scoping",
-    "De novo minibinders": "de-novo-minibinders",
-    "Dual capabilities (minibinder + antibody scaffolds)": (
-        "de-novo-minibinders"
-    ),
-    "Antibodies (VHH)": "antibodies",
+    "Design binders": "de-novo-minibinders",
     "Sequence on a backbone": "sequence-on-backbone",
     "Structure prediction": "structure-prediction",
 }
