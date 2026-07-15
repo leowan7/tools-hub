@@ -60,7 +60,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
-        "endpoint": "developability",
+        "endpoint": "tools.developability",
         "external": False,
         "status": "live",
     },
@@ -83,7 +83,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
-        "endpoint": "library_planner",
+        "endpoint": "tools.library_planner",
         "external": False,
         "status": "live",
     },
@@ -179,7 +179,7 @@ def _build_tools_catalog() -> list[dict]:
 
         display_name = adapter.label.split("—")[0].strip() or adapter.label
         try:
-            route = url_for("tool_form", tool=adapter.slug)
+            route = url_for("tools.tool_form", tool=adapter.slug)
         except Exception:  # noqa: BLE001
             route = f"/tools/{adapter.slug}"
 

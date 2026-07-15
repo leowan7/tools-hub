@@ -508,7 +508,7 @@ def topup_complete():
         wallet=wallet,
         return_tool=return_tool,
         return_tool_url=(
-            url_for("tool_form", tool=return_tool) + "?topup=success"
+            url_for("tools.tool_form", tool=return_tool) + "?topup=success"
             if return_tool else None
         ),
     )

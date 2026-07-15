@@ -386,7 +386,7 @@ def _load_showcase_entries() -> list[dict]:
             adapter = tool_base.get(tool_slug)
             if adapter is not None and tool_enabled(tool_slug):
                 try:
-                    tool_url = url_for("tool_form", tool=tool_slug)
+                    tool_url = url_for("tools.tool_form", tool=tool_slug)
                 except Exception:
                     tool_url = f"/tools/{tool_slug}"
                 try:
@@ -480,7 +480,7 @@ def help_tool_guide(tool: str):
         {"name": "Home", "url": url_for("public.index", _external=True)},
         {"name": "Help", "url": url_for("public.help_index", _external=True)},
         {"name": "Tools", "url": url_for(
-            "tools_comparison", _external=True
+            "tools.tools_comparison", _external=True
         )},
         {"name": short_name, "url": url_for(
             "public.help_tool_guide", tool=tool, _external=True

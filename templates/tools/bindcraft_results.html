@@ -4,7 +4,7 @@
 {% set output     = job.result or {} %}
 {% set candidates = output.get('candidates', []) %}
 {% set columns    = ['ipTM', 'pLDDT', 'RMSD', 'shape_complementarity', 'SAP'] %}
-{% set clone_url  = url_for('tool_form', tool='bindcraft', clone_from=job.id) %}
+{% set clone_url  = url_for('tools.tool_form', tool='bindcraft', clone_from=job.id) %}
 
 {% call results_panel(
     candidates=candidates,

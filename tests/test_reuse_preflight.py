@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import app as app_mod
+import blueprints.tools as tools_mod
 
 
 def _atom_line(serial, name, chain, resnum, x):
@@ -197,13 +198,13 @@ def test_size_params_prefer_binder_length_max_when_present():
 # ---------------------------------------------------------------------------
 
 def test_pxdesign_and_boltz2_are_panel_forms():
-    assert "pxdesign" in app_mod._PREFLIGHT_PANEL_FORMS
-    assert "boltz2" in app_mod._PREFLIGHT_PANEL_FORMS
+    assert "pxdesign" in tools_mod._PREFLIGHT_PANEL_FORMS
+    assert "boltz2" in tools_mod._PREFLIGHT_PANEL_FORMS
 
 
 def test_original_binder_tools_remain_panel_forms():
     for slug in ("rfantibody", "rfdiffusion", "bindcraft", "boltzgen"):
-        assert slug in app_mod._PREFLIGHT_PANEL_FORMS
+        assert slug in tools_mod._PREFLIGHT_PANEL_FORMS
 
 
 def test_every_preflight_tool_has_a_panel():
@@ -212,4 +213,4 @@ def test_every_preflight_tool_has_a_panel():
     # omission. The fallback branch in tool_submit stays as a defensive net.
     from shared.pdb_preflight import PREFLIGHT_TOOLS
 
-    assert PREFLIGHT_TOOLS <= app_mod._PREFLIGHT_PANEL_FORMS
+    assert PREFLIGHT_TOOLS <= tools_mod._PREFLIGHT_PANEL_FORMS

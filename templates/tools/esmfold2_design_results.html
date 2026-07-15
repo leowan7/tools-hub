@@ -30,7 +30,7 @@
 {% set seeds_succeeded    = output.get('seeds_succeeded') %}
 {% set seeds_failed       = output.get('seeds_failed') or 0 %}
 {% set is_sweep           = n_seeds > 1 %}
-{% set clone_url          = url_for('tool_form', tool='esmfold2-design', clone_from=job.id) %}
+{% set clone_url          = url_for('tools.tool_form', tool='esmfold2-design', clone_from=job.id) %}
 
 {# Prefer the Modal orchestrator's canonical candidates[] (already
    globally re-ranked across seeds, seed-tagged in each scores dict).

@@ -132,7 +132,7 @@
               <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">1</span>
               <strong style="display: block; color: var(--text-primary); margin-bottom: 0.15rem;">Pick a tool</strong>
               <span style="color: var(--text-secondary); font-size: 0.9rem;">Browse the catalog and choose the model that fits your target.</span>
-              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('tools_comparison') }}" style="color: var(--accent-text);">Browse all tools</a></span>
+              <span style="display: block; margin-top: 0.5rem;"><a href="{{ url_for('tools.tools_comparison') }}" style="color: var(--accent-text);">Browse all tools</a></span>
             </li>
             <li style="counter-increment: start-step; position: relative; padding: 0.9rem 1rem 0.9rem 3.25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-elevated);">
               <span aria-hidden="true" style="position: absolute; left: 0.9rem; top: 0.9rem; width: 1.6rem; height: 1.6rem; display: flex; align-items: center; justify-content: center; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent-text); font-family: var(--font-mono, monospace); font-weight: 600; font-size: 0.85rem;">2</span>
@@ -154,7 +154,7 @@
             </li>
           </ol>
 
-          <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Browse tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary">Browse tools</a>
         </div>
       {% endif %}
     </div>

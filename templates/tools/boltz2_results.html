@@ -17,7 +17,7 @@
 {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
 {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
 {% set n_failures         = output.get('n_failures') or 0 %}
-{% set clone_url          = url_for('tool_form', tool='boltz2', clone_from=job.id) %}
+{% set clone_url          = url_for('tools.tool_form', tool='boltz2', clone_from=job.id) %}
 
 {# Reshape designs → candidate_table schema. Sort by ipTM desc so the
    top-scoring designs land at the top. #}

@@ -259,10 +259,10 @@ class TestRequiresWalletBlocksAtMoment2:
         flask_app.add_url_rule(
             "/blocked", view_func=handler, methods=["POST"]
         )
-        # Required by _render_topup_gate which calls url_for("tool_form")
+        # Required by _render_topup_gate which calls url_for("tools.tool_form")
         flask_app.add_url_rule(
             "/tools/<tool>",
-            endpoint="tool_form",
+            endpoint="tools.tool_form",
             view_func=lambda tool: "form",
         )
 
@@ -326,7 +326,7 @@ class TestRequiresWalletBlocksAtMoment3:
         )
         flask_app.add_url_rule(
             "/tools/<tool>",
-            endpoint="tool_form",
+            endpoint="tools.tool_form",
             view_func=lambda tool: "form",
         )
 
@@ -377,7 +377,7 @@ class TestRequiresWalletBlocksAtMoment3:
         )
         flask_app.add_url_rule(
             "/tools/<tool>",
-            endpoint="tool_form",
+            endpoint="tools.tool_form",
             view_func=lambda tool: "form",
         )
 
@@ -471,7 +471,7 @@ class TestRequiresWalletReserveLost:
         )
         flask_app.add_url_rule(
             "/tools/<tool>",
-            endpoint="tool_form",
+            endpoint="tools.tool_form",
             view_func=lambda tool: "form",
         )
 

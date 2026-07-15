@@ -231,7 +231,7 @@ def job_detail(job_id: str):
                 "slug": other.slug,
                 "label": other.label,
                 "url": url_for(
-                    "tool_form", tool=other.slug, from_job=job.id
+                    "tools.tool_form", tool=other.slug, from_job=job.id
                 ),
             })
 

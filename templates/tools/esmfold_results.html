@@ -35,7 +35,7 @@
 {% set tier           = output.get('tier') %}
 {% set pdb_b64        = output.get('pdb_b64') %}
 {% set pae_b64        = output.get('pae_matrix_b64') %}
-{% set clone_url      = url_for('tool_form', tool='esmfold', clone_from=job.id) %}
+{% set clone_url      = url_for('tools.tool_form', tool='esmfold', clone_from=job.id) %}
 
 {# ----- Batch path ----- #}
 {% if raw_designs %}
@@ -189,7 +189,7 @@
              class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
         {% endif %}
         {% if pdb_b64 %}
-          <a href="{{ url_for('tool_form', tool='mpnn') }}?resample_from={{ job.id }}"
+          <a href="{{ url_for('tools.tool_form', tool='mpnn') }}?resample_from={{ job.id }}"
              class="btn-secondary" style="margin-left:0.5rem;"
              title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">
             Resample sequence with MPNN

@@ -30,7 +30,7 @@
 
       {% set fv = form_values or {} %}
 
-      <form method="POST" action="{{ url_for('library_planner_plan') }}" class="dev-form">
+      <form method="POST" action="{{ url_for('tools.library_planner_plan') }}" class="dev-form">
         {{ csrf_input() }}
 
         <div class="field">

@@ -336,8 +336,8 @@
 
   <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
     <a href="{{ url_for('jobs.jobs_list') }}" class="btn-secondary">All jobs</a>
-    <a href="{{ url_for('tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
-    <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
+    <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
+    <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
     {% if job.status == 'succeeded' and share_allowed %}
       <button type="button" id="share-result-btn" class="btn-secondary"
               data-job-id="{{ job.id }}">Share this result</button>

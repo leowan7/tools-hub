@@ -13,7 +13,7 @@
       <a href="{{ url_for('public.index') }}" class="brand-tool-link">Tools</a>
     </div>
     <div class="navbar-right">
-      <a href="{{ url_for('tools_comparison') }}" class="nav-link-public">All tools</a>
+      <a href="{{ url_for('tools.tools_comparison') }}" class="nav-link-public">All tools</a>
       {% if session.get('user_email') %}
         <a href="{{ url_for('jobs.jobs_list') }}" class="nav-link-public">My runs</a>
         <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="nav-link-public">Campaigns</a>

@@ -88,10 +88,10 @@ class TestPxdesignMissingPdbDoesNotOrphan:
     def test_no_file_no_reuse_token_skips_create_job(
         self, app_with_pxdesign_flag, monkeypatch
     ):
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.tools.load_user_context", lambda: _ctx())
         # The bug repro: user submits the form without attaching a file.
         # The form has all the text fields but the file input is empty.
-        with patch("app.create_job") as create_job, patch(
+        with patch("blueprints.tools.create_job") as create_job, patch(
             "gpu.modal_client.ModalClient.submit"
         ) as modal_submit:
             client = app_with_pxdesign_flag.test_client()
@@ -121,7 +121,7 @@ class TestPxdesignMissingPdbDoesNotOrphan:
         self, app_with_pxdesign_flag, monkeypatch
     ):
         """Defensive: the early gate must not block the happy path."""
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.tools.load_user_context", lambda: _ctx())
 
         # Make create_job return a stub job so the handler continues into
         # the upload / Modal-submit code, which we then short-circuit on
@@ -135,11 +135,11 @@ class TestPxdesignMissingPdbDoesNotOrphan:
             inputs={},
         )
 
-        with patch("app.create_job", return_value=fake_job) as create_job, \
-             patch("app.upload_input", return_value="path/x.pdb") as upload_input, \
-             patch("app.presigned_input_url", return_value="https://u/x.pdb"), \
-             patch("app.update_inputs"), \
-             patch("app.set_modal_call"), \
+        with patch("blueprints.tools.create_job", return_value=fake_job) as create_job, \
+             patch("blueprints.tools.upload_input", return_value="path/x.pdb") as upload_input, \
+             patch("blueprints.tools.presigned_input_url", return_value="https://u/x.pdb"), \
+             patch("blueprints.tools.update_inputs"), \
+             patch("blueprints.tools.set_modal_call"), \
              patch("gpu.modal_client.ModalClient.submit") as modal_submit:
             modal_submit.return_value = {
                 "function_call_id": "fc-test", "gpu_seconds_cap": 3600,
@@ -180,7 +180,7 @@ class TestNonPdbToolNotAffected:
         from app import create_app
         flask_app = create_app()
         flask_app.config["TESTING"] = True
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.tools.load_user_context", lambda: _ctx())
 
         fake_job = SimpleNamespace(
             id="job-af2",
@@ -190,8 +190,8 @@ class TestNonPdbToolNotAffected:
             job_token="t" * 64,
             inputs={},
         )
-        with patch("app.create_job", return_value=fake_job), \
-             patch("app.set_modal_call"), \
+        with patch("blueprints.tools.create_job", return_value=fake_job), \
+             patch("blueprints.tools.set_modal_call"), \
              patch("gpu.modal_client.ModalClient.submit") as modal_submit:
             modal_submit.return_value = {
                 "function_call_id": "fc-af2", "gpu_seconds_cap": 180,

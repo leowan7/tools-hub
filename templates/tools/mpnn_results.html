@@ -9,7 +9,7 @@
 
 {% set output     = job.result or {} %}
 {% set sequences  = output.get('sequences', []) %}
-{% set clone_url  = url_for('tool_form', tool='mpnn', clone_from=job.id) %}
+{% set clone_url  = url_for('tools.tool_form', tool='mpnn', clone_from=job.id) %}
 
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">

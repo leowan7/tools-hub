@@ -216,10 +216,10 @@
       <div class="landing-hero-cta">
         {% if authenticated %}
           <a href="/account/wallet/topup" class="btn-primary-lg">Top up your wallet</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% else %}
           <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% endif %}
       </div>
       <p class="landing-hero-help" style="margin-top: 1.1rem; font-size: 0.9rem; color: var(--text-secondary);">
@@ -251,7 +251,7 @@
               </div>
               <div class="home-recent-actions">
                 <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}">Open →</a>
-                <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
+                <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
               </div>
             </div>
           {% endfor %}
@@ -272,7 +272,7 @@
     <section class="section" id="tools">
       <div class="home-catalog-section-head">
         <span class="home-catalog-section-title">{% if authenticated %}Run a new tool{% else %}What you can run{% endif %}</span>
-        <a href="{{ url_for('tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
+        <a href="{{ url_for('tools.tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
       </div>
       {% for category, items in grouped %}
         <div class="home-catalog-group">

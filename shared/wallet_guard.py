@@ -105,7 +105,7 @@ def _render_topup_gate(
 
     # NOTE (blueprint refactor): "tool_form" becomes "tools.tool_form" when
     # the tools routes move into the tools blueprint (Commit 7).
-    next_url = url_for("tool_form", tool=tool_slug)
+    next_url = url_for("tools.tool_form", tool=tool_slug)
     wallet = get_or_create_wallet(session.get("user_id") or "") or {}
     return render_template(
         "wallet/topup.html",

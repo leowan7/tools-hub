@@ -221,7 +221,7 @@ def test_form_renders_when_flag_on(app_with_mpnn_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -246,7 +246,7 @@ def test_form_404s_when_flag_off(app_with_mpnn_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -262,7 +262,7 @@ def test_submit_rejects_unknown_preset(app_with_mpnn_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -342,7 +342,7 @@ def test_handoff_pilot_preset_runs_standalone_not_smoke(
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -358,7 +358,7 @@ def test_handoff_pilot_preset_runs_standalone_not_smoke(
         },
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.tools.get_job",
         lambda job_id, user_id: mock_src if job_id == "src-job-abc" else None,
     )
     client = app_with_mpnn_flag.test_client()
