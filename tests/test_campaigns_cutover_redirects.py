@@ -90,7 +90,7 @@ def test_wetlab_email_link_forwards_to_lab_projects(client):
     one of the user's wet-lab campaigns must 301 to /lab-projects/<id> so old
     wet-lab email links still land right."""
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()), \
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
          patch("shared.compute_campaigns.get_campaign", return_value=None), \
          patch("shared.campaigns.get_campaign", return_value=object()):
         resp = client.get("/campaigns/wetlab-1")
@@ -100,7 +100,7 @@ def test_wetlab_email_link_forwards_to_lab_projects(client):
 
 def test_compute_miss_that_is_not_wetlab_falls_back_to_list(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()), \
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
          patch("shared.compute_campaigns.get_campaign", return_value=None), \
          patch("shared.campaigns.get_campaign", return_value=None):
         resp = client.get("/campaigns/missing")

@@ -28,7 +28,7 @@
           set of results. A step by step walkthrough of one full run.
         </p>
         <p style="margin-top: 0.85rem;">
-          <a href="{{ url_for('help_getting_started') }}" class="btn-secondary">Read the guide</a>
+          <a href="{{ url_for('public.help_getting_started') }}" class="btn-secondary">Read the guide</a>
         </p>
       </article>
       <article class="why-card">
@@ -39,7 +39,7 @@
           work.
         </p>
         <p style="margin-top: 0.85rem;">
-          <a href="{{ url_for('pricing') }}" class="btn-secondary">See pricing</a>
+          <a href="{{ url_for('public.pricing') }}" class="btn-secondary">See pricing</a>
         </p>
       </article>
       <article class="why-card">
@@ -49,7 +49,7 @@
           side with typical runtimes and what each one is built for.
         </p>
         <p style="margin-top: 0.85rem;">
-          <a href="{{ url_for('tools_comparison') }}" class="btn-secondary">All tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-secondary">All tools</a>
         </p>
       </article>
     </div>
@@ -82,7 +82,7 @@
           <h3 class="why-card-title">{{ label }}</h3>
           <p class="why-card-body">{{ blurb }}</p>
           <p style="margin-top: 0.85rem;">
-            <a href="{{ url_for('help_tool_guide', tool=slug) }}" class="btn-secondary">Open guide</a>
+            <a href="{{ url_for('public.help_tool_guide', tool=slug) }}" class="btn-secondary">Open guide</a>
           </p>
         </article>
       {% endfor %}
@@ -103,7 +103,7 @@
           and what the scores mean.
         </p>
         <p style="margin-top: 0.85rem;">
-          <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+          <a href="{{ url_for('public.help_faq') }}" class="btn-secondary">Read the FAQ</a>
         </p>
       </article>
       <article class="why-card">
@@ -113,7 +113,7 @@
           to a blank 3D viewer.
         </p>
         <p style="margin-top: 0.85rem;">
-          <a href="{{ url_for('help_troubleshooting') }}" class="btn-secondary">See fixes</a>
+          <a href="{{ url_for('public.help_troubleshooting') }}" class="btn-secondary">See fixes</a>
         </p>
       </article>
       <article class="why-card">

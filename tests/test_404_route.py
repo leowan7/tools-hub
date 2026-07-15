@@ -48,18 +48,18 @@ class TestJobNotFoundPage:
     """``/jobs/<uuid>`` renders 404.html when get_job returns None."""
 
     def test_returns_404_status(self, app, monkeypatch):
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.jobs.load_user_context", lambda: _ctx())
         client = app.test_client()
         _login_session(client)
-        with patch("app.get_job", return_value=None):
+        with patch("blueprints.jobs.get_job", return_value=None):
             resp = client.get(f"/jobs/{uuid.uuid4()}")
         assert resp.status_code == 404
 
     def test_body_says_not_found_not_coming_soon(self, app, monkeypatch):
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.jobs.load_user_context", lambda: _ctx())
         client = app.test_client()
         _login_session(client)
-        with patch("app.get_job", return_value=None):
+        with patch("blueprints.jobs.get_job", return_value=None):
             resp = client.get(f"/jobs/{uuid.uuid4()}")
         body = resp.get_data(as_text=True)
         assert "Not found" in body
@@ -68,10 +68,10 @@ class TestJobNotFoundPage:
 
     def test_body_explains_wrong_account_when_signed_in(self, app, monkeypatch):
         """Signed-in users get a hint that they may be in the wrong account."""
-        monkeypatch.setattr("app.load_user_context", lambda: _ctx())
+        monkeypatch.setattr("blueprints.jobs.load_user_context", lambda: _ctx())
         client = app.test_client()
         _login_session(client, email="leowan7@gmail.com")
-        with patch("app.get_job", return_value=None):
+        with patch("blueprints.jobs.get_job", return_value=None):
             resp = client.get(f"/jobs/{uuid.uuid4()}")
         body = resp.get_data(as_text=True)
         assert "leowan7@gmail.com" in body

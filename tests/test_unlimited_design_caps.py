@@ -114,15 +114,15 @@ def test_over_ceiling_single_job_reroutes_to_campaign(app):
         sess["user_email"] = "u@example.com"
 
     create_job = MagicMock()
-    with patch("app.load_user_context", return_value=_ctx()), patch(
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
         "shared.idempotency.load_user_context", return_value=None
-    ), patch("app.tool_enabled", return_value=True), patch(
+    ), patch("blueprints.tools.tool_enabled", return_value=True), patch(
         # Zero estimate: requires_wallet skips the gate, so no hold is placed
         # and no wallet machinery is exercised — the request lands in
         # tool_submit and the backstop fires.
         "app.estimated_cost_for_tool",
         return_value=Decimal("0"),
-    ), patch("app.create_job", create_job):
+    ), patch("blueprints.tools.create_job", create_job):
         resp = client.post(
             "/tools/rfdiffusion/submit", data=_over_ceiling_form()
         )
@@ -145,10 +145,10 @@ def test_form_render_wires_client_reroute(app):
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
 
-    with patch("app.load_user_context", return_value=_ctx()), patch(
-        "app.tool_enabled", return_value=True
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
+        "blueprints.tools.tool_enabled", return_value=True
     ), patch(
-        "app.get_or_create_wallet",
+        "blueprints.tools.get_or_create_wallet",
         return_value={"balance_usd": "100", "wallet_frozen": False},
     ):
         resp = client.get("/tools/rfdiffusion")
@@ -174,11 +174,11 @@ def test_at_ceiling_single_job_not_rerouted(app):
 
     form = _over_ceiling_form()
     form["num_designs"] = "12"
-    with patch("app.load_user_context", return_value=_ctx()), patch(
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
         "shared.idempotency.load_user_context", return_value=None
-    ), patch("app.tool_enabled", return_value=True), patch(
+    ), patch("blueprints.tools.tool_enabled", return_value=True), patch(
         "app.estimated_cost_for_tool", return_value=Decimal("0")
-    ), patch("app.create_job", MagicMock()):
+    ), patch("blueprints.tools.create_job", MagicMock()):
         resp = client.post("/tools/rfdiffusion/submit", data=form)
 
     body = resp.get_data(as_text=True)
@@ -230,11 +230,11 @@ def test_pxdesign_over_ceiling_reroutes_to_campaign(app):
         "binder_length": "80",
         "num_designs": "100",  # pxdesign ceiling is 24
     }
-    with patch("app.load_user_context", return_value=_ctx()), patch(
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
         "shared.idempotency.load_user_context", return_value=None
-    ), patch("app.tool_enabled", return_value=True), patch(
+    ), patch("blueprints.tools.tool_enabled", return_value=True), patch(
         "app.estimated_cost_for_tool", return_value=Decimal("0")
-    ), patch("app.create_job", create_job):
+    ), patch("blueprints.tools.create_job", create_job):
         resp = client.post("/tools/pxdesign/submit", data=form)
 
     body = resp.get_data(as_text=True)
@@ -251,10 +251,10 @@ def test_pxdesign_form_render_wires_reroute(app):
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
 
-    with patch("app.load_user_context", return_value=_ctx()), patch(
-        "app.tool_enabled", return_value=True
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()), patch(
+        "blueprints.tools.tool_enabled", return_value=True
     ), patch(
-        "app.get_or_create_wallet",
+        "blueprints.tools.get_or_create_wallet",
         return_value={"balance_usd": "100", "wallet_frozen": False},
     ):
         resp = client.get("/tools/pxdesign")

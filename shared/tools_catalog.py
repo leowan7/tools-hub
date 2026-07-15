@@ -60,7 +60,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
-        "endpoint": "developability",
+        "endpoint": "tools.developability",
         "external": False,
         "status": "live",
     },
@@ -83,7 +83,7 @@ _HARDCODED_TOOLS: tuple[dict, ...] = (
         "paper_citation": "—",
         "paper_url": "",
         "github_url": "",
-        "endpoint": "library_planner",
+        "endpoint": "tools.library_planner",
         "external": False,
         "status": "live",
     },
@@ -179,7 +179,7 @@ def _build_tools_catalog() -> list[dict]:
 
         display_name = adapter.label.split("—")[0].strip() or adapter.label
         try:
-            route = url_for("tool_form", tool=adapter.slug)
+            route = url_for("tools.tool_form", tool=adapter.slug)
         except Exception:  # noqa: BLE001
             route = f"/tools/{adapter.slug}"
 
@@ -209,3 +209,16 @@ def _build_tools_catalog() -> list[dict]:
         )
 
     return catalog
+
+
+def _short_name_for_label(label: str) -> str:
+    """Return the algorithm name only — strip any 'X — descriptor' tail.
+
+    Accepts em-dash ('—'), double-dash ('--'), or bare label. Used
+    in SEO titles and h1s so the page leads with the searchable
+    algorithm name rather than the full marketing label.
+    """
+    for sep in (" — ", " -- ", " – "):
+        if sep in label:
+            return label.split(sep, 1)[0].strip()
+    return label.strip()

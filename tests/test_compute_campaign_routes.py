@@ -38,7 +38,7 @@ def _login(client):
 
 def test_runs_new_renders(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()):
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.get("/campaigns/new")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
@@ -49,7 +49,7 @@ def test_runs_new_renders(client):
 
 def test_runs_list_renders(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()), patch(
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), patch(
         "shared.compute_campaigns.list_campaigns_for_user", return_value=[]
     ):
         resp = client.get("/campaigns")
@@ -59,7 +59,7 @@ def test_runs_list_renders(client):
 
 def test_estimate_ok(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()), patch(
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), patch(
         "shared.wallet.get_or_create_wallet",
         return_value={"balance_usd": "1000", "wallet_frozen": False},
     ), patch("shared.compute_campaigns.get_service_client", return_value=None):
@@ -76,7 +76,7 @@ def test_estimate_ok(client):
 
 def test_estimate_over_cap(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()):
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.get("/api/campaigns/estimate?tool=rfdiffusion&requested_designs=999999")
     data = resp.get_json()
     assert data["ok"] is False
@@ -85,7 +85,7 @@ def test_estimate_over_cap(client):
 
 def test_estimate_unsupported_tool(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()):
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.get("/api/campaigns/estimate?tool=mpnn&requested_designs=10")
     data = resp.get_json()
     assert data["ok"] is False
@@ -93,7 +93,7 @@ def test_estimate_unsupported_tool(client):
 
 def test_post_missing_pdb_rerenders_with_error(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()):
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.post("/campaigns", data={
             "tool": "rfdiffusion",
             "requested_designs": "24",
@@ -108,7 +108,7 @@ def test_post_missing_pdb_rerenders_with_error(client):
 
 def test_post_over_cap_rerenders_with_error(client):
     _login(client)
-    with patch("app.load_user_context", return_value=_ctx()):
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
         resp = client.post("/campaigns", data={
             "tool": "rfdiffusion",
             "requested_designs": "999999",

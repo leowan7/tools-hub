@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import app as app_mod
+import blueprints.jobs as jobs_mod
 
 
 def _candidate(pdb_key: str, *, b64: str | None = None) -> dict:
@@ -59,11 +60,11 @@ def _patch_user_ctx(monkeypatch, user_id: str):
     ctx = MagicMock()
     ctx.user_id = user_id
     ctx.email = "test@example.com"
-    monkeypatch.setattr(app_mod, "load_user_context", lambda: ctx)
+    monkeypatch.setattr(jobs_mod, "load_user_context", lambda: ctx)
 
 
 def _patch_job(monkeypatch, job):
-    monkeypatch.setattr(app_mod, "get_job", lambda _id, user_id=None: job)
+    monkeypatch.setattr(jobs_mod, "get_job", lambda _id, user_id=None: job)
 
 
 def _job(*, candidates=None, user_id=None):
@@ -78,7 +79,7 @@ def _job(*, candidates=None, user_id=None):
 class TestAuth:
     def test_no_session_redirects_to_login(self, client, monkeypatch):
         # load_user_context returns None when there's no session.
-        monkeypatch.setattr(app_mod, "load_user_context", lambda: None)
+        monkeypatch.setattr(jobs_mod, "load_user_context", lambda: None)
         # The @login_required decorator itself redirects before our
         # route body runs; either way the user lands at /login.
         resp = client.get("/api/jobs/abc/pdb/design_1.pdb", follow_redirects=False)
@@ -90,7 +91,7 @@ class TestAuth:
         _login(client, user_id)
         _patch_user_ctx(monkeypatch, user_id)
         # get_job returns None when the row doesn't belong to the caller.
-        monkeypatch.setattr(app_mod, "get_job", lambda _id, user_id=None: None)
+        monkeypatch.setattr(jobs_mod, "get_job", lambda _id, user_id=None: None)
         resp = client.get(
             "/api/jobs/some-job/pdb/design_1.pdb", follow_redirects=False
         )
@@ -108,11 +109,11 @@ class TestStoragePath:
         _patch_job(monkeypatch, job)
 
         monkeypatch.setattr(
-            app_mod, "output_exists",
+            jobs_mod, "output_exists",
             lambda **_kw: True,
         )
         monkeypatch.setattr(
-            app_mod, "download_output",
+            jobs_mod, "download_output",
             lambda **_kw: b"ATOM      1  N   ALA A   1\n",
         )
         resp = client.get(f"/api/jobs/{job.id}/pdb/design_1.pdb")
@@ -138,7 +139,7 @@ class TestInlineFallback:
         )
         _patch_job(monkeypatch, job)
 
-        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
 
         resp = client.get(f"/api/jobs/{job.id}/pdb/design_2.pdb")
         assert resp.status_code == 200
@@ -154,7 +155,7 @@ class TestInlineFallback:
             candidates=[_candidate("design_other.pdb", b64="aGVsbG8=")],
         )
         _patch_job(monkeypatch, job)
-        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
 
         resp = client.get(f"/api/jobs/{job.id}/pdb/missing.pdb")
         assert resp.status_code == 404
@@ -177,7 +178,7 @@ class TestPdbKeyPrefix:
             candidates=[_candidate("designs/design_0.pdb", b64=b64)],
         )
         _patch_job(monkeypatch, job)
-        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
 
         # URL request preserves the same "designs/" prefix that the
         # template emits via {{ pdb_key | urlencode }}.
@@ -199,7 +200,7 @@ class TestPdbKeyPrefix:
             candidates=[_candidate("designs/design_0.pdb", b64=b64)],
         )
         _patch_job(monkeypatch, job)
-        monkeypatch.setattr(app_mod, "output_exists", lambda **_kw: False)
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
 
         # Hypothetical client that strips the prefix should still match.
         resp = client.get(f"/api/jobs/{job.id}/pdb/design_0.pdb")
@@ -228,7 +229,7 @@ class TestStorageErrorFallthrough:
         def boom(**_kw):
             raise StorageError("supabase 5xx")
 
-        monkeypatch.setattr(app_mod, "output_exists", boom)
+        monkeypatch.setattr(jobs_mod, "output_exists", boom)
         # Inline path still works.
         resp = client.get(f"/api/jobs/{job.id}/pdb/design_3.pdb")
         assert resp.status_code == 200

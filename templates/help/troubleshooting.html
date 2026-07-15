@@ -80,7 +80,7 @@
                 The estimated cost of the job is above your available balance.
                 Top up your wallet, the minimum top-up is $20, then resubmit.
                 You can also pick a smaller preset to lower the estimate.
-                <br><a href="{{ url_for('wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a>
+                <br><a href="{{ url_for('wallet.wallet_topup') }}" style="color: var(--accent-text);">Top up your wallet</a>
                 &middot;
                 <a href="mailto:{{ support_email }}" style="color: var(--accent-text);">Still stuck? Contact support</a>
               </td>
@@ -91,7 +91,7 @@
     </div>
 
     <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
-      <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+      <a href="{{ url_for('public.help_faq') }}" class="btn-secondary">Read the FAQ</a>
       <a href="mailto:{{ support_email }}" class="btn-secondary">Contact support</a>
     </div>
   </section>

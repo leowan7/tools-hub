@@ -38,8 +38,8 @@ def test_billing_portal_passes_customer_id(client):
     with client.session_transaction() as sess:
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
-    with patch("app.load_user_context", return_value=_ctx()), patch(
-        "app.get_or_create_wallet",
+    with patch("blueprints.wallet.load_user_context", return_value=_ctx()), patch(
+        "blueprints.wallet.get_or_create_wallet",
         return_value={"stripe_customer_id": "cus_123"},
     ), patch(
         "billing.checkout.create_portal_session",
@@ -56,8 +56,8 @@ def test_billing_portal_no_customer_degrades_gracefully(client):
     with client.session_transaction() as sess:
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
-    with patch("app.load_user_context", return_value=_ctx()), patch(
-        "app.get_or_create_wallet", return_value={}
+    with patch("blueprints.wallet.load_user_context", return_value=_ctx()), patch(
+        "blueprints.wallet.get_or_create_wallet", return_value={}
     ):
         # Real create_portal_session runs: empty customer id -> friendly
         # error, NOT a 500.

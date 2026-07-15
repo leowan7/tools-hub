@@ -293,7 +293,7 @@
             {% elif authenticated %}
               <a class="catalog-card" href="{{ tool.route }}">
             {% else %}
-              <a class="catalog-card" href="{{ url_for('login', next=tool.route) }}">
+              <a class="catalog-card" href="{{ url_for('auth.login', next=tool.route) }}">
             {% endif %}
               <div class="catalog-card-head">
                 <span class="catalog-card-name">{{ tool.name }}</span>
@@ -379,7 +379,7 @@
   <div class="comparison-footer">
     <p>Every tool's results page hands off directly into a Ranomics yeast display campaign.</p>
     <p>
-      <a href="{{ url_for('pricing') }}">See pricing</a>
+      <a href="{{ url_for('public.pricing') }}">See pricing</a>
       · <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener">Binder Pilot CRO</a>
       · <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener">AI Binder Sprint</a>
     </p>

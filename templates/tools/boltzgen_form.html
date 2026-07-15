@@ -176,7 +176,7 @@
         <span class="panel-title">Design inputs</span>
       </div>
       <div class="panel-body">
-        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+        <form method="POST" action="{{ url_for('tools.tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
           {{ csrf_input() }}
           {{ workspace_hidden_inputs(workspace_ctx) }}
           <input type="hidden" name="preset" value="pilot">
@@ -269,7 +269,7 @@
             <input type="number" name="budget" id="budget" {{ pre_value(pre_fill, "budget", "4") }} min="1" max="50"
                    style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
-              Top-N final candidates returned (1 to 50). Each refolded with RMSD + ipTM. Need more than one job's worth? Run it as a <a href="{{ url_for('compute_campaign_new') }}" style="color: var(--accent-text, #2B9E7E);">campaign</a> to fan out across GPUs, wallet-bounded, at any scale.
+              Top-N final candidates returned (1 to 50). Each refolded with RMSD + ipTM. Need more than one job's worth? Run it as a <a href="{{ url_for('campaigns.compute_campaign_new') }}" style="color: var(--accent-text, #2B9E7E);">campaign</a> to fan out across GPUs, wallet-bounded, at any scale.
             </div>
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
               First time on this target? Start with 4 designs (~15 to 30 min)

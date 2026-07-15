@@ -62,7 +62,7 @@
   "isAccessibleForFree": True,
   "datePublished": e.meta.date|string,
   "keywords": (e.meta.tool ~ "," ~ e.meta.target_kind),
-  "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
+  "url": (request.url_root.rstrip('/') ~ url_for('public.showcase') ~ '#' ~ e.slug)
 } | tojson }}
 </script>
 {% endfor %}
@@ -72,7 +72,7 @@
     "@type": "ListItem",
     "position": loop.index,
     "name": e.meta.title,
-    "url": (request.url_root.rstrip('/') ~ url_for('showcase') ~ '#' ~ e.slug)
+    "url": (request.url_root.rstrip('/') ~ url_for('public.showcase') ~ '#' ~ e.slug)
   }) %}
 {% endfor %}
 <script type="application/ld+json">
@@ -99,15 +99,15 @@
       </p>
       <div class="landing-hero-cta">
         {% if session.get('user_email') %}
-          <a href="{{ url_for('tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary-lg">Browse the tools</a>
         {% else %}
-          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start free with $5</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start free with $5</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse the tools</a>
         {% endif %}
       </div>
       <p class="landing-hero-help" style="margin-top: 1.1rem; font-size: 0.9rem; color: var(--text-secondary);">
         New accounts start with a $5 wallet. Pay by the second, no subscription.
-        <a href="{{ url_for('pricing') }}" style="color: var(--accent-text);">How billing works</a>.
+        <a href="{{ url_for('public.pricing') }}" style="color: var(--accent-text);">How billing works</a>.
       </p>
     </div>
   </section>
@@ -158,7 +158,7 @@
                 {% if e.tool_url %}
                   <a href="{{ e.tool_url }}" class="btn-primary">Run {{ e.meta.tool_name or e.meta.tool }} on your target</a>
                 {% else %}
-                  <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
+                  <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary">Run it on tools.ranomics.com</a>
                 {% endif %}
                 {% if e.guide_url %}
                   <a href="{{ e.guide_url }}" class="btn-secondary">Read the {{ e.meta.tool_name or e.meta.tool }} guide</a>
@@ -196,9 +196,9 @@
           tools you can run on tools.ranomics.com.
         </p>
         <div class="showcase-actions">
-          <a href="{{ url_for('tools_comparison') }}" class="btn-primary">All tools</a>
-          <a href="{{ url_for('pricing') }}" class="btn-secondary">How billing works</a>
-          <a href="{{ url_for('signup') }}" class="btn-secondary">Create a free account</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary">All tools</a>
+          <a href="{{ url_for('public.pricing') }}" class="btn-secondary">How billing works</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-secondary">Create a free account</a>
         </div>
       </div>
     </div>

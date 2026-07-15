@@ -63,7 +63,7 @@ def _login(client, email="user@example.com"):
 
 def _patched_user(monkeypatch, *, balance=10):
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u-test-1", tier="free", balance=balance,
             email="user@example.com",
@@ -160,9 +160,9 @@ class TestSubmitWithActiveWorkspace:
 
         with patch(
             "shared.workspaces.workspace_preflight", preflight_mock
-        ), patch("app.create_job", create_job_mock), patch(
+        ), patch("blueprints.tools.create_job", create_job_mock), patch(
             "gpu.modal_client.ModalClient.submit", modal_submit_mock
-        ), patch("app.set_modal_call"):
+        ), patch("blueprints.tools.set_modal_call"):
             client = app_with_colabfold.test_client()
             _login(client)
             client.post(
@@ -206,7 +206,7 @@ class TestSubmitNoWorkspace:
         )
         with patch(
             "shared.workspaces.workspace_preflight", preflight_mock
-        ), patch("app.create_job") as create_job_mock:
+        ), patch("blueprints.tools.create_job") as create_job_mock:
             client = app_with_colabfold.test_client()
             _login(client)
             resp = client.post(
@@ -244,7 +244,7 @@ class TestSubmitCapExhausted:
         )
         with patch(
             "shared.workspaces.workspace_preflight", preflight_mock
-        ), patch("app.create_job") as create_job_mock:
+        ), patch("blueprints.tools.create_job") as create_job_mock:
             client = app_with_colabfold.test_client()
             _login(client)
             resp = client.post(
@@ -275,7 +275,7 @@ class TestSubmitCapExhausted:
         )
         with patch(
             "shared.workspaces.workspace_preflight", preflight_mock
-        ), patch("app.create_job") as create_job_mock:
+        ), patch("blueprints.tools.create_job") as create_job_mock:
             client = app_with_colabfold.test_client()
             _login(client)
             resp = client.post(
@@ -321,9 +321,9 @@ class TestSubmitLegacyPath:
 
         with patch(
             "shared.workspaces.workspace_preflight", preflight_mock
-        ), patch("app.create_job", create_job_mock), patch(
+        ), patch("blueprints.tools.create_job", create_job_mock), patch(
             "gpu.modal_client.ModalClient.submit", modal_submit_mock
-        ), patch("app.set_modal_call"):
+        ), patch("blueprints.tools.set_modal_call"):
             client = app_with_colabfold.test_client()
             _login(client)
             client.post(

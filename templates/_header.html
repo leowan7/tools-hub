@@ -10,20 +10,20 @@
         <img src="{{ url_for('static', filename='logo-dark.webp') }}" alt="Ranomics — AI protein design tools" class="brand-logo-img">
       </a>
       <span class="brand-divider"></span>
-      <a href="{{ url_for('index') }}" class="brand-tool-link">Tools</a>
+      <a href="{{ url_for('public.index') }}" class="brand-tool-link">Tools</a>
     </div>
     <div class="navbar-right">
-      <a href="{{ url_for('tools_comparison') }}" class="nav-link-public">All tools</a>
+      <a href="{{ url_for('tools.tools_comparison') }}" class="nav-link-public">All tools</a>
       {% if session.get('user_email') %}
-        <a href="{{ url_for('jobs_list') }}" class="nav-link-public">My runs</a>
-        <a href="{{ url_for('compute_campaigns_list') }}" class="nav-link-public">Campaigns</a>
+        <a href="{{ url_for('jobs.jobs_list') }}" class="nav-link-public">My runs</a>
+        <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="nav-link-public">Campaigns</a>
       {% endif %}
-      <a href="{{ url_for('pricing') }}" class="nav-link-public">Pricing</a>
-      <a href="{{ url_for('help_index') }}" class="nav-link-public">Help</a>
+      <a href="{{ url_for('public.pricing') }}" class="nav-link-public">Pricing</a>
+      <a href="{{ url_for('public.help_index') }}" class="nav-link-public">Help</a>
       {% if session.get('user_email') %}
         {% if nav_wallet_usd is not none %}
           {% set _low = nav_wallet_usd < 5 %}
-          <a href="{{ url_for('wallet_overview') }}"
+          <a href="{{ url_for('wallet.wallet_overview') }}"
              id="nav-wallet-chip"
              class="nav-link-public nav-wallet-chip{% if _low %} nav-wallet-low{% endif %}"
              data-wallet-usd="{{ nav_wallet_usd }}"
@@ -31,27 +31,27 @@
             ${{ '%.2f'|format(nav_wallet_usd) }}
           </a>
           {% if _low %}
-            <a href="{{ url_for('wallet_topup') }}"
+            <a href="{{ url_for('wallet.wallet_topup') }}"
                id="nav-wallet-topup"
                class="nav-link-public nav-wallet-topup"
                title="Wallet below $5">Top up</a>
           {% endif %}
         {% else %}
-          <a href="{{ url_for('wallet_overview') }}" class="nav-link-public">Wallet</a>
+          <a href="{{ url_for('wallet.wallet_overview') }}" class="nav-link-public">Wallet</a>
         {% endif %}
         {% if is_staff %}
           <a href="/admin/users" class="nav-link-public"
              style="color: var(--accent-text, #2B9E7E); border: 1px solid var(--accent-text, #2B9E7E); padding: 0.2rem 0.6rem; border-radius: 4px;"
              title="Staff-only admin">Admin</a>
         {% endif %}
-        <a href="{{ url_for('account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
-        <form method="POST" action="{{ url_for('logout') }}" style="margin:0;">
+        <a href="{{ url_for('auth.account') }}" class="nav-link" title="{{ session.get('user_email') }}">My account</a>
+        <form method="POST" action="{{ url_for('auth.logout') }}" style="margin:0;">
           {{ csrf_input() }}
           <button type="submit" class="btn-logout">Sign out</button>
         </form>
       {% else %}
-        <a href="{{ url_for('login') }}" class="nav-link-public">Sign in</a>
-        <a href="{{ url_for('signup') }}" class="btn-primary" style="padding: 0.35rem 0.9rem; font-size: 0.78rem;">Get started</a>
+        <a href="{{ url_for('auth.login') }}" class="nav-link-public">Sign in</a>
+        <a href="{{ url_for('auth.signup') }}" class="btn-primary" style="padding: 0.35rem 0.9rem; font-size: 0.78rem;">Get started</a>
       {% endif %}
     </div>
   </div>

@@ -23,7 +23,7 @@
 {% set num_chains = output.get('num_chains') or 1 %}
 {% set total_aa   = output.get('total_aa') %}
 {% set model_preset = output.get('model_preset') %}
-{% set clone_url  = url_for('tool_form', tool='af2', clone_from=job.id) %}
+{% set clone_url  = url_for('tools.tool_form', tool='af2', clone_from=job.id) %}
 
 {# Summary stats computed in Jinja — avoids a second round-trip on the
    pLDDT array just to show a mean. #}
@@ -228,9 +228,9 @@
     <div style="margin-top:1rem;">
       <a href="{{ clone_url }}" class="btn-secondary">Run again with different parameters</a>
       {% if pdb_b64 %}
-        <a href="{{ url_for('af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
-        <a href="{{ url_for('af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
-        <a href="{{ url_for('tool_form', tool='mpnn') }}?resample_from={{ job.id }}" class="btn-secondary" style="margin-left:0.5rem;"
+        <a href="{{ url_for('jobs.af2_download_pdb', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PDB</a>
+        <a href="{{ url_for('jobs.af2_download_pae', job_id=job.id) }}" class="btn-secondary" style="margin-left:0.5rem;">Download PAE (npz)</a>
+        <a href="{{ url_for('tools.tool_form', tool='mpnn') }}?resample_from={{ job.id }}" class="btn-secondary" style="margin-left:0.5rem;"
            title="Feed this predicted structure into ProteinMPNN at sampling temperature 0.5 to generate diverse sequence variants that fit the same fold target.">
           Resample sequence with MPNN
         </a>

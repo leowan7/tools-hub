@@ -242,7 +242,7 @@ def test_form_renders_when_flag_on(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -270,7 +270,7 @@ def test_form_404s_when_flag_off(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -286,7 +286,7 @@ def test_submit_rejects_unknown_preset(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -314,7 +314,7 @@ def test_handoff_pilot_preset_runs_standalone_not_smoke(
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -327,7 +327,7 @@ def test_handoff_pilot_preset_runs_standalone_not_smoke(
         },
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.tools.get_job",
         lambda job_id, user_id: mock_src if job_id == "src-job-abc" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -366,7 +366,7 @@ def test_clone_reconstructs_fasta_textarea_from_fasta_records(
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.tools.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -388,7 +388,7 @@ def test_clone_reconstructs_fasta_textarea_from_fasta_records(
         },
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.tools.get_job",
         lambda job_id, user_id: mock_prior if job_id == "prior-af2" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -409,7 +409,7 @@ def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -423,7 +423,7 @@ def test_af2_download_pdb_route(app_with_af2_flag, monkeypatch):
         result={"pdb_b64": base64.b64encode(fake_pdb).decode("ascii")},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "af2-job-1" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -438,7 +438,7 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -459,7 +459,7 @@ def test_af2_download_pae_route(app_with_af2_flag, monkeypatch):
         result={"pae_matrix_b64": base64.b64encode(npz_bytes).decode("ascii")},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "af2-job-2" else None,
     )
     client = app_with_af2_flag.test_client()
@@ -478,7 +478,7 @@ def test_af2_download_rejects_non_af2_job(app_with_af2_flag, monkeypatch):
     from types import SimpleNamespace
 
     monkeypatch.setattr(
-        "app.load_user_context",
+        "blueprints.jobs.load_user_context",
         lambda: SimpleNamespace(
             user_id="u1", tier="free", balance=10, email="user@example.com"
         ),
@@ -491,7 +491,7 @@ def test_af2_download_rejects_non_af2_job(app_with_af2_flag, monkeypatch):
         result={"candidates": []},
     )
     monkeypatch.setattr(
-        "app.get_job",
+        "blueprints.jobs.get_job",
         lambda job_id, user_id: job if job_id == "bc-job-1" else None,
     )
     client = app_with_af2_flag.test_client()

@@ -216,15 +216,15 @@
       <div class="landing-hero-cta">
         {% if authenticated %}
           <a href="/account/wallet/topup" class="btn-primary-lg">Top up your wallet</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% else %}
-          <a href="{{ url_for('signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
-          <a href="{{ url_for('tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
+          <a href="{{ url_for('auth.signup') }}" class="btn-primary-lg">Start with $5 in your wallet</a>
+          <a href="{{ url_for('tools.tools_comparison') }}" class="btn-ghost-lg">Browse tools</a>
         {% endif %}
       </div>
       <p class="landing-hero-help" style="margin-top: 1.1rem; font-size: 0.9rem; color: var(--text-secondary);">
         New here?
-        <a href="{{ url_for('help_getting_started') }}" style="color: var(--accent-text);">Read the Getting Started guide</a>.
+        <a href="{{ url_for('public.help_getting_started') }}" style="color: var(--accent-text);">Read the Getting Started guide</a>.
       </p>
     </div>
   </section>
@@ -241,7 +241,7 @@
           {% for job in recent_jobs %}
             <div class="home-recent-card">
               <div class="home-recent-row">
-                <a href="{{ url_for('job_detail', job_id=job.id) }}" class="home-recent-tool">{{ job.tool }}</a>
+                <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}" class="home-recent-tool">{{ job.tool }}</a>
                 <span class="home-recent-id">{{ job.id[:8] }}</span>
               </div>
               <div class="home-recent-meta">
@@ -250,14 +250,14 @@
                 <span>{{ job.status }}</span>
               </div>
               <div class="home-recent-actions">
-                <a href="{{ url_for('job_detail', job_id=job.id) }}">Open →</a>
-                <a href="{{ url_for('tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
+                <a href="{{ url_for('jobs.job_detail', job_id=job.id) }}">Open →</a>
+                <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}">Clone &amp; re-run</a>
               </div>
             </div>
           {% endfor %}
         </div>
         <div style="margin-top: 0.85rem; text-align: right;">
-          <a href="{{ url_for('jobs_list') }}" class="home-catalog-section-link">All runs →</a>
+          <a href="{{ url_for('jobs.jobs_list') }}" class="home-catalog-section-link">All runs →</a>
         </div>
       {% else %}
         <div class="home-recent-empty">
@@ -272,7 +272,7 @@
     <section class="section" id="tools">
       <div class="home-catalog-section-head">
         <span class="home-catalog-section-title">{% if authenticated %}Run a new tool{% else %}What you can run{% endif %}</span>
-        <a href="{{ url_for('tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
+        <a href="{{ url_for('tools.tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
       </div>
       {% for category, items in grouped %}
         <div class="home-catalog-group">
@@ -288,7 +288,7 @@
               {% elif authenticated %}
                 <a class="home-catalog-card" href="{{ tool.route }}">
               {% else %}
-                <a class="home-catalog-card" href="{{ url_for('login', next=tool.route) }}">
+                <a class="home-catalog-card" href="{{ url_for('auth.login', next=tool.route) }}">
               {% endif %}
                 <div class="home-catalog-card-head">
                   <span class="home-catalog-card-name">{{ tool.name }}</span>
@@ -414,7 +414,7 @@
           No credits, no tiers, no subscriptions.
         </span>
       </div>
-      <a href="{{ url_for('pricing') }}" class="btn-primary-lg">See pricing</a>
+      <a href="{{ url_for('public.pricing') }}" class="btn-primary-lg">See pricing</a>
     </div>
   </section>
 

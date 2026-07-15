@@ -40,7 +40,7 @@
 
   {% if error %}<div class="runs-err">{{ error }}</div>{% endif %}
 
-  <form method="POST" action="{{ url_for('compute_campaign_create') }}" enctype="multipart/form-data" id="runs-form">
+  <form method="POST" action="{{ url_for('campaigns.compute_campaign_create') }}" enctype="multipart/form-data" id="runs-form">
     {{ csrf_input() }}
     <div class="runs-grid">
       <div>
@@ -125,7 +125,7 @@
 
 <script>
 (function () {
-  var estURL = "{{ url_for('api_runs_estimate') }}";
+  var estURL = "{{ url_for('campaigns.api_runs_estimate') }}";
   var tool = document.getElementById('tool');
   var count = document.getElementById('requested_designs');
   var confirm = document.getElementById('rp-confirm');

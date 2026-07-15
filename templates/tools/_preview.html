@@ -74,8 +74,8 @@
         tools.ranomics.com on a dedicated GPU. {{ seo_long }}.
       </p>
       <div style="margin-top: 1.25rem; display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
-        <a href="{{ url_for('login', next=login_next) }}" class="btn-primary">Sign in to run</a>
-        <a href="{{ url_for('signup', next=login_next) }}" class="btn-secondary">Create a free account</a>
+        <a href="{{ url_for('auth.login', next=login_next) }}" class="btn-primary">Sign in to run</a>
+        <a href="{{ url_for('auth.signup', next=login_next) }}" class="btn-secondary">Create a free account</a>
       </div>
       <p style="margin: 0.6rem 0 0; font-size: 0.82rem; color: var(--text-secondary);">
         New accounts start with a $5 wallet balance. Pay by the second of
@@ -288,7 +288,7 @@
               {% if meta.github_url %}
                 <a href="{{ meta.github_url }}" target="_blank" rel="noopener noreferrer" class="btn-secondary">Source code on GitHub</a>
               {% endif %}
-              <a href="{{ url_for('help_tool_guide', tool=adapter.slug) }}" class="btn-secondary">Full guide</a>
+              <a href="{{ url_for('public.help_tool_guide', tool=adapter.slug) }}" class="btn-secondary">Full guide</a>
             </div>
           </div>
         </div>
@@ -307,8 +307,8 @@
             </p>
           </div>
           <div style="display: flex; gap: 0.6rem; flex-wrap: wrap;">
-            <a href="{{ url_for('login', next=login_next) }}" class="btn-primary">Sign in to run</a>
-            <a href="{{ url_for('tools_comparison') }}" class="btn-secondary">All tools</a>
+            <a href="{{ url_for('auth.login', next=login_next) }}" class="btn-primary">Sign in to run</a>
+            <a href="{{ url_for('tools.tools_comparison') }}" class="btn-secondary">All tools</a>
           </div>
         </div>
       </div>

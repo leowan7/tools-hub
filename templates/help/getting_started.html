@@ -74,7 +74,7 @@
         <h2 class="help-step-title">Pick a tool</h2>
         <p class="help-step-body">
           Browse the
-          <a href="{{ url_for('tools_comparison') }}">tool catalog</a>
+          <a href="{{ url_for('tools.tools_comparison') }}">tool catalog</a>
           and choose the model that fits your target. Each tool lists what
           it is built for and a typical runtime.
         </p>
@@ -135,8 +135,8 @@
     </div>
 
     <div style="margin-top: 1.5rem; display: flex; gap: 0.75rem; flex-wrap: wrap;">
-      <a href="{{ url_for('tools_comparison') }}" class="btn-primary">Pick a tool</a>
-      <a href="{{ url_for('help_faq') }}" class="btn-secondary">Read the FAQ</a>
+      <a href="{{ url_for('tools.tools_comparison') }}" class="btn-primary">Pick a tool</a>
+      <a href="{{ url_for('public.help_faq') }}" class="btn-secondary">Read the FAQ</a>
     </div>
   </section>
 

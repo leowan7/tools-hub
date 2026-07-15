@@ -41,11 +41,11 @@
 
       <div class="account-actions" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
         <a href="/campaigns/new" class="btn-primary">Start a campaign</a>
-        <a href="{{ url_for('billing_portal') }}" class="btn-secondary">Stripe receipts</a>
+        <a href="{{ url_for('wallet.billing_portal') }}" class="btn-secondary">Stripe receipts</a>
         {% if platform_api_enabled %}
           <a href="{{ url_for('account_api_keys') }}" class="btn-secondary">API keys</a>
         {% endif %}
-        <form method="POST" action="{{ url_for('logout') }}" style="margin: 0;">
+        <form method="POST" action="{{ url_for('auth.logout') }}" style="margin: 0;">
           {{ csrf_input() }}
           <button type="submit" class="btn-secondary">Sign out</button>
         </form>

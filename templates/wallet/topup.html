@@ -91,7 +91,7 @@
           <p class="field-helper" style="margin-top: 0.5rem;">
             You came here from <strong>{{ return_tool }}</strong>. You can
             retry the top up below, or
-            <a href="{{ url_for('tool_form', tool=return_tool) }}">go back to the tool form</a>.
+            <a href="{{ url_for('tools.tool_form', tool=return_tool) }}">go back to the tool form</a>.
           </p>
         {% endif %}
       </div>
