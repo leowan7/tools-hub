@@ -9,6 +9,7 @@ name: Deploy Modal apps
 #   - esmfold          (tools/esmfold/modal_app.py)
 #   - boltz2           (tools/boltz2/modal_app.py)
 #   - esmfold2_design  (tools/esmfold2_design/modal_app.py)
+#   - iggm             (tools/iggm/modal_app.py)
 #
 # Prerequisites:
 #   - Repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set.
@@ -47,6 +48,7 @@ jobs:
           - esmfold
           - boltz2
           - esmfold2_design
+          - iggm
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}

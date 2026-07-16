@@ -1,0 +1,167 @@
+{# IgGM results partial — included by job_detail.html on status=succeeded.
+
+   Reshapes the IgGM ``smoke_result`` schema into the candidate_table
+   contract: each design becomes one row scored by how many of the
+   requested epitope residues the designed antibody contacts. Sorted by
+   epitope contacts descending. #}
+
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output            = job.result or {} %}
+{% set raw_designs       = output.get('designs', []) %}
+{% set run_task          = output.get('run_task') %}
+{% set tier              = output.get('tier') %}
+{% set antigen_chain     = output.get('antigen_chain') %}
+{% set antigen_length    = output.get('antigen_length') %}
+{% set epitope_positions = output.get('epitope_positions', []) %}
+{% set epitope_pdb       = output.get('epitope_pdb_resnums', []) %}
+{% set artifact_keys     = output.get('artifact_keys', []) %}
+{% set runtime_seconds   = output.get('runtime_seconds') %}
+{% set designs_total     = output.get('designs_total') or (raw_designs | length) %}
+{% set designs_completed = output.get('designs_completed') or (raw_designs | length) %}
+{% set clone_url         = url_for('tool_form', tool='iggm', clone_from=job.id) %}
+
+{% set candidates = [] %}
+{% for d in raw_designs %}
+  {% set _ = candidates.append({
+      'rank': d.get('rank'),
+      'name': d.get('name'),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {
+        'epitope_contacts': d.get('n_epitope_contacts'),
+      },
+      'contacted_positions': d.get('contacted_positions') or [],
+      'n_epitope': d.get('n_epitope'),
+      'antigen_chain': d.get('antigen_chain'),
+  }) %}
+{% endfor %}
+
+{% set candidates = candidates | sort(attribute='scores.epitope_contacts', reverse=True) %}
+{% set columns = ['epitope_contacts'] %}
+
+{# Top summary panel. #}
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">IgGM {{ run_task or 'design' }}</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Designs</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ designs_completed }} / {{ designs_total }}
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Antigen</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          chain {{ antigen_chain or '?' }}{% if antigen_length %}, {{ antigen_length }} aa{% endif %}
+        </div>
+      </div>
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Epitope</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.92rem;">
+          {% if epitope_pdb %}
+            {{ epitope_pdb | join(', ') }}
+          {% else %}
+            <span style="color: var(--text-tertiary);">none</span>
+          {% endif %}
+        </div>
+      </div>
+      {% if runtime_seconds %}
+        <div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Runtime</div>
+          <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">{{ runtime_seconds }} s</div>
+        </div>
+      {% endif %}
+    </div>
+    <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
+      Each design's epitope-contact count is how many of your requested epitope
+      residues the designed antibody engages in the predicted complex (heavy
+      atom within 5&nbsp;&Aring;). A design that engages the epitope is docking
+      where you asked.
+    </div>
+  </div>
+</div>
+
+{# Per-design candidate table — NGL viewer + .pdb download per row. #}
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='iggm',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=tier,
+    gpu_seconds=runtime_seconds,
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    IgGM returned no designs. Double-check the antibody FASTA (>H required),
+    the antigen chain ID, and the masking (design modes need at least one X),
+    then re-submit. The Modal logs
+    (<code>modal app logs ranomics-iggm-prod</code>) carry the stdout from the
+    design run.
+  </p>
+{% endcall %}
+
+{# Epitope-contact breakdown — which epitope positions each design engages. #}
+{% if epitope_positions and candidates %}
+  {% set contact_rows = candidates[:12] %}
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header">
+      <span class="panel-title">Epitope contacts (top {{ contact_rows | length }} designs)</span>
+    </div>
+    <div class="panel-body" style="overflow-x: auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="text-align:left; color:var(--text-tertiary); font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em;">
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle);">Design</th>
+            {% for pos in epitope_positions %}
+              <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center; font-family:var(--font-mono);">{{ pos }}</th>
+            {% endfor %}
+            <th style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:right;">Hits</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in contact_rows %}
+            <tr>
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-primary); font-family:var(--font-mono); font-size:0.82rem;">
+                {{ c.name or ('design_' ~ c.rank) }}
+              </td>
+              {% for pos in epitope_positions %}
+                {% set hit = pos in (c.contacted_positions or []) %}
+                <td style="padding:0.4rem 0.5rem; border-bottom:1px solid var(--border-subtle); text-align:center;">
+                  {% if hit %}
+                    <span style="display:inline-block; width:0.85rem; height:0.85rem; border-radius:50%; background: var(--accent);"></span>
+                  {% else %}
+                    <span style="display:inline-block; width:0.85rem; height:0.85rem; border-radius:50%; background: transparent; border:1px solid var(--border);"></span>
+                  {% endif %}
+                </td>
+              {% endfor %}
+              <td style="padding:0.45rem 0.5rem; border-bottom:1px solid var(--border-subtle); color:var(--text-secondary); text-align:right; font-family:var(--font-mono);">
+                {{ c.scores.epitope_contacts or 0 }} / {{ c.n_epitope or (epitope_positions | length) }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+
+{# Attached artifacts (designed FASTA, sequence-stat CSVs, AA-distribution plots).
+   The per-design complex PDBs are in the table above; these are the run-level
+   extras IgGM writes. Download wiring for non-PDB artifacts is confirmed at
+   build; names are listed so the run is self-documenting either way. #}
+{% if artifact_keys %}
+  <div class="panel" style="margin-top:1rem;">
+    <div class="panel-header"><span class="panel-title">Artifacts</span></div>
+    <div class="panel-body">
+      <ul style="margin:0; padding-left:1.1rem; color: var(--text-secondary); font-size: 0.85rem; font-family: var(--font-mono);">
+        {% for key in artifact_keys %}
+          <li>{{ key.split('/')[-1] }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+{% endif %}

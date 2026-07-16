@@ -132,6 +132,16 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "> 4 out of 7 typical for strict-pass designs",
         "citation": "",
     },
+    "epitope_contacts": {
+        "label": "Epitope contacts",
+        "definition": (
+            "Number of the epitope residues you requested that the "
+            "designed antibody contacts in the predicted complex (any "
+            "heavy atom within 5 Å). IgGM antibody design only."
+        ),
+        "good_range": "higher is better; more epitope engagement",
+        "citation": "",
+    },
 }
 
 # Display format per metric (Python format spec applied to the float value).
@@ -149,6 +159,7 @@ _FORMAT: dict[str, str] = {
     "SAP": ".2f",
     "filter_status": "str",
     "n_hotspot_contacts": ".0f",
+    "epitope_contacts": ".0f",
 }
 
 

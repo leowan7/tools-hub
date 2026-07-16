@@ -1,0 +1,71 @@
+# IgGM (MIT, Tencent AI4S, ICLR 2025) — antibody/nanobody design + structure prediction.
+#
+# IgGM ships ONLY a conda `environment.yaml` (python 3.10, torch 2.0.1/cu117,
+# pyg, biopython, openmm, deepspeed, ...) — no requirements.txt / setup.py. So
+# we create IgGM's exact env the way the authors document
+# (`conda env create -n IgGM -f environment.yaml`) rather than hand-translate
+# deps, then add the PyG extension wheels the README installs separately from
+# the +cu117 index. All python (the Modal function harness AND design.py) runs
+# from the IgGM env via PATH.
+#
+# Base: the matching official PyTorch -DEVEL image (not -runtime) — IgGM's
+# Evoformer attention imports deepspeed's DS4Sci_EvoformerAttention, a CUDA
+# kernel deepspeed JIT-compiles, which needs nvcc + CUDA headers. The devel
+# image ships them at /usr/local/cuda. Modal's host driver (CUDA 12.x) is
+# backward-compatible with the 11.7 toolchain.
+#
+# VERIFIED 2026-07-15 against IgGM master: pretrain.load_hub_workaround saves
+# each checkpoint to `{os.getcwd()}/checkpoints/<model>.pth` from Zenodo record
+# 16909543. run_pipeline runs design.py with cwd=/opt/IgGM, so the weights land
+# in /opt/IgGM/checkpoints == the mounted Volume. The staging smoke (I-1)
+# exercises the full path on the 8iv5 example before the flag flips on.
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8
+
+# build-essential (gcc/g++/make) is required: environment.yaml pip-installs
+# prody + ihm, which compile C extensions, and the pytorch -runtime base ships
+# no compiler.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl wget build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned IgGM commit (master @ 2026-07-15). Never track master HEAD; bump this
+# deliberately after re-verifying the argparse + checkpoint path. Override with
+# --build-arg IGGM_SHA=<sha> on modal deploy if needed.
+ARG IGGM_SHA=06abc563b3fc8c7ea020543add16b69b6f8a1c8d
+WORKDIR /opt
+RUN git clone https://github.com/TencentAI4S/IgGM.git IgGM \
+    && cd IgGM \
+    && git checkout "${IGGM_SHA}"
+
+# Create IgGM's exact conda env from environment.yaml (the authors' verified
+# solve: python 3.10 + torch 2.0.1/cu117 + all scientific deps). libmamba
+# solver keeps the ~100-package solve tractable.
+RUN conda install -n base -y conda-libmamba-solver \
+    && conda env create -n IgGM -f /opt/IgGM/environment.yaml --solver=libmamba \
+    && conda clean -a -y
+
+# Make the IgGM env the default python for everything: Modal installs its
+# client into this python (add_python=None), and run_pipeline's subprocess
+# `python design.py` resolves here too. LD_LIBRARY_PATH points at the env's
+# libs so openmm (imported unconditionally at IgGM package init) loads conda's
+# newer libstdc++ (GLIBCXX_3.4.30) instead of the base image's older system one.
+ENV PATH=/opt/conda/envs/IgGM/bin:$PATH \
+    IGGM_DIR=/opt/IgGM \
+    LD_LIBRARY_PATH=/opt/conda/envs/IgGM/lib \
+    CUDA_HOME=/usr/local/cuda \
+    TORCH_EXTENSIONS_DIR=/opt/IgGM/checkpoints/torch_extensions
+
+# PyG extension wheels (README installs these separately from the +cu117 index)
+# + our uploader dependency. setuptools<81 is pinned because IgGM's pdbfixer
+# imports pkg_resources at init, which setuptools>=81 removed.
+RUN pip install --no-cache-dir \
+        pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv \
+        -f https://data.pyg.org/whl/torch-2.0.1+cu117.html \
+    && pip install --no-cache-dir "setuptools<81" requests
+
+RUN mkdir -p /opt/IgGM/checkpoints
+WORKDIR /opt/IgGM

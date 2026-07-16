@@ -332,6 +332,16 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
             "Above 4 of 7 is the strict-pass bar; 5 or more is strong."
         ),
     },
+    ("iggm", "epitope_contacts"): {
+        "good": 3,
+        "excellent": 5,
+        "direction": "higher_is_better",
+        "explanation": (
+            "Number of your requested epitope residues the designed "
+            "antibody contacts. More engagement means the antibody is "
+            "docking where you asked."
+        ),
+    },
 }
 
 

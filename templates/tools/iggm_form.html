@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/field_group.html" import field_campaign %}
+{% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# IgGM: two-panel layout matching boltz2/boltzgen. Antibody FASTA + antigen
+     PDB on the left, About panel on the right. Scoped .iggm- styles. #}
+
+  <style>
+    .iggm-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) { .iggm-layout { grid-template-columns: 1fr; } }
+    .iggm-preset-group { display: grid; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .iggm-preset-option {
+      display: flex; align-items: flex-start; gap: 0.6rem;
+      padding: 0.65rem 0.8rem; border: 1px solid var(--border);
+      border-radius: var(--radius-md); background: var(--bg-elevated);
+      cursor: pointer; transition: border-color 120ms ease, background 120ms ease;
+    }
+    .iggm-preset-option:hover { border-color: var(--accent-dim); }
+    .iggm-preset-option input[type="radio"] { margin-top: 0.2rem; accent-color: var(--accent); }
+    .iggm-preset-option .preset-title {
+      display: block; color: var(--text-primary); font-weight: 500;
+      font-size: 0.92rem; margin-bottom: 0.15rem;
+    }
+    .iggm-preset-option .preset-desc {
+      display: block; color: var(--text-secondary); font-size: 0.82rem; line-height: 1.45;
+    }
+    .iggm-textarea {
+      width: 100%; min-height: 8rem; background: var(--bg-elevated);
+      color: var(--text-primary); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.5;
+      margin-bottom: 0.35rem;
+    }
+    .iggm-text-input {
+      width: 100%; max-width: 320px; background: var(--bg-elevated);
+      color: var(--text-primary); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: 0.55rem 0.75rem;
+      font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;
+    }
+    .iggm-help {
+      color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;
+    }
+    .iggm-advanced { margin: 0.5rem 0 1.25rem; }
+    .iggm-advanced summary { cursor: pointer; color: var(--text-secondary); font-size: 0.85rem; }
+    .iggm-row { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="iggm-layout">
+    {# ---------- LEFT: form ---------- #}
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Design inputs</span></div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ csrf_input() }}
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+
+          {{ pdb_source_banner(pdb_source) }}
+
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Mode</label>
+          <div class="iggm-preset-group">
+            {% for p in adapter.presets %}
+              <label class="iggm-preset-option">
+                <input type="radio" name="preset" value="{{ p.slug }}" data-iggm-preset
+                       {{ pre_checked(pre_fill, 'preset', p.slug, is_first=loop.first) }}>
+                <span>
+                  <span class="preset-title">{{ p.label }}</span>
+                  <span class="preset-desc">{{ p.description }}</span>
+                </span>
+              </label>
+            {% endfor %}
+          </div>
+
+          <label for="fasta" class="label" style="display:block; margin-bottom: 0.4rem;">Antibody FASTA</label>
+          <textarea name="fasta" id="fasta" required spellcheck="false"
+                    placeholder=">H&#10;QVQLVESGGGLVQPGG...XXXXX...WGQGTLVTVSS&#10;>L&#10;DIQMTQSPSSLSASVG...FGGGTKVEIK"
+                    class="iggm-textarea">{{ (pre_fill.get('fasta') if pre_fill else '') or '' }}</textarea>
+          <div class="iggm-help">
+            Paste the heavy chain as <code>&gt;H</code> and, for a conventional
+            antibody, the light chain as <code>&gt;L</code>. Omit <code>&gt;L</code>
+            for a nanobody / VHH. <span data-iggm-mask-hint>Mark positions to design
+            with <code>X</code>.</span> Do not include an antigen record; it is read
+            from the uploaded PDB.
+          </div>
+
+          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Antigen PDB</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                 {% if not pdb_source %}required{% endif %}
+                 style="width: 100%; max-width: 520px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div class="iggm-help">
+            Upload the target as .pdb / .cif. The antigen sequence is read from
+            the chain you select, so the structure is the single source of truth.
+          </div>
+
+          <div class="iggm-row">
+            <div>
+              <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Antigen chain</label>
+              <input type="text" name="target_chain" id="target_chain" required maxlength="4"
+                     {{ pre_value(pre_fill, "target_chain", "A") }}
+                     class="iggm-text-input" style="max-width: 140px;">
+            </div>
+            <div style="flex:1; min-width: 260px;">
+              <label for="epitope" class="label" style="display:block; margin-bottom: 0.4rem;">Epitope residues <span style="color: var(--text-tertiary); font-weight:normal;">(optional)</span></label>
+              <input type="text" name="epitope" id="epitope" placeholder="7 8 9 10 11 108 109 110"
+                     {{ pre_value(pre_fill, "epitope", "") }} class="iggm-text-input" style="max-width: 100%;">
+            </div>
+          </div>
+          <div class="iggm-help">
+            Epitope residue numbers from the antigen PDB (space or comma
+            separated). IgGM guides design toward these. Positions are handled
+            correctly regardless of the PDB's residue numbering.
+          </div>
+
+          {# ---- affinity maturation only: wild-type reference ---- #}
+          <div data-iggm-maturation hidden>
+            <label for="fasta_origin" class="label" style="display:block; margin-bottom: 0.4rem;">Wild-type reference (for maturation)</label>
+            <textarea name="fasta_origin" id="fasta_origin" spellcheck="false"
+                      placeholder=">H&#10;QVQLVESGGGLVQPGG...WGQGTLVTVSS&#10;>L&#10;DIQMTQSPSSLSASVG...FGGGTKVEIK"
+                      class="iggm-textarea">{{ (pre_fill.get('fasta_origin') if pre_fill else '') or '' }}</textarea>
+            <div class="iggm-help">
+              The original (wild-type) antibody sequence to mature from. Same
+              chains and lengths as above, no <code>X</code>.
+            </div>
+          </div>
+
+          <details class="iggm-advanced">
+            <summary>Advanced</summary>
+            <div class="iggm-row" style="margin-top: 0.75rem;">
+              <div>
+                <label for="num_samples" class="label" style="display:block; margin-bottom: 0.4rem;">Samples</label>
+                <input type="number" name="num_samples" id="num_samples" min="1" max="100" step="1"
+                       {{ pre_value(pre_fill, "num_samples", "1") }} class="iggm-text-input" style="max-width: 120px;">
+              </div>
+              <div>
+                <label for="max_antigen_size" class="label" style="display:block; margin-bottom: 0.4rem;">Max antigen size</label>
+                <input type="number" name="max_antigen_size" id="max_antigen_size" min="64" max="2000" step="1"
+                       {{ pre_value(pre_fill, "max_antigen_size", "2000") }} class="iggm-text-input" style="max-width: 140px;">
+              </div>
+            </div>
+            <div class="iggm-help" style="margin-bottom: 0;">
+              Samples: designs to generate (up to 100 total). For affinity
+              maturation, samples are counted per masked position, so
+              samples x masked positions must stay at or under 100 (needs at
+              least 2 samples). Max antigen size: IgGM's memory guard; lower it
+              for very large antigens.
+            </div>
+          </details>
+
+          {{ field_campaign(prefilled=pre_fill) }}
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          {{ preflight_styles() }}
+          {% if preflight_verdict %}
+            {{ preflight_panel(preflight_verdict, tool_slug=adapter.slug) }}
+          {% else %}
+            <div id="preflight-panel" class="preflight-panel" data-tool="{{ adapter.slug }}" data-kind="" data-ok="1"></div>
+          {% endif %}
+
+          <button type="submit" class="btn-primary" id="tool-submit-btn"
+                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+            Submit run
+          </button>
+        </form>
+      </div>
+    </div>
+
+    {# ---------- RIGHT: About IgGM ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  <script>
+    // Preset-dependent reveals: show the wild-type reference only for affinity
+    // maturation, and swap the masking hint copy per mode. num_samples is a
+    // real form field so the shared wallet script already sends it to the
+    // estimate endpoint; no extra estimate wiring needed here.
+    (function () {
+      var maturation = document.querySelector('[data-iggm-maturation]');
+      var maskHint = document.querySelector('[data-iggm-mask-hint]');
+      var HINTS = {
+        complex_prediction: 'Masking is optional in this mode.',
+        cdr_design: 'Mark the CDR positions to redesign with X (e.g. all of CDR-H3).',
+        fr_design: 'Mark the framework positions to redesign with X.',
+        affinity_maturation: 'Mark positions to diversify with X; provide the wild-type below.',
+        inverse_design: 'Mask the positions whose sequence you want recovered with X.'
+      };
+      function sync() {
+        var checked = document.querySelector('input[name="preset"]:checked');
+        var preset = checked ? checked.value : 'complex_prediction';
+        if (maturation) {
+          if (preset === 'affinity_maturation') maturation.removeAttribute('hidden');
+          else maturation.setAttribute('hidden', '');
+        }
+        if (maskHint && HINTS[preset]) maskHint.textContent = HINTS[preset];
+      }
+      document.querySelectorAll('input[name="preset"]').forEach(function (el) {
+        el.addEventListener('change', sync);
+      });
+      sync();
+    })();
+  </script>
+  <script src="{{ url_for('static', filename='js/preflight.js') }}" defer></script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+{% endblock %}
