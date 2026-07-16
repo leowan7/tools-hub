@@ -165,14 +165,22 @@ def api_runs_estimate():
     """Live budget + chunk-plan preview for the campaign create form."""
     from shared import compute_campaigns as cc  # noqa: PLC0415
     tool = (request.args.get("tool") or "").strip()
+    preset = (request.args.get("preset") or "pilot").strip() or "pilot"
     try:
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
         requested = 0
     if _campaign_tool_gated_off(tool):
         return jsonify({"ok": False, "error": "That tool is not available yet."})
+    if preset == "validate":
+        # The free pre-flight is not a paid campaign — mirror the create route.
+        return jsonify({"ok": False, "error": "The validate tier is a free pre-flight, not a campaign."})
     try:
-        plan = cc.plan_chunks(tool, requested)
+        # Thread the real variant so the estimate matches the create path (the
+        # 5 live tools default to "pilot"); today proteina is fixed-container so
+        # the figures coincide, but this stops a silent divergence if pricing
+        # ever becomes preset-dependent.
+        plan = cc.plan_chunks(tool, requested, preset)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)})
     first_wave = cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool))
@@ -211,7 +219,9 @@ def compute_campaign_create():
     def _err(msg, code=400):
         return render_template(
             "runs/new.html",
-            supported_tools=cc.SUPPORTED_TOOLS,
+            # Filtered so a flag-gated tool (proteina) is not leaked into the
+            # dropdown on a validation-error re-render, matching the GET form.
+            supported_tools=_visible_campaign_tools(),
             max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
             verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
             error=msg,

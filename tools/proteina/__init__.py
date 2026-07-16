@@ -74,9 +74,14 @@ _PRESETS = tuple(_PRESET_CONFIG.keys())
 # blank ``task_name`` field falls back to these so the demo path needs no
 # upload. Verify each against the pinned repo's configs at build time.
 _DEFAULT_TASK: dict[str, str] = {
+    # Curated benchmark tasks, each a top-level key in the upstream config dicts
+    # (protein: configs/targets/targets_dict.yaml; ligand:
+    # configs/targets/ligand_targets_dict.yaml; AME:
+    # configs/design_tasks/ame_dict_v2.yaml). AME task names are M-prefixed —
+    # there is NO "01_AME" task; M0024_1nzy is a real motif/enzyme task.
     "protein_binder": "02_PDL1",
     "ligand_binder": "39_7V11_LIGAND",
-    "motif_ame": "01_AME",
+    "motif_ame": "M0024_1nzy",
 }
 
 # Variants whose reward stack is RF3-only (no AF2 ligand protocol). The

@@ -21,8 +21,12 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
 }
 
 paper_citation: str = "Geffner et al., NVIDIA (2025)"
-paper_url: str = "https://research.nvidia.com/labs/genair/proteina/"
-github_url: str = "https://github.com/NVIDIA-Digital-Bio/proteina"
+paper_url: str = "https://research.nvidia.com/labs/genair/proteina-complexa/"
+# The binder/ligand/AME search code, configs, reward stack, and weights live in
+# the Proteina-Complexa repo (branch ``dev``), NOT the base ``proteina`` backbone
+# generator — the module name ``proteinfoundation`` is shared between the two,
+# which is an easy mix-up. Pinned commit: 916eaaedce5b07c205efb6ef32370c01d366591e.
+github_url: str = "https://github.com/NVIDIA-Digital-Bio/proteina-complexa"
 
 # NVIDIA Open Model License notice — surfaced verbatim on the tool page + repo.
 model_license_notice: str = (
