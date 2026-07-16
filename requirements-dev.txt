@@ -1,0 +1,19 @@
+# Test-only dependencies (CI + local development).
+#
+# requirements.txt is the RUNTIME install: nixpacks.toml [phases.install]
+# feeds it straight to Railway, so anything added there ships to prod.
+# pytest has no business in a prod image, so it lives here instead.
+# CI installs this file; Railway keeps installing requirements.txt untouched.
+#
+#   pip install -r requirements-dev.txt
+#
+# The -r pulls in the full runtime set, so tests import the same modules prod
+# does rather than a thinner CI-only subset.
+-r requirements.txt
+
+# The suite is plugin-free by design -- no pytest-randomly, no pytest-cov.
+# tests/conftest.py handles the only global setup (CSRF_PROTECT=0), and the
+# suite needs no other test-only package: verified by running it in a clean
+# 3.13 venv holding exactly requirements.txt + pytest (1277 passed, 15
+# skipped, matching the local baseline).
+pytest>=9.0,<10.0
