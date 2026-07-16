@@ -155,6 +155,18 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("pxdesign", "pilot"):          3600,
     ("rfdiffusion", "pilot"):       1800,
     ("rfdiffusion", "full"):        3600,
+    # Proteina-Complexa de novo binder search on A100-80GB, run as a
+    # fund-and-drain campaign of one-shard-per-container jobs. The preset IS
+    # the model variant (not a "pilot"/"full" tier): each design variant is
+    # capped at the 7200 s (2 h) container that _MAX_SESSION_S enforces, the
+    # physical bound on a single shard's spend (~$12.6 marked-up at A100-80GB).
+    # BOOTSTRAP until the P4/P5 canaries measure real per-shard wall-clock;
+    # historical p90 supersedes at >=20 runs. `validate` is the free CPU-only
+    # complexa-validate pre-flight gate (no GPU); its cap is nominal.
+    ("proteina", "protein_binder"): 7200,
+    ("proteina", "ligand_binder"):  7200,
+    ("proteina", "motif_ame"):      7200,
+    ("proteina", "validate"):        900,
 }
 
 

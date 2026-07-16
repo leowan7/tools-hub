@@ -269,6 +269,38 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("3.00"),
         absolute_cap_usd=Decimal("75.00"),
     ),
+    "proteina": ToolSpec(
+        slug="proteina",
+        gpu_class="A100-80GB",
+        # Proteina runs as a fund-and-drain campaign of one-shard-per-container
+        # jobs; it is a FIXED-container tool (see _FIXED_CONTAINER_TOOLS in
+        # compute_campaigns), so the estimate AND the hold price at this baseline
+        # (scale 1.0) — one whole container per shard — regardless of how many
+        # designs survive the filter. Bootstrapping at 7200 s (the full 2 h
+        # container the 7200 s Modal session physically enforces) makes the
+        # per-shard estimate ~$12.58 marked-up and the cushioned hold clamp to
+        # base_hard_cap ($15), which sits ABOVE the container's physical max spend
+        # so a shard can never bill more than it held. This deliberately
+        # over-reserves (released as surplus on delivered-only settle) until the
+        # P4/P5 canaries measure real per-shard wall-clock and historical p90
+        # takes over at >=20 runs. designs_per_run_baseline mirrors the 8-design
+        # shard yield pinned in _CHUNK_SIZE_OVERRIDE. One spec covers all 4
+        # presets; per-variant differences live in PRESET_CAPS + container sizing.
+        #
+        # CANARY-MEASURED wall-clock (P-2/P-3 @916eaaed, 8-design shard, A100-80GB):
+        #   protein_binder 02_PDL1        ~553 s  -> ~$0.97 charge  (65 GB peak VRAM)
+        #   ligand_binder  39_7V11_LIGAND ~1343 s -> ~$2.35 charge  (7.3 GB; slower
+        #     because LigandMPNN designability runs in evaluate).
+        # Both « the 7200 s cap and « the $15 hold, so the settle refunds most of
+        # the hold. The hold is deliberately NOT lowered: as a fixed-container tool
+        # it charges ACTUAL wall-clock and the hold must stay >= the container's
+        # $12.58 physical-max charge to never under-hold a worst-case shard.
+        expected_gpu_seconds=7200.0,
+        designs_per_run_baseline=8,
+        scaling_param="num_designs",
+        base_hard_cap_usd=Decimal("15.00"),
+        absolute_cap_usd=Decimal("60.00"),
+    ),
 }
 
 

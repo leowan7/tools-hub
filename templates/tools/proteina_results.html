@@ -1,0 +1,27 @@
+{# Proteina-Complexa results partial — included by job_detail.html on status=succeeded.
+   One shard's designs; the campaign detail page aggregates survivors across all
+   shards (global top-K + diversity). Columns map to keys the pipeline writes into
+   each candidate's `scores` dict: a composite total reward, AF2 confidence
+   (protein binders), the RF3 score (ligand / motif), binder self-consistency
+   RMSD, and the diversity cluster id. Absent metrics render as "—" per variant. #}
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output     = job.result or {} %}
+{% set candidates = output.get('candidates', []) %}
+{% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd', 'cluster_id'] %}
+
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='proteina',
+    job_id=job.id,
+    clone_url='',
+    tier=output.get('tier'),
+    gpu_seconds=output.get('gpu_seconds'),
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    This Proteina-Complexa shard returned no candidates that cleared the
+    reward filters. Survivors are pooled across the whole campaign, so other
+    shards may still have produced hits — check the campaign page.
+  </p>
+{% endcall %}

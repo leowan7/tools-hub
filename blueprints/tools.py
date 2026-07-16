@@ -554,6 +554,14 @@ def tool_form(tool: str):
     if ctx is None:
         return redirect(url_for("auth.login"))
 
+    # Campaign-only tools (proteina) have no single-job atomic form — every run
+    # is a fund-and-drain campaign — so send a logged-in visitor straight to the
+    # campaign create flow. The logged-out preview above stays indexable; this
+    # also avoids rendering a form_template these tools do not ship.
+    from shared import compute_campaigns as _cc  # noqa: PLC0415
+    if tool in _cc.CAMPAIGN_ONLY_TOOLS:
+        return redirect(url_for("campaigns.compute_campaign_new"))
+
     # Workspace context (Wave-2 launch). Forwarded as hidden form
     # inputs by templates/tools/_prefill.html::workspace_hidden_inputs
     # so the POST handler can re-read and gate.
@@ -846,6 +854,14 @@ def tool_submit(tool: str):
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
+
+    # Campaign-only tools (proteina) never run as a single atomic job — a
+    # crafted submit is redirected to the campaign create flow rather than
+    # spawning a doomed one-container run (and rendering a form these tools do
+    # not ship). Mirrors the tool_form guard.
+    from shared import compute_campaigns as _cc  # noqa: PLC0415
+    if tool in _cc.CAMPAIGN_ONLY_TOOLS:
+        return redirect(url_for("campaigns.compute_campaign_new"))
 
     # Workspace context (Wave-2). The /workspaces/<id> detail page
     # links to /tools/<slug>?workspace_id=...&target_pdb_id=... and

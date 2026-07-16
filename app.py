@@ -146,6 +146,7 @@ import tools.esmfold     # noqa: F401 — import to register adapter (D4 atomic)
 import tools.esmfold2_design  # noqa: F401 — import to register adapter (ESMFold2-design)
 import tools.iggm        # noqa: F401 — import to register adapter (IgGM antibody design)
 import tools.mpnn        # noqa: F401 — import to register adapter (D1 atomic)
+import tools.proteina    # noqa: F401 — import to register adapter (Proteina-Complexa)
 import tools.pxdesign    # noqa: F401 — import to register adapter
 import tools.rfantibody  # noqa: F401 — import to register adapter
 import tools.rfdiffusion # noqa: F401 — import to register adapter

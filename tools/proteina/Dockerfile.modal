@@ -1,0 +1,168 @@
+# Proteina-Complexa (NVIDIA, code Apache-2.0 / weights NVIDIA Open Model License)
+# — de novo binder design via an inference-time search over a flow-matching
+# generator, filtered by an AF2 / RF3 / force-field reward stack.
+#
+# REPO IDENTITY (verified 2026-07-16, the trap that a source check caught): the
+# search code, configs, reward stack, and Dockerfile live in the SEPARATE
+# Proteina-Complexa repo, NOT the base `proteina` backbone generator. Both share
+# the module name `proteinfoundation` (here under src/), which is the mix-up.
+#   repo:   https://github.com/NVIDIA-Digital-Bio/proteina-complexa  (-> NVIDIA-BioNeMo/Proteina-Complexa)
+#   branch: dev  (the DEFAULT branch; there is no main / no tag / no release)
+#   commit: 916eaaedce5b07c205efb6ef32370c01d366591e  (pinned; never track dev HEAD)
+#
+# BUILD STRATEGY: we clone the repo at the pinned commit and run the AUTHORS'
+# OWN env build script (`env/build_uv_env.sh`) rather than hand-translating its
+# 8-step uv recipe. Same rationale as the IgGM image: the upstream script is the
+# single source of truth for the pinned reward stack (torch 2.7.0+cu126 -> `uv
+# pip install -e .` -> PyG -> graphein/atomworks -> JAX/AF2 (colabdesign 1.1.1,
+# jax 0.4.29) -> tmol@d8a6f7f9 -> rc-foundry[all] (RF3) -> biotite==1.6.0 last),
+# and hand-copying it would drift the moment upstream bumps a pin. We add only
+# the pieces the script does NOT install (the foldseek/mmseqs eval binaries and
+# our uploader + RDKit deps).
+#
+# Base image + Python are upstream's: nvcr.io/nvidia/pytorch:24.08-py3 (CUDA
+# ~12.6, cu126 wheels) and Python 3.12 (MANDATORY — rc-foundry/RF3 installs only
+# on 3.12; the "downgrade below 3.12 for tmol" lore is wrong).
+FROM nvcr.io/nvidia/pytorch:24.08-py3
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    UV_HTTP_TIMEOUT=120
+
+# Upstream apt deps (rsync libxrender1 libxext6) + our clone/download tooling.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl wget rsync libxrender1 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv is the repo's package manager (NOT conda). Installs to ~/.local/bin.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH=/root/.local/bin:$PATH
+
+# Pinned Proteina-Complexa commit (dev @ 2026-05-22). Bump deliberately after
+# re-verifying build_uv_env.sh, the CLI, and the reward-CSV layout. Override
+# with --build-arg PROTEINA_SHA=<sha> on modal deploy.
+ARG PROTEINA_SHA=916eaaedce5b07c205efb6ef32370c01d366591e
+WORKDIR /opt
+RUN git clone https://github.com/NVIDIA-Digital-Bio/proteina-complexa.git proteina \
+    && cd proteina \
+    && git checkout "${PROTEINA_SHA}"
+
+WORKDIR /opt/proteina
+
+# Build the authors' verified uv environment (.venv at /opt/proteina/.venv). The
+# upstream Dockerfile invokes this as `bash env/build_uv_env.sh --root <root>`;
+# it also installs the editable community_models/colabdesign.
+# BUILD-TIME-VERIFY: confirm the exact flag set (full-reward-stack vs base) and
+# the --root value against env/docker/Dockerfile + env/build_uv_env.sh on the
+# pinned commit; if the tmol step fails on 3.12, uncomment the llvmlite/numba
+# pre-step below (the documented, system-dependent workaround).
+# RUN /opt/proteina/.venv/bin/uv pip install "llvmlite>=0.41" "numba>=0.59"
+RUN bash env/build_uv_env.sh --root /opt/proteina/
+
+# Diversity / evaluation binaries the build script explicitly does NOT install.
+# GPU builds match the A100 runtime. BUILD-TIME-VERIFY the tarball internal
+# layout (bin/ path) at build. dssp/sc/hbplus (interface metrics) come from
+# env/docker/internal/ upstream and are NOT bundled here; the public repo also
+# ships without them, which SUGGESTS the reward stack tolerates their absence,
+# but that is UNVERIFIED — the P4/P5 canary must confirm `complexa design`
+# completes (produces total_reward) without them before the flag flips, else
+# bundle the FreeBindCraft binaries.
+RUN wget -qO /tmp/foldseek.tar.gz https://mmseqs.com/foldseek/foldseek-linux-gpu.tar.gz \
+    && tar -xzf /tmp/foldseek.tar.gz -C /opt \
+    && ln -sf /opt/foldseek/bin/foldseek /usr/local/bin/foldseek \
+    && rm /tmp/foldseek.tar.gz
+RUN wget -qO /tmp/mmseqs.tar.gz https://mmseqs.com/latest/mmseqs-linux-gpu.tar.gz \
+    && tar -xzf /tmp/mmseqs.tar.gz -C /opt \
+    && ln -sf /opt/mmseqs/bin/mmseqs /usr/local/bin/mmseqs \
+    && rm /tmp/mmseqs.tar.gz
+
+# Our runtime deps INSIDE the venv: requests (presigned upload/heartbeat) and
+# RDKit (in-container SDF -> chain-A HETATM+CONECT PDB conversion for the ligand
+# variant; RDKit is deliberately absent from the tools-hub web tier).
+RUN /opt/proteina/.venv/bin/python -m ensurepip --upgrade || true
+RUN /opt/proteina/.venv/bin/uv pip install requests rdkit \
+    || /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
+
+# Community inverse-folding weights for the EVALUATE designability metric. The
+# ligand variant's evaluate runs LigandMPNN (metrics/inverse_folding_models.py
+# run_ligandmpnn -> ligandmpnn_v_32_010_25.pt); the P-3 canary proved evaluate
+# exits 1 without it AFTER the RF3 reward CSV is written. run_pipeline's
+# tolerant-delivery path still ships those RF3-scored designs, but seeding the
+# weights is the clean happy path (proper exit 0 + designability metric).
+# ProteinMPNN too as insurance. Both are ungated github/IPD downloads via the
+# authors' own download_startup.sh (~550MB, baked in — NOT on a Volume, so a
+# download failure surfaces at build, never at a paid run). BUILD-TIME-VERIFY:
+# if the LigandMPNN get_model_params.sh host is unreachable at build, pin the
+# ligandmpnn_v_32_010_25.pt URL directly instead.
+RUN cd /opt/proteina && bash env/download_startup.sh --pmpnn --ligmpnn
+
+# Point the generator + reward stack at the runtime-mounted Volumes. modal_app
+# mounts proteina-weights -> /opt/proteina/ckpts and proteina-rewards ->
+# /opt/proteina/rewards; these ENV vars must stay in lockstep with those mounts.
+#
+# MODEL WEIGHTS (verified 2026-07-16 against download_startup.sh + the three
+# configs/search_*_local_pipeline.yaml on the pinned commit): the generator
+# checkpoints resolve via the config keys `ckpt_path: ./ckpts` + per-variant
+# `ckpt_name` (complexa.ckpt / complexa_ligand.ckpt / complexa_ame.ckpt) +
+# `autoencoder_ckpt_path: ./ckpts/<variant>_ae.ckpt`. These are RELATIVE to the
+# process CWD, NOT read from any env var (grep of src/ finds no WEIGHTS_DIR /
+# CKPT_DIR consumer). So the weights Volume mounts at /opt/proteina/ckpts and
+# run_pipeline runs `complexa design` with cwd=/opt/proteina, exactly like the
+# upstream `complexa design configs/...` invocation from the repo root. WEIGHTS_DIR
+# below is used ONLY by run_pipeline's free validate tier (globs it for a *.ckpt)
+# so an unseeded / wrong-path mount fails cheaply pre-search.
+#
+# REWARD STACK (verified: env vars ARE read from os.environ in src/): AF2_DIR
+# (colabdesign_utils.py:50, npz DIRECTLY inside it — no params/ subdir),
+# ESM_DIR (esm_eval.py:102, an HF hub cache dir -> models--facebook--*),
+# RF3_CKPT_PATH (rf3_reward.py asserts it), RF3_EXEC_PATH, FOLDSEEK/MMSEQS_EXEC.
+#   PROTEINA_RF3=on  -> RF3 reward channel live (Leo's launch decision). Only
+#   ligand_binder (RF3 is its sole reward) and motif_ame need it; protein_binder
+#   scores on AF2 alone, so it runs regardless of this switch. run_pipeline
+#   hard-blocks the RF3-only variants pre-GPU when off (no AF2 ligand fallback).
+# DATA_PATH is REQUIRED even though the curated tasks carry an explicit
+# target_path: the configs resolve the target PDB via
+# `pdb_path: ${oc.select:...target_path, ${oc.env:DATA_PATH}/target_data/...}`,
+# and OmegaConf (2.3.1) EAGERLY evaluates oc.select's default argument, so
+# `${oc.env:DATA_PATH}` is resolved even when target_path is present. With
+# DATA_PATH unset that raises InterpolationResolutionError during dataset build
+# (GPU already allocated) for ALL tasks — a billed zero-design failure the free
+# validate tier does not catch. /opt/proteina/assets makes BOTH the relative
+# target_path (`./assets/...`, cwd=/opt/proteina) and the fallback
+# (`$DATA_PATH/target_data/...`) resolve to the git-bundled tree. CKPT_PATH /
+# CACHE_DIR are the same-class insurance for any non-local config that
+# interpolates them (harmless for the local pipelines, which hardcode ./ckpts).
+ENV PROTEINA_HOME=/opt/proteina \
+    VENV=/opt/proteina/.venv \
+    PATH=/opt/proteina/.venv/bin:$PATH \
+    PYTHONPATH=/opt/proteina/src \
+    DATA_PATH=/opt/proteina/assets \
+    WEIGHTS_DIR=/opt/proteina/ckpts \
+    CKPT_DIR=/opt/proteina/ckpts \
+    CKPT_PATH=/opt/proteina/ckpts \
+    CACHE_DIR=/opt/proteina/.cache \
+    AF2_DIR=/opt/proteina/rewards/ckpts/AF2 \
+    ESM_DIR=/opt/proteina/rewards/ckpts/ESM2 \
+    RF3_CKPT_PATH=/opt/proteina/rewards/ckpts/RF3/rf3_foundry_01_24_latest_remapped.ckpt \
+    RF3_EXEC_PATH=/opt/proteina/.venv/bin/rf3 \
+    FOLDSEEK_EXEC=/usr/local/bin/foldseek \
+    MMSEQS_EXEC=/usr/local/bin/mmseqs \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    PROTEINA_RF3=on \
+    COMPLEXA_INIT=docker
+
+# `complexa design` (and generate/filter/evaluate/analyze) are gated by
+# cli_runner._check_complexa_init: they exit 1 with "Environment not
+# initialized" unless os.environ["COMPLEXA_INIT"] is truthy. `complexa init`
+# normally writes .env + env.sh which `source env.sh` sets (env.sh does
+# `export COMPLEXA_INIT="<runtime>"`). We set every real env var directly as
+# Docker ENV, so we only need the sentinel. `validate` is init-exempt (why the
+# P-1 smoke passed). Any non-empty value works; "docker" matches the runtime.
+
+# Mount points must be EMPTY: Modal refuses `cannot mount volume on non-empty
+# path`. Create /opt/proteina/{ckpts,rewards} bare (the Volumes supply their
+# contents, incl. rewards/ckpts/{AF2,ESM2,RF3}); NEVER pre-create a subdir under
+# a Volume mount point. .cache is a plain writable dir (not a mount).
+RUN mkdir -p /opt/proteina/ckpts /opt/proteina/rewards /opt/proteina/.cache
+WORKDIR /opt/proteina

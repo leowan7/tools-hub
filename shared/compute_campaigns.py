@@ -58,6 +58,11 @@ _TABLE = "compute_campaigns"
 # mirroring how bindcraft was scaled.
 SUPPORTED_TOOLS: tuple[str, ...] = (
     "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "rfantibody",
+    # proteina: 1 shard = 1 fixed A100-80GB container running one seeded
+    # `proteinfoundation.generate` job; num_designs scales the shard count.
+    # Ships behind FLAG_TOOL_PROTEINA (off); its 4 presets are the design
+    # variants, not the "pilot" tier the others carry.
+    "proteina",
 )
 
 # The tool-specific form field that carries the per-chunk design count.
@@ -69,6 +74,7 @@ _DESIGN_PARAM_KEY: Mapping[str, str] = {
     "boltzgen": "budget",
     "pxdesign": "num_designs",
     "rfantibody": "num_designs",
+    "proteina": "num_designs",
 }
 
 # boltzgen returns up to ``budget`` designs (validator caps budget at 50)
@@ -102,6 +108,30 @@ _DISPATCH_ATTEMPT_SLACK = 8
 # column default is 20 but create_campaign always writes this value explicitly.)
 DEFAULT_CONCURRENCY_TARGET = 16
 DEFAULT_MAX_ATTEMPTS = 2
+
+# Per-tool launch concurrency override. A proteina shard is heavy (A100-80GB with
+# co-resident AF2/RF3 folders) and unproven, so a proteina campaign starts at a
+# low in-flight target to keep the instantaneous held amount (~concurrency x the
+# per-shard hold) and the Modal blast radius small until the P4/P5 canaries
+# calibrate it. Fund-and-drain still runs the full campaign; this only throttles
+# how many shards are in flight at once. Tools not listed use the global default.
+_LAUNCH_CONCURRENCY_OVERRIDE: Mapping[str, int] = {"proteina": 4}
+
+# Tools that ONLY run as a campaign — they have no viable single-job atomic tier
+# (every run is too heavy for one container), so /tools/<slug> routes to the
+# campaign create flow instead of an atomic form. The other campaign tools also
+# expose an atomic form for small single runs; proteina does not.
+CAMPAIGN_ONLY_TOOLS: frozenset[str] = frozenset({"proteina"})
+
+
+def launch_concurrency_for(tool: str) -> int:
+    """The in-flight shard target a new campaign of ``tool`` starts at.
+
+    Mirrors what ``create_campaign`` writes onto the row, so the first-wave
+    START gate (``first_wave_hold_usd``) can size the required balance to the
+    shards that will actually launch first rather than the global default.
+    """
+    return _LAUNCH_CONCURRENCY_OVERRIDE.get(tool, DEFAULT_CONCURRENCY_TARGET)
 
 # Global per-user in-flight sub-job cap across ALL of a user's campaigns. A
 # load/fairness guard (stops one user flooding Modal), NOT a spend guard - the
@@ -196,7 +226,12 @@ _CAMPAIGN_CONTAINER_S: Mapping[str, int] = {
 # container). pxdesign's pilot does up to 24 designs in one 3600s container, but
 # the wallet spec's gpu_s/design is miscalibrated for it (it implies ~2), so pin
 # the chunk to the validated single-job maximum of 24.
-_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24}
+# proteina: one search shard emits nsamples x nrepeat x best_of_n.replicas designs
+# (protein_binder default 4 x 1 x 2 = 8) from one fixed container, then the hub does
+# global cross-shard top-K. Pin the chunk to that 8-design shard yield so num_designs
+# splits into ceil(num_designs / 8) shards. Refit if a variant's default output count
+# changes.
+_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24, "proteina": 8}
 
 # Tools whose GPU cost is one fixed container per sub-job regardless of the
 # chunk's design count, so BOTH the point estimate and the wallet hold price at
@@ -207,19 +242,25 @@ _CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24}
 #   * boltzgen: one fixed 200-design pool; returned-count (budget) is free.
 #   * pxdesign: one 3600s pilot container does the whole 24-design chunk; the
 #     spec's per-design rate is miscalibrated (implies ~12 containers for 24).
-_FIXED_CONTAINER_TOOLS: tuple[str, ...] = ("boltzgen", "pxdesign")
+#   * proteina: one shard = one fixed container returning up to 8 designs; the
+#     shard cost is one container regardless of how many designs survive filter,
+#     so both the estimate AND the hold price at the baseline (scale 1.0). Omitting
+#     proteina here would per-design-scale the hold and inflate the first-wave gate.
+_FIXED_CONTAINER_TOOLS: tuple[str, ...] = ("boltzgen", "pxdesign", "proteina")
 
 
-def _campaign_container_seconds(tool: str) -> int:
+def _campaign_container_seconds(tool: str, preset: str = "pilot") -> int:
     """GPU-seconds a campaign sizes ONE sub-job against.
 
     Defaults to the pilot container; tools in ``_CAMPAIGN_CONTAINER_S`` use a
-    bigger one because their Modal session runs up to 23h.
+    bigger one because their Modal session runs up to 23h. ``preset`` selects the
+    PRESET_CAPS row for tools whose campaign preset is not "pilot" (e.g. proteina
+    variants); the 5 live campaign tools always pass "pilot", unchanged.
     """
     override = _CAMPAIGN_CONTAINER_S.get(tool)
     if override is not None:
         return override
-    return preset_gpu_seconds(tool, "pilot")
+    return preset_gpu_seconds(tool, preset)
 
 
 def _campaign_session_inputs(tool: str) -> dict:
@@ -238,7 +279,7 @@ def _campaign_session_inputs(tool: str) -> dict:
     return {}
 
 
-def _chunk_size_for(tool: str) -> int:
+def _chunk_size_for(tool: str, preset: str = "pilot") -> int:
     """Designs per sub-job for ``tool``, sized to one campaign container.
 
     A tool in ``_CHUNK_SIZE_OVERRIDE`` pins the chunk to its validated pilot job.
@@ -257,7 +298,7 @@ def _chunk_size_for(tool: str) -> int:
     gpu_s_per_design = float(spec.expected_gpu_seconds) / float(
         spec.designs_per_run_baseline
     )
-    container_s = _campaign_container_seconds(tool)
+    container_s = _campaign_container_seconds(tool, preset)
     if gpu_s_per_design <= 0 or container_s <= 0:
         return spec.designs_per_run_baseline
     size = int((container_s * _CONTAINER_UTILIZATION) / gpu_s_per_design)
@@ -266,7 +307,7 @@ def _chunk_size_for(tool: str) -> int:
     return max(size, spec.designs_per_run_baseline)
 
 
-def single_container_ceiling(tool: str) -> int:
+def single_container_ceiling(tool: str, preset: str = "pilot") -> int:
     """Max designs one GPU container reliably does for ``tool``.
 
     This is exactly the campaign chunk size: the point above which a single-job
@@ -274,10 +315,10 @@ def single_container_ceiling(tool: str) -> int:
     campaign. Used by the tool forms (D1 auto-route threshold) and the
     ``tool_submit`` backstop. Only meaningful for ``SUPPORTED_TOOLS``.
     """
-    return _chunk_size_for(tool)
+    return _chunk_size_for(tool, preset)
 
 
-def _estimate_chunk_cost(tool: str, chunk_size: int) -> Decimal:
+def _estimate_chunk_cost(tool: str, chunk_size: int, preset: str = "pilot") -> Decimal:
     """USD estimate for ONE sub-job of ``tool`` at ``chunk_size`` designs."""
     spec = get_tool_spec(tool)
     # Fixed-container tools (see _FIXED_CONTAINER_TOOLS) cost one container
@@ -288,14 +329,16 @@ def _estimate_chunk_cost(tool: str, chunk_size: int) -> Decimal:
     else:
         designs_for_estimate = chunk_size
     return estimated_cost_for_tool(
-        None, tool, {"num_designs": designs_for_estimate, "preset": "pilot"}
+        None, tool, {"num_designs": designs_for_estimate, "preset": preset}
     )
 
 
-def plan_chunks(tool: str, requested_designs: int) -> ChunkPlan:
+def plan_chunks(tool: str, requested_designs: int, preset: str = "pilot") -> ChunkPlan:
     """Plan how a design request splits into sub-jobs. Pure; raises ValueError.
 
     The ValueError messages are user-facing (surfaced on the create form).
+    ``preset`` is carried onto the plan/campaign row and selects the tool's
+    container/cost profile; the 5 live campaign tools pass "pilot" (unchanged).
     """
     if tool not in SUPPORTED_TOOLS:
         raise ValueError(
@@ -308,7 +351,7 @@ def plan_chunks(tool: str, requested_designs: int) -> ChunkPlan:
     if requested < 1:
         raise ValueError("Number of designs must be at least 1.")
 
-    chunk_size = _chunk_size_for(tool)
+    chunk_size = _chunk_size_for(tool, preset)
     total_subjobs = math.ceil(requested / chunk_size)
     if total_subjobs > MAX_SUBJOBS_PER_CAMPAIGN:
         max_designs = MAX_SUBJOBS_PER_CAMPAIGN * chunk_size
@@ -319,13 +362,13 @@ def plan_chunks(tool: str, requested_designs: int) -> ChunkPlan:
             f"it into multiple campaigns."
         )
 
-    est_per_chunk = _estimate_chunk_cost(tool, chunk_size)
+    est_per_chunk = _estimate_chunk_cost(tool, chunk_size, preset)
     budget = _quantize_usd(
         Decimal(total_subjobs) * est_per_chunk * BUDGET_BUFFER
     )
     return ChunkPlan(
         tool=tool,
-        preset="pilot",
+        preset=preset,
         requested_designs=requested,
         chunk_size=chunk_size,
         total_subjobs=total_subjobs,
@@ -468,6 +511,7 @@ def create_campaign(
     tool: str,
     params: Mapping[str, object],
     requested_designs: int,
+    preset: str = "pilot",
     name: Optional[str] = None,
     target_pdb_id: Optional[str] = None,
     target_storage_path: Optional[str] = None,
@@ -477,9 +521,10 @@ def create_campaign(
 
     Raises ValueError (user-facing) when the request cannot be planned
     (unsupported tool, bad count, over the sub-job cap). Returns None on a
-    persistence failure.
+    persistence failure. ``preset`` selects the tool's container/cost profile
+    (proteina variants); the 5 live campaign tools pass "pilot" (unchanged).
     """
-    plan = plan_chunks(tool, requested_designs)
+    plan = plan_chunks(tool, requested_designs, preset)
     client = get_service_client()
     if client is None:
         logger.error("create_campaign: Supabase service client unavailable.")
@@ -501,7 +546,7 @@ def create_campaign(
         "requested_designs": plan.requested_designs,
         "chunk_size": plan.chunk_size,
         "total_subjobs": plan.total_subjobs,
-        "concurrency_target": DEFAULT_CONCURRENCY_TARGET,
+        "concurrency_target": launch_concurrency_for(tool),
         "max_attempts": DEFAULT_MAX_ATTEMPTS,
         "status": "draft",
         "budget_usd": float(plan.budget_usd),
@@ -698,7 +743,7 @@ def _campaign_spend_today(user_id: str) -> Decimal:
     return total
 
 
-def estimate_child_cost(tool: str, design_count: int) -> Decimal:
+def estimate_child_cost(tool: str, design_count: int, preset: str = "pilot") -> Decimal:
     """Point-estimate USD for one sub-job at ``design_count`` designs.
 
     The non-binding forecast input and the value stored on the child as
@@ -706,10 +751,10 @@ def estimate_child_cost(tool: str, design_count: int) -> Decimal:
     linear tools scale by the count. The wallet HOLD (reservation) is sized
     separately and cushioned, see :func:`child_hold_usd`.
     """
-    return _estimate_chunk_cost(tool, int(design_count))
+    return _estimate_chunk_cost(tool, int(design_count), preset)
 
 
-def child_hold_usd(tool: str, design_count: int) -> Decimal:
+def child_hold_usd(tool: str, design_count: int, preset: str = "pilot") -> Decimal:
     """Cushioned USD to HOLD for one sub-job (the wallet reservation).
 
     A cushion above the point estimate so actual usually settles under the
@@ -725,7 +770,7 @@ def child_hold_usd(tool: str, design_count: int) -> Decimal:
     else:
         designs_for_estimate = int(design_count)
     return cushioned_hold_usd(
-        None, tool, {"num_designs": designs_for_estimate, "preset": "pilot"}
+        None, tool, {"num_designs": designs_for_estimate, "preset": preset}
     )
 
 
@@ -741,7 +786,7 @@ def first_wave_hold_usd(
     """
     waves = min(int(plan.total_subjobs), int(concurrency_target))
     waves = max(waves, 1)
-    return _quantize_usd(child_hold_usd(plan.tool, plan.chunk_size) * waves)
+    return _quantize_usd(child_hold_usd(plan.tool, plan.chunk_size, plan.preset) * waves)
 
 
 def can_dispatch_more(
@@ -799,6 +844,7 @@ def _ensure_adapters() -> None:
         import tools.rfdiffusion  # noqa: F401,PLC0415
         import tools.bindcraft  # noqa: F401,PLC0415
         import tools.boltzgen  # noqa: F401,PLC0415
+        import tools.proteina  # noqa: F401,PLC0415
     except Exception:
         logger.warning("_ensure_adapters: tool import failed", exc_info=True)
 
@@ -917,8 +963,8 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     base_inputs[_DESIGN_PARAM_KEY[campaign.tool]] = design_count
     base_inputs["preset"] = campaign.preset
 
-    point_estimate = estimate_child_cost(campaign.tool, design_count)
-    hold_amount = child_hold_usd(campaign.tool, design_count)
+    point_estimate = estimate_child_cost(campaign.tool, design_count, campaign.preset)
+    hold_amount = child_hold_usd(campaign.tool, design_count, campaign.preset)
     hold_tx_id = reserve_hold(
         campaign.user_id, campaign.tool, None, hold_amount, base_inputs
     )
