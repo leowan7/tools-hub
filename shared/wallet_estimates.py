@@ -242,6 +242,33 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("10.00"),
         absolute_cap_usd=Decimal("300.00"),
     ),
+    "iggm": ToolSpec(
+        slug="iggm",
+        gpu_class="A100-40GB",
+        # Refit from the canary: one diffusion pass measured ~24 s, plus a
+        # ~30 s model load per job, so a single-pass job (complex_prediction,
+        # I-1) ran ~51-59 s. 60 s/pass is the conservative bootstrap — it never
+        # under-holds the 1-pass baseline and over-reserves multi-pass runs
+        # (released as surplus on settle) until historical p90 takes over at
+        # >=20 runs. NOTE: the scaling value is the TOTAL inference passes, not
+        # raw num_samples — affinity_maturation expands per masked position, so
+        # ``_effective_scaling_value`` multiplies by the FASTA mask count. The
+        # session cap physically bounds any single job at ~3570 s ≈ $4.34.
+        expected_gpu_seconds=60.0,
+        designs_per_run_baseline=1,
+        scaling_param="num_samples",
+        # base_hard_cap is the ceiling at 1 pass. The scaled cap grows with the
+        # effective pass count (compute_hard_cap) up to the $75 absolute ceiling.
+        # For maturation (>=2 passes) the scaled cap is >= $6, above the ~$4.37 a
+        # full 3600 s session can bill, so the customer is never over-charged.
+        # For the rare 1-pass presets (complex_prediction / inverse_design) a
+        # pathological full-session hang would bill ~$4.37, clamped here to
+        # $3.00 with Ranomics absorbing the ~$1.37 remainder — an intentional
+        # customer-protection choice, not an under-hold (holds are estimate-
+        # driven; settle clamps the charge to this cap).
+        base_hard_cap_usd=Decimal("3.00"),
+        absolute_cap_usd=Decimal("75.00"),
+    ),
 }
 
 
@@ -321,7 +348,7 @@ def compute_hard_cap(
     params = dict(params or {})
     if not spec.scaling_param:
         return spec.base_hard_cap_usd
-    actual = _safe_float(params.get(spec.scaling_param), spec.designs_per_run_baseline)
+    actual = _effective_scaling_value(spec, params)
     scale_factor = max(actual / float(spec.designs_per_run_baseline), 1.0)
     scaled = spec.base_hard_cap_usd * Decimal(str(scale_factor))
     return _quantize_usd(min(scaled, spec.absolute_cap_usd))
@@ -397,13 +424,64 @@ def _historical_p90_seconds(tool_slug: str) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 
+def _iggm_mask_count(params: Mapping[str, object]) -> int:
+    """Count masked (X) positions in the pasted antibody FASTA.
+
+    The estimator receives the raw form, so ``params['fasta']`` is the
+    antibody design FASTA (headers + sequence lines, X = design mask, no
+    antigen record). Count X only on sequence lines. Returns 0 when the FASTA
+    is absent (e.g. the live GET preview passes only query args) — the caller
+    then falls back to the raw sample count.
+    """
+    fasta = params.get("fasta")
+    if not isinstance(fasta, str) or not fasta:
+        return 0
+    # Uppercase before counting: ``tools.iggm.validate`` uppercases the FASTA
+    # before computing n_masked (and design.py runs on the uppercased sequence),
+    # so a lowercase ``x`` mask is a real design position. Counting only "X" here
+    # would under-hold whenever the user typed lowercase masks.
+    return sum(
+        line.upper().count("X") for line in fasta.splitlines()
+        if not line.lstrip().startswith(">")
+    )
+
+
+def _effective_scaling_value(spec: ToolSpec, params: Mapping[str, object]) -> float:
+    """The scaling-parameter value, with tool-specific expansion applied.
+
+    Almost every tool runs one inference pass per unit of its scaling
+    parameter, so the raw value is used directly. IgGM's ``affinity_maturation``
+    is the exception: it runs one pass PER masked position PER sample, so the
+    true compute is ``num_samples * n_masked``. Scaling on raw ``num_samples``
+    there would under-hold by the mask-count factor, so we expand it to mirror
+    ``tools.iggm.validate`` (both derive the same product from the same inputs).
+
+    Two callers pass different ``params`` shapes: the submit-time hold passes the
+    raw form (has ``fasta`` but no ``total_passes``), while settle/estimate on a
+    stored job passes the job_spec (has the pre-computed ``total_passes`` but the
+    FASTA only as a parsed list, no top-level ``fasta`` string). Prefer the
+    stored ``total_passes`` when present — it is the authoritative pass count —
+    then fall back to deriving it from the FASTA mask count."""
+    raw = _safe_float(params.get(spec.scaling_param), spec.designs_per_run_baseline)
+    if spec.slug == "iggm" and str(params.get("preset") or "").lower() == "affinity_maturation":
+        stored = params.get("total_passes")
+        if stored is not None:
+            val = _safe_float(stored, 0.0)
+            if val > 0:
+                return val
+        n_masked = _iggm_mask_count(params)
+        if n_masked > 0:
+            return raw * n_masked
+    return raw
+
+
 def _scale_seconds(
     base_seconds: float, spec: ToolSpec, params: Mapping[str, object]
 ) -> float:
     """Scale a baseline gpu_seconds value by the relevant parameter ratio."""
     if not spec.scaling_param:
         return float(base_seconds)
-    actual = _safe_float(params.get(spec.scaling_param), spec.designs_per_run_baseline)
+    actual = _effective_scaling_value(spec, params)
     if spec.designs_per_run_baseline <= 0:
         return float(base_seconds)
     ratio = max(actual / float(spec.designs_per_run_baseline), 1.0)

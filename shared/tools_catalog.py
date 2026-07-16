@@ -102,6 +102,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "rfantibody": "Design binders",
     "esmfold2-design": "Design binders",
     "boltzgen": "Design binders",
+    "iggm": "Design binders",
     "mpnn": "Sequence on a backbone",
     "af2": "Structure prediction",
     "colabfold": "Structure prediction",

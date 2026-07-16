@@ -130,6 +130,19 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     # observed wall-clock distributions from the first prod batches.
     ("esmfold2-design", "minibinder"): 2400,
     ("esmfold2-design", "scfv"):       2400,
+    # IgGM antibody/nanobody design (diffusion) on A100-40GB. Canary-measured:
+    # ~24 s per diffusion pass + ~35 s model load. Every preset is bounded to
+    # MAX_TOTAL_PASSES=100 inference passes (tools.iggm), so the realistic max
+    # wall-clock is ~35 + 100*24 ≈ 2435 s + heartbeat/upload overhead ≈ 2600 s.
+    # affinity_maturation runs one pass PER masked position PER sample, so its
+    # 100-pass ceiling is the num_samples*n_masked product (not raw samples).
+    # Uniform 3000 s ceiling covers that with margin, under the 3570 s Modal
+    # subprocess timeout. Historical p90 supersedes once >=20 runs land.
+    ("iggm", "complex_prediction"):  3000,
+    ("iggm", "cdr_design"):          3000,
+    ("iggm", "fr_design"):           3000,
+    ("iggm", "affinity_maturation"): 3000,
+    ("iggm", "inverse_design"):      3000,
     # Composite pipelines. smoke + mini_pilot tiers were removed
     # 2026-05-29; pilot is the only user-facing tier and full is reserved
     # for AI Binder Sprint runs that go through the webhook flow.

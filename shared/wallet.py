@@ -131,6 +131,7 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     "pxdesign":    Decimal("500.00"),
     "boltzgen":    Decimal("300.00"),
     "boltz2":      Decimal("50.00"),
+    "iggm":        Decimal("75.00"),
 }
 
 

@@ -323,6 +323,12 @@ _PREVIEW_SEO_PHRASES: dict[str, tuple[str, str]] = {
         "AF2-initial-guess binder generation with real ipTM, pLDDT, "
         "and pAE on every candidate"
     ),
+    "iggm": (
+        "IgGM antibody and nanobody design online",
+        "Design or humanize an antibody or nanobody against your "
+        "antigen, or predict the antibody-antigen complex, in one "
+        "diffusion model"
+    ),
 }
 
 def _preview_seo_phrases(slug: str) -> tuple[str, str]:
@@ -355,6 +361,7 @@ _PREVIEW_TITLE_PHRASES: dict[str, str] = {
     "boltz2": "Cofold Validation",
     "pxdesign": "AF2-IG Binder Design",
     "esmfold2-design": "scFv CDR Design",
+    "iggm": "Antibody Design + Structure",
 }
 
 def _preview_title_phrase(slug: str) -> str:
@@ -384,8 +391,9 @@ _RELATED_TOOLS: dict[str, tuple[str, ...]] = {
     "rfdiffusion": ("bindcraft", "pxdesign", "boltzgen"),
     "bindcraft":   ("rfdiffusion", "boltzgen", "pxdesign"),
     "pxdesign":    ("rfdiffusion", "bindcraft", "boltzgen"),
-    "boltzgen":    ("rfdiffusion", "rfantibody", "bindcraft"),
-    "rfantibody":  ("boltzgen", "rfdiffusion", "bindcraft"),
+    "boltzgen":    ("rfantibody", "iggm", "rfdiffusion"),
+    "rfantibody":  ("boltzgen", "iggm", "rfdiffusion"),
+    "iggm":        ("rfantibody", "boltzgen", "boltz2"),
     "mpnn":        ("af2", "colabfold", "esmfold"),
     "af2":         ("colabfold", "esmfold", "mpnn"),
     "colabfold":   ("af2", "esmfold", "mpnn"),
