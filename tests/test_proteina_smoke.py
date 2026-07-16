@@ -254,16 +254,18 @@ class TestDesignCmd:
 
 class TestRewardParse:
     def _make_run(self, tmp_path):
-        # A synthetic reward CSV + matching PDBs under a nested run dir.
+        # Synthetic reward CSV using the REAL verified PROTEIN column names
+        # (af2folding_* + pdb_path), matching the P-2 canary output @916eaaed.
+        # protein total_reward is NEGATIVE (== -i_pae), so higher is better.
         run = tmp_path / "run"
-        sub = run / "inference" / "samples"
+        sub = run / "inference" / "search_binder_local_pipeline_02_PDL1_s"
         sub.mkdir(parents=True)
         (sub / "design_A.pdb").write_text("ATOM\n")
         (sub / "design_B.pdb").write_text("ATOM\n")
         csv_text = (
-            "sample,total_reward,af2_iptm,plddt,rf3,scrmsd,cluster\n"
-            "design_A,0.40,0.70,88.0,0.55,1.2,0\n"
-            "design_B,0.90,0.85,92.0,0.61,0.8,1\n"
+            "pdb_path,pdb_index,total_reward,af2folding_i_ptm_log,af2folding_plddt,af2folding_rmsd,sample_type,metadata_tag\n"
+            f"{sub / 'design_A.pdb'},0,-0.60,0.18,0.62,5.2,final,design_A\n"
+            f"{sub / 'design_B.pdb'},1,-0.45,0.30,0.71,0.8,final,design_B\n"
         )
         (run / "inference" / "rewards_search_binder_local_pipeline_0.csv").write_text(csv_text)
         return run
@@ -273,16 +275,33 @@ class TestRewardParse:
         run = self._make_run(tmp_path)
         designs = rp.parse_designs(run)
         assert len(designs) == 2
-        # ranked by total_reward desc -> design_B first
+        # ranked by total_reward desc -> design_B (-0.45) beats design_A (-0.60)
         assert designs[0]["name"] == "design_B"
         assert designs[0]["rank"] == 0
         s = designs[0]["scores"]
-        assert s["total_reward"] == 0.9
-        assert s["af2_iptm"] == 0.85
-        assert s["af2_plddt"] == 92.0
-        assert s["rf3_score"] == 0.61
-        assert s["binder_scrmsd"] == 0.8
-        assert s["cluster_id"] == 1 and isinstance(s["cluster_id"], int)
+        assert s["total_reward"] == -0.45
+        assert s["af2_iptm"] == 0.30       # af2folding_i_ptm_log
+        assert s["af2_plddt"] == 0.71      # af2folding_plddt
+        assert s["binder_scrmsd"] == 0.8   # af2folding_rmsd
+        assert s["rf3_score"] is None      # protein reward has no rf3 column
+        assert s["cluster_id"] is None     # diversity assigned at the hub
+
+    def test_ligand_columns_map(self, tmp_path):
+        # Ligand reward CSV uses rf3folding_* names (P-3 canary). Verify the
+        # tolerant mapping picks them up for the same display keys.
+        rp = pytest.importorskip("tools.proteina.run_pipeline")
+        run = tmp_path / "lig"
+        (run / "inference").mkdir(parents=True)
+        csv_text = (
+            "pdb_path,total_reward,rf3folding_ipTM,rf3folding_plddt,rf3folding_ranking_score,metadata_tag\n"
+            "b.pdb,0.87,0.86,0.85,0.868,lig_B\n"
+        )
+        (run / "inference" / "rewards_search_ligand_binder_local_pipeline_0.csv").write_text(csv_text)
+        s = rp.parse_designs(run)[0]["scores"]
+        assert s["af2_iptm"] == 0.86       # rf3folding_ipTM
+        assert s["af2_plddt"] == 0.85      # rf3folding_plddt
+        assert s["rf3_score"] == 0.868     # rf3folding_ranking_score
+        assert s["binder_scrmsd"] is None  # ligand has no rmsd column
 
     def test_pdb_match(self, tmp_path):
         rp = pytest.importorskip("tools.proteina.run_pipeline")

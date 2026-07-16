@@ -286,6 +286,15 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # takes over at >=20 runs. designs_per_run_baseline mirrors the 8-design
         # shard yield pinned in _CHUNK_SIZE_OVERRIDE. One spec covers all 4
         # presets; per-variant differences live in PRESET_CAPS + container sizing.
+        #
+        # CANARY-MEASURED wall-clock (P-2/P-3 @916eaaed, 8-design shard, A100-80GB):
+        #   protein_binder 02_PDL1        ~553 s  -> ~$0.97 charge  (65 GB peak VRAM)
+        #   ligand_binder  39_7V11_LIGAND ~1343 s -> ~$2.35 charge  (7.3 GB; slower
+        #     because LigandMPNN designability runs in evaluate).
+        # Both « the 7200 s cap and « the $15 hold, so the settle refunds most of
+        # the hold. The hold is deliberately NOT lowered: as a fixed-container tool
+        # it charges ACTUAL wall-clock and the hold must stay >= the container's
+        # $12.58 physical-max charge to never under-hold a worst-case shard.
         expected_gpu_seconds=7200.0,
         designs_per_run_baseline=8,
         scaling_param="num_designs",

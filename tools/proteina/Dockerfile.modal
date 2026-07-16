@@ -84,6 +84,19 @@ RUN /opt/proteina/.venv/bin/python -m ensurepip --upgrade || true
 RUN /opt/proteina/.venv/bin/uv pip install requests rdkit \
     || /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
 
+# Community inverse-folding weights for the EVALUATE designability metric. The
+# ligand variant's evaluate runs LigandMPNN (metrics/inverse_folding_models.py
+# run_ligandmpnn -> ligandmpnn_v_32_010_25.pt); the P-3 canary proved evaluate
+# exits 1 without it AFTER the RF3 reward CSV is written. run_pipeline's
+# tolerant-delivery path still ships those RF3-scored designs, but seeding the
+# weights is the clean happy path (proper exit 0 + designability metric).
+# ProteinMPNN too as insurance. Both are ungated github/IPD downloads via the
+# authors' own download_startup.sh (~550MB, baked in — NOT on a Volume, so a
+# download failure surfaces at build, never at a paid run). BUILD-TIME-VERIFY:
+# if the LigandMPNN get_model_params.sh host is unreachable at build, pin the
+# ligandmpnn_v_32_010_25.pt URL directly instead.
+RUN cd /opt/proteina && bash env/download_startup.sh --pmpnn --ligmpnn
+
 # Point the generator + reward stack at the runtime-mounted Volumes. modal_app
 # mounts proteina-weights -> /opt/proteina/ckpts and proteina-rewards ->
 # /opt/proteina/rewards; these ENV vars must stay in lockstep with those mounts.
@@ -136,7 +149,16 @@ ENV PROTEINA_HOME=/opt/proteina \
     FOLDSEEK_EXEC=/usr/local/bin/foldseek \
     MMSEQS_EXEC=/usr/local/bin/mmseqs \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    PROTEINA_RF3=on
+    PROTEINA_RF3=on \
+    COMPLEXA_INIT=docker
+
+# `complexa design` (and generate/filter/evaluate/analyze) are gated by
+# cli_runner._check_complexa_init: they exit 1 with "Environment not
+# initialized" unless os.environ["COMPLEXA_INIT"] is truthy. `complexa init`
+# normally writes .env + env.sh which `source env.sh` sets (env.sh does
+# `export COMPLEXA_INIT="<runtime>"`). We set every real env var directly as
+# Docker ENV, so we only need the sentinel. `validate` is init-exempt (why the
+# P-1 smoke passed). Any non-empty value works; "docker" matches the runtime.
 
 # Mount points must be EMPTY: Modal refuses `cannot mount volume on non-empty
 # path`. Create /opt/proteina/{ckpts,rewards} bare (the Volumes supply their

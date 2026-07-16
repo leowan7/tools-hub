@@ -102,16 +102,25 @@ _ALL_CONFIGS = (
 # RF3 kill-switch. Off-values mirror the tools-hub CSRF_PROTECT=0 pattern.
 _RF3_OFF = {"off", "false", "0", "no"}
 
-# Results columns the viewer renders (proteina_results.html). Each maps to one
-# or more tolerant upstream column-name candidates (BUILD-TIME-VERIFY the exact
-# spellings against the reward CSV at canary; unmatched -> None -> hidden).
+# Results columns the viewer renders (proteina_results.html). Column names are
+# VERIFIED against the P-2 (protein: af2folding_*) and P-3 (ligand: rf3folding_*)
+# canary reward CSVs @916eaaed. Each display key lists the real upstream columns
+# for BOTH variants; the tolerant _pick takes the first that exists (unmatched ->
+# None -> hidden by the renderer).
+#   protein_binder reward = af2folding_* (AF2 refold); total_reward == -i_pae.
+#   ligand_binder  reward = rf3folding_* (RF3 fold);   ranking_score is the summary.
 _SCORE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "total_reward": ("total_reward", "reward", "score", "total_score"),
-    "af2_iptm": ("af2_iptm", "iptm", "af2_ iptm", "af2_ipTM", "ipTM"),
-    "af2_plddt": ("af2_plddt", "plddt", "af2_pLDDT", "pLDDT"),
-    "rf3_score": ("rf3_score", "rf3", "rf3_reward", "rf3folding", "rf3_plddt"),
-    "binder_scrmsd": ("binder_scrmsd", "scrmsd", "sc_rmsd", "binder_rmsd", "self_consistency_rmsd"),
-    "cluster_id": ("cluster_id", "cluster", "cluster_idx", "diversity_cluster"),
+    "total_reward": ("total_reward",),
+    # interface pTM: raw for ligand (rf3folding_ipTM), log-only for protein.
+    "af2_iptm": ("rf3folding_ipTM", "af2folding_i_ptm_log", "af2_iptm", "iptm"),
+    # pLDDT (0-1): af2folding_plddt (protein) / rf3folding_plddt (ligand).
+    "af2_plddt": ("af2folding_plddt", "rf3folding_plddt", "af2_plddt", "plddt"),
+    # RF3 summary (ligand only): the fold ranking score (0-1, higher better).
+    "rf3_score": ("rf3folding_ranking_score", "rf3_score"),
+    # self-consistency RMSD (protein AF2 refold; absent for the ligand variant).
+    "binder_scrmsd": ("af2folding_rmsd", "binder_scrmsd", "scrmsd"),
+    # cross-shard diversity is assigned at the hub, not in the per-shard CSV.
+    "cluster_id": ("cluster_id",),
 }
 # Candidate columns for a PDB path/name in the reward CSV (tolerant).
 _PDB_PATH_COLUMNS = ("pdb_path", "path", "sample_path", "structure_path", "filepath", "file")
@@ -628,10 +637,24 @@ def main() -> None:
         rc = run_streaming(cmd, work_dir)
     except FileNotFoundError:
         _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
-    if rc != 0:
-        _fail("search", "complexa", f"`complexa design` exited {rc}")
 
     designs = parse_designs(run_dir)
+    # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
+    # stage can exit nonzero AFTER the reward CSV (with complete scores) is
+    # already written — observed on the ligand path (P-3 canary: 8 designs fully
+    # RF3-scored, then exit 1). Cross-shard diversity is assigned at the hub, so
+    # we still DELIVER designs that were fully scored; only fail when the nonzero
+    # exit left nothing scored to deliver (a genuine early failure).
+    n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+    if rc != 0:
+        if n_scored == 0:
+            _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
+        logger.warning(
+            "complexa design exited %d but %d/%d designs are fully scored — delivering "
+            "(late analyze/eval failure is non-fatal; hub does cross-shard diversity)",
+            rc, n_scored, len(designs),
+        )
+
     if not designs:
         # A shard that legitimately produced no survivors still COMPLETES
         # with zero candidates — the campaign pools survivors across shards,
