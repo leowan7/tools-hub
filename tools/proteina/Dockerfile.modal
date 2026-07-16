@@ -138,5 +138,9 @@ ENV PROTEINA_HOME=/opt/proteina \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PROTEINA_RF3=on
 
-RUN mkdir -p /opt/proteina/ckpts /opt/proteina/rewards/ckpts /opt/proteina/.cache
+# Mount points must be EMPTY: Modal refuses `cannot mount volume on non-empty
+# path`. Create /opt/proteina/{ckpts,rewards} bare (the Volumes supply their
+# contents, incl. rewards/ckpts/{AF2,ESM2,RF3}); NEVER pre-create a subdir under
+# a Volume mount point. .cache is a plain writable dir (not a mount).
+RUN mkdir -p /opt/proteina/ckpts /opt/proteina/rewards /opt/proteina/.cache
 WORKDIR /opt/proteina
