@@ -11,13 +11,19 @@ Populates two Volumes (created by ``tools/proteina/modal_app.py``):
                                nvidia/NV-Proteina-Complexa-Protein-Target-160M-v1
                                nvidia/NV-Proteina-Complexa-Ligand-Target-160M-v1
                                nvidia/NV-Proteina-Complexa-AME-160M-v1
-                             (NVIDIA Open Model License, commercial OK.)
+                             (NVIDIA Open Model License, commercial OK.) The *.ckpt
+                             files land at the Volume root; it mounts at
+                             /opt/proteina/ckpts so the configs' `ckpt_path:
+                             ./ckpts` (cwd=/opt/proteina) resolves.
 
   proteina-rewards  (~18 GB) the reward stack artifacts (NO reference DBs — the
                              stack does all-vs-all self-comparison), laid out to
-                             match the Dockerfile ENV:
-                               ckpts/AF2/params/   AF2 params (CC-BY-4.0)   ~5 GB
+                             match the Dockerfile ENV (verified against upstream
+                             download_startup.sh):
+                               ckpts/AF2/          AF2 params (CC-BY-4.0)   ~5 GB
+                                                   (npz flat, no params/ subdir)
                                ckpts/ESM2/         facebook/esm2_t33_650M   ~2.6 GB
+                                                   (HF cache layout, models--*/)
                                ckpts/RF3/          RF3 foundry ckpt (BSD)   ~10 GB
 
 All sources are ungated direct downloads (verified 2026-07-16). The RF3 CODE
@@ -100,22 +106,29 @@ def seed() -> dict:
     weights.commit()
 
     # --- rewards: AF2 params -------------------------------------------------
+    # The npz params extract DIRECTLY into AF2_DIR (flat, NO params/ subdir): the
+    # code reads AF2_DIR/params_model_*.npz. This mirrors upstream
+    # download_startup.sh (tar -C community_models/ckpts/AF2, then verifies
+    # params_model_5_ptm.npz sits directly in that dir).
     af2_dir = f"{_REWARDS_MOUNT}/ckpts/AF2"
     af2_tar = f"{af2_dir}/alphafold_params_2022-12-06.tar"
-    if not os.path.isdir(f"{af2_dir}/params"):
+    if not os.path.isfile(f"{af2_dir}/params_model_5_ptm.npz"):
+        os.makedirs(af2_dir, exist_ok=True)
         _download(_AF2_TAR_URL, af2_tar)
-        print("[seed] extracting AF2 params", flush=True)
-        os.makedirs(f"{af2_dir}/params", exist_ok=True)
+        print("[seed] extracting AF2 params (flat into AF2_DIR, no params/ subdir)", flush=True)
         with tarfile.open(af2_tar) as tf:
-            tf.extractall(f"{af2_dir}/params")
+            tf.extractall(af2_dir)
         os.remove(af2_tar)
 
     # --- rewards: ESM2 -------------------------------------------------------
-    print(f"[seed] HF snapshot {_ESM2_REPO}", flush=True)
+    # esm_eval.get_esm_model() calls from_pretrained(model_name, cache_dir=ESM_DIR,
+    # local_files_only=True), so ESM_DIR must be an HF *cache* dir (containing the
+    # models--facebook--esm2_t33_650M_UR50D/ tree), NOT a flattened local_dir. Use
+    # cache_dir= so the on-disk layout is exactly what from_pretrained expects.
+    print(f"[seed] HF snapshot {_ESM2_REPO} (HF cache layout under ESM_DIR)", flush=True)
     snapshot_download(
         repo_id=_ESM2_REPO,
-        local_dir=f"{_REWARDS_MOUNT}/ckpts/ESM2",
-        local_dir_use_symlinks=False,
+        cache_dir=f"{_REWARDS_MOUNT}/ckpts/ESM2",
     )
 
     # --- rewards: RF3 checkpoint --------------------------------------------

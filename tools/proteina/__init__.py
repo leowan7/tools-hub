@@ -77,11 +77,19 @@ _DEFAULT_TASK: dict[str, str] = {
     # Curated benchmark tasks, each a top-level key in the upstream config dicts
     # (protein: configs/targets/targets_dict.yaml; ligand:
     # configs/targets/ligand_targets_dict.yaml; AME:
-    # configs/design_tasks/ame_dict_v2.yaml). AME task names are M-prefixed —
-    # there is NO "01_AME" task; M0024_1nzy is a real motif/enzyme task.
+    # configs/design_tasks/ame_dict_v2.yaml). Each MUST carry an explicit
+    # target_path pointing at a git-bundled assets/target_data/*.pdb (verified
+    # 2026-07-16 against 916eaaed) so it resolves offline.
+    #   protein_binder 02_PDL1        -> assets/.../bindcraft_targets/PD-L1.pdb
+    #   ligand_binder  39_7V11_LIGAND -> ligand_targets_dict target
+    #   motif_ame      M0024_1nzy_og  -> assets/.../ame_input_structures/M0024_1nzy.pdb
+    # NOTE: the sibling AME key `M0024_1nzy` (v2) has NO bundled target (it points
+    # at ame_targets/M0024_1nzy_v2.pdb, absent), so _og is the resolvable default.
+    # motif_ame remains the least-verified variant (its reward_model block is
+    # commented out upstream) — canary it before exposing it, protein/ligand first.
     "protein_binder": "02_PDL1",
     "ligand_binder": "39_7V11_LIGAND",
-    "motif_ame": "M0024_1nzy",
+    "motif_ame": "M0024_1nzy_og",
 }
 
 # Variants whose reward stack is RF3-only (no AF2 ligand protocol). The

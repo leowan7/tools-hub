@@ -85,30 +85,52 @@ RUN /opt/proteina/.venv/bin/uv pip install requests rdkit \
     || /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
 
 # Point the generator + reward stack at the runtime-mounted Volumes. modal_app
-# mounts proteina-weights -> /opt/proteina/weights and proteina-rewards ->
-# /opt/proteina/rewards; these ENV vars (names verified against .env_example)
-# must stay in lockstep with those mount points.
-#   PROTEINA_RF3=on  -> RF3 reward channel live (Leo's launch decision). The
-#   pipeline reads it and hard-blocks the ligand/motif variants when off (no AF2
-#   ligand fallback). Flip only to disable RF3 (redeploy or a Modal env override).
-# BUILD-TIME-VERIFY (HIGH — a wrong path is a billed model-load failure): the
-# exact env var / config key the Complexa configs read to locate the model
-# checkpoints (complexa.ckpt etc.), AND whether they resolve flat under
-# WEIGHTS_DIR or under a ckpts/ subdir. Confirm against
-# configs/search_binder_local_pipeline.yaml (ckpt_name) on the pinned commit at
-# the P-1 canary. The pipeline does NOT currently inject a ++ckpt override (the
-# key is unverified); the free validate tier instead asserts a *.ckpt exists
-# under WEIGHTS_DIR so an unseeded / wrong-path mount fails cheaply pre-search.
+# mounts proteina-weights -> /opt/proteina/ckpts and proteina-rewards ->
+# /opt/proteina/rewards; these ENV vars must stay in lockstep with those mounts.
+#
+# MODEL WEIGHTS (verified 2026-07-16 against download_startup.sh + the three
+# configs/search_*_local_pipeline.yaml on the pinned commit): the generator
+# checkpoints resolve via the config keys `ckpt_path: ./ckpts` + per-variant
+# `ckpt_name` (complexa.ckpt / complexa_ligand.ckpt / complexa_ame.ckpt) +
+# `autoencoder_ckpt_path: ./ckpts/<variant>_ae.ckpt`. These are RELATIVE to the
+# process CWD, NOT read from any env var (grep of src/ finds no WEIGHTS_DIR /
+# CKPT_DIR consumer). So the weights Volume mounts at /opt/proteina/ckpts and
+# run_pipeline runs `complexa design` with cwd=/opt/proteina, exactly like the
+# upstream `complexa design configs/...` invocation from the repo root. WEIGHTS_DIR
+# below is used ONLY by run_pipeline's free validate tier (globs it for a *.ckpt)
+# so an unseeded / wrong-path mount fails cheaply pre-search.
+#
+# REWARD STACK (verified: env vars ARE read from os.environ in src/): AF2_DIR
+# (colabdesign_utils.py:50, npz DIRECTLY inside it — no params/ subdir),
+# ESM_DIR (esm_eval.py:102, an HF hub cache dir -> models--facebook--*),
+# RF3_CKPT_PATH (rf3_reward.py asserts it), RF3_EXEC_PATH, FOLDSEEK/MMSEQS_EXEC.
+#   PROTEINA_RF3=on  -> RF3 reward channel live (Leo's launch decision). Only
+#   ligand_binder (RF3 is its sole reward) and motif_ame need it; protein_binder
+#   scores on AF2 alone, so it runs regardless of this switch. run_pipeline
+#   hard-blocks the RF3-only variants pre-GPU when off (no AF2 ligand fallback).
+# DATA_PATH is REQUIRED even though the curated tasks carry an explicit
+# target_path: the configs resolve the target PDB via
+# `pdb_path: ${oc.select:...target_path, ${oc.env:DATA_PATH}/target_data/...}`,
+# and OmegaConf (2.3.1) EAGERLY evaluates oc.select's default argument, so
+# `${oc.env:DATA_PATH}` is resolved even when target_path is present. With
+# DATA_PATH unset that raises InterpolationResolutionError during dataset build
+# (GPU already allocated) for ALL tasks — a billed zero-design failure the free
+# validate tier does not catch. /opt/proteina/assets makes BOTH the relative
+# target_path (`./assets/...`, cwd=/opt/proteina) and the fallback
+# (`$DATA_PATH/target_data/...`) resolve to the git-bundled tree. CKPT_PATH /
+# CACHE_DIR are the same-class insurance for any non-local config that
+# interpolates them (harmless for the local pipelines, which hardcode ./ckpts).
 ENV PROTEINA_HOME=/opt/proteina \
     VENV=/opt/proteina/.venv \
     PATH=/opt/proteina/.venv/bin:$PATH \
     PYTHONPATH=/opt/proteina/src \
-    WEIGHTS_DIR=/opt/proteina/weights \
-    CKPT_DIR=/opt/proteina/weights \
-    COMMUNITY_MODELS_PATH=/opt/proteina/rewards \
+    DATA_PATH=/opt/proteina/assets \
+    WEIGHTS_DIR=/opt/proteina/ckpts \
+    CKPT_DIR=/opt/proteina/ckpts \
+    CKPT_PATH=/opt/proteina/ckpts \
+    CACHE_DIR=/opt/proteina/.cache \
     AF2_DIR=/opt/proteina/rewards/ckpts/AF2 \
     ESM_DIR=/opt/proteina/rewards/ckpts/ESM2 \
-    RF3_DIR=/opt/proteina/rewards/ckpts/RF3 \
     RF3_CKPT_PATH=/opt/proteina/rewards/ckpts/RF3/rf3_foundry_01_24_latest_remapped.ckpt \
     RF3_EXEC_PATH=/opt/proteina/.venv/bin/rf3 \
     FOLDSEEK_EXEC=/usr/local/bin/foldseek \
@@ -116,5 +138,5 @@ ENV PROTEINA_HOME=/opt/proteina \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
     PROTEINA_RF3=on
 
-RUN mkdir -p /opt/proteina/weights /opt/proteina/rewards
+RUN mkdir -p /opt/proteina/ckpts /opt/proteina/rewards/ckpts /opt/proteina/.cache
 WORKDIR /opt/proteina

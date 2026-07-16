@@ -81,12 +81,14 @@ class TestValidateAccept:
         assert inp["target_chain"] == ""
 
     def test_motif_ame_default_task_is_real(self):
-        # Regression: the default AME task must be a real M-prefixed name, not
-        # the non-existent "01_AME" (which would be a billed GPU failure).
+        # Regression: the default AME task must be a real M-prefixed key whose
+        # target PDB is git-bundled. Not "01_AME" (non-existent) and not the bare
+        # "M0024_1nzy" (v2 key with no bundled target) — both would be billed GPU
+        # failures. M0024_1nzy_og carries an explicit target_path to a bundled PDB.
         inp, err = px.validate({"preset": "motif_ame"}, {})
         assert err is None
         assert inp["config_name"] == "search_ame_local_pipeline"
-        assert inp["task_name"] == "M0024_1nzy"
+        assert inp["task_name"] == "M0024_1nzy_og"
         assert not inp["task_name"].endswith("AME")
         assert inp["rf3_required"] is True
 
@@ -222,10 +224,11 @@ class TestDesignCmd:
             config_name="search_binder_local_pipeline", task_name="02_PDL1",
             seed=123, nsamples=4, replicas=2, nsteps=400, run_name="shard_x",
             rf3_on=True)
-        joined = " ".join(cmd)
-        assert "search_binder_local_pipeline.yaml" in joined
+        # config path is passed RELATIVE (run_pipeline runs from cwd=/opt/proteina)
+        assert "configs/search_binder_local_pipeline.yaml" in cmd
         assert "++seed=123" in cmd
         assert "++job_id=0" in cmd
+        assert "++gen_njobs=1" in cmd
         assert "++generation.task_name=02_PDL1" in cmd
         assert "++generation.filter.delete_non_top_n_samples=false" in cmd
         assert any("filter_samples_limit" in c for c in cmd)
@@ -233,15 +236,20 @@ class TestDesignCmd:
         # the campaign chunk_size regardless of its config default.
         assert "++generation.dataloader.dataset.nres.nsamples=4" in cmd
         assert "++generation.search.best_of_n.replicas=2" in cmd
-        # RF3 on -> no disable override
-        assert not any("use_rf3=false" in c for c in cmd)
+        # RF3 is config-gated (rf3folding in reward_models), never a CLI flag.
+        assert not any("use_rf3" in c for c in cmd)
 
-    def test_rf3_off_override(self):
+    def test_rf3_off_emits_no_toggle(self):
+        # RF3 is enabled/disabled by whether rf3folding is present in the config's
+        # reward_models block, NOT by a flag, so build_design_cmd emits no use_rf3
+        # override in either state. The RF3-only variants (ligand/motif) are
+        # hard-blocked in main() when PROTEINA_RF3=off — verified in TestPreGpuGuards.
         rp = pytest.importorskip("tools.proteina.run_pipeline")
         cmd = rp.build_design_cmd(
             config_name="search_binder_local_pipeline", task_name="02_PDL1",
             seed=1, nsamples=4, replicas=2, nsteps=None, run_name="s", rf3_on=False)
-        assert any("use_rf3=false" in c for c in cmd)
+        assert not any("use_rf3" in c for c in cmd)
+        assert "configs/search_binder_local_pipeline.yaml" in cmd
 
 
 class TestRewardParse:

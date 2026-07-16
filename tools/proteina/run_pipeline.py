@@ -25,23 +25,34 @@ flat ``designs`` list and a ``candidates`` list whose nested ``scores`` dict is
 keyed to the results columns the viewer renders
 (total_reward / af2_iptm / af2_plddt / rf3_score / binder_scrmsd / cluster_id).
 
-CONFIRMED upstream facts (Proteina-Complexa @ dev 916eaaed, web-verified):
-  * generate seed = cfg.seed + job_id, applied only when root_path is None.
-    We keep job_id=0 and pass a distinct ++seed derived from JOB_ID so shards
-    are independent without seed collisions (CAVEAT 2 in the source check).
-  * results-CSV early-exit at generate.py:584-589 keyed on
-    (base_config_name, job_id) inside CWD-relative ./inference/. Each Modal
-    container has its own filesystem AND we run in a fresh per-shard cwd, so it
-    never short-circuits.
+CONFIRMED upstream facts (Proteina-Complexa @ dev 916eaaed, source-verified
+against the pinned checkout 2026-07-16):
+  * generate seed = cfg.seed + job_id (generate.py:74). gen_njobs=1 forces
+    job_id=0 (split_by_job zeroes any job_id>=1), so cross-shard independence
+    comes from a distinct ++seed derived from JOB_ID, never from job_id.
+  * model checkpoints resolve via RELATIVE config keys (ckpt_path: ./ckpts,
+    ckpt_name, autoencoder_ckpt_path: ./ckpts/<v>_ae.ckpt), so we run from
+    cwd=/opt/proteina with the weights Volume mounted at ./ckpts. `complexa` is
+    the console script (pyproject [project.scripts]); `design` + `validate` are
+    real subcommands.
+  * results-CSV early-exit (generate.py:584-589) keyed on (config_name, job_id)
+    at CWD-relative ./inference/results_<config>_<job_id>.csv. cwd is now the
+    shared repo root (not a per-shard temp dir), so main() wipes ./inference at
+    shard start to stop a warm container re-emitting a prior shard's designs.
   * filter keeps all samples with
     ++generation.filter.delete_non_top_n_samples=false and a high
     ++generation.filter.filter_samples_limit.
+  * reward channels are config-gated, NOT flag-gated: protein_binder scores on
+    AF2 only (rf3folding commented out in binder_generate.yaml); ligand_binder
+    scores on RF3 only (its sole active reward); motif_ame's reward block is
+    commented out upstream (the least-verified variant).
 
 BUILD-TIME-VERIFY (only a P2 seed / P4-P5 canary can pin these — the output
 layer, not the launch recipe):
-  * the exact `complexa` console-script verb + whether it is on PATH;
-  * the reward/results CSV path + column names (mapped tolerantly below);
-  * the per-design PDB glob;
+  * the reward/results CSV path + exact column names (mapped tolerantly below);
+  * the per-design PDB glob under ./inference/;
+  * whether the AF2 binder reward tolerates the absent dssp / sc binaries (the
+    public image ships without them; DSSP_EXEC/SC_EXEC are left unset);
   * the custom-target (bring-your-own PDB/SDF) registration mechanism.
 """
 
@@ -53,9 +64,9 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -74,7 +85,10 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 
 PROTEINA_HOME = os.environ.get("PROTEINA_HOME", "/opt/proteina")
 CONFIG_DIR = os.environ.get("PROTEINA_CONFIG_DIR", f"{PROTEINA_HOME}/configs")
-WEIGHTS_DIR = os.environ.get("WEIGHTS_DIR", f"{PROTEINA_HOME}/weights")
+# The generator checkpoints live in the repo-root ckpts/ dir (the weights Volume
+# mounts here); the configs reference them via the RELATIVE key `ckpt_path:
+# ./ckpts`, so the validate tier globs this exact dir for a *.ckpt.
+WEIGHTS_DIR = os.environ.get("WEIGHTS_DIR", f"{PROTEINA_HOME}/ckpts")
 COMPLEXA_BIN = os.environ.get("COMPLEXA_BIN", "complexa")
 
 # The three paid design-variant configs (validate exercises all of them so it
@@ -303,14 +317,24 @@ def build_design_cmd(
     filter keeps every sample so all designs survive; a fresh run_name + cwd
     isolate the results-CSV early-exit.
 
-    nsamples / replicas are pinned as explicit Hydra overrides (confirmed keys
-    generation.dataloader.dataset.nres.nsamples + generation.search.best_of_n.
-    replicas) so every variant yields exactly nsamples*replicas designs == the
-    campaign chunk_size, regardless of the per-variant config default. Without
-    these overrides the ligand / AME configs could yield != 8 and desync the
-    wallet chunk accounting.
+    nsamples / replicas are pinned as explicit Hydra overrides. The keys are
+    VERIFIED against configs/pipeline/binder/binder_generate.yaml @ 916eaaed:
+    nsamples lives at generation.dataloader.dataset.nres.nsamples (default 4) and
+    replicas at generation.search.best_of_n.replicas (default 2, algorithm
+    best-of-n). Pinning them makes every variant yield exactly nsamples*replicas
+    designs == the campaign chunk_size, regardless of the per-variant default.
+
+    gen_njobs is pinned to 1 (one GPU per shard). That FORCES job_id=0: with
+    njobs=1, split_by_job() gives any job_id>=1 zero samples, so cross-shard
+    independence comes from a distinct ++seed (cfg.seed = cfg.seed + job_id, so
+    seed+0 == our derived seed), never from job_id.
+
+    The config path is passed RELATIVE (configs/<name>.yaml) because the caller
+    runs from cwd=/opt/proteina — the same invocation upstream documents in each
+    config header — so ./ckpts (weights), ./assets (target PDBs) and Hydra's
+    config search path all resolve from the repo root.
     """
-    config_path = f"{CONFIG_DIR}/{config_name}.yaml"
+    config_path = f"configs/{config_name}.yaml"
     cmd = [
         COMPLEXA_BIN, "design", config_path,
         "++job_id=0",
@@ -328,12 +352,13 @@ def build_design_cmd(
         cmd.append(f"++generation.search.best_of_n.replicas={replicas}")
     if nsteps:
         cmd.append(f"++generation.args.nsteps={nsteps}")
-    if not rf3_on:
-        # Degraded path (RF3 kill-switch off). rf3_required variants are already
-        # hard-blocked upstream of here; for a protein binder we best-effort
-        # disable the RF3 reward so the run does not try to load a missing ckpt.
-        # BUILD-TIME-VERIFY the exact key against the reward config.
-        cmd.append("++generation.evaluate.use_rf3=false")
+    # No RF3 toggle is emitted: RF3 is enabled/disabled by whether `rf3folding`
+    # is present in the config's reward_models block, not by a flag. The upstream
+    # protein_binder config is AF2-only (no RF3 block), while the RF3-only
+    # variants (ligand_binder / motif_ame) are hard-blocked pre-GPU in main()
+    # when PROTEINA_RF3=off. So there is nothing to override here; rf3_on is kept
+    # in the signature for the call-site contract + the main() hard-block.
+    _ = rf3_on
     return cmd
 
 
@@ -575,128 +600,140 @@ def main() -> None:
 
     send_heartbeat(webhook_url, job_id, stage="loading_model", designs_total=designs_total)
 
-    with tempfile.TemporaryDirectory(prefix="proteina_", dir="/tmp") as _td:
-        run_dir = Path(_td)
+    # Run from the repo root so the configs' RELATIVE paths resolve exactly as
+    # upstream's own `complexa design configs/...` invocation: ./ckpts (weights
+    # Volume), ./assets/target_data (bundled benchmark target PDBs), ./configs
+    # (Hydra search path), ./inference (outputs). generate.py uses @hydra.main;
+    # modern Hydra's job.chdir defaults off, so cwd stays here across all stages.
+    work_dir = Path(PROTEINA_HOME)
+    run_dir = work_dir / "inference"
+    # Defeat the warm-container results-CSV early-exit: generate.py exits early if
+    # ./inference/results_<config>_<job_id>.csv exists, and that name is keyed on
+    # (config_name, job_id=0) — identical across same-variant shards. A reused
+    # warm container would then re-emit the prior shard's designs. Modal runs one
+    # input per container at a time (no concurrent inputs on this function), so
+    # wiping ./inference at shard start is safe and isolates every shard.
+    shutil.rmtree(run_dir, ignore_errors=True)
 
-        seed = shard_seed(job_id)
-        run_name = f"shard_{(job_id or 'x')[:12]}"
-        cmd = build_design_cmd(
-            config_name=config_name, task_name=task_name, seed=seed,
-            nsamples=nsamples, replicas=replicas, nsteps=nsteps,
-            run_name=run_name, rf3_on=rf3_on,
-        )
-        send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
+    seed = shard_seed(job_id)
+    run_name = f"shard_{(job_id or 'x')[:12]}"
+    cmd = build_design_cmd(
+        config_name=config_name, task_name=task_name, seed=seed,
+        nsamples=nsamples, replicas=replicas, nsteps=nsteps,
+        run_name=run_name, rf3_on=rf3_on,
+    )
+    send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
 
-        try:
-            rc = run_streaming(cmd, run_dir)
-        except FileNotFoundError:
-            _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
-        if rc != 0:
-            _fail("search", "complexa", f"`complexa design` exited {rc}")
+    try:
+        rc = run_streaming(cmd, work_dir)
+    except FileNotFoundError:
+        _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
+    if rc != 0:
+        _fail("search", "complexa", f"`complexa design` exited {rc}")
 
-        designs = parse_designs(run_dir)
-        if not designs:
-            # A shard that legitimately produced no survivors still COMPLETES
-            # with zero candidates — the campaign pools survivors across shards,
-            # and delivered-only billing releases this shard's hold.
-            runtime = int(time.time() - start)
-            _write_result(
-                {
-                    "status": "COMPLETED",
-                    "tier": preset,
-                    "designs_total": designs_total,
-                    "designs_completed": 0,
-                    "n_failures": 0,
-                    "designs": [],
-                    "candidates": [],
-                    "runtime_seconds": runtime,
-                    "provider_job_id": job_id,
-                }
-            )
-            send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
-            logger.info("shard produced 0 survivors in %ds", runtime)
-            return
-
-        # --- upload + stream each design -------------------------------------
-        out_designs: list[dict] = []
-        out_candidates: list[dict] = []
-        n_failures = 0
-        n_rows = len(designs)
-        for d in designs:
-            rank = d["rank"]
-            pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
-            if pdb_path is None:
-                n_failures += 1
-                logger.warning("design rank %d: no PDB file matched — skipping", rank)
-                continue
-            basename = f"design_{rank:03d}.pdb"
-            pdb_key = f"designs/{basename}"
-            try:
-                pdb_bytes = pdb_path.read_bytes()
-                urls = request_upload_urls(upload_endpoint, job_token, [basename])
-                upload_pdb(urls[basename], pdb_bytes)
-            except Exception as exc:
-                n_failures += 1
-                logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
-                continue
-
-            scores = d["scores"]
-            design_entry = {
-                "rank": rank,
-                "name": d["name"],
-                "pdb_key": pdb_key,
-                # flat copies for the results template + classifiers
-                "total_reward": scores.get("total_reward"),
-                "af2_iptm": scores.get("af2_iptm"),
-                "af2_plddt": scores.get("af2_plddt"),
-                "rf3_score": scores.get("rf3_score"),
-                "binder_scrmsd": scores.get("binder_scrmsd"),
-                "cluster_id": scores.get("cluster_id"),
-            }
-            out_designs.append(design_entry)
-            out_candidates.append(
-                {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
-            )
-            # Heartbeat new_candidate keys match webhook _sanitize_candidate.
-            send_heartbeat(
-                webhook_url, job_id, stage="searching",
-                designs_completed=len(out_designs), designs_total=designs_total,
-                new_candidate={
-                    "rank": rank,
-                    "name": d["name"],
-                    "pdb_key": pdb_key,
-                    "total_reward": scores.get("total_reward"),
-                    "af2_iptm": scores.get("af2_iptm"),
-                    "af2_plddt": scores.get("af2_plddt"),
-                    "rf3_score": scores.get("rf3_score"),
-                    "binder_scrmsd": scores.get("binder_scrmsd"),
-                    "cluster_id": scores.get("cluster_id"),
-                },
-            )
-            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
-
+    designs = parse_designs(run_dir)
+    if not designs:
+        # A shard that legitimately produced no survivors still COMPLETES
+        # with zero candidates — the campaign pools survivors across shards,
+        # and delivered-only billing releases this shard's hold.
         runtime = int(time.time() - start)
         _write_result(
             {
                 "status": "COMPLETED",
                 "tier": preset,
                 "designs_total": designs_total,
-                "designs_completed": len(out_designs),
-                "n_failures": n_failures,
-                "designs": out_designs,
-                "candidates": out_candidates,
+                "designs_completed": 0,
+                "n_failures": 0,
+                "designs": [],
+                "candidates": [],
                 "runtime_seconds": runtime,
                 "provider_job_id": job_id,
             }
         )
+        send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
+        logger.info("shard produced 0 survivors in %ds", runtime)
+        return
+
+    # --- upload + stream each design -----------------------------------------
+    out_designs: list[dict] = []
+    out_candidates: list[dict] = []
+    n_failures = 0
+    n_rows = len(designs)
+    for d in designs:
+        rank = d["rank"]
+        pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
+        if pdb_path is None:
+            n_failures += 1
+            logger.warning("design rank %d: no PDB file matched — skipping", rank)
+            continue
+        basename = f"design_{rank:03d}.pdb"
+        pdb_key = f"designs/{basename}"
+        try:
+            pdb_bytes = pdb_path.read_bytes()
+            urls = request_upload_urls(upload_endpoint, job_token, [basename])
+            upload_pdb(urls[basename], pdb_bytes)
+        except Exception as exc:
+            n_failures += 1
+            logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
+            continue
+
+        scores = d["scores"]
+        design_entry = {
+            "rank": rank,
+            "name": d["name"],
+            "pdb_key": pdb_key,
+            # flat copies for the results template + classifiers
+            "total_reward": scores.get("total_reward"),
+            "af2_iptm": scores.get("af2_iptm"),
+            "af2_plddt": scores.get("af2_plddt"),
+            "rf3_score": scores.get("rf3_score"),
+            "binder_scrmsd": scores.get("binder_scrmsd"),
+            "cluster_id": scores.get("cluster_id"),
+        }
+        out_designs.append(design_entry)
+        out_candidates.append(
+            {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
+        )
+        # Heartbeat new_candidate keys match webhook _sanitize_candidate.
         send_heartbeat(
-            webhook_url, job_id, stage="complete",
+            webhook_url, job_id, stage="searching",
             designs_completed=len(out_designs), designs_total=designs_total,
+            new_candidate={
+                "rank": rank,
+                "name": d["name"],
+                "pdb_key": pdb_key,
+                "total_reward": scores.get("total_reward"),
+                "af2_iptm": scores.get("af2_iptm"),
+                "af2_plddt": scores.get("af2_plddt"),
+                "rf3_score": scores.get("rf3_score"),
+                "binder_scrmsd": scores.get("binder_scrmsd"),
+                "cluster_id": scores.get("cluster_id"),
+            },
         )
-        logger.info(
-            "shard complete — %d/%d designs, %d failures, runtime=%ds",
-            len(out_designs), designs_total, n_failures, runtime,
-        )
+        logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
+
+    runtime = int(time.time() - start)
+    _write_result(
+        {
+            "status": "COMPLETED",
+            "tier": preset,
+            "designs_total": designs_total,
+            "designs_completed": len(out_designs),
+            "n_failures": n_failures,
+            "designs": out_designs,
+            "candidates": out_candidates,
+            "runtime_seconds": runtime,
+            "provider_job_id": job_id,
+        }
+    )
+    send_heartbeat(
+        webhook_url, job_id, stage="complete",
+        designs_completed=len(out_designs), designs_total=designs_total,
+    )
+    logger.info(
+        "shard complete — %d/%d designs, %d failures, runtime=%ds",
+        len(out_designs), designs_total, n_failures, runtime,
+    )
 
 
 if __name__ == "__main__":

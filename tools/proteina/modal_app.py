@@ -28,7 +28,10 @@ is why the per-shard wallet hold ($15) can never under-hold.
 Volumes (seeded once by ``tools/proteina/seed_volumes.py`` before the flag
 flips; a paying job never pays the cold pull):
 
-- ``proteina-weights``  -> ``/opt/proteina/weights``  : the 3 model variants
+- ``proteina-weights``  -> ``/opt/proteina/ckpts``   : the 3 model variants'
+  checkpoints (complexa{,_ligand,_ame}.ckpt + _ae siblings). The configs resolve
+  them via the RELATIVE key ``ckpt_path: ./ckpts``, so the mount point and the
+  ``complexa design`` cwd (=/opt/proteina, set in run_pipeline) are load-bearing.
   (NVIDIA Open Model License, HF mirror ``nvidia/NV-Proteina-Complexa-*``).
 - ``proteina-rewards``  -> ``/opt/proteina/rewards``  : the reward stack
   weight artifacts (AF2 params, the RF3 checkpoint, ESM2). No sequence/structure
@@ -64,9 +67,12 @@ _GPU = "A100-80GB"
 # maximum, never above) before Modal reaps the whole container.
 _MAX_SESSION_S = 7200
 
-# Volume mount points. Kept in lockstep with the Dockerfile ENV that points the
-# generator + reward stack at these paths (WEIGHTS_DIR / RF3_CKPT_PATH / AF2_DIR).
-_WEIGHTS_MOUNT = "/opt/proteina/weights"
+# Volume mount points. The weights mount must be /opt/proteina/ckpts because the
+# configs locate the generator checkpoint via the RELATIVE key `ckpt_path: ./ckpts`
+# (resolved against the `complexa design` cwd=/opt/proteina). The reward stack is
+# located by absolute env vars (RF3_CKPT_PATH / AF2_DIR / ESM_DIR) under the
+# rewards mount. Kept in lockstep with the Dockerfile ENV.
+_WEIGHTS_MOUNT = "/opt/proteina/ckpts"
 _REWARDS_MOUNT = "/opt/proteina/rewards"
 
 
