@@ -55,8 +55,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 3.13 tracks runtime.txt -- the interpreter Railway builds and serves on.
-      # Keep the two in step if runtime.txt is ever bumped.
+      # Same MINOR as runtime.txt (3.13), but note this floats to the newest
+      # 3.13.x on the runner while runtime.txt pins prod to exactly 3.13.0, so
+      # CI runs a NEWER patch than prod. That is deliberate: it is forward
+      # -looking (the first run of this job caught an SSRF guard that only fails
+      # open on 3.13.14, invisible on 3.13.0), but it does mean CI green is not
+      # by itself proof for prod's exact interpreter. The real remedy is to bump
+      # runtime.txt off the year-old 3.13.0 pin, after which the two converge.
       - name: Set up Python 3.13
         uses: actions/setup-python@v5
         with:

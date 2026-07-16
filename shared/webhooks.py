@@ -247,6 +247,16 @@ def _is_private_or_special_ip(addr: str) -> bool:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return True  # Reject anything that isn't a real IP
+    # Unwrap IPv4-mapped IPv6 (::ffff:a.b.c.d) and judge the embedded IPv4 by the
+    # IPv4 rules below, which are the ones that actually describe the
+    # destination. Do NOT trust the wrapper's own flags: CPython has drifted
+    # across patch releases (3.13.0 reports ::ffff:100.64.1.1 as is_reserved,
+    # 3.13.14 does not), and the RFC6598 check below is IPv4-only, so on 3.13.14
+    # the mapped form of CGNAT passed the guard entirely. Unwrapping makes the
+    # rejection intentional instead of an accident of the interpreter's build.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
     if ip.is_private:  # 10.0/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7, fe80::/10
         return True
     if ip.is_loopback:
@@ -257,11 +267,11 @@ def _is_private_or_special_ip(addr: str) -> bool:
         return True
     if ip.is_reserved or ip.is_unspecified:
         return True
-    # RFC6598 shared address space — used by Railway and CGNAT.
+    # RFC6598 shared address space — used by Railway and CGNAT. Tested against
+    # `ip` (post-unwrap), not the original `addr` string: for a mapped literal
+    # `addr` is still "::ffff:100.64.1.1", which IPv4Network() would reject.
     if isinstance(ip, ipaddress.IPv4Address):
-        if ipaddress.IPv4Network("100.64.0.0/10").supernet_of(
-            ipaddress.IPv4Network(f"{addr}/32")
-        ):
+        if ip in ipaddress.IPv4Network("100.64.0.0/10"):
             return True
     return False
 
