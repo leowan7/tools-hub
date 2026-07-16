@@ -19,7 +19,7 @@
 {% set runtime_seconds   = output.get('runtime_seconds') %}
 {% set designs_total     = output.get('designs_total') or (raw_designs | length) %}
 {% set designs_completed = output.get('designs_completed') or (raw_designs | length) %}
-{% set clone_url         = url_for('tool_form', tool='iggm', clone_from=job.id) %}
+{% set clone_url         = url_for('tools.tool_form', tool='iggm', clone_from=job.id) %}
 
 {% set candidates = [] %}
 {% for d in raw_designs %}

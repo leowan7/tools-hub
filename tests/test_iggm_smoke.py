@@ -14,6 +14,12 @@ Runs fully offline — no Modal, no Supabase, no GPU. Covers:
 5. Pricing wiring: TOOL_SPECS + PER_JOB_HARD_CAP_USD + PRESET_CAPS, and the
    estimate scales with num_samples.
 6. The two Jinja templates parse (syntax check).
+7. GET /tools/iggm renders 200 through Flask with every input present, and
+   404s with the flag off.
+
+Section 6 only parses Jinja syntax, which does NOT resolve url_for(); that is
+why a stale ``url_for('tool_submit')`` shipped and 500'd the live page. Section
+7 renders the route for real to close that gap.
 """
 
 from __future__ import annotations
@@ -380,3 +386,120 @@ class TestTemplatesParse:
         for name in ("iggm_form.html", "iggm_results.html"):
             src = (base / name).read_text(encoding="utf-8")
             env.parse(src)  # raises TemplateSyntaxError on bad syntax
+
+
+# ---------------------------------------------------------------------------
+# 7. The form actually RENDERS through Flask
+# ---------------------------------------------------------------------------
+#
+# TestTemplatesParse above only checks Jinja *syntax*: env.parse() never
+# resolves url_for(), so it happily accepted the stale
+# ``url_for('tool_submit')`` that 500'd /tools/iggm in production once the
+# flag went on. Render the route for real. See also
+# tests/test_template_endpoints.py, which statically catches the same bug
+# class across every template — including iggm_results.html, which has no
+# render test of its own (other tools render theirs against a fake job; see
+# tests/test_esmfold_smoke.py).
+
+
+@pytest.fixture
+def app_with_iggm_flag(monkeypatch):
+    """Boot the tools-hub Flask app with FLAG_TOOL_IGGM=on so the route
+    resolves rather than 404s."""
+    monkeypatch.setenv("FLAG_TOOL_IGGM", "on")
+    monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("WEBHOOK_SWEEP_ENABLED", "0")
+
+    from app import create_app
+
+    flask_app = create_app()
+    flask_app.config["TESTING"] = True
+    return flask_app
+
+
+def _login_session(client, email="user@example.com"):
+    """Set session cookie so ``@login_required`` routes pass."""
+    with client.session_transaction() as sess:
+        sess["user_email"] = email
+
+
+def _patch_user_ctx(monkeypatch):
+    """Stub every Supabase-backed call on the GET /tools/iggm render path.
+
+    Three separate calls reach Supabase, and all fail closed — so the test
+    passes either way and the network I/O is invisible unless you trace it.
+    Leaving them live would make this file's "runs fully offline" contract a
+    lie and add real HTTPS round-trips whenever SUPABASE_URL is set (app.py
+    calls load_dotenv(), and the main checkout has a .env). Measured: with
+    SUPABASE_URL pointed at an unroutable host this test took 7.3s vs 2.0s
+    stubbed — that delta was real connection attempts.
+
+      1+2. blueprints.tools.load_user_context / get_or_create_wallet
+           (blueprints/tools.py:686 — wallet panel first paint).
+      3.   app.load_user_context — the app-level inject_workspace_context
+           context processor (app.py:400) fires on EVERY render_template and
+           binds load_user_context in the *app* namespace, so patching the
+           blueprints.tools binding does not reach it. With only user_email
+           in the session it would call _resolve_user_id -> Supabase
+           auth.admin.list_users(). Returning None short-circuits it at
+           app.py:435 and the nav degrades gracefully.
+
+    Note: seeding sess["user_id"] instead would make this WORSE — it skips
+    list_users() but lets get_tier(), active_workspaces_count(), and the nav
+    wallet query all reach Supabase.
+    """
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "blueprints.tools.load_user_context",
+        lambda: SimpleNamespace(
+            user_id="u1", tier="free", balance=10, email="user@example.com"
+        ),
+    )
+    monkeypatch.setattr(
+        "blueprints.tools.get_or_create_wallet",
+        lambda user_id: {"balance_usd": "10.00"},
+    )
+    monkeypatch.setattr("app.load_user_context", lambda: None)
+
+
+class TestFormRenders:
+    def test_form_renders_when_flag_on(self, app_with_iggm_flag, monkeypatch):
+        """GET /tools/iggm returns 200 with every IgGM input present."""
+        _patch_user_ctx(monkeypatch)
+        client = app_with_iggm_flag.test_client()
+        _login_session(client)
+
+        resp = client.get("/tools/iggm")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+
+        # Posts to the blueprint-qualified endpoint, not the pre-refactor name.
+        assert 'action="/tools/iggm/submit"' in body
+
+        # All five run_task modes are offered.
+        for preset in (
+            "complex_prediction", "cdr_design", "fr_design",
+            "affinity_maturation", "inverse_design",
+        ):
+            assert f'name="preset" value="{preset}"' in body
+
+        # The inputs that map onto IgGM's design.py flags.
+        for field in (
+            "fasta", "target_pdb", "target_chain", "epitope",
+            "fasta_origin", "num_samples", "max_antigen_size",
+        ):
+            assert f'name="{field}"' in body
+
+    def test_form_404s_when_flag_off(self, app_with_iggm_flag, monkeypatch):
+        """With the flag removed the route must 404 — launch-gate contract."""
+        monkeypatch.delenv("FLAG_TOOL_IGGM", raising=False)
+        _patch_user_ctx(monkeypatch)
+        client = app_with_iggm_flag.test_client()
+        _login_session(client)
+
+        assert client.get("/tools/iggm").status_code == 404
+        # The 404 must come from the flag, not from the adapter having
+        # vanished from the registry — otherwise this passes for the wrong
+        # reason and stops testing the launch gate at all.
+        assert get_adapter("iggm") is not None
