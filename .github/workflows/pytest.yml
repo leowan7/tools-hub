@@ -1,0 +1,84 @@
+name: pytest (test suite)
+
+# Runs the pytest suite on every pull request and every push to main.
+#
+# Why this exists (incident 2026-07-16): /tools/iggm returned HTTP 500 to every
+# visitor the moment its feature flag went live. feat/iggm-tool was cut before
+# the refactor that moved tool routes into Blueprint("tools"), which renamed the
+# Jinja endpoints tool_form -> tools.tool_form and tool_submit ->
+# tools.tool_submit. Two templates kept the bare names. That merges with no
+# conflict and imports without error, then raises BuildError at render time --
+# so it shipped dead. tests/test_template_endpoints.py was added as the
+# regression guard, but nothing ran the suite: tests only ran when a human
+# remembered to run them locally. This job closes that gap.
+#
+# Deliberately NOT path-filtered. The incident was a stale branch plus a
+# template rename, so a paths: filter (e.g. '**.py') would have skipped the very
+# change that broke prod. Every PR runs the whole suite; it is ~20s, so there is
+# nothing to buy by narrowing it.
+#
+# No secrets are wired in, on purpose. The suite runs fully offline: with no
+# Supabase/Modal/Stripe env set those clients fail closed, and the tests assert
+# that behaviour. Confirmed by running the suite in a clean Python 3.13 venv
+# with no env vars and no .env present -- 1277 passed, 15 skipped, identical to
+# the local baseline. Do not add real credentials here; if a test ever needs a
+# service, it should be faked, not authenticated.
+#
+# Not to be confused with synthetic-smoke.yml, which probes the LIVE
+# /api/v1 every 6h. That is outage detection and only covers the Platform API;
+# it would not have caught the IgGM regression. This job is the pre-merge gate.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: pytest-${{ github.ref }}-${{ github.event_name }}
+  # Superseded PR runs are pointless, so cancel them. Pushes to main are NOT
+  # cancelled (matching deploy-modal.yml): a cancelled run leaves that commit
+  # with no verdict rather than a red one, and main is the branch where the
+  # record has to be unambiguous.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run pytest suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 3.13 tracks runtime.txt -- the interpreter Railway builds and serves on.
+      # Keep the two in step if runtime.txt is ever bumped.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      # requirements-dev.txt = requirements.txt + pytest. The full runtime set is
+      # installed deliberately so CI imports what prod imports. Note freesasa
+      # publishes no manylinux wheel at all, so it compiles from source here;
+      # ubuntu-latest ships a compiler (as Railway does via nixPkgs = ["gcc"],
+      # which is how prod builds the same sdist today), and the pip cache keeps
+      # that cost to the first run on a given dependency set.
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # pytest exits non-zero on any failure or error, which fails this step,
+      # this job, and the resulting PR check.
+      - name: Run pytest
+        run: python -m pytest -q
