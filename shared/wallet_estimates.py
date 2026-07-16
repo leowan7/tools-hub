@@ -269,6 +269,29 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("3.00"),
         absolute_cap_usd=Decimal("75.00"),
     ),
+    "proteina": ToolSpec(
+        slug="proteina",
+        gpu_class="A100-80GB",
+        # Proteina runs as a fund-and-drain campaign of one-shard-per-container
+        # jobs; it is a FIXED-container tool (see _FIXED_CONTAINER_TOOLS in
+        # compute_campaigns), so the estimate AND the hold price at this baseline
+        # (scale 1.0) — one whole container per shard — regardless of how many
+        # designs survive the filter. Bootstrapping at 7200 s (the full 2 h
+        # container the 7200 s Modal session physically enforces) makes the
+        # per-shard estimate ~$12.58 marked-up and the cushioned hold clamp to
+        # base_hard_cap ($15), which sits ABOVE the container's physical max spend
+        # so a shard can never bill more than it held. This deliberately
+        # over-reserves (released as surplus on delivered-only settle) until the
+        # P4/P5 canaries measure real per-shard wall-clock and historical p90
+        # takes over at >=20 runs. designs_per_run_baseline mirrors the 8-design
+        # shard yield pinned in _CHUNK_SIZE_OVERRIDE. One spec covers all 4
+        # presets; per-variant differences live in PRESET_CAPS + container sizing.
+        expected_gpu_seconds=7200.0,
+        designs_per_run_baseline=8,
+        scaling_param="num_designs",
+        base_hard_cap_usd=Decimal("15.00"),
+        absolute_cap_usd=Decimal("60.00"),
+    ),
 }
 
 

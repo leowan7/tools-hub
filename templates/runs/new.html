@@ -56,26 +56,48 @@
             {% endfor %}
           </select>
         </div>
-        <div class="runs-field">
-          <label for="target_pdb">Target structure (.pdb / .cif)</label>
+        <!-- Proteina-Complexa design variant. Disabled unless proteina is the
+             selected tool, so it never posts a bogus preset to the other tools
+             (disabled controls are not submitted). -->
+        <div class="runs-field" id="proteina-preset-field" style="display:none;">
+          <label for="preset">Design variant</label>
+          <select id="preset" name="preset" disabled>
+            <option value="protein_binder" {% if pre_fill.get('preset')=='protein_binder' %}selected{% endif %}>Protein binder (vs a protein target)</option>
+            <option value="ligand_binder" {% if pre_fill.get('preset')=='ligand_binder' %}selected{% endif %}>Ligand binder (vs a small molecule)</option>
+            <option value="motif_ame" {% if pre_fill.get('preset')=='motif_ame' %}selected{% endif %}>Motif scaffolding / enzyme (AME)</option>
+          </select>
+          <div class="hint">Which Proteina-Complexa model variant to run.</div>
+        </div>
+        <div class="runs-field" id="proteina-task-field" style="display:none;">
+          <label for="task_name">Target task</label>
+          <input type="text" id="task_name" name="task_name" maxlength="64" value="{{ pre_fill.get('task_name','') }}" placeholder="e.g. 02_PDL1" disabled>
+          <div class="hint">A curated benchmark task, or leave blank and upload your own target below.</div>
+        </div>
+        <div class="runs-field" id="target-pdb-field">
+          <label for="target_pdb" id="target-pdb-label">Target structure (.pdb / .cif)</label>
           <input type="file" id="target_pdb" name="target_pdb" accept=".pdb,.cif,.mmcif" required>
+        </div>
+        <div class="runs-field" id="target-sdf-field" style="display:none;">
+          <label for="target_sdf">Target molecule (.sdf)</label>
+          <input type="file" id="target_sdf" name="target_sdf" accept=".sdf,.mol" disabled>
+          <div class="hint">Small-molecule target. Optional for curated ligand tasks.</div>
         </div>
         <div class="runs-row">
           <div class="runs-field">
             <label for="target_name">Target name</label>
             <input type="text" id="target_name" name="target_name" value="{{ pre_fill.get('target_name','') }}" placeholder="e.g. HER2">
           </div>
-          <div class="runs-field">
+          <div class="runs-field" id="target-chain-field">
             <label for="target_chain">Target chain</label>
             <input type="text" id="target_chain" name="target_chain" maxlength="4" value="{{ pre_fill.get('target_chain','A') }}">
           </div>
         </div>
-        <div class="runs-field">
+        <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
           <div class="hint">Comma-separated target-chain residues the binder should contact.</div>
         </div>
-        <div class="runs-row">
+        <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
             <label for="binder_length_min">Binder length min</label>
             <input type="number" id="binder_length_min" name="binder_length_min" value="{{ pre_fill.get('binder_length_min','55') }}">
@@ -131,12 +153,49 @@
   var confirm = document.getElementById('rp-confirm');
   var submit = document.getElementById('rp-submit');
   var protoField = document.getElementById('protocol-field');
+  var preset = document.getElementById('preset');
+  var taskName = document.getElementById('task_name');
+  var pdbInput = document.getElementById('target_pdb');
+  var sdfInput = document.getElementById('target_sdf');
+  var chainInput = document.getElementById('target_chain');
   var latest = { ok: false, affordable: false, budget: 0 };
 
   function money(x) { return '$' + Number(x).toFixed(2); }
 
-  function refreshProtocol() {
+  function show(id, on) { document.getElementById(id).style.display = on ? '' : 'none'; }
+
+  function refreshTool() {
+    var isProteina = tool.value === 'proteina';
+    // Proteina-only fields. Keep the inputs disabled off-proteina so they never
+    // submit a bogus preset/task to the other tools.
+    show('proteina-preset-field', isProteina);
+    show('proteina-task-field', isProteina);
+    preset.disabled = !isProteina;
+    taskName.disabled = !isProteina;
+    // BoltzGen-only + generic binder fields — hidden for proteina, unchanged
+    // for every other tool.
     protoField.style.display = (tool.value === 'boltzgen') ? '' : 'none';
+    show('hotspot-field', !isProteina);
+    show('binderlen-row', !isProteina);
+    refreshTarget();
+  }
+
+  function refreshTarget() {
+    var isProteina = tool.value === 'proteina';
+    var isLigand = isProteina && preset.value === 'ligand_binder';
+    // Ligand variant takes an SDF; every other case takes a PDB.
+    show('target-pdb-field', !isLigand);
+    show('target-sdf-field', isLigand);
+    show('target-chain-field', !isLigand);
+    pdbInput.disabled = isLigand;
+    sdfInput.disabled = !isLigand;
+    chainInput.disabled = isLigand;
+    // A PDB is mandatory for the live tools; optional for proteina (a curated
+    // task carries its own target).
+    pdbInput.required = !isProteina;
+    document.getElementById('target-pdb-label').textContent = isProteina
+      ? 'Target structure (.pdb / .cif) — optional for curated tasks'
+      : 'Target structure (.pdb / .cif)';
   }
 
   function setNote(cls, text) {
@@ -189,10 +248,11 @@
 
   var t;
   function debounced() { clearTimeout(t); t = setTimeout(fetchEstimate, 250); }
-  tool.addEventListener('change', function () { refreshProtocol(); debounced(); });
+  tool.addEventListener('change', function () { refreshTool(); debounced(); });
+  preset.addEventListener('change', refreshTarget);
   count.addEventListener('input', debounced);
   confirm.addEventListener('change', syncSubmit);
-  refreshProtocol();
+  refreshTool();
   fetchEstimate();
 })();
 </script>

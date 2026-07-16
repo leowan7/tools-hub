@@ -132,6 +132,12 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     "boltzgen":    Decimal("300.00"),
     "boltz2":      Decimal("50.00"),
     "iggm":        Decimal("75.00"),
+    # proteina: per-shard ceiling. One shard is one 7200 s A100-80GB container
+    # (~$12.58 marked-up physical max), so $60 sits well above any real single
+    # shard and never clips a legit charge while still bounding a pricing bug.
+    # A campaign runs many shards; total exposure is bounded by the prepaid
+    # wallet (fund-and-drain), not this per-shard cap. Mirrors TOOL_SPECS.
+    "proteina":    Decimal("60.00"),
 }
 
 

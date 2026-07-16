@@ -74,6 +74,66 @@ def _campaign_preauth_message(pre) -> str:
            .replace("${required}", f"{required:.2f}" if required else "the first batch")
     )
 
+
+# Campaign tools that ship behind a FLAG_TOOL_<NAME> gate: hidden from the
+# create form + rejected on POST/estimate until the operator flips the flag in
+# prod (mirrors the atomic-tool flag-gating). The 5 original campaign tools are
+# unconditionally live and are NOT filtered by tool_enabled (which is
+# fail-closed — a tool with no flag env reads as off — so filtering the whole
+# list would wrongly hide them).
+_FLAG_GATED_CAMPAIGN_TOOLS = frozenset({"proteina"})
+
+
+def _visible_campaign_tools() -> tuple:
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    return tuple(
+        t for t in cc.SUPPORTED_TOOLS
+        if t not in _FLAG_GATED_CAMPAIGN_TOOLS or tool_enabled(t)
+    )
+
+
+def _campaign_tool_gated_off(tool: str) -> bool:
+    from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    return tool in _FLAG_GATED_CAMPAIGN_TOOLS and not tool_enabled(tool)
+
+
+def _sdf_sanity(data: bytes, filename: str) -> str | None:
+    """Cheap pre-GPU check that an uploaded SDF is a plausible molfile.
+
+    Full RDKit sanitization + the SDF -> chain-A HETATM/CONECT PDB conversion
+    run in-container (RDKit is not in the web tier), so this only rejects
+    obvious junk before staging: a size bound plus a parseable V2000/V3000
+    counts line declaring at least one atom. Returns an error string or None.
+    """
+    if len(data) > 2_000_000:
+        return "SDF file is too large (max 2 MB)."
+    text = data.decode("utf-8", "replace")
+    lines = text.splitlines()
+    if len(lines) < 4:
+        return "SDF file is too short to be a valid molfile."
+    counts = lines[3]
+    if "V3000" in counts:
+        natoms = None
+        for ln in lines:
+            if "V30 COUNTS" in ln:
+                parts = ln.split()
+                try:
+                    natoms = int(parts[parts.index("COUNTS") + 1])
+                except (ValueError, IndexError):
+                    natoms = None
+                break
+        if not natoms or natoms < 1:
+            return "SDF has no atoms (empty V3000 molfile)."
+    else:
+        try:
+            natoms = int(counts[:3])
+        except ValueError:
+            return "SDF counts line is malformed (not a V2000/V3000 molfile)."
+        if natoms < 1:
+            return "SDF has no atoms (empty molfile)."
+    return None
+
 @campaigns_bp.route("/campaigns", methods=["GET"])
 @login_required
 def compute_campaigns_list():
@@ -93,7 +153,7 @@ def compute_campaign_new():
     from shared import compute_campaigns as cc  # noqa: PLC0415
     return render_template(
         "runs/new.html",
-        supported_tools=cc.SUPPORTED_TOOLS,
+        supported_tools=_visible_campaign_tools(),
         max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
         verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
         pre_fill={},
@@ -109,11 +169,13 @@ def api_runs_estimate():
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
         requested = 0
+    if _campaign_tool_gated_off(tool):
+        return jsonify({"ok": False, "error": "That tool is not available yet."})
     try:
         plan = cc.plan_chunks(tool, requested)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)})
-    first_wave = cc.first_wave_hold_usd(plan)
+    first_wave = cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool))
     pre = cc.campaign_preauth(session.get("user_id"), plan.budget_usd, first_wave)
     return jsonify({
         "ok": True,
@@ -140,6 +202,7 @@ def compute_campaign_create():
 
     tool = (request.form.get("tool") or "").strip()
     name = (request.form.get("name") or "").strip()
+    preset = (request.form.get("preset") or "pilot").strip() or "pilot"
     try:
         requested = int(request.form.get("requested_designs") or "0")
     except ValueError:
@@ -155,70 +218,115 @@ def compute_campaign_create():
             pre_fill=request.form.to_dict(),
         ), code
 
+    # 0. Resolve the adapter + preset up front. The 5 live campaign tools each
+    #    carry a single "pilot" preset (the default here), so their behaviour is
+    #    unchanged; proteina posts one of its design variants. An unknown preset
+    #    would mis-size the chunk plan, so reject it before planning. A
+    #    flag-gated tool that is still off is treated as unknown (don't reveal a
+    #    hidden tool exists) — defense-in-depth behind the dropdown filter.
+    adapter = tool_base.get(tool)
+    if adapter is None or _campaign_tool_gated_off(tool):
+        return _err("Unknown tool.")
+    if adapter.preset_for(preset) is None:
+        return _err("Unknown preset for this tool.")
+    # The free `validate` tier is a CPU-only pre-flight, not a paid campaign; it
+    # is omitted from the form and routed separately. Reject it on the paid path
+    # so a crafted request can't open a priced campaign on a config-less variant.
+    if preset == "validate":
+        return _err("The validate tier is a free pre-flight, not a campaign.")
+
     # 1. Plan (validates tool + count + sub-job cap).
     try:
-        plan = cc.plan_chunks(tool, requested)
+        plan = cc.plan_chunks(tool, requested, preset)
     except ValueError as exc:
         return _err(str(exc))
 
     # 2. Validate the tool params by reusing the adapter validator with
     #    an in-cap placeholder design count (the real per-chunk count is
     #    injected by the driver).
-    adapter = tool_base.get(tool)
-    if adapter is None:
-        return _err("Unknown tool.")
     form_for_validate = dict(request.form)
     form_for_validate[plan.design_param_key] = "1"
     validated, verr = adapter.validate(form_for_validate, request.files)
     if validated is None:
         return _err(verr or "Invalid parameters.")
 
-    # 3. Require + inspect the target PDB (one target for the campaign).
-    uploaded = request.files.get("target_pdb")
+    # 3. Resolve the campaign target. The live tools + proteina's protein/motif
+    #    variants take a PDB (inspected + chain-validated); proteina's ligand
+    #    variant takes an SDF (cheap sanity only; the RDKit -> chain-A PDB
+    #    conversion happens in-container). For proteina a target is OPTIONAL — a
+    #    curated benchmark task carries its own target, so no upload means "run
+    #    the task's built-in target". The 5 live tools keep the mandatory-PDB
+    #    path exactly as before.
+    is_proteina = tool == "proteina"
+    is_ligand = is_proteina and validated.get("preset") == "ligand_binder"
+    uploaded = (
+        request.files.get("target_sdf") if is_ligand
+        else request.files.get("target_pdb")
+    )
+    staged_bytes = b""
+    staged_filename = ""
+    staged_content_type = "chemical/x-pdb"
+
     if uploaded is None or not uploaded.filename:
-        return _err("Upload a target PDB file.")
-    pdb_bytes = uploaded.read()
-    inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
-    if not inspection.ok:
-        return _err(inspection.error)
-    target_chain = (validated.get("target_chain") or "").strip()
-    if target_chain:
-        chain_err = validate_target_chain(inspection, target_chain)
-        if chain_err:
-            return _err(chain_err)
-    staged_filename = uploaded.filename
-    fl = uploaded.filename.lower()
-    if fl.endswith(".cif") or fl.endswith(".mmcif"):
-        try:
-            pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
-        except CifConversionError as exc:
-            return _err(str(exc))
-        staged_filename = uploaded.filename.rsplit(".", 1)[0] + ".pdb"
+        if not is_proteina:
+            return _err("Upload a target PDB file.")
+        # proteina + no upload: curated-task path, no staged target file.
+    elif is_ligand:
+        sdf_bytes = uploaded.read()
+        sdf_err = _sdf_sanity(sdf_bytes, uploaded.filename)
+        if sdf_err:
+            return _err(sdf_err)
+        staged_bytes = sdf_bytes
+        staged_filename = uploaded.filename
+        staged_content_type = "chemical/x-mdl-sdfile"
+    else:
+        pdb_bytes = uploaded.read()
+        inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
+        if not inspection.ok:
+            return _err(inspection.error)
+        target_chain = (validated.get("target_chain") or "").strip()
+        if target_chain:
+            chain_err = validate_target_chain(inspection, target_chain)
+            if chain_err:
+                return _err(chain_err)
+        staged_filename = uploaded.filename
+        fl = uploaded.filename.lower()
+        if fl.endswith(".cif") or fl.endswith(".mmcif"):
+            try:
+                pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
+            except CifConversionError as exc:
+                return _err(str(exc))
+            staged_filename = uploaded.filename.rsplit(".", 1)[0] + ".pdb"
+        staged_bytes = pdb_bytes
 
     # 4. Prepaid START gate (checks, never debits): the wallet only has to
     #    cover the first wave; the rest funds as the campaign drains, and it
     #    pauses/resumes on balance (fund-and-drain).
     pre = cc.campaign_preauth(
-        ctx.user_id, plan.budget_usd, cc.first_wave_hold_usd(plan)
+        ctx.user_id, plan.budget_usd,
+        cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool)),
     )
     if not pre.ok:
         return _err(_campaign_preauth_message(pre))
 
-    # 5. Stage the shared target once, then create + fund + first wave.
-    import uuid as _uuid  # noqa: PLC0415
-    target_key = f"campaign-{_uuid.uuid4().hex}"
-    try:
-        staged_path = upload_input(
-            user_id=ctx.user_id, job_id=target_key,
-            filename=staged_filename, data=pdb_bytes,
-            content_type="chemical/x-pdb",
-        )
-    except StorageError as exc:
-        return _err(f"Upload failed: {exc}")
+    # 5. Stage the shared target once (when one was provided), then create +
+    #    fund + first wave. A proteina curated-task run stages nothing.
+    staged_path = None
+    if staged_filename:
+        import uuid as _uuid  # noqa: PLC0415
+        target_key = f"campaign-{_uuid.uuid4().hex}"
+        try:
+            staged_path = upload_input(
+                user_id=ctx.user_id, job_id=target_key,
+                filename=staged_filename, data=staged_bytes,
+                content_type=staged_content_type,
+            )
+        except StorageError as exc:
+            return _err(f"Upload failed: {exc}")
 
     campaign = cc.create_campaign(
         user_id=ctx.user_id, tool=tool, params=validated,
-        requested_designs=requested, name=name or None,
+        requested_designs=requested, preset=preset, name=name or None,
         target_storage_path=staged_path,
         target_name=(request.form.get("target_name") or "").strip() or None,
     )

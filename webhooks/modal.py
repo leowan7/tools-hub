@@ -479,6 +479,21 @@ def _sanitize_candidate(cand: dict) -> dict | None:
     except (TypeError, ValueError):
         n_hotspot_contacts = None
 
+    # Proteina-Complexa diversity cluster id (bounded non-negative int).
+    cluster_id: int | None = None
+    try:
+        if cand.get("cluster_id") is not None:
+            cid = int(cand.get("cluster_id"))
+            cluster_id = cid if 0 <= cid < 1_000_000 else None
+    except (TypeError, ValueError):
+        cluster_id = None
+
+    # Proteina steric-clash flag (bool or None).
+    raw_clash = cand.get("has_clash")
+    has_clash = bool(raw_clash) if isinstance(raw_clash, bool) else None
+
+    metadata_tag = cand.get("metadata_tag")
+
     return {
         "rank": rank,
         "name": str(name)[:64] if name else None,
@@ -492,6 +507,23 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         "n_hotspot_contacts": n_hotspot_contacts,
         "contacted_residues": contacts_out,
         "filter_status": str(filter_status)[:64] if filter_status else None,
+        # Proteina-Complexa reward stack (additive; other tools leave these None
+        # and the results renderer hides them). AF2 confidence for protein
+        # binders; RF3 score for ligand / motif; force-field energy where it
+        # applies; scRMSD self-consistency (binder + ligand); min interface PAE;
+        # a composite total reward; and a diversity cluster id + optional tag.
+        "af2_plddt": _num(cand.get("af2_plddt")),
+        "af2_iptm": _num(cand.get("af2_iptm")),
+        "rf3_score": _num(cand.get("rf3_score")),
+        "ff_energy": _num(cand.get("ff_energy")),
+        "rmsd": _num(cand.get("rmsd")),
+        "binder_scrmsd": _num(cand.get("binder_scrmsd")),
+        "ligand_scrmsd": _num(cand.get("ligand_scrmsd")),
+        "min_ipae": _num(cand.get("min_ipae")),
+        "total_reward": _num(cand.get("total_reward")),
+        "cluster_id": cluster_id,
+        "has_clash": has_clash,
+        "metadata_tag": str(metadata_tag)[:64] if metadata_tag else None,
     }
 
 
