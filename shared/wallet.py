@@ -138,6 +138,11 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     # A campaign runs many shards; total exposure is bounded by the prepaid
     # wallet (fund-and-drain), not this per-shard cap. Mirrors TOOL_SPECS.
     "proteina":    Decimal("60.00"),
+    # esmfold2-design: atomic H100 binder-design tool that fans out on n_seeds
+    # (one container per seed). $1000 covers the N_SEEDS_MAX=64 submit (~$946
+    # physical max) so it never clips a legit max run while still bounding a
+    # pricing bug. Mirrors TOOL_SPECS absolute_cap_usd.
+    "esmfold2-design": Decimal("1000.00"),
 }
 
 
