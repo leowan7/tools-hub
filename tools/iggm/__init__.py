@@ -336,7 +336,26 @@ def validate(
 def build_payload(inputs: dict, presigned_url: str) -> dict:
     """Build the IgGM job_spec. The antigen PDB presigned URL is forwarded
     by the generic submit route via ``_input_presigned_url`` — not embedded
-    here (matches boltz2)."""
+    here (matches boltz2).
+
+    Campaign-safe: a compute campaign validates with a placeholder
+    ``num_samples=1`` and injects the real per-chunk ``num_samples`` afterward,
+    so ``total_passes`` / ``parameters`` (frozen at the placeholder in
+    ``validate``) are RECOMPUTED here from the injected count for every preset
+    except ``affinity_maturation``. design.py produces exactly ``num_samples``
+    designs for those presets, so ``total_passes == num_samples``.
+    ``affinity_maturation`` is atomic-only (rejected on the campaign route), so
+    its stored ``total_passes`` (= num_samples * n_masked, computed in
+    ``validate``) stays authoritative. The atomic path is unchanged for every
+    preset (there ``inputs['total_passes']`` already equals the recomputed
+    value)."""
+    num_samples = int(inputs["num_samples"])
+    if inputs["preset"] == "affinity_maturation":
+        total_passes = int(inputs.get("total_passes") or num_samples)
+        parameters = inputs.get("parameters") or {"n_designs_total": total_passes}
+    else:
+        total_passes = num_samples
+        parameters = {"n_designs_total": total_passes}
     return {
         "preset": inputs["preset"],
         "run_task": inputs["run_task"],
@@ -345,14 +364,14 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
         "antigen_chain": inputs["antigen_chain"],
         "epitope_pdb_resnums": inputs["epitope_pdb_resnums"],
         "max_antigen_size": inputs["max_antigen_size"],
-        "num_samples": inputs["num_samples"],
+        "num_samples": num_samples,
         # total_passes / n_masked must reach the container: run_pipeline reads
         # total_passes for the progress heartbeats (design.py gets raw
         # num_samples on the CLI and expands internally for maturation).
-        "total_passes": inputs["total_passes"],
+        "total_passes": total_passes,
         "n_masked": inputs["n_masked"],
         "relax": inputs["relax"],
-        "parameters": inputs["parameters"],
+        "parameters": parameters,
     }
 
 

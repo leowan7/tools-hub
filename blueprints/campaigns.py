@@ -81,7 +81,7 @@ def _campaign_preauth_message(pre) -> str:
 # unconditionally live and are NOT filtered by tool_enabled (which is
 # fail-closed — a tool with no flag env reads as off — so filtering the whole
 # list would wrongly hide them).
-_FLAG_GATED_CAMPAIGN_TOOLS = frozenset({"proteina"})
+_FLAG_GATED_CAMPAIGN_TOOLS = frozenset({"proteina", "iggm"})
 
 
 def _visible_campaign_tools() -> tuple:
@@ -244,6 +244,15 @@ def compute_campaign_create():
     # so a crafted request can't open a priced campaign on a config-less variant.
     if preset == "validate":
         return _err("The validate tier is a free pre-flight, not a campaign.")
+    # IgGM affinity_maturation runs one design PER masked position PER sample, so
+    # the delivered count != the per-chunk num_samples the driver injects, which
+    # breaks the campaign's delivered-count==chunk-size invariant (holds, progress
+    # counts, and finalize all assume equality). Keep it on the atomic tier only.
+    if tool == "iggm" and preset == "affinity_maturation":
+        return _err(
+            "Affinity maturation is not available as a campaign (its design "
+            "count expands per masked position). Use the single-run IgGM form."
+        )
 
     # 1. Plan (validates tool + count + sub-job cap).
     try:
@@ -294,7 +303,13 @@ def compute_campaign_create():
         inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
         if not inspection.ok:
             return _err(inspection.error)
-        target_chain = (validated.get("target_chain") or "").strip()
+        # iggm names its antigen chain ``antigen_chain`` (it reads the form's
+        # ``target_chain`` but stores it under that key); the other PDB tools use
+        # ``target_chain``. Check whichever the adapter produced so the antigen
+        # chain is validated against the uploaded PDB before any GPU spend.
+        target_chain = (
+            validated.get("target_chain") or validated.get("antigen_chain") or ""
+        ).strip()
         if target_chain:
             chain_err = validate_target_chain(inspection, target_chain)
             if chain_err:

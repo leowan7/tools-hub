@@ -63,6 +63,15 @@ SUPPORTED_TOOLS: tuple[str, ...] = (
     # Ships behind FLAG_TOOL_PROTEINA (off); its 4 presets are the design
     # variants, not the "pilot" tier the others carry.
     "proteina",
+    # iggm: 1 shard = 1 A100-40GB container running design.py --num_samples
+    # <chunk> for one antibody-design variant, each shard entropy-seeded by
+    # design.py itself (random.seed(time.time()) + un-fixed torch RNG) so
+    # shards diverge. num_samples scales the shard count. LINEAR (not
+    # fixed-container); its campaign preset is the design VARIANT, like
+    # proteina. Ships behind FLAG_TOOL_IGGM (off). affinity_maturation is
+    # EXCLUDED from campaigns in blueprints/campaigns.py (its delivered count
+    # = num_samples * n_masked breaks the count==chunk invariant).
+    "iggm",
 )
 
 # The tool-specific form field that carries the per-chunk design count.
@@ -75,6 +84,10 @@ _DESIGN_PARAM_KEY: Mapping[str, str] = {
     "pxdesign": "num_designs",
     "rfantibody": "num_designs",
     "proteina": "num_designs",
+    # iggm's per-chunk count is num_samples (design.py --num_samples). This is
+    # also its wallet ToolSpec.scaling_param, so _scaling_key_for(iggm) keys the
+    # hold on the same value (see Phase 0 scaling-key generalization).
+    "iggm": "num_samples",
 }
 
 # boltzgen returns up to ``budget`` designs (validator caps budget at 50)
@@ -231,7 +244,13 @@ _CAMPAIGN_CONTAINER_S: Mapping[str, int] = {
 # global cross-shard top-K. Pin the chunk to that 8-design shard yield so num_designs
 # splits into ceil(num_designs / 8) shards. Refit if a variant's default output count
 # changes.
-_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24, "proteina": 8}
+# iggm: pin the chunk to 40 designs/shard (what the linear formula yields for
+# every iggm variant at PRESET_CAPS 3000s / 60 gpu-s-per-design). Pinned, not
+# derived, because the live estimate endpoint defaults preset='pilot' (which has
+# no ('iggm','pilot') PRESET_CAPS row) and would otherwise collapse the chunk to
+# the baseline (1) and mis-size the preview. iggm is NOT fixed-container, so the
+# per-chunk estimate + hold still scale with the 40-design count (num_samples).
+_CHUNK_SIZE_OVERRIDE: Mapping[str, int] = {"pxdesign": 24, "proteina": 8, "iggm": 40}
 
 # Tools whose GPU cost is one fixed container per sub-job regardless of the
 # chunk's design count, so BOTH the point estimate and the wallet hold price at
@@ -865,6 +884,7 @@ def _ensure_adapters() -> None:
         import tools.bindcraft  # noqa: F401,PLC0415
         import tools.boltzgen  # noqa: F401,PLC0415
         import tools.proteina  # noqa: F401,PLC0415
+        import tools.iggm  # noqa: F401,PLC0415
     except Exception:
         logger.warning("_ensure_adapters: tool import failed", exc_info=True)
 

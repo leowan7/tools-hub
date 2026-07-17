@@ -12,7 +12,8 @@
   .runs-field { margin-bottom: 1.05rem; }
   .runs-field label { display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-primary, #fafafa); margin-bottom: 0.35rem; }
   .runs-field .hint { font-size: 0.72rem; color: var(--text-secondary, #b8c0c8); margin-top: 0.25rem; }
-  .runs-field input, .runs-field select { width: 100%; background: var(--surface, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 6px; color: var(--text-primary, #fafafa); padding: 0.5rem 0.65rem; font-size: 0.88rem; font-family: inherit; }
+  .runs-field input, .runs-field select, .runs-field textarea { width: 100%; background: var(--surface, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 6px; color: var(--text-primary, #fafafa); padding: 0.5rem 0.65rem; font-size: 0.88rem; font-family: inherit; }
+  .runs-field textarea { resize: vertical; min-height: 5.5rem; font-family: var(--font-mono, monospace); }
   .runs-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
   .runs-panel { border: 1px solid var(--border, rgba(255,255,255,0.12)); border-radius: 8px; padding: 1.1rem 1.15rem; position: sticky; top: 1rem; background: linear-gradient(180deg, rgba(43,158,126,0.06), transparent); }
   .runs-panel h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent-text, #2B9E7E); margin: 0 0 0.85rem; }
@@ -72,6 +73,30 @@
           <label for="task_name">Target task</label>
           <input type="text" id="task_name" name="task_name" maxlength="64" value="{{ pre_fill.get('task_name','') }}" placeholder="e.g. 02_PDL1" disabled>
           <div class="hint">A curated benchmark task, or leave blank and upload your own target below.</div>
+        </div>
+        <!-- IgGM antibody-design fields. Disabled off-iggm so they never post to
+             another tool (disabled controls are not submitted). affinity_maturation
+             is intentionally absent — it is single-run only (rejected on the
+             campaign route). -->
+        <div class="runs-field" id="iggm-preset-field" style="display:none;">
+          <label for="iggm_preset">Design mode</label>
+          <select id="iggm_preset" name="preset" disabled>
+            <option value="cdr_design" {% if pre_fill.get('preset')=='cdr_design' %}selected{% endif %}>CDR design (mask positions with X)</option>
+            <option value="complex_prediction" {% if pre_fill.get('preset')=='complex_prediction' %}selected{% endif %}>Antibody-antigen complex prediction</option>
+            <option value="fr_design" {% if pre_fill.get('preset')=='fr_design' %}selected{% endif %}>Framework redesign / humanization</option>
+            <option value="inverse_design" {% if pre_fill.get('preset')=='inverse_design' %}selected{% endif %}>Inverse design (sequence from structure)</option>
+          </select>
+          <div class="hint">Which IgGM mode to run across the campaign.</div>
+        </div>
+        <div class="runs-field" id="iggm-fasta-field" style="display:none;">
+          <label for="fasta">Antibody FASTA (&gt;H required, &gt;L optional = nanobody)</label>
+          <textarea id="fasta" name="fasta" rows="5" disabled placeholder=">H&#10;EVQLVESGGG...XXXXX...WGQGTLVTVSS&#10;>L&#10;DIQMTQSPSS...">{{ pre_fill.get('fasta','') }}</textarea>
+          <div class="hint">Paste only the antibody chains; mask design positions with X. The antigen is taken from the PDB you upload.</div>
+        </div>
+        <div class="runs-field" id="iggm-epitope-field" style="display:none;">
+          <label for="epitope">Epitope residues (optional)</label>
+          <input type="text" id="epitope" name="epitope" value="{{ pre_fill.get('epitope','') }}" placeholder="e.g. 32, 45, 58" disabled>
+          <div class="hint">Antigen residue numbers (PDB numbering) to guide docking. Leave blank for unguided.</div>
         </div>
         <div class="runs-field" id="target-pdb-field">
           <label for="target_pdb" id="target-pdb-label">Target structure (.pdb / .cif)</label>
@@ -158,6 +183,9 @@
   var pdbInput = document.getElementById('target_pdb');
   var sdfInput = document.getElementById('target_sdf');
   var chainInput = document.getElementById('target_chain');
+  var iggmPreset = document.getElementById('iggm_preset');
+  var fasta = document.getElementById('fasta');
+  var epitope = document.getElementById('epitope');
   var latest = { ok: false, affordable: false, budget: 0 };
 
   function money(x) { return '$' + Number(x).toFixed(2); }
@@ -166,17 +194,27 @@
 
   function refreshTool() {
     var isProteina = tool.value === 'proteina';
+    var isIggm = tool.value === 'iggm';
     // Proteina-only fields. Keep the inputs disabled off-proteina so they never
     // submit a bogus preset/task to the other tools.
     show('proteina-preset-field', isProteina);
     show('proteina-task-field', isProteina);
     preset.disabled = !isProteina;
     taskName.disabled = !isProteina;
-    // BoltzGen-only + generic binder fields — hidden for proteina, unchanged
-    // for every other tool.
+    // IgGM-only fields (design mode + antibody FASTA + optional epitope),
+    // likewise disabled off-iggm so they never post to another tool. Two selects
+    // share name="preset" (proteina's + iggm's); only the enabled one submits.
+    show('iggm-preset-field', isIggm);
+    show('iggm-fasta-field', isIggm);
+    show('iggm-epitope-field', isIggm);
+    iggmPreset.disabled = !isIggm;
+    fasta.disabled = !isIggm;
+    epitope.disabled = !isIggm;
+    // BoltzGen-only + generic binder fields — hidden for proteina AND iggm
+    // (neither uses hotspots or a binder-length range), unchanged elsewhere.
     protoField.style.display = (tool.value === 'boltzgen') ? '' : 'none';
-    show('hotspot-field', !isProteina);
-    show('binderlen-row', !isProteina);
+    show('hotspot-field', !isProteina && !isIggm);
+    show('binderlen-row', !isProteina && !isIggm);
     refreshTarget();
   }
 
