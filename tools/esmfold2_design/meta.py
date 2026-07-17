@@ -33,7 +33,7 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     "scfv": {"typical_minutes": "~12"},
 }
 
-paper_citation: str = "EvolutionaryScale, biohub.ai 2025"
+paper_citation: str = "Chan Zuckerberg Biohub, 2026"
 paper_url: str = "https://biohub.ai/papers/esm_protein.pdf"
 github_url: str = (
     "https://github.com/evolutionaryscale/esm/blob/main/cookbook/"
@@ -54,8 +54,9 @@ example_output_id: Optional[str] = None
 # components/about_panel.html macro on the form page.
 about: dict = {
     "what_it_is": (
-        "ESMFold2 design (EvolutionaryScale, 2025). Inversion of the "
-        "ESMFold2 structure prediction model: gradient descent on a "
+        "ESMFold2 design (Chan Zuckerberg Biohub, 2026, built on the "
+        "ESMC protein language model). Inversion of the ESMFold2 "
+        "structure prediction model: gradient descent on a "
         "soft sequence representation, backpropagated through the fold "
         "network, jointly optimizes sequence and predicted binding pose. "
         "The same architecture handles both de novo minibinders and "
