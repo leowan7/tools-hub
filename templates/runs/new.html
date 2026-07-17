@@ -94,9 +94,9 @@
           <div class="hint">Paste only the antibody chains; mask design positions with X. The antigen is taken from the PDB you upload.</div>
         </div>
         <div class="runs-field" id="iggm-epitope-field" style="display:none;">
-          <label for="epitope">Epitope residues (optional)</label>
+          <label for="epitope">Epitope residues (required)</label>
           <input type="text" id="epitope" name="epitope" value="{{ pre_fill.get('epitope','') }}" placeholder="e.g. 32, 45, 58" disabled>
-          <div class="hint">Antigen residue numbers (PDB numbering) to guide docking. Leave blank for unguided.</div>
+          <div class="hint">Antigen residue numbers (PDB numbering) IgGM should target. Required, because IgGM cannot infer the epitope from an antigen-only structure. Get them from Epitope Scout.</div>
         </div>
         <div class="runs-field" id="target-pdb-field">
           <label for="target_pdb" id="target-pdb-label">Target structure (.pdb / .cif)</label>
@@ -201,7 +201,7 @@
     show('proteina-task-field', isProteina);
     preset.disabled = !isProteina;
     taskName.disabled = !isProteina;
-    // IgGM-only fields (design mode + antibody FASTA + optional epitope),
+    // IgGM-only fields (design mode + antibody FASTA + required epitope),
     // likewise disabled off-iggm so they never post to another tool. Two selects
     // share name="preset" (proteina's + iggm's); only the enabled one submits.
     show('iggm-preset-field', isIggm);

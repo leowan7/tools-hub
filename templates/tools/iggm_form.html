@@ -123,15 +123,18 @@
                      class="iggm-text-input" style="max-width: 140px;">
             </div>
             <div style="flex:1; min-width: 260px;">
-              <label for="epitope" class="label" style="display:block; margin-bottom: 0.4rem;">Epitope residues <span style="color: var(--text-tertiary); font-weight:normal;">(optional)</span></label>
-              <input type="text" name="epitope" id="epitope" placeholder="7 8 9 10 11 108 109 110"
+              <label for="epitope" class="label" style="display:block; margin-bottom: 0.4rem;">Epitope residues <span style="color: var(--accent); font-weight:normal;">(required)</span></label>
+              <input type="text" name="epitope" id="epitope" required placeholder="7 8 9 10 11 108 109 110"
                      {{ pre_value(pre_fill, "epitope", "") }} class="iggm-text-input" style="max-width: 100%;">
             </div>
           </div>
           <div class="iggm-help">
-            Epitope residue numbers from the antigen PDB (space or comma
-            separated). IgGM guides design toward these. Positions are handled
-            correctly regardless of the PDB's residue numbering.
+            Required: the antigen residue numbers IgGM should target (space or
+            comma separated, PDB numbering). IgGM designs against a specific
+            epitope and cannot infer one from an antigen-only structure. Get
+            them from <a href="https://scout.ranomics.com" target="_blank" rel="noopener">Epitope Scout</a>
+            or your own structural analysis. Positions are handled correctly
+            regardless of the PDB's residue numbering.
           </div>
 
           {# ---- affinity maturation only: wild-type reference ---- #}

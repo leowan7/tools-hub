@@ -17,6 +17,12 @@ import shared.compute_campaigns as cc
 import tools.iggm as ig
 from shared.feature_flags import tool_enabled
 
+# A valid masked heavy chain (canonical + a 5-X CDR-H3 mask) for route tests.
+_MASKED_HEAVY = (
+    "QVQLVESGGGLVQPGGSLRLSCAASGFTFSSYAMSWVRQAPGKGLEWVSAISGSGGSTYYADSVKG"
+    "RFTISRDNSKNTLYLQMNSLRAEDTAVYYCAKXXXXXWGQGTLVTVSS"
+)
+
 
 # ---------------------------------------------------------------------------
 # Registration + pricing wiring (pure)
@@ -190,6 +196,26 @@ def test_iggm_campaign_rejects_affinity_maturation(client, monkeypatch):
         })
     assert resp.status_code == 400
     assert "Affinity maturation is not available as a campaign" in resp.get_data(as_text=True)
+
+
+def test_iggm_campaign_rejects_missing_epitope(client, monkeypatch):
+    # IgGM needs an explicit epitope (our antigen-only input can't auto-derive
+    # one, and design.py crashes on epitope=None). The campaign route validates
+    # the params via the adapter BEFORE any PDB staging or GPU spend, so an
+    # epitope-less cdr_design campaign is rejected pre-flight. Regression guard
+    # for the live crash on canary 160454cb (all 3 shards, 2026-07-17).
+    monkeypatch.setenv("FLAG_TOOL_IGGM", "on")
+    _login(client)
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
+        resp = client.post("/campaigns", data={
+            "tool": "iggm",
+            "preset": "cdr_design",
+            "requested_designs": "120",
+            "fasta": f">H\n{_MASKED_HEAVY}",
+            "target_chain": "A",
+        })
+    assert resp.status_code == 400
+    assert "epitope" in resp.get_data(as_text=True).lower()
 
 
 def test_iggm_option_hidden_in_form_when_off(client, monkeypatch):
