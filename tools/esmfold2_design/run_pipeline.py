@@ -61,6 +61,12 @@ Output shape (``/tmp/smoke_results.json``)::
       "provider_job_id": "<job_id>"
     }
 
+Raw capture: the summary above is a *view*, not the record. The complete
+work tree (``/tmp/results``, including the untouched critic rows dumped
+under ``results/raw/``) is tarred to ``/tmp/raw_archive.tgz`` on every
+exit path, and ``modal_app.py`` parks that archive on the
+``ranomics-esmfold2-design-raw`` Volume. See ``_archive_raw`` for why.
+
 TODO (post first prod run, separate PR):
   - Send heartbeats with ``new_candidate`` events for the live UI.
   - Calibrate STRICT_IPTM / STRICT_CDR_IPTM_PROXY thresholds against
@@ -72,7 +78,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sys
+import tarfile
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -93,6 +102,13 @@ logger = logging.getLogger("esmfold2_design_pipeline")
 
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 PDB_OUTPUT_DIR = Path("/tmp/results")
+# Fixed path the Modal wrapper collects the raw tree from. MUST sit outside
+# the tree it archives, or the tar ends up inside its own source — see
+# _archive_raw, which re-checks rather than trusting this constant.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
+# The untouched critic rows land here — inside the work tree, so the archive
+# carries them home. Written before _shape_designs collapses them.
+RAW_CRITIC_RESULTS_PATH = PDB_OUTPUT_DIR / "raw" / "critic_results.json"
 
 # Strict-pass thresholds. Open thread: tune against real PD-L1 sweep.
 # Raised from 0.55 to 0.75 on 2026-06-03 after three test runs returned
@@ -375,7 +391,125 @@ def _shape_designs(
     return designs
 
 
-def main() -> int:
+# ===========================================================================
+# Raw capture
+# ===========================================================================
+
+
+def _dump_raw_critic_results(critic_results: Any) -> None:
+    """Dump the untouched critic rows into the work tree. Best-effort; never raises.
+
+    This is where the field-dropping bug lives in this tool. ``_shape_designs``
+    reads four keys off each critic row (``iptm``, one of the two distogram
+    proxies, ``final_loss``, ``complex``), groups them on ``designed_sequence``,
+    and lets every other key — and every row from a critic name it does not
+    recognise — die with the container. Unlike the CSV-based pipelines there is
+    no file on disk to fall back to: ``critic_results`` exists only in this
+    process's memory, so if it is not written here it is recoverable only by
+    paying for the H100 again.
+
+    ``default=str`` mirrors _write_result: ``complex`` is a ProteinComplex and is
+    not JSON-serialisable. Its coordinates are not lost — _save_complex_pdb
+    writes them into this same tree as PDBs.
+
+    A copy, taken before the parser runs. Nothing here feeds scoring.
+    """
+    try:
+        RAW_CRITIC_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(RAW_CRITIC_RESULTS_PATH, "w") as fh:
+            json.dump(critic_results, fh, default=str)
+        logger.info(
+            "raw capture: wrote %d untouched critic rows to %s",
+            len(critic_results or []),
+            RAW_CRITIC_RESULTS_PATH,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        logger.warning(
+            "raw capture: critic_results dump failed (non-fatal): %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
+
+def _archive_raw(srcs: list[str], dest: str = RAW_ARCHIVE_PATH) -> None:
+    """Tar the COMPLETE work tree to ``dest``. Best-effort; never raises.
+
+    A container must not decide which fields are worth keeping. That is exactly
+    how ``design_iptm`` (the real binder->target interface) was lost on 460
+    BoltzGen designs: the container kept three numbers out of ~190 columns, and
+    the one it kept was the wrong one — ``iptm``, averaged over every chain pair
+    and so dominated by the target's own crystal interface. It read ~2x high,
+    two campaigns were concluded on it, and it was unrecoverable without
+    re-paying for the GPU. Decide LOCALLY, where re-parsing is free.
+
+    Not gated on designs, on status, or on ``upload_urls_endpoint``: a run that
+    parsed to zero designs requests no upload URLs and ships nothing today, and
+    that is precisely the run whose tree you need. Called from a ``finally`` so a
+    crash keeps the evidence for the failure it is reporting.
+    """
+    stage = None
+    try:
+        present = [s for s in srcs if os.path.exists(s)]
+        if not present:
+            logger.warning(
+                "raw capture: nothing to archive (tool wrote no output?): %s", srcs
+            )
+            return
+        dest_abs = os.path.abspath(dest)
+        # The tar must never be written inside a tree it archives, or it tars
+        # itself. /tmp/raw_archive.tgz is outside /tmp/results by construction,
+        # but check rather than trust the layout — a future move of
+        # PDB_OUTPUT_DIR or RAW_ARCHIVE_PATH would otherwise silently make this
+        # recursive.
+        for src in present:
+            src_abs = os.path.abspath(src)
+            if (
+                os.path.isdir(src_abs)
+                and os.path.commonpath([src_abs, dest_abs]) == src_abs
+            ):
+                logger.error(
+                    "raw capture: archive path %s is inside source tree %s — "
+                    "skipping so the tar does not archive itself",
+                    dest_abs,
+                    src_abs,
+                )
+                return
+        # Stage in a FRESH mkdtemp: a directory that did not exist a moment ago
+        # cannot be inside one of the trees above. Stream to a file, never
+        # io.BytesIO — ~1x peak RSS instead of ~3-4x. Moving into place at the
+        # end also means a half-written tar is never left at dest for the
+        # wrapper to park as if it were whole.
+        stage = tempfile.mkdtemp(prefix="rawtar_")
+        staged = os.path.join(stage, "raw_archive.tgz")
+        with tarfile.open(staged, "w:gz") as tf:
+            for src in present:
+                src_abs = os.path.abspath(src)
+                tf.add(
+                    src_abs,
+                    arcname=os.path.basename(src_abs.rstrip(os.sep)) or "work",
+                )
+        shutil.move(staged, dest_abs)
+        logger.info(
+            "raw capture: archived %s -> %s (%.1f MB)",
+            present,
+            dest_abs,
+            os.path.getsize(dest_abs) / 1e6,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        logger.warning(
+            "raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc
+        )
+    finally:
+        if stage and os.path.isdir(stage):
+            shutil.rmtree(stage, ignore_errors=True)
+
+
+# ===========================================================================
+# Main
+# ===========================================================================
+
+
+def _run() -> int:
     start = time.time()
     try:
         job_spec, job_id, tier, payload = _parse_job_payload()
@@ -509,6 +643,10 @@ def main() -> int:
         )
         return 1
 
+    # Copy the raw critic rows out before _shape_designs collapses them to four
+    # keys per design; _archive_raw carries the file home with the tree.
+    _dump_raw_critic_results(critic_results)
+
     designs = _shape_designs(
         critic_results or [],
         is_antibody,
@@ -573,6 +711,25 @@ def main() -> int:
         sum(1 for d in designs if d.get("filter_status") == "strict_pass"),
     )
     return 0
+
+
+def main() -> int:
+    """Run the pipeline, then archive the work tree on EVERY exit path.
+
+    ``_run`` has five returns — payload parse failure, binder_design import
+    failure, model load failure, design() raising, success — plus anything it
+    raises unexpectedly. A ``finally`` here covers all six without re-indenting
+    the body. There is no rmtree to race: this tool's work tree is a fixed
+    /tmp path that simply dies with the container the moment this process
+    exits, so "before teardown" means "before main returns".
+    """
+    try:
+        return _run()
+    finally:
+        # smoke_results.json rides along even though it is normally returned
+        # inline: on a hard timeout the wrapper's return dict never reaches the
+        # hub at all, and then the copy inside this tar is the only one left.
+        _archive_raw([str(PDB_OUTPUT_DIR), SMOKE_RESULTS_PATH])
 
 
 if __name__ == "__main__":

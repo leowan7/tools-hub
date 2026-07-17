@@ -38,6 +38,7 @@ import logging
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -54,6 +55,10 @@ logging.basicConfig(
 logger = logging.getLogger("iggm_pipeline")
 
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
+# Where the complete raw work tree is tarred for the Modal wrapper to park on
+# the raw Volume. Fixed path (the wrapper looks here unconditionally) and
+# deliberately OUTSIDE the /tmp/iggm_*/ work dir it archives.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # IgGM repo root inside the image (design.py imports the IgGM package, so we
 # run from here). Confirmed against the Dockerfile.
 IGGM_DIR = os.environ.get("IGGM_DIR", "/opt/IgGM")
@@ -92,6 +97,61 @@ def _fail(bucket: str, check: str, detail: str) -> None:
         }
     )
     sys.exit(1)
+
+
+# ===========================================================================
+# Raw output capture
+# ===========================================================================
+
+
+def _ship_raw(work_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+    """Tar the COMPLETE work tree to ``dest`` before the work dir is destroyed.
+
+    A container must never decide which fields are worth keeping. This pipeline
+    keeps a handful of numbers per design (epitope contacts) and uploads the
+    design PDBs; IgGM's own per-design score CSVs, plots, logs, the assembled
+    FASTAs and the resolved inputs all die with the temp dir. Anything not
+    shipped here is recoverable only by paying for the GPU again — that is how
+    ``design_iptm`` was lost on 460 boltzgen designs. Decide LOCALLY, where
+    re-parsing is free.
+
+    Unconditional by design: not gated on candidates, on success, or on what
+    was uploaded. A run that crashed or produced zero designs ships nothing
+    today and is exactly the run whose tree you need.
+
+    Best-effort: capture must never fail the run, so every problem is logged
+    and swallowed. Never raises.
+    """
+    try:
+        src = os.path.abspath(str(work_dir))
+        if not os.path.isdir(src):
+            logger.warning("[raw] no work dir to archive (nothing was created?): %s", src)
+            return
+        dst = os.path.abspath(dest)
+        # The tar must never be written inside the tree it archives, or it tars
+        # itself. /tmp/raw_archive.tgz is outside /tmp/iggm_*/ by construction;
+        # this guard is here so a future change to either path fails loudly in
+        # the log instead of silently producing a self-referential archive.
+        if dst == src or dst.startswith(src + os.sep):
+            logger.warning(
+                "[raw] refusing to archive: dest %s is inside the tree it archives (%s)", dst, src
+            )
+            return
+        # Stream to a file, never io.BytesIO — the latter costs ~3-4x peak RSS
+        # on a multi-hundred-MB tree, this costs ~1x.
+        with tarfile.open(dst, "w:gz") as tf:
+            tf.add(src, arcname=os.path.basename(src.rstrip(os.sep)) or "work")
+        logger.info("[raw] archived %s -> %s (%.1f MB)", src, dst, os.path.getsize(dst) / 1e6)
+    except Exception as exc:
+        logger.warning("[raw] capture failed (non-fatal): %s: %s", type(exc).__name__, exc)
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+        except OSError:
+            pass
 
 
 # ===========================================================================
@@ -414,133 +474,146 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="iggm_", dir="/tmp") as _td:
         workdir = Path(_td)
-        antigen_pdb = download_antigen_pdb(
-            payload.get("input_presigned_url") or "", workdir / "antigen.pdb"
-        )
-
-        # ---- preflight: antigen extraction + epitope conversion + size gate ----
-        info = antigen_chain_info(antigen_pdb, antigen_chain)
-        antigen_seq, resnum_to_pos, n_res = info["seq"], info["resnum_to_pos"], info["n_res"]
-        if n_res == 0:
-            _fail("input", "antigen_chain",
-                  f"chain {antigen_chain!r} produced 0 residues in the uploaded PDB")
-        if n_res > ANTIGEN_LEN_HARD_CAP:
-            _fail("input", "antigen_size",
-                  f"antigen chain {antigen_chain} is {n_res} aa, over the "
-                  f"{ANTIGEN_LEN_HARD_CAP} aa limit. Trim the antigen and resubmit.")
-
-        epitope_positions, missing = convert_epitope(epitope_pdb, resnum_to_pos)
-        if missing:
-            _fail("input", "epitope",
-                  f"epitope residue number(s) {missing} are not on antigen chain "
-                  f"{antigen_chain}. Pick epitope residues on the antigen.")
-        logger.info(
-            "antigen %s: %d residues; epitope PDB %s -> positions %s",
-            antigen_chain, n_res, epitope_pdb, epitope_positions,
-        )
-
-        # ---- build FASTA(s) ----
-        design_fasta = workdir / "design.fasta"
-        write_fasta(antibody, antigen_chain, antigen_seq, design_fasta)
-
-        fasta_origin_path: Path | None = None
-        if run_task == "affinity_maturation" and fasta_origin_raw:
-            wt_records: list[dict[str, str]] = []
-            hdr = None
-            buf: list[str] = []
-            for ln in str(fasta_origin_raw).splitlines():
-                ln = ln.strip()
-                if not ln:
-                    continue
-                if ln.startswith(">"):
-                    if hdr is not None and buf:
-                        wt_records.append({"header": hdr, "sequence": "".join(buf).upper()})
-                    hdr = ln[1:].strip()
-                    buf = []
-                else:
-                    buf.append(ln)
-            if hdr is not None and buf:
-                wt_records.append({"header": hdr, "sequence": "".join(buf).upper()})
-            fasta_origin_path = workdir / "origin.fasta"
-            write_fasta(wt_records, antigen_chain, antigen_seq, fasta_origin_path)
-
-        send_heartbeat(webhook_url, job_id, stage="designing", designs_total=total_passes)
-
-        out_dir = workdir / "out"
-        rc = run_iggm(
-            design_fasta, antigen_pdb, out_dir, run_task, epitope_positions,
-            max_antigen_size, num_samples, fasta_origin_path,
-        )
-        if rc != 0:
-            _fail("run", "design.py", f"IgGM design.py exited with code {rc}")
-
-        design_pdbs = collect_design_pdbs(out_dir)
-        if not design_pdbs:
-            _fail("run", "output", "IgGM produced no PDB outputs")
-
-        # ---- upload designs + compute epitope-contact QC per design ----
-        designs_out: list[dict] = []
-        for i, pdb_path in enumerate(design_pdbs):
-            pdb_text = pdb_path.read_text()
-            contacts = epitope_contacts(pdb_text, n_res, epitope_positions)
-            # Index-prefix the key so per-sample outputs that share a basename
-            # (e.g. sample_0/pred.pdb, sample_1/pred.pdb) don't collide in storage.
-            uniq = f"{i:03d}_{pdb_path.stem}"
-            pdb_key = f"{uniq}.pdb"
-            try:
-                urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                upload_file(urls[pdb_key], pdb_text.encode("utf-8"), "chemical/x-pdb")
-            except Exception as exc:
-                logger.warning("design %s: upload failed (%s) — skipping", pdb_key, exc)
-                continue
-            entry = {
-                "rank": i,
-                "name": uniq,
-                "pdb_key": pdb_key,
-                "n_epitope_contacts": contacts["n_contacted"],
-                "n_epitope": contacts["n_epitope"],
-                "contacted_positions": contacts["contacted"],
-                "antigen_chain": antigen_chain,
-            }
-            designs_out.append(entry)
-            send_heartbeat(
-                webhook_url, job_id, stage="designing",
-                designs_completed=len(designs_out), designs_total=len(design_pdbs),
-                new_candidate=entry,
+        try:
+            antigen_pdb = download_antigen_pdb(
+                payload.get("input_presigned_url") or "", workdir / "antigen.pdb"
             )
 
-        # ---- upload non-PDB artifacts (FASTA / CSV / plots) ----
-        artifact_keys: list[str] = []
-        for art in collect_artifacts(out_dir):
-            key = f"artifacts/{art.name}"
-            ctype = {
-                ".fasta": "text/plain", ".csv": "text/csv", ".png": "image/png",
-            }.get(art.suffix.lower(), "application/octet-stream")
-            try:
-                urls = request_upload_urls(upload_endpoint, job_token, [key])
-                upload_file(urls[key], art.read_bytes(), ctype)
-                artifact_keys.append(key)
-            except Exception as exc:
-                logger.warning("artifact %s: upload failed (%s)", key, exc)
+            # ---- preflight: antigen extraction + epitope conversion + size gate ----
+            info = antigen_chain_info(antigen_pdb, antigen_chain)
+            antigen_seq, resnum_to_pos, n_res = info["seq"], info["resnum_to_pos"], info["n_res"]
+            if n_res == 0:
+                _fail("input", "antigen_chain",
+                      f"chain {antigen_chain!r} produced 0 residues in the uploaded PDB")
+            if n_res > ANTIGEN_LEN_HARD_CAP:
+                _fail("input", "antigen_size",
+                      f"antigen chain {antigen_chain} is {n_res} aa, over the "
+                      f"{ANTIGEN_LEN_HARD_CAP} aa limit. Trim the antigen and resubmit.")
 
-    runtime_seconds = int(time.time() - start)
-    _write_result(
-        {
-            "status": "COMPLETED",
-            "tier": preset,
-            "run_task": run_task,
-            "designs_total": len(design_pdbs),
-            "designs_completed": len(designs_out),
-            "designs": designs_out,
-            "artifact_keys": artifact_keys,
-            "antigen_chain": antigen_chain,
-            "antigen_length": n_res,
-            "epitope_positions": epitope_positions,
-            "epitope_pdb_resnums": epitope_pdb,
-            "runtime_seconds": runtime_seconds,
-            "provider_job_id": os.environ.get("JOB_ID", ""),
-        }
-    )
+            epitope_positions, missing = convert_epitope(epitope_pdb, resnum_to_pos)
+            if missing:
+                _fail("input", "epitope",
+                      f"epitope residue number(s) {missing} are not on antigen chain "
+                      f"{antigen_chain}. Pick epitope residues on the antigen.")
+            logger.info(
+                "antigen %s: %d residues; epitope PDB %s -> positions %s",
+                antigen_chain, n_res, epitope_pdb, epitope_positions,
+            )
+
+            # ---- build FASTA(s) ----
+            design_fasta = workdir / "design.fasta"
+            write_fasta(antibody, antigen_chain, antigen_seq, design_fasta)
+
+            fasta_origin_path: Path | None = None
+            if run_task == "affinity_maturation" and fasta_origin_raw:
+                wt_records: list[dict[str, str]] = []
+                hdr = None
+                buf: list[str] = []
+                for ln in str(fasta_origin_raw).splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    if ln.startswith(">"):
+                        if hdr is not None and buf:
+                            wt_records.append({"header": hdr, "sequence": "".join(buf).upper()})
+                        hdr = ln[1:].strip()
+                        buf = []
+                    else:
+                        buf.append(ln)
+                if hdr is not None and buf:
+                    wt_records.append({"header": hdr, "sequence": "".join(buf).upper()})
+                fasta_origin_path = workdir / "origin.fasta"
+                write_fasta(wt_records, antigen_chain, antigen_seq, fasta_origin_path)
+
+            send_heartbeat(webhook_url, job_id, stage="designing", designs_total=total_passes)
+
+            out_dir = workdir / "out"
+            rc = run_iggm(
+                design_fasta, antigen_pdb, out_dir, run_task, epitope_positions,
+                max_antigen_size, num_samples, fasta_origin_path,
+            )
+            if rc != 0:
+                _fail("run", "design.py", f"IgGM design.py exited with code {rc}")
+
+            design_pdbs = collect_design_pdbs(out_dir)
+            if not design_pdbs:
+                _fail("run", "output", "IgGM produced no PDB outputs")
+
+            # ---- upload designs + compute epitope-contact QC per design ----
+            designs_out: list[dict] = []
+            for i, pdb_path in enumerate(design_pdbs):
+                pdb_text = pdb_path.read_text()
+                contacts = epitope_contacts(pdb_text, n_res, epitope_positions)
+                # Index-prefix the key so per-sample outputs that share a basename
+                # (e.g. sample_0/pred.pdb, sample_1/pred.pdb) don't collide in storage.
+                uniq = f"{i:03d}_{pdb_path.stem}"
+                pdb_key = f"{uniq}.pdb"
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+                    upload_file(urls[pdb_key], pdb_text.encode("utf-8"), "chemical/x-pdb")
+                except Exception as exc:
+                    logger.warning("design %s: upload failed (%s) — skipping", pdb_key, exc)
+                    continue
+                entry = {
+                    "rank": i,
+                    "name": uniq,
+                    "pdb_key": pdb_key,
+                    "n_epitope_contacts": contacts["n_contacted"],
+                    "n_epitope": contacts["n_epitope"],
+                    "contacted_positions": contacts["contacted"],
+                    "antigen_chain": antigen_chain,
+                }
+                designs_out.append(entry)
+                send_heartbeat(
+                    webhook_url, job_id, stage="designing",
+                    designs_completed=len(designs_out), designs_total=len(design_pdbs),
+                    new_candidate=entry,
+                )
+
+            # ---- upload non-PDB artifacts (FASTA / CSV / plots) ----
+            artifact_keys: list[str] = []
+            for art in collect_artifacts(out_dir):
+                key = f"artifacts/{art.name}"
+                ctype = {
+                    ".fasta": "text/plain", ".csv": "text/csv", ".png": "image/png",
+                }.get(art.suffix.lower(), "application/octet-stream")
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [key])
+                    upload_file(urls[key], art.read_bytes(), ctype)
+                    artifact_keys.append(key)
+                except Exception as exc:
+                    logger.warning("artifact %s: upload failed (%s)", key, exc)
+
+            # Deliver the COMPLETED result BEFORE the raw-capture tar runs. _ship_raw
+            # is in the finally below; a run finishing near the subprocess timeout can
+            # be SIGKILLed mid-tar, and if the result were written only after the tar
+            # that kill would flip a real success into a lost job. Writing it here — the
+            # last statement of the try body — guarantees result delivery precedes capture.
+            runtime_seconds = int(time.time() - start)
+            _write_result(
+                {
+                    "status": "COMPLETED",
+                    "tier": preset,
+                    "run_task": run_task,
+                    "designs_total": len(design_pdbs),
+                    "designs_completed": len(designs_out),
+                    "designs": designs_out,
+                    "artifact_keys": artifact_keys,
+                    "antigen_chain": antigen_chain,
+                    "antigen_length": n_res,
+                    "epitope_positions": epitope_positions,
+                    "epitope_pdb_resnums": epitope_pdb,
+                    "runtime_seconds": runtime_seconds,
+                    "provider_job_id": os.environ.get("JOB_ID", ""),
+                }
+            )
+        finally:
+            # Ship the COMPLETE tree home before TemporaryDirectory deletes it.
+            # In a finally so it also covers the _fail() exits above (each is a
+            # sys.exit -> SystemExit through this block) and any unexpected raise:
+            # a crashed or zero-design run is precisely when the tree matters most.
+            _ship_raw(workdir)
+
     send_heartbeat(
         webhook_url, job_id, stage="complete",
         designs_completed=len(designs_out), designs_total=len(design_pdbs),

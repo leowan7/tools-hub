@@ -69,6 +69,7 @@ import logging
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -86,6 +87,9 @@ logger = logging.getLogger("boltz2_pipeline")
 
 
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
+# The COMPLETE work tree, tarred at teardown for the Modal wrapper to park on the
+# raw Volume. Fixed path, outside the work dir, so the wrapper needs no coordination.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 HOTSPOT_CUTOFF_ANGSTROM = 5.0
 BOLTZ_BIN = os.environ.get("BOLTZ_BIN", "boltz")
 
@@ -452,6 +456,67 @@ def _num(value: Any) -> float | None:
 
 
 # ===========================================================================
+# Raw output capture
+# ===========================================================================
+
+
+def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
+    """Tar the ENTIRE work tree to ``dest`` before teardown destroys it.
+
+    A container must never decide which fields are worth keeping. This pipeline
+    keeps 4 confidence scalars out of Boltz's ``confidence*.json`` and drops the
+    rest of the tree — the per-design YAML, the PA(E)/PDE npz, the extra ranked
+    models, the MSA, and every artefact of a fold that failed before it produced
+    a PDB. Everything not archived here dies with the container and is
+    recoverable only by re-paying for the GPU. That is how ``design_iptm`` was
+    lost on 460 designs. Re-parsing a tar locally is free; re-running is not.
+
+    Unconditional by design: it is not gated on success or on candidates. A run
+    that folded nothing uploads nothing and is exactly the run whose tree you
+    need. Best-effort by design: capture must never fail the run, so problems
+    are logged and never raised — a crash before output is written is precisely
+    when the diagnostics matter most.
+    """
+    try:
+        if not os.path.isdir(work_dir):
+            logger.warning(
+                "raw capture: %s is not a directory — nothing to archive", work_dir,
+            )
+            return
+        root = os.path.abspath(work_dir)
+        dest_abs = os.path.abspath(dest)
+        # The tar must never be written inside the tree it archives, or it tars
+        # itself. RAW_ARCHIVE_PATH sits in /tmp while work_dir is /tmp/boltz2_*/,
+        # so this cannot trip today — it is here so a future caller passing a dest
+        # under work_dir gets a log line instead of a self-referential archive.
+        if os.path.commonpath([dest_abs, root]) == root:
+            logger.error(
+                "raw capture: refusing to write %s inside the tree it archives (%s)",
+                dest_abs, root,
+            )
+            return
+        # Stream to a file, never io.BytesIO: ~1x peak RSS instead of ~3-4x.
+        with tarfile.open(dest_abs, "w:gz") as tf:
+            tf.add(root, arcname=os.path.basename(root) or "work")
+        logger.info(
+            "raw capture: archived %s -> %s (%.1f MB)",
+            root, dest_abs, os.path.getsize(dest_abs) / 1e6,
+        )
+    except Exception as exc:
+        logger.warning(
+            "raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc,
+        )
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dest_abs):
+                os.remove(dest_abs)
+        except OSError:
+            pass
+
+
+# ===========================================================================
 # Main
 # ===========================================================================
 
@@ -501,118 +566,126 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="boltz2_", dir="/tmp") as _td:
         workdir = Path(_td)
-        antigen_pdb = download_antigen_pdb(
-            payload.get("input_presigned_url") or "",
-            workdir / "antigen.pdb",
-        )
-        antigen_seq = chain_seq(antigen_pdb, chain=antigen_chain)
-        if not antigen_seq:
-            _fail(
-                "input",
-                "antigen_chain",
-                f"chain {antigen_chain!r} produced 0 residues in the uploaded PDB",
+        try:
+            antigen_pdb = download_antigen_pdb(
+                payload.get("input_presigned_url") or "",
+                workdir / "antigen.pdb",
             )
-        antigen_length = len(antigen_seq)
-        logger.info(
-            "antigen %s: %d residues parsed from uploaded PDB",
-            antigen_chain, antigen_length,
-        )
-
-        send_heartbeat(
-            webhook_url, job_id,
-            stage="folding",
-            designs_completed=0,
-            designs_total=designs_total,
-        )
-
-        yaml_factory = make_yaml_msa_server if msa_server else make_yaml_sseq
-
-        designs_out: list[dict] = []
-        n_failures = 0
-
-        for i, binder in enumerate(binders):
-            name = str(binder.get("name") or f"design_{i}").strip() or f"design_{i}"
-            sequence = (binder.get("sequence") or "").strip().upper()
-            if not sequence:
-                n_failures += 1
-                logger.warning("design %d (%s): empty sequence — skipping", i, name)
-                continue
-
-            design_start = time.time()
-            design_workdir = workdir / f"d_{i:03d}"
-            design_workdir.mkdir(parents=True, exist_ok=True)
-            yaml_path = design_workdir / f"{name}.yaml"
-            yaml_path.write_text(yaml_factory(sequence, antigen_seq))
-            out_dir = design_workdir / "out"
-
-            logger.info(
-                "=== folding %d/%d %s (binder=%d aa, antigen=%d aa, msa=%s) ===",
-                i + 1, designs_total, name, len(sequence), antigen_length, msa_server,
-            )
-            rc = run_boltz(yaml_path, out_dir, msa_server=msa_server)
-            if rc != 0:
-                n_failures += 1
-                logger.warning("design %s: boltz exited %d", name, rc)
-                continue
-
-            pdb_path, conf = collect_outputs(out_dir)
-            if pdb_path is None:
-                n_failures += 1
-                logger.warning("design %s: no PDB emitted", name)
-                continue
-
-            pdb_text = pdb_path.read_text()
-            contacts = hotspot_contacts(
-                pdb_text, hotspots, antigen_len=antigen_length,
-            )
-
-            iptm = _num(conf.get("iptm") or conf.get("complex_iptm"))
-            ptm = _num(conf.get("ptm") or conf.get("complex_ptm"))
-            plddt = _num(conf.get("complex_plddt") or conf.get("plddt"))
-            iplddt = _num(conf.get("complex_iplddt"))
-            filter_status = classify(iptm, plddt, contacts["n_contacted"])
-
-            pdb_key = f"{name}_complex.pdb"
-            try:
-                urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
-            except Exception as exc:
-                n_failures += 1
-                logger.warning(
-                    "design %s: upload failed (%s) — skipping", name, exc,
+            antigen_seq = chain_seq(antigen_pdb, chain=antigen_chain)
+            if not antigen_seq:
+                _fail(
+                    "input",
+                    "antigen_chain",
+                    f"chain {antigen_chain!r} produced 0 residues in the uploaded PDB",
                 )
-                continue
-
-            design_entry = {
-                "rank": i,
-                "name": name,
-                "pdb_key": pdb_key,
-                "iptm": iptm,
-                "ptm": ptm,
-                "complex_plddt": plddt,
-                "complex_iplddt": iplddt,
-                "n_hotspot_contacts": contacts["n_contacted"],
-                "n_hotspots": contacts["n_hotspots"],
-                "contacted_residues": contacts["contacted"],
-                "antigen_chain": contacts["antigen_chain"],
-                "filter_status": filter_status,
-                "runtime_seconds": int(time.time() - design_start),
-            }
-            designs_out.append(design_entry)
+            antigen_length = len(antigen_seq)
+            logger.info(
+                "antigen %s: %d residues parsed from uploaded PDB",
+                antigen_chain, antigen_length,
+            )
 
             send_heartbeat(
                 webhook_url, job_id,
                 stage="folding",
-                designs_completed=i + 1,
+                designs_completed=0,
                 designs_total=designs_total,
-                new_candidate=design_entry,
             )
-            logger.info(
-                "  -> %s iptm=%s plddt=%s contacts=%d/%d %s",
-                name, iptm, plddt,
-                contacts["n_contacted"], contacts["n_hotspots"],
-                filter_status,
-            )
+
+            yaml_factory = make_yaml_msa_server if msa_server else make_yaml_sseq
+
+            designs_out: list[dict] = []
+            n_failures = 0
+
+            for i, binder in enumerate(binders):
+                name = str(binder.get("name") or f"design_{i}").strip() or f"design_{i}"
+                sequence = (binder.get("sequence") or "").strip().upper()
+                if not sequence:
+                    n_failures += 1
+                    logger.warning("design %d (%s): empty sequence — skipping", i, name)
+                    continue
+
+                design_start = time.time()
+                design_workdir = workdir / f"d_{i:03d}"
+                design_workdir.mkdir(parents=True, exist_ok=True)
+                yaml_path = design_workdir / f"{name}.yaml"
+                yaml_path.write_text(yaml_factory(sequence, antigen_seq))
+                out_dir = design_workdir / "out"
+
+                logger.info(
+                    "=== folding %d/%d %s (binder=%d aa, antigen=%d aa, msa=%s) ===",
+                    i + 1, designs_total, name, len(sequence), antigen_length, msa_server,
+                )
+                rc = run_boltz(yaml_path, out_dir, msa_server=msa_server)
+                if rc != 0:
+                    n_failures += 1
+                    logger.warning("design %s: boltz exited %d", name, rc)
+                    continue
+
+                pdb_path, conf = collect_outputs(out_dir)
+                if pdb_path is None:
+                    n_failures += 1
+                    logger.warning("design %s: no PDB emitted", name)
+                    continue
+
+                pdb_text = pdb_path.read_text()
+                contacts = hotspot_contacts(
+                    pdb_text, hotspots, antigen_len=antigen_length,
+                )
+
+                iptm = _num(conf.get("iptm") or conf.get("complex_iptm"))
+                ptm = _num(conf.get("ptm") or conf.get("complex_ptm"))
+                plddt = _num(conf.get("complex_plddt") or conf.get("plddt"))
+                iplddt = _num(conf.get("complex_iplddt"))
+                filter_status = classify(iptm, plddt, contacts["n_contacted"])
+
+                pdb_key = f"{name}_complex.pdb"
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+                    upload_pdb(urls[pdb_key], pdb_text.encode("utf-8"))
+                except Exception as exc:
+                    n_failures += 1
+                    logger.warning(
+                        "design %s: upload failed (%s) — skipping", name, exc,
+                    )
+                    continue
+
+                design_entry = {
+                    "rank": i,
+                    "name": name,
+                    "pdb_key": pdb_key,
+                    "iptm": iptm,
+                    "ptm": ptm,
+                    "complex_plddt": plddt,
+                    "complex_iplddt": iplddt,
+                    "n_hotspot_contacts": contacts["n_contacted"],
+                    "n_hotspots": contacts["n_hotspots"],
+                    "contacted_residues": contacts["contacted"],
+                    "antigen_chain": contacts["antigen_chain"],
+                    "filter_status": filter_status,
+                    "runtime_seconds": int(time.time() - design_start),
+                }
+                designs_out.append(design_entry)
+
+                send_heartbeat(
+                    webhook_url, job_id,
+                    stage="folding",
+                    designs_completed=i + 1,
+                    designs_total=designs_total,
+                    new_candidate=design_entry,
+                )
+                logger.info(
+                    "  -> %s iptm=%s plddt=%s contacts=%d/%d %s",
+                    name, iptm, plddt,
+                    contacts["n_contacted"], contacts["n_hotspots"],
+                    filter_status,
+                )
+
+        finally:
+            # Ship the COMPLETE tree home BEFORE TemporaryDirectory deletes it.
+            # In the ``finally`` because every path that skips the normal exit —
+            # a ``_fail`` sys.exit, an unexpected raise, a zero-design run — is a
+            # path whose tree is worth more, not less.
+            archive_raw_outputs(str(workdir))
 
     runtime_seconds = int(time.time() - start)
     _write_result(

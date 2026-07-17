@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 from typing import Any
 
@@ -38,6 +40,17 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-40GB"
+# Raw work-dir capture. ``run_pipeline.py`` tars its complete work dir to
+# _RAW_ARCHIVE_PATH before the tree is destroyed; this wrapper parks it on a
+# dedicated Volume under the job id. The split exists because the pipeline
+# runs as a subprocess and cannot mount a Volume — only this wrapper can.
+#
+# A DEDICATED Volume, never a shared/weights one: raw run output is GB-scale
+# and needs its own reap path, and parking it beside a weights cache bloats
+# the thing that exists to make cold starts cheap.
+_RAW_VOLUME = f"ranomics-{_TOOL}-raw"
+_RAW_MOUNT = "/raw"
+_RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # 4 h ceiling covers the standalone tier (~1-2 min warm, ~9 min cold)
 # and the batch preset (up to 200 records at ~1-2 min/fold warm
 # sequential). For a fully-cold container the JAX JIT recompile is paid
@@ -94,8 +107,59 @@ image = (
 
 app = modal.App("ranomics-colabfold-prod")
 
+raw_volume = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
 
-@app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S)
+
+def _park_raw_archive(job_id: str) -> dict[str, str]:
+    """Move the pipeline's raw work-dir tar onto the raw Volume.
+
+    Returns the two keys a caller needs to fetch it, or ``{}`` when there is
+    nothing to park. Never raises — capture must not fail the run.
+
+    Volume rather than an inline return or an upload, all three checked:
+    ``gpu/modal_client.py`` feeds this dict into the ``tool_jobs.result``
+    JSONB column, and a b64 tar in there is what made the UPDATE throw and
+    left jobs wedged in "running" (``shared/jobs.py``). Supabase Storage is
+    out too: 20 MB object cap and no gzip/tar in the MIME allowlist. Naming
+    the object after the job id means nothing new travels through the DB —
+    and top-level keys are ignored by ``_interpret_pipeline_return``, so
+    this needs zero client changes.
+    """
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE_PATH):
+            print(
+                f"[raw] no {_RAW_ARCHIVE_PATH} to park — pipeline died before "
+                "it could tar, or the work dir was already gone",
+                flush=True,
+            )
+            return {}
+        # job_id reaches us straight from the payload; keep it from escaping
+        # the mount via a slash or a "..".
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(job_id)) or "unknown"
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        dest = os.path.join(_RAW_MOUNT, f"{safe}.tgz")
+        size = os.path.getsize(_RAW_ARCHIVE_PATH)
+        shutil.move(_RAW_ARCHIVE_PATH, dest)
+        try:
+            raw_volume.commit()
+        except Exception as exc:  # a commit race must not lose the run
+            print(f"[raw] volume commit failed: {exc}", flush=True)
+        print(
+            f"[raw] parked {size / 1e6:.1f} MB at {dest} (volume {_RAW_VOLUME})",
+            flush=True,
+        )
+        return {"raw_tgz_volume": _RAW_VOLUME, "raw_tgz_volume_path": dest}
+    except Exception as exc:  # capture is best-effort by design
+        print(f"[raw] parking failed (non-fatal): {exc}", flush=True)
+        return {}
+
+
+@app.function(
+    image=image,
+    gpu=_GPU,
+    timeout=_MAX_SESSION_S,
+    volumes={_RAW_MOUNT: raw_volume},
+)
 def run_tool(payload: Any) -> dict:
     """Run one ColabFold session (smoke or standalone).
 
@@ -124,12 +188,19 @@ def run_tool(payload: Any) -> dict:
     # this wrapper would read the previous job's result and
     # ``gpu.modal_client._interpret_pipeline_return()`` would mark the
     # new job succeeded with another run's output. Codex P1.
-    try:
-        os.remove("/tmp/smoke_results.json")
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
+    #
+    # raw_archive.tgz needs the identical treatment for a sharper reason: a
+    # leftover tar would be parked under THIS job's id and look like this
+    # run's evidence. Losing the tree is recoverable by re-running; silently
+    # attributing another run's tree to this job is the exact failure this
+    # capture exists to prevent.
+    for _stale in ("/tmp/smoke_results.json", _RAW_ARCHIVE_PATH):
+        try:
+            os.remove(_stale)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[run_tool] could not remove stale {_stale}: {exc}", flush=True)
 
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
     print(
@@ -138,15 +209,30 @@ def run_tool(payload: Any) -> dict:
         flush=True,
     )
 
-    result = subprocess.run(
-        cmd,
-        env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        # Keep a safety margin under the hard Modal timeout so the
-        # wrapper still has time to read smoke_results.json.
-        timeout=max(60, _MAX_SESSION_S - 30),
-    )
+    # try/finally so the tar is parked even when subprocess.run raises
+    # TimeoutExpired. The pipeline's own ceiling fires first (14000s batch /
+    # 1740s single, vs 14370s here), so on that path it has usually already
+    # written the tar — leaving it in a dying container's /tmp is a lost run.
+    # The timeout still propagates: this only parks, it never swallows.
+    raw_info: dict[str, str] = {}
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            # Keep a safety margin under the hard Modal timeout so the
+            # wrapper still has time to read smoke_results.json.
+            timeout=max(60, _MAX_SESSION_S - 30),
+        )
+    finally:
+        # Unconditional: not gated on exit_code, on smoke_result parsing, or
+        # on anything having been uploaded. A non-zero exit or a
+        # zero-candidate "success" is when the tree is worth the most.
+        # The Volume object is named after the job id, so even on the raising
+        # path — where this dict never reaches the caller — the archive is
+        # still fetchable by job id alone.
+        raw_info = _park_raw_archive(payload.get("job_id", ""))
 
     print(f"[run_tool] subprocess exited: {result.returncode}", flush=True)
 
@@ -164,10 +250,15 @@ def run_tool(payload: Any) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[run_tool] failed to read smoke_results.json: {exc}", flush=True)
 
+    # raw_tgz_volume / raw_tgz_volume_path ride at the TOP level, alongside
+    # exit_code — never inside smoke_result, which is the curated dict the
+    # hub persists. _interpret_pipeline_return ignores unknown top-level
+    # keys, so this is additive for every existing caller.
     return {
         "exit_code": result.returncode,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        **raw_info,
     }

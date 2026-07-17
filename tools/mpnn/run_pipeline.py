@@ -37,6 +37,14 @@ Output shape (``/tmp/smoke_results.json``)::
       "runtime_seconds": 47,
       "provider_job_id": "<job_id>"
     }
+
+Raw capture: immediately before the work dir is torn down, the COMPLETE
+tree is tarred to ``/tmp/raw_archive.tgz``; ``tools/mpnn/modal_app.py``
+parks that file on the ``ranomics-mpnn-raw`` Volume. Nothing in here
+decides which fields are worth keeping — ``parse_mpnn_output`` reads a
+score and a recovery off each FASTA header and drops the rest of the
+MPNN tree with the container. Filtering and ranking happen locally,
+afterwards, where re-parsing is free and re-running is not.
 """
 
 from __future__ import annotations
@@ -48,6 +56,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -68,6 +77,10 @@ PROTEINMPNN_WEIGHTS = os.environ.get(
 PROTEINMPNN_SCRIPT = f"{PROTEINMPNN_DIR}/protein_mpnn_run.py"
 SMOKE_TARGET_PDB = "/opt/smoke_target.pdb"
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
+# Fixed path the Modal wrapper collects the raw tree from. MUST sit outside the
+# work dir it archives, or the tar ends up inside its own source — see
+# _archive_raw, which re-checks rather than trusting this constant.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 
 # Bounds enforced on the two numeric job_spec params. Mirrored from the
 # tools-hub adapter validate() but re-checked here because the pipeline
@@ -467,6 +480,67 @@ def reject_stub(sequences: list[dict[str, Any]]) -> None:
 
 
 # ===========================================================================
+# Raw capture
+# ===========================================================================
+
+
+def _archive_raw(work_dir: Path) -> None:
+    """Tar the COMPLETE work dir to RAW_ARCHIVE_PATH. Best-effort; never raises.
+
+    A container must not decide which fields are worth keeping. The parser above
+    keeps ``seq``/``score``/``recovery``/``sample`` off each FASTA header and lets
+    the rest of the MPNN tree — the per-residue probability npz, the scores dir,
+    the unparsed header fields, the staged input PDB — die with the tempdir.
+    Anything not shipped here is recoverable only by paying for the GPU again.
+    That is exactly how ``design_iptm`` was lost on 460 BoltzGen designs: three
+    numbers were kept out of ~190 columns, and the one that was kept was the
+    wrong one. Decide LOCALLY, where re-parsing is free.
+
+    Not gated on success, on sequences, or on filenames_to_upload: a run that
+    crashed or parsed to zero is precisely the run whose tree you need. Callers
+    invoke this from a ``finally``, so failure to archive must never break the
+    run — problems are logged, never raised.
+    """
+    try:
+        src = os.path.abspath(str(work_dir))
+        if not os.path.isdir(src):
+            logger.warning("raw capture: no work dir at %s — nothing to archive", src)
+            return
+        dest = os.path.abspath(RAW_ARCHIVE_PATH)
+        # The tar must never be written inside the tree it archives, or it tars
+        # itself. /tmp/raw_archive.tgz is outside a /tmp/mpnn_*/ work dir, but
+        # check rather than trust the layout — a future dir= change would make
+        # this silently recursive.
+        if os.path.commonpath([src, dest]) == src:
+            logger.warning(
+                "raw capture: archive path %s is inside work dir %s — skipping "
+                "so the tar does not archive itself",
+                dest,
+                src,
+            )
+            return
+        # Stream to a file, never io.BytesIO: ~1x peak RSS instead of ~3-4x.
+        with tarfile.open(dest, "w:gz") as tf:
+            tf.add(src, arcname=os.path.basename(src.rstrip(os.sep)) or "work")
+        logger.info(
+            "raw capture: archived %s -> %s (%.1f MB)",
+            src,
+            dest,
+            os.path.getsize(dest) / 1e6,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        logger.warning("raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc)
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
+
+
+# ===========================================================================
 # Main
 # ===========================================================================
 
@@ -505,16 +579,24 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="mpnn_", dir="/tmp") as _td:
         workdir = Path(_td)
-        target_pdb = resolve_input_pdb(payload, workdir)
-        out_dir = run_mpnn(
-            target_pdb=target_pdb,
-            chains_to_design=chains_to_design,
-            num_seq_per_target=num_seq_per_target,
-            sampling_temp=sampling_temp,
-            workdir=workdir,
-        )
-        sequences = parse_mpnn_output(out_dir, pdb_stem=target_pdb.stem)
-        reject_stub(sequences)
+        try:
+            target_pdb = resolve_input_pdb(payload, workdir)
+            out_dir = run_mpnn(
+                target_pdb=target_pdb,
+                chains_to_design=chains_to_design,
+                num_seq_per_target=num_seq_per_target,
+                sampling_temp=sampling_temp,
+                workdir=workdir,
+            )
+            sequences = parse_mpnn_output(out_dir, pdb_stem=target_pdb.stem)
+            reject_stub(sequences)
+        finally:
+            # Archive the tree before TemporaryDirectory.__exit__ rmtrees it, on
+            # EVERY exit path. Every _fail() above raises SystemExit from inside
+            # this block (download failure, MPNN timeout, non-zero exit, missing
+            # FASTA, stub rejection) and would otherwise destroy the evidence for
+            # the failure it is reporting.
+            _archive_raw(workdir)
 
     runtime_seconds = int(time.time() - start)
     _write_result(

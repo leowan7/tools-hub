@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from typing import Any
 
@@ -44,6 +45,14 @@ _GPU = "A100-40GB"
 # at the soft 10-binder limit, plus weight load + MSA fetch tail latency.
 _MAX_SESSION_S = 3600
 _PYTHON = "python3"
+# Where ``run_pipeline.py`` tars its complete work tree at teardown, and where
+# this wrapper parks it. The archive gets its OWN Volume, never the weights
+# cache: a weights volume exists to make cold starts cheap and has no eviction
+# path, so parking GB-scale run output in it bloats the very thing it is for
+# and leaves no way to reap raw without touching weights.
+_RAW_ARCHIVE = "/tmp/raw_archive.tgz"
+_RAW_VOLUME = "ranomics-boltz2-raw"
+_RAW_MOUNT = "/raw"
 
 
 def _build_run_env(payload: dict) -> dict[str, str]:
@@ -85,6 +94,12 @@ def _merged_environment(payload: dict) -> dict[str, str]:
 # already cached there is hot for prod too.
 weights = modal.Volume.from_name("boltz2-weights", create_if_missing=True)
 
+# Raw run artefacts, keyed by job id. Deterministic naming means nothing new has
+# to travel through the DB: the caller already knows the job id, and top-level
+# return keys are ignored by the hub's ``_interpret_pipeline_return``, so this
+# needs zero client changes.
+raw = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
+
 image = (
     modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
@@ -97,7 +112,7 @@ app = modal.App("ranomics-boltz2-prod")
     image=image,
     gpu=_GPU,
     timeout=_MAX_SESSION_S,
-    volumes={"/root/.boltz": weights},
+    volumes={"/root/.boltz": weights, _RAW_MOUNT: raw},
 )
 def run_tool(payload: Any) -> dict:
     """Run one Boltz-2 session.
@@ -120,6 +135,13 @@ def run_tool(payload: Any) -> dict:
         f"WEBHOOK={env.get('WEBHOOK_URL')}",
         flush=True,
     )
+
+    # Warm containers are reused: a leftover raw archive from a prior job would be parked
+    # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
+    try:
+        os.remove(_RAW_ARCHIVE)
+    except OSError:
+        pass
 
     result = subprocess.run(
         cmd,
@@ -149,6 +171,40 @@ def run_tool(payload: Any) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[run_tool] failed to read smoke_results.json: {exc}", flush=True)
 
+    # Park the COMPLETE raw work tree, unconditionally — not gated on success, on
+    # candidates, or on anything having been uploaded. A zero-candidate run ships
+    # nothing today and is exactly the run whose tree you need. The tar goes on a
+    # Volume rather than inline in the return dict because a big base64 blob flows
+    # into the ``tool_jobs.result`` JSONB column and wedges the job in "running".
+    # Best-effort: capture must never fail the run.
+    raw_info: dict[str, str] = {}
+    try:
+        if os.path.isfile(_RAW_ARCHIVE):
+            os.makedirs(_RAW_MOUNT, exist_ok=True)
+            job_id = str(payload.get("job_id") or "unknown")
+            dest = os.path.join(_RAW_MOUNT, f"{os.path.basename(job_id)}.tgz")
+            shutil.move(_RAW_ARCHIVE, dest)
+            try:
+                raw.commit()
+            except Exception as exc:
+                # A commit race must not discard the path we already know: the
+                # tar is on the Volume either way, and a caller told where to
+                # look can find out. Silence cannot.
+                print(f"[run_tool] raw.commit() raised: {exc}", flush=True)
+            raw_info = {
+                "raw_tgz_volume": _RAW_VOLUME,
+                "raw_tgz_volume_path": dest,
+            }
+            print(
+                f"[run_tool] raw tree parked at {dest} (volume {_RAW_VOLUME}, "
+                f"{os.path.getsize(dest) / 1e6:.1f} MB)",
+                flush=True,
+            )
+        else:
+            print(f"[run_tool] no {_RAW_ARCHIVE} to park", flush=True)
+    except Exception as exc:
+        print(f"[run_tool] raw capture failed (non-fatal): {exc}", flush=True)
+
     # Persist the weights Volume so any newly-downloaded model files survive
     # the container teardown. Idempotent if nothing was written.
     try:
@@ -162,4 +218,5 @@ def run_tool(payload: Any) -> dict:
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        **raw_info,
     }
