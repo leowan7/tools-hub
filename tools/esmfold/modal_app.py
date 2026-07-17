@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import time
 from typing import Any
 
 import modal
@@ -38,6 +40,15 @@ _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"
 _RUN_PIPELINE_LOCAL = f"tools/{_TOOL}/run_pipeline.py"
 _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A100-40GB"
+# Raw run artifacts get their OWN Volume - never a weights/model cache, which
+# exists to make cold starts cheap, has no eviction path, and would then be
+# impossible to reap without touching weights.
+_RAW_VOLUME_NAME = f"ranomics-{_TOOL}-raw"
+_RAW_MOUNT = "/raw"
+# Fixed path run_pipeline.py tars its complete work dir to. It cannot mount a
+# Volume itself (it runs as a subprocess), so it drops the archive here and
+# this wrapper parks it. Keep in sync with run_pipeline.RAW_ARCHIVE_PATH.
+_RAW_ARCHIVE = "/tmp/raw_archive.tgz"
 # 60 min ceiling covers the standalone tier (~30 s warm) and the batch
 # preset (up to 500 records at ~5 s/seq sequential on a warm A100-40GB,
 # leaving headroom for cold weight load + tail-end uploads).
@@ -89,8 +100,71 @@ image = (
 
 app = modal.App("ranomics-esmfold-prod")
 
+raw_volume = modal.Volume.from_name(_RAW_VOLUME_NAME, create_if_missing=True)
 
-@app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S)
+
+def _park_raw_archive(job_id: str) -> dict:
+    """Move run_pipeline.py's raw archive onto the raw Volume, keyed by job id.
+
+    Why a Volume rather than an upload or an inline return - all three were
+    checked, this is the only one that works:
+      - ``gpu/modal_client.py`` rejects a non-dict return outright, and
+        ``webhooks/modal.py`` nulls one.
+      - A big b64 blob inside the returned dict flows into the ``tool_jobs``
+        ``result`` JSONB column; ``shared/jobs.py`` exists because inline b64
+        already broke that once - the UPDATE throws and the job never leaves
+        "running".
+      - Supabase Storage caps objects at 20 MB and its MIME allowlist has no
+        gzip/tar.
+    Keying on the job id means nothing new has to travel through the DB at all:
+    ``_interpret_pipeline_return`` ignores unknown top-level keys, so this needs
+    zero client changes.
+
+    Best-effort: never raises, and never gates the run's own result.
+    """
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE):
+            print(
+                f"[run_tool] no raw archive at {_RAW_ARCHIVE} - pipeline died "
+                "before it could tar (see logs above)",
+                flush=True,
+            )
+            return {}
+        stem = "".join(c if (c.isalnum() or c in "-_") else "_" for c in job_id).strip("_")
+        if not stem:
+            # Direct ``modal run`` invocations carry no job_id; still park it.
+            stem = f"nojob-{int(time.time())}"
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        dest = os.path.join(_RAW_MOUNT, f"{stem}.tgz")
+        shutil.move(_RAW_ARCHIVE, dest)
+        size = os.path.getsize(dest)
+        out = {
+            "raw_tgz_volume": _RAW_VOLUME_NAME,
+            "raw_tgz_volume_path": dest,
+            "raw_tgz_bytes": size,
+        }
+        try:
+            raw_volume.commit()
+        except Exception as exc:  # a commit race must not lose the run
+            out["raw_error"] = f"volume commit failed: {exc}"
+            print(f"[run_tool] raw volume commit failed: {exc}", flush=True)
+        print(
+            f"[run_tool] raw archive parked at {dest} ({size} bytes) on volume "
+            f"{_RAW_VOLUME_NAME}",
+            flush=True,
+        )
+        return out
+    except Exception as exc:
+        print(f"[run_tool] raw archive capture failed (non-fatal): {exc}", flush=True)
+        return {}
+
+
+@app.function(
+    image=image,
+    gpu=_GPU,
+    timeout=_MAX_SESSION_S,
+    volumes={_RAW_MOUNT: raw_volume},
+)
 def run_tool(payload: Any) -> dict:
     """Run one ESMFold session (smoke or standalone).
 
@@ -126,6 +200,17 @@ def run_tool(payload: Any) -> dict:
     except OSError as exc:
         print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
 
+    # Same warm-container hazard for the raw archive: if this run's pipeline
+    # dies before tarring, a previous run's archive would be parked under THIS
+    # job's id and mislabel another job's tree as this one's. Same class of bug
+    # as the smoke_results.json staleness above.
+    try:
+        os.remove(_RAW_ARCHIVE)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[run_tool] could not remove stale raw archive: {exc}", flush=True)
+
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
     print(
         f"[run_tool] JOB_ID={env.get('JOB_ID')} TIER={env.get('JOB_TIER')} "
@@ -159,10 +244,16 @@ def run_tool(payload: Any) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[run_tool] failed to read smoke_results.json: {exc}", flush=True)
 
+    # Unconditional: not gated on exit_code, on smoke_result, or on whether the
+    # run produced candidates. A run that crashed or returned nothing is exactly
+    # the one whose complete tree is worth having.
+    raw_info = _park_raw_archive(str(payload.get("job_id", "") or ""))
+
     return {
         "exit_code": result.returncode,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        **raw_info,
     }

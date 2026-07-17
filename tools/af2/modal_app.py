@@ -27,7 +27,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
+import time
 from typing import Any
 
 import modal
@@ -45,6 +48,15 @@ _GPU = "A100-80GB"
 # on a cold container can still complete.
 _MAX_SESSION_S = 14400
 _PYTHON = "python3"
+
+# Raw run artifacts get their OWN Volume, never a weights/cache volume: a
+# weights cache exists to make cold starts cheap and has no eviction path,
+# so parking GB-scale run output in it bloats the very thing it is for and
+# leaves no way to reap raw without touching weights.
+_RAW_MOUNT = "/raw"
+_RAW_VOLUME = f"ranomics-{_TOOL}-raw"
+# Fixed path run_pipeline.py tars its work dir to (RAW_ARCHIVE_PATH there).
+_RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 
 
 def _build_run_env(payload: dict) -> dict[str, str]:
@@ -95,8 +107,61 @@ image = (
 
 app = modal.App("ranomics-af2-prod")
 
+raw_volume = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
 
-@app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S)
+
+def _park_raw_archive(job_id: str) -> dict[str, str]:
+    """Move the pipeline's raw archive onto the raw Volume.
+
+    ``run_pipeline.py`` tars its COMPLETE work dir to
+    ``/tmp/raw_archive.tgz`` before teardown; this parks it under a
+    deterministic name so it can be fetched later without anything new
+    travelling through the DB.
+
+    A Volume rather than an inline return or an upload, all three of
+    which were checked: ``gpu/modal_client.py`` rejects a non-dict return
+    outright and pipes dict values into the ``tool_jobs.result`` JSONB
+    column (inline b64 has already broken that write, which is why
+    ``shared/jobs.py`` has to defend it), and Supabase Storage caps
+    objects at 20 MB with no gzip/tar in its MIME allowlist.
+
+    Best-effort: capture must never fail the run. Returns the keys to
+    merge into the return dict, or ``{}`` if there is nothing to park.
+    """
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE_PATH):
+            print("[raw] pipeline wrote no archive — nothing to park", flush=True)
+            return {}
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(job_id or "")).strip("_")
+        if not name:
+            name = f"unknown_{int(time.time())}"
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        dest = os.path.join(_RAW_MOUNT, f"{name}.tgz")
+        size = os.path.getsize(_RAW_ARCHIVE_PATH)
+        shutil.move(_RAW_ARCHIVE_PATH, dest)
+        try:
+            raw_volume.commit()
+        except Exception as exc:  # noqa: BLE001 — a commit race must not lose the run
+            print(f"[raw] volume commit failed (non-fatal): {exc}", flush=True)
+        print(
+            f"[raw] parked {size / 1e6:.1f} MB at {dest} (volume {_RAW_VOLUME})",
+            flush=True,
+        )
+        # Top-level keys are ignored by _interpret_pipeline_return, so this
+        # needs zero client changes; they exist to tell the caller where to
+        # fetch from rather than print a `modal volume get` line for a human
+        # to run, which has a demonstrated ~0% follow-through rate.
+        return {"raw_tgz_volume": _RAW_VOLUME, "raw_tgz_volume_path": dest}
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        print(
+            f"[raw] parking failed (non-fatal): {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return {}
+
+
+@app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S,
+              volumes={_RAW_MOUNT: raw_volume})
 def run_tool(payload: Any) -> dict:
     """Run one AF2 session (smoke or standalone).
 
@@ -132,6 +197,16 @@ def run_tool(payload: Any) -> dict:
     except OSError as exc:
         print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
 
+    # Same warm-container hazard, same fix: a stale raw archive left by a
+    # prior invocation would be parked under THIS job's id and read back as
+    # this job's output tree.
+    try:
+        os.remove(_RAW_ARCHIVE_PATH)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[run_tool] could not remove stale raw archive: {exc}", flush=True)
+
     print(f"[run_tool] spawning: {' '.join(cmd)}", flush=True)
     print(
         f"[run_tool] JOB_ID={env.get('JOB_ID')} TIER={env.get('JOB_TIER')} "
@@ -165,10 +240,16 @@ def run_tool(payload: Any) -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         print(f"[run_tool] failed to read smoke_results.json: {exc}", flush=True)
 
+    # Unconditional: not gated on exit_code, on smoke_result, or on what got
+    # uploaded. A run that crashed before writing output is exactly when the
+    # tree matters most.
+    raw_keys = _park_raw_archive(payload.get("job_id", ""))
+
     return {
         "exit_code": result.returncode,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        **raw_keys,
     }

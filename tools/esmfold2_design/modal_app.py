@@ -18,6 +18,12 @@ warm container; weights pull is ~30 GB on a cold Volume. Memory is sized
 for the default ``REUSE_ESMC=False`` path (27 GB VRAM); flip the
 ``use_scaling_critics`` env var to load the 15-checkpoint ensemble and
 bump memory to 60 GB host RAM.
+
+Raw capture: ``run_pipeline.py`` tars its COMPLETE work tree to
+``/tmp/raw_archive.tgz`` before the container dies; ``_park_raw_archive``
+moves it onto the ``ranomics-esmfold2-design-raw`` Volume under a
+deterministic name and reports where it landed via the top-level
+``raw_tgz_volume`` / ``raw_tgz_volume_path`` keys.
 """
 
 from __future__ import annotations
@@ -25,6 +31,8 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
+import shutil
 import subprocess
 from typing import Any
 
@@ -46,6 +54,24 @@ _MAX_SESSION_S = 60 * 60
 # over the worker timeout to absorb spawn overhead + aggregation.
 _ORCHESTRATOR_TIMEOUT_S = 75 * 60
 _PYTHON = "python3"
+
+# Raw run artifacts get their OWN Volume, never the weights Volume: a weights
+# cache exists to make cold starts cheap and has no eviction path, so parking
+# GB-scale run output in it bloats the very thing it is for and leaves no way to
+# reap raw without touching weights.
+#
+# A Volume rather than an inline return or an upload — all three were checked.
+# gpu/modal_client.py rejects a non-dict return outright and pipes dict values
+# into the tool_jobs.result JSONB column (inline b64 has already broken that
+# write, which is why shared/jobs.py carries the scar tissue for it), and
+# Supabase Storage caps objects at 20 MB with no gzip/tar in its MIME allowlist.
+# Naming the tar deterministically means nothing new has to travel through the
+# DB at all — _interpret_pipeline_return ignores unknown top-level keys, so this
+# needs zero client changes.
+_RAW_MOUNT = "/raw"
+_RAW_VOLUME = f"ranomics-{_TOOL}-raw"
+# Fixed path run_pipeline.py tars its work tree to (RAW_ARCHIVE_PATH there).
+_RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 
 
 def _build_run_env(payload: dict) -> dict[str, str]:
@@ -80,6 +106,69 @@ def _merged_environment(payload: dict) -> dict[str, str]:
 weights = modal.Volume.from_name(
     "ranomics-esmfold2-models", create_if_missing=True
 )
+
+raw_volume = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
+
+
+def _raw_stem(prefix: Any, job_id: Any) -> str:
+    """Deterministic, filesystem-safe archive name for one container's tree.
+
+    ``pdb_prefix`` is the mechanism this tool already uses to stop fan-out
+    children colliding in the per-job Storage namespace (``seed{N}_``), so reuse
+    it here for exactly the same reason: every child of one job shares a job_id,
+    and without the prefix N seeds would race to write the same ``<job_id>.tgz``
+    and N-1 trees would be lost silently. Single-seed runs get an empty prefix
+    and land at ``<job_id>.tgz``.
+
+    Deterministic on purpose — the caller reconstructs the path from the job id
+    and seed, which is what lets the archive be found even when the return dict
+    never made it home. No time-based fallback for that reason.
+    """
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{prefix or ''}{job_id or ''}").strip("_")
+    return stem or "unknown"
+
+
+def _park_raw_archive(payload: Any) -> dict[str, str]:
+    """Move run_pipeline.py's raw archive onto the raw Volume. Never raises.
+
+    Returns the keys telling the caller where the tar landed, or ``{}`` if there
+    was nothing to park. Capture must never fail the run: a tool that crashed
+    before writing output is exactly when the tree matters most, so problems are
+    printed, not raised.
+    """
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE_PATH):
+            print(
+                f"[raw] no archive at {_RAW_ARCHIVE_PATH} — pipeline died before "
+                f"its finally ran (hard timeout / OOM kill?)",
+                flush=True,
+            )
+            return {}
+        spec = (payload or {}).get("job_spec", {}) or {}
+        stem = _raw_stem(spec.get("pdb_prefix", ""), (payload or {}).get("job_id", ""))
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        dest = os.path.join(_RAW_MOUNT, f"{stem}.tgz")
+        size = os.path.getsize(_RAW_ARCHIVE_PATH)
+        shutil.move(_RAW_ARCHIVE_PATH, dest)
+        try:
+            raw_volume.commit()
+        except Exception as exc:  # noqa: BLE001 — a commit race must not lose the run
+            print(f"[raw] volume commit failed (non-fatal): {exc}", flush=True)
+        print(
+            f"[raw] parked {size / 1e6:.1f} MB at {dest} (volume {_RAW_VOLUME})",
+            flush=True,
+        )
+        # Top-level keys are ignored by _interpret_pipeline_return, so this needs
+        # zero client changes; they exist so the caller can fetch the tar itself
+        # rather than have a human run a `modal volume get` line, which has a
+        # demonstrated ~0% follow-through rate.
+        return {"raw_tgz_volume": _RAW_VOLUME, "raw_tgz_volume_path": dest}
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        print(
+            f"[raw] parking failed (non-fatal): {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return {}
 
 # Mirrors the upstream cookbook image build (evolutionaryscale/esm
 # cookbook/tutorials/binder_design.py, ~line 1150): micromamba base for
@@ -140,7 +229,7 @@ app = modal.App("ranomics-esmfold2-design-prod")
     timeout=_MAX_SESSION_S,
     cpu=16,
     memory=10 * 1024,
-    volumes={"/models": weights},
+    volumes={"/models": weights, _RAW_MOUNT: raw_volume},
 )
 def _run_one_seed(payload: Any) -> dict:
     """Worker — runs one ESMFold2-design gradient pass at one seed.
@@ -168,13 +257,30 @@ def _run_one_seed(payload: Any) -> dict:
         flush=True,
     )
 
-    result = subprocess.run(
-        cmd,
-        env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        timeout=max(60, _MAX_SESSION_S - 30),
-    )
+    # Warm containers are reused: a leftover raw archive from a prior job would be parked
+    # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
+    try:
+        os.remove(_RAW_ARCHIVE_PATH)
+    except OSError:
+        pass
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            timeout=max(60, _MAX_SESSION_S - 30),
+        )
+    finally:
+        # Unconditional, and in a finally: not gated on exit_code, on
+        # smoke_result, or on what got uploaded. subprocess.run raises
+        # TimeoutExpired on a 60 min H100 run — the path where this function
+        # never returns a dict at all, so the raw pointer never reaches the hub
+        # and the deterministic name is the only way back to the tree. Parking
+        # it there anyway is the difference between a recoverable timeout and a
+        # re-paid H100 hour.
+        raw_keys = _park_raw_archive(payload)
 
     print(f"[_run_one_seed] subprocess exited: {result.returncode}", flush=True)
 
@@ -207,6 +313,7 @@ def _run_one_seed(payload: Any) -> dict:
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        **raw_keys,
     }
 
 
@@ -305,6 +412,12 @@ def _aggregate(
     exporter and UI can attribute hits. Sums failure counts. If every
     child failed, returns a FAILED umbrella so tools-hub marks the job
     failed and surfaces the first few error strings to the user.
+
+    Also forwards the children's raw-archive pointers. One container per seed
+    means one archive per seed, so the umbrella carries the plural
+    ``raw_tgz_volume_paths``: collapsing N trees into the scalar
+    ``raw_tgz_volume_path`` that the single-seed path returns would silently
+    point at one of them and drop the rest.
     """
     tier = ""
     if isinstance(orig_payload, dict):
@@ -336,6 +449,17 @@ def _aggregate(
                 "failure_notes": [f"seed {s}: {e}" for s, e in failures],
                 "provider_job_id": umbrella_provider_id,
             },
+            "raw_tgz_volume": _RAW_VOLUME,
+            # Every child raised, so none of their return dicts survived and no
+            # pointer was confirmed. The names are deterministic, so hand over
+            # the ones to look for: a child that parked its tree before dying is
+            # recoverable, and one killed outright (OOM, preemption) simply will
+            # not be there. Best-effort names beat nothing on the exact path
+            # where the trees are worth the most.
+            "raw_tgz_volume_paths": [
+                f"{_RAW_MOUNT}/{_raw_stem(f'seed{s}_', umbrella_provider_id)}.tgz"
+                for s, _ in failures
+            ],
         }
 
     template = (successes[0][1].get("smoke_result") or {}) if isinstance(
@@ -351,6 +475,7 @@ def _aggregate(
 
     all_candidates: list[dict] = []
     all_designs: list[dict] = []
+    raw_paths: list[str] = []
     max_runtime = 0
     designs_total = 0
     designs_completed = 0
@@ -360,6 +485,9 @@ def _aggregate(
 
     for seed, child_ret in successes:
         smoke = (child_ret or {}).get("smoke_result") or {}
+        raw_path = (child_ret or {}).get("raw_tgz_volume_path")
+        if raw_path:
+            raw_paths.append(str(raw_path))
         for cand in smoke.get("candidates", []) or []:
             tagged = dict(cand)
             tagged["seed"] = seed
@@ -428,10 +556,14 @@ def _aggregate(
     if designs_completed == 0:
         smoke_result["error"] = "All seeds returned zero designs"
 
-    return {
+    out = {
         "exit_code": 0 if designs_completed > 0 else 1,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": umbrella_provider_id,
         "smoke_result": smoke_result,
     }
+    if raw_paths:
+        out["raw_tgz_volume"] = _RAW_VOLUME
+        out["raw_tgz_volume_paths"] = raw_paths
+    return out

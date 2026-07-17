@@ -51,8 +51,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import time
 from typing import Any
 
 import modal
@@ -74,6 +76,16 @@ _MAX_SESSION_S = 7200
 # rewards mount. Kept in lockstep with the Dockerfile ENV.
 _WEIGHTS_MOUNT = "/opt/proteina/ckpts"
 _REWARDS_MOUNT = "/opt/proteina/rewards"
+
+# Raw shard-output capture. run_pipeline.py tars its COMPLETE ./inference tree to
+# _RAW_ARCHIVE_PATH on every exit path; this wrapper parks it on a Volume under
+# the job id. The job id is a name both sides already know, so the tar itself
+# never travels through the return dict (and therefore never through the
+# tool_jobs.result JSONB column, where an inline blob has already broken an
+# UPDATE and stranded jobs in "running").
+_RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
+_RAW_VOLUME = f"ranomics-{_TOOL}-raw"
+_RAW_MOUNT = "/raw"
 
 
 def _build_run_env(payload: dict) -> dict[str, str]:
@@ -108,6 +120,11 @@ def _merged_environment(payload: dict) -> dict[str, str]:
 # instead of paying a tens-of-GB cold pull.
 weights = modal.Volume.from_name("proteina-weights", create_if_missing=True)
 rewards = modal.Volume.from_name("proteina-rewards", create_if_missing=True)
+# Raw run artifacts get their OWN Volume, never the weights / rewards caches:
+# those exist to make cold starts cheap and have no eviction path, so parking
+# GB-scale per-run output in them bloats the very thing they are for and leaves
+# no way to reap raw without touching the weights a paying job depends on.
+raw = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
 
 image = (
     modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
@@ -117,11 +134,51 @@ image = (
 app = modal.App("ranomics-proteina-prod")
 
 
+def _raw_archive_name(job_id: str) -> str:
+    """Filesystem-safe stem for the parked tar. The job id is deterministic and
+    already known to whoever wants the tree, so nothing extra has to be carried
+    back through the result to locate it."""
+    cleaned = "".join(c for c in str(job_id) if c.isalnum() or c in "-_.")
+    return cleaned or f"job_{int(time.time())}"
+
+
+def _park_raw_archive(job_id: str) -> str | None:
+    """Move run_pipeline's raw output tar onto the raw Volume. Never raises.
+
+    Capture failing must never fail the run — the runs worth capturing are
+    disproportionately the ones that already went wrong — so every problem here
+    is printed and swallowed. Returns the Volume path, or None if there was
+    nothing to park (e.g. the pipeline was killed before it could tar)."""
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE_PATH):
+            print(f"[run_tool] no raw archive at {_RAW_ARCHIVE_PATH} (nothing captured)", flush=True)
+            return None
+        size = os.path.getsize(_RAW_ARCHIVE_PATH)
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        dest = f"{_RAW_MOUNT}/{_raw_archive_name(job_id)}.tgz"
+        shutil.move(_RAW_ARCHIVE_PATH, dest)
+        try:
+            raw.commit()
+        except Exception as exc:  # noqa: BLE001 — a commit race must not lose the run
+            print(f"[run_tool] raw.commit() raised: {exc}", flush=True)
+        print(
+            f"[run_tool] raw archive parked: {dest} ({size / 1e6:.1f} MB, volume {_RAW_VOLUME})",
+            flush=True,
+        )
+        return dest
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        print(
+            f"[run_tool] raw archive capture failed (non-fatal): {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        return None
+
+
 @app.function(
     image=image,
     gpu=_GPU,
     timeout=_MAX_SESSION_S,
-    volumes={_WEIGHTS_MOUNT: weights, _REWARDS_MOUNT: rewards},
+    volumes={_WEIGHTS_MOUNT: weights, _REWARDS_MOUNT: rewards, _RAW_MOUNT: raw},
 )
 def run_tool(payload: Any) -> dict:
     """Run one Proteina-Complexa search shard. stdout/stderr live-stream to
@@ -134,11 +191,24 @@ def run_tool(payload: Any) -> dict:
         f"RF3={env.get('PROTEINA_RF3', 'on')} WEBHOOK={env.get('WEBHOOK_URL')}",
         flush=True,
     )
-    result = subprocess.run(
-        cmd, env=env, stdout=sys.stdout, stderr=sys.stderr,
-        timeout=max(60, _MAX_SESSION_S - 120),
-    )
-    print(f"[run_tool] subprocess exited: {result.returncode}", flush=True)
+    # Warm containers are reused: a leftover raw archive from a prior job would be parked
+    # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
+    try:
+        os.remove(_RAW_ARCHIVE_PATH)
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            cmd, env=env, stdout=sys.stdout, stderr=sys.stderr,
+            timeout=max(60, _MAX_SESSION_S - 120),
+        )
+        print(f"[run_tool] subprocess exited: {result.returncode}", flush=True)
+    finally:
+        # In a finally so the _MAX_SESSION_S timeout kill — where subprocess.run
+        # raises TimeoutExpired and this function never reaches its return — still
+        # ships whatever the pipeline managed to tar. The exception is not
+        # swallowed: a timeout must still fail the job exactly as it does today.
+        raw_tgz_path = _park_raw_archive(str(payload.get("job_id", "")))
 
     smoke_result: dict | None = None
     try:
@@ -163,10 +233,17 @@ def run_tool(payload: Any) -> dict:
         except Exception as exc:  # pragma: no cover - defensive
             print(f"[run_tool] {name}.commit() raised: {exc}", flush=True)
 
-    return {
+    out = {
         "exit_code": result.returncode,
         "stdout_tail": "",
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
     }
+    # Top-level keys are ignored by the hub's _interpret_pipeline_return, so this
+    # is a pure addition — no client change, and only a pointer travels, never the
+    # tar. Absent == nothing was parked.
+    if raw_tgz_path:
+        out["raw_tgz_volume"] = _RAW_VOLUME
+        out["raw_tgz_volume_path"] = raw_tgz_path
+    return out

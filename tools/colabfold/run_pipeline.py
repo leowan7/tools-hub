@@ -76,6 +76,12 @@ logger = logging.getLogger("colabfold_pipeline")
 
 SMOKE_TARGET_FASTA = "/opt/smoke_target.fasta"
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
+# Fixed drop point for the complete raw work-dir tar. Outside every work dir
+# (those are /tmp/colabfold_*/), because a tar written inside the tree it
+# archives tars itself. ``tools/colabfold/modal_app.py`` moves this onto the
+# ranomics-colabfold-raw Volume once the subprocess returns — this process
+# cannot mount a Volume itself, which is why the two halves are split.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 COLABFOLD_CACHE_DIR = os.environ.get(
     "COLABFOLD_CACHE_DIR", "/opt/colabfold_weights"
 )
@@ -125,6 +131,69 @@ def _fail(bucket: str, check: str, detail: str) -> None:
         }
     )
     sys.exit(1)
+
+
+# ===========================================================================
+# Raw work-dir capture
+# ===========================================================================
+
+
+def archive_work_dir(work_dir: str | Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+    """Tar the COMPLETE work dir to ``dest`` before the tree is destroyed.
+
+    A container must not decide which fields are worth keeping. The parsers
+    below keep ~6 scalars and one PDB out of everything ``colabfold_batch``
+    writes: the per-model PAE/pLDDT plots, the a3m, the config JSON, the
+    ranking debug JSON, every model below rank_001 and the run log all die
+    with the TemporaryDirectory. That is exactly how BoltzGen's ``iptm``
+    (interface-pTM averaged over every chain pair) got reported for 460
+    designs where ``design_iptm`` (binder -> target) was meant — ~2x high,
+    two confidently wrong verdicts, unrecoverable without re-paying for the
+    GPU. Ship the tree; decide locally, where re-parsing is free.
+
+    Unconditional by design: not gated on success, on candidates, or on
+    anything having been uploaded. A run that died before writing output,
+    or a zero-candidate "success", is precisely when the tree is worth the
+    most. Callers invoke this from a ``finally`` for the same reason.
+
+    Never raises. Capture failing must never fail the run.
+    """
+    import tarfile  # noqa: PLC0415 — only needed on this path
+
+    try:
+        src = os.path.abspath(str(work_dir))
+        if not os.path.isdir(src):
+            logger.warning("[raw] no work dir to archive: %s", src)
+            return
+        # The tar must not live inside the tree it archives, or it tars
+        # itself. RAW_ARCHIVE_PATH is /tmp/raw_archive.tgz and every work
+        # dir is /tmp/colabfold_*/, so this cannot trip — assert it anyway
+        # rather than trust a caller to keep passing a safe dest.
+        dest_abs = os.path.abspath(dest)
+        if dest_abs == src or dest_abs.startswith(src + os.sep):
+            logger.warning(
+                "[raw] refusing to write archive %s inside the tree it "
+                "archives (%s)", dest_abs, src,
+            )
+            return
+        # Stream to a file. io.BytesIO would hold the whole tar in RAM and
+        # cost ~3-4x peak RSS on a multi-hundred-MB colabfold output tree.
+        with tarfile.open(dest_abs, "w:gz") as tf:
+            tf.add(src, arcname=os.path.basename(src) or "work")
+        logger.info(
+            "[raw] archived %s -> %s (%.1f MB)",
+            src, dest_abs, os.path.getsize(dest_abs) / 1e6,
+        )
+    except Exception as exc:
+        logger.warning("[raw] capture failed (non-fatal): %s", exc)
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dest_abs):
+                os.remove(dest_abs)
+        except OSError:
+            pass
 
 
 # ===========================================================================
@@ -1000,16 +1069,24 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
 
     with tempfile.TemporaryDirectory(prefix="colabfold_", dir="/tmp") as _td:
         workdir = Path(_td)
-        fasta_path = resolve_input_fasta(payload, workdir)
-        fasta_summary = validate_fasta(fasta_path)
-        out_dir = run_colabfold(
-            fasta_path=fasta_path,
-            num_recycles=num_recycles,
-            use_templates=use_templates,
-            workdir=workdir,
-        )
-        parsed = parse_colabfold_output(out_dir)
-        reject_stub(parsed)
+        # try/finally, not a trailing call: every helper below exits via
+        # _fail() -> sys.exit(1) on any input/tool/parser/stub problem, and
+        # that SystemExit would otherwise unwind straight through the
+        # TemporaryDirectory and take the evidence with it. The finally runs
+        # before the with-block tears the tree down on every path.
+        try:
+            fasta_path = resolve_input_fasta(payload, workdir)
+            fasta_summary = validate_fasta(fasta_path)
+            out_dir = run_colabfold(
+                fasta_path=fasta_path,
+                num_recycles=num_recycles,
+                use_templates=use_templates,
+                workdir=workdir,
+            )
+            parsed = parse_colabfold_output(out_dir)
+            reject_stub(parsed)
+        finally:
+            archive_work_dir(_td)
 
     parsed.pop("pae_matrix_raw", None)
 
@@ -1086,189 +1163,198 @@ def _run_batch(
 
     with tempfile.TemporaryDirectory(prefix="colabfold_batch_", dir="/tmp") as _td:
         workdir = Path(_td)
-        fasta_path = workdir / "batch.fasta"
-        record_map, n_failures = _write_consolidated_fasta(records, fasta_path)
-        if not record_map:
-            _write_result(
-                {
-                    "status": "COMPLETED",
-                    "tier": "batch",
-                    "designs_total": designs_total,
-                    "designs_completed": 0,
-                    "n_failures": n_failures,
-                    "designs": [],
-                    "num_recycles": num_recycles,
-                    "use_templates": use_templates,
-                    "runtime_seconds": int(time.time() - start),
-                    "provider_job_id": os.environ.get("JOB_ID", ""),
-                }
-            )
-            send_heartbeat(
-                webhook_url, job_id,
-                stage="complete",
-                designs_completed=0,
-                designs_total=designs_total,
-            )
-            logger.info(
-                "batch pipeline ok — 0/%d designs folded "
-                "(all records failed pre-validation), %d failures",
-                designs_total, n_failures,
-            )
-            return
-
-        send_heartbeat(
-            webhook_url, job_id,
-            stage="folding",
-            designs_completed=0,
-            designs_total=designs_total,
-        )
-        fold_start = time.time()
-
-        # Bound by the Modal session ceiling minus margin for post-processing.
-        max_session_s = int(os.environ.get("MAX_BATCH_TIMEOUT_S", "14000"))
-
-        process, out_dir = _run_colabfold_consolidated(
-            fasta_path=fasta_path,
-            num_recycles=num_recycles,
-            use_templates=use_templates,
-            workdir=workdir,
-        )
-
-        def _dispatch(safe_name: str, scores_path: Path, pdb_path: Path) -> None:
-            """Per-record post-processing: parse scores, upload PDB, emit heartbeat."""
-            rec_info = record_map[safe_name]
-            try:
-                with open(scores_path) as fh:
-                    scores = json.load(fh)
-            except Exception as exc:
-                logger.warning(
-                    "design %s: scores parse failed — %s",
-                    rec_info["name"], exc,
+        # try/finally, not a trailing call: _fail() -> sys.exit(1) on a
+        # timeout or a zero-design exit, and the zero-record path returns
+        # early — all three would unwind through the TemporaryDirectory and
+        # take the tree with them. The finally runs before teardown on every
+        # path, including the silent zero-candidate 'success'.
+        try:
+            fasta_path = workdir / "batch.fasta"
+            record_map, n_failures = _write_consolidated_fasta(records, fasta_path)
+            if not record_map:
+                _write_result(
+                    {
+                        "status": "COMPLETED",
+                        "tier": "batch",
+                        "designs_total": designs_total,
+                        "designs_completed": 0,
+                        "n_failures": n_failures,
+                        "designs": [],
+                        "num_recycles": num_recycles,
+                        "use_templates": use_templates,
+                        "runtime_seconds": int(time.time() - start),
+                        "provider_job_id": os.environ.get("JOB_ID", ""),
+                    }
                 )
-                rec_info["failed"] = True
+                send_heartbeat(
+                    webhook_url, job_id,
+                    stage="complete",
+                    designs_completed=0,
+                    designs_total=designs_total,
+                )
+                logger.info(
+                    "batch pipeline ok — 0/%d designs folded "
+                    "(all records failed pre-validation), %d failures",
+                    designs_total, n_failures,
+                )
                 return
 
-            plddt_raw = scores.get("plddt") or []
-            try:
-                plddt = [float(x) for x in plddt_raw]
-            except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "design %s: plddt cast failed — %s",
-                    rec_info["name"], exc,
-                )
-                rec_info["failed"] = True
-                return
-            if not plddt:
-                logger.warning("design %s: empty plddt", rec_info["name"])
-                rec_info["failed"] = True
-                return
-
-            try:
-                pdb_bytes = pdb_path.read_bytes()
-            except OSError as exc:
-                logger.warning(
-                    "design %s: PDB read failed — %s",
-                    rec_info["name"], exc,
-                )
-                rec_info["failed"] = True
-                return
-            if len(pdb_bytes) < 200:
-                logger.warning(
-                    "design %s: PDB only %d bytes — not a real fold",
-                    rec_info["name"], len(pdb_bytes),
-                )
-                rec_info["failed"] = True
-                return
-
-            user_name = rec_info["name"]
-            pdb_key = (
-                f"{re.sub(r'[^A-Za-z0-9_-]+', '_', user_name)[:60] or 'fold'}.pdb"
-            )
-            try:
-                urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
-                upload_pdb(urls[pdb_key], pdb_bytes)
-            except Exception as exc:
-                logger.warning(
-                    "design %s: upload failed — %s",
-                    user_name, exc,
-                )
-                rec_info["failed"] = True
-                return
-
-            mean_plddt = round(sum(plddt) / len(plddt), 2)
-            ptm = scores.get("ptm")
-            iptm = scores.get("iptm")
-            design_entry = {
-                "rank": rec_info["index"],
-                "name": user_name,
-                "pdb_key": pdb_key,
-                "mean_plddt": mean_plddt,
-                "iptm": float(iptm) if iptm is not None else None,
-                "ptm": float(ptm) if ptm is not None else None,
-                "total_aa": rec_info["total_aa"],
-                "num_chains": rec_info["num_chains"],
-                "runtime_seconds": int(time.time() - fold_start),
-            }
-            designs_out.append(design_entry)
-            rec_info["done"] = True
             send_heartbeat(
                 webhook_url, job_id,
                 stage="folding",
-                designs_completed=len(designs_out),
+                designs_completed=0,
                 designs_total=designs_total,
-                new_candidate=design_entry,
             )
-            logger.info(
-                "  -> %s mean_pLDDT=%s ipTM=%s pTM=%s aa=%d",
-                user_name, mean_plddt,
-                design_entry["iptm"], design_entry["ptm"],
-                design_entry["total_aa"],
+            fold_start = time.time()
+
+            # Bound by the Modal session ceiling minus margin for post-processing.
+            max_session_s = int(os.environ.get("MAX_BATCH_TIMEOUT_S", "14000"))
+
+            process, out_dir = _run_colabfold_consolidated(
+                fasta_path=fasta_path,
+                num_recycles=num_recycles,
+                use_templates=use_templates,
+                workdir=workdir,
             )
 
-        try:
-            exit_code = _stream_consolidated_results(
-                process=process,
-                out_dir=out_dir,
-                record_map=record_map,
-                on_design_ready=_dispatch,
-                timeout=max_session_s,
-            )
-        except subprocess.TimeoutExpired:
-            logger.error(
-                "colabfold consolidated batch TIMEOUT after %ds — "
-                "%d/%d designs streamed before kill",
-                max_session_s, len(designs_out), designs_total,
-            )
-            _fail(
-                "tool-invocation",
-                "timeout",
-                f"colabfold_batch consolidated exceeded {max_session_s}s.",
-            )
-            return  # unreachable
+            def _dispatch(safe_name: str, scores_path: Path, pdb_path: Path) -> None:
+                """Per-record post-processing: parse scores, upload PDB, emit heartbeat."""
+                rec_info = record_map[safe_name]
+                try:
+                    with open(scores_path) as fh:
+                        scores = json.load(fh)
+                except Exception as exc:
+                    logger.warning(
+                        "design %s: scores parse failed — %s",
+                        rec_info["name"], exc,
+                    )
+                    rec_info["failed"] = True
+                    return
 
-        if exit_code != 0:
-            logger.error(
-                "colabfold consolidated exit %d after %d/%d designs streamed",
-                exit_code, len(designs_out), designs_total,
-            )
-            if not designs_out:
-                _fail(
-                    "tool-invocation",
-                    "exit",
-                    f"colabfold_batch consolidated exited {exit_code} "
-                    "with zero completed designs.",
+                plddt_raw = scores.get("plddt") or []
+                try:
+                    plddt = [float(x) for x in plddt_raw]
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "design %s: plddt cast failed — %s",
+                        rec_info["name"], exc,
+                    )
+                    rec_info["failed"] = True
+                    return
+                if not plddt:
+                    logger.warning("design %s: empty plddt", rec_info["name"])
+                    rec_info["failed"] = True
+                    return
+
+                try:
+                    pdb_bytes = pdb_path.read_bytes()
+                except OSError as exc:
+                    logger.warning(
+                        "design %s: PDB read failed — %s",
+                        rec_info["name"], exc,
+                    )
+                    rec_info["failed"] = True
+                    return
+                if len(pdb_bytes) < 200:
+                    logger.warning(
+                        "design %s: PDB only %d bytes — not a real fold",
+                        rec_info["name"], len(pdb_bytes),
+                    )
+                    rec_info["failed"] = True
+                    return
+
+                user_name = rec_info["name"]
+                pdb_key = (
+                    f"{re.sub(r'[^A-Za-z0-9_-]+', '_', user_name)[:60] or 'fold'}.pdb"
+                )
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [pdb_key])
+                    upload_pdb(urls[pdb_key], pdb_bytes)
+                except Exception as exc:
+                    logger.warning(
+                        "design %s: upload failed — %s",
+                        user_name, exc,
+                    )
+                    rec_info["failed"] = True
+                    return
+
+                mean_plddt = round(sum(plddt) / len(plddt), 2)
+                ptm = scores.get("ptm")
+                iptm = scores.get("iptm")
+                design_entry = {
+                    "rank": rec_info["index"],
+                    "name": user_name,
+                    "pdb_key": pdb_key,
+                    "mean_plddt": mean_plddt,
+                    "iptm": float(iptm) if iptm is not None else None,
+                    "ptm": float(ptm) if ptm is not None else None,
+                    "total_aa": rec_info["total_aa"],
+                    "num_chains": rec_info["num_chains"],
+                    "runtime_seconds": int(time.time() - fold_start),
+                }
+                designs_out.append(design_entry)
+                rec_info["done"] = True
+                send_heartbeat(
+                    webhook_url, job_id,
+                    stage="folding",
+                    designs_completed=len(designs_out),
+                    designs_total=designs_total,
+                    new_candidate=design_entry,
+                )
+                logger.info(
+                    "  -> %s mean_pLDDT=%s ipTM=%s pTM=%s aa=%d",
+                    user_name, mean_plddt,
+                    design_entry["iptm"], design_entry["ptm"],
+                    design_entry["total_aa"],
                 )
 
-        # Account for records colabfold skipped silently or that failed
-        # post-fold processing.
-        n_failures += sum(
-            1
-            for info in record_map.values()
-            if not info.get("done") and not info.get("failed")
-        )
-        n_failures += sum(
-            1 for info in record_map.values() if info.get("failed")
-        )
+            try:
+                exit_code = _stream_consolidated_results(
+                    process=process,
+                    out_dir=out_dir,
+                    record_map=record_map,
+                    on_design_ready=_dispatch,
+                    timeout=max_session_s,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "colabfold consolidated batch TIMEOUT after %ds — "
+                    "%d/%d designs streamed before kill",
+                    max_session_s, len(designs_out), designs_total,
+                )
+                _fail(
+                    "tool-invocation",
+                    "timeout",
+                    f"colabfold_batch consolidated exceeded {max_session_s}s.",
+                )
+                return  # unreachable
+
+            if exit_code != 0:
+                logger.error(
+                    "colabfold consolidated exit %d after %d/%d designs streamed",
+                    exit_code, len(designs_out), designs_total,
+                )
+                if not designs_out:
+                    _fail(
+                        "tool-invocation",
+                        "exit",
+                        f"colabfold_batch consolidated exited {exit_code} "
+                        "with zero completed designs.",
+                    )
+
+            # Account for records colabfold skipped silently or that failed
+            # post-fold processing.
+            n_failures += sum(
+                1
+                for info in record_map.values()
+                if not info.get("done") and not info.get("failed")
+            )
+            n_failures += sum(
+                1 for info in record_map.values() if info.get("failed")
+            )
+
+        finally:
+            archive_work_dir(_td)
 
     runtime_seconds = int(time.time() - start)
     _write_result(

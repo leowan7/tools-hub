@@ -81,6 +81,11 @@ logger = logging.getLogger("esmfold_pipeline")
 SMOKE_TARGET_FASTA = "/opt/smoke_target.fasta"
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 ESMFOLD_MODEL_ID = "facebook/esmfold_v1"
+# Fixed drop point for the complete raw work-tree archive. This pipeline runs as
+# a subprocess and so cannot mount a Modal Volume itself; the wrapper
+# (``tools/esmfold/modal_app.py``) moves this file onto the
+# ``ranomics-esmfold-raw`` Volume once the subprocess returns.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 
 # Bounds enforced on the sequence. Mirrored from the tools-hub adapter
 # validate() but re-checked here because the pipeline may be invoked
@@ -122,6 +127,110 @@ def _fail(bucket: str, check: str, detail: str) -> None:
         }
     )
     sys.exit(1)
+
+
+# ===========================================================================
+# Raw-output capture
+#
+# A container must never decide which fields are worth keeping. ESMFold has no
+# on-disk tool output tree the way a CLI-driven tool does: ``fold_with_loaded``
+# hands back tensors and everything downstream is a projection of them.
+# ``shape_output`` keeps pdb/pLDDT/pTM and float16-packs pAE; ``_fold_record``
+# then drops pAE entirely; ``_run_batch``'s ``design_entry`` drops the
+# per-residue pLDDT array too. Whatever is not written to the work dir here
+# dies with the container and is recoverable only by paying for the GPU again.
+# That is how ``design_iptm`` (the real binder:target interface) was lost on 460
+# boltzgen designs, which were scored on ``iptm`` - a different quantity, ~2x
+# high - and concluded on. Write the raw values; decide LOCALLY, where
+# re-parsing is free.
+#
+# Nothing below gates on success, on candidate count or on what got uploaded: a
+# zero-candidate run ships nothing today and is exactly the run whose tree you
+# want. Nothing below may raise, either - a job that crashed before writing
+# output is when the diagnostics matter most.
+# ===========================================================================
+
+
+def _safe_stem(name: str) -> str:
+    """Filesystem-safe stem for a user-supplied (FASTA header) record name."""
+    stem = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name or "")
+    return stem.strip("._")[:80] or "design"
+
+
+def _dump_raw_fold(raw_dir: Path, stem: str, raw: dict[str, Any]) -> None:
+    """Persist ONE fold's untouched model output into the work dir.
+
+    Writes the PDB verbatim plus a JSON sidecar carrying the FULL per-residue
+    pLDDT array, pTM and the pAE matrix at the precision the model produced
+    them - not the float16 npz ``shape_output`` packs, and not the subset
+    ``_fold_record`` returns.
+
+    Best-effort: never raises. Losing a dump must not cost the fold.
+    """
+    try:
+        base = _safe_stem(stem)
+        pdb_text = raw.get("pdb_text") or ""
+        if pdb_text:
+            (raw_dir / f"{base}.pdb").write_text(pdb_text)
+        with open(raw_dir / f"{base}.raw.json", "w") as fh:
+            json.dump(
+                {
+                    "plddt_per_residue": raw.get("plddt_per_residue"),
+                    "ptm": raw.get("ptm"),
+                    "pae": raw.get("pae"),
+                },
+                fh,
+            )
+    except Exception as exc:
+        logger.warning("raw capture: dump of %r failed (non-fatal): %s", stem, exc)
+
+
+def _archive_raw(work_dir: str) -> None:
+    """Tar the COMPLETE work dir to ``RAW_ARCHIVE_PATH``. Never raises.
+
+    Callers put this in a ``finally``, immediately before the teardown that
+    destroys the tree, so it also runs on ``_fail()``'s ``sys.exit`` and on an
+    unhandled raise.
+    """
+    import tarfile  # noqa: PLC0415
+
+    try:
+        if not os.path.isdir(work_dir):
+            logger.warning(
+                "raw capture: %s is not a directory - nothing to archive", work_dir
+            )
+            return
+        root = os.path.abspath(work_dir)
+        dest = os.path.abspath(RAW_ARCHIVE_PATH)
+        # The tar must never be written inside the tree it archives or it tars
+        # itself. /tmp/raw_archive.tgz already sits outside a /tmp/<workdir>/,
+        # but assert that rather than trust it.
+        if dest == root or dest.startswith(root + os.sep):
+            logger.error(
+                "raw capture: refusing to write archive %s inside its own source %s",
+                dest,
+                root,
+            )
+            return
+        # Stream to a file; never io.BytesIO, which costs ~3-4x peak RSS.
+        with tarfile.open(dest, "w:gz") as tf:
+            tf.add(root, arcname=os.path.basename(root) or "work")
+        logger.info(
+            "raw capture: archived %s -> %s (%d bytes)",
+            root,
+            dest,
+            os.path.getsize(dest),
+        )
+    except Exception as exc:
+        logger.warning("raw capture: archive failed (non-fatal): %s", exc)
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dest):
+                os.remove(dest)
+        except OSError:
+            pass
 
 
 # ===========================================================================
@@ -742,7 +851,12 @@ def _validate_record_inline(name: str, seq: str) -> str:
 
 
 def _fold_record(
-    tokenizer: Any, model: Any, name: str, seq: str
+    tokenizer: Any,
+    model: Any,
+    name: str,
+    seq: str,
+    raw_dir: Path | None = None,
+    raw_stem: str = "",
 ) -> dict[str, Any]:
     """Fold one record against a pre-loaded ESMFold model.
 
@@ -751,8 +865,14 @@ def _fold_record(
     ``reject_stub``/``_fail`` if the output is degenerate, so the batch
     loop can mark this record as a failure and move on without aborting
     the run.
+
+    ``raw_dir``/``raw_stem`` are capture-only: when set, the untouched model
+    output is dumped there BEFORE ``reject_stub`` can kill the fold, because a
+    stub-rejected fold is precisely the one whose numbers you need to see.
     """
     raw_output = fold_with_loaded(tokenizer, model, seq)
+    if raw_dir is not None:
+        _dump_raw_fold(raw_dir, raw_stem or name, raw_output)
     parsed = shape_output(raw_output)
     reject_stub(parsed)
     plddt = parsed.get("plddt_per_residue") or []
@@ -773,9 +893,17 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
 
     with tempfile.TemporaryDirectory(prefix="esmfold_", dir="/tmp") as _td:
         workdir = Path(_td)
-        fasta_path = resolve_input_fasta(payload, workdir)
-        fasta_summary = validate_fasta(fasta_path)
-        raw_output = run_esmfold(fasta_summary["sequence"])
+        try:
+            fasta_path = resolve_input_fasta(payload, workdir)
+            fasta_summary = validate_fasta(fasta_path)
+            raw_output = run_esmfold(fasta_summary["sequence"])
+            _dump_raw_fold(workdir, "fold", raw_output)
+        finally:
+            # Tar INSIDE the with-block: ``TemporaryDirectory.__exit__`` is the
+            # teardown here, and ``_fail()``'s sys.exit unwinds straight through
+            # it, so an input-resolution or fold crash would otherwise take the
+            # tree with it.
+            _archive_raw(str(workdir))
 
     parsed = shape_output(raw_output)
     reject_stub(parsed)
@@ -804,6 +932,28 @@ def _run_single(payload: dict[str, Any], start: float) -> None:
 def _run_batch(
     payload: dict[str, Any], records: list[dict[str, Any]], start: float
 ) -> None:
+    """Own the batch work dir + raw capture around ``_run_batch_folds``.
+
+    Unlike ``_run_single`` this path has no work dir of its own - records
+    arrive inline in the payload and every fold happens in memory - so one is
+    made here purely to give the raw per-fold output somewhere to land.
+    """
+    raw_dir = Path(tempfile.mkdtemp(prefix="esmfold_batch_", dir="/tmp"))
+    try:
+        _run_batch_folds(payload, records, start, raw_dir)
+    finally:
+        # Tar immediately before the rmtree that destroys the tree, on every
+        # exit path: clean return, ``_fail()``'s SystemExit, unhandled raise.
+        _archive_raw(str(raw_dir))
+        shutil.rmtree(raw_dir, ignore_errors=True)
+
+
+def _run_batch_folds(
+    payload: dict[str, Any],
+    records: list[dict[str, Any]],
+    start: float,
+    raw_dir: Path,
+) -> None:
     """Sequential batch fold across N records with per-design streaming.
 
     One container loads ESMFold-3B once and folds each record in turn.
@@ -812,6 +962,17 @@ def _run_batch(
     folds complete. Failures (bad input, stub rejection, upload error)
     increment ``n_failures`` and do not abort the rest of the batch.
     """
+    # The batch input arrives inline in the payload rather than as a file, so
+    # write it down: this is the path's equivalent of _run_single's input.fasta.
+    # First thing in the function so even the upload_urls_endpoint _fail below
+    # still leaves the inputs in the archive.
+    try:
+        (raw_dir / "batch_records.json").write_text(json.dumps(records, indent=2))
+    except Exception as exc:
+        logger.warning(
+            "raw capture: could not write batch_records.json (non-fatal): %s", exc
+        )
+
     job_id = os.environ.get("JOB_ID", "")
     webhook_url = os.environ.get("WEBHOOK_URL", "")
     job_token = payload.get("job_token", "") or os.environ.get("JOB_TOKEN", "")
@@ -863,7 +1024,9 @@ def _run_batch(
             i + 1, designs_total, name, len(seq),
         )
         try:
-            folded = _fold_record(tokenizer, model, name, seq)
+            folded = _fold_record(
+                tokenizer, model, name, seq, raw_dir, f"{i:04d}_{name}"
+            )
         except SystemExit:
             # reject_stub() calls _fail() which writes a FAILED smoke
             # result + sys.exit(1). For batch we want to keep going.

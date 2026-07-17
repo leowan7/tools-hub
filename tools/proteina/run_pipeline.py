@@ -67,6 +67,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import time
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,11 @@ logging.basicConfig(
 logger = logging.getLogger("proteina_pipeline")
 
 SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
+# The COMPLETE, unparsed shard output tree, tarred here on every exit path (see
+# archive_raw_outputs). modal_app.py moves it onto the raw Volume keyed by job
+# id; nothing about it travels through the job result. Fixed path == the wrapper
+# needs no coordination with this script beyond the constant.
+RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 
 PROTEINA_HOME = os.environ.get("PROTEINA_HOME", "/opt/proteina")
 CONFIG_DIR = os.environ.get("PROTEINA_CONFIG_DIR", f"{PROTEINA_HOME}/configs")
@@ -476,6 +482,67 @@ def parse_designs(run_dir: Path) -> list[dict]:
 
 
 # ===========================================================================
+# Raw output capture (the counterpart to the parser above)
+# ===========================================================================
+
+
+def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+    """Tar the COMPLETE shard output tree to ``dest``. Best-effort: never raises.
+
+    A container must not decide which fields are worth keeping. Everything above
+    this line throws work away: ``_SCORE_COLUMNS`` maps 6 display keys out of the
+    reward CSV and drops every other column; ``find_reward_csv`` reads the FIRST
+    matching CSV and ignores the rest; ``find_pdb_for`` skips the
+    filtered_out_samples bucket; and only PDBs that matched a scored row are
+    uploaded. The Hydra resolved config, the analyze artifacts and every unmapped
+    column then die with the container, recoverable only by re-paying for the
+    A100. That is exactly how ``design_iptm`` (the real binder->target interface)
+    was lost behind ``iptm`` (an average over every chain pair, ~2x high) on 460
+    designs across two campaigns. Decide LOCALLY, where re-parsing is free.
+
+    Note this archives ``run_dir`` (./inference), NOT the ``work_dir`` the shard
+    runs from: work_dir is /opt/proteina, the repo root, and the weights and
+    rewards Volumes are mounted INSIDE it (./ckpts, ./rewards). Tarring the work
+    dir would archive tens of GB of model checkpoints on every run. ./inference is
+    the whole of what this shard produced.
+
+    Failure to archive must never break the run: a shard that crashed before
+    writing output is exactly when the diagnostics matter most, so problems are
+    logged, never raised.
+    """
+    try:
+        src = os.path.abspath(str(out_dir))
+        if not os.path.isdir(src):
+            logger.warning("raw capture: nothing to archive, no dir at %s", src)
+            return
+        dest_abs = os.path.abspath(dest)
+        # The tar must never be written inside the tree it archives, or it tars
+        # itself. /tmp is outside /opt/proteina/inference, but assert it rather
+        # than trust it — this is cheap and the failure mode is silent.
+        if os.path.commonpath([dest_abs, src]) == src:
+            logger.error("raw capture: refusing to write %s inside its own source %s", dest_abs, src)
+            return
+        # Stream to a file, never io.BytesIO: ~1x peak RSS instead of ~3-4x, which
+        # matters on a tree carrying every sample PDB the search emitted.
+        with tarfile.open(dest_abs, "w:gz") as tf:
+            tf.add(src, arcname=os.path.basename(src) or "inference")
+        logger.info(
+            "raw capture: archived %s -> %s (%.1f MB)",
+            src, dest_abs, os.path.getsize(dest_abs) / 1e6,
+        )
+    except Exception as exc:
+        logger.warning("raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc)
+        # A crash mid-write (e.g. ENOSPC) can leave a truncated but still-openable .tgz at
+        # the destination; the wrapper parks whatever exists. Remove the partial so a failed
+        # capture parks NOTHING rather than a tar that reports success but cannot be read.
+        try:
+            if os.path.exists(dest_abs):
+                os.remove(dest_abs)
+        except OSError:
+            pass
+
+
+# ===========================================================================
 # validate tier (free, CPU dry-run — the staging gate)
 # ===========================================================================
 
@@ -624,139 +691,153 @@ def main() -> None:
     # wiping ./inference at shard start is safe and isolates every shard.
     shutil.rmtree(run_dir, ignore_errors=True)
 
-    seed = shard_seed(job_id)
-    run_name = f"shard_{(job_id or 'x')[:12]}"
-    cmd = build_design_cmd(
-        config_name=config_name, task_name=task_name, seed=seed,
-        nsamples=nsamples, replicas=replicas, nsteps=nsteps,
-        run_name=run_name, rf3_on=rf3_on,
-    )
-    send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
-
+    # Everything from here to the end of the shard runs under a try/finally so the
+    # complete output tree is archived on EVERY exit path: success, zero
+    # survivors, _fail()'s sys.exit (SystemExit still runs a finally), or an
+    # uncaught exception. The try opens AFTER the wipe above on purpose — on a
+    # warm container the preflight _fail()s can leave the PREVIOUS shard's
+    # ./inference standing, and archiving that would file another shard's tree
+    # under this job id. Everything inside was written by this shard alone.
     try:
-        rc = run_streaming(cmd, work_dir)
-    except FileNotFoundError:
-        _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
-
-    designs = parse_designs(run_dir)
-    # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
-    # stage can exit nonzero AFTER the reward CSV (with complete scores) is
-    # already written — observed on the ligand path (P-3 canary: 8 designs fully
-    # RF3-scored, then exit 1). Cross-shard diversity is assigned at the hub, so
-    # we still DELIVER designs that were fully scored; only fail when the nonzero
-    # exit left nothing scored to deliver (a genuine early failure).
-    n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
-    if rc != 0:
-        if n_scored == 0:
-            _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
-        logger.warning(
-            "complexa design exited %d but %d/%d designs are fully scored — delivering "
-            "(late analyze/eval failure is non-fatal; hub does cross-shard diversity)",
-            rc, n_scored, len(designs),
+        seed = shard_seed(job_id)
+        run_name = f"shard_{(job_id or 'x')[:12]}"
+        cmd = build_design_cmd(
+            config_name=config_name, task_name=task_name, seed=seed,
+            nsamples=nsamples, replicas=replicas, nsteps=nsteps,
+            run_name=run_name, rf3_on=rf3_on,
         )
+        send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
 
-    if not designs:
-        # A shard that legitimately produced no survivors still COMPLETES
-        # with zero candidates — the campaign pools survivors across shards,
-        # and delivered-only billing releases this shard's hold.
-        runtime = int(time.time() - start)
-        _write_result(
-            {
-                "status": "COMPLETED",
-                "tier": preset,
-                "designs_total": designs_total,
-                "designs_completed": 0,
-                "n_failures": 0,
-                "designs": [],
-                "candidates": [],
-                "runtime_seconds": runtime,
-                "provider_job_id": job_id,
-            }
-        )
-        send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
-        logger.info("shard produced 0 survivors in %ds", runtime)
-        return
-
-    # --- upload + stream each design -----------------------------------------
-    out_designs: list[dict] = []
-    out_candidates: list[dict] = []
-    n_failures = 0
-    n_rows = len(designs)
-    for d in designs:
-        rank = d["rank"]
-        pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
-        if pdb_path is None:
-            n_failures += 1
-            logger.warning("design rank %d: no PDB file matched — skipping", rank)
-            continue
-        basename = f"design_{rank:03d}.pdb"
-        pdb_key = f"designs/{basename}"
         try:
-            pdb_bytes = pdb_path.read_bytes()
-            urls = request_upload_urls(upload_endpoint, job_token, [basename])
-            upload_pdb(urls[basename], pdb_bytes)
-        except Exception as exc:
-            n_failures += 1
-            logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
-            continue
+            rc = run_streaming(cmd, work_dir)
+        except FileNotFoundError:
+            _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
 
-        scores = d["scores"]
-        design_entry = {
-            "rank": rank,
-            "name": d["name"],
-            "pdb_key": pdb_key,
-            # flat copies for the results template + classifiers
-            "total_reward": scores.get("total_reward"),
-            "af2_iptm": scores.get("af2_iptm"),
-            "af2_plddt": scores.get("af2_plddt"),
-            "rf3_score": scores.get("rf3_score"),
-            "binder_scrmsd": scores.get("binder_scrmsd"),
-            "cluster_id": scores.get("cluster_id"),
-        }
-        out_designs.append(design_entry)
-        out_candidates.append(
-            {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
-        )
-        # Heartbeat new_candidate keys match webhook _sanitize_candidate.
-        send_heartbeat(
-            webhook_url, job_id, stage="searching",
-            designs_completed=len(out_designs), designs_total=designs_total,
-            new_candidate={
+        designs = parse_designs(run_dir)
+        # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
+        # stage can exit nonzero AFTER the reward CSV (with complete scores) is
+        # already written — observed on the ligand path (P-3 canary: 8 designs fully
+        # RF3-scored, then exit 1). Cross-shard diversity is assigned at the hub, so
+        # we still DELIVER designs that were fully scored; only fail when the nonzero
+        # exit left nothing scored to deliver (a genuine early failure).
+        n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+        if rc != 0:
+            if n_scored == 0:
+                _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
+            logger.warning(
+                "complexa design exited %d but %d/%d designs are fully scored — delivering "
+                "(late analyze/eval failure is non-fatal; hub does cross-shard diversity)",
+                rc, n_scored, len(designs),
+            )
+
+        if not designs:
+            # A shard that legitimately produced no survivors still COMPLETES
+            # with zero candidates — the campaign pools survivors across shards,
+            # and delivered-only billing releases this shard's hold.
+            runtime = int(time.time() - start)
+            _write_result(
+                {
+                    "status": "COMPLETED",
+                    "tier": preset,
+                    "designs_total": designs_total,
+                    "designs_completed": 0,
+                    "n_failures": 0,
+                    "designs": [],
+                    "candidates": [],
+                    "runtime_seconds": runtime,
+                    "provider_job_id": job_id,
+                }
+            )
+            send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
+            logger.info("shard produced 0 survivors in %ds", runtime)
+            return
+
+        # --- upload + stream each design -------------------------------------
+        out_designs: list[dict] = []
+        out_candidates: list[dict] = []
+        n_failures = 0
+        n_rows = len(designs)
+        for d in designs:
+            rank = d["rank"]
+            pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
+            if pdb_path is None:
+                n_failures += 1
+                logger.warning("design rank %d: no PDB file matched — skipping", rank)
+                continue
+            basename = f"design_{rank:03d}.pdb"
+            pdb_key = f"designs/{basename}"
+            try:
+                pdb_bytes = pdb_path.read_bytes()
+                urls = request_upload_urls(upload_endpoint, job_token, [basename])
+                upload_pdb(urls[basename], pdb_bytes)
+            except Exception as exc:
+                n_failures += 1
+                logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
+                continue
+
+            scores = d["scores"]
+            design_entry = {
                 "rank": rank,
                 "name": d["name"],
                 "pdb_key": pdb_key,
+                # flat copies for the results template + classifiers
                 "total_reward": scores.get("total_reward"),
                 "af2_iptm": scores.get("af2_iptm"),
                 "af2_plddt": scores.get("af2_plddt"),
                 "rf3_score": scores.get("rf3_score"),
                 "binder_scrmsd": scores.get("binder_scrmsd"),
                 "cluster_id": scores.get("cluster_id"),
-            },
-        )
-        logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
+            }
+            out_designs.append(design_entry)
+            out_candidates.append(
+                {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
+            )
+            # Heartbeat new_candidate keys match webhook _sanitize_candidate.
+            send_heartbeat(
+                webhook_url, job_id, stage="searching",
+                designs_completed=len(out_designs), designs_total=designs_total,
+                new_candidate={
+                    "rank": rank,
+                    "name": d["name"],
+                    "pdb_key": pdb_key,
+                    "total_reward": scores.get("total_reward"),
+                    "af2_iptm": scores.get("af2_iptm"),
+                    "af2_plddt": scores.get("af2_plddt"),
+                    "rf3_score": scores.get("rf3_score"),
+                    "binder_scrmsd": scores.get("binder_scrmsd"),
+                    "cluster_id": scores.get("cluster_id"),
+                },
+            )
+            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
 
-    runtime = int(time.time() - start)
-    _write_result(
-        {
-            "status": "COMPLETED",
-            "tier": preset,
-            "designs_total": designs_total,
-            "designs_completed": len(out_designs),
-            "n_failures": n_failures,
-            "designs": out_designs,
-            "candidates": out_candidates,
-            "runtime_seconds": runtime,
-            "provider_job_id": job_id,
-        }
-    )
-    send_heartbeat(
-        webhook_url, job_id, stage="complete",
-        designs_completed=len(out_designs), designs_total=designs_total,
-    )
-    logger.info(
-        "shard complete — %d/%d designs, %d failures, runtime=%ds",
-        len(out_designs), designs_total, n_failures, runtime,
-    )
+        runtime = int(time.time() - start)
+        _write_result(
+            {
+                "status": "COMPLETED",
+                "tier": preset,
+                "designs_total": designs_total,
+                "designs_completed": len(out_designs),
+                "n_failures": n_failures,
+                "designs": out_designs,
+                "candidates": out_candidates,
+                "runtime_seconds": runtime,
+                "provider_job_id": job_id,
+            }
+        )
+        send_heartbeat(
+            webhook_url, job_id, stage="complete",
+            designs_completed=len(out_designs), designs_total=designs_total,
+        )
+        logger.info(
+            "shard complete — %d/%d designs, %d failures, runtime=%ds",
+            len(out_designs), designs_total, n_failures, runtime,
+        )
+    finally:
+        # NOT gated on rc, on survivors, or on what got uploaded. A shard whose
+        # reward CSV went missing returns [] from parse_designs and completes as a
+        # silent zero-candidate "success" having shipped nothing — that is
+        # precisely the run whose tree you need to read afterwards.
+        archive_raw_outputs(run_dir)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from typing import Any
 
@@ -38,6 +39,23 @@ _RUN_PIPELINE_REMOTE = "/opt/run_pipeline.py"
 _GPU = "A10G"
 _MAX_SESSION_S = 600  # 10 min per ATOMIC-TOOLS.md D1 timeout.
 _PYTHON = "python3"
+
+# Raw run artifacts get their OWN Volume — never a weights/cache volume, which
+# has no eviction path and exists to keep cold starts cheap.
+#
+# A Volume, rather than an upload or an inline return, because all three were
+# checked: gpu/modal_client.py rejects a non-dict return; webhooks/modal.py
+# NULLs a non-dict result; a big b64 inside the returned dict flows into the
+# tool_jobs.result JSONB column and throws on UPDATE, wedging the job in
+# "running" (shared/jobs.py already carries the scar tissue for that); and
+# Supabase Storage caps objects at 20 MB with no gzip/tar in its MIME
+# allowlist. Naming the tar after the job id means nothing new has to travel
+# through the DB at all — _interpret_pipeline_return ignores unknown top-level
+# keys, so this needs zero client changes.
+_RAW_VOLUME = f"ranomics-{_TOOL}-raw"
+_RAW_MOUNT = "/raw"
+_RAW_ARCHIVE = "/tmp/raw_archive.tgz"  # written by run_pipeline.py's _archive_raw
+raw_volume = modal.Volume.from_name(_RAW_VOLUME, create_if_missing=True)
 
 
 def _build_run_env(payload: dict) -> dict[str, str]:
@@ -72,6 +90,42 @@ def _merged_environment(payload: dict) -> dict[str, str]:
     return merged
 
 
+def _ship_raw(job_id: str) -> dict[str, str]:
+    """Park run_pipeline.py's raw archive on the raw Volume. Never raises.
+
+    Returns the two keys that tell the caller where the tar landed, or ``{}``
+    if there was nothing to park. Capture must never fail the run: a tool that
+    crashed before writing output is exactly when the tree matters most, so
+    problems are printed, not raised.
+    """
+    try:
+        if not os.path.isfile(_RAW_ARCHIVE):
+            print(
+                f"[raw] no archive at {_RAW_ARCHIVE} — pipeline died before its "
+                f"finally ran (hard timeout / OOM kill?)",
+                flush=True,
+            )
+            return {}
+        os.makedirs(_RAW_MOUNT, exist_ok=True)
+        # basename() so a malformed job_id can never escape the mount.
+        name = os.path.basename(str(job_id).strip()) or "unknown"
+        dest = os.path.join(_RAW_MOUNT, f"{name}.tgz")
+        shutil.move(_RAW_ARCHIVE, dest)
+        size = os.path.getsize(dest)
+        try:
+            raw_volume.commit()
+        except Exception as exc:  # noqa: BLE001 — a commit race must not lose the run
+            print(f"[raw] volume commit failed (non-fatal): {exc}", flush=True)
+        print(
+            f"[raw] parked {size / 1e6:.1f} MB at {dest} (volume {_RAW_VOLUME})",
+            flush=True,
+        )
+        return {"raw_tgz_volume": _RAW_VOLUME, "raw_tgz_volume_path": dest}
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort by design
+        print(f"[raw] capture failed (non-fatal): {type(exc).__name__}: {exc}", flush=True)
+        return {}
+
+
 image = (
     modal.Image.from_dockerfile(_DOCKERFILE, add_python=None)
     .add_local_file(_RUN_PIPELINE_LOCAL, _RUN_PIPELINE_REMOTE, copy=True)
@@ -80,7 +134,12 @@ image = (
 app = modal.App("ranomics-mpnn-prod")
 
 
-@app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S)
+@app.function(
+    image=image,
+    gpu=_GPU,
+    timeout=_MAX_SESSION_S,
+    volumes={_RAW_MOUNT: raw_volume},
+)
 def run_tool(payload: Any) -> dict:
     """Run one MPNN session (smoke or standalone).
 
@@ -108,15 +167,29 @@ def run_tool(payload: Any) -> dict:
         flush=True,
     )
 
-    result = subprocess.run(
-        cmd,
-        env=env,
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-        # Keep a safety margin under the hard Modal timeout so the
-        # wrapper still has time to read smoke_results.json.
-        timeout=max(60, _MAX_SESSION_S - 30),
-    )
+    # Warm containers are reused: a leftover raw archive from a prior job would be parked
+    # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
+    try:
+        os.remove(_RAW_ARCHIVE)
+    except OSError:
+        pass
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            # Keep a safety margin under the hard Modal timeout so the
+            # wrapper still has time to read smoke_results.json.
+            timeout=max(60, _MAX_SESSION_S - 30),
+        )
+    finally:
+        # Ship on both exit paths: subprocess.run RAISES TimeoutExpired rather
+        # than returning, and a timed-out run is one worth having the tree for.
+        # (A SIGKILLed pipeline never reaches its own finally, so there may be
+        # nothing to park — _ship_raw says so and returns {}.)
+        raw_info = _ship_raw(payload.get("job_id", ""))
 
     print(f"[run_tool] subprocess exited: {result.returncode}", flush=True)
 
@@ -140,4 +213,9 @@ def run_tool(payload: Any) -> dict:
         "stderr_tail": "",
         "provider_job_id": payload.get("job_id", ""),
         "smoke_result": smoke_result,
+        # raw_tgz_volume / raw_tgz_volume_path, at the TOP level next to
+        # exit_code. _interpret_pipeline_return ignores top-level keys it does
+        # not recognise, so pointing at the tar costs no client change and
+        # nothing large travels through tool_jobs.result.
+        **raw_info,
     }
