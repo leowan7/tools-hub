@@ -607,3 +607,49 @@ def test_can_dispatch_more():
     assert cc.can_dispatch_more(camp, {"pending": 0, "running": 0}, 4) is False
     # Room again after some finished (2 dispatched, 1 in flight, target 2).
     assert cc.can_dispatch_more(camp, {"pending": 0, "running": 1}, 2) is True
+
+
+# ---------------------------------------------------------------------------
+# Scaling-key generalization (Phase 0): the per-chunk estimate/hold must scale
+# on each tool's real wallet scaling_param, not a hardcoded "num_designs".
+# ---------------------------------------------------------------------------
+
+
+def test_scaling_key_is_num_designs_for_every_live_tool():
+    # Every live campaign tool's wallet scaling_param is "num_designs", so the
+    # generalized key resolves there and the estimate/hold stay BYTE-IDENTICAL
+    # to the old hardcoded path. This locks the "no regression to the live
+    # tools" guarantee.
+    for tool in ("rfdiffusion", "bindcraft", "boltzgen", "pxdesign",
+                 "rfantibody", "proteina"):
+        assert cc._scaling_key_for(tool) == "num_designs", tool
+
+
+def test_scaling_key_follows_the_tool_spec():
+    # A tool whose wallet scaling_param differs resolves to that key, so its
+    # per-chunk cost scales instead of falling back to the 1-unit baseline.
+    assert cc._scaling_key_for("iggm") == "num_samples"       # linear, num_samples
+    assert cc._scaling_key_for("af2") == "n_designs_total"     # fold batch
+    # Unknown / unregistered tool falls back to the historical default.
+    assert cc._scaling_key_for("does-not-exist") == "num_designs"
+
+
+def test_non_num_designs_tool_prices_under_its_own_key():
+    # The bug Phase 0 fixes: a linear tool whose scaling_param is not
+    # "num_designs" (iggm=num_samples) was priced under a key its ToolSpec never
+    # reads, so _effective_scaling_value fell back to the 1-unit baseline and the
+    # per-chunk cost did NOT grow with the count. Passing the count under the
+    # tool's real scaling_param scales it; the old hardcoded "num_designs" did
+    # not. (iggm baseline=1, so 40 units scales ~40x.)
+    from shared.wallet_estimates import estimated_cost_for_tool
+    key = cc._scaling_key_for("iggm")
+    assert key == "num_samples"
+    scaled = estimated_cost_for_tool(None, "iggm", {key: 40, "preset": "pilot"})
+    under_old_key = estimated_cost_for_tool(
+        None, "iggm", {"num_designs": 40, "preset": "pilot"}
+    )
+    assert scaled > under_old_key
+    # And the campaign hold for a linear non-num_designs tool now scales with the
+    # chunk (iggm is not fixed-container).
+    assert "iggm" not in cc._FIXED_CONTAINER_TOOLS
+    assert cc.child_hold_usd("iggm", 40) > cc.child_hold_usd("iggm", 1)

@@ -318,6 +318,26 @@ def single_container_ceiling(tool: str, preset: str = "pilot") -> int:
     return _chunk_size_for(tool, preset)
 
 
+def _scaling_key_for(tool: str) -> str:
+    """The params key the wallet estimator scales the per-chunk cost on.
+
+    ``shared.wallet_estimates._effective_scaling_value`` reads
+    ``params[spec.scaling_param]``. The campaign estimator/hold historically
+    hardcoded ``"num_designs"``, which is correct only for a tool whose ToolSpec
+    ``scaling_param`` IS ``num_designs`` (every current campaign tool) or which is
+    fixed-container (priced at the baseline, scale 1.0, so key-insensitive). A
+    future tool whose wallet ``scaling_param`` differs (iggm=``num_samples``, the
+    fold tools=``n_designs_total``) would silently fall back to the 1-design
+    baseline and UNDER-hold. Keying on the tool's real ``scaling_param`` fixes
+    that while staying byte-identical for the existing tools: they all resolve to
+    ``num_designs`` (or price at baseline regardless of the key).
+    """
+    spec = get_tool_spec(tool)
+    if spec and spec.scaling_param:
+        return spec.scaling_param
+    return "num_designs"
+
+
 def _estimate_chunk_cost(tool: str, chunk_size: int, preset: str = "pilot") -> Decimal:
     """USD estimate for ONE sub-job of ``tool`` at ``chunk_size`` designs."""
     spec = get_tool_spec(tool)
@@ -329,7 +349,7 @@ def _estimate_chunk_cost(tool: str, chunk_size: int, preset: str = "pilot") -> D
     else:
         designs_for_estimate = chunk_size
     return estimated_cost_for_tool(
-        None, tool, {"num_designs": designs_for_estimate, "preset": preset}
+        None, tool, {_scaling_key_for(tool): designs_for_estimate, "preset": preset}
     )
 
 
@@ -770,7 +790,7 @@ def child_hold_usd(tool: str, design_count: int, preset: str = "pilot") -> Decim
     else:
         designs_for_estimate = int(design_count)
     return cushioned_hold_usd(
-        None, tool, {"num_designs": designs_for_estimate, "preset": preset}
+        None, tool, {_scaling_key_for(tool): designs_for_estimate, "preset": preset}
     )
 
 
