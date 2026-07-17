@@ -301,6 +301,28 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("60.00"),
     ),
+    "esmfold2-design": ToolSpec(
+        slug="esmfold2-design",
+        gpu_class="H100",
+        # ESMFold2 binder design fans out on n_seeds: EACH seed is a separate
+        # H100 container (modal_app run_tool .spawn per seed), while batch_size
+        # (1-6) runs its designs inside ONE gradient pass at the SAME wall-clock.
+        # So COST scales with n_seeds, NOT n_designs_total (= n_seeds * batch_size);
+        # scaling on n_designs_total would UNDER-hold up to 6x when batch_size<6.
+        # Bootstrap 2400 s/seed so the 1.5x cushioned hold equals the container's
+        # physical max (3600 s H100 * rate * 1.70 markup ~= $14.79/seed): the hold
+        # never under-covers a worst-case seed and settle refunds the surplus.
+        # base_hard_cap ($15) sits just above that per-seed max; absolute_cap
+        # ($1000) covers the N_SEEDS_MAX=64 submit (~$946). Historical p90 refines
+        # the displayed estimate down after >=20 runs. WAS UNREGISTERED -> the
+        # atomic tier fell to the $0.10 / $10 no-spec default and under-held ~64x
+        # on a max multi-seed run.
+        expected_gpu_seconds=2400.0,
+        designs_per_run_baseline=1,
+        scaling_param="n_seeds",
+        base_hard_cap_usd=Decimal("15.00"),
+        absolute_cap_usd=Decimal("1000.00"),
+    ),
 }
 
 
