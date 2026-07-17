@@ -49,6 +49,7 @@ jobs:
           - boltz2
           - esmfold2_design
           - iggm
+          - proteina
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
