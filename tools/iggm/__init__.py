@@ -15,7 +15,7 @@ for legibility (same CLI, different validation + guidance); the other
 three each map to their own ``--run_task``:
 
 - ``complex_prediction`` — fold the antibody-antigen complex (run_task
-  ``design``, no masking required). Optional epitope hint.
+  ``design``, no masking required). Requires an epitope (see below).
 - ``cdr_design``          — redesign CDRs masked with ``X`` (run_task ``design``).
 - ``fr_design``           — framework redesign / humanization.
 - ``affinity_maturation`` — variants to improve binding; needs a wild-type
@@ -304,6 +304,27 @@ def validate(
                 f"limit. Lower the sample count."
             )
 
+    # Epitope is REQUIRED for every preset. IgGM designs against a specific
+    # antigen epitope; when none is given it tries to auto-derive one with
+    # cal_ppi, which needs a *bound complex*. Our single-source input is an
+    # antigen-ONLY structure (no antibody in the PDB), so cal_ppi always throws,
+    # design.py silently falls back to epitope=None, and the diffusion forward
+    # pass crashes on ``len(None)`` deep in ``__build_inputs_cm``, one hour into
+    # a paid GPU job (verified live: canary 160454cb, all 3 shards, 2026-07-17).
+    # design.py bundles the epitope into the shared ``chains`` object for ALL
+    # run_tasks with no branching, so no preset can run unguided under this input
+    # model. Enforce it here (pre-GPU) so an epitope-less run fails fast for $0
+    # instead of billing a crash. Kept LAST so the other input errors surface
+    # first. Epitope Scout (scout.ranomics.com) is the natural upstream source.
+    if not epitope:
+        return None, (
+            "Epitope residues are required. IgGM designs against a specific "
+            "antigen epitope and cannot infer one from an antigen-only "
+            "structure. Enter the antigen residue numbers to target (PDB "
+            "numbering, space or comma separated), for example from Epitope "
+            "Scout, then resubmit."
+        )
+
     ab_desc = "nanobody (VHH)" if len(antibody) == 1 else "antibody (H+L)"
 
     return (
@@ -390,8 +411,8 @@ adapter = ToolAdapter(
             label="Antibody-antigen complex prediction",
             description=(
                 "Fold the antibody-antigen complex from the full heavy "
-                "(and light) chain sequences against your antigen. Add an "
-                "optional epitope to guide docking. Fastest mode."
+                "(and light) chain sequences against your antigen. Provide "
+                "the epitope residues to guide docking. Fastest mode."
             ),
             requires_pdb=True,
         ),
@@ -400,8 +421,8 @@ adapter = ToolAdapter(
             label="CDR design (H3 or all CDRs)",
             description=(
                 "Mask CDR positions with X in the antibody FASTA and IgGM "
-                "redesigns them against your antigen. Add an epitope for "
-                "epitope-guided design."
+                "redesigns them against your antigen, aimed at the epitope "
+                "residues you specify."
             ),
             requires_pdb=True,
             long_running=True,

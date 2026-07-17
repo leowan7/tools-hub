@@ -88,20 +88,20 @@ class TestValidateAccept:
     def test_nanobody_no_light(self):
         inp, err = ig.validate(
             {"preset": "complex_prediction", "fasta": f">H\n{HEAVY}",
-             "target_chain": "B"}, {})
+             "target_chain": "B", "epitope": "7 8 9"}, {})
         assert err is None and "nanobody" in inp["target"]
 
     def test_cdr_design_with_mask(self):
         inp, err = ig.validate(
             {"preset": "cdr_design", "fasta": f">H\n{HEAVY_MASKED}",
-             "target_chain": "A"}, {})
+             "target_chain": "A", "epitope": "7 8 9"}, {})
         assert err is None and inp["run_task"] == "design"
 
     def test_affinity_maturation(self):
         inp, err = ig.validate(
             {"preset": "affinity_maturation", "fasta": f">H\n{HEAVY_MASKED}",
              "fasta_origin": f">H\n{HEAVY}", "target_chain": "A",
-             "num_samples": "10"}, {})
+             "num_samples": "10", "epitope": "7 8 9"}, {})
         assert err is None
         assert inp["run_task"] == "affinity_maturation"
         assert inp["num_samples"] == 10
@@ -188,10 +188,23 @@ class TestValidateReject:
         _, err = self._v(preset="complex_prediction", fasta=f">H\n{HEAVY[:-1]}B")
         assert err is not None
 
+    def test_epitope_required(self):
+        # Every preset needs an explicit epitope: our antigen-only input cannot
+        # auto-derive one (cal_ppi needs a bound complex) and design.py crashes
+        # on epitope=None. Enforced pre-GPU so an epitope-less run costs $0.
+        _, err = self._v(preset="complex_prediction", fasta=f">H\n{HEAVY}")
+        assert err and "epitope" in err.lower() and "required" in err.lower()
+
+    def test_cdr_design_requires_epitope(self):
+        # A valid masked design that only lacks the epitope still rejects.
+        _, err = self._v(preset="cdr_design", fasta=f">H\n{HEAVY_MASKED}")
+        assert err and "epitope" in err.lower()
+
     def test_empty_chain_defaults_to_A(self):
         # Matches boltz2's ``(form.get("target_chain") or "A")`` idiom.
         inp, err = ig.validate({"preset": "complex_prediction",
-                                "fasta": f">H\n{HEAVY}", "target_chain": ""}, {})
+                                "fasta": f">H\n{HEAVY}", "target_chain": "",
+                                "epitope": "7 8 9"}, {})
         assert err is None and inp["antigen_chain"] == "A"
 
     def test_chain_too_long(self):
@@ -209,7 +222,7 @@ class TestBuildPayload:
     def test_shape(self):
         inp, err = ig.validate(
             {"preset": "inverse_design", "fasta": f">H\n{HEAVY}\n>L\n{LIGHT}",
-             "target_chain": "B"}, {})
+             "target_chain": "B", "epitope": "7 8 9"}, {})
         assert err is None
         bp = ig.build_payload(inp, "https://example/presigned")
         assert set(bp) == {
