@@ -1,0 +1,38 @@
+# OpenDDE (Apache-2.0, Aureka AI Research) — all-atom co-folding foundation model.
+#
+# Strategy: base on the OFFICIAL, version-pinned OpenDDE image. It bundles the
+# exact opendde package, CUDA 12.6, cuDNN, and a Python in opendde's supported
+# range (3.11-3.13) — a single reproducible artifact, which is the cleanest pin
+# now that the verified install is PyPI (`uv pip install "opendde[gpu]"`), NOT a
+# git+SHA VCS pin. We add only the two host-side deps the pipeline needs on top:
+# gemmi (best-effort mmCIF->PDB for the viewer) and requests (presigned uploads).
+#
+# PIN: the `:v1` tag is the preview release (2026-07-03). Bump deliberately after
+# re-verifying the `opendde pred` argparse; pin by DIGEST (sha256:...) once known
+# so an upstream retag cannot silently move the build. The HF CHECKPOINT revision
+# is pinned separately in tools/opendde/seed_volumes.py.
+#
+# ALT (if Modal cannot use this image's Python with add_python=None): base on
+#   nvidia/cuda:12.6.2-cudnn-runtime-ubuntu24.04, `apt-get install python3.12`,
+#   then `pip install uv && uv pip install --system --torch-backend cu126
+#   "opendde[gpu]==<ver>" gemmi requests huggingface_hub`.
+FROM aurekaresearch/opendde:v1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
+    OPENDDE_ROOT_DIR=/opt/opendde_root
+
+# The weights Volume mounts here at runtime; checkpoint/opendde.pt resolves from
+# OPENDDE_ROOT_DIR. Created empty in the image so the mount point exists.
+RUN mkdir -p /opt/opendde_root/checkpoint
+
+RUN pip install --no-cache-dir gemmi requests || \
+    python3 -m pip install --no-cache-dir gemmi requests
+
+# Build-time smoke: HARD-fail the image build (loud, safe) if the CLI drifted
+# from the verified `opendde pred` interface, rather than discovering it on a
+# paying run. No `|| echo` fallback — a non-zero --help must break the build.
+RUN opendde --help >/dev/null 2>&1 && opendde pred --help >/dev/null 2>&1
+
+WORKDIR /opt

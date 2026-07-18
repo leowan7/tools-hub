@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% from "tools/_prefill.html" import pre_value, pre_checked, prefill_script, workspace_hidden_inputs %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/field_group.html" import field_campaign %}
+
+{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# OpenDDE form. Two-panel layout matching ESMFold2-design. Inline inputs, no
+     PDB upload. Checkpoint radio (general | abag). spec_mode radio (guided |
+     json) toggles the five guided entity textareas vs one JSON escape hatch. JS
+     at the bottom wires the toggle + n_designs_total = n_seeds * sample. #}
+
+  <style>
+    .odde-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 360px);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .odde-layout { grid-template-columns: 1fr; }
+    }
+    .odde-radio-group { display: grid; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .odde-radio-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.65rem 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      cursor: pointer;
+      transition: border-color 120ms ease, background 120ms ease;
+    }
+    .odde-radio-option:hover { border-color: var(--accent-dim); }
+    .odde-radio-option input[type="radio"] { margin-top: 0.2rem; accent-color: var(--accent); }
+    .odde-radio-option .opt-title {
+      display: block;
+      color: var(--text-primary);
+      font-weight: 500;
+      font-size: 0.92rem;
+      margin-bottom: 0.15rem;
+    }
+    .odde-radio-option .opt-desc {
+      display: block;
+      color: var(--text-secondary);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+    .odde-textarea {
+      width: 100%;
+      min-height: 5rem;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.6rem 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.5;
+      margin-bottom: 0.35rem;
+    }
+    .odde-number {
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      margin-bottom: 0.35rem;
+      width: 100%;
+    }
+    .odde-field-label { display: block; margin-bottom: 0.35rem; margin-top: 0.5rem; }
+    .odde-help { color: var(--text-secondary); font-size: 0.82rem; max-width: 60ch; }
+    .odde-conditional { margin-bottom: 1.25rem; }
+    .odde-conditional[hidden] { display: none; }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="odde-layout">
+    {# ---------- LEFT: form ---------- #}
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Co-folding inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tools.tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ csrf_input() }}
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+
+          {# ----- Checkpoint ----- #}
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Checkpoint</label>
+          <div class="odde-radio-group">
+            <label class="odde-radio-option">
+              <input type="radio" name="preset" value="general" {{ pre_checked(pre_fill, 'preset', 'general', is_first=True) }}>
+              <span>
+                <span class="opt-title">General co-folding</span>
+                <span class="opt-desc">Any mix of protein, DNA, RNA, ligand, and ion. The default.</span>
+              </span>
+            </label>
+            <label class="odde-radio-option">
+              <input type="radio" name="preset" value="abag" {{ pre_checked(pre_fill, 'preset', 'abag', is_first=False) }}>
+              <span>
+                <span class="opt-title">Antibody-antigen (ABAG)</span>
+                <span class="opt-desc">The antibody-antigen specialised checkpoint. Use for antibody or nanobody complexes.</span>
+              </span>
+            </label>
+          </div>
+
+          {# ----- Input mode ----- #}
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Input mode</label>
+          <div class="odde-radio-group">
+            <label class="odde-radio-option">
+              <input type="radio" name="spec_mode" value="guided" data-odde-spec-mode
+                     {{ pre_checked(pre_fill, 'spec_mode', 'guided', is_first=True) }}>
+              <span>
+                <span class="opt-title">Guided (fill in each entity)</span>
+                <span class="opt-desc">One box per entity type. We assemble the OpenDDE JSON for you.</span>
+              </span>
+            </label>
+            <label class="odde-radio-option">
+              <input type="radio" name="spec_mode" value="json" data-odde-spec-mode
+                     {{ pre_checked(pre_fill, 'spec_mode', 'json', is_first=False) }}>
+              <span>
+                <span class="opt-title">Paste an OpenDDE JSON spec</span>
+                <span class="opt-desc">Power users. Validated against the real schema and the same size limits.</span>
+              </span>
+            </label>
+          </div>
+
+          {# ----- Guided entity inputs (visible only when spec_mode=guided) ----- #}
+          <div class="odde-conditional" data-odde-guided-only hidden>
+            <label for="proteins" class="label odde-field-label">Protein chains (FASTA)</label>
+            <textarea name="proteins" id="proteins" spellcheck="false" class="odde-textarea"
+                      placeholder=">A&#10;MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG">{{ (pre_fill.get('proteins') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">One record per chain. <code>&gt;id</code> headers are optional (auto-assigned if omitted).</div>
+
+            <label for="dna" class="label odde-field-label">DNA chains (FASTA)</label>
+            <textarea name="dna" id="dna" spellcheck="false" class="odde-textarea"
+                      placeholder=">D&#10;ATGCATGCATGC">{{ (pre_fill.get('dna') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">Alphabet A T G C (N, X allowed).</div>
+
+            <label for="rna" class="label odde-field-label">RNA chains (FASTA)</label>
+            <textarea name="rna" id="rna" spellcheck="false" class="odde-textarea"
+                      placeholder=">R&#10;AUGCAUGCAUGC">{{ (pre_fill.get('rna') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">Alphabet A U G C (N, X allowed).</div>
+
+            <label for="ligands" class="label odde-field-label">Ligands (one per line)</label>
+            <textarea name="ligands" id="ligands" spellcheck="false" class="odde-textarea" style="min-height: 3.5rem;"
+                      placeholder="CCD_ATP&#10;CC(=O)Oc1ccccc1C(=O)O">{{ (pre_fill.get('ligands') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">A CCD code (<code>CCD_ATP</code>), a multi-residue code (<code>CCD_NAG_BMA_BGC</code>), a bundled <code>FILE_x.sdf</code>, or a bare SMILES string.</div>
+
+            <label for="ions" class="label odde-field-label">Ions (comma separated)</label>
+            <textarea name="ions" id="ions" spellcheck="false" class="odde-textarea" style="min-height: 2.5rem;"
+                      placeholder="MG, ZN">{{ (pre_fill.get('ions') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">CCD element names, e.g. <code>MG</code>, <code>ZN</code>, <code>NA</code>.</div>
+          </div>
+
+          {# ----- JSON escape hatch (visible only when spec_mode=json) ----- #}
+          <div class="odde-conditional" data-odde-json-only hidden>
+            <label for="spec_json" class="label odde-field-label">OpenDDE JSON spec</label>
+            <textarea name="spec_json" id="spec_json" spellcheck="false" class="odde-textarea" style="min-height: 12rem;"
+                      placeholder='[{"name": "job", "modelSeeds": [1], "sequences": [{"proteinChain": {"sequence": "MQIFVK...", "count": 1, "id": ["A"]}}, {"ligand": "CCD_ATP"}, {"ion": "MG"}]}]'>{{ (pre_fill.get('spec_json') if pre_fill else '') or '' }}</textarea>
+            <div class="odde-help">
+              A single job (object, or one-element list). Entities must be
+              <code>proteinChain</code> / <code>dnaSequence</code> /
+              <code>rnaSequence</code> / <code>ligand</code> / <code>ion</code>.
+              The Seeds fields below control replication; any
+              <code>modelSeeds</code> in your paste is overridden.
+            </div>
+          </div>
+
+          {# ----- Sampler knobs ----- #}
+          <label class="label" style="display:block; margin-bottom: 0.4rem;">Sampler</label>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem;">
+            <div>
+              <label for="sample" class="label odde-field-label">Samples / seed</label>
+              <input type="number" name="sample" id="sample" min="1" max="4" {{ pre_value(pre_fill, 'sample', '1') }} class="odde-number">
+            </div>
+            <div>
+              <label for="step" class="label odde-field-label">Diffusion steps</label>
+              <input type="number" name="step" id="step" min="1" max="400" {{ pre_value(pre_fill, 'step', '200') }} class="odde-number">
+            </div>
+            <div>
+              <label for="cycle" class="label odde-field-label">Recycles</label>
+              <input type="number" name="cycle" id="cycle" min="1" max="20" {{ pre_value(pre_fill, 'cycle', '10') }} class="odde-number">
+            </div>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;">
+            <div>
+              <label for="seed" class="label odde-field-label">Starting seed</label>
+              <input type="number" name="seed" id="seed" min="0" max="2147483647" {{ pre_value(pre_fill, 'seed', '1') }} class="odde-number">
+            </div>
+            <div>
+              <label for="n_seeds" class="label odde-field-label">Seeds</label>
+              <input type="number" name="n_seeds" id="n_seeds" min="1" max="4" {{ pre_value(pre_fill, 'n_seeds', '1') }} class="odde-number">
+              <div class="odde-help">Predictions returned = seeds &times; samples.</div>
+            </div>
+          </div>
+
+          {{ field_campaign(prefilled=pre_fill) }}
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          <button type="submit" class="btn-primary">Submit co-folding run</button>
+        </form>
+      </div>
+    </div>
+
+    {# ---------- RIGHT: About OpenDDE ---------- #}
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  <script>
+    // Conditional reveal (guided vs json) + n_designs_total = n_seeds * sample.
+    (function () {
+      var specModeRadios = document.querySelectorAll('input[name="spec_mode"][data-odde-spec-mode]');
+      var guidedOnly = document.querySelector('[data-odde-guided-only]');
+      var jsonOnly = document.querySelector('[data-odde-json-only]');
+      var sampleInput = document.getElementById('sample');
+      var nSeedsInput = document.getElementById('n_seeds');
+
+      function syncSpecMode() {
+        var selected = document.querySelector('input[name="spec_mode"]:checked');
+        var isJson = selected && selected.value === 'json';
+        if (guidedOnly) guidedOnly.hidden = isJson;
+        if (jsonOnly) jsonOnly.hidden = !isJson;
+      }
+      function syncWalletCount() {
+        var s = parseInt(sampleInput && sampleInput.value, 10);
+        if (!isFinite(s) || s < 1) s = 1;
+        var ns = parseInt(nSeedsInput && nSeedsInput.value, 10);
+        if (!isFinite(ns) || ns < 1) ns = 1;
+        var hidden = document.querySelector('input[name="n_designs_total"]');
+        if (!hidden) {
+          hidden = document.createElement('input');
+          hidden.type = 'hidden';
+          hidden.name = 'n_designs_total';
+          var form = (sampleInput && sampleInput.form) || (nSeedsInput && nSeedsInput.form);
+          if (form) form.appendChild(hidden);
+        }
+        // Total predictions. The wallet holds a fixed single-container budget, so
+        // this feeds the job record and the on-page count, not the hold amount.
+        hidden.value = String(s * ns);
+        if (typeof window.refreshWalletEstimate === 'function') {
+          window.refreshWalletEstimate();
+        }
+      }
+
+      for (var i = 0; i < specModeRadios.length; i++) {
+        specModeRadios[i].addEventListener('change', syncSpecMode);
+      }
+      if (sampleInput) {
+        sampleInput.addEventListener('input', syncWalletCount);
+        sampleInput.addEventListener('change', syncWalletCount);
+      }
+      if (nSeedsInput) {
+        nSeedsInput.addEventListener('input', syncWalletCount);
+        nSeedsInput.addEventListener('change', syncWalletCount);
+      }
+      syncSpecMode();
+      syncWalletCount();
+    })();
+  </script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+{% endblock %}

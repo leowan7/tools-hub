@@ -524,6 +524,9 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         "cluster_id": cluster_id,
         "has_clash": has_clash,
         "metadata_tag": str(metadata_tag)[:64] if metadata_tag else None,
+        # OpenDDE confidence-head ranking score (additive; other tools leave it
+        # None and the results renderer hides it).
+        "ranking_score": _num(cand.get("ranking_score")),
     }
 
 

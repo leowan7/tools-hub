@@ -10,6 +10,15 @@ from __future__ import annotations
 from typing import Optional
 
 GLOSSARY: dict[str, dict] = {
+    "ranking_score": {
+        "label": "Ranking score",
+        "definition": (
+            "OpenDDE's confidence-head ranking of a predicted complex. Used by the "
+            "model to select the best sample; higher is more confident."
+        ),
+        "good_range": "higher is better (relative within a run)",
+        "citation": "Aureka AI Research, OpenDDE-Preview 2026",
+    },
     "ipTM": {
         "label": "ipTM",
         "definition": (

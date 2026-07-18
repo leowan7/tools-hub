@@ -143,6 +143,12 @@ PER_JOB_HARD_CAP_USD: Mapping[str, Decimal] = {
     # physical max) so it never clips a legit max run while still bounding a
     # pricing bug. Mirrors TOOL_SPECS absolute_cap_usd.
     "esmfold2-design": Decimal("1000.00"),
+    # opendde: atomic H100 co-folding tool. One container per job, physically
+    # capped at _MAX_SESSION_S=3600 s ($14.79 marked-up worst case), so $15 is
+    # the TRUE per-job ceiling — there is no fan-out that could push it higher.
+    # Mirrors TOOL_SPECS absolute_cap_usd. (Deviates from the plan's $150, which
+    # assumed a multi-shard scaling model that does not fit a single container.)
+    "opendde":     Decimal("15.00"),
 }
 
 

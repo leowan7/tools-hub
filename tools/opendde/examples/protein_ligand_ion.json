@@ -1,0 +1,17 @@
+[
+  {
+    "name": "ubiquitin_atp_mg",
+    "modelSeeds": [1],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+          "count": 1,
+          "id": ["A"]
+        }
+      },
+      {"ligand": "CCD_ATP"},
+      {"ion": "MG"}
+    ]
+  }
+]

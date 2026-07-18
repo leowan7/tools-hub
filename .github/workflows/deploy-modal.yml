@@ -10,6 +10,8 @@ name: Deploy Modal apps
 #   - boltz2           (tools/boltz2/modal_app.py)
 #   - esmfold2_design  (tools/esmfold2_design/modal_app.py)
 #   - iggm             (tools/iggm/modal_app.py)
+#   - proteina         (tools/proteina/modal_app.py)
+#   - opendde          (tools/opendde/modal_app.py)
 #
 # Prerequisites:
 #   - Repository secrets MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are set.
@@ -50,6 +52,7 @@ jobs:
           - esmfold2_design
           - iggm
           - proteina
+          - opendde
 
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
