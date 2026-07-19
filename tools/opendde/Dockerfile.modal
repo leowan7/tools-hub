@@ -27,12 +27,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # OPENDDE_ROOT_DIR. Created empty in the image so the mount point exists.
 RUN mkdir -p /opt/opendde_root/checkpoint
 
-RUN pip install --no-cache-dir gemmi requests || \
-    python3 -m pip install --no-cache-dir gemmi requests
+# The base image installs OpenDDE (via uv) into the SYSTEM python /usr/bin/python3
+# (3.12): that interpreter HAS opendde but NO pip, and requests/gemmi are absent
+# (so a plain `pip install` / `python3 -m pip` fails). The `opendde` console
+# script's shebang is #!/usr/bin/python and `python3` already resolves to
+# /usr/bin/python3, so run_pipeline.py (spawned as `python3` by modal_app.py) runs
+# on the SAME interpreter as opendde — no symlink needed. Add our two host-side
+# deps (gemmi for mmCIF->PDB, requests for presigned uploads) into it with uv. The
+# fallback chain covers uv's system / PEP-668 externally-managed modes.
+RUN /root/.local/bin/uv pip install --python /usr/bin/python3 --no-cache gemmi requests \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --no-cache gemmi requests \
+    || /root/.local/bin/uv pip install --python /usr/bin/python3 --system --break-system-packages --no-cache gemmi requests
 
-# Build-time smoke: HARD-fail the image build (loud, safe) if the CLI drifted
-# from the verified `opendde pred` interface, rather than discovering it on a
-# paying run. No `|| echo` fallback — a non-zero --help must break the build.
+# Self-verifying build gates (HARD-fail, loud+safe, so drift surfaces at build
+# rather than on a paying run):
+#  1. the runtime interpreter run_pipeline.py uses can import opendde + both deps;
+#  2. the `opendde pred` CLI still matches the verified interface.
+RUN python3 -c "import sys, opendde, requests, gemmi; print('opendde+deps OK on', sys.executable)"
 RUN opendde --help >/dev/null 2>&1 && opendde pred --help >/dev/null 2>&1
 
 WORKDIR /opt
