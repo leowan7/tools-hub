@@ -1,6 +1,6 @@
 [
   {
-    "name": "ubiquitin_atp_mg",
+    "name": "ubiquitin_atp",
     "modelSeeds": [1],
     "sequences": [
       {
@@ -10,8 +10,7 @@
           "id": ["A"]
         }
       },
-      {"ligand": "CCD_ATP"},
-      {"ion": "MG"}
+      {"ligand": {"ligand": "CCD_ATP", "count": 1, "id": ["L"]}}
     ]
   }
 ]

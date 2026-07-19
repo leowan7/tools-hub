@@ -184,16 +184,37 @@ def parse_payload() -> dict[str, Any]:
 
 
 def _cif_to_pdb(cif_bytes: bytes) -> bytes | None:
-    """Best-effort mmCIF -> PDB for the browser viewer. None on any failure."""
+    """Best-effort mmCIF -> PDB for the browser viewer. None on any failure.
+
+    OpenDDE writes AF3-style mmCIF. gemmi (0.6.7 in the image) has no string
+    reader, so parse via a temp file with ``read_structure`` (format auto-detect).
+    Multi-entity complexes (ligands / ions / nucleic acids / multi-char chains)
+    that overflow legacy PDB, or any parse that yields no atoms, return None and
+    are served as native mmCIF by the caller.
+    """
+    tmp: str | None = None
     try:
         import gemmi
 
-        st = gemmi.read_structure_string(cif_bytes.decode("utf-8", "replace"))
+        with tempfile.NamedTemporaryFile("wb", suffix=".cif", delete=False) as fh:
+            fh.write(cif_bytes)
+            tmp = fh.name
+        st = gemmi.read_structure(tmp)
         st.setup_entities()
-        return st.make_pdb_string().encode("utf-8")
+        pdb = st.make_pdb_string()
+        if "ATOM" not in pdb and "HETATM" not in pdb:
+            logger.warning("cif->pdb produced no atom records; serving native file")
+            return None
+        return pdb.encode("utf-8")
     except Exception as exc:  # noqa: BLE001 — conversion is optional
         logger.warning("cif->pdb conversion failed (%s); serving native file", exc)
         return None
+    finally:
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _read_score_json(structure_path: Path) -> dict:

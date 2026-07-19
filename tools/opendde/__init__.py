@@ -1,7 +1,11 @@
-"""OpenDDE — all-atom co-folding (protein + DNA + RNA + ligand + ion).
+"""OpenDDE — all-atom co-folding (protein + DNA + RNA + ligand).
 
 Modal app: ``ranomics-opendde-prod``. GPU: H100. Atomic primitive (a single
 Modal job, boltz2 shape) — NOT a compute campaign.
+
+Ion entities are part of OpenDDE's schema but are BLOCKED by this adapter: the
+v1 preview model cannot featurize them (see ION_UNSUPPORTED_MSG). Protein, DNA,
+RNA and ligand all fold cleanly (verified at the O-1/O-2/O-3 + isolation canaries).
 
 OpenDDE (Aureka AI Research, Apache-2.0, preview released 2026-07-03) is an
 AlphaFold3-class foundation model that co-folds an arbitrary mix of biomolecular
@@ -29,9 +33,12 @@ docs/infer_json_format.md) and HF card at build:
 - ``proteinChain``/``dnaSequence``/``rnaSequence`` are objects with
   ``sequence`` + ``count`` + ``id`` (``id`` is an ARRAY of chain letters whose
   length must equal ``count``).
-- ``ligand`` / ``ion`` are BARE STRINGS: ligand is ``"CCD_ATP"`` /
-  ``"CCD_NAG_BMA_BGC"`` / ``"FILE_x.sdf"`` / a bare SMILES (no ``SMILES:``
-  prefix); ion is a bare CCD component name (``"MG"``, not ``"CCD_MG"``).
+- ``ligand`` / ``ion`` are OBJECTS whose inner key repeats the entity name, plus
+  ``count`` (+ optional ``id``): ``{"ligand": {"ligand": "CCD_ATP", "count": 1}}``,
+  ``{"ion": {"ion": "MG", "count": 1}}``. The ligand code is ``"CCD_ATP"`` /
+  ``"CCD_NAG_BMA_BGC"`` / ``"FILE_x.sdf"`` / a bare SMILES (no ``SMILES:`` prefix);
+  the ion code is a bare CCD component name (``"MG"``, not ``"CCD_MG"``). A bare
+  string here crashes OpenDDE's ``json_parser.build_ligand`` (verified O-2).
 
 Cost model: this is a single H100 container physically capped at
 ``_MAX_SESSION_S`` (see modal_app.py), so the wallet holds a fixed
@@ -89,8 +96,23 @@ POLYMER_KEYS = {
     "dnaSequence": DNA_NT,
     "rnaSequence": RNA_NT,
 }
-STRING_ENTITY_KEYS = {"ligand", "ion"}
-ENTITY_KEYS = set(POLYMER_KEYS) | STRING_ENTITY_KEYS
+# ligand + ion. Named for what they are NOT (polymers) — each is an OBJECT whose
+# inner key repeats the entity name, NOT a bare string (see _validate_sequences).
+NONPOLYMER_KEYS = {"ligand", "ion"}
+ENTITY_KEYS = set(POLYMER_KEYS) | NONPOLYMER_KEYS
+
+# The OpenDDE v1 preview cannot featurize ion entities: its template featurizer's
+# map_to_standard raises on any ion (verified at the O-2 / iso canaries, on both
+# checkpoints, even for a lone protein+ion with --use_template false). Ions are
+# still a RECOGNISED key (so a paste gets this precise message, not "unknown
+# type"), but validate() rejects them PRE-GPU so a user is never charged for a
+# guaranteed failure. Protein / DNA / RNA / ligand all fold cleanly. Revisit when
+# upstream fixes ion featurization (or if we later enable the template path).
+ION_UNSUPPORTED_MSG = (
+    "Ion entities are not supported yet — the OpenDDE v1 preview model cannot "
+    "featurize ions. Remove the ion(s); protein, DNA, RNA, and ligand entities "
+    "are supported."
+)
 
 JOB_NAME = "opendde_job"   # fixed, filesystem-safe; the pipeline globs recursively
 MODEL_NAME = "opendde_v1"  # -n value (the architecture, not a job id)
@@ -197,29 +219,26 @@ def _assemble_guided(form: Mapping[str, Any]) -> tuple[Optional[list], Optional[
                 {entity_key: {"sequence": seq, "count": 1, "id": [cid]}}
             )
 
-    # Ligands — one per line: CCD_x / CCD_x_y_z / FILE_x.sdf / bare SMILES.
+    # Ligands — one per line: CCD_x / CCD_x_y_z / FILE_x.sdf / bare SMILES. OpenDDE
+    # wraps a ligand as an OBJECT {"ligand": {"ligand": <code>, "count", "id"}},
+    # NOT a bare string — a bare string crashes its json_parser.build_ligand.
     for line in (form.get("ligands") or "").splitlines():
         token = line.strip()
         if not token:
             continue
         if len(token) > 512:
             return None, "A ligand entry is too long (> 512 chars)."
-        sequences.append({"ligand": token})
+        cid = _next_chain_id(used_ids)
+        if cid is None:
+            return None, f"Too many chains (> {len(_CHAIN_ID_POOL)})."
+        sequences.append({"ligand": {"ligand": token, "count": 1, "id": [cid]}})
 
-    # Ions — comma or whitespace separated CCD element names (e.g. MG, ZN, NA).
-    ion_block = (form.get("ions") or "").replace(",", " ")
-    for token in ion_block.split():
-        token = token.strip().upper()
-        if not token:
-            continue
-        # CCD ion names are an element symbol optionally carrying an oxidation
-        # state digit (MG, ZN, FE2, CU1). Allow alphanumerics with an alpha lead.
-        if not (token[0].isalpha() and token.isalnum()) or len(token) > 4:
-            return None, f"Invalid ion {token!r} (use a CCD element name like MG or FE2)."
-        sequences.append({"ion": token})
+    # Ions are blocked pre-GPU (OpenDDE v1 preview cannot featurize them).
+    if (form.get("ions") or "").strip():
+        return None, ION_UNSUPPORTED_MSG
 
     if not sequences:
-        return None, "Add at least one entity (protein, DNA, RNA, ligand, or ion)."
+        return None, "Add at least one entity (protein, DNA, RNA, or ligand)."
     return sequences, None
 
 
@@ -248,6 +267,8 @@ def _validate_sequences(sequences: Any) -> tuple[Optional[list], Optional[str]]:
                 f"Entity {i} uses unknown type {key!r}; allowed: "
                 f"{', '.join(sorted(ENTITY_KEYS))}."
             )
+        if key == "ion":
+            return None, ION_UNSUPPORTED_MSG
         if key in POLYMER_KEYS:
             if not isinstance(val, dict) or "sequence" not in val:
                 return None, f"Entity {i} ({key}) needs a 'sequence'."
@@ -272,21 +293,39 @@ def _validate_sequences(sequences: Any) -> tuple[Optional[list], Optional[str]]:
                         f"letters (one per count)."
                     )
             out.append({key: {"sequence": seq, "count": count, **({"id": ids} if ids else {})}})
-        else:  # ligand / ion — bare string. Re-apply the SAME bounds as guided
-               # mode so the escape hatch is not a way around the size / format
-               # checks (mirrors _assemble_guided).
-            if not isinstance(val, str) or not val.strip():
-                return None, f"Entity {i} ({key}) must be a non-empty string."
-            token = val.strip()
+        else:  # ligand / ion — OBJECT {"<key>": {"<key>": <code>, count, id}}.
+               # Re-apply the SAME bounds as guided mode so the escape hatch is not
+               # a way around the size / format checks (mirrors _assemble_guided).
+            if not isinstance(val, dict) or key not in val:
+                return None, (
+                    f"Entity {i} ({key}) must be an object with a {key!r} field, "
+                    f'e.g. {{"{key}": {{"{key}": "…", "count": 1}}}}.'
+                )
+            code = val.get(key)
+            if not isinstance(code, str) or not code.strip():
+                return None, f"Entity {i} ({key}) {key!r} must be a non-empty string."
+            code = code.strip()
+            count = val.get("count", 1)
+            if not isinstance(count, int) or count < 1 or count > MAX_CHAINS:
+                return None, f"Entity {i} ({key}) has an invalid 'count'."
+            ids = val.get("id")
+            if ids is not None:
+                if not isinstance(ids, list) or len(ids) != count or not all(
+                    isinstance(x, str) and x for x in ids
+                ):
+                    return None, (
+                        f"Entity {i} ({key}) 'id' must be a list of {count} chain "
+                        f"letters (one per count)."
+                    )
             if key == "ligand":
-                if len(token) > 512:
+                if len(code) > 512:
                     return None, f"Entity {i} (ligand) is too long (> 512 chars)."
-                out.append({"ligand": token})
+                norm = code
             else:  # ion — CCD element name (optional oxidation-state digit)
-                ion = token.upper()
-                if not (ion[0].isalpha() and ion.isalnum()) or len(ion) > 4:
+                norm = code.upper()
+                if not (norm[0].isalpha() and norm.isalnum()) or len(norm) > 4:
                     return None, f"Entity {i} (ion) must be a CCD element name like MG."
-                out.append({"ion": ion})
+            out.append({key: {key: norm, "count": count, **({"id": ids} if ids else {})}})
     return out, None
 
 
@@ -334,11 +373,13 @@ def _count_tokens_and_chains(sequences: list) -> tuple[int, int]:
             tokens += len(str(val.get("sequence", ""))) * count
             chains += count
         elif key == "ligand":
-            tokens += LIGAND_TOKEN_COST
-            chains += 1
+            count = int(val.get("count", 1)) if isinstance(val, dict) else 1
+            tokens += LIGAND_TOKEN_COST * count
+            chains += count
         else:  # ion
-            tokens += ION_TOKEN_COST
-            chains += 1
+            count = int(val.get("count", 1)) if isinstance(val, dict) else 1
+            tokens += ION_TOKEN_COST * count
+            chains += count
     return tokens, chains
 
 
@@ -462,8 +503,8 @@ adapter = ToolAdapter(
     slug="opendde",
     label="OpenDDE co-folding",
     blurb=(
-        "All-atom co-folding for any mix of protein, DNA, RNA, ligand, and ion "
-        "in one spec. AlphaFold3-class multi-modal structure prediction, the "
+        "All-atom co-folding for any mix of protein, DNA, RNA, and ligand in one "
+        "spec. AlphaFold3-class multi-modal structure prediction, the "
         "multi-molecule complement to the protein-only Boltz-2 tool."
     ),
     presets=(
@@ -472,8 +513,8 @@ adapter = ToolAdapter(
             label="General co-folding",
             description=(
                 "The general OpenDDE checkpoint. Co-fold any mix of protein, "
-                "DNA, RNA, ligand, and ion entities. Choose this unless your "
-                "target is specifically an antibody-antigen pair."
+                "DNA, RNA, and ligand entities. Choose this unless your target "
+                "is specifically an antibody-antigen pair."
             ),
             requires_pdb=False,
             long_running=True,

@@ -110,7 +110,7 @@
               <input type="radio" name="preset" value="general" {{ pre_checked(pre_fill, 'preset', 'general', is_first=True) }}>
               <span>
                 <span class="opt-title">General co-folding</span>
-                <span class="opt-desc">Any mix of protein, DNA, RNA, ligand, and ion. The default.</span>
+                <span class="opt-desc">Any mix of protein, DNA, RNA, and ligand. The default.</span>
               </span>
             </label>
             <label class="odde-radio-option">
@@ -164,24 +164,20 @@
             <textarea name="ligands" id="ligands" spellcheck="false" class="odde-textarea" style="min-height: 3.5rem;"
                       placeholder="CCD_ATP&#10;CC(=O)Oc1ccccc1C(=O)O">{{ (pre_fill.get('ligands') if pre_fill else '') or '' }}</textarea>
             <div class="odde-help">A CCD code (<code>CCD_ATP</code>), a multi-residue code (<code>CCD_NAG_BMA_BGC</code>), a bundled <code>FILE_x.sdf</code>, or a bare SMILES string.</div>
-
-            <label for="ions" class="label odde-field-label">Ions (comma separated)</label>
-            <textarea name="ions" id="ions" spellcheck="false" class="odde-textarea" style="min-height: 2.5rem;"
-                      placeholder="MG, ZN">{{ (pre_fill.get('ions') if pre_fill else '') or '' }}</textarea>
-            <div class="odde-help">CCD element names, e.g. <code>MG</code>, <code>ZN</code>, <code>NA</code>.</div>
           </div>
 
           {# ----- JSON escape hatch (visible only when spec_mode=json) ----- #}
           <div class="odde-conditional" data-odde-json-only hidden>
             <label for="spec_json" class="label odde-field-label">OpenDDE JSON spec</label>
             <textarea name="spec_json" id="spec_json" spellcheck="false" class="odde-textarea" style="min-height: 12rem;"
-                      placeholder='[{"name": "job", "modelSeeds": [1], "sequences": [{"proteinChain": {"sequence": "MQIFVK...", "count": 1, "id": ["A"]}}, {"ligand": "CCD_ATP"}, {"ion": "MG"}]}]'>{{ (pre_fill.get('spec_json') if pre_fill else '') or '' }}</textarea>
+                      placeholder='[{"name": "job", "modelSeeds": [1], "sequences": [{"proteinChain": {"sequence": "MQIFVK...", "count": 1, "id": ["A"]}}, {"ligand": {"ligand": "CCD_ATP", "count": 1}}]}]'>{{ (pre_fill.get('spec_json') if pre_fill else '') or '' }}</textarea>
             <div class="odde-help">
               A single job (object, or one-element list). Entities must be
               <code>proteinChain</code> / <code>dnaSequence</code> /
-              <code>rnaSequence</code> / <code>ligand</code> / <code>ion</code>.
-              The Seeds fields below control replication; any
-              <code>modelSeeds</code> in your paste is overridden.
+              <code>rnaSequence</code> / <code>ligand</code>. (Ion entities are
+              not supported by the current preview model.) The Seeds fields below
+              control replication; any <code>modelSeeds</code> in your paste is
+              overridden.
             </div>
           </div>
 
