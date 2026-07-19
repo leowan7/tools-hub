@@ -167,6 +167,14 @@ PRESET_CAPS: Dict[tuple[str, str], int] = {
     ("proteina", "ligand_binder"):  7200,
     ("proteina", "motif_ame"):      7200,
     ("proteina", "validate"):        900,
+    # OpenDDE all-atom co-folding on H100. Atomic tool: one container per job,
+    # both checkpoints share the same architecture so the cap is size/sampler
+    # driven, not preset driven. 3600 s matches tools/opendde/modal_app.py
+    # _MAX_SESSION_S — the physical bound on a single job's spend (~$14.79
+    # marked-up at H100). BOOTSTRAP until the O-1/O-2 canaries measure real
+    # per-prediction wall-clock; historical p90 supersedes at >=20 runs.
+    ("opendde", "general"):         3600,
+    ("opendde", "abag"):            3600,
 }
 
 

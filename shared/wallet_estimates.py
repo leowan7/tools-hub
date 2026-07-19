@@ -101,6 +101,14 @@ class ToolSpec:
     base_hard_cap_usd: Decimal
     absolute_cap_usd: Decimal
     tier_gpu_seconds: Mapping[str, float] = field(default_factory=dict)
+    # Fixed-container tools that bill ACTUAL wall-clock up to a physical session
+    # cap can always bill their worst case, so the HOLD must cover it regardless
+    # of the historical-p90 estimate (which only right-sizes the DISPLAYED price).
+    # When set, ``cushioned_hold_usd`` floors the hold at the marked-up charge for
+    # this many GPU-seconds — the physical session cap — so a fast p90 can never
+    # shrink the hold below what one heavy job can still be billed. ``None`` = an
+    # ordinary per-design-scaling tool with no worst-case floor.
+    worst_case_gpu_seconds: Optional[float] = None
 
 
 # Per-tool spec table. Mirrors the absolute caps in
@@ -323,6 +331,32 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("1000.00"),
     ),
+    "opendde": ToolSpec(
+        slug="opendde",
+        gpu_class="H100",
+        # OpenDDE is an ATOMIC single-container tool: all seeds * samples run
+        # sequentially INSIDE one H100 container physically capped at
+        # _MAX_SESSION_S=3600 s (tools/opendde/modal_app.py). So the cost is a
+        # FIXED container budget, not a per-design fan-out. scaling_param=None
+        # (like alphafold2) prices every job at the worst-case container time:
+        # 3600 s * $0.002417/s * 1.70 markup = $14.79, and base_hard_cap ($15)
+        # sits just above that. n_designs_total (seeds * samples) is stamped for
+        # the job record and packs predictions INTO the fixed budget; it does not
+        # move the hold. worst_case_gpu_seconds=3600 FLOORS the cushioned hold at
+        # $14.79 so that once historical p90 pulls the DISPLAYED estimate down
+        # (>=20 runs), the HOLD still covers a single heavy job that runs the full
+        # session — without the floor the p90 branch would shrink the hold and a
+        # max-sampler job would under-hold. If a larger complex needs a longer
+        # session, bump _MAX_SESSION_S AND these caps AND worst_case_gpu_seconds
+        # TOGETHER. (Deviates from the plan's 900 s / n_designs_total / $150 model,
+        # which would under-hold a single heavy run on a single container.)
+        expected_gpu_seconds=3600.0,
+        designs_per_run_baseline=1,
+        scaling_param=None,
+        base_hard_cap_usd=Decimal("15.00"),
+        absolute_cap_usd=Decimal("15.00"),
+        worst_case_gpu_seconds=3600.0,
+    ),
 }
 
 
@@ -428,7 +462,18 @@ def cushioned_hold_usd(
     """
     point = estimated_cost_for_tool(user_id, tool_slug, params)
     cap = compute_hard_cap(tool_slug, params)
-    return _quantize_usd(min(HOLD_CUSHION_MULTIPLIER * point, cap))
+    hold = HOLD_CUSHION_MULTIPLIER * point
+    # Fixed-container floor: a tool that bills actual wall-clock up to a physical
+    # session cap can ALWAYS bill its worst case, so the hold must cover it even
+    # after historical p90 pulls the point estimate down. Without this the p90
+    # branch lowers the HOLD (not just the displayed price) and a single heavy job
+    # under-holds. The floor is itself clamped to the hard cap.
+    spec = TOOL_SPECS.get(tool_slug)
+    if spec is not None and spec.worst_case_gpu_seconds:
+        rate = Decimal(str(GPU_USD_PER_SECOND.get(spec.gpu_class, DEFAULT_USD_PER_SECOND)))
+        floor = Decimal(str(spec.worst_case_gpu_seconds)) * rate * WALLET_MARKUP
+        hold = max(hold, min(floor, cap))
+    return _quantize_usd(min(hold, cap))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,107 @@
+{# OpenDDE results partial — included by job_detail.html on status=succeeded.
+
+   Reshapes the pipeline's per-prediction output into the candidate_table
+   contract. Each prediction becomes one row with the model's own confidence
+   ranking score, plus pTM / ipTM / pLDDT columns IF the (undocumented) OpenDDE
+   confidence file surfaced them. Co-folding has no pass/fail gate, so no
+   filter_status is mapped — every prediction is a valid structure ranked by
+   confidence, and the "below threshold" banner stays silent. #}
+
+{% from "components/results_shell.html" import results_panel %}
+
+{% set output            = job.result or {} %}
+{% set preset            = output.get('tier') or output.get('preset') %}
+{% set raw_designs       = output.get('designs', []) %}
+{% set tier              = output.get('tier') %}
+{% set runtime_seconds   = output.get('runtime_seconds') %}
+{% set sample            = output.get('sample') %}
+{% set step              = output.get('step') %}
+{% set cycle             = output.get('cycle') %}
+{% set designs_total     = output.get('designs_total') or (raw_designs | length) %}
+{% set designs_completed = output.get('designs_completed') or (raw_designs | length) %}
+{% set clone_url         = url_for('tools.tool_form', tool='opendde', clone_from=job.id) %}
+
+{# Reshape designs[] into the candidate contract. No filter_status is set, so the
+   shell treats every prediction as passing (co-folding has no quality gate). #}
+{% set candidates = [] %}
+{% set opt = namespace(ptm=false, iptm=false, plddt=false) %}
+{% for d in raw_designs %}
+  {% if d.get('ptm') is not none %}{% set opt.ptm = true %}{% endif %}
+  {% if d.get('iptm') is not none %}{% set opt.iptm = true %}{% endif %}
+  {% if d.get('plddt') is not none %}{% set opt.plddt = true %}{% endif %}
+  {% set _ = candidates.append({
+      'rank': d.get('rank'),
+      'name': d.get('name') or ('prediction_' ~ (d.get('rank') or '0')),
+      'pdb_key': d.get('pdb_key'),
+      'scores': {
+        'ranking_score': d.get('ranking_score'),
+        'pTM': d.get('ptm'),
+        'ipTM': d.get('iptm'),
+        'pLDDT': d.get('plddt'),
+      },
+  }) %}
+{% endfor %}
+{% set candidates = candidates | sort(attribute='rank') %}
+
+{# Only show confidence columns that OpenDDE actually populated this run. #}
+{% set columns = ['ranking_score']
+    + (['pTM'] if opt.ptm else [])
+    + (['ipTM'] if opt.iptm else [])
+    + (['pLDDT'] if opt.plddt else []) %}
+
+{# Top summary panel. #}
+<div class="panel" style="margin-top:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">OpenDDE co-folding — {{ 'antibody-antigen' if preset == 'abag' else 'general' }}</span>
+    {% if tier %}<span class="panel-badge">{{ tier }}</span>{% endif %}
+  </div>
+  <div class="panel-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 0.5rem;">
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Predictions returned</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ designs_completed }} / {{ designs_total }}
+        </div>
+      </div>
+      {% if sample %}
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Sampler</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 0.92rem;">
+          {{ sample }} sample &middot; {{ step }} step &middot; {{ cycle }} cycle
+        </div>
+      </div>
+      {% endif %}
+      {% if runtime_seconds %}
+      <div>
+        <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Runtime</div>
+        <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+          {{ runtime_seconds }} s
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div style="color: var(--text-secondary); font-size: 0.82rem; max-width: 64ch;">
+      OpenDDE co-folds all supplied entities into one complex and ranks the
+      predicted structures by its own confidence head. Download each structure or
+      view it in the browser. Higher ranking score is more confident.
+    </div>
+  </div>
+</div>
+
+{# Per-prediction candidate table — pdb_key resolves to the structure download
+   via the shared candidate_table macro. Viewer per row. #}
+{% call results_panel(
+    candidates=candidates,
+    columns=columns,
+    tool_slug='opendde',
+    job_id=job.id,
+    clone_url=clone_url,
+    tier=tier,
+    gpu_seconds=runtime_seconds,
+    send_target_tools=send_target_tools) %}
+  <p class="subtitle">
+    OpenDDE returned no predicted structures. Check the Modal logs
+    (<code>modal app logs ranomics-opendde-prod</code>) for the
+    <code>opendde pred</code> trajectory, and confirm the entity spec is valid.
+  </p>
+{% endcall %}
