@@ -109,6 +109,20 @@ class ToolSpec:
     # shrink the hold below what one heavy job can still be billed. ``None`` = an
     # ordinary per-design-scaling tool with no worst-case floor.
     worst_case_gpu_seconds: Optional[float] = None
+    # Whether ``worst_case_gpu_seconds`` is a PER-CONTAINER cap on a tool that
+    # spawns one physical container per unit of ``scaling_param`` (a fan-out
+    # tool, e.g. esmfold2-design: one H100 container per seed). For such tools a
+    # single job-level hold covers ALL the containers, so the worst-case floor
+    # must scale by the same ratio the point estimate uses — a flat per-container
+    # floor would only cover ONE container and still under-hold a multi-unit job
+    # after p90. Leave ``False`` (the default) for single-container tools whose
+    # whole job runs in ONE session-capped container regardless of the scaling
+    # param (proteina: one shard = one container; af2: the whole batch folds
+    # sequentially inside one container; opendde: scaling_param is None): there
+    # the flat per-container floor already covers the entire job and scaling it
+    # would over-reserve (clamped to the cap, so still money-safe, but it locks
+    # wallet funds with no billing benefit).
+    worst_case_scales_with_param: bool = False
 
 
 # Per-tool spec table. Mirrors the absolute caps in
@@ -132,6 +146,11 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param=None,
         base_hard_cap_usd=Decimal("1.50"),
         absolute_cap_usd=Decimal("500.00"),
+        # Mirrors the af2 floor below (this historic key is never read by the prod
+        # wallet route but is kept consistent with its live twin). One AF2 fold =
+        # ONE A100-80GB container; a full-session hang bills up to the $1.50 cap,
+        # so the floor clamps there. Flat (single container, scaling_param=None).
+        worst_case_gpu_seconds=14400.0,
     ),
     # The AF2 ``ToolAdapter`` registers under slug ``af2``, not
     # ``alphafold2``. The historic ``alphafold2`` key above is preserved
@@ -147,6 +166,15 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         scaling_param="n_designs_total",
         base_hard_cap_usd=Decimal("1.50"),
         absolute_cap_usd=Decimal("500.00"),
+        # worst_case_gpu_seconds=14400 (=_MAX_SESSION_S in tools/af2/modal_app.py).
+        # The batch preset folds ALL records SEQUENTIALLY inside ONE A100-80GB
+        # container physically capped at 14400 s, so the JOB worst case is one
+        # container regardless of n_designs_total -> flat floor
+        # (worst_case_scales_with_param stays False; scaling it would over-reserve
+        # the batch). Floors the hold at the max chargeable (clamped to the
+        # scaled cap) once p90 pulls the per-fold estimate down. Smaller blast
+        # radius than proteina/esmfold2 (base cap $1.50 at one fold).
+        worst_case_gpu_seconds=14400.0,
     ),
     "colabfold": ToolSpec(
         slug="colabfold",
@@ -303,11 +331,18 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # the hold. The hold is deliberately NOT lowered: as a fixed-container tool
         # it charges ACTUAL wall-clock and the hold must stay >= the container's
         # $12.58 physical-max charge to never under-hold a worst-case shard.
+        # worst_case_gpu_seconds=7200 (=_MAX_SESSION_S in tools/proteina/modal_app.py)
+        # FLOORS the cushioned hold at that $12.58 once historical p90 pulls the
+        # displayed estimate down (>=20 runs): one shard = ONE fixed A100-80GB
+        # container, so the floor does NOT scale with the design count
+        # (worst_case_scales_with_param stays False). The child hold already prices
+        # per shard at baseline (see compute_campaigns.child_hold_usd).
         expected_gpu_seconds=7200.0,
         designs_per_run_baseline=8,
         scaling_param="num_designs",
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("60.00"),
+        worst_case_gpu_seconds=7200.0,
     ),
     "esmfold2-design": ToolSpec(
         slug="esmfold2-design",
@@ -325,11 +360,23 @@ TOOL_SPECS: Mapping[str, ToolSpec] = {
         # the displayed estimate down after >=20 runs. WAS UNREGISTERED -> the
         # atomic tier fell to the $0.10 / $10 no-spec default and under-held ~64x
         # on a max multi-seed run.
+        #
+        # worst_case_gpu_seconds=3600 (=_MAX_SESSION_S in
+        # tools/esmfold2_design/modal_app.py) FLOORS the cushioned hold at the
+        # per-seed physical max ($14.79) once p90 pulls the estimate below the 2400 s
+        # bootstrap. Unlike proteina/af2 this is a FAN-OUT tool (one H100 container
+        # per seed, run_tool .spawn per seed), and the single job-level hold covers
+        # ALL n_seeds containers, so worst_case_scales_with_param=True makes the
+        # floor scale by n_seeds — a flat per-seed floor would cover only ONE seed
+        # and a p90-shrunk multi-seed job would still under-hold. Scaled floor at
+        # n_seeds seeds = n_seeds * $14.79, clamped to the n_seeds-scaled hard cap.
         expected_gpu_seconds=2400.0,
         designs_per_run_baseline=1,
         scaling_param="n_seeds",
         base_hard_cap_usd=Decimal("15.00"),
         absolute_cap_usd=Decimal("1000.00"),
+        worst_case_gpu_seconds=3600.0,
+        worst_case_scales_with_param=True,
     ),
     "opendde": ToolSpec(
         slug="opendde",
@@ -471,7 +518,25 @@ def cushioned_hold_usd(
     spec = TOOL_SPECS.get(tool_slug)
     if spec is not None and spec.worst_case_gpu_seconds:
         rate = Decimal(str(GPU_USD_PER_SECOND.get(spec.gpu_class, DEFAULT_USD_PER_SECOND)))
-        floor = Decimal(str(spec.worst_case_gpu_seconds)) * rate * WALLET_MARKUP
+        wc_seconds = Decimal(str(spec.worst_case_gpu_seconds))
+        # Fan-out tools spawn one physical container per unit of the scaling
+        # param, so their JOB-level worst case is one container's cap TIMES the
+        # container count. Scale the floor by the same ratio the point estimate
+        # uses (see _scale_seconds) so it covers the whole multi-unit job, not
+        # just one container. Single-container tools skip this (flag defaults
+        # False) and floor at one container.
+        if (
+            spec.worst_case_scales_with_param
+            and spec.scaling_param
+            and spec.designs_per_run_baseline > 0
+        ):
+            ratio = max(
+                _effective_scaling_value(spec, params or {})
+                / float(spec.designs_per_run_baseline),
+                1.0,
+            )
+            wc_seconds *= Decimal(str(ratio))
+        floor = wc_seconds * rate * WALLET_MARKUP
         hold = max(hold, min(floor, cap))
     return _quantize_usd(min(hold, cap))
 
