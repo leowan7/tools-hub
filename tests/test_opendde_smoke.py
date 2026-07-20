@@ -83,23 +83,41 @@ class TestValidateGuided:
         assert seqs[0]["proteinChain"]["sequence"] == UBIQUITIN
         assert inputs["parameters"]["n_designs_total"] == 1
 
-    def test_protein_ligand_ion(self):
-        inputs, err = odde.validate(
-            _guided(ligands="CCD_ATP", ions="MG, ZN"), {}
-        )
+    def test_protein_ligand(self):
+        inputs, err = odde.validate(_guided(ligands="CCD_ATP"), {})
         assert err is None, err
         seqs = inputs["spec"][0]["sequences"]
         kinds = [list(e)[0] for e in seqs]
         assert "proteinChain" in kinds
         assert kinds.count("ligand") == 1
-        assert kinds.count("ion") == 2
 
     def test_smiles_ligand_kept_bare(self):
         inputs, err = odde.validate(_guided(ligands="CC(=O)Oc1ccccc1C(=O)O"), {})
         assert err is None, err
         lig = [e for e in inputs["spec"][0]["sequences"] if "ligand" in e][0]
-        # No SMILES: prefix injected — bare string per the verified schema.
-        assert lig["ligand"] == "CC(=O)Oc1ccccc1C(=O)O"
+        # OpenDDE wraps the ligand in an object; the SMILES code itself is kept
+        # bare (no SMILES: prefix injected) per the verified schema.
+        assert lig["ligand"]["ligand"] == "CC(=O)Oc1ccccc1C(=O)O"
+
+    def test_guided_ligand_object_shape(self):
+        # OpenDDE's json_parser.build_ligand indexes info["ligand"], so a bare
+        # string {"ligand": "CCD_ATP"} crashes it (verified at the O-2 canary).
+        # The adapter must emit the object form with count + id.
+        inputs, err = odde.validate(_guided(ligands="CCD_ATP"), {})
+        assert err is None, err
+        seqs = inputs["spec"][0]["sequences"]
+        lig = [e for e in seqs if "ligand" in e][0]["ligand"]
+        assert lig["ligand"] == "CCD_ATP" and lig["count"] == 1 and len(lig["id"]) == 1
+        # ids are globally unique across all entities (polymer + ligand).
+        all_ids = [i for e in seqs for v in e.values() for i in v.get("id", [])]
+        assert len(all_ids) == len(set(all_ids))
+
+    def test_guided_ion_rejected(self):
+        # OpenDDE v1 preview cannot featurize ions; blocked PRE-GPU so no user is
+        # charged for a guaranteed failure (verified at the O-2 / iso canaries).
+        inputs, err = odde.validate(_guided(ligands="CCD_ATP", ions="MG"), {})
+        assert inputs is None
+        assert "ion" in (err or "").lower() and "not supported" in (err or "").lower()
 
     def test_dna_rna(self):
         inputs, err = odde.validate(
@@ -219,7 +237,7 @@ class TestValidateJson:
         assert "too large" in (err or "").lower()
 
     def test_escape_hatch_reapplies_chain_cap(self):
-        seqs = [{"ion": "MG"} for _ in range(odde.MAX_CHAINS + 1)]
+        seqs = [{"ligand": {"ligand": "CCD_ATP", "count": 1}} for _ in range(odde.MAX_CHAINS + 1)]
         spec = self._spec(seqs)
         inputs, err = odde.validate(
             {"preset": "general", "spec_mode": "json", "spec_json": spec}, {}
@@ -229,8 +247,8 @@ class TestValidateJson:
 
     def test_reject_multi_job_list(self):
         two = json.dumps([
-            {"name": "a", "sequences": [{"ion": "MG"}]},
-            {"name": "b", "sequences": [{"ion": "ZN"}]},
+            {"name": "a", "sequences": [{"proteinChain": {"sequence": UBIQUITIN, "count": 1}}]},
+            {"name": "b", "sequences": [{"proteinChain": {"sequence": UBIQUITIN, "count": 1}}]},
         ])
         inputs, err = odde.validate(
             {"preset": "general", "spec_mode": "json", "spec_json": two}, {}
@@ -505,11 +523,14 @@ class TestQCFixes:
         monkeypatch.setattr(we, "_historical_p90_seconds", lambda slug: None)
         assert we.cushioned_hold_usd(None, "opendde", {}) == Decimal("15.00")
 
-    def test_guided_ion_oxidation_state_accepted(self):
-        inputs, err = odde.validate(_guided(ions="FE2, CU1, MG"), {})
-        assert err is None, err
-        ions = [e["ion"] for e in inputs["spec"][0]["sequences"] if "ion" in e]
-        assert ions == ["FE2", "CU1", "MG"]
+    def test_json_ion_object_rejected(self):
+        # Even a perfectly well-formed ion object is blocked (OpenDDE v1 preview
+        # cannot featurize ions) — rejected PRE-GPU with the specific message.
+        spec = json.dumps([{"name": "j", "sequences": [{"ion": {"ion": "MG", "count": 1}}]}])
+        inputs, err = odde.validate(
+            {"preset": "general", "spec_mode": "json", "spec_json": spec}, {}
+        )
+        assert inputs is None and "not supported" in (err or "").lower()
 
     def test_json_deep_nesting_returns_clean_error(self):
         # Must return (None, error), never raise RecursionError -> 500.
@@ -527,19 +548,34 @@ class TestQCFixes:
         assert "too large" in (err or "").lower()
 
     def test_json_ligand_length_bounded(self):
-        spec = json.dumps([{"name": "j", "sequences": [{"ligand": "C" * 600}]}])
+        spec = json.dumps([{"name": "j", "sequences": [{"ligand": {"ligand": "C" * 600, "count": 1}}]}])
         inputs, err = odde.validate(
             {"preset": "general", "spec_mode": "json", "spec_json": spec}, {}
         )
         assert inputs is None
         assert "too long" in (err or "").lower()
 
-    def test_json_ion_validated(self):
-        spec = json.dumps([{"name": "j", "sequences": [{"ion": "NOT_AN_ELEMENT"}]}])
+    def test_json_rejects_bare_string_ligand(self):
+        # The exact O-2 bug: a bare-string ligand must be rejected up front (object
+        # form required), never passed through to crash OpenDDE's parser.
+        spec = json.dumps([{"name": "j", "sequences": [{"ligand": "CCD_ATP"}]}])
         inputs, err = odde.validate(
             {"preset": "general", "spec_mode": "json", "spec_json": spec}, {}
         )
-        assert inputs is None
+        assert inputs is None and "object" in (err or "").lower()
+
+    def test_json_accepts_object_ligand(self):
+        spec = json.dumps([{"name": "j", "sequences": [
+            {"proteinChain": {"sequence": UBIQUITIN, "count": 1}},
+            {"ligand": {"ligand": "CCD_ATP", "count": 1}},
+        ]}])
+        inputs, err = odde.validate(
+            {"preset": "general", "spec_mode": "json", "spec_json": spec}, {}
+        )
+        assert err is None, err
+        seqs = inputs["spec"][0]["sequences"]
+        assert [list(e)[0] for e in seqs] == ["proteinChain", "ligand"]
+        assert seqs[1]["ligand"]["ligand"] == "CCD_ATP"
 
     def test_ranking_score_has_glossary_entry(self):
         from shared.metric_glossary import GLOSSARY

@@ -23,9 +23,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONIOENCODING=utf-8 \
     OPENDDE_ROOT_DIR=/opt/opendde_root
 
-# The weights Volume mounts here at runtime; checkpoint/opendde.pt resolves from
-# OPENDDE_ROOT_DIR. Created empty in the image so the mount point exists.
-RUN mkdir -p /opt/opendde_root/checkpoint
+# NOTE: do NOT pre-create /opt/opendde_root. The opendde-weights Volume mounts
+# there at runtime and Modal creates the mount point itself; pre-creating it (even
+# an empty checkpoint/ subdir) makes the path non-empty and the Volume mount fails
+# at run time with "cannot mount volume on non-empty path" — a failure the deploy
+# never surfaces (deploy only builds), so it would strike the first paying job.
+# (Found at the O-1 canary.)
 
 # The base image installs OpenDDE (via uv) into the SYSTEM python /usr/bin/python3
 # (3.12): that interpreter HAS opendde but NO pip, and requests/gemmi are absent

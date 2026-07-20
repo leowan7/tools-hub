@@ -10,18 +10,21 @@ from __future__ import annotations
 from typing import Optional
 
 # Keyed by preset slug. Both checkpoints share the same architecture, so runtime
-# is driven by complex size + sampler settings, not by which checkpoint.
+# is driven by complex size + sampler settings, not by which checkpoint. Figures
+# from the O-1/O-2/O-3 canaries: a single small-complex prediction is ~2-3 min
+# (dominated by a ~1.5 min fixed CUDA/kernel init); more samples/seeds add ~15 s
+# each. Kept conservative (overestimate) for larger inputs.
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    "general": {"typical_minutes": "~10 to 40"},
-    "abag": {"typical_minutes": "~10 to 40"},
+    "general": {"typical_minutes": "~2 to 8"},
+    "abag": {"typical_minutes": "~2 to 8"},
 }
 
 paper_citation: str = "Aureka AI Research, OpenDDE-Preview, arXiv 2026"
 paper_url: str = "https://arxiv.org/abs/2607.03787"
 github_url: str = "https://github.com/aurekaresearch/OpenDDE"
 comparison_one_liner: str = (
-    "Pick OpenDDE to co-fold a mixed complex — protein with DNA, RNA, ligands, "
-    "or ions in one prediction. For a plain protein-protein or protein-peptide "
+    "Pick OpenDDE to co-fold a mixed complex — protein with DNA, RNA, or a bound "
+    "ligand in one prediction. For a plain protein-protein or protein-peptide "
     "cofold, Boltz-2 is faster and cheaper."
 )
 example_output_id: Optional[str] = None
@@ -31,12 +34,12 @@ about: dict = {
     "what_it_is": (
         "OpenDDE is an AlphaFold3-class, all-atom co-folding foundation model "
         "(Aureka AI Research, Apache-2.0). It predicts the joint structure of an "
-        "arbitrary mix of biomolecular entities &mdash; protein, DNA, RNA, small "
-        "molecules (ligands), and ions &mdash; from a single specification."
+        "arbitrary mix of biomolecular entities &mdash; protein, DNA, RNA, and "
+        "small molecules (ligands) &mdash; from a single specification."
     ),
     "when_to_use": [
         "You need a complex with more than just protein: protein plus DNA / RNA, "
-        "a bound small molecule, or a metal ion.",
+        "or a bound small molecule.",
         "You are modelling an antibody or nanobody with its antigen (use the ABAG "
         "checkpoint).",
         "You want an AlphaFold3-style multi-modal prediction without standing up "
@@ -46,7 +49,6 @@ about: dict = {
         "Sequences for each polymer chain (protein / DNA / RNA).",
         "For ligands: a CCD code (e.g. <code>CCD_ATP</code>), a bare SMILES "
         "string, or a bundled <code>FILE_*.sdf</code> reference.",
-        "For ions: a CCD element name (e.g. <code>MG</code>, <code>ZN</code>).",
     ],
     "inputs": [
         {
@@ -61,8 +63,7 @@ about: dict = {
             "explanation": (
                 "One textarea per entity type. Proteins / DNA / RNA are entered as "
                 "FASTA (<code>&gt;id</code> headers optional); ligands one per "
-                "line; ions as a comma list. This adapter assembles the OpenDDE "
-                "JSON for you."
+                "line. This adapter assembles the OpenDDE JSON for you."
             ),
         },
         {
@@ -89,8 +90,8 @@ about: dict = {
         },
     ],
     "runtime_table": [
-        {"preset": "general", "typical": "~10 to 40 min"},
-        {"preset": "abag", "typical": "~10 to 40 min"},
+        {"preset": "general", "typical": "~2 to 8 min"},
+        {"preset": "abag", "typical": "~2 to 8 min"},
     ],
     "output_summary": (
         "A ranked set of predicted complexes (mmCIF/PDB) with the model's own "
