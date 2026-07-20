@@ -1551,6 +1551,7 @@ def list_jobs_paginated(
     page: int = 1,
     page_size: int = 25,
     campaign_label: Optional[str] = None,
+    standalone_only: bool = False,
 ) -> tuple[list[ToolJob], int]:
     """Paginated owner-scoped job list. Returns (rows, total_count).
 
@@ -1562,6 +1563,11 @@ def list_jobs_paginated(
     value ``""`` (empty string) selects only the uncategorized rows
     (``campaign_label IS NULL``); a non-empty string filters by equality.
     Pass ``None`` (default) to skip filtering.
+
+    ``standalone_only`` excludes compute-campaign children (``campaign_id``
+    IS NULL), so the unified campaign list can show single runs as
+    campaigns-of-one without a campaign's sub-jobs appearing as their own
+    cards.
     """
     page = max(1, int(page))
     page_size = max(1, min(100, int(page_size)))
@@ -1581,6 +1587,8 @@ def list_jobs_paginated(
                 query = query.is_("campaign_label", "null")
             else:
                 query = query.eq("campaign_label", campaign_label)
+        if standalone_only:
+            query = query.is_("campaign_id", "null")
         response = (
             query
             .order("created_at", desc=True)

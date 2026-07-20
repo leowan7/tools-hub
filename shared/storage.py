@@ -194,6 +194,7 @@ def stage_campaign_candidates(
     indices: list[int],
     user_id: str,
     job_id: str,
+    prefix: str = "",
 ) -> list[str]:
     """Copy the shortlisted candidates' PDB payloads into the
     ``lab-campaigns/{campaign_id}/`` folder so Ranomics staff can read
@@ -243,7 +244,10 @@ def stage_campaign_candidates(
         if data is None:
             continue
         filename = _safe_filename(raw_key)
-        path = f"{campaign_id}/{filename}"
+        # ``prefix`` namespaces a multi-sub-job campaign shortlist by source
+        # job so identically-named designs from different sub-jobs don't
+        # collide in the lab-campaigns bucket. Empty for the single-job path.
+        path = f"{campaign_id}/{prefix}{filename}"
         try:
             bucket.upload(
                 path=path,

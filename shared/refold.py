@@ -78,6 +78,19 @@ def _candidate_sequence(cand: dict) -> Optional[str]:
     return seq.strip() if isinstance(seq, str) and seq.strip() else None
 
 
+def candidate_seq_from_record(cand: dict, idx: int) -> Optional[CandidateSeq]:
+    """A :class:`CandidateSeq` for one candidate record, or None when it
+    carries no designed sequence. ``idx`` seeds the rank/pdb_key fallbacks."""
+    if not isinstance(cand, dict):
+        return None
+    seq = _candidate_sequence(cand)
+    if seq is None:
+        return None
+    rank = cand.get("rank", idx + 1)
+    pdb_key = cand.get("pdb_key", f"design_{idx + 1}")
+    return CandidateSeq(rank=int(rank), pdb_key=str(pdb_key), sequence=seq)
+
+
 def extract_top_n_sequences(
     job_result: dict, n: int
 ) -> list[CandidateSeq]:
@@ -95,12 +108,9 @@ def extract_top_n_sequences(
     for idx, cand in enumerate(candidates):
         if len(out) >= n:
             break
-        seq = _candidate_sequence(cand)
-        if seq is None:
-            continue
-        rank = cand.get("rank", idx + 1)
-        pdb_key = cand.get("pdb_key", f"design_{idx + 1}")
-        out.append(CandidateSeq(rank=int(rank), pdb_key=str(pdb_key), sequence=seq))
+        cs = candidate_seq_from_record(cand, idx)
+        if cs is not None:
+            out.append(cs)
     return out
 
 

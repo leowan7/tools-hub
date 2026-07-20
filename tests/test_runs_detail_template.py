@@ -80,16 +80,68 @@ def test_subjob_completion_headline_renders(app):
 
 
 def test_all_succeeded_surfaces_download_pointer(app):
-    """Designs are downloadable; a prominent sub-jobs pointer is present."""
+    """The unified campaign page shows designs inline and keeps a pointer to
+    inspect the individual sub-jobs. (The merged results table replaced the
+    old link-out to the per-sub-job list.)"""
     with app.test_request_context("/campaigns/camp-smoke"):
         html = render_template(
             "runs/detail.html",
             campaign=_campaign_fixture(status="completed"),
             counts=_counts(succeeded=6),
         )
-    assert "sub-jobs page" in html
-    # All succeeded => the exact requested figure may be stated as generated.
-    assert "requested designs were generated" in html
+    assert "View individual sub-jobs" in html
+
+
+def test_merged_results_render_in_campaign_mode(app):
+    """When sub-jobs produced designs, the page renders the merged candidate
+    table in campaign mode: campaign-scoped exports, per-candidate 3D resolved
+    to the SOURCE sub-job, a source-sub-job provenance tag, and a campaign-wide
+    refold + lab-submit. Exercises results_panel/candidate_table with the real
+    app Jinja globals."""
+    cands = [
+        {"pdb_key": "d0.pdb", "scores": {"ipTM": 0.91, "filter_status": "pass"},
+         "_source_job_id": "job-aaaaaaaa", "_source_chunk": 0, "_source_index": 0},
+        {"pdb_key": "d1.pdb", "scores": {"ipTM": 0.74, "filter_status": "pass"},
+         "_source_job_id": "job-bbbbbbbb", "_source_chunk": 1, "_source_index": 2},
+    ]
+    with app.test_request_context("/campaigns/camp-smoke"):
+        html = render_template(
+            "runs/detail.html",
+            campaign=_campaign_fixture(status="completed"),
+            counts=_counts(succeeded=6),
+            candidates=cands,
+            result_columns=["ipTM", "pLDDT", "i_pAE", "filter_status"],
+            candidates_total=2,
+            candidates_capped=False,
+            was_running=False,
+        )
+    # Exports are campaign-scoped, not per-job.
+    assert "/campaigns/camp-smoke/export.zip" in html
+    # Per-candidate 3D/download resolves to the candidate's own source sub-job.
+    assert "/api/jobs/job-bbbbbbbb/pdb/" in html
+    # Provenance tag + campaign-wide refold and lab-submit.
+    assert "cand-subjob-tag" in html
+    assert "/campaigns/camp-smoke/refold" in html
+    assert 'name="source_campaign_id"' in html
+
+
+def test_capped_note_renders_top_n_of_m(app):
+    """A capped merged table shows an explicit 'top N of M' note."""
+    cands = [{"pdb_key": "d.pdb", "scores": {"ipTM": 0.8}, "_source_job_id": "j",
+              "_source_chunk": 0, "_source_index": 0}]
+    with app.test_request_context("/campaigns/camp-smoke"):
+        html = render_template(
+            "runs/detail.html",
+            campaign=_campaign_fixture(status="completed"),
+            counts=_counts(succeeded=6),
+            candidates=cands,
+            result_columns=["ipTM"],
+            candidates_total=900,
+            candidates_capped=True,
+            was_running=False,
+        )
+    assert "900" in html
+    assert "designs by score" in html
 
 
 def test_partial_completion_does_not_overstate_generated_count(app):

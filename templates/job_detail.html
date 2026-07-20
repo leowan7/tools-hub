@@ -108,6 +108,9 @@
 
 {% block content %}
   <div class="hero">
+    <p style="margin:0 0 .4rem;font-size:.8rem;">
+      <a href="{{ url_for('campaigns.compute_campaigns_list') }}" style="color:var(--accent-text,#2B9E7E);text-decoration:none;">&larr; Campaigns</a>
+    </p>
     <h1>{{ tool_label }} — job {{ job.id[:8] }}</h1>
     <p class="subtitle">
       Preset <strong>{{ job.preset }}</strong> ·
@@ -335,7 +338,7 @@
   {% endif %}
 
   <div style="margin-top: 1.5rem; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;">
-    <a href="{{ url_for('jobs.jobs_list') }}" class="btn-secondary">All jobs</a>
+    <a href="{{ url_for('campaigns.compute_campaigns_list') }}" class="btn-secondary">All campaigns</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool) }}" class="btn-secondary">Run again</a>
     <a href="{{ url_for('tools.tool_form', tool=job.tool, clone_from=job.id) }}" class="btn-secondary">Clone to new run</a>
     {% if job.status == 'succeeded' and share_allowed %}

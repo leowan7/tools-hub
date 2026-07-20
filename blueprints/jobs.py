@@ -319,6 +319,148 @@ def job_status(job_id: str):
         }
     )
 
+def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
+                      antigen_storage_path=None):
+    """Spawn one orthogonal second-opinion fold of ``seq`` (a CandidateSeq from
+    completed job ``src``) in ``dest_tool``, returning the new job id or None.
+
+    Shared by the per-job (/jobs/<id>/refold) and campaign
+    (/campaigns/<id>/refold) refold paths. Every sequence here came out of an
+    already-validated job's result candidates, so inputs are built directly and
+    the destination adapter's validate() is bypassed. Boltz-2 cofolds against
+    ``src``'s own already-staged antigen (same target, orthogonal predictor).
+    """
+    if dest_tool == "colabfold":
+        inputs = {
+            "preset": "standalone",
+            "fasta_text": f">{seq.fasta_header}\n{seq.sequence}",
+            "num_recycles": 1,
+            "use_templates": False,
+            "target": f"Refold of {src.tool} job {src.id[:8]}, rank {seq.rank}",
+            "_refold_of_job_id": src.id,
+            "_campaign_label": campaign_label,
+        }
+    elif dest_tool == "esmfold":
+        inputs = {
+            "preset": "standalone",
+            "fasta_text": f">{seq.fasta_header}\n{seq.sequence}",
+            "target": f"Refold of {src.tool} job {src.id[:8]}, rank {seq.rank}",
+            "_refold_of_job_id": src.id,
+            "_campaign_label": campaign_label,
+        }
+    elif dest_tool == "boltz2":
+        # Boltz-2 cofold against the SOURCE job's original antigen. Reuses the
+        # source's already-staged target PDB rather than re-uploading. The
+        # source job has requires_pdb=True (all SOURCE_TOOLS do), so
+        # _pdb_storage_path is normally present.
+        src_inputs = src.inputs or {}
+        staged_path = (src_inputs.get("_pdb_storage_path") or "").strip()
+        if not staged_path and antigen_storage_path:
+            # Campaign sub-jobs don't persist _pdb_storage_path on their row
+            # (create strips underscore-prefixed shared params; the antigen
+            # path lives on compute_campaigns.target_storage_path). The campaign
+            # refold passes it in so the cofold still targets the right antigen.
+            staged_path = str(antigen_storage_path).strip()
+        if not staged_path:
+            logger.warning(
+                "refold->boltz2: source job %s has no _pdb_storage_path",
+                src.id,
+            )
+            return None
+        try:
+            src_presigned = presigned_input_url(staged_path, expires_seconds=7200)
+        except Exception:
+            logger.exception(
+                "refold->boltz2: presigned_input_url failed for %s",
+                staged_path,
+            )
+            return None
+        src_chain = str(src_inputs.get("target_chain") or "A").strip() or "A"
+        # SOURCE_TOOLS all persist hotspot_residues as list[int]; tolerate a
+        # string from any future adapter that drops the parsing.
+        raw_hotspots = src_inputs.get("hotspot_residues") or []
+        if isinstance(raw_hotspots, str):
+            parsed: list[int] = []
+            for tok in raw_hotspots.replace(";", ",").split(","):
+                tok = tok.strip()
+                if tok:
+                    try:
+                        parsed.append(int(tok))
+                    except ValueError:
+                        pass
+            raw_hotspots = parsed
+        hotspot_list = [int(x) for x in raw_hotspots if str(x).strip()]
+        inputs = {
+            "preset": "standalone",
+            "target_chain": src_chain,
+            "hotspot_residues": hotspot_list,
+            "binder_sequences": [
+                {"name": seq.fasta_header, "sequence": seq.sequence},
+            ],
+            "parameters": {"n_designs_total": 1},
+            "target": f"Refold of {src.tool} job {src.id[:8]}, rank {seq.rank}",
+            "_refold_of_job_id": src.id,
+            "_campaign_label": campaign_label,
+            "_pdb_storage_path": staged_path,
+            "_input_pdb_url": src_presigned,
+            "_input_presigned_url": src_presigned,
+        }
+    else:
+        return None
+
+    job = create_job(
+        user_id=ctx.user_id,
+        tool=dest_adapter.slug,
+        preset="standalone",
+        inputs=inputs,
+        campaign_label=campaign_label,
+    )
+    if job is None:
+        logger.warning(
+            "refold: create_job failed for rank %s (%s -> %s)",
+            seq.rank, src.tool, dest_tool,
+        )
+        return None
+
+    try:
+        job_spec = dest_adapter.build_payload(inputs, "")
+        webhook_url = url_for(
+            "modal_result",
+            job_id=job.id,
+            job_token=job.job_token,
+            _external=True,
+        )
+        # Boltz-2 needs the antigen presigned URL and the per-design upload
+        # endpoint (partial-results streaming). ColabFold/ESMFold ignore both
+        # because their FASTA travels inline in job_spec.
+        submit_inputs: dict = dict(job_spec)
+        if dest_tool == "boltz2":
+            submit_inputs["_input_pdb_url"] = inputs.get("_input_presigned_url", "")
+            submit_inputs["_input_presigned_url"] = inputs.get("_input_presigned_url", "")
+            submit_inputs["_upload_urls_endpoint"] = url_for(
+                "upload_urls",
+                job_id=job.id,
+                job_token=job.job_token,
+                _external=True,
+            )
+        current_app.modal_client.submit(
+            dest_adapter.slug,
+            "standalone",
+            inputs=submit_inputs,
+            job_id=job.id,
+            job_token=job.job_token,
+            webhook_url=webhook_url,
+        )
+        return job.id
+    except Exception:
+        logger.exception("refold: modal submit failed for job %s", job.id)
+        mark_failed(
+            job.id,
+            error={"bucket": "modal-submit", "detail": "refold spawn failed"},
+        )
+        return None
+
+
 @jobs_bp.route("/jobs/<job_id>/refold", methods=["POST"])
 @login_required
 @idempotent()
@@ -380,164 +522,11 @@ def job_refold(job_id: str):
     campaign_label = f"validation-of-{src.id[:8]}"
     spawned: list[str] = []
     for seq in seqs:
-        # Build the inputs in the shape the destination adapter's
-        # validate() would produce after parsing the form. This
-        # bypasses validate() since we control the FASTA content
-        # entirely — every sequence here came out of a previously
-        # validated job's result candidates.
-        if dest_tool == "colabfold":
-            inputs = {
-                "preset": "standalone",
-                "fasta_text": (
-                    f">{seq.fasta_header}\n{seq.sequence}"
-                ),
-                "num_recycles": 1,
-                "use_templates": False,
-                "target": (
-                    f"Refold of {src.tool} job {src.id[:8]}, "
-                    f"rank {seq.rank}"
-                ),
-                "_refold_of_job_id": src.id,
-                "_campaign_label": campaign_label,
-            }
-        elif dest_tool == "esmfold":
-            inputs = {
-                "preset": "standalone",
-                "fasta_text": (
-                    f">{seq.fasta_header}\n{seq.sequence}"
-                ),
-                "target": (
-                    f"Refold of {src.tool} job {src.id[:8]}, "
-                    f"rank {seq.rank}"
-                ),
-                "_refold_of_job_id": src.id,
-                "_campaign_label": campaign_label,
-            }
-        elif dest_tool == "boltz2":
-            # Boltz-2 cofold against the SOURCE job's original antigen.
-            # Reuses the source's already-staged target PDB rather than
-            # re-uploading. The source job must have requires_pdb=True
-            # (all SOURCE_TOOLS do), so _pdb_storage_path is guaranteed.
-            src_inputs = src.inputs or {}
-            staged_path = (src_inputs.get("_pdb_storage_path") or "").strip()
-            if not staged_path:
-                logger.warning(
-                    "refold->boltz2: source job %s has no _pdb_storage_path",
-                    src.id,
-                )
-                continue
-            try:
-                src_presigned = presigned_input_url(
-                    staged_path, expires_seconds=7200,
-                )
-            except Exception:
-                logger.exception(
-                    "refold->boltz2: presigned_input_url failed for %s",
-                    staged_path,
-                )
-                continue
-            src_chain = str(src_inputs.get("target_chain") or "A").strip() or "A"
-            # SOURCE_TOOLS all persist hotspot_residues as list[int] in
-            # their validate() output; tolerate a string from any
-            # future adapter that drops the parsing.
-            raw_hotspots = src_inputs.get("hotspot_residues") or []
-            if isinstance(raw_hotspots, str):
-                parsed: list[int] = []
-                for tok in raw_hotspots.replace(";", ",").split(","):
-                    tok = tok.strip()
-                    if tok:
-                        try:
-                            parsed.append(int(tok))
-                        except ValueError:
-                            pass
-                raw_hotspots = parsed
-            hotspot_list = [int(x) for x in raw_hotspots if str(x).strip()]
-            inputs = {
-                "preset": "standalone",
-                "target_chain": src_chain,
-                "hotspot_residues": hotspot_list,
-                "binder_sequences": [
-                    {"name": seq.fasta_header, "sequence": seq.sequence},
-                ],
-                "parameters": {"n_designs_total": 1},
-                "target": (
-                    f"Refold of {src.tool} job {src.id[:8]}, "
-                    f"rank {seq.rank}"
-                ),
-                "_refold_of_job_id": src.id,
-                "_campaign_label": campaign_label,
-                "_pdb_storage_path": staged_path,
-                "_input_pdb_url": src_presigned,
-                "_input_presigned_url": src_presigned,
-            }
-        else:
-            # can_refold gate above should make this unreachable.
-            continue
-
-        # C4 — promote the per-batch label to the first-class column so
-        # /jobs can group the refold batch without sniffing inputs JSON.
-        # The legacy inputs._campaign_label key is kept for backward
-        # compatibility with rows older than the C4 migration.
-        job = create_job(
-            user_id=ctx.user_id,
-            tool=dest_adapter.slug,
-            preset="standalone",
-            inputs=inputs,
-            campaign_label=campaign_label,
+        jid = _spawn_refold_job(
+            ctx, dest_adapter, dest_tool, seq, src, campaign_label,
         )
-        if job is None:
-            logger.warning(
-                "refold: create_job failed for rank %s (%s -> %s)",
-                seq.rank, src.tool, dest_tool,
-            )
-            continue
-
-        try:
-            job_spec = dest_adapter.build_payload(inputs, "")
-            webhook_url = url_for(
-                "modal_result",
-                job_id=job.id,
-                job_token=job.job_token,
-                _external=True,
-            )
-            # Boltz-2 needs the antigen presigned URL and the
-            # per-design upload endpoint (partial-results streaming).
-            # ColabFold/ESMFold ignore both because their FASTA
-            # travels inline in job_spec.
-            submit_inputs: dict = dict(job_spec)
-            if dest_tool == "boltz2":
-                submit_inputs["_input_pdb_url"] = inputs.get(
-                    "_input_presigned_url", ""
-                )
-                submit_inputs["_input_presigned_url"] = inputs.get(
-                    "_input_presigned_url", ""
-                )
-                submit_inputs["_upload_urls_endpoint"] = url_for(
-                    "upload_urls",
-                    job_id=job.id,
-                    job_token=job.job_token,
-                    _external=True,
-                )
-            current_app.modal_client.submit(
-                dest_adapter.slug,
-                "standalone",
-                inputs=submit_inputs,
-                job_id=job.id,
-                job_token=job.job_token,
-                webhook_url=webhook_url,
-            )
-            spawned.append(job.id)
-        except Exception:
-            logger.exception(
-                "refold: modal submit failed for job %s", job.id,
-            )
-            mark_failed(
-                job.id,
-                error={
-                    "bucket": "modal-submit",
-                    "detail": "refold spawn failed",
-                },
-            )
+        if jid is not None:
+            spawned.append(jid)
 
     if not spawned:
         return redirect(url_for("jobs.job_detail", job_id=job_id))
@@ -659,9 +648,8 @@ def job_share(job_id: str):
 @jobs_bp.route("/jobs/<job_id>/export.csv", methods=["GET"])
 @login_required
 def export_csv(job_id: str):
-    import csv  # noqa: PLC0415
-    import io   # noqa: PLC0415
     from flask import Response  # noqa: PLC0415
+    from shared.exports import candidates_to_csv  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -669,26 +657,8 @@ def export_csv(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     candidates = (job.result or {}).get("candidates", [])
-    buf = io.StringIO()
-    all_score_keys: list[str] = []
-    for cand in candidates:
-        if not isinstance(cand, dict):
-            continue
-        for k in (cand.get("scores") or {}):
-            if k not in all_score_keys:
-                all_score_keys.append(k)
-    writer = csv.DictWriter(buf, fieldnames=["rank", "pdb_key"] + all_score_keys,
-                            extrasaction="ignore")
-    writer.writeheader()
-    for i, cand in enumerate(candidates):
-        if not isinstance(cand, dict):
-            continue
-        scores = cand.get("scores") or {}
-        row = {"rank": cand.get("rank", i + 1), "pdb_key": cand.get("pdb_key", "")}
-        row.update(scores)
-        writer.writerow(row)
     return Response(
-        buf.getvalue(),
+        candidates_to_csv(candidates),
         mimetype="text/csv",
         headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_scores.csv"},
     )
@@ -697,6 +667,7 @@ def export_csv(job_id: str):
 @login_required
 def export_fasta(job_id: str):
     from flask import Response  # noqa: PLC0415
+    from shared.exports import candidates_to_fasta  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -704,49 +675,13 @@ def export_fasta(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     result = job.result or {}
-    candidates = result.get("candidates", [])
-    mpnn_sequences = result.get("sequences", [])
-    lines: list[str] = []
-    # Binder-design tools (rfantibody/bindcraft/boltzgen/pxdesign)
-    # return ``candidates`` (PDB + docked pose + scores). MPNN is a
-    # sequence-design primitive and returns ``sequences`` (seq +
-    # score + recovery), so the header+body shape has to differ.
-    for i, cand in enumerate(candidates):
-        if not isinstance(cand, dict):
-            continue
-        seq = cand.get("sequence") or cand.get("binder_sequence") or ""
-        if not seq:
-            continue
-        pdb_key = cand.get("pdb_key", f"candidate_{i + 1}")
-        rank = cand.get("rank", i + 1)
-        lines.append(f">rank{rank}_{pdb_key}")
-        # wrap at 80 chars
-        for start in range(0, len(seq), 80):
-            lines.append(seq[start:start + 80])
-    for i, seq_obj in enumerate(mpnn_sequences):
-        if not isinstance(seq_obj, dict):
-            continue
-        seq = seq_obj.get("seq") or ""
-        if not seq:
-            continue
-        header_parts = [f">mpnn_rank{i + 1}"]
-        score = seq_obj.get("score")
-        recovery = seq_obj.get("recovery")
-        if score is not None:
-            header_parts.append(f"score={score}")
-        if recovery is not None:
-            header_parts.append(f"recovery={recovery}")
-        lines.append(" ".join(header_parts))
-        for start in range(0, len(seq), 80):
-            lines.append(seq[start:start + 80])
-    if not lines:
-        return Response(
-            "# No sequences found in this job's output.\n",
-            mimetype="text/plain",
-            headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
-        )
+    body = candidates_to_fasta(
+        result.get("candidates", []), sequences=result.get("sequences", []),
+    )
+    if not body:
+        body = "# No sequences found in this job's output.\n"
     return Response(
-        "\n".join(lines) + "\n",
+        body,
         mimetype="text/plain",
         headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}.fasta"},
     )
@@ -943,10 +878,8 @@ def export_zip(job_id: str):
     Candidates that resolve via neither path are silently skipped
     (rather than failing the whole archive).
     """
-    import base64   # noqa: PLC0415
-    import io       # noqa: PLC0415
-    import zipfile  # noqa: PLC0415
     from flask import Response  # noqa: PLC0415
+    from shared.exports import candidates_to_zip  # noqa: PLC0415
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -954,43 +887,22 @@ def export_zip(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     candidates = (job.result or {}).get("candidates", []) or []
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for i, cand in enumerate(candidates):
-            if not isinstance(cand, dict):
-                continue
-            filename = cand.get("pdb_key") or f"candidate_{i + 1}.pdb"
-            data = None
 
-            # Path 1: inline b64.
-            encoded = cand.get("pdb_content_b64")
-            if encoded:
-                try:
-                    data = base64.b64decode(encoded, validate=True)
-                except Exception:
-                    data = None
+    def _fetch(src_job_id: str, filename: str):
+        try:
+            return download_output(
+                user_id=ctx.user_id, job_id=src_job_id, filename=filename,
+            )
+        except StorageError:
+            logger.warning(
+                "export_zip: storage miss for %s/%s",
+                src_job_id, filename, exc_info=True,
+            )
+            return None
 
-            # Path 2: tool-outputs Storage.
-            if data is None and cand.get("pdb_key"):
-                try:
-                    data = download_output(
-                        user_id=ctx.user_id,
-                        job_id=job_id,
-                        filename=cand["pdb_key"],
-                    )
-                except StorageError:
-                    logger.warning(
-                        "export_zip: storage miss for %s/%s",
-                        job_id, filename, exc_info=True,
-                    )
-                    data = None
-
-            if data is None:
-                continue
-            zf.writestr(filename, data)
-    buf.seek(0)
+    data = candidates_to_zip(candidates, _fetch, default_job_id=job_id)
     return Response(
-        buf.read(),
+        data,
         mimetype="application/zip",
         headers={"Content-Disposition": f"attachment; filename=job_{job_id[:8]}_pdbs.zip"},
     )
