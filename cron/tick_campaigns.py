@@ -51,7 +51,10 @@ def tick_campaigns() -> dict:
     since round-robin drives a campaign across several rounds).
     """
     from shared.credits import get_service_client  # noqa: PLC0415
-    from shared.compute_campaigns import drive_campaign  # noqa: PLC0415
+    from shared.compute_campaigns import (  # noqa: PLC0415
+        drive_campaign,
+        reconcile_campaign_children,
+    )
 
     summary: dict = {"driven": 0, "errors": []}
     client = get_service_client()
@@ -81,6 +84,23 @@ def tick_campaigns() -> dict:
         if not campaign_id:
             continue
         by_user.setdefault(row.get("user_id"), []).append(str(campaign_id))
+
+    # Terminalise finished in-flight children FIRST. Atomic-pattern campaign
+    # tools (proteina / iggm) return their result inline and post no terminal
+    # webhook, so a completed shard would otherwise hang until the 6-hour
+    # stuck-job sweeper. Reconciling here settles it and frees its slot before
+    # this tick decides what to dispatch. Best-effort per campaign.
+    reconciled = 0
+    for campaign_ids in by_user.values():
+        for campaign_id in campaign_ids:
+            try:
+                reconciled += reconcile_campaign_children(campaign_id)
+            except Exception:
+                logger.warning(
+                    "tick_campaigns: reconcile raised for %s",
+                    campaign_id, exc_info=True,
+                )
+    summary["reconciled"] = reconciled
 
     driven_ids: set = set()
 
