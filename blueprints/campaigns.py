@@ -11,6 +11,7 @@ move in with the routes.
 from __future__ import annotations
 
 import logging
+import time
 
 from flask import (
     Blueprint,
@@ -36,6 +37,34 @@ from tools import base as tool_base
 logger = logging.getLogger(__name__)
 
 campaigns_bp = Blueprint("campaigns", __name__)
+
+
+# The campaign detail page polls the status endpoint every ~5s per open tab,
+# and the status endpoint reconciles in-flight children (poll Modal + settle +
+# dispatch the next wave). Collapse repeat polls — many tabs, fast interval —
+# to at most one reconcile per campaign per interval so N tabs cannot fan out
+# N x synchronous Modal polls (and job dispatch) on a 5-second GET. The cron
+# tick (~60-90s) reconciles every campaign regardless, so this throttle only
+# trades a little settle latency for load; it never blocks progress.
+_STATUS_RECONCILE_MIN_INTERVAL_S = 20.0
+_last_status_reconcile: dict = {}
+
+
+def _status_reconcile_due(campaign_id: str) -> bool:
+    """True (and stamps ``now``) when this campaign is due a status-path
+    reconcile. In-process and best-effort: under W web workers at most ~W
+    reconciles fire per interval no matter how many tabs poll. The map is
+    coarse-pruned so it cannot grow without bound over an instance's life."""
+    now = time.monotonic()
+    last = _last_status_reconcile.get(campaign_id)
+    if last is not None and (now - last) < _STATUS_RECONCILE_MIN_INTERVAL_S:
+        return False
+    if len(_last_status_reconcile) > 4096:
+        cutoff = now - _STATUS_RECONCILE_MIN_INTERVAL_S
+        for cid in [c for c, t in _last_status_reconcile.items() if t < cutoff]:
+            _last_status_reconcile.pop(cid, None)
+    _last_status_reconcile[campaign_id] = now
+    return True
 
 
 # -- Compute campaigns ("Campaigns") ---------------------------------
@@ -397,6 +426,25 @@ def compute_campaign_status(campaign_id):
     campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
     if campaign is None:
         return jsonify({"error": "not_found"}), 404
+    # Terminalise any in-flight sub-job whose Modal FunctionCall already
+    # returned an inline result but posted no terminal webhook (atomic-pattern
+    # tools: proteina / iggm). Without this the counts on a *watched* campaign
+    # would not advance — and its wallet hold would not settle — until the next
+    # cron reconcile (~60-90s), or, absent the cron, the 6-hour stuck-job
+    # sweeper. Doing it here settles a watched campaign near-instantly. Throttled
+    # (see _status_reconcile_due) and best-effort; a poll fault must not break
+    # the status read. Re-fetch so a just-finalised campaign reports terminal now.
+    if campaign.status not in (
+        "completed", "completed_with_failures", "failed", "cancelled",
+    ) and _status_reconcile_due(campaign_id):
+        try:
+            cc.reconcile_campaign_children(campaign_id)
+        except Exception:
+            logger.warning(
+                "campaign status: reconcile raised for %s",
+                campaign_id, exc_info=True,
+            )
+        campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id) or campaign
     counts = cc.get_progress_counts(campaign_id)
     payload = campaign.to_dict()
     payload["subjobs"] = counts

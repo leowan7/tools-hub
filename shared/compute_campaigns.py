@@ -1546,6 +1546,111 @@ def maybe_drive_campaign_for_job(job) -> None:  # noqa: ANN001
         )
 
 
+def reconcile_campaign_children(campaign_id: str, *, max_poll: int = 64) -> int:
+    """Poll a campaign's in-flight sub-jobs and terminalise the finished ones.
+
+    Atomic-pattern tools (proteina, iggm, and the boltz2 / mpnn / af2 / … shape)
+    return their result INLINE from the Modal function and never POST a terminal
+    webhook. The driver deliberately never flips a child's terminal state, and
+    the campaign status page polls only aggregate counts — so a finished
+    atomic-pattern child that nobody is individually watching hangs in
+    ``running`` (its wallet hold stranded) until the 6-hour stuck-job sweeper.
+    This closes that gap: it polls each in-flight child's FunctionCall
+    (non-blocking) and, on POSITIVE inline-success evidence, routes it through
+    the same idempotent ``complete_job`` settle + drive path the per-job status
+    poll uses.
+
+    SUCCESS-ONLY, by design. A ``succeeded`` poll requires an inline
+    ``smoke_result.status == "COMPLETED"``, which only the atomic tools emit.
+    The composite pilots (bindcraft / boltzgen / pxdesign / rfantibody) take the
+    webhook path and carry no inline payload, so ``poll`` reads ``failed`` for
+    them even when the work succeeded (see ``_interpret_pipeline_return`` and
+    ``shared.job_recovery``). We therefore NEVER fail a child from a poll here —
+    ``failed`` / ``error`` / ``running`` polls are left untouched for the
+    terminal webhook and the careful stuck-job recovery sweeper. The only state
+    this writes is ``succeeded`` (plus a cosmetic pending→running when the
+    FunctionCall is live but the first heartbeat was lost).
+
+    Best-effort: every fault is swallowed so a poll error can never break the
+    caller (a status read or the cron tick). Returns the number of children
+    terminalised on this call.
+    """
+    client = get_service_client()
+    if client is None:
+        return 0
+    try:
+        resp = (
+            client.table("tool_jobs")
+            .select("id,status,modal_function_call_id")
+            .eq("campaign_id", campaign_id)
+            .in_("status", ["pending", "running"])
+            .execute()
+        )
+        rows = list(getattr(resp, "data", None) or [])
+    except Exception:
+        logger.warning(
+            "reconcile_campaign_children: child query failed for %s",
+            campaign_id, exc_info=True,
+        )
+        return 0
+    if not rows:
+        return 0
+
+    from shared.jobs import complete_job, mark_running  # noqa: PLC0415
+    from gpu.modal_client import ModalClient  # noqa: PLC0415
+
+    mc = ModalClient()
+    reconciled = 0
+    polled = 0
+    for r in rows:
+        fc_id = r.get("modal_function_call_id")
+        if not fc_id:
+            # Not yet submitted to Modal (row created, submit ack pending):
+            # nothing to poll. The dispatcher / sweeper own that state.
+            continue
+        if polled >= max_poll:
+            break
+        polled += 1
+        try:
+            poll = mc.poll(str(fc_id))
+        except Exception:
+            logger.warning(
+                "reconcile_campaign_children: poll raised for child %s",
+                r.get("id"), exc_info=True,
+            )
+            continue
+        status = poll.get("status") if isinstance(poll, dict) else None
+        if status == "succeeded":
+            try:
+                complete_job(
+                    str(r["id"]),
+                    terminal_status="succeeded",
+                    result=poll.get("result") or {},
+                    gpu_seconds_used=poll.get("gpu_seconds_used"),
+                )
+                reconciled += 1
+            except Exception:
+                logger.warning(
+                    "reconcile_campaign_children: complete_job raised for %s",
+                    r.get("id"), exc_info=True,
+                )
+        elif status == "running" and r.get("status") == "pending":
+            # FunctionCall is live but the row never advanced past pending
+            # (first heartbeat lost). Anchor started_at so the stuck-job
+            # sweeper measures runtime from the right point.
+            try:
+                mark_running(str(r["id"]))
+            except Exception:
+                logger.warning(
+                    "reconcile_campaign_children: mark_running raised for %s",
+                    r.get("id"), exc_info=True,
+                )
+        # failed / error: DO NOT terminalise here — a composite pilot's lost
+        # webhook reads as ``failed`` even on success. Leave it to the terminal
+        # webhook and the careful stuck-job recovery sweeper.
+    return reconciled
+
+
 def cancel_campaign(campaign_id: str, user_id: str) -> bool:
     """Cancel a campaign: stop dispatch, cancel in-flight children, refund.
 
