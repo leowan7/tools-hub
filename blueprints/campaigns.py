@@ -25,6 +25,7 @@ from flask import (
 
 from shared.auth import login_required
 from shared.credits import get_service_client, load_user_context
+from shared.idempotency import idempotent
 from shared.pdb_inspect import (
     CifConversionError,
     convert_cif_to_pdb_bytes,
@@ -170,8 +171,20 @@ def compute_campaigns_list():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    campaigns = cc.list_campaigns_for_user(ctx.user_id)
-    return render_template("runs/list.html", campaigns=campaigns)
+    from shared.jobs import list_jobs_paginated  # noqa: PLC0415
+    # Unified feed: real campaigns + standalone single runs (campaigns of one),
+    # newest first. Campaign children (campaign_id set) are excluded from the
+    # standalone list — they live inside their campaign. Each source is capped,
+    # then merged in memory; fine at these sizes (see plan note on union
+    # pagination). ISO created_at strings sort chronologically as text.
+    campaigns = cc.list_campaigns_for_user(ctx.user_id, limit=100)
+    standalone, _ = list_jobs_paginated(
+        ctx.user_id, page=1, page_size=100, standalone_only=True,
+    )
+    entries = [("campaign", c, c.created_at or "") for c in campaigns]
+    entries += [("job", j, j.created_at or "") for j in standalone]
+    entries.sort(key=lambda e: e[2], reverse=True)
+    return render_template("runs/list.html", entries=entries)
 
 @campaigns_bp.route("/campaigns/new", methods=["GET"])
 @login_required
@@ -414,7 +427,23 @@ def compute_campaign_detail(campaign_id):
             )
         return redirect(url_for("campaigns.compute_campaigns_list"))
     counts = cc.get_progress_counts(campaign_id)
-    return render_template("runs/detail.html", campaign=campaign, counts=counts)
+    # Fan every succeeded sub-job's designs into one ranked table (top 300).
+    agg = cc.aggregate_campaign_candidates(
+        campaign_id, user_id=ctx.user_id, limit=300,
+    )
+    terminal = campaign.status in (
+        "completed", "completed_with_failures", "failed", "cancelled",
+    )
+    return render_template(
+        "runs/detail.html",
+        campaign=campaign,
+        counts=counts,
+        candidates=agg.get("candidates", []),
+        result_columns=agg.get("columns", []),
+        candidates_total=agg.get("total", 0),
+        candidates_capped=agg.get("capped", False),
+        was_running=not terminal,
+    )
 
 @campaigns_bp.route("/campaigns/<campaign_id>/status.json", methods=["GET"])
 @login_required
@@ -510,6 +539,179 @@ def _campaign_passed_filters(campaign_id: str) -> int:
         return 0
     from shared.jobs import count_passed_candidates  # noqa: PLC0415
     return sum(count_passed_candidates(r.get("result")) for r in rows)
+
+# The on-screen merged table and every campaign export share one top-N cap, so
+# a download matches the ranked designs shown and a large campaign can never
+# bundle an unbounded number of PDBs into memory (decision 6).
+_CAMPAIGN_EXPORT_LIMIT = 300
+
+
+def _campaign_export(campaign_id: str, fmt: str):
+    """Pooled CSV / FASTA / ZIP across a campaign's sub-jobs (ownership-gated).
+
+    The aggregator resolves ownership (returns an empty ``tool`` when the
+    campaign is not the caller's), so a foreign id 404s here rather than
+    leaking designs. ZIP namespaces each PDB by its source sub-job.
+    """
+    from flask import Response  # noqa: PLC0415
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+    )
+    from shared.storage import download_output  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    agg = cc.aggregate_campaign_candidates(
+        campaign_id, user_id=ctx.user_id, limit=_CAMPAIGN_EXPORT_LIMIT,
+    )
+    if agg.get("tool") is None:
+        return render_template("404.html"), 404
+    candidates = agg.get("candidates", [])
+    stem = "campaign_" + campaign_id[:8]
+
+    if fmt == "csv":
+        return Response(
+            candidates_to_csv(candidates),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={stem}_scores.csv"},
+        )
+    if fmt == "fasta":
+        body = candidates_to_fasta(candidates) or (
+            "# No sequences found in this campaign's output.\n"
+        )
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={"Content-Disposition": f"attachment; filename={stem}.fasta"},
+        )
+
+    def _fetch(src_job_id: str, filename: str):
+        try:
+            return download_output(
+                user_id=ctx.user_id, job_id=src_job_id, filename=filename,
+            )
+        except StorageError:
+            logger.warning(
+                "campaign export_zip: storage miss for %s/%s",
+                src_job_id, filename, exc_info=True,
+            )
+            return None
+
+    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    return Response(
+        data,
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={stem}_pdbs.zip"},
+    )
+
+
+@campaigns_bp.route("/campaigns/<campaign_id>/export.csv", methods=["GET"])
+@login_required
+def compute_campaign_export_csv(campaign_id):
+    return _campaign_export(campaign_id, "csv")
+
+
+@campaigns_bp.route("/campaigns/<campaign_id>/export.fasta", methods=["GET"])
+@login_required
+def compute_campaign_export_fasta(campaign_id):
+    return _campaign_export(campaign_id, "fasta")
+
+
+@campaigns_bp.route("/campaigns/<campaign_id>/export.zip", methods=["GET"])
+@login_required
+def compute_campaign_export_zip(campaign_id):
+    return _campaign_export(campaign_id, "zip")
+
+
+@campaigns_bp.route("/campaigns/<campaign_id>/refold", methods=["POST"])
+@login_required
+@idempotent()
+def compute_campaign_refold(campaign_id):
+    """Second-opinion fold across the whole campaign: refold its global top-N
+    designs (drawn from any sub-job) in an orthogonal predictor and route to
+    /jobs/compare. The campaign parallel of /jobs/<id>/refold; each design
+    still cofolds against its own source sub-job's antigen (Boltz-2 path).
+    """
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.refold import (  # noqa: PLC0415
+        DEFAULT_REFOLD_N, MAX_REFOLD_N, can_refold, candidate_seq_from_record,
+    )
+    from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    from shared.jobs import get_job  # noqa: PLC0415
+    from blueprints.jobs import _spawn_refold_job  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
+    if campaign is None:
+        return render_template("404.html"), 404
+
+    dest_tool = (request.form.get("dest_tool") or "").strip()
+    try:
+        n_raw = int(request.form.get("n") or DEFAULT_REFOLD_N)
+    except ValueError:
+        n_raw = DEFAULT_REFOLD_N
+    n = max(1, min(n_raw, MAX_REFOLD_N))
+
+    detail = url_for("campaigns.compute_campaign_detail", campaign_id=campaign_id)
+    if not can_refold(campaign.tool, dest_tool) or not tool_enabled(dest_tool):
+        return redirect(detail)
+    dest_adapter = tool_base.get(dest_tool)
+    if dest_adapter is None:
+        return redirect(detail)
+
+    # The global top-N designs with a sequence (headroom slice because a top
+    # design could in theory lack one). "Top N" = by the campaign's ranking,
+    # so we attempt exactly those, not backfill from lower ranks.
+    agg = cc.aggregate_campaign_candidates(
+        campaign_id, user_id=ctx.user_id, limit=max(n * 2, MAX_REFOLD_N),
+    )
+    seqs_with_src: list[tuple] = []
+    for idx, cand in enumerate(agg.get("candidates", [])):
+        if len(seqs_with_src) >= n:
+            break
+        cs = candidate_seq_from_record(cand, idx)
+        if cs is not None:
+            seqs_with_src.append((cs, cand.get("_source_job_id")))
+
+    campaign_label = f"validation-of-campaign-{campaign_id[:8]}"
+    src_cache: dict = {}
+    spawned: list[str] = []
+    for cs, src_job_id in seqs_with_src:
+        if not src_job_id:
+            continue
+        src_job = src_cache.get(src_job_id)
+        if src_job is None:
+            src_job = get_job(src_job_id, user_id=ctx.user_id)
+            if src_job is None:
+                continue
+            src_cache[src_job_id] = src_job
+        jid = _spawn_refold_job(
+            ctx, dest_adapter, dest_tool, cs, src_job, campaign_label,
+            antigen_storage_path=campaign.target_storage_path,
+        )
+        if jid is not None:
+            spawned.append(jid)
+
+    if not spawned:
+        return redirect(detail)
+
+    from shared.events import EVENTS, emit  # noqa: PLC0415
+    emit(
+        EVENTS.REFOLD_SPAWNED,
+        user_id=ctx.user_id,
+        properties={
+            "source_tool": campaign.tool,
+            "dest_tool": dest_tool,
+            "n": len(spawned),
+            "campaign_id": campaign_id,
+        },
+    )
+    return redirect(url_for("jobs.jobs_compare", ids=",".join(spawned)))
+
 
 @campaigns_bp.route("/campaigns/<campaign_id>/cancel", methods=["POST"])
 @login_required

@@ -673,6 +673,115 @@ def get_progress_counts(campaign_id: str) -> dict:
     return counts
 
 
+def aggregate_campaign_candidates(
+    campaign_id: str, *, user_id: Optional[str] = None, limit: int = 300,
+) -> dict:
+    """Fan a campaign's sub-jobs' candidates into one globally-ranked list.
+
+    Returns ``{"candidates": [...top ``limit``...], "total": int,
+    "columns": [...], "capped": bool, "tool": str}``. Each returned candidate
+    is a shallow copy tagged with ``_source_job_id`` / ``_source_chunk`` /
+    ``_source_index`` so the merged table can build per-candidate PDB, export,
+    and shortlist references back to the child job that produced it.
+
+    Ownership-gated: when ``user_id`` is given and the campaign is not that
+    user's, returns an empty envelope (an IDOR-safe no-op). Reads only the
+    metadata columns (``result`` already stores PDBs as Storage refs, so no
+    structure bytes are transferred here).
+
+    Ordering: passing designs first (per :func:`shared.jobs.candidate_passed_filter`),
+    then by the tool's primary metric in its configured direction, missing
+    metric last. Because passing designs sort ahead of failing ones, the top-N
+    cap never drops a passing design in favour of a higher-raw-score failing one.
+    Retry siblings are de-duplicated by keeping the highest ``attempt`` per
+    ``chunk_index``.
+    """
+    from shared.jobs import candidate_records, candidate_passed_filter
+    from shared.result_columns import (
+        columns_for,
+        primary_metric_for,
+        candidate_metric,
+    )
+
+    empty = {
+        "candidates": [], "total": 0, "columns": [],
+        "capped": False, "tool": None,
+    }
+    campaign = get_campaign(campaign_id, user_id=user_id)
+    if campaign is None:
+        return empty
+    tool = campaign.tool
+    columns = columns_for(tool)
+    metric_key, direction = primary_metric_for(tool)
+    base = {**empty, "columns": columns, "tool": tool}
+
+    client = get_service_client()
+    if client is None:
+        return base
+    try:
+        rows = list(
+            getattr(
+                client.table("tool_jobs")
+                .select("id,chunk_index,attempt,result")
+                .eq("campaign_id", campaign_id)
+                .eq("status", "succeeded")
+                .execute(),
+                "data",
+                None,
+            )
+            or []
+        )
+    except Exception:
+        logger.warning(
+            "aggregate_campaign_candidates: query failed for %s",
+            campaign_id, exc_info=True,
+        )
+        return base
+
+    # Dedupe retries: keep the highest attempt per chunk_index (rows lacking a
+    # chunk_index — should not happen for campaign children — key on job id).
+    best_by_chunk: dict = {}
+    for r in rows:
+        chunk = r.get("chunk_index")
+        key = chunk if chunk is not None else r.get("id")
+        attempt = r.get("attempt") or 1
+        prev = best_by_chunk.get(key)
+        if prev is None or attempt > (prev.get("attempt") or 1):
+            best_by_chunk[key] = r
+
+    merged: list[dict] = []
+    for r in best_by_chunk.values():
+        job_id = r.get("id")
+        chunk = r.get("chunk_index")
+        for local_idx, cand in enumerate(candidate_records(r.get("result"))):
+            if not isinstance(cand, dict):
+                continue
+            c = dict(cand)
+            c["_source_job_id"] = job_id
+            c["_source_chunk"] = chunk
+            c["_source_index"] = local_idx
+            merged.append(c)
+
+    total = len(merged)
+
+    def _sort_key(c: dict):
+        passed = 0 if candidate_passed_filter(c) else 1
+        val = candidate_metric(c, metric_key)
+        missing = 1 if val is None else 0
+        ordv = 0.0 if val is None else (-val if direction == "desc" else val)
+        return (passed, missing, ordv)
+
+    merged.sort(key=_sort_key)
+
+    return {
+        "candidates": merged[:limit],
+        "total": total,
+        "columns": columns,
+        "capped": total > limit,
+        "tool": tool,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Billing: prepaid pre-authorization + per-child estimate + admission
 # ---------------------------------------------------------------------------

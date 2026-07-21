@@ -122,6 +122,11 @@ class Campaign:
     results: Optional[dict[str, Any]] = None
     # Customer-facing note (migration 0032). Distinct from notes_internal.
     notes_customer: Optional[str] = None
+    # Campaign-wide shortlist (migration 0037). Set on 'campaign'
+    # submission_source rows, where the shortlist spans many sub-jobs of a
+    # compute campaign: candidate_refs = [{"job_id","index"}, ...].
+    source_campaign_id: Optional[str] = None
+    candidate_refs: Optional[list[dict[str, Any]]] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Campaign":
@@ -163,6 +168,11 @@ class Campaign:
             quote_notes=row.get("quote_notes"),
             results=row.get("results"),
             notes_customer=row.get("notes_customer"),
+            source_campaign_id=(
+                str(row["source_campaign_id"])
+                if row.get("source_campaign_id") is not None else None
+            ),
+            candidate_refs=row.get("candidate_refs"),
         )
 
 
@@ -210,6 +220,63 @@ def create_campaign(
         return Campaign.from_row(rows[0])
     except Exception:
         logger.error("Failed to insert lab_campaigns row.", exc_info=True)
+        return None
+
+
+def create_campaign_from_refs(
+    *,
+    user_id: str,
+    source_campaign_id: str,
+    candidate_refs: list[dict],
+    target_name: str,
+    target_context: str,
+    assay_type: str,
+    budget_band: str,
+    affinity_goal_kd_nm: Optional[float] = None,
+    timeline_weeks: Optional[int] = None,
+) -> Optional[Campaign]:
+    """Insert a lab campaign whose shortlist spans MANY sub-jobs of a compute
+    campaign (``submission_source = 'campaign'``, migration 0037).
+
+    ``candidate_refs`` is ``[{"job_id": str, "index": int}, ...]``. ``source_job_id``
+    is left NULL and ``candidate_indices`` stays empty; the widened CHECK
+    constraints accept the row because ``candidate_refs`` is non-empty. Mirrors
+    :func:`create_campaign`'s app-side enum validation. The caller must have
+    already verified every referenced job belongs to ``user_id``.
+    """
+    if assay_type not in ASSAY_TYPES:
+        raise ValueError(f"invalid assay_type: {assay_type!r}")
+    if budget_band not in BUDGET_BANDS:
+        raise ValueError(f"invalid budget_band: {budget_band!r}")
+    if not candidate_refs:
+        raise ValueError("candidate_refs must be non-empty")
+
+    client = get_service_client()
+    if client is None:
+        logger.error("Cannot create campaign: service client unavailable.")
+        return None
+    row = {
+        "user_id": user_id,
+        "submission_source": "campaign",
+        "source_campaign_id": source_campaign_id,
+        "candidate_refs": list(candidate_refs),
+        "target_name": target_name,
+        "target_context": target_context or "",
+        "assay_type": assay_type,
+        "budget_band": budget_band,
+        "affinity_goal_kd_nm": affinity_goal_kd_nm,
+        "timeline_weeks": timeline_weeks,
+    }
+    try:
+        response = client.table(_TABLE).insert(row).execute()
+        rows = list(getattr(response, "data", None) or [])
+        if not rows:
+            return None
+        return Campaign.from_row(rows[0])
+    except Exception:
+        logger.error(
+            "Failed to insert campaign-wide lab_campaigns row.", exc_info=True,
+        )
         return None
 
 

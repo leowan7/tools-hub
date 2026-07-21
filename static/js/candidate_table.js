@@ -1,38 +1,63 @@
 /**
  * Candidate table behaviour: column sort, star/shortlist, sessionStorage
- * persistence, 3D viewer expand, and campaign modal population.
+ * persistence, 3D viewer expand, and lab-submit modal population.
  *
- * Initialised automatically for every [data-cand-table-id] wrapper on
- * DOMContentLoaded.  Exposes:
- *   window.getShortlist(jobId)        → int[]
- *   window.openCampaignModal(jobId)
- *   window.closeCampaignModal(jobId)
+ * Works for a single job's table AND for a merged campaign table whose
+ * candidates come from many sub-jobs. Shortlist entries are {j: jobId, i: idx}
+ * refs so a campaign shortlist can span sub-jobs; a single-job table just has
+ * one jobId across every row. The wrapper carries:
+ *   data-scope        - the sessionStorage key + element-id suffix (campaign id
+ *                       in campaign mode, else the job id)
+ *   data-campaign-id  - present only in campaign mode (drives the modal payload)
+ * Each star button carries data-job (the candidate's SOURCE job) and
+ * data-ref-idx (its index WITHIN that job); data-idx stays the row index used
+ * for the 3D viewer rows.
+ *
+ * Exposes:
+ *   window.getShortlist(scope)     → [{j,i}]
+ *   window.openCampaignModal(scope)
+ *   window.closeCampaignModal(scope)
  */
 (function () {
   'use strict';
 
   // ─── sessionStorage helpers ──────────────────────────────────────────────
 
-  function storageKey(jobId) { return 'shortlist_' + jobId; }
+  function storageKey(scope) { return 'shortlist_' + scope; }
 
-  function loadShortlist(jobId) {
+  function loadShortlist(scope) {
     try {
-      var raw = sessionStorage.getItem(storageKey(jobId));
-      return raw ? JSON.parse(raw) : [];
+      var raw = sessionStorage.getItem(storageKey(scope));
+      var arr = raw ? JSON.parse(raw) : [];
+      // Coerce any legacy bare-int entries to {j,i} refs (j unknown → null).
+      return arr.map(function (e) {
+        if (e && typeof e === 'object') return { j: e.j != null ? String(e.j) : null, i: e.i };
+        return { j: null, i: e };
+      });
     } catch (_) { return []; }
   }
 
-  function saveShortlist(jobId, indices) {
-    try { sessionStorage.setItem(storageKey(jobId), JSON.stringify(indices)); }
+  function saveShortlist(scope, refs) {
+    try { sessionStorage.setItem(storageKey(scope), JSON.stringify(refs)); }
     catch (_) {}
+  }
+
+  function refKey(j, i) { return String(j) + '#' + String(i); }
+
+  function starRef(btn) {
+    // The index recorded is the candidate's index within its OWN job
+    // (data-ref-idx); data-job is that source job. In single-job mode both
+    // collapse to the table's job + row index.
+    var i = btn.dataset.refIdx !== undefined ? btn.dataset.refIdx : btn.dataset.idx;
+    return { j: btn.dataset.job, i: parseInt(i, 10) };
   }
 
   // ─── UI helpers ──────────────────────────────────────────────────────────
 
-  function updateShortlistUI(jobId) {
-    var sl       = loadShortlist(jobId);
-    var countEl  = document.getElementById('shortlist-count-' + jobId);
-    var sendBtn  = document.getElementById('send-to-lab-btn-' + jobId);
+  function updateShortlistUI(scope) {
+    var sl      = loadShortlist(scope);
+    var countEl = document.getElementById('shortlist-count-' + scope);
+    var sendBtn = document.getElementById('send-to-lab-btn-' + scope);
     if (countEl) countEl.textContent = sl.length;
     if (sendBtn) {
       var disabled = sl.length === 0;
@@ -41,13 +66,15 @@
     }
   }
 
-  function restoreStarState(table, jobId) {
-    var sl = loadShortlist(jobId);
+  function restoreStarState(table, scope) {
+    var sl   = loadShortlist(scope);
+    var keys = {};
+    sl.forEach(function (r) { keys[refKey(r.j, r.i)] = true; });
     table.querySelectorAll('.star-btn').forEach(function (btn) {
-      var idx = parseInt(btn.dataset.idx, 10);
-      var on  = sl.indexOf(idx) !== -1;
+      var r  = starRef(btn);
+      var on = keys[refKey(r.j, r.i)] === true;
       btn.classList.toggle('starred', on);
-      btn.textContent = on ? '\u2605' : '\u2606';
+      btn.textContent = on ? '★' : '☆';
     });
   }
 
@@ -93,31 +120,35 @@
 
   function initTable(wrapEl) {
     var tableId = wrapEl.dataset.candTableId;
-    var jobId   = wrapEl.dataset.jobId;
+    var scope   = wrapEl.dataset.scope || wrapEl.dataset.jobId;
     var table   = document.getElementById(tableId);
     if (!table) return;
 
-    restoreStarState(table, jobId);
-    updateShortlistUI(jobId);
+    restoreStarState(table, scope);
+    updateShortlistUI(scope);
 
     // Star toggle
     table.addEventListener('click', function (e) {
       var btn = e.target.closest('.star-btn');
       if (!btn) return;
-      var idx = parseInt(btn.dataset.idx, 10);
-      var sl  = loadShortlist(jobId);
-      var pos = sl.indexOf(idx);
+      var r   = starRef(btn);
+      var k   = refKey(r.j, r.i);
+      var sl  = loadShortlist(scope);
+      var pos = -1;
+      for (var n = 0; n < sl.length; n++) {
+        if (refKey(sl[n].j, sl[n].i) === k) { pos = n; break; }
+      }
       if (pos === -1) {
-        sl.push(idx);
+        sl.push(r);
         btn.classList.add('starred');
-        btn.textContent = '\u2605';
+        btn.textContent = '★';
       } else {
         sl.splice(pos, 1);
         btn.classList.remove('starred');
-        btn.textContent = '\u2606';
+        btn.textContent = '☆';
       }
-      saveShortlist(jobId, sl);
-      updateShortlistUI(jobId);
+      saveShortlist(scope, sl);
+      updateShortlistUI(scope);
     });
 
     // 3D viewer expand
@@ -164,22 +195,32 @@
 
   // ─── Modal ───────────────────────────────────────────────────────────────
 
-  window.getShortlist = function (jobId) { return loadShortlist(jobId); };
+  window.getShortlist = function (scope) { return loadShortlist(scope); };
 
-  window.openCampaignModal = function (jobId) {
-    var sl    = loadShortlist(jobId);
-    var modal = document.getElementById('campaign-modal-' + jobId);
+  window.openCampaignModal = function (scope) {
+    var sl    = loadShortlist(scope);
+    var modal = document.getElementById('campaign-modal-' + scope);
     if (!modal) return;
 
-    // Populate hidden indices field.
-    var inp = modal.querySelector('[name="candidate_indices"]');
-    if (inp) inp.value = JSON.stringify(sl);
+    // Campaign mode has a candidate_refs field; single-job mode has
+    // candidate_indices. Populate whichever the modal carries.
+    var refsInput = modal.querySelector('[name="candidate_refs"]');
+    var idxInput  = modal.querySelector('[name="candidate_indices"]');
+    if (refsInput) {
+      refsInput.value = JSON.stringify(sl.map(function (r) {
+        return { job_id: r.j, index: r.i };
+      }));
+    }
+    if (idxInput) {
+      idxInput.value = JSON.stringify(sl.map(function (r) { return r.i; }));
+    }
 
-    // Update review list.
     var list = modal.querySelector('.shortlist-review');
     if (list) {
-      list.innerHTML = sl.map(function (i) {
-        return '<li>Candidate ' + (i + 1) + '</li>';
+      list.innerHTML = sl.map(function (r) {
+        var label = 'Candidate ' + (r.i + 1);
+        if (refsInput && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
+        return '<li>' + label + '</li>';
       }).join('');
     }
 
@@ -187,8 +228,8 @@
     document.body.style.overflow = 'hidden';
   };
 
-  window.closeCampaignModal = function (jobId) {
-    var modal = document.getElementById('campaign-modal-' + jobId);
+  window.closeCampaignModal = function (scope) {
+    var modal = document.getElementById('campaign-modal-' + scope);
     if (modal) modal.style.display = 'none';
     document.body.style.overflow = '';
   };

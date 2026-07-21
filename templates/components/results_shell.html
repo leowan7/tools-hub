@@ -7,7 +7,7 @@
 
 {% macro results_panel(candidates, columns, tool_slug, job_id,
                        clone_url="", tier="", gpu_seconds=None,
-                       send_target_tools=None) %}
+                       send_target_tools=None, campaign_id="") %}
 <div class="panel" style="margin-top:1rem;">
   <div class="panel-header">
     <span class="panel-title">Candidates ({{ candidates | length }})</span>
@@ -45,7 +45,7 @@
           </p>
         </div>
       {% endif %}
-      {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url) }}
+      {{ candidate_table(candidates, columns, job_id, tool_slug, clone_url, campaign_id) }}
 
       {# C3 — Second-opinion fold. Spawn N orthogonal ColabFold /
          ESMFold jobs and route the user to /jobs/compare. Rendered
@@ -53,6 +53,9 @@
          (kept in lockstep with shared.refold.SOURCE_TOOLS). #}
       {% set REFOLD_SOURCES = ['rfdiffusion', 'bindcraft', 'rfantibody', 'pxdesign', 'boltzgen'] %}
       {% if tool_slug in REFOLD_SOURCES %}
+        {# Campaign context refolds the whole campaign's global top-N; a single
+           job refolds its own top-N. #}
+        {% set refold_action = url_for('campaigns.compute_campaign_refold', campaign_id=campaign_id) if campaign_id else url_for('jobs.job_refold', job_id=job_id) %}
         <div class="results-refold" style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border);">
           <div style="font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent-text); margin-bottom: 0.45rem;">
             Second-opinion fold
@@ -64,7 +67,7 @@
             diverge on AF2-overconfident ones.
           </p>
           <div style="display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;">
-            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="colabfold">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>
@@ -74,7 +77,7 @@
               </select>
               <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with ColabFold</button>
             </form>
-            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="esmfold">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>
@@ -84,7 +87,7 @@
               </select>
               <button type="submit" class="btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.85rem;">Re-fold with ESMFold</button>
             </form>
-            <form method="POST" action="{{ url_for('jobs.job_refold', job_id=job_id) }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form method="POST" action="{{ refold_action }}" style="display: inline-flex; gap: 0.4rem; align-items: center;">
               {{ csrf_input() }}
               <input type="hidden" name="dest_tool" value="boltz2">
               <span style="color: var(--text-secondary); font-size: 0.85rem;">Top</span>

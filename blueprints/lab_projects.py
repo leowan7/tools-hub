@@ -34,6 +34,118 @@ lab_projects_bp = Blueprint("lab_projects", __name__)
 # in the launch cutover; the compute product now owns /campaigns/*).
 # ------------------------------------------------------------------
 
+def _parse_candidate_refs(raw: str) -> list[dict]:
+    """Parse the campaign-wide shortlist payload — a JSON array of
+    ``{"job_id": str, "index": int}`` — into a sanitized list. Malformed
+    entries are dropped; a non-array or unparseable body yields ``[]``."""
+    import json  # noqa: PLC0415
+    try:
+        parsed = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[dict] = []
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        jid = str(entry.get("job_id") or "").strip()
+        try:
+            idx = int(entry.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if jid and idx >= 0:
+            out.append({"job_id": jid, "index": idx})
+    return out
+
+
+def _submit_campaign_shortlist(
+    ctx, source_campaign_id, candidate_refs, target_name, target_context,
+    assay_type, budget_band, affinity_goal_kd_nm, timeline_weeks,
+):
+    """Create a lab campaign from a shortlist spanning many sub-jobs of a
+    compute campaign, then stage each shortlisted PDB. Every referenced job is
+    re-checked against the caller (IDOR-safe) and must be a child of the named
+    compute campaign; PDBs are namespaced by source sub-job."""
+    from collections import defaultdict  # noqa: PLC0415
+    from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.campaigns import create_campaign_from_refs  # noqa: PLC0415
+    from shared.email import send_campaign_submitted_emails  # noqa: PLC0415
+
+    detail = url_for(
+        "campaigns.compute_campaign_detail", campaign_id=source_campaign_id,
+    )
+    if not target_name or not candidate_refs:
+        return redirect(detail)
+    if cc.get_campaign(source_campaign_id, user_id=ctx.user_id) is None:
+        return redirect(url_for("jobs.jobs_list"))
+
+    jobs_by_id: dict = {}
+    refs_by_job = defaultdict(list)
+    clean_refs: list[dict] = []
+    for ref in candidate_refs:
+        jid = ref["job_id"]
+        idx = ref["index"]
+        job = jobs_by_id.get(jid)
+        if job is None:
+            job = get_job(jid, user_id=ctx.user_id)
+            # Must be the caller's own job AND a child of this campaign.
+            if job is None or job.campaign_id != source_campaign_id:
+                continue
+            jobs_by_id[jid] = job
+        refs_by_job[jid].append(idx)
+        clean_refs.append({"job_id": jid, "index": idx})
+
+    if not clean_refs:
+        return redirect(detail)
+
+    try:
+        lab_campaign = create_campaign_from_refs(
+            user_id=ctx.user_id,
+            source_campaign_id=source_campaign_id,
+            candidate_refs=clean_refs,
+            target_name=target_name,
+            target_context=target_context,
+            assay_type=assay_type,
+            budget_band=budget_band,
+            affinity_goal_kd_nm=affinity_goal_kd_nm,
+            timeline_weeks=timeline_weeks,
+        )
+    except ValueError:
+        return redirect(detail)
+    if lab_campaign is None:
+        return redirect(detail)
+
+    for jid, idxs in refs_by_job.items():
+        job = jobs_by_id[jid]
+        try:
+            stage_campaign_candidates(
+                campaign_id=lab_campaign.id,
+                candidates=(job.result or {}).get("candidates", []),
+                indices=idxs,
+                user_id=ctx.user_id,
+                job_id=jid,
+                prefix=f"{jid[:8]}/",
+            )
+        except StorageError:
+            logger.warning(
+                "stage_campaign_candidates (campaign) failed for %s/%s",
+                lab_campaign.id, jid,
+            )
+
+    try:
+        send_campaign_submitted_emails(
+            campaign=lab_campaign, user_email=session.get("user_email", ""),
+        )
+    except Exception:
+        logger.warning("campaign submit emails failed", exc_info=True)
+
+    return redirect(
+        url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
+        + "?submitted=1"
+    )
+
+
 @lab_projects_bp.route("/lab-projects/submit", methods=["POST"])
 @login_required
 def campaigns_submit():
@@ -44,10 +156,9 @@ def campaigns_submit():
     if ctx is None:
         return redirect(url_for("auth.login"))
 
-    source_job_id = request.form.get("source_job_id", "").strip()
-    target_name   = request.form.get("target_name", "").strip()
-    assay_type    = request.form.get("assay_type", "yeast_display").strip()
-    budget_band   = request.form.get("budget_band", "pilot").strip()
+    target_name    = request.form.get("target_name", "").strip()
+    assay_type     = request.form.get("assay_type", "yeast_display").strip()
+    budget_band    = request.form.get("budget_band", "pilot").strip()
     target_context = request.form.get("target_context", "").strip()
 
     raw_kd = request.form.get("affinity_goal_kd_nm", "").strip()
@@ -62,6 +173,19 @@ def campaigns_submit():
     except ValueError:
         timeline_weeks = None
 
+    # Campaign-wide shortlist (spans many sub-jobs) takes precedence over the
+    # legacy single-job form when its fields are present.
+    source_campaign_id = request.form.get("source_campaign_id", "").strip()
+    candidate_refs = _parse_candidate_refs(request.form.get("candidate_refs", ""))
+    if source_campaign_id and candidate_refs:
+        return _submit_campaign_shortlist(
+            ctx, source_campaign_id, candidate_refs, target_name,
+            target_context, assay_type, budget_band, affinity_goal_kd_nm,
+            timeline_weeks,
+        )
+
+    # -- Legacy single-job shortlist --------------------------------------
+    source_job_id = request.form.get("source_job_id", "").strip()
     raw_indices = request.form.get("candidate_indices", "[]").strip()
     try:
         candidate_indices = [int(i) for i in json.loads(raw_indices)]

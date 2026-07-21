@@ -16,8 +16,13 @@
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
 #}
-{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='') %}
-{% set table_id = 'cand-table-' ~ job_id %}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='') %}
+{# ``scope`` is the shortlist storage key + element-id suffix: the campaign id
+   in campaign mode (merged table, candidates from many sub-jobs), else the job
+   id. ``export_base`` routes exports to the campaign or the single job. #}
+{% set scope = campaign_id if campaign_id else job_id %}
+{% set export_base = ('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id) %}
+{% set table_id = 'cand-table-' ~ scope %}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
@@ -79,6 +84,15 @@
   background: rgba(43, 158, 126, .12);
   border: 1px solid rgba(43, 158, 126, .35);
   border-radius: var(--radius-sm);
+  vertical-align: middle;
+}
+/* Source sub-job tag on merged campaign tables (provenance). */
+.cand-subjob-tag {
+  display: inline-block;
+  margin-left: .3rem;
+  font-size: .6rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-tertiary, #6b7683);
   vertical-align: middle;
 }
 
@@ -193,19 +207,19 @@
 </style>
 
 {# ── Action bar ────────────────────────────────────────────────── #}
-<div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}">
+<div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}" data-scope="{{ scope }}"{% if campaign_id %} data-campaign-id="{{ campaign_id }}"{% endif %}>
   <div class="cand-export-btns">
-    <a href="/jobs/{{ job_id }}/export.csv"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export CSV</a>
-    <a href="/jobs/{{ job_id }}/export.fasta" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export FASTA</a>
-    <a href="/jobs/{{ job_id }}/export.zip"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download PDBs (ZIP)</a>
+    <a href="{{ export_base }}/export.csv"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export CSV</a>
+    <a href="{{ export_base }}/export.fasta" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export FASTA</a>
+    <a href="{{ export_base }}/export.zip"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download PDBs (ZIP)</a>
   </div>
   <div class="cand-shortlist-bar">
-    <span><span id="shortlist-count-{{ job_id }}">0</span> starred</span>
-    <button id="send-to-lab-btn-{{ job_id }}"
+    <span><span id="shortlist-count-{{ scope }}">0</span> starred</span>
+    <button id="send-to-lab-btn-{{ scope }}"
             class="btn-primary"
             style="font-size:.82rem;padding:.3rem .75rem;"
             disabled
-            onclick="openCampaignModal('{{ job_id }}')">
+            onclick="openCampaignModal('{{ scope }}')">
       Send shortlist to Ranomics lab
     </button>
   </div>
@@ -253,6 +267,11 @@
       {% for cand in candidates %}
         {% set scores      = cand.get('scores', {}) %}
         {% set idx         = loop.index0 %}
+        {# Per-candidate source: in a merged campaign table each row came from a
+           different sub-job. Fall back to the table's own job for single-job
+           tables (no _source_* tags). #}
+        {% set src_job     = cand.get('_source_job_id') or job_id %}
+        {% set src_idx     = cand.get('_source_index') if cand.get('_source_index') is not none else idx %}
         {% set raw_pdb_key = cand.get('pdb_key') %}
         {% set pdb_key     = raw_pdb_key or 'design_' ~ (idx + 1) ~ '.pdb' %}
         {% set has_b64     = cand.get('pdb_content_b64') %}
@@ -263,7 +282,7 @@
            the inline data: URL. That path is legacy; modern adapters always
            set pdb_key. #}
         {% set use_url     = raw_pdb_key %}
-        {% set pdb_url     = '/api/jobs/' ~ job_id ~ '/pdb/' ~ (pdb_key | urlencode) %}
+        {% set pdb_url     = '/api/jobs/' ~ src_job ~ '/pdb/' ~ (pdb_key | urlencode) %}
         {% set has_pdb     = use_url or has_b64 %}
 
         {# Candidates arrive pre-ranked from the pipeline. Visually
@@ -275,9 +294,12 @@
             {% if loop.first %}
               <span class="cand-rank-top-badge" title="Top-ranked design in this run">Top</span>
             {% endif %}
+            {% if cand.get('_source_chunk') is not none %}
+              <span class="cand-subjob-tag" title="From sub-job {{ src_job[:8] }}">#{{ cand.get('_source_chunk') }}</span>
+            {% endif %}
           </td>
           <td class="star-cell">
-            <button class="star-btn" data-idx="{{ idx }}" data-job="{{ job_id }}" title="Shortlist">&#9734;</button>
+            <button class="star-btn" data-idx="{{ idx }}" data-job="{{ src_job }}" data-ref-idx="{{ src_idx }}" title="Shortlist">&#9734;</button>
           </td>
 
           {% for col in columns %}
@@ -359,14 +381,14 @@
 {% endif %}
 
 {# ── Campaign submit modal ─────────────────────────────────────── #}
-<div id="campaign-modal-{{ job_id }}"
+<div id="campaign-modal-{{ scope }}"
      class="modal-overlay"
      style="display:none;"
-     onclick="if(event.target===this)closeCampaignModal('{{ job_id }}')">
+     onclick="if(event.target===this)closeCampaignModal('{{ scope }}')">
   <div class="modal-box">
     <div class="modal-header">
       <h3 style="margin:0;font-size:1.1rem;">Submit shortlist to Ranomics lab</h3>
-      <button class="modal-close" onclick="closeCampaignModal('{{ job_id }}')">&times;</button>
+      <button class="modal-close" onclick="closeCampaignModal('{{ scope }}')">&times;</button>
     </div>
     <p class="subtitle" style="margin:.25rem 0 1.1rem;font-size:.875rem;">
       Ranomics reviews your candidates, runs feasibility against current lab capacity,
@@ -375,8 +397,13 @@
 
     <form action="/lab-projects/submit" method="POST">
       {{ csrf_input() }}
+      {% if campaign_id %}
+      <input type="hidden" name="source_campaign_id" value="{{ campaign_id }}">
+      <input type="hidden" name="candidate_refs"      value="[]">
+      {% else %}
       <input type="hidden" name="source_job_id"       value="{{ job_id }}">
       <input type="hidden" name="candidate_indices"   value="[]">
+      {% endif %}
 
       <div style="margin-bottom:.9rem;padding:.6rem .75rem;background:var(--bg-deep);border-radius:var(--radius-sm);border:1px solid var(--border);">
         <strong style="font-size:.875rem;">Shortlisted candidates:</strong>
@@ -437,7 +464,7 @@
       </div>
 
       <div style="display:flex;gap:.65rem;justify-content:flex-end;">
-        <button type="button" class="btn-secondary" onclick="closeCampaignModal('{{ job_id }}')">Cancel</button>
+        <button type="button" class="btn-secondary" onclick="closeCampaignModal('{{ scope }}')">Cancel</button>
         <button type="submit" class="btn-primary">Submit scoping request</button>
       </div>
     </form>
