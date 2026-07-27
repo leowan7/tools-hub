@@ -172,16 +172,15 @@ def copy_input(
 
 
 def delete_input(object_path: str) -> bool:
-    """Remove a previously uploaded object. Used for cleanup on failure."""
-    client = get_service_client()
-    if client is None:
-        return False
-    try:
-        client.storage.from_(BUCKET).remove([object_path])
-        return True
-    except Exception:
-        logger.warning("Storage delete failed for %s", object_path, exc_info=True)
-        return False
+    """Remove a previously uploaded ``tool-inputs`` object.
+
+    Thin, backwards-compatible wrapper over the bucket-generic
+    :func:`delete_objects`. Kept so callers that only need to drop a
+    single input (e.g. cleanup on a failed submit) have a named entry
+    point; the retention sweeper and per-user erasure use
+    :func:`delete_objects` directly across all three buckets.
+    """
+    return delete_objects(BUCKET, [object_path]) > 0
 
 
 CAMPAIGN_BUCKET = "lab-campaigns"
@@ -497,3 +496,152 @@ def _safe_filename(name: str) -> str:
     from werkzeug.utils import secure_filename  # noqa: PLC0415
     safe = secure_filename(name) or "upload"
     return safe
+
+
+# ---------------------------------------------------------------------------
+# Data-retention primitives
+# ---------------------------------------------------------------------------
+#
+# The tools-hub keeps three Storage buckets of customer data that otherwise
+# accumulate forever:
+#   - tool-inputs   (0006) — uploaded PDB / CIF / FASTA, keyed {user}/{job}/...
+#   - tool-outputs  (0021) — pipeline result PDBs, keyed {user}/{job}/designs/...
+#   - lab-campaigns (0011) — shortlisted PDBs for CRO handoff, keyed {campaign}/...
+#
+# RETENTION_DAYS is the single source of truth for the retention window across
+# the sweeper (cron.purge_old_storage) and the legal copy. Do NOT hard-code 30
+# elsewhere — import this constant.
+RETENTION_DAYS = 30
+
+# The buckets the retention sweeper and per-user erasure operate on. Order is
+# only for stable logging.
+DATA_BUCKETS = (BUCKET, OUTPUT_BUCKET, CAMPAIGN_BUCKET)
+
+# Storage list() default page size (storage3 DEFAULT_SEARCH_OPTIONS["limit"]).
+# We page explicitly so a bucket with >100 objects is fully enumerated.
+_LIST_PAGE = 100
+# Supabase caps a single DELETE prefixes[] payload; batch removes well under it.
+_DELETE_BATCH = 100
+# Backstop against a pathological listing that never terminates (e.g. a folder
+# that always reports a full page). 100k pages * 100 = 10M entries per level.
+_MAX_LIST_PAGES = 100_000
+# Placeholder object Supabase writes to keep an "empty" folder visible.
+_EMPTY_FOLDER_PLACEHOLDER = ".emptyFolderPlaceholder"
+
+
+def _resolve_client(client: Optional[object]):
+    """Return the passed client or fetch the service client lazily.
+
+    Lazy import (not the module-level binding) so tests can monkeypatch
+    ``shared.credits.get_service_client``; callers may also inject a client
+    directly to avoid a second fetch.
+    """
+    if client is not None:
+        return client
+    from shared.credits import get_service_client  # noqa: PLC0415
+    return get_service_client()
+
+
+def list_objects_recursive(
+    bucket_name: str,
+    prefix: str = "",
+    *,
+    client: Optional[object] = None,
+) -> list[dict]:
+    """Enumerate every leaf object under ``prefix`` in ``bucket_name``.
+
+    Supabase Storage ``list()`` is NOT recursive — folders are virtual and
+    each call returns only one level's immediate children (folder entries
+    carry ``id is None``; real objects carry a non-null ``id`` plus
+    ``created_at`` / ``updated_at``). This walks the tree depth-first,
+    paging each level, and returns a flat list of::
+
+        {"path": "<full object path>", "created_at": ..., "updated_at": ...}
+
+    for every real object. ``prefix`` scopes the walk (e.g. a user id, a
+    job id, or "" for the whole bucket). Raises ``StorageError`` if the
+    service client is unavailable.
+    """
+    resolved = _resolve_client(client)
+    if resolved is None:
+        raise StorageError("Supabase service client unavailable.")
+    bucket = resolved.storage.from_(bucket_name)
+    results: list[dict] = []
+    _walk_prefix(bucket, prefix, results)
+    return results
+
+
+def _walk_prefix(bucket, prefix: str, results: list[dict]) -> None:
+    """Depth-first page-walk of one virtual folder, appending leaf objects."""
+    offset = 0
+    for _ in range(_MAX_LIST_PAGES):
+        try:
+            listing = bucket.list(
+                path=prefix or None,
+                options={"limit": _LIST_PAGE, "offset": offset},
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise StorageError(f"list failed for {bucket_name_of(bucket)}:{prefix}: {exc}") from exc
+        if not isinstance(listing, list) or not listing:
+            return
+        for item in listing:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not name or name == _EMPTY_FOLDER_PLACEHOLDER:
+                continue
+            full = f"{prefix}/{name}" if prefix else name
+            if item.get("id") is None:
+                # Virtual sub-folder — recurse.
+                _walk_prefix(bucket, full, results)
+            else:
+                results.append(
+                    {
+                        "path": full,
+                        "created_at": item.get("created_at"),
+                        "updated_at": item.get("updated_at"),
+                    }
+                )
+        if len(listing) < _LIST_PAGE:
+            return
+        offset += _LIST_PAGE
+
+
+def bucket_name_of(bucket) -> str:
+    """Best-effort bucket id for error messages (storage3 stores it on ``id``)."""
+    return str(getattr(bucket, "id", None) or getattr(bucket, "bucket_id", "?"))
+
+
+def delete_objects(
+    bucket_name: str,
+    paths: list[str],
+    *,
+    client: Optional[object] = None,
+) -> int:
+    """Delete ``paths`` from ``bucket_name`` in batches; return the count removed.
+
+    Bucket-generic replacement for the old inline ``.remove([...])`` calls.
+    Idempotent — removing an already-gone object is a no-op on Supabase's
+    side, so re-running the sweeper is safe. Returns 0 (and logs) rather
+    than raising when the client is unavailable, so a cleanup path never
+    fails a request over a missing client.
+    """
+    if not paths:
+        return 0
+    resolved = _resolve_client(client)
+    if resolved is None:
+        logger.warning("delete_objects: no service client; skipped %d paths", len(paths))
+        return 0
+    bucket = resolved.storage.from_(bucket_name)
+    removed = 0
+    for start in range(0, len(paths), _DELETE_BATCH):
+        batch = paths[start:start + _DELETE_BATCH]
+        try:
+            bucket.remove(batch)
+            removed += len(batch)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "delete_objects: batch remove failed for %s (%d paths)",
+                bucket_name, len(batch), exc_info=True,
+            )
+    return removed

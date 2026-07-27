@@ -794,6 +794,15 @@ def admin_users_list():
 
     return render_template("admin/users_list.html", users=users)
 
+# TODO(account-deletion): There is no in-app account-deletion action yet;
+# deleting a user (Supabase dashboard or a future admin/self-serve control)
+# cascades the DB rows but leaves their Storage objects orphaned. When an
+# account-deletion action is added here, it MUST call
+# ``cron.purge_old_storage.purge_user_objects(user_id, dry_run=False)`` BEFORE
+# the auth.users row is deleted — the DB cascade removes the user's
+# lab_campaigns rows, and those are what locate the user's lab-campaigns
+# bucket folders. Until then the erasure is available via the CLI:
+# ``flask storage:purge-user --user-id <uuid> --apply``.
 @admin_bp.route("/admin/users/<user_id>", methods=["GET"])
 def admin_user_detail(user_id: str):
     """Per-user activity timeline: events + tool runs + credits."""
