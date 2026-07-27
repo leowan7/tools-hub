@@ -1,70 +1,97 @@
 # Handoff — target-first rework, Phase 0 (2026-07-27)
 
-Session paused mid-Phase-0. Everything below is committed; nothing is pushed.
+**Phase 0 is COMPLETE and QC-clean. Nothing is pushed.** Next action is a push
+decision, then Phase 1.
 
-## Start here when you resume
+## State
 
-```bash
-cd tools-hub && git checkout fix/phase0-campaign-hardening && ./venv/Scripts/python.exe -m pytest -q
-```
+- Branch `fix/phase0-campaign-hardening`, **six commits** off `origin/main` (`bb57477`).
+- Full suite: **1524 passed, 6 skipped, 0 failed** (10-20 min depending on load;
+  the `test_compute_campaigns_driver.py` cases sleep, slowest ~95s, so run it in
+  the background and do not read slowness as a hang).
+- Approved plan: `~/.claude/plans/i-recently-made-many-jaunty-lerdorf.md`
+  (migration numbers and the stale-branch claims in it were corrected this session).
 
-**This is the one thing that must happen first.** The full suite has NOT been run
-since the pagination change in `e1311e4`. The last full run was `1493 passed, 6
-skipped` at commit `4d12c86`. Since then only the touched suites were run (142
-passed). The risk is real, not theoretical: `iter_succeeded_children` now calls
-`.order()` and `.range()`, and any other test fake that stands in for the
-Supabase client on the aggregator or the "Passed filters" rollup will raise
-`AttributeError` the way `_FakeQuery` in `tests/test_campaign_results.py` did.
-Expect a small number of fakes to need the same two methods added.
-
-Expected count after the run: roughly `1493 + 33` new tests, so ~1526.
-
-## Where the work lives
-
-- Branch `fix/phase0-campaign-hardening`, two commits off `origin/main` (`bb57477`).
-- Approved plan: `~/.claude/plans/i-recently-made-many-jaunty-lerdorf.md`.
-- Commit `4d12c86` — presign swallow, `candidate_records` at 8 sites, wrapped-`designs` normalizer, retention sweeper guard, audit addendum, PRODUCT-PLAN backlog.
-- Commit `e1311e4` — fan-in pagination, iggm ranking, handoff-email count, idempotent `Location` + migration 0038.
-
-## Done
-
-| Plan step | State |
+| Commit | What |
 |---|---|
-| 0.0 file findings | Done. Audit addendum A1-A7 in `docs/audit-2026-07-22-campaign-rework-open-items.md`; backlog in `docs/PRODUCT-PLAN.md`; memory pointers in `project_open_items.md`. |
-| 0.1 uncap exports | **Already shipped** as PR #95 before this session. Nothing to do. |
-| 0.2 `candidate_records` | Done, 8 sites (one more than planned: the completion email reported "0 candidates" for designs-only tools). Plus a real normalizer gap: `_normalize_result_shape` only unwrapped `output.candidates`, so a wrapped `output.designs` row stayed invisible. |
-| 0.3 paginate fan-in | Code done, **verification incomplete** (see above). |
-| 0.4 export provenance | **Not started.** The only Phase 0 item with no code yet. |
-| 0.5 email count + iggm reshape | Done. |
-| 0.6 presign swallow | Done. Resolved *before* the hold and the child row so a failure costs nothing. |
-| 0.7 idempotent headers | Done, needs migration 0038 applied. |
+| `4d12c86` | presign swallow, `candidate_records` at 8 sites, wrapped-`designs` normalizer, retention sweeper guard |
+| `e1311e4` | fan-in pagination, iggm ranking, handoff-email count, idempotent `Location` + migration 0038 |
+| `0f772a1` | docs |
+| `d09cb0f` | **lab handoff stages the starred design, not its screen position** |
+| `82ac902` | **Location replay made real; sweeper guard paged and fails closed** |
+| `98094ff` | export provenance + global rank + real metrics in exports |
 
-## Two corrections to what memory said at session start
+All 0.1-0.7 steps are done. 0.1 was already merged as PR #95 before the session.
 
-1. **`fix/uncap-csv-fasta-exports` and `feat/data-retention-30d` are merged**, as PR #95 and #96. Memory still described both as "CODED, NOT pushed". Local `main` was 9 commits behind when this session started.
-2. **Migration numbering shifted.** 0038 is now `idempotency_location`. The plan's `design_targets` becomes **0039** and the lab-campaign target source becomes **0040**. Update the plan before Phase 1.
+## Before you push
 
-## Unplanned work this session, and why
+1. **Apply migration 0038** in the Supabase SQL editor. The code is now safe in
+   either order (`_claim_key` uses `select("*")`, `_store_response` retries
+   without the column), but without the migration a replayed redirect still has
+   no `Location` — it degrades to the cached body's link, not a blank page.
+2. Nothing else blocks. Railway auto-deploys web on merge; no Modal redeploy
+   (nothing under `tools/**` changed).
 
-The retention sweeper that shipped in PR #96 selects purely on object age with
-no reference to campaign state, while `_dispatch_chunk` re-mints a presigned
-URL from `campaign.target_storage_path` on every wave. A long-running or paused
-campaign could have had its input swept out from under it. Added
-`active_campaign_input_paths()` plus a fail-closed filter. This was written up
-as A6 in the audit addendum, which originally (wrongly) assumed the sweeper had
-not landed.
+## The three fixes that came out of QC, and why they matter
 
-## Next actions, in order
+An 11-agent adversarial QC pass reviewed all three changesets. It found that
+**two of the earlier fixes on this branch were themselves defective and one was
+inert**, all with a green suite. Do not assume a passing suite means a fix works.
 
-1. Run the full suite; fix whatever fakes need `.order()`/`.range()`.
-2. Finish **0.4 export provenance** in `shared/exports.py`: leading CSV columns become `rank, tool, campaign_id, source_job, source_chunk, pdb_key, source_rank` with `rank` as the global row index and the tool's own rank demoted to `source_rank`; FASTA ids become `>rank{global}_{tool}_{job8}_{basename}` with the `designs/` prefix stripped; extract one `export_key(cand, i)` shared by all three serializers so CSV, FASTA and ZIP cannot disagree.
-3. Get independent QC on the two commits before any push (per the standing rule: commit is fine, push is manual and QC-gated).
-4. Apply migration 0038 in the Supabase SQL editor **before** the code deploys, or `@idempotent()` silently falls back to caching without `Location`.
-5. Then Phase 1 (`design_targets`, now migration 0039).
+- **`d09cb0f` was a live blocker.** Threading `candidate_records` through the
+  lab handoff turned "stages zero PDBs" into "stages the WRONG PDB" for the
+  seven designs-shape tools: their partials re-sort, `_source_index` was stamped
+  only on the campaign path, so the starred row's *screen position* indexed the
+  *unsorted* list. The CRO would have received a different structure than the
+  one starred, with a success email. **Any new re-sorting results template must
+  stamp `_source_index` before the sort.**
+- **`82ac902`, half one:** the `Location` fix did nothing, because `_claim_key`
+  projected an explicit column list without `location`. Use `select("*")`, never
+  `,location` — pre-0038 that 400s and `_claim_key` fails OPEN, which means a
+  double-clicked submit places a second wallet hold and spawns a second Modal job.
+- **`82ac902`, half two:** the retention guard re-introduced the PostgREST
+  1000-row clamp and failed OPEN, so `--apply` could have deleted live campaigns'
+  inputs. Now paged, negation-filtered server-side, fails closed on overrun.
+
+Two test fakes were making the green suite lie: `tests/test_idempotency.py`'s
+ignored PostgREST column projection, and `_designs_shape()` in
+`tests/test_export_shapes.py` invented a nested `scores` dict and a `sequence`
+that no designs pipeline emits. Both now model reality. **Do not "simplify"
+either back** — nor the `max_rows` clamp modelled in `tests/test_data_retention.py`
+and `tests/test_campaign_results.py`.
+
+## Filed, not fixed
+
+`docs/audit-2026-07-22-campaign-rework-open-items.md`, addendum 2, items A8-A14:
+
+- **A10** a permanent `"skipped"` leaves a campaign in `running` forever — no
+  terminal state, no email, no TTL. Pre-existing (`adapter is None` already did
+  this), widened by the presign fix. Highest-value follow-up.
+- **A11** the retention guard has no recency bound, so a stuck campaign pins its
+  input forever and quietly defeats the 30-day promise in the Terms.
+- **A12** `fund_campaign` can silently no-op, stranding a campaign in `draft`.
+- **A13** a hold placed before a failed `create_job` is unreachable if its
+  release also fails.
+- **A14** root metrics export under pipeline names (`iptm`, not `ipTM`);
+  canonical aliasing belongs with the merged target table (Phase 3.3).
+
+## Next: Phase 1
+
+`design_targets` is migration **0039**, and the lab target source is **0040**
+(0038 was consumed by `idempotency_location`). The plan file has been corrected.
 
 ## Things worth not re-deriving
 
-- `_dispatch_chunk` creates the child row and places the hold *before* the old presign call, which is why "return skipped on presign failure" was wrong as originally planned. The fix moves the presign ahead of the money.
-- `copy_input` / `download_input` / `download_output` take `user_id` as a **path component, not an authz check**. The `target:<uuid>` token planned for Phase 1 must re-fetch scoped to `ctx.user_id` before touching a path, mirroring `blueprints/tools.py:1312-1321`.
-- `lab_campaigns.source_target_id` must be `ON DELETE CASCADE` to match 0037, which is only safe because the UI will **archive** targets and never hard-delete. If a hard delete ever ships it silently destroys paid CRO scoping requests.
-- The test fake in `tests/test_campaign_results.py` now models the PostgREST `max_rows` clamp on purpose. Do not "simplify" it away; it is what makes the pagination test real.
+- `_dispatch_chunk` creates the child row and places the hold *before* the old
+  presign call, which is why "return skipped on presign failure" was wrong as
+  originally planned. The fix moves the presign ahead of the money.
+- `copy_input` / `download_input` / `download_output` take `user_id` as a **path
+  component, not an authz check**. The `target:<uuid>` token planned for Phase 1
+  must re-fetch scoped to `ctx.user_id` before touching a path, mirroring
+  `blueprints/tools.py:1312-1321`.
+- `lab_campaigns.source_target_id` must be `ON DELETE CASCADE` to match 0037,
+  which is only safe because the UI will **archive** targets and never
+  hard-delete. A hard delete would silently destroy paid CRO scoping requests.
+- `archive_target` must **not** call `delete_input`: `_dispatch_chunk` re-mints a
+  presigned URL every wave, so deleting an input mid-campaign breaks every
+  remaining chunk.
