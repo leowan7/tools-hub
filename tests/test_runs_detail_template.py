@@ -142,6 +142,13 @@ def test_capped_note_renders_top_n_of_m(app):
         )
     assert "900" in html
     assert "designs by score" in html
+    # Banner honesty (guards the QC fix): CSV/FASTA are described as the full
+    # ranked set BUT qualified by the 1000-sub-job PostgREST clamp, the ZIP is
+    # described as limited, and the old false "download all" wording is gone.
+    assert "full ranked set" in html
+    assert "up to the first 1000 completed sub-jobs" in html
+    assert "PDB ZIP is" in html and "limited" in html
+    assert "download all" not in html
 
 
 def test_partial_completion_does_not_overstate_generated_count(app):
