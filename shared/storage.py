@@ -513,9 +513,19 @@ def _safe_filename(name: str) -> str:
 # elsewhere — import this constant.
 RETENTION_DAYS = 30
 
-# The buckets the retention sweeper and per-user erasure operate on. Order is
-# only for stable logging.
+# Full set of customer-data buckets. Used by the per-user (GDPR-style) erasure
+# path, which must reach ALL of a user's data — including lab-campaigns — when
+# an account is deleted or a data-deletion request comes in.
 DATA_BUCKETS = (BUCKET, OUTPUT_BUCKET, CAMPAIGN_BUCKET)
+
+# Buckets the AGE sweeper is allowed to time-delete on the RETENTION_DAYS clock.
+# Deliberately EXCLUDES lab-campaigns: that bucket holds CRO wet-lab handoff
+# shortlists — client deliverables whose lifecycle runs for MONTHS (a wet-lab
+# cycle far exceeds 30 days), so aging them out on the same clock as ephemeral
+# tool inputs/outputs would destroy live deliverables. lab-campaigns objects are
+# removed ONLY via per-user erasure (purge_user_objects) on account deletion or
+# an explicit deletion request — never by the scheduled age sweep.
+AGE_SWEEP_BUCKETS = (BUCKET, OUTPUT_BUCKET)
 
 # Storage list() default page size (storage3 DEFAULT_SEARCH_OPTIONS["limit"]).
 # We page explicitly so a bucket with >100 objects is fully enumerated.

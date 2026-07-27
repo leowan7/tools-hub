@@ -11,16 +11,21 @@ Storage objects behind.
 This module provides two operations, both routed through the bucket-generic
 helpers in ``shared.storage`` (never the Storage client inline):
 
-``purge_old_storage`` — the scheduled sweeper. Walks each bucket, classifies
-    every object as expired (older than the window) or retained by its
-    Storage ``created_at`` metadata, and deletes the expired set. DEFAULTS
-    TO DRY-RUN: it logs what it *would* delete and removes nothing unless
-    called with ``dry_run=False`` (the CLI exposes this as ``--apply``).
+``purge_old_storage`` — the scheduled AGE sweeper. Walks the age-sweep
+    buckets (``shared.storage.AGE_SWEEP_BUCKETS`` = tool-inputs + tool-outputs
+    ONLY), classifies every object as expired (older than the window) or
+    retained by its Storage ``created_at`` metadata, and deletes the expired
+    set. ``lab-campaigns`` is deliberately EXCLUDED — it holds CRO wet-lab
+    handoff shortlists (client deliverables on a months-long lifecycle) that
+    must not be aged out on the 30-day clock; those are removed only by the
+    per-user erasure below. DEFAULTS TO DRY-RUN: it logs what it *would*
+    delete and removes nothing unless called with ``dry_run=False`` (the CLI
+    exposes this as ``--apply``).
 
 ``purge_user_objects`` — per-user erasure. Given a user id, removes that
-    user's objects from all three buckets. This is what an account-deletion
-    flow must call so deletion actually reaches Storage. Also DRY-RUN by
-    default.
+    user's objects from ALL THREE buckets (including lab-campaigns). This is
+    what an account-deletion / data-deletion-request flow must call so
+    deletion actually reaches Storage. Also DRY-RUN by default.
 
 Age source
 ----------
@@ -55,10 +60,12 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from shared.storage import (
+    AGE_SWEEP_BUCKETS,
     CAMPAIGN_BUCKET,
     DATA_BUCKETS,
     RETENTION_DAYS,
@@ -78,7 +85,18 @@ _MIN_RETENTION_DAYS = 7
 def _resolve_retention_days(retention_days: Optional[int]) -> int:
     days = retention_days
     if days is None:
-        days = int(os.environ.get("DATA_RETENTION_DAYS", str(RETENTION_DAYS)) or RETENTION_DAYS)
+        raw = os.environ.get("DATA_RETENTION_DAYS")
+        if raw is None or raw.strip() == "":
+            days = RETENTION_DAYS
+        else:
+            try:
+                days = int(raw)
+            except ValueError:
+                logger.warning(
+                    "purge-old: ignoring non-numeric DATA_RETENTION_DAYS=%r; "
+                    "falling back to %d", raw, RETENTION_DAYS,
+                )
+                days = RETENTION_DAYS
     return max(_MIN_RETENTION_DAYS, days)
 
 
@@ -129,6 +147,10 @@ def purge_old_storage(
 ) -> dict:
     """Delete (or, when ``dry_run``, only count) objects past the window.
 
+    Operates on ``AGE_SWEEP_BUCKETS`` (tool-inputs + tool-outputs) by default;
+    ``lab-campaigns`` is intentionally NOT age-swept (CRO deliverables). Pass
+    ``buckets`` only to narrow further (e.g. a single bucket in a canary).
+
     DEFAULTS TO DRY-RUN. Returns a summary dict suitable for logging::
 
         {"retention_days": N, "cutoff": "...", "dry_run": bool,
@@ -138,7 +160,7 @@ def purge_old_storage(
     """
     days = _resolve_retention_days(retention_days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    target_buckets = buckets or DATA_BUCKETS
+    target_buckets = buckets or AGE_SWEEP_BUCKETS
 
     summary: dict = {
         "retention_days": days,
@@ -193,19 +215,19 @@ def _campaign_ids_for_user(user_id: str, client) -> list[str]:
     Must run BEFORE the account-deletion DB cascade removes these rows, or the
     campaign folders become unreachable for enumeration. See the wiring note in
     ``purge_user_objects``.
+
+    Raises on a DB failure — the caller records it as an error so an
+    INCOMPLETE erasure (lab-campaigns skipped) is visible in the summary
+    rather than being silently reported as a clean run.
     """
-    try:
-        rows = (
-            client.table("lab_campaigns")
-            .select("id")
-            .eq("user_id", user_id)
-            .execute()
-            .data
-            or []
-        )
-    except Exception:  # noqa: BLE001
-        logger.warning("purge-user: lab_campaigns lookup failed for %s", user_id, exc_info=True)
-        return []
+    rows = (
+        client.table("lab_campaigns")
+        .select("id")
+        .eq("user_id", user_id)
+        .execute()
+        .data
+        or []
+    )
     return [r["id"] for r in rows if r.get("id")]
 
 
@@ -243,12 +265,22 @@ def purge_user_objects(
         "errors": [],
     }
 
-    # Safety: an empty user id would make the prefix "" and enumerate (and,
-    # with --apply, delete) the ENTIRE bucket. Refuse outright.
-    if not user_id or not str(user_id).strip():
+    # Safety: validate the id BEFORE any listing. A malformed id would make a
+    # bad prefix that silently under-completes a GDPR erasure (or, if empty,
+    # collapses to "" and enumerates the ENTIRE bucket). Require: non-empty,
+    # no path separator, and a valid UUID shape (matches auth.users.id).
+    if user_id is None or not str(user_id).strip():
         summary["errors"].append("empty user_id refused")
         return summary
     user_id = str(user_id).strip()
+    if "/" in user_id:
+        summary["errors"].append("user_id containing '/' refused")
+        return summary
+    try:
+        uuid.UUID(user_id)
+    except (ValueError, AttributeError, TypeError):
+        summary["errors"].append("non-uuid user_id refused")
+        return summary
 
     resolved = client
     if resolved is None:
@@ -262,7 +294,17 @@ def purge_user_objects(
     prefix_plan: dict[str, list[str]] = {}
     for bucket in DATA_BUCKETS:
         if bucket == CAMPAIGN_BUCKET:
-            campaign_ids = _campaign_ids_for_user(user_id, resolved)
+            try:
+                campaign_ids = _campaign_ids_for_user(user_id, resolved)
+            except Exception as exc:  # noqa: BLE001
+                # WR-04: surface the incomplete erasure instead of hiding it.
+                logger.warning(
+                    "purge-user: lab_campaigns lookup failed for %s", user_id,
+                    exc_info=True,
+                )
+                summary["errors"].append(f"{CAMPAIGN_BUCKET}:campaign-lookup:{exc}")
+                prefix_plan[bucket] = []
+                continue
             summary["campaign_ids"] = campaign_ids
             prefix_plan[bucket] = list(campaign_ids)
         else:

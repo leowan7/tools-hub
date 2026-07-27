@@ -838,7 +838,8 @@ def create_app() -> Flask:
     def cli_storage_purge_old(apply_: bool):
         """Delete Storage objects older than the retention window.
 
-        Sweeps tool-inputs, tool-outputs, and lab-campaigns for objects past
+        Sweeps tool-inputs and tool-outputs (NOT lab-campaigns — those are CRO
+        deliverables removed only by per-user erasure) for objects past
         shared.storage.RETENTION_DAYS (30, override DATA_RETENTION_DAYS, floored
         at 7) and deletes them. DEFAULTS TO DRY-RUN — pass --apply to delete.
         Usage::
