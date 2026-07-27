@@ -30,6 +30,7 @@
   {% if d.get('iptm') is not none %}{% set opt.iptm = true %}{% endif %}
   {% if d.get('plddt') is not none %}{% set opt.plddt = true %}{% endif %}
   {% set _ = candidates.append({
+      '_source_index': loop.index0,
       'rank': d.get('rank'),
       'name': d.get('name') or ('prediction_' ~ (d.get('rank') or '0')),
       'pdb_key': d.get('pdb_key'),

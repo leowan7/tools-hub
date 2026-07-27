@@ -42,6 +42,7 @@
   {% set candidates = [] %}
   {% for d in raw_designs %}
     {% set _ = candidates.append({
+        '_source_index': loop.index0,
         'rank': d.get('rank'),
         'name': d.get('name'),
         'pdb_key': d.get('pdb_key'),
