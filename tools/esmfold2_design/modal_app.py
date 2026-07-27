@@ -476,7 +476,14 @@ def _aggregate(
     all_candidates: list[dict] = []
     all_designs: list[dict] = []
     raw_paths: list[str] = []
-    max_runtime = 0
+    # Each seed runs in its OWN container (see spawn loop in run_tool), so the
+    # GPU time the account is billed for is the SUM of the children, not the
+    # max. ``runtime_seconds`` feeds ``gpu_seconds_used`` at the billing seam
+    # (gpu/modal_client.py), so it MUST be the sum or a multi-seed run is
+    # under-charged by up to Nx. ``wall_clock_seconds`` keeps the parallel
+    # elapsed time (~max) for honest UI display.
+    total_gpu_seconds = 0
+    wall_clock_seconds = 0
     designs_total = 0
     designs_completed = 0
     inner_failures = 0
@@ -509,7 +516,9 @@ def _aggregate(
         designs_total += int(smoke.get("designs_total") or 0)
         designs_completed += int(smoke.get("designs_completed") or 0)
         inner_failures += int(smoke.get("n_failures") or 0)
-        max_runtime = max(max_runtime, int(smoke.get("runtime_seconds") or 0))
+        child_runtime = int(smoke.get("runtime_seconds") or 0)
+        total_gpu_seconds += child_runtime
+        wall_clock_seconds = max(wall_clock_seconds, child_runtime)
 
     def _cand_sort_key(c: dict) -> float:
         iptm = (c.get("scores") or {}).get("ipTM")
@@ -546,7 +555,8 @@ def _aggregate(
         "best_sequence": best_seq,
         "designs": all_designs,
         "candidates": all_candidates,
-        "runtime_seconds": max_runtime,
+        "runtime_seconds": total_gpu_seconds,
+        "wall_clock_seconds": wall_clock_seconds,
         "n_seeds": len(successes) + len(failures),
         "seeds_succeeded": len(successes),
         "seeds_failed": len(failures),
