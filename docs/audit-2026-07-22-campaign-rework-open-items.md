@@ -273,3 +273,50 @@ Numbered `A*` so they do not collide with either the synthesis list (1-16) or th
 - **severity:** informational | **owner:** code
 - **detail:** Not a live defect: every current call site gates correctly. Recording it because the pattern is easy to break. These three functions take `user_id` as a **path component, not an authorization check**, and run on the service-role client, so they will read or copy any object in the bucket if handed a foreign path. The entire tenancy boundary for the `job:` PDB-reuse token is the user-scoped `get_job` immediately above the `copy_input` call; the GET-side checks that mint the token are decorative, since the token round-trips through a client-controlled hidden field. Any new reuse token (a `target:` token, for instance) must re-fetch the id scoped to `ctx.user_id` and raise before touching a path. Separately, `upload_input` sanitizes `filename` via `secure_filename` but interpolates `user_id` and `job_id` raw, and `blueprints/campaigns.py:384` already repurposes the `job_id` slot as a free-text namespace, so any future client-influenced value in that slot is a path-traversal write.
 - **evidence:** `shared/storage.py:150-171` (`copy_input`, no `source_user_id`), `:129-147` (`download_input`), `:437-456` (`download_output`), `:58-100` (`upload_input`, `_safe_filename` on filename only), `:490-499`; `blueprints/tools.py:1312-1321` (the load-bearing `get_job(..., user_id=ctx.user_id)`); `blueprints/campaigns.py:381-390` (free-text `job_id` slot precedent)
+
+## Addendum 2 — 2026-07-27, independent QC of the Phase 0 branch
+
+Eleven findings from an adversarial review of `fix/phase0-campaign-hardening`
+(five independent reviewers, one refutation pass each). A8 and A9 were
+regressions **introduced by this branch's own fixes** and are already fixed;
+A10-A13 are filed, not fixed. Numbering continues from A7.
+
+### A8. A1's `candidate_records` fix turned "stages zero PDBs" into "stages the WRONG PDB" (RESOLVED 2026-07-27)
+- **severity:** was blocker | **owner:** code | **status:** fixed in the same pass
+- **detail:** Every designs-shape results partial reshapes `result["designs"]` into fresh dicts and then re-sorts by its headline metric, so the row at screen position 0 is normally not `designs[0]`. `_source_index` was stamped in exactly one place, `aggregate_campaign_candidates`, so on the single-job path `candidate_table.html` fell back to `loop.index0` — the **post-sort** position — and the shortlist posted that as `candidate_indices`. `blueprints/lab_projects.py` then resolved it against `candidate_records(job.result)`, which is raw pipeline order. Before the `candidate_records` change the same line read `(job.result or {}).get("candidates", [])`, which is `[]` for these tools, so the failure mode was silent-empty; afterwards it became silent-**wrong**: a different structure copied into the `lab-campaigns` bucket, recorded in `candidate_refs`, and confirmed to the user by a success email. Item 13's note that "the only possible failure is zero staged, never mis-staged" reasoned from `_source_index`, which holds only on the campaign path.
+- **affected:** boltz2, af2, colabfold, esmfold, iggm, opendde, and esmfold2_design's legacy fallback branch.
+- **fix:** all seven partials stamp `'_source_index': loop.index0` inside the reshape loop, **before** the sort. `tests/test_shortlist_index_mapping.py` renders each tool with a metric order that is the reverse of pipeline order and asserts the posted index resolves, through `candidate_records`, to the design shown in that row; it fails if any stamp is removed. It also pins both esmfold2_design branches (the canonical `candidates` branch is identity because it does not sort).
+- *Next:* the durable fix is to move the reshape and sort out of Jinja into shared code so a new partial cannot reintroduce this. Until then, **any new re-sorting results template must stamp `_source_index`.**
+
+### A9. Amends A2 — the `@idempotent()` Location fix was inert (RESOLVED 2026-07-27)
+- **severity:** was medium | **owner:** code | **status:** fixed in the same pass
+- **detail:** A2's fix persisted `location` and replayed it, but `_claim_key` selected an explicit column list that did not include it. PostgREST projects exactly the columns requested, so the replayed row never carried `location` and `_replay_response` always read `None`. Every guarded route still returned a bare 302. Migration 0038 was scheduled for prod in support of a fix that did nothing.
+- **why the obvious fix is wrong:** appending `,location` to the list 400s before 0038 is applied, and `_claim_key`'s bare `except` fails **open**, so every double-submit would re-run its handler — a second wallet hold and a second Modal job per double-click. `.select("*")` is migration-order-independent and matches the house pattern.
+- **fix:** `.select("*")`, plus `tests/test_idempotency.py`'s fake now honours the projection (which is what made the two Location tests vacuous) and can model a pre-0038 table that rejects the column on UPDATE. A new test asserts that before the migration the replay degrades to "no Location, body still carries the link" while the handler still runs exactly once.
+- *Next:* the deploy-order note stands but is no longer load-bearing: apply 0038 before deploying to get the header, but the code is safe either way.
+
+### A10. A permanently unrecoverable `"skipped"` leaves a campaign in `running` forever
+- **severity:** low (pre-existing, widened by A1) | **owner:** code
+- **detail:** When `_dispatch_chunk` returns `"skipped"` the driver breaks out of the admission loop with `launched_any=False` and `hit_insufficient=False`, so no status transition runs, and `_maybe_finalize` returns early because `dispatched < total`. In-flight children drain to zero and the campaign sits in `running` indefinitely: no `completed_at`, no pause email, no failure email, and `cron/tick_campaigns.py` keeps re-driving it forever. Only `paused_insufficient_funds` has a TTL. Pre-existing — `adapter is None` and `design_count <= 0` already returned a permanent `"skipped"` — but A1 added a new way to reach it (an input that stops resolving).
+- *Next:* bound it like the pause path. Count consecutive no-progress drives for a campaign with undispatched chunks and zero in-flight children, then CAS to a terminal status through the existing notification path. Returning a reason alongside the outcome would let a 404 start the clock immediately and a 5xx only after N retries.
+
+### A11. The retention guard has no upper bound, so a stuck campaign pins its input forever
+- **severity:** medium | **owner:** code + product decision
+- **detail:** `active_campaign_input_paths()` protects every non-terminal campaign with no recency limit. A campaign stuck in `draft` (see A12) or otherwise abandoned protects its `tool-inputs` object permanently, which quietly defeats the 30-day retention promise the Terms now make. The guard is deliberately fail-safe in this direction, so the cost is storage and a compliance gap, not data loss.
+- *Next:* protect only non-terminal campaigns with activity inside a sane window (`_PAUSE_TTL_DAYS` plus a margin), log anything older as stuck, and add a reaper that cancels `draft`/`funded` campaigns that have dispatched nothing after N hours. Pairs with A12.
+
+### A12. `fund_campaign` can silently no-op, stranding a paid-intent campaign in `draft`
+- **severity:** low | **owner:** code
+- **detail:** The transition is not checked, so a campaign that fails to move `draft -> funded` is redirected to as though it started. It never dispatches, never bills, and never terminalizes; it also pins its input under A11. A draft is inert, so nothing is charged — the cost is a user who thinks they launched a run.
+- *Next:* make it a checked CAS transition returning a bool, and have the create route surface an error or retry instead of redirecting.
+
+### A13. A hold placed before `create_job` fails is unreachable if its release fails
+- **severity:** low | **owner:** code
+- **detail:** On the `create_job`-failed path the hold release is best-effort and its return value is not checked. A failed release leaves a hold with no job row, so nothing downstream can settle or reclaim it and there is no sweeper. Bounded by how rarely `create_job` fails, and it strands rather than overcharges.
+- *Next:* check the boolean, retry once, then persist the orphan id for reclamation. Placing the hold after `create_job` succeeds would make every hold reachable from a job row by construction.
+
+### A14. Per-job CSV / FASTA carried no metrics for designs-shape tools (PARTLY RESOLVED 2026-07-27)
+- **severity:** medium | **owner:** code
+- **detail:** `candidates_to_csv` discovered columns from `cand["scores"]` only, but every designs-shape pipeline puts its metrics at the record **root** and has no `scores` dict. The results templates reshape inline, so the screen looked correct while the export produced the right number of rows with no science in them. A1's `candidate_records` fix corrected the row count, not the columns. The `_designs_shape()` fixture in `tests/test_export_shapes.py` invented a nested `scores` and a `sequence`, so the tests asserting "not header-only" passed against a shape no tool emits.
+- **fix:** column discovery now reads the root as well as `scores`, excluding provenance tags, identity fields, and any non-scalar or bulk value (`pdb_content_b64`, per-residue contact lists). The fixture was rebuilt from a real boltz2 row and a test now asserts the metric *values* reach the file, not just the row count.
+- *Next:* root metrics export under the pipeline's own names (`iptm`, not `ipTM`). Mapping those onto canonical display names is the cross-tool aliasing work and belongs with the merged target table, not here. FASTA is still empty for designs-shape tools, which is correct — they emit no binder sequence.

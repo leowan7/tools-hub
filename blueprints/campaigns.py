@@ -542,10 +542,11 @@ def _campaign_passed_filters(campaign_id: str) -> int:
 # CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
 # (limit=None). The ZIP keeps a top-N cap because it pulls every candidate's
 # PDB bytes into web-process memory, and an unbounded campaign could OOM the
-# process — that cap is load-bearing (decision 6). Note: an "uncapped" CSV /
-# FASTA is still bounded by the PostgREST max_rows (1000) clamp on the
-# aggregator's underlying sub-job fetch (a separate tracked item), so it is
-# complete only for campaigns with <=1000 succeeded sub-jobs.
+# process — that cap is load-bearing (decision 6).
+#
+# "Uncapped" is now literally true: the aggregator's sub-job fetch pages via
+# shared.compute_campaigns.iter_succeeded_children, so the PostgREST max_rows
+# (1000) clamp that used to silently truncate these exports no longer applies.
 _CAMPAIGN_ZIP_EXPORT_LIMIT = 300
 
 

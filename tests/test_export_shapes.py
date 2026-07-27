@@ -51,20 +51,40 @@ def _candidates_shape() -> dict:
 
 
 def _designs_shape() -> dict:
-    """af2 / colabfold / esmfold / boltz2 / iggm / esmfold2_design."""
+    """af2 / colabfold / esmfold / boltz2 / iggm / esmfold2_design.
+
+    Copied from what the pipelines actually persist, NOT invented: metrics sit
+    at the record ROOT under the pipeline's own lowercase names, and there is
+    no nested ``scores`` dict (see tools/boltz2/run_pipeline.py:652-666 and
+    the equivalents in af2/colabfold/esmfold/iggm). An earlier version of this
+    fixture gave designs rows a nested ``scores``, which made the CSV and FASTA
+    assertions below pass against a shape no tool emits.
+    """
     return {
         "designs": [
             {
+                "rank": 0,
+                "name": "design_0",
                 "pdb_key": "design_0.pdb",
                 "sequence": "MKTAYIAKQR",
                 "pdb_content_b64": "QVRPTQo=",
-                "scores": {"ipTM": 0.66, "pLDDT": 79.4},
+                "iptm": 0.66,
+                "complex_plddt": 0.794,
+                "n_hotspot_contacts": 5,
+                "contacted_residues": [12, 15, 19],   # non-scalar: not a column
+                "filter_status": "PASS",
             },
             {
+                "rank": 1,
+                "name": "design_1",
                 "pdb_key": "design_1.pdb",
                 "sequence": "GGSGGSGGSG",
                 "pdb_content_b64": "QVRPTQo=",
-                "scores": {"ipTM": 0.60, "pLDDT": 77.1},
+                "iptm": 0.60,
+                "complex_plddt": 0.771,
+                "n_hotspot_contacts": 2,
+                "contacted_residues": [12],
+                "filter_status": "FAIL",
             },
         ]
     }
@@ -93,7 +113,22 @@ def test_csv_export_is_not_header_only(shape):
     lines = [ln for ln in csv_text.splitlines() if ln.strip()]
     # Header plus one row per design — the regression was header alone.
     assert len(lines) == 3, csv_text
-    assert "ipTM" in lines[0]
+
+
+@pytest.mark.parametrize("shape", sorted(SHAPES))
+def test_csv_export_carries_the_metrics_not_just_the_rows(shape):
+    """Row count alone is not the bar. The designs shape keeps its metrics at
+    the record root, so a scores-only exporter produced a file with the right
+    number of rows and no science in it."""
+    csv_text = candidates_to_csv(candidate_records(SHAPES[shape]()))
+    header, first = csv_text.splitlines()[0], csv_text.splitlines()[1]
+    metric = "ipTM" if shape == "candidates" else "iptm"
+    assert metric in header.split(","), header
+    value = "0.81" if shape == "candidates" else "0.66"
+    assert value in first.split(","), first
+    # Bulk and identity fields must never become columns.
+    for banned in ("pdb_content_b64", "sequence", "contacted_residues"):
+        assert banned not in header.split(","), header
 
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))

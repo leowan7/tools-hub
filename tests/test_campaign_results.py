@@ -72,8 +72,36 @@ def test_csv_unions_all_score_keys():
         {"rank": 2, "pdb_key": "b.pdb", "scores": {"pLDDT": 90}},
     ])
     lines = csv.splitlines()
-    assert lines[0] == "rank,pdb_key,ipTM,pLDDT"
-    assert lines[1].startswith("1,a.pdb,0.8")
+    # No provenance on these rows, so only the always-present columns lead.
+    assert lines[0] == "rank,pdb_key,source_rank,ipTM,pLDDT"
+    assert lines[1].startswith("1,a.pdb,1,0.8")
+
+
+def test_csv_rank_is_global_and_tool_rank_is_demoted():
+    """Across a merge every tool contributes its own rank 1. The export rank
+    must be the row index so it stays monotonic and matches the screen."""
+    csv = exports.candidates_to_csv([
+        {"rank": 1, "pdb_key": "design_1.pdb", "_source_tool": "bindcraft",
+         "_source_job_id": "job-aaaaaaaa1", "_source_chunk": 0,
+         "_source_campaign_id": "camp-a", "scores": {"ipTM": 0.9}},
+        {"rank": 1, "pdb_key": "design_1.pdb", "_source_tool": "boltzgen",
+         "_source_job_id": "job-bbbbbbbb2", "_source_chunk": 3,
+         "_source_campaign_id": "camp-b", "scores": {"ipTM": 0.7}},
+    ])
+    lines = csv.splitlines()
+    assert lines[0] == (
+        "rank,tool,campaign_id,source_job,source_chunk,pdb_key,source_rank,ipTM"
+    )
+    assert lines[1] == "1,bindcraft,camp-a,job-aaaaaaaa1,0,design_1.pdb,1,0.9"
+    # Same pdb_key and same source_rank, disambiguated by rank + provenance.
+    assert lines[2] == "2,boltzgen,camp-b,job-bbbbbbbb2,3,design_1.pdb,1,0.7"
+
+
+def test_csv_omits_provenance_columns_nothing_carries():
+    """A single-job export has no source job, so it must not grow blank
+    columns; the target-level export gets them because its rows carry them."""
+    csv = exports.candidates_to_csv([{"pdb_key": "a.pdb", "scores": {}}])
+    assert csv.splitlines()[0] == "rank,pdb_key,source_rank"
 
 
 def test_fasta_body_and_empty():
@@ -82,6 +110,34 @@ def test_fasta_body_and_empty():
     assert "MKTAY" in body
     # No sequences anywhere -> empty string (caller supplies the message).
     assert exports.candidates_to_fasta([{"scores": {"ipTM": 0.9}}]) == ""
+
+
+def test_fasta_ids_are_unique_and_carry_no_slash():
+    """A '/' in a FASTA id terminates parsing in several downstream tools, and
+    'designs/design_1.pdb' is the pdb_key almost every tool emits."""
+    body = exports.candidates_to_fasta([
+        {"sequence": "MKTAY", "pdb_key": "designs/design_1.pdb", "rank": 1,
+         "_source_tool": "bindcraft", "_source_job_id": "job-aaaaaaaa1"},
+        {"sequence": "GGSGG", "pdb_key": "designs/design_1.pdb", "rank": 1,
+         "_source_tool": "boltzgen", "_source_job_id": "job-bbbbbbbb2"},
+    ])
+    ids = [ln for ln in body.splitlines() if ln.startswith(">")]
+    assert ids == [
+        ">rank1_bindcraft_job-aaaa_design_1.pdb",
+        ">rank2_boltzgen_job-bbbb_design_1.pdb",
+    ]
+    assert len(set(ids)) == 2
+    assert not any("/" in i for i in ids)
+
+
+def test_fasta_skips_rank_for_sequenceless_rows_but_keeps_global_order():
+    """A candidate with no sequence is skipped, and the ranks of the rows that
+    do emit must still match their CSV rank (the row index, not a counter)."""
+    body = exports.candidates_to_fasta([
+        {"pdb_key": "a.pdb"},                      # no sequence -> skipped
+        {"pdb_key": "b.pdb", "sequence": "MKTAY"},
+    ])
+    assert [ln for ln in body.splitlines() if ln.startswith(">")] == [">rank2_b.pdb"]
 
 
 def test_zip_namespaces_by_subjob_and_blocks_traversal():
