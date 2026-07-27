@@ -23,6 +23,7 @@
 {% set trajectory_steps   = output.get('trajectory_steps') %}
 {% set tier               = output.get('tier') %}
 {% set runtime_seconds    = output.get('runtime_seconds') %}
+{% set wall_clock_seconds = output.get('wall_clock_seconds') %}
 {% set designs_total      = output.get('designs_total') or (raw_designs | length) %}
 {% set designs_completed  = output.get('designs_completed') or (raw_designs | length) %}
 {% set use_scaling_critics = output.get('use_scaling_critics') %}
@@ -113,9 +114,17 @@
       {% endif %}
       {% if runtime_seconds %}
         <div>
-          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Runtime</div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">GPU time</div>
           <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
             {{ runtime_seconds }} s
+          </div>
+        </div>
+      {% endif %}
+      {% if wall_clock_seconds and wall_clock_seconds != runtime_seconds %}
+        <div>
+          <div style="color: var(--text-tertiary); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase;">Wall clock</div>
+          <div style="color: var(--text-primary); font-family: var(--font-mono); font-size: 1.1rem;">
+            {{ wall_clock_seconds }} s
           </div>
         </div>
       {% endif %}
