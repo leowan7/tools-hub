@@ -830,6 +830,81 @@ def create_app() -> Flask:
             flush=True,
         )
 
+    @flask_app.cli.command("storage:purge-old")
+    @click.option(
+        "--apply", "apply_", is_flag=True, default=False,
+        help="Actually delete expired objects. Omit for a dry run (default).",
+    )
+    def cli_storage_purge_old(apply_: bool):
+        """Delete Storage objects older than the retention window.
+
+        Sweeps tool-inputs and tool-outputs (NOT lab-campaigns — those are CRO
+        deliverables removed only by per-user erasure) for objects past
+        shared.storage.RETENTION_DAYS (30, override DATA_RETENTION_DAYS, floored
+        at 7) and deletes them. DEFAULTS TO DRY-RUN — pass --apply to delete.
+        Usage::
+
+            flask storage:purge-old            # dry run, deletes nothing
+            flask storage:purge-old --apply    # live delete
+        """
+        from cron.purge_old_storage import purge_old_storage  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = purge_old_storage(dry_run=not apply_)
+        print(
+            f"storage:purge-old ({'live' if apply_ else 'dry-run'}) "
+            f"cutoff<{summary['cutoff']} retention_days={summary['retention_days']} "
+            f"scanned={summary['total_scanned']} expired={summary['total_expired']} "
+            f"deleted={summary['total_deleted']} errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for bucket, stats in summary["buckets"].items():
+            print(
+                f"  {bucket}: scanned={stats['scanned']} "
+                f"expired={stats['expired']} deleted={stats['deleted']}",
+                flush=True,
+            )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
+    @flask_app.cli.command("storage:purge-user")
+    @click.option(
+        "--user-id", "user_id", required=True,
+        help="Auth user id whose objects to erase across all three buckets.",
+    )
+    @click.option(
+        "--apply", "apply_", is_flag=True, default=False,
+        help="Actually delete the user's objects. Omit for a dry run (default).",
+    )
+    def cli_storage_purge_user(user_id: str, apply_: bool):
+        """Erase one user's objects from all three Storage buckets.
+
+        This is the Storage side of account deletion. DEFAULTS TO DRY-RUN —
+        pass --apply to delete. Must run BEFORE the DB cascade removes the
+        user's lab_campaigns rows (needed to locate lab-campaigns objects).
+        Usage::
+
+            flask storage:purge-user --user-id <uuid>
+            flask storage:purge-user --user-id <uuid> --apply
+        """
+        from cron.purge_old_storage import purge_user_objects  # noqa: PLC0415
+
+        with flask_app.app_context():
+            summary = purge_user_objects(user_id, dry_run=not apply_)
+        print(
+            f"storage:purge-user ({'live' if apply_ else 'dry-run'}) "
+            f"user={summary['user_id']} campaigns={len(summary['campaign_ids'])} "
+            f"errors={len(summary['errors'])}",
+            flush=True,
+        )
+        for bucket, stats in summary["buckets"].items():
+            print(
+                f"  {bucket}: found={stats['found']} deleted={stats['deleted']}",
+                flush=True,
+            )
+        for err in summary["errors"]:
+            print(f"  err: {err}", flush=True)
+
     return flask_app
 
 
