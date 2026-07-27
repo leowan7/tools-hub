@@ -115,10 +115,18 @@ def _claim_key(
     expires = now + timedelta(seconds=ttl_seconds)
 
     # Fast path: is there a live row for this key already?
+    #
+    # select("*"), not an explicit column list. PostgREST projects exactly the
+    # columns asked for, so an explicit list silently drops any column added
+    # later -- which is what made the `location` replay fix a no-op until this
+    # changed. Naming `location` explicitly is worse than the wildcard: before
+    # migration 0038 is applied PostgREST 400s on the unknown column, and the
+    # bare except below fails OPEN, so every double-submit would re-run its
+    # handler and place a SECOND wallet hold plus a SECOND Modal job.
     try:
         response = (
             client.table(_TABLE)
-            .select("key,response_status,response_body,content_type,expires_at")
+            .select("*")
             .eq("key", key)
             .execute()
         )

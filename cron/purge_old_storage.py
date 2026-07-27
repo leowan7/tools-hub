@@ -82,6 +82,13 @@ logger = logging.getLogger(__name__)
 # policy so an operator can tighten it for cost reasons but never near-zero.
 _MIN_RETENTION_DAYS = 7
 
+# Paging for the active-campaign lookup. The page size stays under the
+# PostgREST ``max_rows`` clamp (1000) so a full page is never itself a
+# truncation; the page cap is a runaway guard, and hitting it fails CLOSED
+# (see :func:`active_campaign_input_paths`).
+_CAMPAIGN_PAGE_SIZE = 500
+_MAX_CAMPAIGN_PAGES = 200
+
 
 def _resolve_retention_days(retention_days: Optional[int]) -> int:
     days = retention_days
@@ -149,9 +156,22 @@ def active_campaign_input_paths(client: Optional[object] = None) -> Optional[set
     input is still load-bearing.
 
     Returns the protected set, or ``None`` when it cannot be determined (no
-    client, or the read failed). ``None`` means "unknown", and callers must
-    treat it as "do not delete" — matching this module's existing posture of
-    never deleting an object whose age cannot be established.
+    client, the read failed, or the result could not be read in full). ``None``
+    means "unknown", and callers must treat it as "do not delete" — matching
+    this module's existing posture of never deleting an object whose age cannot
+    be established.
+
+    Two things here are load-bearing and easy to "simplify" into a silent
+    data-loss bug:
+
+    * **The read is paged.** PostgREST clamps every response to
+      ``max_rows`` (1000), and a clamped read is indistinguishable from a
+      complete one at the call site. An unpaged read would hand back a
+      truncated protected set that looks authoritative, and the sweep would
+      then delete the inputs of every live campaign that fell outside the page.
+    * **The status filter is a negation, server-side.** Filtering on "not
+      terminal" means a status added later is protected by default; filtering
+      on a positive list of active statuses would silently stop protecting it.
     """
     from shared.compute_campaigns import CAMPAIGN_TERMINAL_STATUSES  # noqa: PLC0415
     from shared.credits import get_service_client  # noqa: PLC0415
@@ -159,27 +179,43 @@ def active_campaign_input_paths(client: Optional[object] = None) -> Optional[set
     db = client if client is not None else get_service_client()
     if db is None:
         return None
+
+    page_size = _CAMPAIGN_PAGE_SIZE
+    protected: set[str] = set()
+    start = 0
     try:
-        rows = list(
-            getattr(
+        for _ in range(_MAX_CAMPAIGN_PAGES):
+            resp = (
                 db.table("compute_campaigns")
-                .select("target_storage_path,status")
-                .execute(),
-                "data",
-                None,
+                .select("id,target_storage_path,status")
+                .not_.in_("status", list(CAMPAIGN_TERMINAL_STATUSES))
+                .order("id")
+                .range(start, start + page_size - 1)
+                .execute()
             )
-            or []
-        )
+            batch = list(getattr(resp, "data", None) or [])
+            for row in batch:
+                path = (row or {}).get("target_storage_path")
+                # Re-check client-side too: a filter that silently no-ops
+                # (unsupported operator, changed column) must not widen the
+                # sweep, and this keeps the guard correct either way.
+                if path and (row or {}).get("status") not in CAMPAIGN_TERMINAL_STATUSES:
+                    protected.add(path)
+            if len(batch) < page_size:
+                return protected
+            start += page_size
     except Exception:  # noqa: BLE001
         logger.warning("purge-old: active-campaign lookup failed", exc_info=True)
         return None
 
-    return {
-        path
-        for row in rows
-        if (path := (row or {}).get("target_storage_path"))
-        and (row or {}).get("status") not in CAMPAIGN_TERMINAL_STATUSES
-    }
+    # Ran out of pages with a full page still coming: the set is incomplete, so
+    # it is not safe to treat anything as unprotected. Fail closed.
+    logger.error(
+        "purge-old: active-campaign lookup exceeded %s pages; refusing to sweep "
+        "inputs on a partial protected set",
+        _MAX_CAMPAIGN_PAGES,
+    )
+    return None
 
 
 def purge_old_storage(
