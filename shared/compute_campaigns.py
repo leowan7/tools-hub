@@ -674,9 +674,20 @@ def get_progress_counts(campaign_id: str) -> dict:
 
 
 def aggregate_campaign_candidates(
-    campaign_id: str, *, user_id: Optional[str] = None, limit: int = 300,
+    campaign_id: str, *, user_id: Optional[str] = None,
+    limit: Optional[int] = 300,
 ) -> dict:
     """Fan a campaign's sub-jobs' candidates into one globally-ranked list.
+
+    ``limit`` bounds how many of the top-ranked candidates come back; pass
+    ``None`` for no cap (used by the CSV / FASTA campaign exports, which must
+    return the full ranked set). Note: even with ``limit=None`` the returned
+    set is still bounded by how many succeeded sub-job *rows* the underlying
+    Supabase select returns, which PostgREST clamps at ``max_rows`` (1000, see
+    ``supabase/config.toml``) because the select below carries no explicit
+    ``.limit()``. That unbounded-fetch clamp is a separate tracked item; until
+    it is fixed, an "uncapped" export is complete only for campaigns with
+    <=1000 succeeded sub-jobs.
 
     Returns ``{"candidates": [...top ``limit``...], "total": int,
     "columns": [...], "capped": bool, "tool": str}``. Each returned candidate
@@ -773,11 +784,16 @@ def aggregate_campaign_candidates(
 
     merged.sort(key=_sort_key)
 
+    # limit=None means "no cap" (full ranked set); merged[:None] is the whole
+    # list and nothing is dropped, so capped is False.
+    candidates = merged if limit is None else merged[:limit]
+    capped = limit is not None and total > limit
+
     return {
-        "candidates": merged[:limit],
+        "candidates": candidates,
         "total": total,
         "columns": columns,
-        "capped": total > limit,
+        "capped": capped,
         "tool": tool,
     }
 

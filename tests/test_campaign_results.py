@@ -187,6 +187,84 @@ def test_aggregate_ownership_gate_returns_empty(monkeypatch):
     assert out["tool"] is None
 
 
+def test_aggregate_uncapped_returns_full_ranked_set(monkeypatch):
+    """limit=None returns every candidate (used by CSV / FASTA exports), well
+    past the old top-300 cap, and reports capped=False."""
+    rows = [
+        {"id": "j", "campaign_id": "C", "status": "succeeded", "chunk_index": 0,
+         "attempt": 1,
+         "result": {"candidates": [_cand(i, 0.5 + i * 0.0001, "pass")
+                                   for i in range(350)]}},
+    ]
+    _patch(monkeypatch, rows)
+    out = cc.aggregate_campaign_candidates("C", user_id="u", limit=None)
+    assert out["total"] == 350
+    assert len(out["candidates"]) == 350
+    assert out["capped"] is False
+    # Same pool, capped at 300, still reports the true total and capped=True.
+    capped = cc.aggregate_campaign_candidates("C", user_id="u", limit=300)
+    assert capped["total"] == 350
+    assert len(capped["candidates"]) == 300
+    assert capped["capped"] is True
+
+
+# ---------------------------------------------------------------------------
+# _campaign_export: CSV / FASTA uncapped, ZIP capped at 300
+# ---------------------------------------------------------------------------
+
+def test_campaign_export_csv_fasta_uncapped_zip_capped(monkeypatch):
+    """The export route asks the aggregator for the full set (limit=None) for
+    CSV / FASTA and for the top-N only (limit=300) for the ZIP, so the text
+    exports carry every candidate while the ZIP stays memory-bounded. The ZIP
+    download name makes its 'top N of M' truncation explicit."""
+    from types import SimpleNamespace
+    import blueprints.campaigns as bp
+
+    pool = [
+        {"rank": i + 1, "pdb_key": f"d{i}.pdb", "sequence": "MKTAY",
+         "scores": {"ipTM": 0.5},
+         "pdb_content_b64": base64.b64encode(b"ATOM X").decode(),
+         "_source_chunk": 0, "_source_job_id": "j"}
+        for i in range(350)
+    ]
+
+    seen_limits = []
+
+    def _fake_agg(campaign_id, *, user_id=None, limit=300):
+        seen_limits.append(limit)
+        sliced = pool if limit is None else pool[:limit]
+        return {
+            "candidates": sliced,
+            "total": len(pool),
+            "columns": ["ipTM"],
+            "capped": limit is not None and len(pool) > limit,
+            "tool": "rfdiffusion",
+        }
+
+    monkeypatch.setattr(bp, "load_user_context",
+                        lambda: SimpleNamespace(user_id="u"))
+    monkeypatch.setattr(
+        "shared.compute_campaigns.aggregate_campaign_candidates", _fake_agg)
+
+    # CSV — full set (header + 350 rows), aggregator asked with limit=None.
+    csv_resp = bp._campaign_export("camp1234", "csv")
+    csv_lines = csv_resp.get_data(as_text=True).strip().splitlines()
+    assert len(csv_lines) == 351
+    assert seen_limits[-1] is None
+
+    # FASTA — one record per candidate, aggregator asked with limit=None.
+    fasta_resp = bp._campaign_export("camp1234", "fasta")
+    assert fasta_resp.get_data(as_text=True).count(">") == 350
+    assert seen_limits[-1] is None
+
+    # ZIP — capped at the ZIP-specific limit (300), and the filename says so.
+    zip_resp = bp._campaign_export("camp1234", "zip")
+    assert seen_limits[-1] == bp._CAMPAIGN_ZIP_EXPORT_LIMIT == 300
+    names = zipfile.ZipFile(io.BytesIO(zip_resp.get_data())).namelist()
+    assert len(names) == 300
+    assert "top300of350" in zip_resp.headers["Content-Disposition"]
+
+
 # ---------------------------------------------------------------------------
 # campaign-wide shortlist ref parser
 # ---------------------------------------------------------------------------

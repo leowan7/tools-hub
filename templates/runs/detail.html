@@ -70,7 +70,9 @@
     {% if candidates_capped %}
       <p class="rd-progress-label" style="margin:1.5rem 0 .5rem;">
         Showing the top <strong>{{ candidates|length }}</strong> designs by score of
-        <strong>{{ candidates_total }}</strong> total. Use the export buttons to download all.
+        <strong>{{ candidates_total }}</strong> total. The CSV and FASTA exports include
+        the full ranked set; the PDB ZIP is limited to these top
+        <strong>{{ candidates|length }}</strong>.
       </p>
     {% endif %}
     {% from "components/results_shell.html" import results_panel %}
