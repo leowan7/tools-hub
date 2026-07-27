@@ -446,6 +446,73 @@ def test_transient_hold_refusal_retries_same_index_next_pass(driver_env, monkeyp
     assert state["released"] == []
 
 
+def test_presign_failure_skips_dispatch_without_spending(driver_env, monkeypatch):
+    """A presign failure must cost nothing and dispatch nothing.
+
+    Regression for the swallowed-presign bug: the except used to leave
+    presigned_url = "" and fall through to build_payload + submit, so the
+    driver kept placing per-child holds and launching GPU containers with no
+    input file until the whole campaign had dispatched and failed. Storage is
+    re-presigned every wave, so one outage burned the entire budget silently.
+    """
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, requested=24, concurrency_target=8)
+
+    import shared.storage as s
+    calls = {"n": 0}
+
+    def flaky_presign(path, expires_seconds=0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("storage down")
+        return "https://fake/url"
+
+    monkeypatch.setattr(s, "presigned_input_url", flaky_presign)
+
+    drive_campaign("camp-1")
+    # Nothing created, nothing charged, nothing launched.
+    assert len(_children(client)) == 0
+    assert state["holds"] == []
+    assert state["submits"] == 0
+    # And no hold was placed then released — the money never moved at all.
+    assert state["released"] == []
+
+    drive_campaign("camp-1")
+    # Storage recovered: the same chunks are retried, in order, no gap.
+    kids = _children(client)
+    assert len(kids) == 2
+    assert {k["chunk_index"] for k in kids} == {0, 1}
+
+
+def test_presign_returning_empty_skips_dispatch(driver_env, monkeypatch):
+    """A falsy presign return is the same unrunnable state as a raise, so it
+    must take the same no-spend path rather than submitting an empty URL."""
+    client, state = driver_env
+    _seed_campaign(client, total_subjobs=2, requested=24, concurrency_target=8)
+
+    import shared.storage as s
+    monkeypatch.setattr(s, "presigned_input_url", lambda path, expires_seconds=0: "")
+
+    drive_campaign("camp-1")
+
+    assert len(_children(client)) == 0
+    assert state["holds"] == []
+    assert state["submits"] == 0
+
+
+def test_campaign_without_target_still_dispatches(driver_env):
+    """The presign guard must not break tools that legitimately have no staged
+    target (a proteina curated-task campaign carries target_storage_path=None)."""
+    client, state = driver_env
+    row = _seed_campaign(client, total_subjobs=2, requested=24, concurrency_target=8)
+    row["target_storage_path"] = None
+
+    drive_campaign("camp-1")
+
+    assert len(_children(client)) == 2
+    assert state["submits"] == 2
+
+
 def test_cancel_campaign(driver_env, monkeypatch):
     client, state = driver_env
     _seed_campaign(client, total_subjobs=3, chunk_size=12, requested=36,

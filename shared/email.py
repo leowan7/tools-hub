@@ -977,8 +977,12 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         )
 
     # Composite binder-design tools (RFantibody, BindCraft, BoltzGen,
-    # PXDesign, RFdiffusion): 'candidates[]'.
-    cands = result.get("candidates", []) or []
+    # PXDesign, RFdiffusion): 'candidates[]'. candidate_records also covers the
+    # designs-only shape (boltz2, iggm), which reaches this fallthrough without
+    # a root-level pdb_b64 and would otherwise report "0 candidates returned"
+    # in an otherwise-successful completion email.
+    from shared.jobs import candidate_records  # noqa: PLC0415
+    cands = candidate_records(result)
     n = len(cands)
     return (
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "

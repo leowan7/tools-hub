@@ -23,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from cron import purge_old_storage as mod
 from shared.storage import (
     AGE_SWEEP_BUCKETS,
@@ -117,10 +119,14 @@ class _FakeStorage:
 
 
 class _FakeTable:
-    def __init__(self, name: str, campaigns: list, raise_on_execute: bool):
+    def __init__(self, name: str, campaigns: list, raise_on_execute: bool,
+                 compute_campaigns: list = None,
+                 compute_raise: bool = False):
         self.name = name
         self.campaigns = campaigns
         self.raise_on_execute = raise_on_execute
+        self.compute_campaigns = compute_campaigns or []
+        self.compute_raise = compute_raise
         self._uid = None
 
     def select(self, *_cols):
@@ -134,6 +140,10 @@ class _FakeTable:
     def execute(self):
         if self.name == "lab_campaigns" and self.raise_on_execute:
             raise RuntimeError("transient DB failure")
+        if self.name == "compute_campaigns":
+            if self.compute_raise:
+                raise RuntimeError("transient DB failure")
+            return SimpleNamespace(data=list(self.compute_campaigns))
         rows = [
             {"id": c["id"]} for c in self.campaigns
             if self.name == "lab_campaigns" and c["user_id"] == self._uid
@@ -142,14 +152,20 @@ class _FakeTable:
 
 
 class _FakeClient:
-    def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False):
+    def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False,
+                 compute_campaigns=None, compute_raise=False):
         self.removed: list = []
         self.storage = _FakeStorage(buckets, self.removed)
         self._campaigns = campaigns or []
         self._campaigns_raise = campaigns_raise
+        self._compute_campaigns = compute_campaigns or []
+        self._compute_raise = compute_raise
 
     def table(self, name: str) -> _FakeTable:
-        return _FakeTable(name, self._campaigns, self._campaigns_raise)
+        return _FakeTable(
+            name, self._campaigns, self._campaigns_raise,
+            self._compute_campaigns, self._compute_raise,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +294,78 @@ def test_sweeper_never_deletes_lab_campaigns_even_old():
     assert "camp-1/results/summary.csv" in buckets[CAMPAIGN_BUCKET]
     assert all("camp-1/" not in p for p in client.removed)
     assert CAMPAIGN_BUCKET not in summary["buckets"]
+
+
+def test_input_of_live_campaign_survives_sweep_despite_age():
+    """A campaign re-mints a signed URL from its stored target path on EVERY
+    wave, so age alone must not decide. An old input belonging to a campaign
+    that can still dispatch has to survive, or every remaining chunk becomes
+    unrunnable mid-flight."""
+    buckets = _seed_buckets()
+    client = _FakeClient(
+        buckets,
+        compute_campaigns=[
+            {"target_storage_path": "u1/j1/target.pdb", "status": "running"},
+        ],
+    )
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in buckets[BUCKET]          # survives
+    assert "u1/j1/target.pdb" not in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 1
+    # The other expired input (no live campaign) is still swept.
+    assert "u2/j9/orphan.pdb" in client.removed
+
+
+@pytest.mark.parametrize(
+    "status", ["completed", "completed_with_failures", "failed", "cancelled"]
+)
+def test_input_of_terminal_campaign_is_swept(status):
+    """A terminal campaign will never dispatch again, so its input is ordinary
+    expired data and the guard must not pin it forever."""
+    buckets = _seed_buckets()
+    client = _FakeClient(
+        buckets,
+        compute_campaigns=[
+            {"target_storage_path": "u1/j1/target.pdb", "status": status},
+        ],
+    )
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 0
+
+
+def test_unknown_live_campaign_set_blocks_input_deletion():
+    """If the live-campaign set cannot be read we cannot prove an input is
+    unreferenced, so the sweep must fail CLOSED for tool-inputs — matching the
+    module's existing 'never delete on unknown age' posture. tool-outputs is
+    unaffected."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, compute_raise=True)
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in buckets[BUCKET]          # nothing deleted
+    assert "u2/j9/orphan.pdb" in buckets[BUCKET]
+    assert summary["buckets"][BUCKET]["deleted"] == 0
+    assert summary["buckets"][BUCKET]["protected"] is None
+    assert any("active-campaign-lookup-failed" in e for e in summary["errors"])
+    # The outputs bucket is not campaign-referenced and still sweeps.
+    assert "u1/j1/designs/design_0.pdb" in client.removed
+
+
+def test_active_campaign_paths_ignores_rows_without_a_target():
+    """proteina curated-task campaigns carry target_storage_path=None; those
+    rows must not poison the protected set with a None entry."""
+    client = _FakeClient(
+        {},
+        compute_campaigns=[
+            {"target_storage_path": None, "status": "running"},
+            {"target_storage_path": "", "status": "running"},
+            {"target_storage_path": "u1/j1/target.pdb", "status": "running"},
+        ],
+    )
+    assert mod.active_campaign_input_paths(client=client) == {"u1/j1/target.pdb"}
 
 
 def test_sweeper_apply_deletes_only_expired():

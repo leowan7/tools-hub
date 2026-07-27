@@ -22,7 +22,7 @@ from flask import (
 
 from shared.auth import login_required
 from shared.credits import load_user_context
-from shared.jobs import get_job
+from shared.jobs import candidate_records, get_job
 from shared.storage import StorageError, stage_campaign_candidates
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,11 @@ def _submit_campaign_shortlist(
         try:
             stage_campaign_candidates(
                 campaign_id=lab_campaign.id,
-                candidates=(job.result or {}).get("candidates", []),
+                # candidate_records: the aggregator indexed these refs with it,
+                # so a raw ["candidates"] read here stages ZERO PDBs (silently)
+                # for the designs-only tools while still creating the row and
+                # sending the confirmation email.
+                candidates=candidate_records(job.result),
                 indices=idxs,
                 user_id=ctx.user_id,
                 job_id=jid,
@@ -218,7 +222,7 @@ def campaigns_submit():
         return redirect(url_for("jobs.jobs_list"))
 
     # Copy candidate PDBs into durable campaign bucket.
-    candidates = (job.result or {}).get("candidates", [])
+    candidates = candidate_records(job.result)
     try:
         stage_campaign_candidates(
             campaign_id=campaign.id,

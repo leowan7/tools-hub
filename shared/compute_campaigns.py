@@ -181,6 +181,15 @@ CAMPAIGN_STATUSES: frozenset[str] = frozenset({
     "completed", "completed_with_failures", "failed", "cancelled",
 })
 
+# States after which a campaign will never dispatch another chunk. A campaign
+# NOT in this set can still re-mint a presigned URL from its
+# target_storage_path on a later wave (see _dispatch_chunk), so its input
+# object must never be age-swept out from under it — cron/purge_old_storage.py
+# reads this to protect live inputs.
+CAMPAIGN_TERMINAL_STATUSES: frozenset[str] = frozenset({
+    "completed", "completed_with_failures", "failed", "cancelled",
+})
+
 # tool_jobs statuses the progress rollup buckets.
 _CHILD_STATUSES: tuple[str, ...] = (
     "pending", "running", "succeeded", "failed", "timeout", "cancelled",
@@ -1093,9 +1102,10 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
       * ``"launched"`` — a child row was created and a Modal run started.
       * ``"failed"``   — a child row exists but reached a terminal failure
                           (modal submit failed); the chunk IS dispatched.
-      * ``"skipped"``  — NO child row was created (transient hold refusal or
-                          transient insert failure); retry this SAME index on a
-                          later drive pass (the frontier does not advance).
+      * ``"skipped"``  — NO child row was created (transient hold refusal,
+                          transient insert failure, or the target PDB could not
+                          be presigned); retry this SAME index on a later drive
+                          pass (the frontier does not advance).
       * ``"duplicate"`` — NO new row: a concurrent driver already created this
                           (campaign_id, chunk_index). The index IS claimed, so
                           the caller resyncs the frontier and moves on.
@@ -1127,6 +1137,35 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
     base_inputs = dict(campaign.params or {})
     base_inputs[_DESIGN_PARAM_KEY[campaign.tool]] = design_count
     base_inputs["preset"] = campaign.preset
+
+    # Resolve the target URL BEFORE any money moves. A campaign persists the
+    # storage PATH and re-mints a short-lived signed URL per wave, so a Storage
+    # outage or a revoked object makes every remaining chunk unrunnable. This
+    # used to sit after create_job with a bare except that left presigned_url
+    # "" and dispatched anyway, so the driver kept placing holds and launching
+    # containers with no input file until the campaign drained. Failing here
+    # returns "skipped": no row, no hold, frontier does not advance, and the
+    # chunk is retried on a later tick once Storage recovers.
+    presigned_url = ""
+    if campaign.target_storage_path:
+        try:
+            presigned_url = presigned_input_url(
+                campaign.target_storage_path, expires_seconds=7200
+            )
+        except Exception:
+            logger.error(
+                "campaign %s chunk %s: presign failed; skipping dispatch",
+                campaign.id, chunk_index, exc_info=True,
+            )
+            return "skipped"
+        if not presigned_url:
+            # Defensive: a falsy return without an exception is the same
+            # unrunnable state as a raise, so treat it identically.
+            logger.error(
+                "campaign %s chunk %s: presign returned empty; skipping dispatch",
+                campaign.id, chunk_index,
+            )
+            return "skipped"
 
     point_estimate = estimate_child_cost(campaign.tool, design_count, campaign.preset)
     hold_amount = child_hold_usd(campaign.tool, design_count, campaign.preset)
@@ -1182,18 +1221,6 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         except Exception:
             logger.warning("release_hold after create fail raised", exc_info=True)
         return "duplicate"
-
-    presigned_url = ""
-    if campaign.target_storage_path:
-        try:
-            presigned_url = presigned_input_url(
-                campaign.target_storage_path, expires_seconds=7200
-            )
-        except Exception:
-            logger.warning(
-                "campaign %s chunk %s: presign failed", campaign.id, chunk_index,
-                exc_info=True,
-            )
 
     # Build the payload + submit under ONE guard: a build_payload or
     # URL-build failure here (after the row + hold already exist) must take

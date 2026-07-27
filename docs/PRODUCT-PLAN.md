@@ -573,3 +573,30 @@ Only if Phase 1 has revenue signal:
 - Scout Pro → Lab conversion.
 - Tool use → Binder Pilot booking rate — the wedge hypothesis.
 - [VALIDATION-LOG.md](VALIDATION-LOG.md) shows zero customer-facing silent-failure incidents across waves (the anti-PXDesign outcome).
+
+---
+
+# Backlog — 2026-07-27 (target-first rework)
+
+Product gaps surfaced while planning the target-first / multi-tool rework: one persistent protein target, N tool runs against it in parallel, one combined ranked table, download, and an **optional** Ranomics handoff. None of these are defects; defects live in `audit-2026-07-22-campaign-rework-open-items.md`.
+
+**Staleness warning for readers of this file:** everything above this line predates the USD-wallet pivot. The tier/credits model (Scout Pro, Lab, credit debits, paywall-at-4-jobs) and the Target Workspaces SKU section are **retired**. The shipped model is a prepaid USD wallet with per-sub-job holds and fund-and-drain campaigns; `/workspaces` sales routes are stubs redirecting away (`blueprints/wallet.py:208-243`). Treat the sections above as history.
+
+Direct ancestor of the current work: item 8 under "What fully production-ready means" — *"Cross-run results comparison: pick N past jobs, see a stacked table of top candidates ranked by composite score."* Written, never built. `/jobs/compare` shipped instead and is a side-by-side panel view capped at 10 jobs and 4 metric columns, explicitly labelled "shared metrics only". The target-first rework is that item, done properly.
+
+## Gaps, ranked by value per unit of work
+
+**1. Epitope Scout should mint a target.** Highest value in this list. Scout already outputs ranked epitopes with residue lists, `scout_handoffs` (migration 0007) already exists, and `blueprints/tools.py:630-648` already consumes a handoff to prefill a tool form. A Scout result *is* a target with hotspots prefilled. Today Scout and the paid hub are two disconnected products with a free tier between them; this makes them one continuous path and gives the documented top-of-funnel entry an actual destination. Becomes cheap once `design_targets` exists: mint a target row from the handoff instead of prefilling a single form. Fix `get_handoff`'s missing `expires_at` check (addendum A5) as part of it.
+
+**2. Target-completion notifications.** Seven tool runs finishing across hours or days, and the only transactional email that exists is low-balance. Nobody will hold the page open. A "your target finished, N designs, M passed filters" email closes the loop and is the honest moment to mention the optional lab handoff, rather than making the handoff the loudest thing on the results page. Reuses the existing Resend path in `shared/email.py`.
+
+**3. Live reveal of designs while runs are in flight.** Already tracked as verification-list item 14, but the pain scales with tool count: `status.json` returns counts only, so the merged table reads zero during the first wave even though passing designs already exist in `inputs._partial_candidates` on running children. Tolerable for one run, bad for seven. Needs a candidates endpoint or an HTML-fragment refetch, not a JS tweak.
+
+**4. Developability screening on the target shortlist.** The hub already ships a `developability` tool that is not campaign-capable. "Which of these should I actually order" is a better question than ipTM rank, and it is the natural step between ranking and any handoff. Running it across a target's top-N would make the combined table actionable rather than just sorted. Out of scope for the rework itself, but the ranking work should not preclude it.
+
+**5. Reuse a target's launch configuration.** "Do for HER3 what I did for HER2." Nearly free once `launch_group_id` exists, and it makes the second campaign much faster to start than the first, which matters for retention.
+
+## Decisions owed before parts of this can be built
+
+- **Retention: 30 days or 90?** Migration 0021 plans 30, `templates/legal/terms.html:64` states 90. They still disagree, and the sweeper cannot be built until one wins. Blocks verification-list item 16.
+- **Should the common-yardstick refold place a real wallet hold?** `_spawn_refold_job` places no hold today and bills on completion, which is fine at 5-10 folds and questionable at 24. The rework plan gates the target-level route on a balance check, which is a check and not a reservation. Upgrading it to a real hold would change behaviour for the two existing refold routes, so it needs an explicit call.

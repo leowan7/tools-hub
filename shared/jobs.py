@@ -48,7 +48,8 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     dict, and the old `_interpret_pipeline_return` stored it raw as
     `tool_jobs.result`. Every template and helper that reads
     `job.result.get("candidates")` then saw nothing because candidates
-    were nested under `result.output.candidates`. `_interpret_pipeline_return`
+    were nested under `result.output.candidates` (or, for the designs-only
+    tools, `result.output.designs`). `_interpret_pipeline_return`
     now unwraps for new jobs, but rows persisted before that fix still
     have the wrapped shape. Normalize on read so every consumer (template
     render, PDB resolver, CSV/FASTA export, completion email) sees the
@@ -56,10 +57,17 @@ def _normalize_result_shape(result: Optional[dict]) -> Optional[dict]:
     """
     if not isinstance(result, dict):
         return result
-    if result.get("candidates"):
+    # Both per-candidate keys count: the designs-only tools (boltz2, iggm,
+    # esmfold2_design) persist under "designs", and keying this check on
+    # "candidates" alone left a wrapped designs row unflattened and therefore
+    # invisible to every consumer — the exact failure this function exists to
+    # prevent.
+    if result.get("candidates") or result.get("designs"):
         return result
     nested = result.get("output")
-    if not isinstance(nested, dict) or not nested.get("candidates"):
+    if not isinstance(nested, dict) or not (
+        nested.get("candidates") or nested.get("designs")
+    ):
         return result
     merged = dict(nested)
     for key in ("tier", "gpu_seconds", "runtime_seconds"):

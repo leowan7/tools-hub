@@ -66,6 +66,7 @@ from typing import Optional
 
 from shared.storage import (
     AGE_SWEEP_BUCKETS,
+    BUCKET as INPUT_BUCKET,
     CAMPAIGN_BUCKET,
     DATA_BUCKETS,
     RETENTION_DAYS,
@@ -138,6 +139,49 @@ def select_expired(entries: list[dict], cutoff: datetime) -> tuple[list[dict], l
     return expired, retained
 
 
+def active_campaign_input_paths(client: Optional[object] = None) -> Optional[set[str]]:
+    """Input object paths still referenced by a campaign that can dispatch again.
+
+    A campaign persists the storage PATH of its target and re-mints a
+    short-lived signed URL on EVERY wave, so deleting that object mid-campaign
+    makes every remaining chunk unrunnable. Age alone is not a safe signal: a
+    long-running or paused campaign can outlive the retention window while its
+    input is still load-bearing.
+
+    Returns the protected set, or ``None`` when it cannot be determined (no
+    client, or the read failed). ``None`` means "unknown", and callers must
+    treat it as "do not delete" — matching this module's existing posture of
+    never deleting an object whose age cannot be established.
+    """
+    from shared.compute_campaigns import CAMPAIGN_TERMINAL_STATUSES  # noqa: PLC0415
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    db = client if client is not None else get_service_client()
+    if db is None:
+        return None
+    try:
+        rows = list(
+            getattr(
+                db.table("compute_campaigns")
+                .select("target_storage_path,status")
+                .execute(),
+                "data",
+                None,
+            )
+            or []
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("purge-old: active-campaign lookup failed", exc_info=True)
+        return None
+
+    return {
+        path
+        for row in rows
+        if (path := (row or {}).get("target_storage_path"))
+        and (row or {}).get("status") not in CAMPAIGN_TERMINAL_STATUSES
+    }
+
+
 def purge_old_storage(
     *,
     retention_days: Optional[int] = None,
@@ -151,12 +195,22 @@ def purge_old_storage(
     ``lab-campaigns`` is intentionally NOT age-swept (CRO deliverables). Pass
     ``buckets`` only to narrow further (e.g. a single bucket in a canary).
 
+    Objects in ``tool-inputs`` that are still referenced by a non-terminal
+    campaign are held back regardless of age (see
+    :func:`active_campaign_input_paths`) and reported as ``protected``. A
+    ``protected`` of ``None`` means the live-campaign set could not be read and
+    nothing was deleted from that bucket on this pass.
+
     DEFAULTS TO DRY-RUN. Returns a summary dict suitable for logging::
 
         {"retention_days": N, "cutoff": "...", "dry_run": bool,
-         "buckets": {bucket: {"scanned": S, "expired": E, "deleted": D}},
+         "buckets": {bucket: {"scanned": S, "expired": E, "deleted": D,
+                              "protected": P}},
          "total_scanned": ..., "total_expired": ..., "total_deleted": ...,
          "errors": [...]}
+
+    ``expired`` counts objects past the cutoff BEFORE the live-campaign filter,
+    so ``deleted <= expired - protected`` for ``tool-inputs``.
     """
     days = _resolve_retention_days(retention_days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -189,6 +243,25 @@ def purge_old_storage(
         summary["total_scanned"] += len(entries)
         summary["total_expired"] += len(expired)
 
+        # Age is not sufficient for tool-inputs: a campaign re-mints a signed
+        # URL from its stored target path on every wave, so an input belonging
+        # to a campaign that can still dispatch must survive the sweep no
+        # matter how old it is. Unknown (None) fails closed.
+        if bucket == INPUT_BUCKET and expired:
+            protected = active_campaign_input_paths(client=client)
+            if protected is None:
+                stats["protected"] = None
+                summary["errors"].append(f"{bucket}:active-campaign-lookup-failed")
+                logger.error(
+                    "purge-old: cannot determine live campaign inputs; refusing "
+                    "to delete from %s this pass (%d expired left in place)",
+                    bucket, len(expired),
+                )
+                continue
+            before = len(expired)
+            expired = [e for e in expired if e.get("path") not in protected]
+            stats["protected"] = before - len(expired)
+
         if expired and not dry_run:
             try:
                 deleted = delete_objects(
@@ -201,9 +274,10 @@ def purge_old_storage(
                 summary["errors"].append(f"{bucket}:delete:{exc}")
 
         logger.info(
-            "purge-old %s bucket=%s scanned=%d expired=%d deleted=%d",
+            "purge-old %s bucket=%s scanned=%d expired=%d protected=%s deleted=%d",
             "DRY-RUN" if dry_run else "LIVE",
-            bucket, stats["scanned"], stats["expired"], stats["deleted"],
+            bucket, stats["scanned"], stats["expired"],
+            stats.get("protected", 0), stats["deleted"],
         )
 
     return summary
