@@ -540,10 +540,14 @@ def _campaign_passed_filters(campaign_id: str) -> int:
     from shared.jobs import count_passed_candidates  # noqa: PLC0415
     return sum(count_passed_candidates(r.get("result")) for r in rows)
 
-# The on-screen merged table and every campaign export share one top-N cap, so
-# a download matches the ranked designs shown and a large campaign can never
-# bundle an unbounded number of PDBs into memory (decision 6).
-_CAMPAIGN_EXPORT_LIMIT = 300
+# CSV and FASTA are cheap ranked text, so they export the campaign's FULL set
+# (limit=None). The ZIP keeps a top-N cap because it pulls every candidate's
+# PDB bytes into web-process memory, and an unbounded campaign could OOM the
+# process — that cap is load-bearing (decision 6). Note: an "uncapped" CSV /
+# FASTA is still bounded by the PostgREST max_rows (1000) clamp on the
+# aggregator's underlying sub-job fetch (a separate tracked item), so it is
+# complete only for campaigns with <=1000 succeeded sub-jobs.
+_CAMPAIGN_ZIP_EXPORT_LIMIT = 300
 
 
 def _campaign_export(campaign_id: str, fmt: str):
@@ -552,6 +556,10 @@ def _campaign_export(campaign_id: str, fmt: str):
     The aggregator resolves ownership (returns an empty ``tool`` when the
     campaign is not the caller's), so a foreign id 404s here rather than
     leaking designs. ZIP namespaces each PDB by its source sub-job.
+
+    CSV / FASTA aggregate the full ranked set (``limit=None``); the ZIP is
+    capped at :data:`_CAMPAIGN_ZIP_EXPORT_LIMIT` to bound memory. See that
+    constant for the residual PostgREST-1000 caveat on the "full" text exports.
     """
     from flask import Response  # noqa: PLC0415
     from shared import compute_campaigns as cc  # noqa: PLC0415
@@ -563,8 +571,9 @@ def _campaign_export(campaign_id: str, fmt: str):
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
+    export_limit = _CAMPAIGN_ZIP_EXPORT_LIMIT if fmt == "zip" else None
     agg = cc.aggregate_campaign_candidates(
-        campaign_id, user_id=ctx.user_id, limit=_CAMPAIGN_EXPORT_LIMIT,
+        campaign_id, user_id=ctx.user_id, limit=export_limit,
     )
     if agg.get("tool") is None:
         return render_template("404.html"), 404
@@ -600,10 +609,17 @@ def _campaign_export(campaign_id: str, fmt: str):
             return None
 
     data = candidates_to_zip(candidates, _fetch, namespace=True)
+    # When the ZIP is truncated, name the artifact so the "top N of M"
+    # limitation travels with the file (the CSV / FASTA carry the full set).
+    if agg.get("capped"):
+        total = agg.get("total", len(candidates))
+        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}.zip"
+    else:
+        zip_name = f"{stem}_pdbs.zip"
     return Response(
         data,
         mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={stem}_pdbs.zip"},
+        headers={"Content-Disposition": f"attachment; filename={zip_name}"},
     )
 
 
