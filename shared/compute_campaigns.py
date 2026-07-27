@@ -682,6 +682,54 @@ def get_progress_counts(campaign_id: str) -> dict:
     return counts
 
 
+# Rows per page when fanning a campaign's sub-jobs in. Must stay at or below
+# the PostgREST max_rows in supabase/config.toml (1000) or a page comes back
+# short and pagination stops early.
+_CHILD_PAGE_SIZE = 500
+
+# Hard bound on the paging loop: MAX_SUBJOBS_PER_CAMPAIGN attempts, each of
+# which could in principle have max_attempts rows. Purely a runaway guard
+# against a backend that keeps returning full pages.
+_MAX_CHILD_PAGES = (MAX_SUBJOBS_PER_CAMPAIGN * DEFAULT_MAX_ATTEMPTS) // _CHILD_PAGE_SIZE + 2
+
+
+def iter_succeeded_children(campaign_id: str, client, *, columns: str = None):
+    """Yield every succeeded sub-job row of a campaign, paging past max_rows.
+
+    A plain ``.select()`` is clamped by PostgREST to the project's ``max_rows``
+    (1000 in ``supabase/config.toml``) while a campaign may hold up to
+    ``MAX_SUBJOBS_PER_CAMPAIGN`` (50000) children, so the unpaged read silently
+    truncated the fan-in: the merged table, the exports, and the "global top-N"
+    the Boltz-2 validation refold spends real GPU on were all computed from at
+    most the first 1000 rows, with nothing to indicate rows were missing.
+
+    ``.limit()`` does NOT fix this (PostgREST clamps it the same way);
+    ``.range()`` is the only way past it. Ordered by ``id`` so page boundaries
+    are stable and no row is skipped or repeated across pages.
+    """
+    select_cols = columns or "id,chunk_index,attempt,result"
+    start = 0
+    for _ in range(_MAX_CHILD_PAGES):
+        resp = (
+            client.table("tool_jobs")
+            .select(select_cols)
+            .eq("campaign_id", campaign_id)
+            .eq("status", "succeeded")
+            .order("id")
+            .range(start, start + _CHILD_PAGE_SIZE - 1)
+            .execute()
+        )
+        batch = list(getattr(resp, "data", None) or [])
+        yield from batch
+        if len(batch) < _CHILD_PAGE_SIZE:
+            return
+        start += _CHILD_PAGE_SIZE
+    logger.error(
+        "iter_succeeded_children: page bound hit for campaign %s; "
+        "results may be incomplete", campaign_id,
+    )
+
+
 def aggregate_campaign_candidates(
     campaign_id: str, *, user_id: Optional[str] = None,
     limit: Optional[int] = 300,
@@ -690,13 +738,9 @@ def aggregate_campaign_candidates(
 
     ``limit`` bounds how many of the top-ranked candidates come back; pass
     ``None`` for no cap (used by the CSV / FASTA campaign exports, which must
-    return the full ranked set). Note: even with ``limit=None`` the returned
-    set is still bounded by how many succeeded sub-job *rows* the underlying
-    Supabase select returns, which PostgREST clamps at ``max_rows`` (1000, see
-    ``supabase/config.toml``) because the select below carries no explicit
-    ``.limit()``. That unbounded-fetch clamp is a separate tracked item; until
-    it is fixed, an "uncapped" export is complete only for campaigns with
-    <=1000 succeeded sub-jobs.
+    return the full ranked set). Sub-job rows are fetched through
+    :func:`iter_succeeded_children`, which pages past the PostgREST
+    ``max_rows`` clamp, so ``limit=None`` really is the full set.
 
     Returns ``{"candidates": [...top ``limit``...], "total": int,
     "columns": [...], "capped": bool, "tool": str}``. Each returned candidate
@@ -721,6 +765,7 @@ def aggregate_campaign_candidates(
         columns_for,
         primary_metric_for,
         candidate_metric,
+        normalize_candidate,
     )
 
     empty = {
@@ -739,18 +784,7 @@ def aggregate_campaign_candidates(
     if client is None:
         return base
     try:
-        rows = list(
-            getattr(
-                client.table("tool_jobs")
-                .select("id,chunk_index,attempt,result")
-                .eq("campaign_id", campaign_id)
-                .eq("status", "succeeded")
-                .execute(),
-                "data",
-                None,
-            )
-            or []
-        )
+        rows = list(iter_succeeded_children(campaign_id, client))
     except Exception:
         logger.warning(
             "aggregate_campaign_candidates: query failed for %s",
@@ -776,7 +810,10 @@ def aggregate_campaign_candidates(
         for local_idx, cand in enumerate(candidate_records(r.get("result"))):
             if not isinstance(cand, dict):
                 continue
-            c = dict(cand)
+            # Lift any root-level headline metric into scores first, or the
+            # tool's declared primary metric resolves to None and the merged
+            # table is unordered (this is what made every iggm row rank equal).
+            c = dict(normalize_candidate(cand, tool))
             c["_source_job_id"] = job_id
             c["_source_chunk"] = chunk
             c["_source_index"] = local_idx

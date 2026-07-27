@@ -178,18 +178,36 @@ def _store_response(key: str, response: Response) -> None:
         body_text = response.get_data(as_text=True)
     except Exception:
         body_text = ""
+    fields = {
+        "response_status": int(response.status_code),
+        "response_body": body_text,
+        "content_type": response.headers.get("Content-Type"),
+    }
+    # Redirects carry their destination in a header, not the body, so a replay
+    # that drops it returns a 302 to nowhere. Only set the column when there is
+    # one, so non-redirect routes are untouched.
+    location = response.headers.get("Location")
+    if location:
+        fields["location"] = location
+
     try:
-        client.table(_TABLE).update(
-            {
-                "response_status": int(response.status_code),
-                "response_body": body_text,
-                "content_type": response.headers.get("Content-Type"),
-            }
-        ).eq("key", key).execute()
+        client.table(_TABLE).update(fields).eq("key", key).execute()
     except Exception:
-        logger.warning(
-            "Failed to cache idempotent response for key %s", key, exc_info=True
-        )
+        # Tolerate a deploy that lands before migration 0038: retry without the
+        # new column rather than losing the cache entirely, because an
+        # uncached response means the guarded handler re-runs on replay.
+        if "location" not in fields:
+            logger.warning(
+                "Failed to cache idempotent response for key %s", key, exc_info=True
+            )
+            return
+        fields.pop("location", None)
+        try:
+            client.table(_TABLE).update(fields).eq("key", key).execute()
+        except Exception:
+            logger.warning(
+                "Failed to cache idempotent response for key %s", key, exc_info=True
+            )
 
 
 def _replay_response(row: dict) -> Response:
@@ -198,6 +216,9 @@ def _replay_response(row: dict) -> Response:
     body = row.get("response_body") or ""
     content_type = row.get("content_type") or "application/json"
     resp = Response(response=body, status=status, content_type=content_type)
+    location = row.get("location")
+    if location:
+        resp.headers["Location"] = location
     resp.headers["Idempotent-Replay"] = "true"
     return resp
 

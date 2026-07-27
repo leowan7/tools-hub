@@ -525,15 +525,14 @@ def _campaign_passed_filters(campaign_id: str) -> int:
     client = get_service_client()
     if client is None:
         return 0
+    from shared.compute_campaigns import iter_succeeded_children  # noqa: PLC0415
     try:
-        rows = (
-            client.table("tool_jobs")
-            .select("result")
-            .eq("campaign_id", campaign_id)
-            .eq("status", "succeeded")
-            .execute()
-            .data
-            or []
+        # Paged: this runs on every 5s status poll for the life of a running
+        # campaign, and an unpaged select is clamped at PostgREST's max_rows
+        # (1000), so a large campaign under-reported its passing designs for
+        # the same reason the merged table under-reported its rows.
+        rows = list(
+            iter_succeeded_children(campaign_id, client, columns="result")
         )
     except Exception:
         return 0

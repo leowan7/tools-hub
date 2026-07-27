@@ -112,7 +112,18 @@ def app(fake_client):
             200,
         )
 
+    redirect_counter = {"count": 0}
+
+    @flask_app.route("/go", methods=["POST"])
+    @idempotent(ttl_seconds=60)
+    def go():
+        from flask import redirect
+
+        redirect_counter["count"] += 1
+        return redirect("/jobs/compare?ids=a,b")
+
     flask_app.call_counter = call_counter  # type: ignore[attr-defined]
+    flask_app.redirect_counter = redirect_counter  # type: ignore[attr-defined]
     return flask_app
 
 
@@ -202,6 +213,32 @@ def test_replay_returns_cached_response_without_rerunning(app):
     # Handler invoked only once.
     assert app.call_counter["count"] == 1
     assert r2.headers.get("Idempotent-Replay") == "true"
+
+
+def test_replayed_redirect_keeps_its_location(app):
+    """A cached response used to persist status + body + content-type only, so
+    a replayed redirect came back as a bare 302 with no Location and the
+    browser rendered a blank page. Every return path in the campaign refold
+    route is a redirect, so double-clicking Re-fold hit this."""
+    client = app.test_client()
+    r1 = client.post("/go", data=b"same")
+    r2 = client.post("/go", data=b"same")
+
+    assert r1.status_code == 302
+    assert r2.status_code == 302
+    assert app.redirect_counter["count"] == 1        # handler ran once
+    assert r2.headers.get("Idempotent-Replay") == "true"
+    assert r2.headers.get("Location") == r1.headers.get("Location")
+    assert "/jobs/compare" in r2.headers["Location"]
+
+
+def test_replayed_non_redirect_has_no_location(app):
+    """The column is only written for responses that actually redirect."""
+    client = app.test_client()
+    client.post("/echo", data=b"hello")
+    r2 = client.post("/echo", data=b"hello")
+    assert r2.headers.get("Idempotent-Replay") == "true"
+    assert r2.headers.get("Location") is None
 
 
 def test_different_body_is_not_deduped(app):
