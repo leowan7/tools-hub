@@ -26,15 +26,38 @@ from shared.idempotency import _compute_key, idempotent
 
 
 class _FakeTable:
-    """Minimal in-memory stand-in for a Supabase table client."""
+    """Minimal in-memory stand-in for a Supabase table client.
 
-    def __init__(self, store: dict[str, dict]) -> None:
+    Models two PostgREST behaviours the previous fake ignored, both of which
+    silently hid real bugs:
+
+    * ``select("a,b")`` **projects** — the returned rows carry only the named
+      columns. Ignoring this made the ``location`` replay assertions vacuous:
+      they passed while production returned a 302 with no ``Location``, because
+      ``_claim_key``'s explicit column list never asked for it.
+    * with ``known_columns`` set, an UPDATE naming a column the table does not
+      have raises, the way PostgREST does before a migration is applied. That
+      is the path ``_store_response``'s fallback exists to survive.
+    """
+
+    def __init__(
+        self, store: dict[str, dict], known_columns: Optional[set[str]] = None,
+    ) -> None:
         self._store = store
+        self._known_columns = known_columns
         self._filter_key: Optional[str] = None
         self._update_payload: Optional[dict] = None
         self._pending_upsert: Optional[dict] = None
+        self._projection: Optional[list[str]] = None
 
-    def select(self, *_args: Any, **_kwargs: Any) -> "_FakeTable":
+    def _project(self, row: dict) -> dict:
+        if self._projection is None or "*" in self._projection:
+            return dict(row)
+        return {k: v for k, v in row.items() if k in self._projection}
+
+    def select(self, *args: Any, **_kwargs: Any) -> "_FakeTable":
+        cols = args[0] if args else "*"
+        self._projection = [c.strip() for c in str(cols).split(",") if c.strip()]
         return self
 
     def eq(self, column: str, value: Any) -> "_FakeTable":
@@ -55,28 +78,51 @@ class _FakeTable:
             row = dict(self._pending_upsert)
             self._store[row["key"]] = row
             self._pending_upsert = None
+            self._projection = None
             return type("R", (), {"data": [row]})()
         if self._update_payload is not None and self._filter_key is not None:
-            existing = self._store.get(self._filter_key)
-            if existing:
-                existing.update(self._update_payload)
+            payload = self._update_payload
             self._update_payload = None
+            key = self._filter_key
             self._filter_key = None
+            self._projection = None
+            if self._known_columns is not None:
+                unknown = set(payload) - self._known_columns
+                if unknown:
+                    raise RuntimeError(
+                        f"column {sorted(unknown)[0]!r} of relation "
+                        "'request_idempotency' does not exist"
+                    )
+            existing = self._store.get(key)
+            if existing:
+                existing.update(payload)
             return type("R", (), {"data": []})()
         if self._filter_key is not None:
             row = self._store.get(self._filter_key)
-            data = [row] if row else []
+            data = [self._project(row)] if row else []
             self._filter_key = None
+            self._projection = None
             return type("R", (), {"data": data})()
+        self._projection = None
         return type("R", (), {"data": []})()
 
 
 class _FakeClient:
-    def __init__(self, store: dict[str, dict]) -> None:
+    def __init__(
+        self, store: dict[str, dict], known_columns: Optional[set[str]] = None,
+    ) -> None:
         self._store = store
+        self._known_columns = known_columns
 
     def table(self, _name: str) -> _FakeTable:
-        return _FakeTable(self._store)
+        return _FakeTable(self._store, known_columns=self._known_columns)
+
+
+# The columns request_idempotency had BEFORE migration 0038 added `location`.
+_PRE_0038_COLUMNS = {
+    "key", "user_id", "route", "response_status", "response_body",
+    "content_type", "expires_at", "created_at",
+}
 
 
 @pytest.fixture
@@ -112,7 +158,18 @@ def app(fake_client):
             200,
         )
 
+    redirect_counter = {"count": 0}
+
+    @flask_app.route("/go", methods=["POST"])
+    @idempotent(ttl_seconds=60)
+    def go():
+        from flask import redirect
+
+        redirect_counter["count"] += 1
+        return redirect("/jobs/compare?ids=a,b")
+
     flask_app.call_counter = call_counter  # type: ignore[attr-defined]
+    flask_app.redirect_counter = redirect_counter  # type: ignore[attr-defined]
     return flask_app
 
 
@@ -202,6 +259,70 @@ def test_replay_returns_cached_response_without_rerunning(app):
     # Handler invoked only once.
     assert app.call_counter["count"] == 1
     assert r2.headers.get("Idempotent-Replay") == "true"
+
+
+def test_replayed_redirect_keeps_its_location(app):
+    """A cached response used to persist status + body + content-type only, so
+    a replayed redirect came back as a bare 302 with no Location and the
+    browser rendered a blank page. Every return path in the campaign refold
+    route is a redirect, so double-clicking Re-fold hit this."""
+    client = app.test_client()
+    r1 = client.post("/go", data=b"same")
+    r2 = client.post("/go", data=b"same")
+
+    assert r1.status_code == 302
+    assert r2.status_code == 302
+    assert app.redirect_counter["count"] == 1        # handler ran once
+    assert r2.headers.get("Idempotent-Replay") == "true"
+    assert r2.headers.get("Location") == r1.headers.get("Location")
+    assert "/jobs/compare" in r2.headers["Location"]
+
+
+def test_redirect_still_dedupes_before_migration_0038(fake_store, user_ctx):
+    """Deploy-before-migration must degrade, not break.
+
+    Until 0038 is applied the table has no ``location`` column, so the UPDATE
+    that carries it raises and ``_store_response`` retries without it. The
+    replay then has no Location (the pre-fix behaviour, and the reason the
+    migration is scheduled ahead of the deploy), but the guarantee that
+    actually costs money -- the handler runs exactly once -- must still hold.
+    """
+    from flask import Flask, redirect as flask_redirect
+
+    pre_migration = _FakeClient(fake_store, known_columns=_PRE_0038_COLUMNS)
+    flask_app = Flask(__name__)
+    counter = {"count": 0}
+
+    @flask_app.route("/go", methods=["POST"])
+    @idempotent(ttl_seconds=60)
+    def go():
+        counter["count"] += 1
+        return flask_redirect("/jobs/compare?ids=a,b")
+
+    with patch(
+        "shared.idempotency.get_service_client", return_value=pre_migration
+    ), patch("shared.idempotency.load_user_context", return_value=user_ctx):
+        client = flask_app.test_client()
+        r1 = client.post("/go", data=b"same")
+        r2 = client.post("/go", data=b"same")
+
+    assert r1.status_code == 302
+    assert r1.headers.get("Location") == "/jobs/compare?ids=a,b"
+    assert r2.status_code == 302
+    assert r2.headers.get("Idempotent-Replay") == "true"
+    assert counter["count"] == 1, "handler must not re-run: it places a hold"
+    # No Location on the replay, but the cached body still carries the link.
+    assert r2.headers.get("Location") is None
+    assert b"/jobs/compare" in r2.data
+
+
+def test_replayed_non_redirect_has_no_location(app):
+    """The column is only written for responses that actually redirect."""
+    client = app.test_client()
+    client.post("/echo", data=b"hello")
+    r2 = client.post("/echo", data=b"hello")
+    assert r2.headers.get("Idempotent-Replay") == "true"
+    assert r2.headers.get("Location") is None
 
 
 def test_different_body_is_not_deduped(app):

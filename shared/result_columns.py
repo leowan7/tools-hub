@@ -48,6 +48,44 @@ _TOOL_PRIMARY_METRIC: dict[str, tuple[str, str]] = {
 }
 
 
+# Headline metrics some pipelines emit at the RECORD ROOT rather than under
+# ``scores``. Every ranking helper resolves ``scores`` first and then the root
+# under the SAME key, so a metric whose root name differs from its display name
+# resolves to nothing and orders nothing. The per-tool
+# ``templates/tools/<tool>_results.html`` partials do this reshape inline for
+# their own single-job table, which is why the campaign path silently lost it.
+# Keep this in sync with those partials.
+_ROOT_METRIC_ALIASES: dict[str, dict[str, str]] = {
+    # iggm persists ``n_epitope_contacts``; its declared primary metric is
+    # ``epitope_contacts`` (see _TOOL_PRIMARY_METRIC above).
+    "iggm": {"n_epitope_contacts": "epitope_contacts"},
+}
+
+
+def normalize_candidate(cand: object, tool: str) -> object:
+    """Return ``cand`` with any root-level metric lifted into ``scores``.
+
+    A shallow copy is made only when something actually moves, so the common
+    case (every tool but iggm today) is a pass-through. Existing ``scores``
+    entries win, so a pipeline that starts emitting the metric properly is not
+    overridden by its own legacy root key.
+    """
+    aliases = _ROOT_METRIC_ALIASES.get(tool)
+    if not aliases or not isinstance(cand, dict):
+        return cand
+    scores = dict(cand.get("scores") or {})
+    moved = False
+    for root_key, score_key in aliases.items():
+        if scores.get(score_key) is None and cand.get(root_key) is not None:
+            scores[score_key] = cand[root_key]
+            moved = True
+    if not moved:
+        return cand
+    out = dict(cand)
+    out["scores"] = scores
+    return out
+
+
 def columns_for(tool: str) -> list[str]:
     """Display columns for a tool's merged campaign table ([] if unknown)."""
     return list(_TOOL_RESULT_COLUMNS.get(tool, []))

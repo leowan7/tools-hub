@@ -418,6 +418,15 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
 
     campaign_url = f"{base_url}/lab-projects/{campaign.id}"
 
+    # Shortlist size. A 'web' row carries candidate_indices; a 'campaign' or
+    # 'target' row leaves that empty and keeps the shortlist in candidate_refs
+    # (migration 0037), so reading candidate_indices alone reported "0
+    # candidates" on BOTH the customer confirmation and the staff notify for
+    # every campaign handoff.
+    n_candidates = len(campaign.candidate_indices) or len(
+        campaign.candidate_refs or []
+    )
+
     # User confirmation
     user_subject = f"Scoping request received — {campaign.target_name}"
     user_html = f"""
@@ -425,8 +434,8 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
       <h2 style="margin-top:0;">Scoping request received</h2>
       <p>We've received your yeast display scoping request for
-         <strong>{campaign.target_name}</strong> ({len(campaign.candidate_indices)}
-         candidate{'s' if len(campaign.candidate_indices) != 1 else ''}).</p>
+         <strong>{campaign.target_name}</strong> ({n_candidates}
+         candidate{'s' if n_candidates != 1 else ''}).</p>
       <p>The Ranomics team will review feasibility against current lab capacity
          and follow up within <strong>2 business days</strong>.</p>
       <p style="margin:24px 0;">
@@ -464,7 +473,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Assay</td>
             <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
-            <td>{len(campaign.candidate_indices)}</td></tr>
+            <td>{n_candidates}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
             <td>{campaign.budget_band.title()}</td></tr>
       </table>
@@ -483,7 +492,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
         f"Target: {campaign.target_name}\n"
         f"From: {user_email}\n"
         f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
-        f"Candidates: {len(campaign.candidate_indices)}\n"
+        f"Candidates: {n_candidates}\n"
         f"Budget: {campaign.budget_band.title()}\n\n"
         f"Review in admin: {admin_url}\n"
     )
@@ -977,8 +986,12 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
         )
 
     # Composite binder-design tools (RFantibody, BindCraft, BoltzGen,
-    # PXDesign, RFdiffusion): 'candidates[]'.
-    cands = result.get("candidates", []) or []
+    # PXDesign, RFdiffusion): 'candidates[]'. candidate_records also covers the
+    # designs-only shape (boltz2, iggm), which reaches this fallthrough without
+    # a root-level pdb_b64 and would otherwise report "0 candidates returned"
+    # in an otherwise-successful completion email.
+    from shared.jobs import candidate_records  # noqa: PLC0415
+    cands = candidate_records(result)
     n = len(cands)
     return (
         f"{n} candidate{'s' if n != 1 else ''} returned with real scores and "

@@ -66,6 +66,7 @@ from typing import Optional
 
 from shared.storage import (
     AGE_SWEEP_BUCKETS,
+    BUCKET as INPUT_BUCKET,
     CAMPAIGN_BUCKET,
     DATA_BUCKETS,
     RETENTION_DAYS,
@@ -80,6 +81,13 @@ logger = logging.getLogger(__name__)
 # Mirrors the guardrail in cron.purge_old_events; kept well below the 30-day
 # policy so an operator can tighten it for cost reasons but never near-zero.
 _MIN_RETENTION_DAYS = 7
+
+# Paging for the active-campaign lookup. The page size stays under the
+# PostgREST ``max_rows`` clamp (1000) so a full page is never itself a
+# truncation; the page cap is a runaway guard, and hitting it fails CLOSED
+# (see :func:`active_campaign_input_paths`).
+_CAMPAIGN_PAGE_SIZE = 500
+_MAX_CAMPAIGN_PAGES = 200
 
 
 def _resolve_retention_days(retention_days: Optional[int]) -> int:
@@ -138,6 +146,78 @@ def select_expired(entries: list[dict], cutoff: datetime) -> tuple[list[dict], l
     return expired, retained
 
 
+def active_campaign_input_paths(client: Optional[object] = None) -> Optional[set[str]]:
+    """Input object paths still referenced by a campaign that can dispatch again.
+
+    A campaign persists the storage PATH of its target and re-mints a
+    short-lived signed URL on EVERY wave, so deleting that object mid-campaign
+    makes every remaining chunk unrunnable. Age alone is not a safe signal: a
+    long-running or paused campaign can outlive the retention window while its
+    input is still load-bearing.
+
+    Returns the protected set, or ``None`` when it cannot be determined (no
+    client, the read failed, or the result could not be read in full). ``None``
+    means "unknown", and callers must treat it as "do not delete" — matching
+    this module's existing posture of never deleting an object whose age cannot
+    be established.
+
+    Two things here are load-bearing and easy to "simplify" into a silent
+    data-loss bug:
+
+    * **The read is paged.** PostgREST clamps every response to
+      ``max_rows`` (1000), and a clamped read is indistinguishable from a
+      complete one at the call site. An unpaged read would hand back a
+      truncated protected set that looks authoritative, and the sweep would
+      then delete the inputs of every live campaign that fell outside the page.
+    * **The status filter is a negation, server-side.** Filtering on "not
+      terminal" means a status added later is protected by default; filtering
+      on a positive list of active statuses would silently stop protecting it.
+    """
+    from shared.compute_campaigns import CAMPAIGN_TERMINAL_STATUSES  # noqa: PLC0415
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    db = client if client is not None else get_service_client()
+    if db is None:
+        return None
+
+    page_size = _CAMPAIGN_PAGE_SIZE
+    protected: set[str] = set()
+    start = 0
+    try:
+        for _ in range(_MAX_CAMPAIGN_PAGES):
+            resp = (
+                db.table("compute_campaigns")
+                .select("id,target_storage_path,status")
+                .not_.in_("status", list(CAMPAIGN_TERMINAL_STATUSES))
+                .order("id")
+                .range(start, start + page_size - 1)
+                .execute()
+            )
+            batch = list(getattr(resp, "data", None) or [])
+            for row in batch:
+                path = (row or {}).get("target_storage_path")
+                # Re-check client-side too: a filter that silently no-ops
+                # (unsupported operator, changed column) must not widen the
+                # sweep, and this keeps the guard correct either way.
+                if path and (row or {}).get("status") not in CAMPAIGN_TERMINAL_STATUSES:
+                    protected.add(path)
+            if len(batch) < page_size:
+                return protected
+            start += page_size
+    except Exception:  # noqa: BLE001
+        logger.warning("purge-old: active-campaign lookup failed", exc_info=True)
+        return None
+
+    # Ran out of pages with a full page still coming: the set is incomplete, so
+    # it is not safe to treat anything as unprotected. Fail closed.
+    logger.error(
+        "purge-old: active-campaign lookup exceeded %s pages; refusing to sweep "
+        "inputs on a partial protected set",
+        _MAX_CAMPAIGN_PAGES,
+    )
+    return None
+
+
 def purge_old_storage(
     *,
     retention_days: Optional[int] = None,
@@ -151,12 +231,22 @@ def purge_old_storage(
     ``lab-campaigns`` is intentionally NOT age-swept (CRO deliverables). Pass
     ``buckets`` only to narrow further (e.g. a single bucket in a canary).
 
+    Objects in ``tool-inputs`` that are still referenced by a non-terminal
+    campaign are held back regardless of age (see
+    :func:`active_campaign_input_paths`) and reported as ``protected``. A
+    ``protected`` of ``None`` means the live-campaign set could not be read and
+    nothing was deleted from that bucket on this pass.
+
     DEFAULTS TO DRY-RUN. Returns a summary dict suitable for logging::
 
         {"retention_days": N, "cutoff": "...", "dry_run": bool,
-         "buckets": {bucket: {"scanned": S, "expired": E, "deleted": D}},
+         "buckets": {bucket: {"scanned": S, "expired": E, "deleted": D,
+                              "protected": P}},
          "total_scanned": ..., "total_expired": ..., "total_deleted": ...,
          "errors": [...]}
+
+    ``expired`` counts objects past the cutoff BEFORE the live-campaign filter,
+    so ``deleted <= expired - protected`` for ``tool-inputs``.
     """
     days = _resolve_retention_days(retention_days)
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -189,6 +279,25 @@ def purge_old_storage(
         summary["total_scanned"] += len(entries)
         summary["total_expired"] += len(expired)
 
+        # Age is not sufficient for tool-inputs: a campaign re-mints a signed
+        # URL from its stored target path on every wave, so an input belonging
+        # to a campaign that can still dispatch must survive the sweep no
+        # matter how old it is. Unknown (None) fails closed.
+        if bucket == INPUT_BUCKET and expired:
+            protected = active_campaign_input_paths(client=client)
+            if protected is None:
+                stats["protected"] = None
+                summary["errors"].append(f"{bucket}:active-campaign-lookup-failed")
+                logger.error(
+                    "purge-old: cannot determine live campaign inputs; refusing "
+                    "to delete from %s this pass (%d expired left in place)",
+                    bucket, len(expired),
+                )
+                continue
+            before = len(expired)
+            expired = [e for e in expired if e.get("path") not in protected]
+            stats["protected"] = before - len(expired)
+
         if expired and not dry_run:
             try:
                 deleted = delete_objects(
@@ -201,9 +310,10 @@ def purge_old_storage(
                 summary["errors"].append(f"{bucket}:delete:{exc}")
 
         logger.info(
-            "purge-old %s bucket=%s scanned=%d expired=%d deleted=%d",
+            "purge-old %s bucket=%s scanned=%d expired=%d protected=%s deleted=%d",
             "DRY-RUN" if dry_run else "LIVE",
-            bucket, stats["scanned"], stats["expired"], stats["deleted"],
+            bucket, stats["scanned"], stats["expired"],
+            stats.get("protected", 0), stats["deleted"],
         )
 
     return summary

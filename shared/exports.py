@@ -8,6 +8,12 @@ candidates come from many sub-jobs, so each carries a ``_source_job_id`` tag
 namespace it inside the ZIP. Keeping the serializers here means both paths stay
 byte-for-byte identical and a bug is fixed once.
 
+All three serializers take their leading columns, FASTA ids, and ZIP prefixes
+from :func:`export_key`, so a row's identity is the same whichever format the
+user downloads. That matters most once an export merges several tools over one
+target: ``rank`` and ``pdb_key`` are no longer unique on their own there, since
+every tool emits a rank 1 and a ``design_1.pdb``.
+
 These are pure functions over candidate dicts; the ZIP builder takes a
 ``fetch_bytes(job_id, filename)`` callback so this module never imports the
 Storage layer (and stays trivially testable).
@@ -44,24 +50,139 @@ def _safe_arcname(name: str, prefix: str = "") -> str:
     return f"{prefix}{safe}" if prefix else safe
 
 
-def candidates_to_csv(candidates) -> str:
-    """Rank + pdb_key + the union of every candidate's ``scores`` keys."""
-    cands = _dict_candidates(candidates)
-    all_score_keys: list[str] = []
+# Provenance the aggregator stamps onto every merged candidate, mapped to the
+# column name it exports under. Ordered: these lead the CSV, ahead of pdb_key.
+# A key absent from every candidate (a single-job export has no source job; a
+# single-campaign export has no tool column) is omitted rather than exported
+# blank, so each surface's CSV carries exactly the provenance it actually has.
+_PROVENANCE_COLUMNS = (
+    ("tool", "_source_tool"),
+    ("campaign_id", "_source_campaign_id"),
+    ("source_job", "_source_job_id"),
+    ("source_chunk", "_source_chunk"),
+)
+
+
+def export_key(cand: dict, i: int) -> dict:
+    """The provenance block for one exported row, at global index ``i``.
+
+    ``rank`` is the **global** row index, so it is monotonic and matches the
+    on-screen order of the merged table. The tool's own rank is demoted to
+    ``source_rank``: across a merged export those collide (every tool emits a
+    rank 1), so using it as the export rank made the CSV look shuffled and made
+    "row 7" ambiguous. ``pdb_key`` collides the same way (every tool emits
+    ``design_1.pdb``), which is why the source job and chunk travel beside it.
+
+    All three serializers derive from this one function so the CSV, the FASTA
+    ids, and the ZIP entry names cannot disagree about where a row came from.
+    """
+    key: dict = {"rank": i + 1}
+    for column, source in _PROVENANCE_COLUMNS:
+        value = cand.get(source)
+        if value is not None:
+            key[column] = value
+    key["pdb_key"] = cand.get("pdb_key", "")
+    key["source_rank"] = cand.get("rank", i + 1)
+    return key
+
+
+def _export_keys(cands: list) -> tuple[list[dict], list[str]]:
+    """Per-row provenance plus the leading column names actually present."""
+    keys = [export_key(c, i) for i, c in enumerate(cands)]
+    leading = ["rank"]
+    for column, _ in _PROVENANCE_COLUMNS:
+        if any(column in k for k in keys):
+            leading.append(column)
+    leading += ["pdb_key", "source_rank"]
+    return keys, leading
+
+
+def _basename(pdb_key: str, fallback: str) -> str:
+    """Last path segment of a pdb_key. Keys arrive as ``designs/design_0.pdb``
+    for most tools; a ``/`` inside a FASTA id terminates parsing in several
+    downstream tools, so the prefix is stripped rather than escaped."""
+    tail = (pdb_key or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    # Whitespace ends a FASTA id and turns the rest into a free-text
+    # description, which would silently truncate the provenance we just added.
+    return "_".join(tail.split()) or fallback
+
+
+# Root-level keys that are never metrics: identity, provenance, bulk payloads.
+# Everything else scalar at the root IS exported (see _metric_columns).
+_NON_METRIC_ROOT_KEYS = frozenset({
+    "pdb_key", "name", "rank", "scores",
+    "sequence", "binder_sequence", "designed_sequence",
+    "pdb_content_b64", "pdb_content", "cif_content_b64",
+})
+
+
+def _metric_columns(cands: list, leading: list[str]) -> list[str]:
+    """Metric column names, in first-seen order.
+
+    Reads ``scores`` AND the record root. The designs-shape pipelines (boltz2,
+    af2, colabfold, esmfold, iggm, opendde) put every metric at the root and
+    have no ``scores`` dict at all — their results templates reshape inline, so
+    the screen looked fine while a scores-only export produced a file with the
+    row count right and every metric missing.
+
+    Root names are the pipeline's own (``iptm``, not ``ipTM``); mapping those
+    onto canonical display names is a per-tool concern and belongs with the
+    cross-tool aliasing work, not here. Exporting the real numbers under their
+    real names beats exporting nothing.
+    """
+    out: list[str] = []
     for cand in cands:
         for k in (cand.get("scores") or {}):
-            if k not in all_score_keys:
-                all_score_keys.append(k)
+            if k not in out and k not in leading:
+                out.append(k)
+    for cand in cands:
+        for k, v in cand.items():
+            if k in out or k in leading or k in _NON_METRIC_ROOT_KEYS:
+                continue
+            if k.startswith("_"):          # provenance tags
+                continue
+            if not _is_metric_value(v):
+                continue
+            out.append(k)
+    return out
+
+
+# No metric is a long string. The cap is insurance against a pipeline putting a
+# bulk payload (structure text, a base64 blob) under a key not in the denylist:
+# without it one such key would inline megabytes into every CSV row.
+_MAX_METRIC_STR = 512
+
+
+def _is_metric_value(v) -> bool:
+    """Scalar, and small enough to belong in a spreadsheet cell."""
+    if v is None or isinstance(v, (int, float, bool)):
+        return True
+    if isinstance(v, str):
+        return len(v) <= _MAX_METRIC_STR
+    return False                           # lists/dicts (per-residue contacts)
+
+
+def candidates_to_csv(candidates) -> str:
+    """Provenance columns (:func:`export_key`) + every metric found."""
+    cands = _dict_candidates(candidates)
+    keys, leading = _export_keys(cands)
+    all_score_keys = _metric_columns(cands, leading)
     buf = io.StringIO()
     writer = csv.DictWriter(
-        buf, fieldnames=["rank", "pdb_key"] + all_score_keys,
-        extrasaction="ignore",
+        buf, fieldnames=leading + all_score_keys, extrasaction="ignore",
     )
     writer.writeheader()
-    for i, cand in enumerate(cands):
-        scores = cand.get("scores") or {}
-        row = {"rank": cand.get("rank", i + 1), "pdb_key": cand.get("pdb_key", "")}
-        row.update(scores)
+    for cand, key in zip(cands, keys):
+        # Root metrics first, then scores (which win, matching how
+        # candidate_metric resolves), then provenance (which wins outright).
+        # A key can be scalar on one candidate and a list on another, so the
+        # value is re-checked here and not just at column-discovery time.
+        row = {
+            k: cand[k] for k in all_score_keys
+            if k in cand and _is_metric_value(cand[k])
+        }
+        row.update(cand.get("scores") or {})
+        row.update(key)
         writer.writerow(row)
     return buf.getvalue()
 
@@ -73,13 +194,22 @@ def candidates_to_fasta(candidates, sequences=None) -> str:
     Returns ``""`` when there is nothing to write (caller supplies the empty
     message so the download still names sensibly)."""
     lines: list[str] = []
-    for i, cand in enumerate(_dict_candidates(candidates)):
+    cands = _dict_candidates(candidates)
+    for i, cand in enumerate(cands):
         seq = cand.get("sequence") or cand.get("binder_sequence") or ""
         if not seq:
             continue
-        pdb_key = cand.get("pdb_key", f"candidate_{i + 1}")
-        rank = cand.get("rank", i + 1)
-        lines.append(f">rank{rank}_{pdb_key}")
+        key = export_key(cand, i)
+        # rank{global}_{tool}_{job8}_{basename}: unique across a merged export,
+        # where the old rank+pdb_key pair was not (every tool emits a rank 1
+        # and a design_1.pdb). Segments absent from this export are omitted.
+        parts = [f"rank{key['rank']}"]
+        if key.get("tool"):
+            parts.append(str(key["tool"]))
+        if key.get("source_job"):
+            parts.append(str(key["source_job"])[:8])
+        parts.append(_basename(key["pdb_key"], f"candidate_{i + 1}"))
+        lines.append(">" + "_".join(parts))
         for start in range(0, len(seq), 80):
             lines.append(seq[start:start + 80])
     for i, seq_obj in enumerate(sequences or []):
@@ -123,16 +253,17 @@ def candidates_to_zip(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for i, cand in enumerate(_dict_candidates(candidates)):
-            pdb_key = cand.get("pdb_key") or f"candidate_{i + 1}.pdb"
-            job_id = cand.get("_source_job_id") or default_job_id
+            key = export_key(cand, i)
+            pdb_key = key["pdb_key"] or f"candidate_{i + 1}.pdb"
+            job_id = key.get("source_job") or default_job_id
             data = _decode_b64(cand.get("pdb_content_b64"))
-            if data is None and job_id and cand.get("pdb_key"):
-                data = fetch_bytes(job_id, cand["pdb_key"])
+            if data is None and job_id and key["pdb_key"]:
+                data = fetch_bytes(job_id, key["pdb_key"])
             if data is None:
                 continue
             prefix = ""
             if namespace:
-                chunk = cand.get("_source_chunk")
+                chunk = key.get("source_chunk")
                 if chunk is not None:
                     prefix = f"chunk{int(chunk):03d}/"
                 elif job_id:

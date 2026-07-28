@@ -20,12 +20,20 @@
 {% set clone_url          = url_for('tools.tool_form', tool='boltz2', clone_from=job.id) %}
 
 {# Reshape designs → candidate_table schema. Sort by ipTM desc so the
-   top-scoring designs land at the top. #}
+   top-scoring designs land at the top.
+
+   ``_source_index`` is stamped BEFORE the sort and must stay that way. The
+   shortlist posts the row's ``_source_index`` (candidate_table.html), and the
+   lab handoff uses it to index ``candidate_records(job.result)``, which is in
+   pipeline order. Without it the row's post-sort screen position would be used
+   as an index into the unsorted list and the CRO would receive a different
+   design from the one the user starred. #}
 {% set candidates = [] %}
 {% for d in raw_designs %}
   {% set _plddt = d.get('complex_plddt') %}
   {% set _plddt_pct = (_plddt * 100) if _plddt is not none else none %}
   {% set _ = candidates.append({
+      '_source_index': loop.index0,
       'rank': d.get('rank'),
       'name': d.get('name'),
       'pdb_key': d.get('pdb_key'),

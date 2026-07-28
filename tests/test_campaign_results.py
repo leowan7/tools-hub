@@ -25,6 +25,35 @@ def test_columns_and_primary_metric():
     assert result_columns.columns_for("unknown-tool") == []
 
 
+def test_normalize_candidate_lifts_root_metric_into_scores():
+    """iggm persists n_epitope_contacts at the record root while its declared
+    primary metric is scores.epitope_contacts, so every row resolved to None
+    and the merged campaign table ranked nothing. The per-tool template did
+    this reshape inline, which is why only the campaign path lost it."""
+    raw = {"pdb_key": "d0.pdb", "n_epitope_contacts": 7}
+    out = result_columns.normalize_candidate(raw, "iggm")
+    assert out["scores"]["epitope_contacts"] == 7
+    assert result_columns.candidate_metric(out, "epitope_contacts") == 7
+    # Non-destructive: the source record is untouched.
+    assert "scores" not in raw
+
+
+def test_normalize_candidate_is_passthrough_for_other_tools():
+    raw = {"scores": {"ipTM": 0.8}}
+    assert result_columns.normalize_candidate(raw, "rfdiffusion") is raw
+    assert result_columns.normalize_candidate(raw, "unknown-tool") is raw
+    assert result_columns.normalize_candidate("not-a-dict", "iggm") == "not-a-dict"
+
+
+def test_normalize_candidate_does_not_override_existing_scores():
+    """A pipeline that starts emitting the metric properly must win over its
+    own legacy root key."""
+    raw = {"n_epitope_contacts": 1, "scores": {"epitope_contacts": 9}}
+    assert result_columns.normalize_candidate(raw, "iggm")["scores"][
+        "epitope_contacts"
+    ] == 9
+
+
 def test_candidate_metric_reads_scores_then_root():
     assert result_columns.candidate_metric({"scores": {"ipTM": 0.8}}, "ipTM") == 0.8
     assert result_columns.candidate_metric({"ipTM": 0.7}, "ipTM") == 0.7
@@ -43,8 +72,36 @@ def test_csv_unions_all_score_keys():
         {"rank": 2, "pdb_key": "b.pdb", "scores": {"pLDDT": 90}},
     ])
     lines = csv.splitlines()
-    assert lines[0] == "rank,pdb_key,ipTM,pLDDT"
-    assert lines[1].startswith("1,a.pdb,0.8")
+    # No provenance on these rows, so only the always-present columns lead.
+    assert lines[0] == "rank,pdb_key,source_rank,ipTM,pLDDT"
+    assert lines[1].startswith("1,a.pdb,1,0.8")
+
+
+def test_csv_rank_is_global_and_tool_rank_is_demoted():
+    """Across a merge every tool contributes its own rank 1. The export rank
+    must be the row index so it stays monotonic and matches the screen."""
+    csv = exports.candidates_to_csv([
+        {"rank": 1, "pdb_key": "design_1.pdb", "_source_tool": "bindcraft",
+         "_source_job_id": "job-aaaaaaaa1", "_source_chunk": 0,
+         "_source_campaign_id": "camp-a", "scores": {"ipTM": 0.9}},
+        {"rank": 1, "pdb_key": "design_1.pdb", "_source_tool": "boltzgen",
+         "_source_job_id": "job-bbbbbbbb2", "_source_chunk": 3,
+         "_source_campaign_id": "camp-b", "scores": {"ipTM": 0.7}},
+    ])
+    lines = csv.splitlines()
+    assert lines[0] == (
+        "rank,tool,campaign_id,source_job,source_chunk,pdb_key,source_rank,ipTM"
+    )
+    assert lines[1] == "1,bindcraft,camp-a,job-aaaaaaaa1,0,design_1.pdb,1,0.9"
+    # Same pdb_key and same source_rank, disambiguated by rank + provenance.
+    assert lines[2] == "2,boltzgen,camp-b,job-bbbbbbbb2,3,design_1.pdb,1,0.7"
+
+
+def test_csv_omits_provenance_columns_nothing_carries():
+    """A single-job export has no source job, so it must not grow blank
+    columns; the target-level export gets them because its rows carry them."""
+    csv = exports.candidates_to_csv([{"pdb_key": "a.pdb", "scores": {}}])
+    assert csv.splitlines()[0] == "rank,pdb_key,source_rank"
 
 
 def test_fasta_body_and_empty():
@@ -53,6 +110,34 @@ def test_fasta_body_and_empty():
     assert "MKTAY" in body
     # No sequences anywhere -> empty string (caller supplies the message).
     assert exports.candidates_to_fasta([{"scores": {"ipTM": 0.9}}]) == ""
+
+
+def test_fasta_ids_are_unique_and_carry_no_slash():
+    """A '/' in a FASTA id terminates parsing in several downstream tools, and
+    'designs/design_1.pdb' is the pdb_key almost every tool emits."""
+    body = exports.candidates_to_fasta([
+        {"sequence": "MKTAY", "pdb_key": "designs/design_1.pdb", "rank": 1,
+         "_source_tool": "bindcraft", "_source_job_id": "job-aaaaaaaa1"},
+        {"sequence": "GGSGG", "pdb_key": "designs/design_1.pdb", "rank": 1,
+         "_source_tool": "boltzgen", "_source_job_id": "job-bbbbbbbb2"},
+    ])
+    ids = [ln for ln in body.splitlines() if ln.startswith(">")]
+    assert ids == [
+        ">rank1_bindcraft_job-aaaa_design_1.pdb",
+        ">rank2_boltzgen_job-bbbb_design_1.pdb",
+    ]
+    assert len(set(ids)) == 2
+    assert not any("/" in i for i in ids)
+
+
+def test_fasta_skips_rank_for_sequenceless_rows_but_keeps_global_order():
+    """A candidate with no sequence is skipped, and the ranks of the rows that
+    do emit must still match their CSV rank (the row index, not a counter)."""
+    body = exports.candidates_to_fasta([
+        {"pdb_key": "a.pdb"},                      # no sequence -> skipped
+        {"pdb_key": "b.pdb", "sequence": "MKTAY"},
+    ])
+    assert [ln for ln in body.splitlines() if ln.startswith(">")] == [">rank2_b.pdb"]
 
 
 def test_zip_namespaces_by_subjob_and_blocks_traversal():
@@ -92,10 +177,20 @@ class _FakeResult:
         self.data = data
 
 
+# PostgREST clamps EVERY select to the project's max_rows, which
+# supabase/config.toml sets to 1000, while a campaign may hold up to
+# MAX_SUBJOBS_PER_CAMPAIGN (50000) children. The fake enforces the same clamp
+# so an unpaged read truncates here exactly as it does in production — that is
+# what makes the pagination test below meaningful rather than decorative.
+_FAKE_MAX_ROWS = 1000
+
+
 class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
         self._filters = []
+        self._order_col = None
+        self._range = None
 
     def select(self, *a, **k):
         return self
@@ -104,12 +199,25 @@ class _FakeQuery:
         self._filters.append((col, str(val)))
         return self
 
+    def order(self, col, **k):
+        self._order_col = col
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
     def execute(self):
         matched = [
             r for r in self._rows
             if all(str(r.get(c)) == v for c, v in self._filters)
         ]
-        return _FakeResult(matched)
+        if self._order_col:
+            matched.sort(key=lambda r: str(r.get(self._order_col)))
+        if self._range is not None:
+            start, end = self._range
+            matched = matched[start:end + 1]
+        return _FakeResult(matched[:_FAKE_MAX_ROWS])
 
 
 class _FakeClient:
@@ -162,6 +270,94 @@ def test_aggregate_merges_sorts_dedupes(monkeypatch):
     assert [round(c["scores"]["ipTM"], 2) for c in cands] == [0.95, 0.70, 0.50]
     assert cands[0]["_source_job_id"] == "j0b"
     assert cands[0]["_source_index"] == 1
+
+
+def test_iter_succeeded_children_pages_and_filters():
+    """The shared fan-in primitive, used by BOTH the aggregator and the
+    "Passed filters" rollup that runs on every 5s status poll."""
+    n = _FAKE_MAX_ROWS + 137
+    rows = [
+        {"id": f"j{i:05d}", "campaign_id": "C", "status": "succeeded",
+         "chunk_index": i, "attempt": 1, "result": {}}
+        for i in range(n)
+    ]
+    # Noise that must be filtered out: another campaign, and a non-terminal
+    # child of this one.
+    rows.append({"id": "other", "campaign_id": "D", "status": "succeeded",
+                 "chunk_index": 0, "attempt": 1, "result": {}})
+    rows.append({"id": "pending", "campaign_id": "C", "status": "running",
+                 "chunk_index": 999, "attempt": 1, "result": {}})
+
+    got = list(cc.iter_succeeded_children("C", _FakeClient(rows)))
+
+    assert len(got) == n
+    assert {r["id"] for r in got} == {f"j{i:05d}" for i in range(n)}
+    # No duplicates across page boundaries.
+    assert len({r["id"] for r in got}) == len(got)
+
+
+def test_iter_succeeded_children_narrows_columns():
+    """The passed-filters rollup only needs `result`, so it must be able to
+    ask for that alone rather than dragging every column across the wire."""
+    client = _FakeClient([
+        {"id": "j1", "campaign_id": "C", "status": "succeeded",
+         "chunk_index": 0, "attempt": 1, "result": {"designs": []}},
+    ])
+    got = list(cc.iter_succeeded_children("C", client, columns="result"))
+    assert len(got) == 1
+
+
+def test_aggregate_pages_past_the_postgrest_max_rows_clamp(monkeypatch):
+    """The fan-in must not stop at max_rows.
+
+    An unpaged .select() is clamped by PostgREST at 1000 rows while a campaign
+    may hold 50000 children, so the merged table, both exports, and the
+    "global top-N" that the Boltz-2 validation refold spends real GPU on were
+    all computed from at most the first 1000 sub-jobs with nothing indicating
+    rows were missing. .limit() does not help — it is clamped the same way.
+    """
+    n = _FAKE_MAX_ROWS + 200
+    rows = [
+        {"id": f"j{i:05d}", "campaign_id": "C", "status": "succeeded",
+         "chunk_index": i, "attempt": 1,
+         "result": {"candidates": [_cand(i, i / 10000.0, "pass")]}}
+        for i in range(n)
+    ]
+    _patch(monkeypatch, rows)
+    out = cc.aggregate_campaign_candidates("C", user_id="u", limit=None)
+
+    assert out["total"] == n, "truncated at the clamp instead of paging"
+    assert len(out["candidates"]) == n
+    # Highest ipTM first, so the top row comes from the LAST page — proof the
+    # tail was actually fetched and not just counted.
+    assert out["candidates"][0]["_source_job_id"] == f"j{n - 1:05d}"
+
+
+def test_aggregate_ranks_iggm_by_its_root_level_metric(monkeypatch):
+    """End-to-end guard for the reshape: the merged table must be ordered by
+    epitope_contacts even though the pipeline writes n_epitope_contacts at the
+    record root."""
+    class _Iggm:
+        tool = "iggm"
+
+    rows = [
+        {"id": "j0", "campaign_id": "C", "status": "succeeded", "chunk_index": 0,
+         "attempt": 1, "result": {"designs": [
+             {"pdb_key": "a.pdb", "n_epitope_contacts": 3},
+             {"pdb_key": "b.pdb", "n_epitope_contacts": 11},
+         ]}},
+        {"id": "j1", "campaign_id": "C", "status": "succeeded", "chunk_index": 1,
+         "attempt": 1, "result": {"designs": [
+             {"pdb_key": "c.pdb", "n_epitope_contacts": 7},
+         ]}},
+    ]
+    _patch(monkeypatch, rows, campaign=_Iggm())
+    out = cc.aggregate_campaign_candidates("C", user_id="u", limit=10)
+
+    assert out["total"] == 3
+    # Descending by contacts, not pipeline order.
+    assert [c["pdb_key"] for c in out["candidates"]] == ["b.pdb", "c.pdb", "a.pdb"]
+    assert [c["scores"]["epitope_contacts"] for c in out["candidates"]] == [11, 7, 3]
 
 
 def test_aggregate_caps_without_dropping_total(monkeypatch):

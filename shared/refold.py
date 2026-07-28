@@ -103,8 +103,12 @@ def extract_top_n_sequences(
     the returned list may be shorter than ``n`` if the source job has
     sparse output).
     """
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
     out: list[CandidateSeq] = []
-    candidates: Iterable[dict] = (job_result or {}).get("candidates", [])
+    # candidate_records, not a raw read: a designs-only source (boltz2, iggm)
+    # would otherwise yield no sequences and silently spawn zero refold jobs.
+    candidates: Iterable[dict] = candidate_records(job_result)
     for idx, cand in enumerate(candidates):
         if len(out) >= n:
             break

@@ -31,6 +31,7 @@ from shared.feature_flags import tool_enabled
 from shared.idempotency import idempotent
 from shared.jobs import (
     cancel_job,
+    candidate_records,
     complete_job,
     create_job,
     get_job,
@@ -656,7 +657,10 @@ def export_csv(job_id: str):
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
-    candidates = (job.result or {}).get("candidates", [])
+    # candidate_records, not a raw ["candidates"] read: the designs-only tools
+    # (af2/colabfold/esmfold/boltz2/iggm) persist rows under "designs" and
+    # would otherwise export a header-only CSV.
+    candidates = candidate_records(job.result)
     return Response(
         candidates_to_csv(candidates),
         mimetype="text/csv",
@@ -676,7 +680,7 @@ def export_fasta(job_id: str):
         return render_template("404.html"), 404
     result = job.result or {}
     body = candidates_to_fasta(
-        result.get("candidates", []), sequences=result.get("sequences", []),
+        candidate_records(job.result), sequences=result.get("sequences", []),
     )
     if not body:
         body = "# No sequences found in this job's output.\n"
@@ -743,7 +747,7 @@ def job_candidate_pdb(job_id: str, filename: str):
     # a request URL of either "designs/design_0.pdb" or "design_0.pdb".
     import posixpath  # noqa: PLC0415
     target_basename = posixpath.basename(filename) or filename
-    candidates = (job.result or {}).get("candidates", []) or []
+    candidates = candidate_records(job.result)
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
@@ -886,7 +890,7 @@ def export_zip(job_id: str):
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
-    candidates = (job.result or {}).get("candidates", []) or []
+    candidates = candidate_records(job.result)
 
     def _fetch(src_job_id: str, filename: str):
         try:

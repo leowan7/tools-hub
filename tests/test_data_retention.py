@@ -23,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from cron import purge_old_storage as mod
 from shared.storage import (
     AGE_SWEEP_BUCKETS,
@@ -116,12 +118,39 @@ class _FakeStorage:
         return _FakeBucket(self.buckets.setdefault(name, {}), self.removed)
 
 
+# PostgREST clamps every response to this many rows (supabase/config.toml).
+# The fake enforces it so a query that forgets to page truncates HERE, the way
+# it would in production, instead of quietly returning everything.
+_FAKE_MAX_ROWS = 1000
+
+
+class _NotBuilder:
+    """Stands in for PostgREST's ``.not_`` negation builder."""
+
+    def __init__(self, table: "_FakeTable") -> None:
+        self._table = table
+
+    def in_(self, col, values):
+        self._table._exclude = (col, set(values))
+        return self._table
+
+    def is_(self, col, value):
+        return self._table
+
+
 class _FakeTable:
-    def __init__(self, name: str, campaigns: list, raise_on_execute: bool):
+    def __init__(self, name: str, campaigns: list, raise_on_execute: bool,
+                 compute_campaigns: list = None,
+                 compute_raise: bool = False):
         self.name = name
         self.campaigns = campaigns
         self.raise_on_execute = raise_on_execute
+        self.compute_campaigns = compute_campaigns or []
+        self.compute_raise = compute_raise
         self._uid = None
+        self._exclude = None
+        self._ordered = False
+        self._range = None
 
     def select(self, *_cols):
         return self
@@ -131,25 +160,60 @@ class _FakeTable:
             self._uid = val
         return self
 
+    @property
+    def not_(self) -> _NotBuilder:
+        return _NotBuilder(self)
+
+    def order(self, _col, **_kw):
+        self._ordered = True
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
+        return self
+
+    def _paginate(self, rows: list) -> list:
+        """Apply .range() then the max_rows clamp, as PostgREST does."""
+        if self._range is not None:
+            start, end = self._range
+            rows = rows[start:end + 1]
+        return rows[:_FAKE_MAX_ROWS]
+
     def execute(self):
         if self.name == "lab_campaigns" and self.raise_on_execute:
             raise RuntimeError("transient DB failure")
+        if self.name == "compute_campaigns":
+            if self.compute_raise:
+                raise RuntimeError("transient DB failure")
+            rows = list(self.compute_campaigns)
+            if self._exclude is not None:
+                col, excluded = self._exclude
+                rows = [r for r in rows if (r or {}).get(col) not in excluded]
+            if self._ordered:
+                rows = sorted(rows, key=lambda r: str((r or {}).get("id", "")))
+            return SimpleNamespace(data=self._paginate(rows))
         rows = [
             {"id": c["id"]} for c in self.campaigns
             if self.name == "lab_campaigns" and c["user_id"] == self._uid
         ]
-        return SimpleNamespace(data=rows)
+        return SimpleNamespace(data=self._paginate(rows))
 
 
 class _FakeClient:
-    def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False):
+    def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False,
+                 compute_campaigns=None, compute_raise=False):
         self.removed: list = []
         self.storage = _FakeStorage(buckets, self.removed)
         self._campaigns = campaigns or []
         self._campaigns_raise = campaigns_raise
+        self._compute_campaigns = compute_campaigns or []
+        self._compute_raise = compute_raise
 
     def table(self, name: str) -> _FakeTable:
-        return _FakeTable(name, self._campaigns, self._campaigns_raise)
+        return _FakeTable(
+            name, self._campaigns, self._campaigns_raise,
+            self._compute_campaigns, self._compute_raise,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +342,132 @@ def test_sweeper_never_deletes_lab_campaigns_even_old():
     assert "camp-1/results/summary.csv" in buckets[CAMPAIGN_BUCKET]
     assert all("camp-1/" not in p for p in client.removed)
     assert CAMPAIGN_BUCKET not in summary["buckets"]
+
+
+def test_input_of_live_campaign_survives_sweep_despite_age():
+    """A campaign re-mints a signed URL from its stored target path on EVERY
+    wave, so age alone must not decide. An old input belonging to a campaign
+    that can still dispatch has to survive, or every remaining chunk becomes
+    unrunnable mid-flight."""
+    buckets = _seed_buckets()
+    client = _FakeClient(
+        buckets,
+        compute_campaigns=[
+            {"target_storage_path": "u1/j1/target.pdb", "status": "running"},
+        ],
+    )
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in buckets[BUCKET]          # survives
+    assert "u1/j1/target.pdb" not in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 1
+    # The other expired input (no live campaign) is still swept.
+    assert "u2/j9/orphan.pdb" in client.removed
+
+
+@pytest.mark.parametrize(
+    "status", ["completed", "completed_with_failures", "failed", "cancelled"]
+)
+def test_input_of_terminal_campaign_is_swept(status):
+    """A terminal campaign will never dispatch again, so its input is ordinary
+    expired data and the guard must not pin it forever."""
+    buckets = _seed_buckets()
+    client = _FakeClient(
+        buckets,
+        compute_campaigns=[
+            {"target_storage_path": "u1/j1/target.pdb", "status": status},
+        ],
+    )
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 0
+
+
+def test_unknown_live_campaign_set_blocks_input_deletion():
+    """If the live-campaign set cannot be read we cannot prove an input is
+    unreferenced, so the sweep must fail CLOSED for tool-inputs — matching the
+    module's existing 'never delete on unknown age' posture. tool-outputs is
+    unaffected."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, compute_raise=True)
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in buckets[BUCKET]          # nothing deleted
+    assert "u2/j9/orphan.pdb" in buckets[BUCKET]
+    assert summary["buckets"][BUCKET]["deleted"] == 0
+    assert summary["buckets"][BUCKET]["protected"] is None
+    assert any("active-campaign-lookup-failed" in e for e in summary["errors"])
+    # The outputs bucket is not campaign-referenced and still sweeps.
+    assert "u1/j1/designs/design_0.pdb" in client.removed
+
+
+def test_active_campaign_paths_ignores_rows_without_a_target():
+    """proteina curated-task campaigns carry target_storage_path=None; those
+    rows must not poison the protected set with a None entry."""
+    client = _FakeClient(
+        {},
+        compute_campaigns=[
+            {"target_storage_path": None, "status": "running"},
+            {"target_storage_path": "", "status": "running"},
+            {"target_storage_path": "u1/j1/target.pdb", "status": "running"},
+        ],
+    )
+    assert mod.active_campaign_input_paths(client=client) == {"u1/j1/target.pdb"}
+
+
+def test_protected_set_is_paged_past_the_postgrest_row_clamp():
+    """The guard must page. PostgREST clamps a response to 1000 rows and a
+    clamped read looks identical to a complete one, so an unpaged lookup would
+    hand back a protected set that silently omits every live campaign past the
+    first page — and the sweep would then delete their inputs while treating
+    the truncated set as authoritative. The fake enforces the same clamp, so
+    this test fails against an unpaged implementation."""
+    n = 2400
+    campaigns = [
+        {"id": f"c{i:05d}", "target_storage_path": f"u1/j{i}/target.pdb",
+         "status": "running"}
+        for i in range(n)
+    ]
+    client = _FakeClient({}, compute_campaigns=campaigns)
+
+    protected = mod.active_campaign_input_paths(client=client)
+
+    assert protected is not None
+    assert len(protected) == n, "protected set was truncated at the row clamp"
+    assert "u1/j2399/target.pdb" in protected      # last page, past 2x the clamp
+
+
+def test_terminal_campaigns_do_not_consume_the_page_budget():
+    """The status filter runs server-side, so a long tail of dead campaigns
+    cannot push live ones out of the pages that get read."""
+    campaigns = [
+        {"id": f"c{i:05d}", "target_storage_path": f"u1/dead{i}/target.pdb",
+         "status": "completed"}
+        for i in range(1500)
+    ]
+    campaigns.append(
+        {"id": "c99999", "target_storage_path": "u1/live/target.pdb",
+         "status": "running"}
+    )
+    client = _FakeClient({}, compute_campaigns=campaigns)
+
+    assert mod.active_campaign_input_paths(client=client) == {"u1/live/target.pdb"}
+
+
+def test_page_budget_overrun_fails_closed(monkeypatch):
+    """Running out of pages means the set is incomplete. An incomplete set must
+    read as 'unknown' (None), never as 'these are the only protected paths'."""
+    monkeypatch.setattr(mod, "_MAX_CAMPAIGN_PAGES", 1)
+    monkeypatch.setattr(mod, "_CAMPAIGN_PAGE_SIZE", 10)
+    campaigns = [
+        {"id": f"c{i:05d}", "target_storage_path": f"u1/j{i}/target.pdb",
+         "status": "running"}
+        for i in range(25)
+    ]
+    client = _FakeClient({}, compute_campaigns=campaigns)
+
+    assert mod.active_campaign_input_paths(client=client) is None
 
 
 def test_sweeper_apply_deletes_only_expired():

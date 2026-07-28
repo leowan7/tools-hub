@@ -45,6 +45,7 @@
   {% for d in raw_designs %}
     {% set _proxy = d.get('cdr_distogram_iptm_proxy') if is_antibody else d.get('distogram_iptm_proxy') %}
     {% set _ = candidates.append({
+        '_source_index': loop.index0,
         'rank': d.get('rank'),
         'name': d.get('name') or ('design_' ~ (d.get('rank') or '0')),
         'pdb_key': d.get('pdb_key'),
