@@ -141,14 +141,19 @@ class _NotBuilder:
 class _FakeTable:
     def __init__(self, name: str, campaigns: list, raise_on_execute: bool,
                  compute_campaigns: list = None,
-                 compute_raise: bool = False):
+                 compute_raise: bool = False,
+                 design_targets: list = None,
+                 targets_raise: bool = False):
         self.name = name
         self.campaigns = campaigns
         self.raise_on_execute = raise_on_execute
         self.compute_campaigns = compute_campaigns or []
         self.compute_raise = compute_raise
+        self.design_targets = design_targets or []
+        self.targets_raise = targets_raise
         self._uid = None
         self._exclude = None
+        self._null_cols: list = []
         self._ordered = False
         self._range = None
 
@@ -158,6 +163,13 @@ class _FakeTable:
     def eq(self, col, val):
         if col == "user_id":
             self._uid = val
+        return self
+
+    def is_(self, col, _value):
+        """PostgREST ``.is_(col, "null")``. Recorded, and actually applied in
+        execute() — a fake that ignored it would let an archived target look
+        protected and hide the bug."""
+        self._null_cols.append(col)
         return self
 
     @property
@@ -192,6 +204,25 @@ class _FakeTable:
             if self._ordered:
                 rows = sorted(rows, key=lambda r: str((r or {}).get("id", "")))
             return SimpleNamespace(data=self._paginate(rows))
+        if self.name == "design_targets":
+            if self.targets_raise:
+                # An exception instance lets a test choose WHICH failure this
+                # is. That distinction is the whole behaviour under test: a
+                # missing table means "no targets exist yet, sweep on", any
+                # other error means "unknown, do not delete". A fake that could
+                # only raise one kind of error tested one branch while its
+                # docstring claimed both.
+                raise (
+                    self.targets_raise
+                    if isinstance(self.targets_raise, Exception)
+                    else RuntimeError("transient DB failure")
+                )
+            rows = list(self.design_targets)
+            for col in self._null_cols:
+                rows = [r for r in rows if (r or {}).get(col) in (None, "")]
+            if self._ordered:
+                rows = sorted(rows, key=lambda r: str((r or {}).get("id", "")))
+            return SimpleNamespace(data=self._paginate(rows))
         rows = [
             {"id": c["id"]} for c in self.campaigns
             if self.name == "lab_campaigns" and c["user_id"] == self._uid
@@ -201,18 +232,22 @@ class _FakeTable:
 
 class _FakeClient:
     def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False,
-                 compute_campaigns=None, compute_raise=False):
+                 compute_campaigns=None, compute_raise=False,
+                 design_targets=None, targets_raise=False):
         self.removed: list = []
         self.storage = _FakeStorage(buckets, self.removed)
         self._campaigns = campaigns or []
         self._campaigns_raise = campaigns_raise
         self._compute_campaigns = compute_campaigns or []
         self._compute_raise = compute_raise
+        self._design_targets = design_targets or []
+        self._targets_raise = targets_raise
 
     def table(self, name: str) -> _FakeTable:
         return _FakeTable(
             name, self._campaigns, self._campaigns_raise,
             self._compute_campaigns, self._compute_raise,
+            self._design_targets, self._targets_raise,
         )
 
 
@@ -468,6 +503,150 @@ def test_page_budget_overrun_fails_closed(monkeypatch):
     client = _FakeClient({}, compute_campaigns=campaigns)
 
     assert mod.active_campaign_input_paths(client=client) is None
+
+
+# ---------------------------------------------------------------------------
+# Live-target guard (migration 0039)
+# ---------------------------------------------------------------------------
+
+def test_a_live_targets_structure_survives_the_sweep():
+    """Targets are long-lived BY DESIGN, which is the whole point of them. The
+    campaign guard is not enough: every campaign launched from a target
+    eventually goes terminal and stops protecting its input, while the target
+    stays launchable forever. Without this the structure is swept at 30 days
+    and the next run against a normal-looking target dies on an unrunnable
+    input."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, design_targets=[
+        {"id": "t-1", "storage_path": "u1/j1/target.pdb", "archived_at": None},
+    ])
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" not in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 1
+    # The unprotected expired input is still swept — the guard is narrow.
+    assert "u2/j9/orphan.pdb" in client.removed
+
+
+def test_an_archived_targets_structure_is_not_protected():
+    """Archiving is how a user says they are done with a structure, and it is
+    the only removal the UI offers."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, design_targets=[
+        {"id": "t-1", "storage_path": "u1/j1/target.pdb",
+         "archived_at": "2026-01-01T00:00:00Z"},
+    ])
+    mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in client.removed
+
+
+def _missing_table_error() -> Exception:
+    """The error Supabase actually raises for a table that does not exist.
+
+    Built from the real client class so the payload is the one production
+    raises. PostgREST resolves the relation in its router against the schema
+    cache, so a missing table comes back as PGRST205 and never as the raw
+    SQLSTATE 42P01.
+
+    Note what this does NOT prove: ``str(APIError)`` renders the whole dict,
+    so the ``"could not find the table"`` clause of the predicate matches on
+    the message independently of the code. The test cannot observe WHICH clause
+    fired. The assert below is what pins ``.code``, not the choice of class.
+    """
+    from postgrest.exceptions import APIError
+
+    exc = APIError({
+        "code": "PGRST205",
+        "message": "Could not find the table 'public.design_targets' in the "
+                   "schema cache",
+        "details": None,
+        "hint": None,
+    })
+    # Pin the shape the predicate depends on. If a client upgrade stops
+    # populating .code, this fails here rather than quietly turning the test
+    # below into a no-op.
+    assert getattr(exc, "code", None) == "PGRST205"
+    return exc
+
+
+def test_is_missing_table_separates_a_missing_table_from_any_other_error():
+    """The predicate is the whole hinge: True keeps the sweep running on an
+    empty protected set, False halts it. Pinned in BOTH directions, because
+    either error is silent in production -- an under-match halts retention
+    forever, an over-match deletes live inputs."""
+    assert mod._is_missing_table(_missing_table_error()) is True
+    assert mod._is_missing_table(RuntimeError("transient DB failure")) is False
+    assert mod._is_missing_table(TimeoutError("read timed out")) is False
+
+
+def test_a_missing_design_targets_table_lets_the_sweep_continue():
+    """Pre-0039 there are no targets, so nothing needs protecting and the
+    correct protected set is empty, not unknown.
+
+    Failing closed here would halt the tool-inputs sweep on EVERY pass until
+    the migration is applied, since the table is missing every time. The
+    deletion assertions are what make this test load-bearing: if the
+    missing-table branch is removed, live_target_input_paths returns None, the
+    bucket is skipped, and nothing is removed."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, targets_raise=_missing_table_error())
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert summary["buckets"][BUCKET]["protected"] == 0
+    assert "u1/j1/target.pdb" in client.removed
+    assert "u2/j9/orphan.pdb" in client.removed
+    assert not any("live-target" in e for e in summary["errors"])
+
+
+def test_target_lookup_failure_fails_closed():
+    """Any error that is NOT a missing table is genuinely unknown, and unknown
+    must read as 'do not delete'.
+
+    The missing-table case is deliberately not this test's subject; it takes
+    the opposite branch and is covered by
+    test_a_missing_design_targets_table_lets_the_sweep_continue."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, targets_raise=True)
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert summary["buckets"][BUCKET]["protected"] is None
+    assert summary["buckets"][BUCKET]["deleted"] == 0
+    assert "u1/j1/target.pdb" not in client.removed
+    assert "u2/j9/orphan.pdb" not in client.removed
+    assert any("live-target" in e for e in summary["errors"])
+
+
+def test_live_target_set_is_paged_past_the_postgrest_row_clamp():
+    """Same clamp, same consequence as the campaign guard: an unpaged read
+    hands back a protected set that silently omits every target past the first
+    page, and the sweep deletes their structures believing it complete."""
+    n = 2400
+    targets = [
+        {"id": f"t{i:05d}", "storage_path": f"u1/t{i}/target.pdb",
+         "archived_at": None}
+        for i in range(n)
+    ]
+    client = _FakeClient({}, design_targets=targets)
+
+    protected = mod.live_target_input_paths(client=client)
+
+    assert protected is not None
+    assert len(protected) == n, "protected set was truncated at the row clamp"
+    assert "u1/t2399/target.pdb" in protected
+
+
+def test_live_target_page_budget_overrun_fails_closed(monkeypatch):
+    monkeypatch.setattr(mod, "_MAX_CAMPAIGN_PAGES", 1)
+    monkeypatch.setattr(mod, "_CAMPAIGN_PAGE_SIZE", 10)
+    targets = [
+        {"id": f"t{i:05d}", "storage_path": f"u1/t{i}/target.pdb",
+         "archived_at": None}
+        for i in range(25)
+    ]
+    client = _FakeClient({}, design_targets=targets)
+
+    assert mod.live_target_input_paths(client=client) is None
 
 
 def test_sweeper_apply_deletes_only_expired():

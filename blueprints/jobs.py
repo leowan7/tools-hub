@@ -330,6 +330,18 @@ def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
     already-validated job's result candidates, so inputs are built directly and
     the destination adapter's validate() is bypassed. Boltz-2 cofolds against
     ``src``'s own already-staged antigen (same target, orthogonal predictor).
+
+    The new job inherits ``src.target_id``. Read from the source job rather
+    than passed in, because both call sites hand over a ``ToolJob`` and a
+    campaign sub-job already carries its campaign's target_id (stamped by
+    ``_dispatch_chunk``); there is no path where the caller knows a target the
+    source job does not. It is NULL for a refold of an untargeted run, which is
+    correct -- there is no target to attribute it to.
+
+    This is what makes a yardstick refold findable: it lands with campaign_id
+    NULL, so ``target_id`` is its only link back, and Phase 4's whole premise
+    is re-ranking every tool's designs on one predictor's numbers. Without it
+    the fan-in cannot see these rows at all.
     """
     if dest_tool == "colabfold":
         inputs = {
@@ -415,6 +427,7 @@ def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
         preset="standalone",
         inputs=inputs,
         campaign_label=campaign_label,
+        target_id=src.target_id,
     )
     if job is None:
         logger.warning(

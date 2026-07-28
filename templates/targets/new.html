@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "components/field_group.html" import field_text, field_file, field_textarea %}
+{% block title %}Add a target — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Add a target</h1>
+  <p class="subtitle">
+    Upload the structure once. Chain and hotspots are saved as defaults and
+    can be overridden per run.
+  </p>
+</div>
+
+<div class="section" style="margin-top: 2rem; max-width: 720px;">
+  {% if error %}
+  <div class="panel" style="margin-bottom: 1.25rem; border-color: var(--danger, #e8846b);">
+    <div class="panel-body">
+      <p style="color: #e8846b; margin: 0;">{{ error }}</p>
+      {% if duplicate %}
+      {# Same content hash as an existing target. Offered, never forced: two
+         targets for one protein split its results across two combined tables,
+         which is the whole thing targets exist to prevent. #}
+      <p style="margin: 0.85rem 0 0;">
+        <a href="{{ url_for('targets.target_detail', target_id=duplicate.id) }}"
+           class="btn-primary">Use "{{ duplicate.display_name }}"</a>
+      </p>
+      <p style="margin: 0.6rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">
+        Or tick "upload it anyway" below to keep them separate.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <form method="POST" action="{{ url_for('targets.target_create') }}"
+        enctype="multipart/form-data">
+    {{ csrf_input() }}
+
+    {{ field_file("target_pdb", "Target structure",
+                  "PDB or mmCIF. An mmCIF is converted to PDB on upload.",
+                  accept=".pdb,.cif,.mmcif", required=true) }}
+
+    {{ field_text("name", "Name",
+                  "How this target appears in your list. Defaults to the filename.",
+                  placeholder="e.g. HER2 domain IV", max_length=120,
+                  prefilled=pre_fill) }}
+
+    {{ field_text("target_chain", "Target chain",
+                  "The chain a binder should be designed against. Checked against the uploaded structure.",
+                  placeholder="e.g. A", max_length=4, max_width="120px",
+                  prefilled=pre_fill) }}
+
+    {{ field_text("hotspot_residues", "Hotspot residues",
+                  "Comma-separated residues in PDB numbering. Saved as the default for runs against this target.",
+                  placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
+
+    {{ field_text("epitope_residues", "Epitope residues",
+                  "Only used by antibody design (IgGM). Leave blank otherwise.",
+                  placeholder="e.g. 32, 45, 58", prefilled=pre_fill) }}
+
+    {{ field_textarea("notes", "Notes",
+                      "Anything you want to remember about this construct.",
+                      rows=3, prefilled=pre_fill) }}
+
+    {% if duplicate %}
+    <div class="field-group">
+      <label class="radio-label">
+        <input type="checkbox" name="allow_duplicate" value="1">
+        Upload it anyway as a separate target
+      </label>
+    </div>
+    {% endif %}
+
+    <button type="submit" class="btn-primary">Save target</button>
+    <a href="{{ url_for('targets.targets_list') }}" class="btn-secondary">Cancel</a>
+  </form>
+</div>
+{% endblock %}

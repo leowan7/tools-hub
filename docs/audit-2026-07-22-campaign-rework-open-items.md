@@ -320,3 +320,116 @@ A10-A13 are filed, not fixed. Numbering continues from A7.
 - **detail:** `candidates_to_csv` discovered columns from `cand["scores"]` only, but every designs-shape pipeline puts its metrics at the record **root** and has no `scores` dict. The results templates reshape inline, so the screen looked correct while the export produced the right number of rows with no science in them. A1's `candidate_records` fix corrected the row count, not the columns. The `_designs_shape()` fixture in `tests/test_export_shapes.py` invented a nested `scores` and a `sequence`, so the tests asserting "not header-only" passed against a shape no tool emits.
 - **fix:** column discovery now reads the root as well as `scores`, excluding provenance tags, identity fields, and any non-scalar or bulk value (`pdb_content_b64`, per-residue contact lists). The fixture was rebuilt from a real boltz2 row and a test now asserts the metric *values* reach the file, not just the row count.
 - *Next:* root metrics export under the pipeline's own names (`iptm`, not `ipTM`). Mapping those onto canonical display names is the cross-tool aliasing work and belongs with the merged target table, not here. FASTA is still empty for designs-shape tools, which is correct — they emit no binder sequence.
+
+---
+
+## Addendum 3 — 2026-07-28 (target-first Phase 1)
+
+Filed while building `design_targets` (migration 0039). One defect was
+introduced-and-fixed inside this phase; the rest are notes on what Phase 1
+deliberately left for later.
+
+### A15. Targets would have been swept by the retention cron at 30 days (RESOLVED in phase)
+- **severity:** high (would have been) | **owner:** code
+- **detail:** `cron/purge_old_storage.py` sweeps `tool-inputs` by object age, guarded only by `active_campaign_input_paths()`. That guard protects a *campaign* that can still dispatch, and every campaign eventually reaches a terminal status and stops protecting its input. A target is long-lived **by design** — that is the entire point of 0039 — and stays launchable forever. So a target older than the retention window would have silently lost its structure while still rendering as a normal, launchable card, and the next run against it would have died on an unrunnable input. The failure is invisible until someone launches.
+- **fix:** `live_target_input_paths()`, same contract as the campaign guard: paged past the PostgREST `max_rows` clamp, negation applied server-side and re-checked client-side, and `None` (unknown) fails closed. The two protected sets are unioned; either lookup failing skips the whole `tool-inputs` sweep for that pass. Archived targets are deliberately NOT protected, since archiving is how a user says they are done with a structure.
+- *Next:* this widens A11. A target with no recency bound pins its input permanently, which is the same compliance gap as a stuck campaign, now with a legitimate long-lived object behind it. The 30-vs-90-day retention decision (still unresolved: migration 0021 says 30, `templates/legal/terms.html:64` says 90) should be settled before adding a recency bound here, because "we keep your uploaded structure while the target is live" may be the honest policy rather than a bug.
+
+### A16. A run launched from a target validates chain and hotspots against the persisted inspection, not the file
+- **severity:** informational | **owner:** code
+- **detail:** Chain and hotspots are per-RUN and may override the target's defaults, so they still need checking — but the structure is never re-uploaded, so `resolve_target_upload` (and with it `validate_target_chain`) does not run. Rather than download and re-parse on every launch, `DesignTarget.chain_error` / `.hotspot_error` check the `chain_summary` jsonb persisted at upload time. This is the same data the inspection produced, so the answer is identical, and it costs no round-trip. It does mean the check is skipped for a target with no persisted summary — an SDF ligand or a curated task, neither of which has protein chains to name.
+- **contrast with the atomic path:** the `target:` reuse token in `blueprints/tools.py` gets the *full* re-inspection, because the existing reuse hard-gate downloads the staged bytes back for every non-`alphafold:` token. Both paths are gated; only the cost differs.
+- *Next:* nothing. Noted so a future change does not "helpfully" add a download to the launch path.
+
+### A17. The target hub read runs twice and could hide them all (RESOLVED)
+- **severity:** ~~low~~ **medium** | **owner:** code
+- **detail:** `/targets/<id>` called `campaign_ids_for_target` (paged select of ids) and then `list_campaigns_for_user(limit=200)`, filtering in memory.
+- **this entry originally understated it, and the correction is the point.** It was filed as "a user with more than 200 runs could see an incomplete run strip" — a cosmetic cap. The cap is not on the target's runs, it is on the user's ENTIRE campaign history. A target whose runs all fall outside that window matched nothing, so the page rendered its empty state: "Nothing has been run against this target yet", for runs the user had paid for. Found independently by three reviewers in the second QC pass and confirmed by both verify lenses.
+- **fix:** `shared/compute_campaigns.py::list_campaigns_for_target` filters server-side on `target_id`, owner-scoped, paged past `max_rows`, with the newest-first sort applied in memory so page boundaries stay stable. One read instead of two. `tests/test_target_routes.py::test_target_detail_lists_only_this_targets_runs` now asserts `list_campaigns_for_user` is NOT called, so reintroducing the in-memory filter fails the suite.
+- *Lesson:* a severity assigned from the mechanism ("two reads, one cap") rather than from the user-visible outcome ("your runs disappear") files a real defect as cleanup and it stays unfixed.
+
+### A18. `validate_hotspots` rejects every hotspot on a multi-chain target
+- **severity:** medium (pre-existing, on main) | **owner:** code
+- **detail:** `shared/pdb_inspect.py::validate_hotspots` passes the whole `target_chain` string to `report.chain()`. For a multi-chain string like `"A B"` — which ProteinMPNN-style design submits and rfdiffusion's validator accepts (4-char cap) — the lookup returns `None`, so the function reports EVERY hotspot out of range. Reached from `_verify_reuse_pdb_bytes`, so it fires on the `job:` / `handoff:` / `resample:` / `target:` reuse paths, failing a legitimate submission for $0 with a misleading message.
+- **why it surfaced now:** `DesignTarget.hotspot_error` (Phase 1) checks the same thing against the persisted `chain_summary` and deliberately does NOT reproduce this: it accepts a residue in ANY named chain. So the identical submission is accepted on the campaign target path and rejected on the atomic `target:` path. The new behaviour is the correct one; the divergence is the cost of not fixing the old function in a phase that was not about it.
+- *Next:* make `validate_hotspots` split the chain string and union the ranges, matching `validate_target_chain`, which already iterates `target_chain.split()`. Then delete the divergence note in `shared/targets.py::hotspot_error`.
+
+### A19. Both retention guards page by offset, so a concurrent insert can drop a row
+- **severity:** medium (pre-existing for the campaign guard) | **owner:** code
+- **detail:** `active_campaign_input_paths` and `live_target_input_paths` both page with `.order("id").range(offset, offset+499)` over a `gen_random_uuid()` primary key, i.e. effectively random ordering. If a row is inserted into an already-read page mid-sweep, every later row shifts down one and exactly one row is never read. That row's storage object is then absent from the protected set and is deleted while still in use. One row lost per interleaved insert; needs >500 live rows of the relevant kind to be reachable at all.
+- *Next:* keyset paging — `.gt("id", last_id)` instead of `.range()` — which is immune to inserts and no more code. Same fix for `shared/targets.py::campaign_ids_for_target` and `shared/compute_campaigns.py::iter_succeeded_children`, which share the shape (their failure is a short read, not data loss).
+
+### A20. The pytest suite runs against the production database
+- **severity:** high | **owner:** code + ops
+- **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` carries real `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`, so any test that imports `app` and exercises a route performs REAL reads and writes against production. `@idempotent()` routes are the worst case: they INSERT into `idempotency_keys` and then replay those cached responses into later runs. Measured on the Phase 1 target tests: 3 of 6 consecutive runs failed, different tests each time, including all three cross-tenant isolation assertions (a target owned by `u-1` came back for `u-2`). With the credentials blanked: 74 passed in 3.8s, clean 5 runs running. A suite that consults a database it does not control cannot be the gate on ownership.
+- **partial fix:** `tests/conftest.py::isolate_supabase` blanks the credentials for a test; the four Phase 1 target test files opt in via `pytestmark`. Deliberately opt-in, because making ~1500 existing tests hermetic in one move is its own change with its own blast radius.
+- *Next:* make it autouse and let the env-gated suites (`test_rls.py`, `test_af2_smoke.py`, `test_platform_api_hardening.py`, `test_uniprot_lookup.py`) opt back IN explicitly. Then stop shipping usable production credentials in a file every test run loads by default.
+
+### A21. `create_job`'s schema-gap retry had never fired (RESOLVED)
+- **severity:** low | **owner:** code
+- **detail:** The 0022 guard read `if "campaign_label" in msg and "label" in row`. The second clause tests dict KEYS and the key is `campaign_label`, so it was always False and the retry was dead code — the comment above it advertised a safety net that did not exist. Pre-existing on main and dormant in practice (0022 is applied, so no error mentions the column). Found by `tests/test_target_id_persistence.py`, which asserts the retry preserves `target_id`.
+- **fix:** `"campaign_label" in row`. The retry stays dormant in prod; it now works if it is ever needed.
+
+---
+
+## Addendum 2026-07-28b — second QC pass, over the Phase 1 FIXES
+
+The first pass reviewed the branch; its findings were then fixed by the author
+and **the fixes were reviewed by nobody**. This pass covered only that fix diff:
+six reviewers plus adversarial refuters. Two defects confirmed (A17 above,
+restated and re-severitied; A22 below), one finding refuted (A23), nine capped
+unverified (A24 to A30).
+
+### A22. The retention fix's fail-open branch had zero coverage, and the test claiming to cover it took the other branch (RESOLVED)
+- **severity:** high (test integrity) | **owner:** code
+- **detail:** `test_target_lookup_failure_fails_closed`'s docstring said it covered "a database that has not had 0039 applied yet, where the table does not exist". Its fake raised `RuntimeError("transient DB failure")`, which `_is_missing_table` returns False for, so it exercised the fail-CLOSED path while advertising the other one. Deleting the entire `if _is_missing_table(exc): return set()` block left all 36 tests green — a reviewer applied that mutation and ran it. Nothing in `tests/` referenced `42P01`, `PGRST205`, or `_is_missing_table`.
+- **why this one stings:** it is the same defect class the fix was written for, reproduced inside the fix. A docstring asserting a property nobody checked, plus a test that passes when the code it names is deleted.
+- **fix:** the fake now takes an exception instance so a test can choose WHICH failure it is; `_missing_table_error()` builds a real `postgrest.exceptions.APIError` with the PGRST205 payload and asserts `.code` is populated (a hand-rolled stand-in would satisfy the predicate for the wrong reason); `test_is_missing_table_separates_a_missing_table_from_any_other_error` pins the predicate in BOTH directions; `test_a_missing_design_targets_table_lets_the_sweep_continue` asserts objects were actually deleted, which is only true if the branch fired. Mutation-verified: re-disabling the branch fails that test.
+
+### A23. `_is_missing_table` treats a PostgREST schema-cache miss as a missing table (REFUTED, do not "fix")
+- **severity:** informational | **owner:** none
+- **claim:** `PGRST205` means "not in the schema cache", not "table absent", so a transient cache anomaly would unprotect every live target and the sweep would delete their structures.
+- **why it was refuted:** the mechanism is real but unreachable in shipped code. `purge_old_storage` has exactly one caller, the `flask storage:purge-old` CLI (`app.py:835`), which defaults to dry-run. No Procfile entry, no GitHub workflow, no Railway cron service, and no in-process scheduler invokes it; the only Railway crons are `digest:send` and `jobs:sweep-stuck`. Harm requires an operator typing `--apply` during a cache anomaly.
+- **and the proposed remedy is actively wrong.** Narrowing the predicate to SQLSTATE `42P01` would break it: PostgREST resolves the relation in its router against the schema cache, so a genuinely missing table returns `PGRST205` and never the raw SQLSTATE. Restricting to `42P01` means `_is_missing_table` never fires, the guard returns `None` on every pass pre-migration, and the permanent-halt bug returns. The `PGRST205` ambiguity is inherent to the wire protocol and is not distinguishable client-side.
+- *Next:* nothing, beyond not scheduling this sweeper without revisiting. Recorded so the "obvious fix" is not applied later by someone reading only the predicate.
+
+### A24 to A30. Capped unverified
+Reported by reviewers, not put through the refuters (verify budget capped at 5).
+Listed so they are not mistaken for a clean bill.
+- **A24.** `target_defaults_for_form`'s `"epitope"` key is untested; renaming it back leaves the target suite green. No fixture sets `epitope_residues`, so the line never executes. *(medium)*
+- **A25.** The `target:` token stamps `target_id` on a job even when the adapter has `requires_pdb=False`, so the entire staging block is skipped and the run is filed under a target whose structure it never read — the same mis-attribution the upload-override fix was written to prevent. *(low)*
+- **A26. (RESOLVED)** `_spawn_refold_job` omitted `target_id`, so validation refolds landed with both `target_id` and `campaign_id` NULL. Migration `0039`'s own comment claims a "yardstick re-fold" carries it — false when written, and Phase 4 depends on it being true: a refold has campaign_id NULL, so `target_id` is its ONLY link back, and the fan-in that re-ranks every tool on one predictor reads exactly these rows. Unstamped, they are invisible and the comparison silently covers nothing. **Fixed:** the new job inherits `src.target_id`, read from the source job rather than passed in (both call sites hand over a `ToolJob`, and a campaign sub-job already carries its campaign's target_id from `_dispatch_chunk`, so there is no path where the caller knows a target the source does not). NULL for a refold of an untargeted run, which is correct. Mutation-verified; the two `SimpleNamespace` source-job fakes in `test_campaign_results.py` now carry the field, since they stand in for a `ToolJob` that has it. *(the migration comment is now true rather than aspirational)*
+- **A27.** `campaign_ids_for_target`'s docstring claimed "every run id" while reading only `compute_campaigns`; standalone `tool_jobs` rows carrying `target_id` can never be returned. **Docstring corrected in place**; the underlying two-table read is Phase 3's fan-in. *(low, and a false comment)*
+- **A28.** `test_list_targets_clamps_a_limit_past_the_row_cap` seeds 5 rows and asserts `len(...) == 5`, which holds whether the limit is clamped or not. Decorative. *(low)*
+- **A29.** A19's offset-paging hazard restated for `live_target_input_paths` specifically: a row leaving the filtered set between page reads drops exactly one live target from the protected set. *(medium, tracked under A19)*
+- **A30.** A18 restated: the same submission passes `DesignTarget.hotspot_error` and fails `validate_hotspots`, and the losing path fails the job only after the row and its Modal-bound staging exist. *(low, tracked under A18)*
+
+**Three of these (A26, A27, and the A17 restatement) are comments asserting properties that are false — written in the pass whose purpose was fixing comments that assert properties that are false.** The rule in `feedback_comments_assert_intent_not_behaviour` is not being applied to new comments as they are written.
+
+---
+
+## Addendum 2026-07-28c — third QC pass, over the A17/A22/A26 fixes
+
+One independent reviewer over `git diff 4f21a4b`. **No logic defect found**; it
+independently mutation-tested all three fixes (disabling the missing-table
+branch, dropping the `user_id` filter, and swapping `.range()` for `.limit()`)
+and confirmed each turns exactly one test red. It also confirmed the `for/else`
+is not inverted, owner scope is unreachable with `user_id=None`, and both
+`_spawn_refold_job` call sites hand over a real `ToolJob`.
+
+**All three findings were comments asserting properties the code does not
+have — for the third consecutive pass, and this time in the very comments
+written to fix that same defect.** Corrected in place. The recurrence is the
+finding: writing a property-asserting comment is being treated as documenting
+intent, when it is making a claim that has not been checked.
+
+### A31. The target page cannot show a target's standalone runs
+- **severity:** low (latent) | **owner:** code
+- **detail:** `list_campaigns_for_target` reads `compute_campaigns` only. Migration 0039 also puts `target_id` on `tool_jobs`, and two things write it there with `campaign_id` NULL: the `target:` reuse token (`blueprints/tools.py`) and, as of this branch, yardstick refolds (A26). A target holding only those renders "Nothing has been run against this target yet" — the exact user-visible failure A17 was fixed for, through a different table.
+- **why it is latent, not live:** no template mints a `target:` token yet (`templates/tools/_prefill.html` emits `pdb_source.token`, and the only minter is `resample:`), so the row cannot be created from the UI today. The docstrings on both the function and the route now say so explicitly rather than claiming completeness.
+- *Next:* Phase 3's fan-in reads both tables by definition, so this closes there. Do not widen the summary line without widening the query.
+
+### A32. The target run strip has no render ceiling
+- **severity:** informational | **owner:** code
+- **detail:** The pre-fix code capped the render at 200 rows as a side effect of the bug. The fix removes the cap deliberately (that cap was hiding runs), so the page now renders every run up to the 10,000-row paging bound, each with a status badge. Nobody has looked at what a 2,000-run target does to that page.
+- *Next:* nothing yet. Phase 6.4's run strip is the natural place to add paging or a "showing N of M" affordance. Noted so a future slow-page report is not misdiagnosed as a query problem.

@@ -29,6 +29,9 @@
   .runs-submit { width: 100%; background: var(--accent-text, #2B9E7E); color: #05110d; border: none; border-radius: 6px; padding: 0.7rem; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
   .runs-submit:disabled { opacity: 0.45; cursor: not-allowed; }
   .runs-err { background: rgba(232,132,107,0.12); color: #e8846b; border-radius: 6px; padding: 0.7rem 0.9rem; font-size: 0.85rem; margin-bottom: 1.25rem; }
+  .runs-chip { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; background: var(--surface, rgba(255,255,255,0.04)); border: 1px solid var(--border, rgba(255,255,255,0.14)); border-radius: 6px; padding: 0.6rem 0.7rem; }
+  .runs-chip .n { font-size: 0.88rem; color: var(--text-primary, #fafafa); }
+  .runs-chip .m { font-size: 0.72rem; color: var(--text-secondary, #b8c0c8); font-family: var(--font-mono, monospace); }
 </style>
 {% endblock %}
 
@@ -98,9 +101,26 @@
           <input type="text" id="epitope" name="epitope" value="{{ pre_fill.get('epitope','') }}" placeholder="e.g. 32, 45, 58" disabled>
           <div class="hint">Antigen residue numbers (PDB numbering) IgGM should target. Required, because IgGM cannot infer the epitope from an antigen-only structure. Get them from Epitope Scout.</div>
         </div>
-        <div class="runs-field" id="target-pdb-field">
+        {% if target %}
+        {# Launched from a stored target: the structure is already staged, so
+           there is nothing to upload. The file inputs stay in the DOM (the
+           panel JS holds references to them) but disabled, so they can never
+           post an empty file that would shadow the target. #}
+        <input type="hidden" name="target_id" value="{{ target.id }}">
+        <div class="runs-field">
+          <label>Target structure</label>
+          <div class="runs-chip">
+            <span class="n">{{ target.display_name }}</span>
+            <span class="m">
+              {{ target.filename or 'structure' }}{% if target.residue_count %} · {{ target.residue_count }} residues{% endif %}
+            </span>
+          </div>
+          <div class="hint">Already uploaded. <a href="{{ url_for('campaigns.compute_campaign_new') }}">Use a different structure</a>.</div>
+        </div>
+        {% endif %}
+        <div class="runs-field" id="target-pdb-field"{% if target %} style="display:none;"{% endif %}>
           <label for="target_pdb" id="target-pdb-label">Target structure (.pdb / .cif)</label>
-          <input type="file" id="target_pdb" name="target_pdb" accept=".pdb,.cif,.mmcif" required>
+          <input type="file" id="target_pdb" name="target_pdb" accept=".pdb,.cif,.mmcif"{% if target %} disabled{% else %} required{% endif %}>
         </div>
         <div class="runs-field" id="target-sdf-field" style="display:none;">
           <label for="target_sdf">Target molecule (.sdf)</label>
@@ -186,6 +206,7 @@
   var iggmPreset = document.getElementById('iggm_preset');
   var fasta = document.getElementById('fasta');
   var epitope = document.getElementById('epitope');
+  var boundTarget = {% if target %}true{% else %}false{% endif %};
   var latest = { ok: false, affordable: false, budget: 0 };
 
   function money(x) { return '$' + Number(x).toFixed(2); }
@@ -221,6 +242,20 @@
   function refreshTarget() {
     var isProteina = tool.value === 'proteina';
     var isLigand = isProteina && preset.value === 'ligand_binder';
+    if (boundTarget) {
+      // Structure comes from the stored target. Keep both file inputs hidden
+      // AND disabled (a disabled control is not submitted) so switching tools
+      // can never re-expose an upload that would shadow the target. The chain
+      // stays editable: it is a per-run override of the target's default.
+      show('target-pdb-field', false);
+      show('target-sdf-field', false);
+      pdbInput.disabled = true;
+      sdfInput.disabled = true;
+      pdbInput.required = false;
+      show('target-chain-field', !isLigand);
+      chainInput.disabled = isLigand;
+      return;
+    }
     // Ligand variant takes an SDF; every other case takes a PDB.
     show('target-pdb-field', !isLigand);
     show('target-sdf-field', isLigand);

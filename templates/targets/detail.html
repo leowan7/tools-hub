@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "components/status_badge.html" import status_badge %}
+{% block title %}{{ target.display_name }} — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>{{ target.display_name }}</h1>
+  <p class="subtitle">
+    {{ target.filename or 'No structure staged' }}
+    {%- if target.target_chain %} · chain {{ target.target_chain }}{% endif %}
+    {%- if target.residue_count %} · {{ target.residue_count }} residues{% endif %}
+    {%- if target.chains %} · {{ target.chains|length }} chain(s){% endif %}
+  </p>
+  <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
+    <a href="{{ url_for('targets.target_launch', target_id=target.id) }}"
+       class="btn-primary">Run a tool</a>
+    <form method="POST" action="{{ url_for('targets.target_archive', target_id=target.id) }}"
+          style="display: inline;">
+      {{ csrf_input() }}
+      <button type="submit" class="btn-secondary">Archive</button>
+    </form>
+  </div>
+</div>
+
+{% if target.hotspot_residues or target.epitope_residues or target.notes %}
+<div class="panel" style="margin-top: 1.5rem;">
+  <div class="panel-header"><span class="panel-title">Defaults</span></div>
+  <div class="panel-body" style="font-size: 0.88rem; color: var(--text-secondary);">
+    {% if target.hotspot_residues %}
+    <p style="margin: 0 0 0.4rem;">
+      Hotspots:
+      <span style="font-family: var(--font-mono); color: var(--accent-text);">
+        {{ target.hotspot_residues|join(', ') }}
+      </span>
+    </p>
+    {% endif %}
+    {% if target.epitope_residues %}
+    <p style="margin: 0 0 0.4rem;">
+      Epitope:
+      <span style="font-family: var(--font-mono); color: var(--accent-text);">
+        {{ target.epitope_residues|join(', ') }}
+      </span>
+    </p>
+    {% endif %}
+    {% if target.notes %}<p style="margin: 0;">{{ target.notes }}</p>{% endif %}
+    <p style="margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-tertiary);">
+      Prefilled on every run against this target. Each run can override them.
+    </p>
+  </div>
+</div>
+{% endif %}
+
+<div class="section" style="margin-top: 1.5rem;">
+  <div class="section-head"><h2 class="section-title">Runs</h2></div>
+  {% if runs %}
+    {% for r in runs %}
+    <div class="panel" style="margin-bottom: 0.7rem;">
+      <div class="panel-header">
+        <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=r.id) }}"
+           style="text-decoration: none; color: var(--text-primary); font-weight: 600;">
+          {{ r.name or r.tool }}
+        </a>
+        {{ status_badge(r.status) }}
+      </div>
+      <div class="panel-body" style="font-size: 0.85rem; color: var(--text-secondary);">
+        {{ r.tool }} · {{ r.requested_designs }} designs · {{ r.total_subjobs }} sub-job(s)
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="panel">
+      <div class="panel-body" style="text-align: center; padding: 2.5rem 1.5rem;">
+        <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+          Nothing has been run against this target yet.
+        </p>
+        <a href="{{ url_for('targets.target_launch', target_id=target.id) }}"
+           class="btn-primary">Run a tool</a>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

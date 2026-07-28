@@ -978,6 +978,7 @@ def tool_submit(tool: str):
         or reuse_token.startswith("handoff:")
         or reuse_token.startswith("resample:")
         or reuse_token.startswith("alphafold:")
+        or reuse_token.startswith("target:")
     ):
         return render_template(
             adapter.form_template,
@@ -987,6 +988,56 @@ def tool_submit(tool: str):
             pdb_source=None,
             workspace_ctx=workspace_ctx,
         )
+
+    # Resolve a ``target:`` reuse token HERE, before create_job. Two reasons:
+    # the job row carries target_id (the only way a standalone run reaches its
+    # target's combined table), and a bad id has to be rejected before a job
+    # row exists — the same failure shape the missing-PDB gate above prevents.
+    # The wallet hold is already placed by @requires_wallet at this point; what
+    # matters is that returning here leaves ``g.wallet_hold_consumed`` False,
+    # so the decorator releases it. Do not move this below the point where that
+    # flag is set.
+    #
+    # The owner-scoped fetch is the ENTIRE tenancy boundary: copy_input takes
+    # no source_user_id and download_input will read any object in the bucket,
+    # so resolving this uuid to a storage path any other way is a cross-tenant
+    # structure read.
+    reuse_target = None
+    if reuse_token.startswith("target:"):
+        from shared.targets import get_target  # noqa: PLC0415
+        reuse_target = get_target(
+            reuse_token.split(":", 1)[1].strip(), user_id=ctx.user_id,
+        )
+        # Archived is rejected here as well as missing. An archived target is
+        # excluded from the retention sweeper's protected set, so its structure
+        # is deleted once it ages out — accepting one would create a job row,
+        # copy nothing, and die in Storage. `/campaigns` already rejects the
+        # same id; the two routes must not disagree about what is launchable.
+        if (
+            reuse_target is None
+            or reuse_target.is_archived
+            or not reuse_target.storage_path
+        ):
+            return render_template(
+                adapter.form_template,
+                adapter=adapter,
+                error=(
+                    "That target is archived."
+                    if reuse_target is not None and reuse_target.is_archived
+                    else "That target could not be found."
+                ),
+                pre_fill=inputs,
+                pdb_source=None,
+                workspace_ctx=workspace_ctx,
+            )
+        # An attached file OVERRIDES the token — that is the documented
+        # behaviour for every reuse token (templates/tools/_prefill.html says
+        # so verbatim). The target's structure is then never staged, so the
+        # run must NOT be filed under it: a design produced from some other
+        # structure appearing in that target's merged ranking is worse than
+        # one that is merely unparented.
+        if uploaded is not None and uploaded.filename:
+            reuse_target = None
 
     # ---- PDB pre-flight inspection (Bug 9 follow-on) ----
     # Run a fast Biopython inspection on freshly-uploaded files so we
@@ -1248,6 +1299,7 @@ def tool_submit(tool: str):
         target_pdb_id=ws_target,
         workspace_id=ws_id,
         campaign_label=form_campaign_label or None,
+        target_id=(reuse_target.id if reuse_target is not None else None),
     )
     if job is None:
         # Release the hold so we don't leave a stranded reservation.
@@ -1325,6 +1377,21 @@ def tool_submit(tool: str):
                     dest_user_id=ctx.user_id,
                     dest_job_id=job.id,
                     filename=src_name,
+                )
+            elif reuse_target is not None:
+                # Target reuse: copy the target's staged structure into this
+                # job's prefix so the RLS owner-prefix still holds, exactly as
+                # the job:/handoff: paths do. Ownership was resolved before
+                # create_job; do NOT re-derive the path from the token here.
+                # The copied bytes are re-inspected by the reuse hard-gate
+                # further down (it fires for every non-alphafold token), so a
+                # chain that does not match this run is caught before Modal.
+                staged_filename = reuse_target.filename or "target.pdb"
+                staged_path = copy_input(
+                    source_path=reuse_target.storage_path,
+                    dest_user_id=ctx.user_id,
+                    dest_job_id=job.id,
+                    filename=staged_filename,
                 )
             elif reuse_token.startswith("handoff:"):
                 # Wave 3C Scout handoff: copy PDB staged by Scout.

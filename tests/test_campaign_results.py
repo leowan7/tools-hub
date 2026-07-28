@@ -473,7 +473,7 @@ def test_spawn_refold_boltz2_falls_back_to_campaign_antigen(monkeypatch):
     import blueprints.jobs as J
 
     src = SimpleNamespace(
-        id="subjob-1", tool="rfdiffusion",
+        id="subjob-1", tool="rfdiffusion", target_id=None,
         inputs={"target_chain": "A", "hotspot_residues": [10, 12]},  # no _pdb_storage_path
     )
     seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
@@ -509,12 +509,76 @@ def test_spawn_refold_boltz2_still_noops_without_any_antigen(monkeypatch):
     """No sub-job path and no campaign fallback -> None (unchanged safety)."""
     from types import SimpleNamespace
     import blueprints.jobs as J
-    src = SimpleNamespace(id="s", tool="rfdiffusion", inputs={"target_chain": "A"})
+    src = SimpleNamespace(id="s", tool="rfdiffusion", target_id=None,
+                          inputs={"target_chain": "A"})
     seq = SimpleNamespace(rank=1, pdb_key="d.pdb", sequence="MK", fasta_header="h")
     assert J._spawn_refold_job(
         SimpleNamespace(user_id="u"), SimpleNamespace(slug="boltz2"), "boltz2",
         seq, src, "label", antigen_storage_path=None,
     ) is None
+
+
+def test_spawn_refold_inherits_the_source_jobs_target(monkeypatch):
+    """A yardstick refold lands with campaign_id NULL, so target_id is its only
+    link back to the target. Phase 4 re-ranks every tool's designs on one
+    predictor by reading exactly these rows; unstamped, they are invisible to
+    the fan-in and the comparison silently covers nothing."""
+    from types import SimpleNamespace
+    import blueprints.jobs as J
+
+    src = SimpleNamespace(id="subjob-1", tool="rfdiffusion", target_id="t-42",
+                          inputs={"target_chain": "A"})
+    seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
+                          fasta_header="rank1_d1.pdb")
+    captured = {}
+    monkeypatch.setattr(J, "create_job", lambda **k: (
+        captured.update(k) or SimpleNamespace(id="new-job", job_token="tok")
+    ))
+    monkeypatch.setattr(J, "url_for", lambda *a, **k: "http://hook")
+    monkeypatch.setattr(
+        J, "current_app",
+        SimpleNamespace(modal_client=SimpleNamespace(submit=lambda *a, **k: None)),
+    )
+
+    class _Adapter:
+        slug = "esmfold"
+
+        def build_payload(self, inputs, url):
+            return dict(inputs)
+
+    jid = J._spawn_refold_job(
+        SimpleNamespace(user_id="u"), _Adapter(), "esmfold", seq, src, "label",
+    )
+    assert jid == "new-job"
+    assert captured["target_id"] == "t-42"
+
+
+def test_spawn_refold_of_an_untargeted_run_carries_no_target(monkeypatch):
+    """NULL is the correct answer when there is no target, not a fallback to
+    some other job's."""
+    from types import SimpleNamespace
+    import blueprints.jobs as J
+
+    src = SimpleNamespace(id="j-1", tool="rfdiffusion", target_id=None,
+                          inputs={"target_chain": "A"})
+    seq = SimpleNamespace(rank=1, pdb_key="d1.pdb", sequence="MKTAY",
+                          fasta_header="rank1_d1.pdb")
+    captured = {}
+    monkeypatch.setattr(J, "create_job", lambda **k: (
+        captured.update(k) or SimpleNamespace(id="new-job", job_token="tok")
+    ))
+    monkeypatch.setattr(J, "url_for", lambda *a, **k: "http://hook")
+    monkeypatch.setattr(
+        J, "current_app",
+        SimpleNamespace(modal_client=SimpleNamespace(submit=lambda *a, **k: None)),
+    )
+
+    J._spawn_refold_job(
+        SimpleNamespace(user_id="u"), SimpleNamespace(
+            slug="esmfold", build_payload=lambda i, u: dict(i),
+        ), "esmfold", seq, src, "label",
+    )
+    assert captured["target_id"] is None
 
 
 def test_parse_candidate_refs_sanitizes():

@@ -21,6 +21,7 @@ from shared.compute_campaigns import (
     create_campaign,
     get_campaign,
     get_progress_counts,
+    list_campaigns_for_target,
     list_campaigns_for_user,
     plan_chunks,
     sanitize_shared_params,
@@ -263,6 +264,13 @@ class _Result:
         self.count = count
 
 
+# The PostgREST max_rows in supabase/config.toml. Modelled here because a fake
+# that hands back every row makes any paging test decorative: the code under
+# test only pages because the real backend truncates, so a fake that never
+# truncates passes whether the paging works or not.
+_FAKE_MAX_ROWS = 1000
+
+
 class _Query:
     def __init__(self, store, table):
         self._store = store
@@ -273,6 +281,8 @@ class _Query:
         self._single = False
         self._count = None
         self._head = False
+        self._range = None
+        self._order = None
 
     def select(self, *_a, **_k):
         self._count = _k.get("count")
@@ -295,10 +305,18 @@ class _Query:
         # Date-window filter; accept-all keeps tests date-independent.
         return self
 
-    def order(self, *_a, **_k):
+    def order(self, col, **kw):
+        self._order = (col, bool(kw.get("desc", False)))
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
         return self
 
     def limit(self, *_a, **_k):
+        # Deliberately a no-op beyond the clamp in execute(): PostgREST clamps
+        # .limit() to max_rows exactly as it clamps an unbounded select, which
+        # is why .range() is the only way past it.
         return self
 
     def single(self):
@@ -328,7 +346,15 @@ class _Query:
             if not matched:
                 raise RuntimeError("no rows")
             return _Result(matched[0])
-        return _Result(matched)
+        if self._order is not None:
+            col, desc = self._order
+            matched = sorted(matched, key=lambda r: str(r.get(col, "")), reverse=desc)
+        if self._range is not None:
+            start, end = self._range
+            matched = matched[start:end + 1]
+        # Applied last and unconditionally, as PostgREST does: a .range() wider
+        # than max_rows still comes back clamped.
+        return _Result(matched[:_FAKE_MAX_ROWS])
 
 
 class _Client:
@@ -390,6 +416,61 @@ def test_list_campaigns_for_user(fake_client):
     mine = list_campaigns_for_user("user-1")
     assert len(mine) == 3
     assert all(c.user_id == "user-1" for c in mine)
+
+
+def _run_row(i, *, target_id="t-1", user_id="user-1", created="2026-07-03T00:00:00Z"):
+    return {
+        "id": f"c{i:05d}", "user_id": user_id, "target_id": target_id,
+        "tool": "rfdiffusion", "preset": "pilot", "status": "running",
+        "name": f"run-{i}", "created_at": created,
+    }
+
+
+def test_list_campaigns_for_target_filters_server_side(fake_client):
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1), _run_row(2),
+        _run_row(3, target_id="t-other"),
+        _run_row(4, target_id=None),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+    assert [c.id for c in runs] == ["c00001", "c00002"]
+
+
+def test_list_campaigns_for_target_is_owner_scoped(fake_client):
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1, user_id="user-1"),
+        _run_row(2, user_id="someone-else"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+    assert [c.id for c in runs] == ["c00001"]
+
+
+def test_list_campaigns_for_target_pages_past_the_row_clamp(fake_client):
+    """A target can hold more runs than PostgREST will hand back in one read.
+
+    The clamp is invisible at the call site -- a truncated page looks exactly
+    like a complete one -- so without .range() paging the target page would
+    show the first 1000 runs and give no sign the rest exist.
+    """
+    n = 2400
+    fake_client.store["compute_campaigns"] = [_run_row(i) for i in range(n)]
+
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+
+    assert len(runs) == n, "run list was truncated at the PostgREST row clamp"
+    assert {c.id for c in runs} == {f"c{i:05d}" for i in range(n)}
+
+
+def test_list_campaigns_for_target_returns_newest_first(fake_client):
+    """Pages are read ordered by id (stable across boundaries); the
+    newest-first ordering the page renders is applied after."""
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1, created="2026-07-01T00:00:00Z"),
+        _run_row(2, created="2026-07-09T00:00:00Z"),
+        _run_row(3, created="2026-07-05T00:00:00Z"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+    assert [c.id for c in runs] == ["c00002", "c00003", "c00001"]
 
 
 def test_get_progress_counts(fake_client):

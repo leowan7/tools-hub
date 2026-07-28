@@ -479,6 +479,12 @@ class ComputeCampaign:
     target_pdb_id: Optional[str] = None
     target_storage_path: Optional[str] = None
     target_name: Optional[str] = None
+    # design_targets linkage (migration 0039). Nullable forever: a run
+    # launched from a plain upload has no target, and proteina's curated-task
+    # path has no structure at all. target_storage_path stays denormalized
+    # even when target_id is set — that is what keeps the driver unchanged.
+    target_id: Optional[str] = None
+    launch_group_id: Optional[str] = None
     escrow_tx_id: Optional[int] = None
     created_at: Optional[str] = None
     confirmed_at: Optional[str] = None
@@ -513,6 +519,8 @@ class ComputeCampaign:
             target_pdb_id=row.get("target_pdb_id"),
             target_storage_path=row.get("target_storage_path"),
             target_name=row.get("target_name"),
+            target_id=row.get("target_id"),
+            launch_group_id=row.get("launch_group_id"),
             escrow_tx_id=row.get("escrow_tx_id"),
             created_at=row.get("created_at"),
             confirmed_at=row.get("confirmed_at"),
@@ -533,6 +541,7 @@ class ComputeCampaign:
             "chunk_size": self.chunk_size,
             "total_subjobs": self.total_subjobs,
             "target_name": self.target_name,
+            "target_id": self.target_id,
             "budget_usd": float(self.budget_usd),
             # NOTE: spent/reserved/refunded are advisory columns the Phase-1
             # driver does not populate (the wallet ledger is the source of
@@ -564,6 +573,9 @@ def create_campaign(
     target_pdb_id: Optional[str] = None,
     target_storage_path: Optional[str] = None,
     target_name: Optional[str] = None,
+    target_id: Optional[str] = None,
+    launch_group_id: Optional[str] = None,
+    concurrency_target: Optional[int] = None,
 ) -> Optional[ComputeCampaign]:
     """Insert a ``draft`` campaign row from a validated request.
 
@@ -571,6 +583,12 @@ def create_campaign(
     (unsupported tool, bad count, over the sub-job cap). Returns None on a
     persistence failure. ``preset`` selects the tool's container/cost profile
     (proteina variants); the 5 live campaign tools pass "pilot" (unchanged).
+
+    ``target_id`` / ``launch_group_id`` / ``concurrency_target`` all default to
+    today's behaviour: no target, no launch group, and the tool's own launch
+    concurrency. They exist so a multi-tool launch can parent its runs to one
+    target, group them, and divide the global in-flight cap between them
+    without a second create path.
     """
     plan = plan_chunks(tool, requested_designs, preset)
     client = get_service_client()
@@ -594,11 +612,22 @@ def create_campaign(
         "requested_designs": plan.requested_designs,
         "chunk_size": plan.chunk_size,
         "total_subjobs": plan.total_subjobs,
-        "concurrency_target": launch_concurrency_for(tool),
+        "concurrency_target": (
+            max(1, int(concurrency_target))
+            if concurrency_target
+            else launch_concurrency_for(tool)
+        ),
         "max_attempts": DEFAULT_MAX_ATTEMPTS,
         "status": "draft",
         "budget_usd": float(plan.budget_usd),
     }
+    # Only sent when actually set. PostgREST 400s on a column the schema does
+    # not have, so a database still missing 0039 keeps creating ordinary
+    # untargeted runs instead of failing every launch.
+    if target_id is not None:
+        row["target_id"] = target_id
+    if launch_group_id is not None:
+        row["launch_group_id"] = launch_group_id
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
@@ -651,6 +680,93 @@ def list_campaigns_for_user(
         logger.warning("list_campaigns_for_user failed for %s", user_id, exc_info=True)
         return []
     return [ComputeCampaign.from_row(r) for r in rows]
+
+
+# Paging for the per-target run list. Must stay at or below the PostgREST
+# max_rows in supabase/config.toml: ABOVE it a full page comes back clamped,
+# len(batch) < page size reads as "last page", and the loop stops early with a
+# silently short list. (At exactly max_rows a clamped page still returns
+# page_size rows, so the short-page test does not misfire; only > breaks.)
+#
+# The assert compares two module literals -- it catches someone raising the
+# page size here, NOT someone lowering max_rows in config.toml, which would
+# truncate with the assert still green. Keeping the two in sync is manual.
+_POSTGREST_MAX_ROWS = 1000
+_TARGET_RUN_PAGE_SIZE = 500
+_MAX_TARGET_RUN_PAGES = 20
+assert _TARGET_RUN_PAGE_SIZE <= _POSTGREST_MAX_ROWS, (
+    "page size must not exceed PostgREST max_rows or paging truncates silently"
+)
+
+
+def list_campaigns_for_target(
+    target_id: str, *, user_id: Optional[str] = None
+) -> list[ComputeCampaign]:
+    """A target's COMPUTE-CAMPAIGN runs, newest first.
+
+    Not every run against the target. This reads ``compute_campaigns`` only,
+    and migration 0039 also puts ``target_id`` on ``tool_jobs``: a standalone
+    run launched from the ``target:`` reuse token lands as a ``tool_jobs`` row
+    with ``campaign_id`` NULL and is invisible here, as is a yardstick refold.
+    A target with only those would render the "nothing has been run yet" empty
+    state. Latent in Phase 1 -- no template mints a ``target:`` token yet -- and
+    Phase 3's fan-in has to read both tables. Do not widen the summary line
+    above without widening the query.
+
+    Owner-scoped when ``user_id`` is given.
+
+    Filtered server-side on ``target_id``. The obvious alternative -- pull the
+    user's recent campaigns and keep the ones whose id matches -- is wrong in a
+    way that is invisible in testing: that cap applies to the user's WHOLE
+    campaign history, not to this target's runs, so a target whose runs all sit
+    outside the window renders as having never been run. It also cost a second
+    read.
+
+    Paged past the row clamp for the usual reason: ``.limit()`` is clamped
+    identically and a clamped read is indistinguishable from a complete one at
+    the call site. Pages are ordered by ``id`` because that ordering is stable
+    across page boundaries; the newest-first ordering the caller wants is
+    applied afterwards, in memory, where ties cannot reshuffle a boundary.
+
+    NOT guaranteed complete on the error path: a failed page returns the runs
+    read so far and logs. That is deliberate for a read-only page (a short run
+    strip beats a 500) and is why no deletion or billing decision may be taken
+    from this list. The retention guard that CAN destroy data pages the same
+    table and fails closed instead -- see cron/purge_old_storage.py.
+    """
+    client = get_service_client()
+    if client is None:
+        return []
+    rows: list = []
+    start = 0
+    for _ in range(_MAX_TARGET_RUN_PAGES):
+        try:
+            query = client.table(_TABLE).select("*").eq("target_id", target_id)
+            if user_id is not None:
+                query = query.eq("user_id", user_id)
+            response = (
+                query.order("id")
+                .range(start, start + _TARGET_RUN_PAGE_SIZE - 1)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "list_campaigns_for_target failed for %s", target_id, exc_info=True
+            )
+            break
+        batch = list(getattr(response, "data", None) or [])
+        rows += batch
+        if len(batch) < _TARGET_RUN_PAGE_SIZE:
+            break
+        start += _TARGET_RUN_PAGE_SIZE
+    else:
+        logger.error(
+            "list_campaigns_for_target: page bound hit for target %s; "
+            "the run list may be incomplete", target_id,
+        )
+    campaigns = [ComputeCampaign.from_row(r) for r in rows]
+    campaigns.sort(key=lambda c: str(getattr(c, "created_at", "") or ""), reverse=True)
+    return campaigns
 
 
 def get_progress_counts(campaign_id: str) -> dict:
@@ -1245,6 +1361,10 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         chunk_index=chunk_index,
         attempt=1,
         campaign_label=campaign.name or None,
+        # Stamped on the child too, not just the campaign, so a design is
+        # target-attributable without joining back through compute_campaigns
+        # — the target fan-in reads tool_jobs directly.
+        target_id=campaign.target_id,
     )
     if child is None:
         # No row: a racing driver won the UNIQUE(campaign_id, chunk_index,
