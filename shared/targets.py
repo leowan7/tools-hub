@@ -488,7 +488,18 @@ def touch_target(target_id: str) -> None:
 
 
 def campaign_ids_for_target(target_id: str, *, user_id: Optional[str] = None) -> list:
-    """Every run id belonging to a target, oldest first.
+    """The target's COMPUTE-CAMPAIGN ids, oldest first.
+
+    Not every run: this reads ``compute_campaigns`` only. Migration 0039 also
+    puts ``target_id`` on ``tool_jobs``, and the ``target:`` reuse token on the
+    atomic tool forms stamps it there, so a standalone run against this target
+    exists as a ``tool_jobs`` row with ``campaign_id`` NULL and can never be
+    returned here. Phase 3's fan-in has to read both.
+
+    No caller in Phase 1 -- the target page uses
+    ``compute_campaigns.list_campaigns_for_target``, which needs whole rows
+    rather than ids. Kept for Phase 5's shortlist parentage check, which needs
+    exactly this id set and nothing else.
 
     Owner-scoped when ``user_id`` is given. Paged for the same reason the
     campaign fan-in is: PostgREST clamps an unpaged read to max_rows and the

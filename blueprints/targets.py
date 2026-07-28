@@ -32,7 +32,6 @@ from shared.pdb_intake import resolve_target_upload
 from shared.storage import StorageError
 from shared.targets import (
     archive_target,
-    campaign_ids_for_target,
     create_target,
     find_target_by_sha256,
     get_target,
@@ -169,11 +168,14 @@ def target_detail(target_id):
     # Phase 1 shows the runs launched against this target. The combined ranked
     # table over all of them is Phase 3; until then each run links to its own
     # results page.
-    run_ids = set(campaign_ids_for_target(target.id, user_id=ctx.user_id))
-    runs = [
-        c for c in cc.list_campaigns_for_user(ctx.user_id, limit=200)
-        if c.id in run_ids
-    ]
+    #
+    # One server-side read filtered on target_id. This previously fetched the
+    # target's run ids and then intersected them with the user's 200 most
+    # recent campaigns, which is capped over their ENTIRE campaign history: a
+    # target whose runs all fell outside that window rendered the empty state,
+    # telling the user nothing had ever been run against a target they had paid
+    # to run against.
+    runs = cc.list_campaigns_for_target(target.id, user_id=ctx.user_id)
     return render_template("targets/detail.html", target=target, runs=runs)
 
 

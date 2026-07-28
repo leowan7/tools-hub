@@ -216,22 +216,24 @@ def test_target_detail_lists_only_this_targets_runs(client):
         id="c-1", name="sweep", tool="rfdiffusion", status="running",
         requested_designs=24, total_subjobs=2,
     )
-    other = SimpleNamespace(
-        id="c-9", name="unrelated", tool="bindcraft", status="running",
-        requested_designs=8, total_subjobs=1,
-    )
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("blueprints.targets.campaign_ids_for_target",
-                  return_value=["c-1"]), \
-            patch("shared.compute_campaigns.list_campaigns_for_user",
-                  return_value=[mine, other]):
+            patch("shared.compute_campaigns.list_campaigns_for_target",
+                  return_value=[mine]) as fetch, \
+            patch("shared.compute_campaigns.list_campaigns_for_user") as everything:
         resp = client.get(f"/targets/{t.id}")
 
     body = resp.get_data(as_text=True)
     assert resp.status_code == 200
     assert "sweep" in body
-    assert "unrelated" not in body
+    # Filtered server-side on target_id, owner-scoped in the query itself.
+    assert fetch.call_args.args[0] == t.id
+    assert fetch.call_args.kwargs["user_id"] == "u-1"
+    # And NOT derived from the user's global campaign list. That read is capped
+    # over their entire campaign history, so a target whose runs all fell
+    # outside the cap rendered "nothing has been run against this target yet"
+    # for runs they had paid for.
+    everything.assert_not_called()
 
 
 def test_launch_hands_off_to_the_run_form_with_the_target_bound(client):

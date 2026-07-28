@@ -341,10 +341,12 @@ deliberately left for later.
 - **contrast with the atomic path:** the `target:` reuse token in `blueprints/tools.py` gets the *full* re-inspection, because the existing reuse hard-gate downloads the staged bytes back for every non-`alphafold:` token. Both paths are gated; only the cost differs.
 - *Next:* nothing. Noted so a future change does not "helpfully" add a download to the launch path.
 
-### A17. `campaign_ids_for_target` and the target hub read runs twice
-- **severity:** low | **owner:** code
-- **detail:** `/targets/<id>` calls `campaign_ids_for_target` (paged select of ids) and then `list_campaigns_for_user(limit=200)`, filtering in memory. Two reads where one server-side `.eq("target_id", ...)` would do, and the 200 cap means a user with more than 200 runs could see an incomplete run strip on a target's page.
-- *Next:* add `list_campaigns_for_target(target_id, user_id)` doing the filter server-side with the same paging. Cheap, and Phase 3's fan-in wants that function anyway.
+### A17. The target hub read runs twice and could hide them all (RESOLVED)
+- **severity:** ~~low~~ **medium** | **owner:** code
+- **detail:** `/targets/<id>` called `campaign_ids_for_target` (paged select of ids) and then `list_campaigns_for_user(limit=200)`, filtering in memory.
+- **this entry originally understated it, and the correction is the point.** It was filed as "a user with more than 200 runs could see an incomplete run strip" — a cosmetic cap. The cap is not on the target's runs, it is on the user's ENTIRE campaign history. A target whose runs all fall outside that window matched nothing, so the page rendered its empty state: "Nothing has been run against this target yet", for runs the user had paid for. Found independently by three reviewers in the second QC pass and confirmed by both verify lenses.
+- **fix:** `shared/compute_campaigns.py::list_campaigns_for_target` filters server-side on `target_id`, owner-scoped, paged past `max_rows`, with the newest-first sort applied in memory so page boundaries stay stable. One read instead of two. `tests/test_target_routes.py::test_target_detail_lists_only_this_targets_runs` now asserts `list_campaigns_for_user` is NOT called, so reintroducing the in-memory filter fails the suite.
+- *Lesson:* a severity assigned from the mechanism ("two reads, one cap") rather than from the user-visible outcome ("your runs disappear") files a real defect as cleanup and it stays unfixed.
 
 ### A18. `validate_hotspots` rejects every hotspot on a multi-chain target
 - **severity:** medium (pre-existing, on main) | **owner:** code
@@ -367,3 +369,39 @@ deliberately left for later.
 - **severity:** low | **owner:** code
 - **detail:** The 0022 guard read `if "campaign_label" in msg and "label" in row`. The second clause tests dict KEYS and the key is `campaign_label`, so it was always False and the retry was dead code — the comment above it advertised a safety net that did not exist. Pre-existing on main and dormant in practice (0022 is applied, so no error mentions the column). Found by `tests/test_target_id_persistence.py`, which asserts the retry preserves `target_id`.
 - **fix:** `"campaign_label" in row`. The retry stays dormant in prod; it now works if it is ever needed.
+
+---
+
+## Addendum 2026-07-28b — second QC pass, over the Phase 1 FIXES
+
+The first pass reviewed the branch; its findings were then fixed by the author
+and **the fixes were reviewed by nobody**. This pass covered only that fix diff:
+six reviewers plus adversarial refuters. Two defects confirmed (A17 above,
+restated and re-severitied; A22 below), one finding refuted (A23), nine capped
+unverified (A24 to A30).
+
+### A22. The retention fix's fail-open branch had zero coverage, and the test claiming to cover it took the other branch (RESOLVED)
+- **severity:** high (test integrity) | **owner:** code
+- **detail:** `test_target_lookup_failure_fails_closed`'s docstring said it covered "a database that has not had 0039 applied yet, where the table does not exist". Its fake raised `RuntimeError("transient DB failure")`, which `_is_missing_table` returns False for, so it exercised the fail-CLOSED path while advertising the other one. Deleting the entire `if _is_missing_table(exc): return set()` block left all 36 tests green — a reviewer applied that mutation and ran it. Nothing in `tests/` referenced `42P01`, `PGRST205`, or `_is_missing_table`.
+- **why this one stings:** it is the same defect class the fix was written for, reproduced inside the fix. A docstring asserting a property nobody checked, plus a test that passes when the code it names is deleted.
+- **fix:** the fake now takes an exception instance so a test can choose WHICH failure it is; `_missing_table_error()` builds a real `postgrest.exceptions.APIError` with the PGRST205 payload and asserts `.code` is populated (a hand-rolled stand-in would satisfy the predicate for the wrong reason); `test_is_missing_table_separates_a_missing_table_from_any_other_error` pins the predicate in BOTH directions; `test_a_missing_design_targets_table_lets_the_sweep_continue` asserts objects were actually deleted, which is only true if the branch fired. Mutation-verified: re-disabling the branch fails that test.
+
+### A23. `_is_missing_table` treats a PostgREST schema-cache miss as a missing table (REFUTED, do not "fix")
+- **severity:** informational | **owner:** none
+- **claim:** `PGRST205` means "not in the schema cache", not "table absent", so a transient cache anomaly would unprotect every live target and the sweep would delete their structures.
+- **why it was refuted:** the mechanism is real but unreachable in shipped code. `purge_old_storage` has exactly one caller, the `flask storage:purge-old` CLI (`app.py:835`), which defaults to dry-run. No Procfile entry, no GitHub workflow, no Railway cron service, and no in-process scheduler invokes it; the only Railway crons are `digest:send` and `jobs:sweep-stuck`. Harm requires an operator typing `--apply` during a cache anomaly.
+- **and the proposed remedy is actively wrong.** Narrowing the predicate to SQLSTATE `42P01` would break it: PostgREST resolves the relation in its router against the schema cache, so a genuinely missing table returns `PGRST205` and never the raw SQLSTATE. Restricting to `42P01` means `_is_missing_table` never fires, the guard returns `None` on every pass pre-migration, and the permanent-halt bug returns. The `PGRST205` ambiguity is inherent to the wire protocol and is not distinguishable client-side.
+- *Next:* nothing, beyond not scheduling this sweeper without revisiting. Recorded so the "obvious fix" is not applied later by someone reading only the predicate.
+
+### A24 to A30. Capped unverified
+Reported by reviewers, not put through the refuters (verify budget capped at 5).
+Listed so they are not mistaken for a clean bill.
+- **A24.** `target_defaults_for_form`'s `"epitope"` key is untested; renaming it back leaves the target suite green. No fixture sets `epitope_residues`, so the line never executes. *(medium)*
+- **A25.** The `target:` token stamps `target_id` on a job even when the adapter has `requires_pdb=False`, so the entire staging block is skipped and the run is filed under a target whose structure it never read — the same mis-attribution the upload-override fix was written to prevent. *(low)*
+- **A26.** `_spawn_refold_job` omits `target_id`, so validation refolds land with both `target_id` and `campaign_id` NULL. Migration `0039`'s own comment claims a "yardstick re-fold" carries it. That comment is false today and Phase 4 depends on it being true. *(low, and a false comment)*
+- **A27.** `campaign_ids_for_target`'s docstring claimed "every run id" while reading only `compute_campaigns`; standalone `tool_jobs` rows carrying `target_id` can never be returned. **Docstring corrected in place**; the underlying two-table read is Phase 3's fan-in. *(low, and a false comment)*
+- **A28.** `test_list_targets_clamps_a_limit_past_the_row_cap` seeds 5 rows and asserts `len(...) == 5`, which holds whether the limit is clamped or not. Decorative. *(low)*
+- **A29.** A19's offset-paging hazard restated for `live_target_input_paths` specifically: a row leaving the filtered set between page reads drops exactly one live target from the protected set. *(medium, tracked under A19)*
+- **A30.** A18 restated: the same submission passes `DesignTarget.hotspot_error` and fails `validate_hotspots`, and the losing path fails the job only after the row and its Modal-bound staging exist. *(low, tracked under A18)*
+
+**Three of these (A26, A27, and the A17 restatement) are comments asserting properties that are false — written in the pass whose purpose was fixing comments that assert properties that are false.** The rule in `feedback_comments_assert_intent_not_behaviour` is not being applied to new comments as they are written.

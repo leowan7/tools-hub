@@ -206,7 +206,17 @@ class _FakeTable:
             return SimpleNamespace(data=self._paginate(rows))
         if self.name == "design_targets":
             if self.targets_raise:
-                raise RuntimeError("transient DB failure")
+                # An exception instance lets a test choose WHICH failure this
+                # is. That distinction is the whole behaviour under test: a
+                # missing table means "no targets exist yet, sweep on", any
+                # other error means "unknown, do not delete". A fake that could
+                # only raise one kind of error tested one branch while its
+                # docstring claimed both.
+                raise (
+                    self.targets_raise
+                    if isinstance(self.targets_raise, Exception)
+                    else RuntimeError("transient DB failure")
+                )
             rows = list(self.design_targets)
             for col in self._null_cols:
                 rows = [r for r in rows if (r or {}).get(col) in (None, "")]
@@ -531,9 +541,67 @@ def test_an_archived_targets_structure_is_not_protected():
     assert "u1/j1/target.pdb" in client.removed
 
 
+def _missing_table_error() -> Exception:
+    """The error Supabase actually raises for a table that does not exist.
+
+    Built from the real client class, not a hand-rolled stand-in, because
+    :func:`_is_missing_table` reads ``exc.code`` and a fake without that
+    attribute would pass the predicate for the wrong reason. PostgREST resolves
+    the relation in its router against the schema cache, so a missing table
+    comes back as PGRST205 and never as the raw SQLSTATE 42P01.
+    """
+    from postgrest.exceptions import APIError
+
+    exc = APIError({
+        "code": "PGRST205",
+        "message": "Could not find the table 'public.design_targets' in the "
+                   "schema cache",
+        "details": None,
+        "hint": None,
+    })
+    # Pin the shape the predicate depends on. If a client upgrade stops
+    # populating .code, this fails here rather than quietly turning the test
+    # below into a no-op.
+    assert getattr(exc, "code", None) == "PGRST205"
+    return exc
+
+
+def test_is_missing_table_separates_a_missing_table_from_any_other_error():
+    """The predicate is the whole hinge: True keeps the sweep running on an
+    empty protected set, False halts it. Pinned in BOTH directions, because
+    either error is silent in production -- an under-match halts retention
+    forever, an over-match deletes live inputs."""
+    assert mod._is_missing_table(_missing_table_error()) is True
+    assert mod._is_missing_table(RuntimeError("transient DB failure")) is False
+    assert mod._is_missing_table(TimeoutError("read timed out")) is False
+
+
+def test_a_missing_design_targets_table_lets_the_sweep_continue():
+    """Pre-0039 there are no targets, so nothing needs protecting and the
+    correct protected set is empty, not unknown.
+
+    Failing closed here would halt the tool-inputs sweep on EVERY pass until
+    the migration is applied, since the table is missing every time. The
+    deletion assertions are what make this test load-bearing: if the
+    missing-table branch is removed, live_target_input_paths returns None, the
+    bucket is skipped, and nothing is removed."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, targets_raise=_missing_table_error())
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert summary["buckets"][BUCKET]["protected"] == 0
+    assert "u1/j1/target.pdb" in client.removed
+    assert "u2/j9/orphan.pdb" in client.removed
+    assert not any("live-target" in e for e in summary["errors"])
+
+
 def test_target_lookup_failure_fails_closed():
-    """Unknown must read as 'do not delete'. This also covers a database that
-    has not had 0039 applied yet, where the table does not exist."""
+    """Any error that is NOT a missing table is genuinely unknown, and unknown
+    must read as 'do not delete'.
+
+    The missing-table case is deliberately not this test's subject; it takes
+    the opposite branch and is covered by
+    test_a_missing_design_targets_table_lets_the_sweep_continue."""
     buckets = _seed_buckets()
     client = _FakeClient(buckets, targets_raise=True)
     summary = mod.purge_old_storage(dry_run=False, client=client)

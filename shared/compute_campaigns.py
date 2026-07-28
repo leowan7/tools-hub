@@ -682,6 +682,79 @@ def list_campaigns_for_user(
     return [ComputeCampaign.from_row(r) for r in rows]
 
 
+# Paging for the per-target run list. Must stay strictly under the PostgREST
+# max_rows in supabase/config.toml (1000): at or above it a full page comes
+# back clamped, len(batch) < page size reads as "last page", and the loop stops
+# early with a silently short list. Asserted rather than commented because that
+# exact fail-open has shipped here once already.
+_TARGET_RUN_PAGE_SIZE = 500
+_MAX_TARGET_RUN_PAGES = 20
+assert _TARGET_RUN_PAGE_SIZE < 1000, (
+    "page size must stay under PostgREST max_rows or paging truncates silently"
+)
+
+
+def list_campaigns_for_target(
+    target_id: str, *, user_id: Optional[str] = None
+) -> list[ComputeCampaign]:
+    """Every run launched against a target, newest first.
+
+    Owner-scoped when ``user_id`` is given.
+
+    Filtered server-side on ``target_id``. The obvious alternative -- pull the
+    user's recent campaigns and keep the ones whose id matches -- is wrong in a
+    way that is invisible in testing: that cap applies to the user's WHOLE
+    campaign history, not to this target's runs, so a target whose runs all sit
+    outside the window renders as having never been run. It also cost a second
+    read.
+
+    Paged past the row clamp for the usual reason: ``.limit()`` is clamped
+    identically and a clamped read is indistinguishable from a complete one at
+    the call site. Pages are ordered by ``id`` because that ordering is stable
+    across page boundaries; the newest-first ordering the caller wants is
+    applied afterwards, in memory, where ties cannot reshuffle a boundary.
+
+    NOT guaranteed complete on the error path: a failed page returns the runs
+    read so far and logs. That is deliberate for a read-only page (a short run
+    strip beats a 500) and is why no deletion or billing decision may be taken
+    from this list. The retention guard that CAN destroy data pages the same
+    table and fails closed instead -- see cron/purge_old_storage.py.
+    """
+    client = get_service_client()
+    if client is None:
+        return []
+    rows: list = []
+    start = 0
+    for _ in range(_MAX_TARGET_RUN_PAGES):
+        try:
+            query = client.table(_TABLE).select("*").eq("target_id", target_id)
+            if user_id is not None:
+                query = query.eq("user_id", user_id)
+            response = (
+                query.order("id")
+                .range(start, start + _TARGET_RUN_PAGE_SIZE - 1)
+                .execute()
+            )
+        except Exception:
+            logger.warning(
+                "list_campaigns_for_target failed for %s", target_id, exc_info=True
+            )
+            break
+        batch = list(getattr(response, "data", None) or [])
+        rows += batch
+        if len(batch) < _TARGET_RUN_PAGE_SIZE:
+            break
+        start += _TARGET_RUN_PAGE_SIZE
+    else:
+        logger.error(
+            "list_campaigns_for_target: page bound hit for target %s; "
+            "the run list may be incomplete", target_id,
+        )
+    campaigns = [ComputeCampaign.from_row(r) for r in rows]
+    campaigns.sort(key=lambda c: str(getattr(c, "created_at", "") or ""), reverse=True)
+    return campaigns
+
+
 def get_progress_counts(campaign_id: str) -> dict:
     """Aggregate sub-job counts by status for a campaign.
 
