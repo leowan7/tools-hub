@@ -479,6 +479,12 @@ class ComputeCampaign:
     target_pdb_id: Optional[str] = None
     target_storage_path: Optional[str] = None
     target_name: Optional[str] = None
+    # design_targets linkage (migration 0039). Nullable forever: a run
+    # launched from a plain upload has no target, and proteina's curated-task
+    # path has no structure at all. target_storage_path stays denormalized
+    # even when target_id is set — that is what keeps the driver unchanged.
+    target_id: Optional[str] = None
+    launch_group_id: Optional[str] = None
     escrow_tx_id: Optional[int] = None
     created_at: Optional[str] = None
     confirmed_at: Optional[str] = None
@@ -513,6 +519,8 @@ class ComputeCampaign:
             target_pdb_id=row.get("target_pdb_id"),
             target_storage_path=row.get("target_storage_path"),
             target_name=row.get("target_name"),
+            target_id=row.get("target_id"),
+            launch_group_id=row.get("launch_group_id"),
             escrow_tx_id=row.get("escrow_tx_id"),
             created_at=row.get("created_at"),
             confirmed_at=row.get("confirmed_at"),
@@ -533,6 +541,7 @@ class ComputeCampaign:
             "chunk_size": self.chunk_size,
             "total_subjobs": self.total_subjobs,
             "target_name": self.target_name,
+            "target_id": self.target_id,
             "budget_usd": float(self.budget_usd),
             # NOTE: spent/reserved/refunded are advisory columns the Phase-1
             # driver does not populate (the wallet ledger is the source of
@@ -564,6 +573,9 @@ def create_campaign(
     target_pdb_id: Optional[str] = None,
     target_storage_path: Optional[str] = None,
     target_name: Optional[str] = None,
+    target_id: Optional[str] = None,
+    launch_group_id: Optional[str] = None,
+    concurrency_target: Optional[int] = None,
 ) -> Optional[ComputeCampaign]:
     """Insert a ``draft`` campaign row from a validated request.
 
@@ -571,6 +583,12 @@ def create_campaign(
     (unsupported tool, bad count, over the sub-job cap). Returns None on a
     persistence failure. ``preset`` selects the tool's container/cost profile
     (proteina variants); the 5 live campaign tools pass "pilot" (unchanged).
+
+    ``target_id`` / ``launch_group_id`` / ``concurrency_target`` all default to
+    today's behaviour: no target, no launch group, and the tool's own launch
+    concurrency. They exist so a multi-tool launch can parent its runs to one
+    target, group them, and divide the global in-flight cap between them
+    without a second create path.
     """
     plan = plan_chunks(tool, requested_designs, preset)
     client = get_service_client()
@@ -594,11 +612,22 @@ def create_campaign(
         "requested_designs": plan.requested_designs,
         "chunk_size": plan.chunk_size,
         "total_subjobs": plan.total_subjobs,
-        "concurrency_target": launch_concurrency_for(tool),
+        "concurrency_target": (
+            max(1, int(concurrency_target))
+            if concurrency_target
+            else launch_concurrency_for(tool)
+        ),
         "max_attempts": DEFAULT_MAX_ATTEMPTS,
         "status": "draft",
         "budget_usd": float(plan.budget_usd),
     }
+    # Only sent when actually set. PostgREST 400s on a column the schema does
+    # not have, so a database still missing 0039 keeps creating ordinary
+    # untargeted runs instead of failing every launch.
+    if target_id is not None:
+        row["target_id"] = target_id
+    if launch_group_id is not None:
+        row["launch_group_id"] = launch_group_id
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
@@ -1245,6 +1274,10 @@ def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:
         chunk_index=chunk_index,
         attempt=1,
         campaign_label=campaign.name or None,
+        # Stamped on the child too, not just the campaign, so a design is
+        # target-attributable without joining back through compute_campaigns
+        # — the target fan-in reads tool_jobs directly.
+        target_id=campaign.target_id,
     )
     if child is None:
         # No row: a racing driver won the UNIQUE(campaign_id, chunk_index,

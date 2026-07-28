@@ -26,12 +26,7 @@ from flask import (
 from shared.auth import login_required
 from shared.credits import get_service_client, load_user_context
 from shared.idempotency import idempotent
-from shared.pdb_inspect import (
-    CifConversionError,
-    convert_cif_to_pdb_bytes,
-    inspect_pdb_bytes,
-    validate_target_chain,
-)
+from shared.pdb_intake import resolve_target_upload
 from shared.storage import StorageError, upload_input
 from tools import base as tool_base
 
@@ -128,42 +123,6 @@ def _campaign_tool_gated_off(tool: str) -> bool:
     return tool in _FLAG_GATED_CAMPAIGN_TOOLS and not tool_enabled(tool)
 
 
-def _sdf_sanity(data: bytes, filename: str) -> str | None:
-    """Cheap pre-GPU check that an uploaded SDF is a plausible molfile.
-
-    Full RDKit sanitization + the SDF -> chain-A HETATM/CONECT PDB conversion
-    run in-container (RDKit is not in the web tier), so this only rejects
-    obvious junk before staging: a size bound plus a parseable V2000/V3000
-    counts line declaring at least one atom. Returns an error string or None.
-    """
-    if len(data) > 2_000_000:
-        return "SDF file is too large (max 2 MB)."
-    text = data.decode("utf-8", "replace")
-    lines = text.splitlines()
-    if len(lines) < 4:
-        return "SDF file is too short to be a valid molfile."
-    counts = lines[3]
-    if "V3000" in counts:
-        natoms = None
-        for ln in lines:
-            if "V30 COUNTS" in ln:
-                parts = ln.split()
-                try:
-                    natoms = int(parts[parts.index("COUNTS") + 1])
-                except (ValueError, IndexError):
-                    natoms = None
-                break
-        if not natoms or natoms < 1:
-            return "SDF has no atoms (empty V3000 molfile)."
-    else:
-        try:
-            natoms = int(counts[:3])
-        except ValueError:
-            return "SDF counts line is malformed (not a V2000/V3000 molfile)."
-        if natoms < 1:
-            return "SDF has no atoms (empty molfile)."
-    return None
-
 @campaigns_bp.route("/campaigns", methods=["GET"])
 @login_required
 def compute_campaigns_list():
@@ -193,12 +152,24 @@ def compute_campaign_new():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.targets import get_target, target_defaults_for_form  # noqa: PLC0415
+    # ?target_id= swaps the file input for a target chip and prefills the
+    # target's stored chain + hotspots. An unknown or unowned id silently
+    # falls back to the plain upload form rather than confirming the id
+    # exists for someone else.
+    target = None
+    target_id = (request.args.get("target_id") or "").strip()
+    if target_id:
+        target = get_target(target_id, user_id=ctx.user_id)
+        if target is not None and (target.is_archived or not target.storage_path):
+            target = None
     return render_template(
         "runs/new.html",
         supported_tools=_visible_campaign_tools(),
         max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
         verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
-        pre_fill={},
+        target=target,
+        pre_fill=target_defaults_for_form(target),
     )
 
 @campaigns_bp.route("/api/campaigns/estimate", methods=["GET"])
@@ -249,6 +220,7 @@ def compute_campaign_create():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.targets import get_target, touch_target  # noqa: PLC0415
 
     tool = (request.form.get("tool") or "").strip()
     name = (request.form.get("name") or "").strip()
@@ -257,6 +229,17 @@ def compute_campaign_create():
         requested = int(request.form.get("requested_designs") or "0")
     except ValueError:
         requested = 0
+
+    # Resolved before _err so an error re-render keeps the target chip instead
+    # of dropping back to a file input the user cannot satisfy.
+    target = None
+    target_id = (request.form.get("target_id") or "").strip()
+    if target_id:
+        # Owner-scoped fetch is the WHOLE boundary here: copy_input and
+        # download_input take user_id as a path component, not an authz check,
+        # so resolving this id to a storage path any other way is a
+        # cross-tenant structure read.
+        target = get_target(target_id, user_id=ctx.user_id)
 
     def _err(msg, code=400):
         return render_template(
@@ -267,8 +250,20 @@ def compute_campaign_create():
             max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
             verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
             error=msg,
+            target=target,
             pre_fill=request.form.to_dict(),
         ), code
+
+    if target_id and target is None:
+        return _err("That target could not be found.")
+    if target is not None:
+        if target.is_archived:
+            return _err(
+                "That target is archived. Pick another one or upload a new "
+                "structure."
+            )
+        if not target.storage_path:
+            return _err("That target has no stored structure to run against.")
 
     # 0. Resolve the adapter + preset up front. The 5 live campaign tools each
     #    carry a single "pilot" preset (the default here), so their behaviour is
@@ -318,53 +313,79 @@ def compute_campaign_create():
     #    curated benchmark task carries its own target, so no upload means "run
     #    the task's built-in target". The 5 live tools keep the mandatory-PDB
     #    path exactly as before.
+    #    A run launched from a stored target skips all of this: the structure
+    #    is already staged and validated, so re-uploading it would be the exact
+    #    duplication targets exist to remove.
     is_proteina = tool == "proteina"
     is_ligand = is_proteina and validated.get("preset") == "ligand_binder"
     uploaded = (
         request.files.get("target_sdf") if is_ligand
         else request.files.get("target_pdb")
     )
-    staged_bytes = b""
-    staged_filename = ""
-    staged_content_type = "chemical/x-pdb"
+    upload = None
 
-    if uploaded is None or not uploaded.filename:
+    # An attached file OVERRIDES the target, and drops the target link with it.
+    # Same rule as the atomic form's reuse tokens, which document override-by-
+    # upload verbatim. The form disables both file inputs when a target is
+    # bound, so this only fires on a crafted or stale POST — but silently
+    # discarding an attached file (the previous behaviour) meant paying for a
+    # campaign against a structure the user did not send, with no warning.
+    # Dropping the link too is what stops a design produced from structure Y
+    # appearing in target X's merged ranking.
+    if target is not None and uploaded is not None and uploaded.filename:
+        target = None
+
+    if target is not None:
+        # A target's structure has to be the format this tool consumes.
+        # Unreachable today (every target is created as ``pdb``), but the
+        # ligand path silently accepting a PDB is the kind of latent mismatch
+        # that only shows up as a container failure after the money is spent.
+        if is_ligand != (target.kind == "sdf"):
+            return _err(
+                "That target is a "
+                f"{'small molecule' if target.kind == 'sdf' else 'structure'}, "
+                "which this tool cannot use. Pick another target."
+            )
+        # The chain and hotspots are per-RUN and may override the target's
+        # defaults, so they still have to be checked — against the inspection
+        # persisted at upload time, so no download is needed.
+        run_chain = (
+            validated.get("target_chain") or validated.get("antigen_chain") or ""
+        )
+        chain_err = target.chain_error(run_chain)
+        if chain_err:
+            return _err(chain_err)
+        # Both keys are original PDB author numbering, so both are range-
+        # checkable against the target's chain. iggm calls its epitope
+        # ``epitope_pdb_resnums``; every other campaign tool calls its
+        # hotspots ``hotspot_residues``.
+        hotspot_err = target.hotspot_error(
+            run_chain,
+            (validated.get("hotspot_residues") or [])
+            + (validated.get("epitope_pdb_resnums") or []),
+        )
+        if hotspot_err:
+            return _err(hotspot_err)
+    elif uploaded is None or not uploaded.filename:
         if not is_proteina:
             return _err("Upload a target PDB file.")
         # proteina + no upload: curated-task path, no staged target file.
-    elif is_ligand:
-        sdf_bytes = uploaded.read()
-        sdf_err = _sdf_sanity(sdf_bytes, uploaded.filename)
-        if sdf_err:
-            return _err(sdf_err)
-        staged_bytes = sdf_bytes
-        staged_filename = uploaded.filename
-        staged_content_type = "chemical/x-mdl-sdfile"
     else:
-        pdb_bytes = uploaded.read()
-        inspection = inspect_pdb_bytes(pdb_bytes, filename=uploaded.filename)
-        if not inspection.ok:
-            return _err(inspection.error)
         # iggm names its antigen chain ``antigen_chain`` (it reads the form's
-        # ``target_chain`` but stores it under that key); the other PDB tools use
-        # ``target_chain``. Check whichever the adapter produced so the antigen
-        # chain is validated against the uploaded PDB before any GPU spend.
-        target_chain = (
-            validated.get("target_chain") or validated.get("antigen_chain") or ""
-        ).strip()
-        if target_chain:
-            chain_err = validate_target_chain(inspection, target_chain)
-            if chain_err:
-                return _err(chain_err)
-        staged_filename = uploaded.filename
-        fl = uploaded.filename.lower()
-        if fl.endswith(".cif") or fl.endswith(".mmcif"):
-            try:
-                pdb_bytes = convert_cif_to_pdb_bytes(pdb_bytes, uploaded.filename)
-            except CifConversionError as exc:
-                return _err(str(exc))
-            staged_filename = uploaded.filename.rsplit(".", 1)[0] + ".pdb"
-        staged_bytes = pdb_bytes
+        # ``target_chain`` but stores it under that key); the other PDB tools
+        # use ``target_chain``. Pass whichever the adapter produced so the
+        # antigen chain is validated against the upload before any GPU spend.
+        upload, upload_err = resolve_target_upload(
+            uploaded,
+            target_chain=(
+                validated.get("target_chain")
+                or validated.get("antigen_chain")
+                or ""
+            ),
+            kind="sdf" if is_ligand else "pdb",
+        )
+        if upload is None:
+            return _err(upload_err or "Upload a target PDB file.")
 
     # 4. Prepaid START gate (checks, never debits): the wallet only has to
     #    cover the first wave; the rest funds as the campaign drains, and it
@@ -378,15 +399,22 @@ def compute_campaign_create():
 
     # 5. Stage the shared target once (when one was provided), then create +
     #    fund + first wave. A proteina curated-task run stages nothing.
+    #    A run launched from a target stages nothing either: it DENORMALIZES
+    #    the target's existing path onto the campaign row, which is what keeps
+    #    the driver unchanged — _dispatch_chunk keeps re-minting its presigned
+    #    URL from target_storage_path every wave and never learns about
+    #    design_targets at all.
     staged_path = None
-    if staged_filename:
+    if target is not None:
+        staged_path = target.storage_path
+    elif upload is not None:
         import uuid as _uuid  # noqa: PLC0415
         target_key = f"campaign-{_uuid.uuid4().hex}"
         try:
             staged_path = upload_input(
                 user_id=ctx.user_id, job_id=target_key,
-                filename=staged_filename, data=staged_bytes,
-                content_type=staged_content_type,
+                filename=upload.filename, data=upload.data,
+                content_type=upload.content_type,
             )
         except StorageError as exc:
             return _err(f"Upload failed: {exc}")
@@ -395,10 +423,17 @@ def compute_campaign_create():
         user_id=ctx.user_id, tool=tool, params=validated,
         requested_designs=requested, preset=preset, name=name or None,
         target_storage_path=staged_path,
-        target_name=(request.form.get("target_name") or "").strip() or None,
+        target_name=(
+            (request.form.get("target_name") or "").strip()
+            or (target.display_name if target is not None else None)
+        ),
+        target_id=(target.id if target is not None else None),
     )
     if campaign is None:
         return _err("Could not create the campaign. Try again in a moment.")
+
+    if target is not None:
+        touch_target(target.id)
 
     cc.fund_campaign(campaign.id)
     # Kick the first wave off the request path (daemon thread); the cron

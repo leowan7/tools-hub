@@ -320,3 +320,50 @@ A10-A13 are filed, not fixed. Numbering continues from A7.
 - **detail:** `candidates_to_csv` discovered columns from `cand["scores"]` only, but every designs-shape pipeline puts its metrics at the record **root** and has no `scores` dict. The results templates reshape inline, so the screen looked correct while the export produced the right number of rows with no science in them. A1's `candidate_records` fix corrected the row count, not the columns. The `_designs_shape()` fixture in `tests/test_export_shapes.py` invented a nested `scores` and a `sequence`, so the tests asserting "not header-only" passed against a shape no tool emits.
 - **fix:** column discovery now reads the root as well as `scores`, excluding provenance tags, identity fields, and any non-scalar or bulk value (`pdb_content_b64`, per-residue contact lists). The fixture was rebuilt from a real boltz2 row and a test now asserts the metric *values* reach the file, not just the row count.
 - *Next:* root metrics export under the pipeline's own names (`iptm`, not `ipTM`). Mapping those onto canonical display names is the cross-tool aliasing work and belongs with the merged target table, not here. FASTA is still empty for designs-shape tools, which is correct — they emit no binder sequence.
+
+---
+
+## Addendum 3 — 2026-07-28 (target-first Phase 1)
+
+Filed while building `design_targets` (migration 0039). One defect was
+introduced-and-fixed inside this phase; the rest are notes on what Phase 1
+deliberately left for later.
+
+### A15. Targets would have been swept by the retention cron at 30 days (RESOLVED in phase)
+- **severity:** high (would have been) | **owner:** code
+- **detail:** `cron/purge_old_storage.py` sweeps `tool-inputs` by object age, guarded only by `active_campaign_input_paths()`. That guard protects a *campaign* that can still dispatch, and every campaign eventually reaches a terminal status and stops protecting its input. A target is long-lived **by design** — that is the entire point of 0039 — and stays launchable forever. So a target older than the retention window would have silently lost its structure while still rendering as a normal, launchable card, and the next run against it would have died on an unrunnable input. The failure is invisible until someone launches.
+- **fix:** `live_target_input_paths()`, same contract as the campaign guard: paged past the PostgREST `max_rows` clamp, negation applied server-side and re-checked client-side, and `None` (unknown) fails closed. The two protected sets are unioned; either lookup failing skips the whole `tool-inputs` sweep for that pass. Archived targets are deliberately NOT protected, since archiving is how a user says they are done with a structure.
+- *Next:* this widens A11. A target with no recency bound pins its input permanently, which is the same compliance gap as a stuck campaign, now with a legitimate long-lived object behind it. The 30-vs-90-day retention decision (still unresolved: migration 0021 says 30, `templates/legal/terms.html:64` says 90) should be settled before adding a recency bound here, because "we keep your uploaded structure while the target is live" may be the honest policy rather than a bug.
+
+### A16. A run launched from a target validates chain and hotspots against the persisted inspection, not the file
+- **severity:** informational | **owner:** code
+- **detail:** Chain and hotspots are per-RUN and may override the target's defaults, so they still need checking — but the structure is never re-uploaded, so `resolve_target_upload` (and with it `validate_target_chain`) does not run. Rather than download and re-parse on every launch, `DesignTarget.chain_error` / `.hotspot_error` check the `chain_summary` jsonb persisted at upload time. This is the same data the inspection produced, so the answer is identical, and it costs no round-trip. It does mean the check is skipped for a target with no persisted summary — an SDF ligand or a curated task, neither of which has protein chains to name.
+- **contrast with the atomic path:** the `target:` reuse token in `blueprints/tools.py` gets the *full* re-inspection, because the existing reuse hard-gate downloads the staged bytes back for every non-`alphafold:` token. Both paths are gated; only the cost differs.
+- *Next:* nothing. Noted so a future change does not "helpfully" add a download to the launch path.
+
+### A17. `campaign_ids_for_target` and the target hub read runs twice
+- **severity:** low | **owner:** code
+- **detail:** `/targets/<id>` calls `campaign_ids_for_target` (paged select of ids) and then `list_campaigns_for_user(limit=200)`, filtering in memory. Two reads where one server-side `.eq("target_id", ...)` would do, and the 200 cap means a user with more than 200 runs could see an incomplete run strip on a target's page.
+- *Next:* add `list_campaigns_for_target(target_id, user_id)` doing the filter server-side with the same paging. Cheap, and Phase 3's fan-in wants that function anyway.
+
+### A18. `validate_hotspots` rejects every hotspot on a multi-chain target
+- **severity:** medium (pre-existing, on main) | **owner:** code
+- **detail:** `shared/pdb_inspect.py::validate_hotspots` passes the whole `target_chain` string to `report.chain()`. For a multi-chain string like `"A B"` — which ProteinMPNN-style design submits and rfdiffusion's validator accepts (4-char cap) — the lookup returns `None`, so the function reports EVERY hotspot out of range. Reached from `_verify_reuse_pdb_bytes`, so it fires on the `job:` / `handoff:` / `resample:` / `target:` reuse paths, failing a legitimate submission for $0 with a misleading message.
+- **why it surfaced now:** `DesignTarget.hotspot_error` (Phase 1) checks the same thing against the persisted `chain_summary` and deliberately does NOT reproduce this: it accepts a residue in ANY named chain. So the identical submission is accepted on the campaign target path and rejected on the atomic `target:` path. The new behaviour is the correct one; the divergence is the cost of not fixing the old function in a phase that was not about it.
+- *Next:* make `validate_hotspots` split the chain string and union the ranges, matching `validate_target_chain`, which already iterates `target_chain.split()`. Then delete the divergence note in `shared/targets.py::hotspot_error`.
+
+### A19. Both retention guards page by offset, so a concurrent insert can drop a row
+- **severity:** medium (pre-existing for the campaign guard) | **owner:** code
+- **detail:** `active_campaign_input_paths` and `live_target_input_paths` both page with `.order("id").range(offset, offset+499)` over a `gen_random_uuid()` primary key, i.e. effectively random ordering. If a row is inserted into an already-read page mid-sweep, every later row shifts down one and exactly one row is never read. That row's storage object is then absent from the protected set and is deleted while still in use. One row lost per interleaved insert; needs >500 live rows of the relevant kind to be reachable at all.
+- *Next:* keyset paging — `.gt("id", last_id)` instead of `.range()` — which is immune to inserts and no more code. Same fix for `shared/targets.py::campaign_ids_for_target` and `shared/compute_campaigns.py::iter_succeeded_children`, which share the shape (their failure is a short read, not data loss).
+
+### A20. The pytest suite runs against the production database
+- **severity:** high | **owner:** code + ops
+- **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` carries real `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`, so any test that imports `app` and exercises a route performs REAL reads and writes against production. `@idempotent()` routes are the worst case: they INSERT into `idempotency_keys` and then replay those cached responses into later runs. Measured on the Phase 1 target tests: 3 of 6 consecutive runs failed, different tests each time, including all three cross-tenant isolation assertions (a target owned by `u-1` came back for `u-2`). With the credentials blanked: 74 passed in 3.8s, clean 5 runs running. A suite that consults a database it does not control cannot be the gate on ownership.
+- **partial fix:** `tests/conftest.py::isolate_supabase` blanks the credentials for a test; the four Phase 1 target test files opt in via `pytestmark`. Deliberately opt-in, because making ~1500 existing tests hermetic in one move is its own change with its own blast radius.
+- *Next:* make it autouse and let the env-gated suites (`test_rls.py`, `test_af2_smoke.py`, `test_platform_api_hardening.py`, `test_uniprot_lookup.py`) opt back IN explicitly. Then stop shipping usable production credentials in a file every test run loads by default.
+
+### A21. `create_job`'s schema-gap retry had never fired (RESOLVED)
+- **severity:** low | **owner:** code
+- **detail:** The 0022 guard read `if "campaign_label" in msg and "label" in row`. The second clause tests dict KEYS and the key is `campaign_label`, so it was always False and the retry was dead code — the comment above it advertised a safety net that did not exist. Pre-existing on main and dormant in practice (0022 is applied, so no error mentions the column). Found by `tests/test_target_id_persistence.py`, which asserts the retry preserves `target_id`.
+- **fix:** `"campaign_label" in row`. The retry stays dormant in prod; it now works if it is ever needed.

@@ -23,3 +23,39 @@ def _disable_csrf_enforcement_for_tests():
         os.environ.pop("CSRF_PROTECT", None)
     else:
         os.environ["CSRF_PROTECT"] = prev
+
+
+# Credentials `shared.credits` reads at CALL time to build a client. Blanking
+# them is what makes get_service_client() return None.
+_SUPABASE_ENV = (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_KEY",
+    "SUPABASE_ANON_KEY",
+)
+
+
+@pytest.fixture
+def isolate_supabase(monkeypatch):
+    """Cut a test off from the live database.
+
+    ``app.py`` calls ``load_dotenv()`` at import, and the repo-root ``.env``
+    carries real service-role credentials — so any test that imports ``app``
+    and exercises a route runs REAL writes against production. `@idempotent()`
+    routes are the worst case: they INSERT into ``idempotency_keys`` and then
+    replay those cached responses into later runs, which made three
+    cross-tenant isolation assertions fail intermittently (a target owned by
+    u-1 came back for u-2) while passing most of the time.
+
+    A test whose subject is ownership cannot be allowed to consult a real
+    database it does not control. Opt in with::
+
+        pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
+    This is deliberately opt-in rather than autouse: making the whole suite
+    hermetic in one move would change the environment of ~1500 existing tests,
+    which is its own change with its own blast radius.
+    """
+    for name in _SUPABASE_ENV:
+        monkeypatch.setenv(name, "")
+    yield

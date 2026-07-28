@@ -213,6 +213,10 @@ class ToolJob:
     campaign_id: Optional[str] = None
     chunk_index: Optional[int] = None
     attempt: Optional[int] = None
+    # design_targets linkage (migration 0039). Set on campaign sub-jobs (from
+    # their campaign) and on standalone runs launched against a target, which
+    # is the only way those rows reach the target's combined table at all.
+    target_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ToolJob":
@@ -236,6 +240,7 @@ class ToolJob:
             campaign_id=(str(row["campaign_id"]) if row.get("campaign_id") else None),
             chunk_index=row.get("chunk_index"),
             attempt=row.get("attempt"),
+            target_id=(str(row["target_id"]) if row.get("target_id") else None),
         )
 
     def to_dict(self) -> dict:
@@ -255,6 +260,7 @@ class ToolJob:
             "campaign_id": self.campaign_id,
             "chunk_index": self.chunk_index,
             "attempt": self.attempt,
+            "target_id": self.target_id,
         }
 
 
@@ -390,6 +396,7 @@ def create_job(
     campaign_id: Optional[str] = None,
     chunk_index: Optional[int] = None,
     attempt: Optional[int] = None,
+    target_id: Optional[str] = None,
 ) -> Optional[ToolJob]:
     """Insert a new tool_jobs row in pending status. Returns None on failure.
 
@@ -462,6 +469,15 @@ def create_job(
             row["chunk_index"] = chunk_index
         if attempt is not None:
             row["attempt"] = attempt
+    # design_targets linkage (migration 0039). Like campaign_id and unlike
+    # campaign_label, this is load-bearing rather than cosmetic: the target's
+    # combined table reads tool_jobs by target_id, so a silently dropped
+    # target_id would show the user a merged ranking that is missing designs
+    # they paid for. It is therefore NOT part of the schema-gap retry below.
+    # Unreachable pre-0039 anyway: the same migration creates design_targets,
+    # so no target can exist to be referenced.
+    if target_id is not None:
+        row["target_id"] = target_id
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
@@ -474,7 +490,13 @@ def create_job(
         # land (just under the "Uncategorized" group on /jobs) until the
         # migration runs. PGRST204 / 42703 are the matching error codes.
         msg = repr(exc)
-        if "campaign_label" in msg and "label" in row:
+        # ``"campaign_label" in row``, not ``"label" in row``: this tests dict
+        # KEYS, and the key is campaign_label — so the original condition was
+        # always False and this retry had never once fired. Pre-existing on
+        # main and dormant in practice (0022 is applied, so no error mentions
+        # the column), but the comment above advertised a safety net that did
+        # not exist. Found by tests/test_target_id_persistence.py.
+        if "campaign_label" in msg and "campaign_label" in row:
             logger.warning(
                 "tool_jobs.campaign_label missing in prod schema — "
                 "retrying insert without it (migration 0022 pending)."

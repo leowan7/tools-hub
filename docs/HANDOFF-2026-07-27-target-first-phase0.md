@@ -1,7 +1,11 @@
 # Handoff — target-first rework, Phase 0 (2026-07-27)
 
-**Phase 0 is COMPLETE and QC-clean. Nothing is pushed.** Next action is a push
-decision, then Phase 1.
+> **SUPERSEDED 2026-07-28.** Phase 0 shipped: PR #97 merged to `main` as
+> `8e7e364`. Current handoff is `HANDOFF-2026-07-28-target-first-phase1.md`.
+> Kept for the "why" sections below, which are still the reason those fixes
+> look the way they do.
+
+**Phase 0 is COMPLETE and QC-clean.**
 
 ## State
 

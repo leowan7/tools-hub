@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Targets — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{# Built on the shared design system (.hero / .panel / .btn-*) rather than a
+   private <style> block. The runs/* templates each ship their own hardcoded
+   palette and namespace, which is the debt this page deliberately does not
+   add to. #}
+
+{% block content %}
+<div class="hero">
+  <h1>Targets</h1>
+  <p class="subtitle">
+    One structure, uploaded once. Run any tool against it without uploading
+    again, and keep every design produced for that target together.
+  </p>
+  <div style="margin-top: 1.25rem;">
+    <a href="{{ url_for('targets.target_new') }}" class="btn-primary">Add a target</a>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 2rem;">
+  {% if targets %}
+    {% for t in targets %}
+    <div class="panel" style="margin-bottom: 0.85rem;">
+      <div class="panel-header">
+        <a href="{{ url_for('targets.target_detail', target_id=t.id) }}"
+           style="text-decoration: none; color: var(--text-primary); font-weight: 600;">
+          {{ t.display_name }}
+        </a>
+        <a href="{{ url_for('targets.target_launch', target_id=t.id) }}"
+           class="btn-secondary">Run a tool</a>
+      </div>
+      <div class="panel-body" style="font-size: 0.85rem; color: var(--text-secondary);">
+        {{ t.filename or 'no structure' }}
+        {%- if t.target_chain %} · chain {{ t.target_chain }}{% endif %}
+        {%- if t.residue_count %} · {{ t.residue_count }} residues{% endif %}
+        {%- if t.hotspot_residues %} · {{ t.hotspot_residues|length }} hotspot(s){% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="panel">
+      <div class="panel-body" style="text-align: center; padding: 3rem 1.5rem;">
+        <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+          No targets yet. Upload a structure and every run you launch against
+          it stays linked to it.
+        </p>
+        <a href="{{ url_for('targets.target_new') }}" class="btn-primary">Add a target</a>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

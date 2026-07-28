@@ -89,6 +89,32 @@ _MIN_RETENTION_DAYS = 7
 _CAMPAIGN_PAGE_SIZE = 500
 _MAX_CAMPAIGN_PAGES = 200
 
+# PostgREST's max_rows (supabase/config.toml). Load-bearing, not decorative:
+# at any page size >= this, the first .range() comes back clamped, the
+# "short page means last page" test fires, and BOTH guards below hand back a
+# truncated protected set as if it were complete — failing OPEN, which is the
+# exact bug that shipped once already. Asserted at import so the constant
+# cannot be raised past it in a later edit.
+_POSTGREST_MAX_ROWS = 1000
+assert _CAMPAIGN_PAGE_SIZE < _POSTGREST_MAX_ROWS, (
+    "page size must stay under PostgREST max_rows or paging silently truncates"
+)
+
+
+def _is_missing_table(exc: Exception) -> bool:
+    """True when an error means "this relation does not exist".
+
+    PostgREST surfaces it as SQLSTATE 42P01 / PGRST205. Matched on the message
+    because supabase-py raises a generic APIError carrying a dict.
+    """
+    text = f"{getattr(exc, 'code', '')} {exc}".lower()
+    return (
+        "42p01" in text
+        or "pgrst205" in text
+        or ("does not exist" in text and "relation" in text)
+        or "could not find the table" in text
+    )
+
 
 def _resolve_retention_days(retention_days: Optional[int]) -> int:
     days = retention_days
@@ -218,6 +244,78 @@ def active_campaign_input_paths(client: Optional[object] = None) -> Optional[set
     return None
 
 
+def live_target_input_paths(client: Optional[object] = None) -> Optional[set[str]]:
+    """Input object paths belonging to targets a user can still launch against.
+
+    Targets are LONG-LIVED BY DESIGN — that is the entire point of migration
+    0039 — so the campaign guard above is not enough. A campaign reaches a
+    terminal status and stops protecting its input; the target it was launched
+    from stays launchable forever. Without this a target older than the
+    retention window silently loses its structure, and the next run against it
+    dies on an unrunnable input while the target still renders as a normal
+    card.
+
+    Archived targets are NOT protected: archiving is how a user says they are
+    done with a structure, and it is already the only removal the UI offers.
+
+    Same contract and the same two load-bearing details as
+    :func:`active_campaign_input_paths`: paged (an unpaged read is clamped to
+    ``max_rows`` and the truncation is invisible), and ``None`` means "unknown,
+    do not delete".
+    """
+    from shared.credits import get_service_client  # noqa: PLC0415
+
+    db = client if client is not None else get_service_client()
+    if db is None:
+        return None
+
+    page_size = _CAMPAIGN_PAGE_SIZE
+    protected: set[str] = set()
+    start = 0
+    try:
+        for _ in range(_MAX_CAMPAIGN_PAGES):
+            resp = (
+                db.table("design_targets")
+                .select("id,storage_path,archived_at")
+                .is_("archived_at", "null")
+                .order("id")
+                .range(start, start + page_size - 1)
+                .execute()
+            )
+            batch = list(getattr(resp, "data", None) or [])
+            for row in batch:
+                path = (row or {}).get("storage_path")
+                # Re-checked client-side for the same reason as above: a filter
+                # that silently no-ops must not widen the sweep.
+                if path and not (row or {}).get("archived_at"):
+                    protected.add(path)
+            if len(batch) < page_size:
+                return protected
+            start += page_size
+    except Exception as exc:  # noqa: BLE001
+        # A table that does not exist yet is NOT an unknown: pre-0039 there are
+        # no targets, so nothing needs protecting and an empty set is the
+        # correct answer. Failing closed here instead would halt the whole
+        # tool-inputs sweep on EVERY pass until the migration is applied — not
+        # "one skipped sweep" — because the table is missing every time. Any
+        # other error is still genuinely unknown and still fails closed.
+        if _is_missing_table(exc):
+            logger.warning(
+                "purge-old: design_targets is missing (migration 0039 not "
+                "applied); treating the live-target set as empty",
+            )
+            return set()
+        logger.warning("purge-old: live-target lookup failed", exc_info=True)
+        return None
+
+    logger.error(
+        "purge-old: live-target lookup exceeded %s pages; refusing to sweep "
+        "inputs on a partial protected set",
+        _MAX_CAMPAIGN_PAGES,
+    )
+    return None
+
+
 def purge_old_storage(
     *,
     retention_days: Optional[int] = None,
@@ -279,21 +377,34 @@ def purge_old_storage(
         summary["total_scanned"] += len(entries)
         summary["total_expired"] += len(expired)
 
-        # Age is not sufficient for tool-inputs: a campaign re-mints a signed
-        # URL from its stored target path on every wave, so an input belonging
-        # to a campaign that can still dispatch must survive the sweep no
-        # matter how old it is. Unknown (None) fails closed.
+        # Age is not sufficient for tool-inputs. Two independent reasons an
+        # old object is still load-bearing:
+        #   * a campaign re-mints a signed URL from its stored target path on
+        #     every wave, so an input belonging to a campaign that can still
+        #     dispatch must survive no matter how old it is;
+        #   * a design target is long-lived by design and stays launchable
+        #     forever, long after every campaign launched from it went
+        #     terminal.
+        # Either lookup returning None means "unknown" and fails closed.
         if bucket == INPUT_BUCKET and expired:
             protected = active_campaign_input_paths(client=client)
-            if protected is None:
+            live_targets = (
+                None if protected is None
+                else live_target_input_paths(client=client)
+            )
+            if protected is None or live_targets is None:
+                which = (
+                    "active-campaign" if protected is None else "live-target"
+                )
                 stats["protected"] = None
-                summary["errors"].append(f"{bucket}:active-campaign-lookup-failed")
+                summary["errors"].append(f"{bucket}:{which}-lookup-failed")
                 logger.error(
-                    "purge-old: cannot determine live campaign inputs; refusing "
+                    "purge-old: cannot determine live %s inputs; refusing "
                     "to delete from %s this pass (%d expired left in place)",
-                    bucket, len(expired),
+                    which, bucket, len(expired),
                 )
                 continue
+            protected = protected | live_targets
             before = len(expired)
             expired = [e for e in expired if e.get("path") not in protected]
             stats["protected"] = before - len(expired)

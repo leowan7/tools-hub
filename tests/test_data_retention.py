@@ -141,14 +141,19 @@ class _NotBuilder:
 class _FakeTable:
     def __init__(self, name: str, campaigns: list, raise_on_execute: bool,
                  compute_campaigns: list = None,
-                 compute_raise: bool = False):
+                 compute_raise: bool = False,
+                 design_targets: list = None,
+                 targets_raise: bool = False):
         self.name = name
         self.campaigns = campaigns
         self.raise_on_execute = raise_on_execute
         self.compute_campaigns = compute_campaigns or []
         self.compute_raise = compute_raise
+        self.design_targets = design_targets or []
+        self.targets_raise = targets_raise
         self._uid = None
         self._exclude = None
+        self._null_cols: list = []
         self._ordered = False
         self._range = None
 
@@ -158,6 +163,13 @@ class _FakeTable:
     def eq(self, col, val):
         if col == "user_id":
             self._uid = val
+        return self
+
+    def is_(self, col, _value):
+        """PostgREST ``.is_(col, "null")``. Recorded, and actually applied in
+        execute() — a fake that ignored it would let an archived target look
+        protected and hide the bug."""
+        self._null_cols.append(col)
         return self
 
     @property
@@ -192,6 +204,15 @@ class _FakeTable:
             if self._ordered:
                 rows = sorted(rows, key=lambda r: str((r or {}).get("id", "")))
             return SimpleNamespace(data=self._paginate(rows))
+        if self.name == "design_targets":
+            if self.targets_raise:
+                raise RuntimeError("transient DB failure")
+            rows = list(self.design_targets)
+            for col in self._null_cols:
+                rows = [r for r in rows if (r or {}).get(col) in (None, "")]
+            if self._ordered:
+                rows = sorted(rows, key=lambda r: str((r or {}).get("id", "")))
+            return SimpleNamespace(data=self._paginate(rows))
         rows = [
             {"id": c["id"]} for c in self.campaigns
             if self.name == "lab_campaigns" and c["user_id"] == self._uid
@@ -201,18 +222,22 @@ class _FakeTable:
 
 class _FakeClient:
     def __init__(self, buckets: dict, campaigns=None, campaigns_raise=False,
-                 compute_campaigns=None, compute_raise=False):
+                 compute_campaigns=None, compute_raise=False,
+                 design_targets=None, targets_raise=False):
         self.removed: list = []
         self.storage = _FakeStorage(buckets, self.removed)
         self._campaigns = campaigns or []
         self._campaigns_raise = campaigns_raise
         self._compute_campaigns = compute_campaigns or []
         self._compute_raise = compute_raise
+        self._design_targets = design_targets or []
+        self._targets_raise = targets_raise
 
     def table(self, name: str) -> _FakeTable:
         return _FakeTable(
             name, self._campaigns, self._campaigns_raise,
             self._compute_campaigns, self._compute_raise,
+            self._design_targets, self._targets_raise,
         )
 
 
@@ -468,6 +493,88 @@ def test_page_budget_overrun_fails_closed(monkeypatch):
     client = _FakeClient({}, compute_campaigns=campaigns)
 
     assert mod.active_campaign_input_paths(client=client) is None
+
+
+# ---------------------------------------------------------------------------
+# Live-target guard (migration 0039)
+# ---------------------------------------------------------------------------
+
+def test_a_live_targets_structure_survives_the_sweep():
+    """Targets are long-lived BY DESIGN, which is the whole point of them. The
+    campaign guard is not enough: every campaign launched from a target
+    eventually goes terminal and stops protecting its input, while the target
+    stays launchable forever. Without this the structure is swept at 30 days
+    and the next run against a normal-looking target dies on an unrunnable
+    input."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, design_targets=[
+        {"id": "t-1", "storage_path": "u1/j1/target.pdb", "archived_at": None},
+    ])
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" not in client.removed
+    assert summary["buckets"][BUCKET]["protected"] == 1
+    # The unprotected expired input is still swept — the guard is narrow.
+    assert "u2/j9/orphan.pdb" in client.removed
+
+
+def test_an_archived_targets_structure_is_not_protected():
+    """Archiving is how a user says they are done with a structure, and it is
+    the only removal the UI offers."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, design_targets=[
+        {"id": "t-1", "storage_path": "u1/j1/target.pdb",
+         "archived_at": "2026-01-01T00:00:00Z"},
+    ])
+    mod.purge_old_storage(dry_run=False, client=client)
+
+    assert "u1/j1/target.pdb" in client.removed
+
+
+def test_target_lookup_failure_fails_closed():
+    """Unknown must read as 'do not delete'. This also covers a database that
+    has not had 0039 applied yet, where the table does not exist."""
+    buckets = _seed_buckets()
+    client = _FakeClient(buckets, targets_raise=True)
+    summary = mod.purge_old_storage(dry_run=False, client=client)
+
+    assert summary["buckets"][BUCKET]["protected"] is None
+    assert summary["buckets"][BUCKET]["deleted"] == 0
+    assert "u1/j1/target.pdb" not in client.removed
+    assert "u2/j9/orphan.pdb" not in client.removed
+    assert any("live-target" in e for e in summary["errors"])
+
+
+def test_live_target_set_is_paged_past_the_postgrest_row_clamp():
+    """Same clamp, same consequence as the campaign guard: an unpaged read
+    hands back a protected set that silently omits every target past the first
+    page, and the sweep deletes their structures believing it complete."""
+    n = 2400
+    targets = [
+        {"id": f"t{i:05d}", "storage_path": f"u1/t{i}/target.pdb",
+         "archived_at": None}
+        for i in range(n)
+    ]
+    client = _FakeClient({}, design_targets=targets)
+
+    protected = mod.live_target_input_paths(client=client)
+
+    assert protected is not None
+    assert len(protected) == n, "protected set was truncated at the row clamp"
+    assert "u1/t2399/target.pdb" in protected
+
+
+def test_live_target_page_budget_overrun_fails_closed(monkeypatch):
+    monkeypatch.setattr(mod, "_MAX_CAMPAIGN_PAGES", 1)
+    monkeypatch.setattr(mod, "_CAMPAIGN_PAGE_SIZE", 10)
+    targets = [
+        {"id": f"t{i:05d}", "storage_path": f"u1/t{i}/target.pdb",
+         "archived_at": None}
+        for i in range(25)
+    ]
+    client = _FakeClient({}, design_targets=targets)
+
+    assert mod.live_target_input_paths(client=client) is None
 
 
 def test_sweeper_apply_deletes_only_expired():

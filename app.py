@@ -155,6 +155,7 @@ from scout import scout_bp
 from blueprints.public import public_bp
 from blueprints.jobs import jobs_bp
 from blueprints.campaigns import campaigns_bp
+from blueprints.targets import targets_bp
 from blueprints.lab_projects import lab_projects_bp
 from blueprints.admin import admin_bp
 from blueprints.auth import auth_bp
@@ -515,6 +516,7 @@ def create_app() -> Flask:
     flask_app.register_blueprint(public_bp)
     flask_app.register_blueprint(jobs_bp)
     flask_app.register_blueprint(campaigns_bp)
+    flask_app.register_blueprint(targets_bp)
     flask_app.register_blueprint(lab_projects_bp)
     flask_app.register_blueprint(admin_bp)
     flask_app.register_blueprint(auth_bp)

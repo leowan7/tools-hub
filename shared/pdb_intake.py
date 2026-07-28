@@ -11,11 +11,16 @@ preflight route and the ``alphafold:<accession>`` reuse-token path in
 ``tool_submit``.
 """
 
+import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from typing import Optional
 
 from shared.pdb_inspect import (
+    CifConversionError,
+    InspectionReport,
+    convert_cif_to_pdb_bytes,
     hotspot_range_message,
     inspect_pdb_bytes,
     validate_hotspots,
@@ -202,6 +207,188 @@ def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
         binder_max = _maybe_int(source.get("binder_length"))
 
     return (binder_max, _maybe_int(source.get("num_designs")))
+
+
+# ---------------------------------------------------------------------------
+# Target upload intake
+# ---------------------------------------------------------------------------
+# Shared by the run-create route and the target routes. Both take the same
+# uploaded file and have to do the same four things before any of it reaches
+# Storage: inspect it, validate the user-typed target chain against what is
+# actually in the structure, convert mmCIF to PDB (the GPU pipelines only read
+# PDB), and cheap-check an SDF. That block used to live inline in
+# ``blueprints/campaigns.py``; a target can now be created from either route,
+# so it lives here and the two cannot drift into validating uploads
+# differently.
+
+# proteina's ligand_binder variant is the only SDF consumer, and its real
+# parse (RDKit sanitize + the SDF -> chain-A HETATM/CONECT PDB conversion)
+# runs in-container because RDKit is not installed in the web tier. So this
+# cap only has to stop obvious junk from being staged.
+MAX_SDF_BYTES = 2_000_000
+
+
+def sdf_sanity(data: bytes, filename: str) -> Optional[str]:
+    """Cheap pre-GPU check that an uploaded SDF is a plausible molfile.
+
+    Returns a user-facing error string, or None when the file passes. Only
+    rejects obvious junk: a size bound plus a parseable V2000/V3000 counts
+    line declaring at least one atom.
+    """
+    if len(data) > MAX_SDF_BYTES:
+        return "SDF file is too large (max 2 MB)."
+    text = data.decode("utf-8", "replace")
+    lines = text.splitlines()
+    if len(lines) < 4:
+        return "SDF file is too short to be a valid molfile."
+    counts = lines[3]
+    if "V3000" in counts:
+        natoms = None
+        for ln in lines:
+            if "V30 COUNTS" in ln:
+                parts = ln.split()
+                try:
+                    natoms = int(parts[parts.index("COUNTS") + 1])
+                except (ValueError, IndexError):
+                    natoms = None
+                break
+        if not natoms or natoms < 1:
+            return "SDF has no atoms (empty V3000 molfile)."
+    else:
+        try:
+            natoms = int(counts[:3])
+        except ValueError:
+            return "SDF counts line is malformed (not a V2000/V3000 molfile)."
+        if natoms < 1:
+            return "SDF has no atoms (empty molfile)."
+    return None
+
+
+def chain_summary_json(report: Optional[InspectionReport]) -> Optional[dict]:
+    """JSON-serializable view of an inspection, for ``design_targets.chain_summary``.
+
+    Persisted so the target page and the launch form can offer chain choices
+    and residue ranges without re-downloading and re-parsing the structure on
+    every render.
+    """
+    if report is None or not report.ok:
+        return None
+    return {
+        "model_count": report.model_count,
+        "total_standard_residues": report.total_standard_residues,
+        "total_hetatm_residues": report.total_hetatm_residues,
+        "total_water_residues": report.total_water_residues,
+        "warnings": list(report.warnings or []),
+        "chains": [
+            {
+                "chain_id": c.chain_id,
+                "standard_residue_count": c.standard_residue_count,
+                "hetatm_resnames": list(c.hetatm_resnames or []),
+                "water_count": c.water_count,
+                "min_resnum": c.min_resnum,
+                "max_resnum": c.max_resnum,
+            }
+            for c in (report.chains or [])
+        ],
+    }
+
+
+@dataclass(frozen=True)
+class TargetUpload:
+    """A validated upload, ready to stage.
+
+    ``data`` / ``filename`` are post-conversion: an mmCIF arrives as ``.cif``
+    and leaves as PDB bytes under a ``.pdb`` name, because everything
+    downstream (Storage, the presigned URL, the container) assumes PDB.
+    ``sha256`` is over those staged bytes, so two uploads of the same
+    structure hash alike even when one of them arrived as CIF.
+    """
+
+    data: bytes
+    filename: str
+    content_type: str
+    kind: str
+    sha256: str
+    inspection: Optional[InspectionReport] = None
+
+    @property
+    def chain_summary(self) -> Optional[dict]:
+        return chain_summary_json(self.inspection)
+
+
+def resolve_target_upload(
+    uploaded,  # noqa: ANN001 - werkzeug FileStorage
+    *,
+    target_chain: str = "",
+    kind: str = "pdb",
+) -> "tuple[Optional[TargetUpload], Optional[str]]":
+    """Validate and normalize an uploaded target file.
+
+    Args:
+        uploaded: The werkzeug ``FileStorage``. Callers gate "was anything
+            attached" themselves, because whether a missing file is an error
+            is per-tool (proteina's curated-task path has no target at all).
+        target_chain: The chain the caller's validated params name, if any.
+            Checked against the structure so a typo is caught before GPU
+            spend rather than after it. Empty means "do not check".
+        kind: ``"pdb"`` or ``"sdf"``.
+
+    Returns:
+        ``(upload, None)`` on success, ``(None, error_message)`` on rejection.
+        Never raises: a CIF that will not convert comes back as an error
+        string, not a ``CifConversionError``.
+    """
+    if uploaded is None or not getattr(uploaded, "filename", ""):
+        return None, "Upload a target file."
+
+    raw = uploaded.read()
+    if not raw:
+        return None, "The uploaded file is empty."
+
+    if kind == "sdf":
+        err = sdf_sanity(raw, uploaded.filename)
+        if err:
+            return None, err
+        return TargetUpload(
+            data=raw,
+            filename=uploaded.filename,
+            content_type="chemical/x-mdl-sdfile",
+            kind="sdf",
+            sha256=hashlib.sha256(raw).hexdigest(),
+        ), None
+
+    inspection = inspect_pdb_bytes(raw, filename=uploaded.filename)
+    if not inspection.ok:
+        return None, inspection.error
+
+    # Validate the chain against the ORIGINAL parse. Conversion below only
+    # rewrites the container format and never the chain identifiers, so
+    # checking here or after is equivalent — but here a bad chain is rejected
+    # without paying for the conversion.
+    chain = (target_chain or "").strip()
+    if chain:
+        chain_err = validate_target_chain(inspection, chain)
+        if chain_err:
+            return None, chain_err
+
+    data = raw
+    filename = uploaded.filename
+    lowered = filename.lower()
+    if lowered.endswith(".cif") or lowered.endswith(".mmcif"):
+        try:
+            data = convert_cif_to_pdb_bytes(raw, filename)
+        except CifConversionError as exc:
+            return None, str(exc)
+        filename = filename.rsplit(".", 1)[0] + ".pdb"
+
+    return TargetUpload(
+        data=data,
+        filename=filename,
+        content_type="chemical/x-pdb",
+        kind="pdb",
+        sha256=hashlib.sha256(data).hexdigest(),
+        inspection=inspection,
+    ), None
 
 
 def _verify_reuse_pdb_bytes(
