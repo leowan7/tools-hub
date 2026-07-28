@@ -398,10 +398,38 @@ Reported by reviewers, not put through the refuters (verify budget capped at 5).
 Listed so they are not mistaken for a clean bill.
 - **A24.** `target_defaults_for_form`'s `"epitope"` key is untested; renaming it back leaves the target suite green. No fixture sets `epitope_residues`, so the line never executes. *(medium)*
 - **A25.** The `target:` token stamps `target_id` on a job even when the adapter has `requires_pdb=False`, so the entire staging block is skipped and the run is filed under a target whose structure it never read — the same mis-attribution the upload-override fix was written to prevent. *(low)*
-- **A26.** `_spawn_refold_job` omits `target_id`, so validation refolds land with both `target_id` and `campaign_id` NULL. Migration `0039`'s own comment claims a "yardstick re-fold" carries it. That comment is false today and Phase 4 depends on it being true. *(low, and a false comment)*
+- **A26. (RESOLVED)** `_spawn_refold_job` omitted `target_id`, so validation refolds landed with both `target_id` and `campaign_id` NULL. Migration `0039`'s own comment claims a "yardstick re-fold" carries it — false when written, and Phase 4 depends on it being true: a refold has campaign_id NULL, so `target_id` is its ONLY link back, and the fan-in that re-ranks every tool on one predictor reads exactly these rows. Unstamped, they are invisible and the comparison silently covers nothing. **Fixed:** the new job inherits `src.target_id`, read from the source job rather than passed in (both call sites hand over a `ToolJob`, and a campaign sub-job already carries its campaign's target_id from `_dispatch_chunk`, so there is no path where the caller knows a target the source does not). NULL for a refold of an untargeted run, which is correct. Mutation-verified; the two `SimpleNamespace` source-job fakes in `test_campaign_results.py` now carry the field, since they stand in for a `ToolJob` that has it. *(the migration comment is now true rather than aspirational)*
 - **A27.** `campaign_ids_for_target`'s docstring claimed "every run id" while reading only `compute_campaigns`; standalone `tool_jobs` rows carrying `target_id` can never be returned. **Docstring corrected in place**; the underlying two-table read is Phase 3's fan-in. *(low, and a false comment)*
 - **A28.** `test_list_targets_clamps_a_limit_past_the_row_cap` seeds 5 rows and asserts `len(...) == 5`, which holds whether the limit is clamped or not. Decorative. *(low)*
 - **A29.** A19's offset-paging hazard restated for `live_target_input_paths` specifically: a row leaving the filtered set between page reads drops exactly one live target from the protected set. *(medium, tracked under A19)*
 - **A30.** A18 restated: the same submission passes `DesignTarget.hotspot_error` and fails `validate_hotspots`, and the losing path fails the job only after the row and its Modal-bound staging exist. *(low, tracked under A18)*
 
 **Three of these (A26, A27, and the A17 restatement) are comments asserting properties that are false — written in the pass whose purpose was fixing comments that assert properties that are false.** The rule in `feedback_comments_assert_intent_not_behaviour` is not being applied to new comments as they are written.
+
+---
+
+## Addendum 2026-07-28c — third QC pass, over the A17/A22/A26 fixes
+
+One independent reviewer over `git diff 4f21a4b`. **No logic defect found**; it
+independently mutation-tested all three fixes (disabling the missing-table
+branch, dropping the `user_id` filter, and swapping `.range()` for `.limit()`)
+and confirmed each turns exactly one test red. It also confirmed the `for/else`
+is not inverted, owner scope is unreachable with `user_id=None`, and both
+`_spawn_refold_job` call sites hand over a real `ToolJob`.
+
+**All three findings were comments asserting properties the code does not
+have — for the third consecutive pass, and this time in the very comments
+written to fix that same defect.** Corrected in place. The recurrence is the
+finding: writing a property-asserting comment is being treated as documenting
+intent, when it is making a claim that has not been checked.
+
+### A31. The target page cannot show a target's standalone runs
+- **severity:** low (latent) | **owner:** code
+- **detail:** `list_campaigns_for_target` reads `compute_campaigns` only. Migration 0039 also puts `target_id` on `tool_jobs`, and two things write it there with `campaign_id` NULL: the `target:` reuse token (`blueprints/tools.py`) and, as of this branch, yardstick refolds (A26). A target holding only those renders "Nothing has been run against this target yet" — the exact user-visible failure A17 was fixed for, through a different table.
+- **why it is latent, not live:** no template mints a `target:` token yet (`templates/tools/_prefill.html` emits `pdb_source.token`, and the only minter is `resample:`), so the row cannot be created from the UI today. The docstrings on both the function and the route now say so explicitly rather than claiming completeness.
+- *Next:* Phase 3's fan-in reads both tables by definition, so this closes there. Do not widen the summary line without widening the query.
+
+### A32. The target run strip has no render ceiling
+- **severity:** informational | **owner:** code
+- **detail:** The pre-fix code capped the render at 200 rows as a side effect of the bug. The fix removes the cap deliberately (that cap was hiding runs), so the page now renders every run up to the 10,000-row paging bound, each with a status badge. Nobody has looked at what a 2,000-run target does to that page.
+- *Next:* nothing yet. Phase 6.4's run strip is the natural place to add paging or a "showing N of M" affordance. Noted so a future slow-page report is not misdiagnosed as a query problem.

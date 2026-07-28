@@ -544,11 +544,15 @@ def test_an_archived_targets_structure_is_not_protected():
 def _missing_table_error() -> Exception:
     """The error Supabase actually raises for a table that does not exist.
 
-    Built from the real client class, not a hand-rolled stand-in, because
-    :func:`_is_missing_table` reads ``exc.code`` and a fake without that
-    attribute would pass the predicate for the wrong reason. PostgREST resolves
-    the relation in its router against the schema cache, so a missing table
-    comes back as PGRST205 and never as the raw SQLSTATE 42P01.
+    Built from the real client class so the payload is the one production
+    raises. PostgREST resolves the relation in its router against the schema
+    cache, so a missing table comes back as PGRST205 and never as the raw
+    SQLSTATE 42P01.
+
+    Note what this does NOT prove: ``str(APIError)`` renders the whole dict,
+    so the ``"could not find the table"`` clause of the predicate matches on
+    the message independently of the code. The test cannot observe WHICH clause
+    fired. The assert below is what pins ``.code``, not the choice of class.
     """
     from postgrest.exceptions import APIError
 

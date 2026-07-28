@@ -226,7 +226,9 @@ def test_target_detail_lists_only_this_targets_runs(client):
     body = resp.get_data(as_text=True)
     assert resp.status_code == 200
     assert "sweep" in body
-    # Filtered server-side on target_id, owner-scoped in the query itself.
+    # The route passes the target and the caller's own id. That the id reaches
+    # the QUERY rather than a post-fetch filter is proved by
+    # test_list_campaigns_for_target_is_owner_scoped, not here.
     assert fetch.call_args.args[0] == t.id
     assert fetch.call_args.kwargs["user_id"] == "u-1"
     # And NOT derived from the user's global campaign list. That read is capped

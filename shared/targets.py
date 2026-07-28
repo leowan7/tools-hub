@@ -488,7 +488,12 @@ def touch_target(target_id: str) -> None:
 
 
 def campaign_ids_for_target(target_id: str, *, user_id: Optional[str] = None) -> list:
-    """The target's COMPUTE-CAMPAIGN ids, oldest first.
+    """The target's COMPUTE-CAMPAIGN ids, in arbitrary order.
+
+    NOT chronological. Pages are ordered by ``id`` so page boundaries are
+    stable, and ``compute_campaigns.id`` is ``gen_random_uuid()`` (0034), which
+    has no relation to insert order. Sort by ``created_at`` at the caller if
+    order matters; the membership test this exists for does not care.
 
     Not every run: this reads ``compute_campaigns`` only. Migration 0039 also
     puts ``target_id`` on ``tool_jobs``, and the ``target:`` reuse token on the

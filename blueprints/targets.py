@@ -165,9 +165,13 @@ def target_detail(target_id):
         return render_template("404.html"), 404
 
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    # Phase 1 shows the runs launched against this target. The combined ranked
-    # table over all of them is Phase 3; until then each run links to its own
-    # results page.
+    # Phase 1 shows this target's COMPUTE-CAMPAIGN runs. Standalone jobs that
+    # carry target_id with campaign_id NULL (the `target:` reuse token, and
+    # Phase 4's yardstick refolds) are not shown: reading both tables is
+    # Phase 3's fan-in. Currently invisible rather than wrong, because no
+    # template mints a `target:` token yet. The combined ranked table over all
+    # of them is also Phase 3; until then each run links to its own results
+    # page.
     #
     # One server-side read filtered on target_id. This previously fetched the
     # target's run ids and then intersected them with the user's 200 most

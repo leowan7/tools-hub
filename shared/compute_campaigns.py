@@ -682,22 +682,36 @@ def list_campaigns_for_user(
     return [ComputeCampaign.from_row(r) for r in rows]
 
 
-# Paging for the per-target run list. Must stay strictly under the PostgREST
-# max_rows in supabase/config.toml (1000): at or above it a full page comes
-# back clamped, len(batch) < page size reads as "last page", and the loop stops
-# early with a silently short list. Asserted rather than commented because that
-# exact fail-open has shipped here once already.
+# Paging for the per-target run list. Must stay at or below the PostgREST
+# max_rows in supabase/config.toml: ABOVE it a full page comes back clamped,
+# len(batch) < page size reads as "last page", and the loop stops early with a
+# silently short list. (At exactly max_rows a clamped page still returns
+# page_size rows, so the short-page test does not misfire; only > breaks.)
+#
+# The assert compares two module literals -- it catches someone raising the
+# page size here, NOT someone lowering max_rows in config.toml, which would
+# truncate with the assert still green. Keeping the two in sync is manual.
+_POSTGREST_MAX_ROWS = 1000
 _TARGET_RUN_PAGE_SIZE = 500
 _MAX_TARGET_RUN_PAGES = 20
-assert _TARGET_RUN_PAGE_SIZE < 1000, (
-    "page size must stay under PostgREST max_rows or paging truncates silently"
+assert _TARGET_RUN_PAGE_SIZE <= _POSTGREST_MAX_ROWS, (
+    "page size must not exceed PostgREST max_rows or paging truncates silently"
 )
 
 
 def list_campaigns_for_target(
     target_id: str, *, user_id: Optional[str] = None
 ) -> list[ComputeCampaign]:
-    """Every run launched against a target, newest first.
+    """A target's COMPUTE-CAMPAIGN runs, newest first.
+
+    Not every run against the target. This reads ``compute_campaigns`` only,
+    and migration 0039 also puts ``target_id`` on ``tool_jobs``: a standalone
+    run launched from the ``target:`` reuse token lands as a ``tool_jobs`` row
+    with ``campaign_id`` NULL and is invisible here, as is a yardstick refold.
+    A target with only those would render the "nothing has been run yet" empty
+    state. Latent in Phase 1 -- no template mints a ``target:`` token yet -- and
+    Phase 3's fan-in has to read both tables. Do not widen the summary line
+    above without widening the query.
 
     Owner-scoped when ``user_id`` is given.
 
