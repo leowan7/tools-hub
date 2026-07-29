@@ -476,8 +476,9 @@ them; the rest are filed.
 
 ### A37. `list_campaigns_for_user` still lists stranded drafts
 - **severity:** low | **owner:** code
-- **detail:** Phase 2 excludes `draft` from `list_campaigns_for_target` (a draft was never funded, dispatched or billed, so it is not a run and the page can offer no action on it). `list_campaigns_for_user` is a different query feeding `/campaigns` and the homepage and is deliberately unchanged, so the two lists disagree about a stranded draft.
-- **why it was not widened here:** that list feeds three surfaces and deserves its own review rather than riding along on a launch diff.
+- **detail:** Phase 2 excludes `draft` from `list_campaigns_for_target` (a draft was never funded, dispatched or billed, so it is not a run and the page can offer no action on it). `list_campaigns_for_user` is a different query, applies no status filter, and is deliberately unchanged, so the two lists disagree about a stranded draft.
+- **corrected 2026-07-29 (QC round 5):** this entry and the docstring citing it both said the query "feeds `/campaigns` and the homepage" and "three surfaces". **Measured: one production caller**, `blueprints/campaigns.py:95` (`GET /campaigns`). The homepage loads `list_jobs_for_user` (`tool_jobs`, not campaigns) and only renders a link to `/campaigns`. So a stranded draft does NOT appear on the homepage.
+- **why it was not widened here:** it is a separate query on a separate surface and deserves its own review rather than riding along on a launch diff. The blast radius is smaller than this entry originally claimed, which makes it cheaper to fix, not less real.
 
 ### A38. `CAMPAIGN_STATUSES` is missing `paused_insufficient_funds`
 - **severity:** low (latent) | **owner:** code
@@ -492,7 +493,9 @@ them; the rest are filed.
 ### A40. Several route-exercising test files lack `isolate_supabase`
 - **severity:** medium (test hygiene) | **owner:** code
 - **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` holds real production credentials, so a test that boots `create_app()` and exercises a route reads production unless it opts into `tests/conftest.py::isolate_supabase`. `tests/test_compute_campaign_routes.py` was missing it (added in this diff). `tests/test_iggm_campaign.py` and `tests/test_csrf_protection.py` still are; both happen to mock their write paths, so the exposure is reads.
-- *Next:* audit every test file that imports `app` and add the fixture. Better: make the fixture autouse in `conftest.py` and have the few tests that genuinely want live config opt out, so the safe direction is the default.
+- **measured 2026-07-29 (QC round 3):** **26 of the 32 test files that reference `create_app` have no `isolate_supabase`.** The audit above named three by inspection and undercounted by an order of magnitude. Not fixed in this round: the fixture blanks four env vars for the whole module, so adding it to 26 files changes the environment of several hundred existing tests, which is its own change with its own blast radius (the reason the fixture was made opt-in in the first place, per its own docstring).
+- **also in this round:** `tests/test_compute_campaigns.py` gained the fixture. It does not boot `create_app()`, so it was not in the class named above, and it still read production: its `fake_client` binds `cc.get_service_client`, while `plan_chunks` prices through `wallet_estimates._historical_p90_seconds`, which late-imports `credits.get_service_client`. Every planner test was pricing money against the live `tool_jobs_p90` view. The module docstring said "No live Modal or Supabase" throughout.
+- *Next:* make the fixture autouse in `conftest.py` and have the few tests that genuinely want live config opt out, so the safe direction is the default. Note that patching one module's `get_service_client` is not sufficient on its own: any call that reaches pricing resolves `credits.get_service_client` at call time.
 
 ### Two documentation claims corrected in place
 - `docs/HANDOFF-2026-07-29-phase2.md` asserted "bindcraft is not broken". Every `POST /campaigns` with `tool=bindcraft` returned 400 "Pick a preset." Fixed in this diff and the handoff corrected.
@@ -583,3 +586,299 @@ Round 1 said: measure anything a comment calls free or pure. Round 2 adds two
 more that would have caught most of the above without a reviewer:
 - **A number in a comment is a claim.** "2x", "280.90999999999997", "one read per tool" are all assertions, and every one of them here was wrong. Run it or drop it.
 - **Fix the cause, not the symptom the reviewer showed you.** The n=1 note bug was reported at n=1 and fixed at n=1; the same defect at n=2 shipped in the fix. When a finding names one input, ask what class it belongs to before writing the branch.
+
+## Addendum 2026-07-29d — third QC pass, and the items it filed rather than fixed
+
+Four independent agents reviewed `git diff 02d2a24 HEAD` (4150 lines, 16 files),
+one per slice: idempotency, routes + template, shared engine, test integrity.
+Verdicts: FIX FIRST x3, SUITE PARTIALLY TRUSTWORTHY. No live production bug, but
+two tests that could not fail, one money-copy bug, and a production read from a
+test file. All ten remediation items (A-J in
+`docs/HANDOFF-2026-07-29-qc-round3.md`) are done and mutation-verified.
+
+The items below are deliberately NOT fixed. Each is either pre-existing, or a
+fix whose blast radius exceeds this diff.
+
+### A41. `blueprints/tools.py` error paths return HTTP 200, so `@idempotent` caches their failures
+- **severity:** medium | **owner:** code
+- **detail:** The release-on-failure logic in `shared/idempotency.py` keys on the status code: a response `>= 400` releases the claim so a corrected retry can run. `tool_submit`'s validation-failure paths re-render the form with a bare `render_template`, which Flask serves as **200**, so those failures are cached for the full TTL and a corrected resubmission inside 60 s replays the stale error page. The module docstring claimed "Failures are not cached" without qualification; corrected in this diff to state the status-code dependency.
+- *Next:* give those paths real 4xx codes. That changes what the browser and every existing `tool_submit` test see, so it is its own change.
+
+### A42. `_claim_key`'s upsert is a TOCTOU, not mutual exclusion
+- **severity:** medium | **owner:** code
+- **detail:** `_claim_key` SELECTs for a live row, then upserts with `on_conflict="key"`. `ON CONFLICT DO UPDATE` succeeds for **both** racing writers, so two concurrent identical submissions can each see "not claimed" and each run the handler. Pre-existing. The `_release_key` scoping added in this diff (`.is_("response_status", None)`) removes the new leg this created for `target_launch_submit` — a losing sibling can no longer delete the winner's cached success — but the underlying race is untouched.
+- *Next:* a conditional insert that can actually fail (plain `insert` and treat the unique-violation as "lost the race"), or a DB-level advisory lock.
+
+### A43. `_store_response`'s own failure path leaves `response_status` NULL
+- **severity:** low | **owner:** code
+- **detail:** If the UPDATE that caches the response fails, the claim row keeps `response_status NULL`, which reads as "in flight" to every subsequent request for the rest of the TTL — the 409-until-expiry state `_release_key` exists to prevent, reached by a different route. Pre-existing.
+
+### A44. The single-tool `/campaigns` route still discards `fund_campaign`'s bool
+- **severity:** low | **owner:** code
+- **detail:** `fund_campaign` now reports whether the row actually moved out of `draft` (audit item A12), and the multi-tool launch route branches on it to report stalled runs. `blueprints/campaigns.py` still ignores the return, so a single-tool campaign whose fund silently fails is left `draft` — inert and unbilled, but presented to the user as started. A12 is half closed.
+
+### A45. A deliberate identical re-launch inside 60 s is a silent no-op
+- **severity:** low (UX) | **owner:** product
+- **detail:** `@idempotent()` on `target_launch_submit` cannot distinguish a double-click from a user who genuinely wants the same tools run against the same target twice (adding 400 more BindCraft designs is a legitimate launch). The second is answered from cache and replays "Started N runs", so the UI asserts something that did not happen. The TTL is 60 s, so the window is small, but nothing marks a replay as a replay.
+- *Next:* surface `Idempotent-Replay` in the banner, or give the form a nonce the user's second submit would change.
+
+### What this round adds to the carry-forward list
+
+Rounds 1 and 2 said: measure anything a comment calls free or pure, and a number
+in a comment is a claim. Round 3 adds two about tests rather than comments.
+
+- **A test that cannot fail is worse than a missing test**, because it is
+  counted. Both dead tests here were dead for the same reason: the fixture's
+  arithmetic collapsed the distinction under test. `32 // 2 == 16` is
+  rfdiffusion's solo width, so dividing concurrency across 2 tools is an
+  identity. One sub-job per tool clamps the first wave to 1, so burst and steady
+  price identically. Neither is visible by reading the test. Both were found by
+  computing the two branches and comparing.
+- **So state the precondition as an assertion.** Every cohort-sensitive test in
+  this round now carries one: `_assert_pace_is_observable_on`,
+  `_assert_float_encoding_is_distinguishable`,
+  `test_the_typed_field_cases_all_differ_from_the_adapter_default`,
+  `test_csrf_enforcement_is_actually_on_in_this_fixture`,
+  `test_a_nul_bearing_value_survives_form_decoding`, and an inline guard in the
+  page-budget test. If someone later shrinks a cohort to something cheaper, the
+  precondition fails with a message naming the fix instead of the test quietly
+  passing forever.
+- **A fake that omits a method does not fail loudly; it fails silently in the
+  safe-looking direction.** Two instances this round. `tests/test_idempotency.py::_FakeTable`
+  had no `is_()`, so the `_release_key` scoping added in this diff raised
+  `AttributeError` into a bare `except` and the fix read as a no-op — both the
+  fix and its removal left 26 tests green. `tests/test_compute_campaigns.py::_Query`
+  had no `update()`, so `fund_campaign`'s CAS could not be modelled at all and
+  had zero coverage across 9 behaviours. Compare
+  `feedback_test_fakes_must_model_backend_limits`: same lesson, third occurrence.
+
+## Addendum 2026-07-29e — independent QC over the round-3 REMEDIATION
+
+Two agents over the 1759-line remediation diff: one on production code, one on
+test integrity. Verdicts: **FIX FIRST** and **SUITE PARTIALLY TRUSTWORTHY**.
+The test agent ran 35 production mutations; 33 reddened a named test, 2 did not.
+
+**Fourth consecutive round in which reviewing the fixes was as productive as
+reviewing the original work**, and this time the fix contained a defect strictly
+worse than the one it fixed.
+
+### The fund/drive guard inverted the reporting on a money path
+Round 3 wrapped the launch route's fund/drive loop so nothing could raise past
+it. The wrap set `moved = False` in the handler. But **`fund_campaign` cannot
+raise** — `_cas_transition` catches everything and returns `False` — so the only
+exception the block could ever catch came from `drive_campaign_async`, i.e.
+`threading.Thread(...).start()`, i.e. **exactly the case where the campaign is
+already `funded`**. And `funded` is in `cron/tick_campaigns.py::_ACTIVE_STATES`,
+so the tick drives it within a minute or two and it bills.
+
+So the guard reported N funded, billing campaigns as *"None of those runs could
+be started. Your wallet was not charged."* Thread exhaustion is process-wide, so
+every tool in a launch fails together and `started` would be empty every time.
+
+The second half is worse than the wrong banner. That answer is a **400**, and
+round 3's own `shared/idempotency.py` change releases the claim on any status
+>= 400 — so the retry the error copy invites would create and fund a **second
+full set** against a gate the user passed once. At HEAD the exception propagated
+to a 500, which left `response_status NULL` and 409'd every retry: accidental
+protection that the fix removed and replaced with an invitation.
+
+Now: the fund is the sole commit point and the only thing that decides
+started-vs-stalled; a drive-spawn failure logs and the campaign stays *started*,
+because the cron owns it. Three tests added — **no test anywhere made
+`fund_campaign` or `drive_campaign_async` raise**, which is how a whole-launch
+reporting inversion shipped inside a QC fix.
+
+### `_release_key`'s scoping was necessary but not sufficient
+Scoping the release to `response_status IS NULL` stops a losing sibling deleting
+the winner's cached success. It does not stop the loser **overwriting** it: when
+the release matches nothing the wrapper falls through to `_store_response`, whose
+UPDATE was unscoped. The loser's 400 replaced the winner's cached 302, so the
+browser was shown "nothing was started and nothing was charged" for a funded,
+billing launch, and every click inside the TTL replayed it. `_store_response` now
+carries the same predicate. The isolated `_release_key` test could not see this;
+it is the composition that fails.
+
+### The consent-staleness fix cleared the variable, not the number
+`debounced()` cleared the internal `latest` and unticked the box but left the
+PREVIOUS launch's total and held-to-start **rendered**, for the whole repricing
+window. The rendered figure is the only price a user reads, and someone who sees
+the tick vanish re-ticks while "$3.20" is still on screen. `clearTotals()`
+already existed for this. Separately, `fetchEstimate` had no request-generation
+guard, so with two fetches in flight the one that RESOLVED last won — not the one
+describing the form as it now stands. Both fixed (`clearTotals()` in
+`debounced()`, plus a monotonic `reqSeq` every response checks).
+
+### Tests that could not fail, inside tests written to prove the fixes
+- `test_no_placeholder_survives_for_any_reason_or_count` parametrized over a
+  hardcoded 5-tuple rather than `_PREAUTH_MESSAGES`. A new refusal reason is the
+  normal way a new placeholder arrives, so the case the test exists to catch
+  shipped green: proven by adding a `{oops}` reason and getting 94 passed. Now
+  derived from the table, with a companion test that the table is complete.
+- `test_a_launch_touches_the_target_once_after_every_insert` asserted count and
+  argument against a standalone mock, which observes neither order. Moving
+  `touch_target` from after the create loop to just after the preauth gate left
+  it green. Now logged in the same recorder as create/fund/drive and asserted
+  positionally.
+- `test_singular_and_plural_copy_differ_where_the_subject_appears` read its
+  branch off the very table it asserted on, so stripping the count-sensitive
+  placeholders flipped it into the `else` arm where `one == many` then held. The
+  regression asserted itself away. Count-sensitivity is now declared per reason.
+- The typed-field precondition claimed to relaunch "with the field ABSENT", but
+  `_form()` hardcodes `rfdiffusion__binder_length_min/_max`, so it measured the
+  FORM default. It agreed with the adapter's only by coincidence.
+
+### Four more false claims, three of them numbers
+- **"that total (3.5176)"** — rfdiffusion@12 plans 2.0101 and 2.6219. 3.5176 is
+  not produced by that cohort at any figure; it is half of the two-tool total,
+  presented as measured. (Caught by the author before review, which is the only
+  reason it is not a fifth.)
+- **"all four asserted figures carry a trailing zero"** — the test asserts SIX,
+  and two carry none (rows 20.1009 and 30.1461). The `any()` precondition still
+  holds, so the cohort works; the count was invented.
+- **"For all of these except pxdesign the two defaults are byte-identical"** —
+  pxdesign's template default is `80` and its adapter default is `"80"`, so it is
+  byte-identical too. The carve-out named the wrong tool, and pxdesign is not
+  even in the list it annotates.
+- **"the previous tests here all drove launched_count to 0"** —
+  `test_the_banner_counts_only_the_runs_from_this_launch` asserts "Started 2
+  runs". The true statement is that no prior test combined a MATCHING group with
+  a non-zero `stalled`.
+- Also corrected: a **wrong audit citation** ("Filed as A35", which is a
+  different and already-RESOLVED item; the right one is A37); a claim that
+  `shared.tools_catalog` entries carry a trailing "-- one line about the tool"
+  (measured across all 14 registered adapters: not one label contains any dash,
+  and the catalog stores the tagline in a separate key); and a claim that a user
+  seeing a stranded draft on /campaigns "can still clear it" (`cancel_campaign`
+  would accept it, but no template renders a Cancel control for `draft`).
+
+### What to carry forward, sharpened again
+Rounds 1-3 gave: measure anything called free or pure; a number in a comment is
+a claim; fix the class, not the reported input; state the precondition as an
+assertion. Round 4 adds two that are specifically about *fixes*:
+
+- **A guard is a claim about which exceptions can reach it.** The fund/drive wrap
+  was written for the failure the reviewer described (money committed, exception
+  escaping) without checking which callee could actually raise. Both callees were
+  in the same file; one line of reading would have shown that the reachable case
+  was the opposite of the one being handled. Before catching, enumerate what
+  throws.
+- **A fake that omits a method fails silently in the safe-looking direction, and
+  refusing beats omitting.** Four instances now across two rounds:
+  `_FakeTable.is_()` missing (the release scoping read as a no-op, and both
+  adding and removing the fix left 26 tests green), `_Query.update()` missing
+  (`fund_campaign`'s CAS unmodellable, 9 behaviours uncovered), `_FakeTable`
+  honouring `is_` on DELETE but not UPDATE (the scoping looked effective while
+  the clobber still happened), and `_IdemTable.delete()` missing (swallowed into
+  a `False` return that caches instead of releasing). The pattern that works is
+  the one `is_()` now uses: **raise on anything not modelled**, so an unmodelled
+  path is a loud error instead of a plausible wrong answer. See
+  `feedback_test_fakes_must_model_backend_limits` — third and fourth occurrences.
+
+## Addendum 2026-07-29f — QC round 5, over the round-4 fixes
+
+One agent over the 461-line production slice of the round-4 remediation.
+Verdict **FIX FIRST**. It ran the four safe test files (226 passed) and
+re-checked the launch JS with `node --check`.
+
+**Fifth consecutive round finding defects in the previous round's fixes, and the
+second in a row where the defect was in a fix to a money path.**
+
+### `fund_campaign` returning False is AMBIGUOUS, and round 4 leaned on it
+Round 4 made the fund the sole commit point: `False` -> stalled -> "was not
+charged". But `_cas_transition` catches **every** exception and returns `False`,
+so `False` means either "the row was not in draft" or "the UPDATE raised and I
+cannot tell". A write that commits in Postgres while the response read times out
+lands in the second bucket (see `reference_tools_hub_supabase_http2_railway` for
+that failure class on this stack). The route rendered it as the first: the
+campaign is `funded`, it bills, and the user is told it was not charged and
+invited to launch it again.
+
+This is round 4's own headline defect arriving through the other branch, which is
+the point: fixing the reported input is not the same as fixing the class.
+
+Now the route confirms a `False` with an owner-scoped `get_campaign` and only
+calls a campaign stalled when the row is **confirmed** still `draft`. Anything
+else (moved, or unreadable) is treated as started, because claiming "not charged"
+about money that may be committed is the more expensive error and the one that
+produces the duplicate. Five tests added; and `_launch()` now models the
+confirming read, without which every `fund_results=[False]` test silently took
+the indeterminate branch.
+
+### A46. The campaign tick has no schedule in this repo
+- **severity:** medium | **owner:** ops (Leo)
+- **detail:** Round 4's reasoning ("a funded campaign has started, because the
+  cron drives it") depends on `campaigns:tick` actually running. `"funded"` is in
+  `cron/tick_campaigns.py::_ACTIVE_STATES` and that module puts a tick at
+  ~60-90 s, but the schedule lives **outside the repo**: the `Procfile` declares
+  only `release` and `web`, there is no `railway.json`/`railway.toml`, and
+  `campaigns:tick` is a Flask CLI command with no in-repo caller. The inline hook
+  in `shared/jobs.complete_job` cannot substitute, because a campaign whose
+  first-wave drive never spawned has no children to complete.
+- **failure scenario:** thread exhaustion on a multi-tool launch plus an absent or
+  paused Railway cron leaves N campaigns parked at `funded` forever, with an
+  untinted badge (A39), while the user reads "Started N runs".
+- *Next:* Leo to confirm the Railway cron exists and is enabled. If it does not,
+  the round-4 reasoning is wrong and a drive-spawn failure needs a real retry
+  rather than a log line.
+
+### A47. The launch page's JavaScript has no automated coverage at all
+- **severity:** medium (test hygiene) | **owner:** code
+- **detail:** `grep -rl "reqSeq\|clearTotals\|Repricing" tests/` returns nothing.
+  Three consecutive rounds have found defects in this one `<script>` block (the
+  consent surviving a reprice, the previous price staying rendered, the
+  superseded-response race) and it is still only syntax-checked with
+  `node --check`. The block is what decides whether the submit button is live
+  against a price the user agreed to.
+- *Next:* the cheapest real coverage is a headless-DOM harness over the extracted
+  script with `fetch` stubbed; a browser walk needs auth and a real target, which
+  needs production credentials.
+
+### Corrected in place
+- **"three surfaces"** (both `list_campaigns_for_target`'s docstring and A37
+  itself): `list_campaigns_for_user` has exactly **one** production caller,
+  `blueprints/campaigns.py:95`. The homepage loads `list_jobs_for_user`
+  (`tool_jobs`, not campaigns) and only links to /campaigns, so a stranded draft
+  never appears there.
+- **`_IdemTable.delete()` raising `NotImplementedError` did not "fail loudly".**
+  `_release_key` wraps `.delete()` in a bare `except Exception`, so raising is
+  swallowed into the same `False` as omitting the method, and the wrapper then
+  caches the failure. The stub therefore inverted the behaviour under test as
+  silently as a missing method would, and made the double-fund assertion in
+  `test_a_drive_spawn_failure_does_not_release_the_idempotency_claim`
+  **unfailable**. Now modelled faithfully; the assertion has been verified to
+  fire, with its own message, under a mutation that releases regardless of status.
+  Note the asymmetry this teaches: `is_()` CAN refuse, because it is called on the
+  builder outside the `except`; `delete()` cannot.
+- **The coercion comment overstated its protection.** `Decimal(str(x))` raises
+  `InvalidOperation` for a non-numeric string, for `inf`, and for a large
+  exponent, and **NaN does not raise at all** -- it quantizes to NaN and rendered
+  "about $NaN to start". Now guarded with an `is_finite()` check and a
+  try/except that falls back to the wording, so the claim is true. The
+  parenthetical about an `AttributeError` also described no state that existed:
+  HEAD's expression was `f"${required:.2f}"`, which formats floats fine.
+- **The length prefix closed the boundary between parts but not inside one.**
+  Parts were a single `f"{field}={value}"` string, and a field NAME may contain
+  `=` (`%3D` decodes into `request.form`), so `{"a": "b=c"}` and `{"a=b": "c"}`
+  both encoded to `5:a=b=c`. Each component is now framed separately
+  (`1:a3:b=c` vs `3:a=b1:c`).
+- **A "file" tag was added to file descriptors with a comment claiming it stops a
+  form field being spelled as one. Removing the tag changes no test**, because the
+  outer per-part prefix already frames each part whole. The comment now says the
+  tag is a debugging aid and the framing is the guard. Caught by mutating the
+  author's own new code, which is the only reason it is recorded as a correction
+  rather than a fifth false claim.
+
+### Carry-forward, after five rounds
+Cumulative: measure anything called free or pure; a number in a comment is a
+claim; fix the class, not the reported input; state the precondition as an
+assertion; a guard is a claim about which exceptions can reach it; a fake that
+omits a method fails silently in the safe-looking direction. Round 5 adds:
+
+- **A boolean from a function that swallows exceptions is three-valued.** `True`,
+  `False`, and "I could not tell" all arrive as two values. Any user-facing claim
+  built on such a bool -- especially "you were not charged" -- has to either
+  confirm independently or refuse to make the claim. Two rounds in a row produced
+  a money-reporting inversion from treating one of these as definitive.
+- **Mutate your own fix, not just the code it touches.** The false "file tag"
+  claim and the unfailable double-fund assertion were both found by mutating
+  lines written minutes earlier. Adding a test is not evidence the test can fail.

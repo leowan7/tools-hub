@@ -107,9 +107,20 @@ _REFUSED_PRESETS = {
 def _tool_label(adapter) -> str:  # noqa: ANN001
     """Short display name for an error message.
 
-    Adapter labels carry a trailing "— one line about the tool"; keep the name
-    only, matching ``shared.tools_catalog``. A seven-tool form answering
-    "Invalid parameters." with no idea which tool is unusable.
+    A seven-tool form answering "Invalid parameters." with no idea which tool
+    is unusable, hence the label on every failure message.
+
+    The em-dash split is defensive, not load-bearing. Measured across all 14
+    registered adapters: not one label contains an em dash, en dash or double
+    dash, so the split is a no-op on every input it will ever see today.
+    "Proteina-Complexa" uses an ASCII hyphen, so it survives intact.
+
+    It is kept because ``shared/tools_catalog.py`` carries the same defensive
+    splitter (``adapter.label.split("—")[0]`` and ``_short_name_for_label``) for
+    a "Name — one line about the tool" convention that nothing currently
+    follows. If an adapter ever adopts that style, an error message here should
+    not become a sentence. Do not read the split as evidence that any label
+    needs it.
     """
     return str(adapter.label or "").split("—")[0].strip() or adapter.slug
 
@@ -547,6 +558,16 @@ def api_target_launch_estimate(target_id):
     target = get_target(target_id, user_id=ctx.user_id)
     if target is None:
         return jsonify({"ok": False, "error": "That target could not be found."})
+    # The target-level refusals, not just the per-tool ones. Without these the
+    # endpoint prices an archived or structure-less target in full detail and
+    # answers affordable:true for a launch the POST refuses outright. The
+    # browser never asks (the GET renders the blocked panel with no form, and
+    # archived redirects before that), so this is for an API caller.
+    if target.is_archived:
+        return jsonify({"ok": False, "error": "This target is archived."})
+    blocked = _launch_blocker(target)
+    if blocked:
+        return jsonify({"ok": False, "error": blocked})
 
     tools = request.args.getlist("tool")
     designs = request.args.getlist("designs")
@@ -765,18 +786,74 @@ def target_launch_submit(target_id):
 
     started, stalled = [], []
     for campaign in created:
-        # fund_campaign is a CAS that reports whether the row actually moved.
-        # Driving an unfunded campaign is a silent no-op (drive_campaign
-        # early-returns on draft), so an unchecked fund would leave a run the
-        # user believes is going parked forever with nothing to see.
-        if cc.fund_campaign(campaign.id):
-            cc.drive_campaign_async(campaign.id)
-            started.append(campaign)
-        else:
-            stalled.append(campaign)
+        # THE FUND IS THE COMMIT POINT and the only thing that decides started
+        # vs stalled. `fund_campaign` is a CAS reporting whether the row moved
+        # out of `draft`, and it cannot raise: `_cas_transition` catches
+        # everything and returns False.
+        #
+        # Which is exactly why False on its own is NOT grounds for telling the
+        # user nothing was charged. It means EITHER "the row was not in draft"
+        # OR "the UPDATE raised and I cannot tell" -- and a write that commits
+        # in Postgres while the response read times out lands in the second
+        # bucket (see reference_tools_hub_supabase_http2_railway). Reporting
+        # that as "not started and not charged" invites a re-launch of a
+        # campaign that is funded and billing, which is the same money-
+        # reporting inversion as reporting a drive-spawn failure that way, just
+        # through the other branch.
+        if not cc.fund_campaign(campaign.id):
+            row = cc.get_campaign(campaign.id, user_id=ctx.user_id)
+            if row is not None and row.status == "draft":
+                # Confirmed inert: `drive_campaign` early-returns on draft,
+                # `_campaign_spend_today` skips it, no hold was ever placed. It
+                # genuinely did not start and was not charged.
+                stalled.append(campaign)
+                logger.warning(
+                    "target_launch: %s (%s) is still draft after fund; not "
+                    "driven", campaign.id, campaign.tool,
+                )
+                continue
+            # Either it did move (so the fund actually succeeded) or the read
+            # could not tell us. Fall through and treat it as started: claiming
+            # "not charged" about money that may be committed is the more
+            # expensive error, and it is the one that produces a duplicate.
             logger.warning(
-                "target_launch: fund_campaign did not move %s (%s) out of "
-                "draft; it will not be driven", campaign.id, campaign.tool,
+                "target_launch: fund_campaign reported False for %s (%s) but "
+                "its status is %s; treating it as started",
+                campaign.id, campaign.tool,
+                getattr(row, "status", "unreadable"),
+            )
+
+        # Funded. Past this line the campaign HAS started and WILL bill,
+        # whether or not the thread below ever runs, PROVIDED the campaign tick
+        # is scheduled: `funded` is in `cron/tick_campaigns.py::_ACTIVE_STATES`
+        # and that module's docstring puts a tick at ~60-90 s, but the SCHEDULE
+        # lives outside this repo (the Procfile declares only `release` and
+        # `web`, and `campaigns:tick` is a Flask CLI command with no in-repo
+        # caller). If it is not scheduled, a campaign whose drive thread never
+        # spawned parks at `funded` with no children and nothing to restart it.
+        # Filed as A46.
+        #
+        # `drive_campaign_async` only moves the first wave off the request path;
+        # it is an optimisation, not the thing that starts the campaign. So its
+        # failure must NOT flip this campaign to stalled. Doing that reported
+        # "nothing was started and nothing was charged" about N funded, billing
+        # campaigns -- and because that answer is a 400, and
+        # `shared/idempotency.py` releases the claim on any status >= 400, the
+        # retry the copy invites would create and fund a SECOND full set against
+        # a gate the user passed once. Thread exhaustion is process-wide, so
+        # every tool in the launch fails together and `started` would be empty.
+        started.append(campaign)
+        try:
+            cc.drive_campaign_async(campaign.id)
+        except Exception:
+            # `threading.Thread(...).start()` is the only statement here that
+            # can raise (the drive itself is wrapped inside the thread). Nothing
+            # may propagate past this loop: money is committed, and an escaping
+            # exception would 500 AND release the claim.
+            logger.exception(
+                "target_launch: could not spawn the first-wave drive for %s "
+                "(%s); it is funded and the campaign tick will drive it",
+                campaign.id, campaign.tool,
             )
 
     if not started:

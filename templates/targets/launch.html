@@ -70,7 +70,7 @@
         </p>
         {% endif %}
         {{ field_text("hotspot_residues", "Hotspot residues",
-                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen; unused by Proteina and IgGM.",
+                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen. Tools that do not use hotspots ignore it.",
                       placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
       </div>
     </div>
@@ -383,15 +383,28 @@
     });
   }
 
+  // Monotonic request counter. The debounce only collapses changes inside
+  // 250 ms, so two edits a little further apart put two fetches in flight and
+  // whichever RESOLVES last wins -- which is not necessarily the one describing
+  // the form as it now stands. Left unguarded: change 12 -> 100 (fetch A),
+  // change 100 -> 5000 (fetch B), B returns first, A returns second, and both
+  // `latest` and the rendered figures end up describing 100 designs while the
+  // form would POST 5000. The user ticks against the small figure and the
+  // server holds the large one. Every response checks its own sequence number
+  // against the current one and drops itself if it has been superseded.
+  var reqSeq = 0;
+
   function fetchEstimate() {
     var chosen = selected();
     if (!chosen.length) {
+      reqSeq += 1;
       latest = { ok: false, affordable: false };
       clearTotals();
       setNote('Pick a tool to see what it costs.');
       syncSubmit();
       return;
     }
+    var mySeq = reqSeq;
     var params = [];
     var pace = document.querySelector('.pace-pick:checked');
     params.push('pace=' + encodeURIComponent(pace ? pace.value : 'burst'));
@@ -405,6 +418,7 @@
     fetch(estURL + '?' + params.join('&'), { headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        if (mySeq !== reqSeq) { return; }
         latest = d;
         if (!d.ok) {
           clearTotals();
@@ -434,7 +448,9 @@
         syncSubmit();
       })
       .catch(function () {
+        if (mySeq !== reqSeq) { return; }
         latest = { ok: false, affordable: false };
+        clearTotals();
         setNote('Estimate unavailable.');
         syncSubmit();
       });
@@ -442,6 +458,26 @@
 
   var timer = null;
   function debounced() {
+    // Invalidate the consent AND the figures on screen the moment anything
+    // changes, BEFORE the 250 ms fetch fires. Without this the tick survives a
+    // change of tools, designs or pace and the button stays live against a
+    // figure the user agreed to for a different launch: tick at $3.20, raise
+    // the design count, click, and a much larger first wave is held under the
+    // old consent. The server still gates correctly; what breaks is the
+    // authorization the tick is supposed to record. Consent is per-price.
+    //
+    // clearTotals() is not decoration. Clearing only the internal `latest`
+    // leaves the PREVIOUS launch's total and held-to-start rendered for the
+    // whole repricing window, and the rendered number is the only price the
+    // user actually reads. Someone who sees the tick vanish naturally re-ticks
+    // while "$3.20" is still on screen, and the next response enables the
+    // button. Blank plus "Repricing..." is the honest state.
+    reqSeq += 1;
+    latest = { ok: false, affordable: false };
+    confirmBox.checked = false;
+    clearTotals();
+    setNote('Repricing...');
+    syncSubmit();
     clearTimeout(timer);
     timer = setTimeout(fetchEstimate, 250);
   }

@@ -50,6 +50,7 @@ class _FakeTable:
         self._pending_upsert: Optional[dict] = None
         self._projection: Optional[list[str]] = None
         self._pending_delete = False
+        self._is_null: list[str] = []
 
     def _project(self, row: dict) -> dict:
         if self._projection is None or "*" in self._projection:
@@ -64,6 +65,26 @@ class _FakeTable:
     def eq(self, column: str, value: Any) -> "_FakeTable":
         if column == "key":
             self._filter_key = value
+        return self
+
+    def is_(self, column: str, value: Any) -> "_FakeTable":
+        """Model the NULL predicate, do not accept-and-ignore it.
+
+        ``_release_key`` scopes its DELETE to ``response_status IS NULL`` so it
+        can only remove a claim that never completed. A fake that swallowed this
+        would delete unconditionally and the scoping -- the thing that stops a
+        losing sibling wiping the winner's cached success -- would be untestable
+        in exactly the direction that matters.
+
+        postgrest-py renders ``.is_(col, None)`` as ``is.null``; anything else
+        is not a predicate this codebase issues, so it is refused rather than
+        approximated.
+        """
+        if value is not None:
+            raise AssertionError(
+                f"is_({column!r}, {value!r}) is not modelled; only IS NULL is"
+            )
+        self._is_null.append(column)
         return self
 
     def upsert(self, payload: dict, on_conflict: str = "key") -> "_FakeTable":
@@ -89,7 +110,16 @@ class _FakeTable:
             key = self._filter_key
             self._filter_key = None
             self._projection = None
-            removed = self._store.pop(key, None) if key is not None else None
+            is_null, self._is_null = self._is_null, []
+            removed = None
+            if key is not None:
+                candidate = self._store.get(key)
+                # The IS NULL predicate is part of the WHERE clause, so a row
+                # that fails it is not deleted AND not returned.
+                if candidate is not None and all(
+                    candidate.get(col) is None for col in is_null
+                ):
+                    removed = self._store.pop(key)
             return type("R", (), {"data": [removed] if removed else []})()
         if self._pending_upsert is not None:
             row = dict(self._pending_upsert)
@@ -103,6 +133,7 @@ class _FakeTable:
             key = self._filter_key
             self._filter_key = None
             self._projection = None
+            is_null, self._is_null = self._is_null, []
             if self._known_columns is not None:
                 unknown = set(payload) - self._known_columns
                 if unknown:
@@ -111,7 +142,15 @@ class _FakeTable:
                         "'request_idempotency' does not exist"
                     )
             existing = self._store.get(key)
-            if existing:
+            # `_store_response` scopes its write to `response_status IS NULL` so
+            # it cannot overwrite a claim another request already completed. The
+            # predicate is part of the WHERE clause, so a row that fails it is
+            # neither written nor returned. Honoured here as well as on the
+            # delete path: modelling it for one verb and not the other made the
+            # scoping look effective while the clobber still happened.
+            if existing is not None and all(
+                existing.get(col) is None for col in is_null
+            ):
                 existing.update(payload)
             return type("R", (), {"data": []})()
         if self._filter_key is not None:
@@ -642,6 +681,36 @@ def test_releasing_a_claim_that_matched_nothing_reports_failure(fake_store):
     assert "real-key" not in fake_store
 
 
+def test_releasing_never_removes_a_claim_that_already_completed(fake_store):
+    """The scoping, not just the delete. This is the leg that makes a duplicate
+    launch impossible rather than merely unlikely.
+
+    ``_claim_key`` upserts, and ``ON CONFLICT DO UPDATE`` succeeds for BOTH
+    racing writers, so the SELECT before it is a TOCTOU and not a lock: two
+    concurrent submissions of the same form can each run the handler. Suppose
+    the winner stores a 302 for a launch that really created and funded runs,
+    and the loser then fails validation and releases. Delete by key alone would
+    wipe the winner's cached success, and a third click would launch the whole
+    set a second time -- real money, silently.
+
+    ``response_status IS NULL`` is what confines the release to a claim that
+    never finished. Red if that predicate is dropped.
+    """
+    from shared.idempotency import _release_key
+
+    fake_store["done-key"] = {
+        "key": "done-key",
+        "response_status": 302,
+        "response_body": "",
+        "location": "/targets/t-1?launched=g-1",
+    }
+    assert _release_key("done-key") is False
+    assert fake_store["done-key"]["response_status"] == 302, (
+        "a completed claim was deleted; the winner's cached success is gone "
+        "and the next submit re-launches everything"
+    )
+
+
 def test_an_error_is_cached_when_the_claim_cannot_be_released(failing_app):
     """Degradation path: if the delete fails we fall back to caching, because
     replaying a 400 beats orphaning a claim that 409s every retry."""
@@ -654,3 +723,202 @@ def test_an_error_is_cached_when_the_claim_cannot_be_released(failing_app):
     assert second.status_code == 400
     assert second.headers.get("Idempotent-Replay") == "true"
     assert failing_app.state["calls"] == 1
+
+
+def test_a_nul_in_a_field_value_cannot_forge_a_part_boundary(form_app, user_ctx):
+    """Two genuinely different launches must not hash alike.
+
+    The fingerprint is a list of ``field=value`` parts. Joined on a separator,
+    a field VALUE containing that separator can spell out an extra part, and
+    ``%00`` survives urlencoded decoding into ``request.form``, so NUL is not a
+    theoretical separator here. These two forms are different launches:
+
+        A: name="a\\x00tools=iggm", tools=["rfdiffusion"]
+        B: name="a",               tools=["iggm", "rfdiffusion"]
+
+    Under ``b"\\0".join(parts)`` both serialise to
+    ``name=a\\0tools=iggm\\0tools=rfdiffusion`` -- so B, submitted within the
+    TTL, would be answered from A's cache and never run. B launches two tools
+    where A launched one, which is real money that silently does not happen.
+
+    A length prefix cannot be spelled from inside a value, which is why the
+    parts are prefixed rather than delimited.
+    """
+    from flask import request
+
+    def _key(data):
+        with form_app.test_request_context(
+            "/launch", method="POST", data=data,
+            content_type="application/x-www-form-urlencoded",
+        ):
+            # Consume the stream exactly as app.py's _enforce_csrf does, so the
+            # form fallback is the path under test.
+            request.form.get("_csrf")
+            return _compute_key(user_ctx.user_id, "/launch", b"")
+
+    forged = _key({
+        "_csrf": "t", "name": "a\x00tools=iggm", "tools": ["rfdiffusion"],
+    })
+    genuine = _key({
+        "_csrf": "t", "name": "a", "tools": ["iggm", "rfdiffusion"],
+    })
+    assert forged != genuine, (
+        "a NUL inside a field value forged a part boundary, so two different "
+        "launches share one idempotency key and the second is a silent replay"
+    )
+    # And the fingerprint is still stable for a genuine re-submit.
+    assert genuine == _key({
+        "_csrf": "t", "name": "a", "tools": ["rfdiffusion", "iggm"],
+    })
+
+
+def test_a_nul_bearing_value_survives_form_decoding(form_app):
+    """Precondition for the test above. If NUL could not reach request.form the
+    forgery would be unreachable and that test would prove nothing."""
+    from flask import request
+
+    with form_app.test_request_context(
+        "/launch", method="POST",
+        data={"_csrf": "t", "name": "a\x00tools=iggm"},
+        content_type="application/x-www-form-urlencoded",
+    ):
+        assert "\x00" in request.form["name"]
+
+
+def test_a_losing_siblings_failure_cannot_overwrite_a_cached_success(fake_store):
+    """`_store_response` may only write a claim that has not completed.
+
+    `_claim_key` upserts, and `ON CONFLICT DO UPDATE` succeeds for BOTH racing
+    writers, so two concurrent submissions of the same form can each be told
+    "claimed" (audit A42). The winner launches and caches its 302. The loser
+    then fails -- typically on the velocity cap, because the winner's budgets
+    are already in `_campaign_spend_today` -- and the wrapper's 4xx path calls
+    `_release_key`, which correctly matches nothing, and then falls through to
+    `_store_response`.
+
+    Unscoped, that write replaced the winner's cached 302 with the loser's 400.
+    The user was shown "Nothing was started and nothing was charged" for a
+    launch that was funded and billing, and every click inside the TTL replayed
+    that 400. `_release_key` alone does not prevent this: it is the pair of
+    scopings that does.
+    """
+    from flask import Flask
+
+    from shared.idempotency import _store_response
+
+    fake_store["winner"] = {
+        "key": "winner",
+        "response_status": 302,
+        "response_body": "",
+        "content_type": "text/html; charset=utf-8",
+        "location": "/targets/t-1?launched=g-1",
+    }
+
+    app = Flask(__name__)
+    with app.test_request_context():
+        loser = app.make_response(("Nothing was started.", 400))
+        _store_response("winner", loser)
+
+    row = fake_store["winner"]
+    assert row["response_status"] == 302, (
+        "the loser's 400 overwrote the winner's cached success; the next click "
+        "replays a false 'nothing was charged' for a billing launch"
+    )
+    assert row["location"] == "/targets/t-1?launched=g-1"
+
+
+def test_store_response_still_caches_an_unfinished_claim(fake_store):
+    """The scoping above must not break the orphaned-claim fallback it serves.
+
+    When a release fails for an infra reason the row is still present with a
+    NULL status, so this write must still match and still cache -- otherwise a
+    failed release would leave a claim that 409s every retry until the TTL.
+    """
+    from flask import Flask
+
+    from shared.idempotency import _store_response
+
+    fake_store["live"] = {"key": "live", "response_status": None}
+
+    app = Flask(__name__)
+    with app.test_request_context():
+        _store_response("live", app.make_response(("nope", 400)))
+
+    assert fake_store["live"]["response_status"] == 400
+
+
+def test_an_equals_in_a_field_name_cannot_forge_a_boundary_either(
+    form_app, user_ctx,
+):
+    """The NUL forgery closed the boundary BETWEEN parts. This closes the one
+    INSIDE a part.
+
+    Parts used to be a single `f"{field}={value}"` string with one length
+    prefix, so a field NAME containing `=` could still be confused with a
+    value: `%3D` decodes into `request.form`, and `{"a": "b=c"}` and
+    `{"a=b": "c"}` both encoded to `5:a=b=c`. Framing the name and the value
+    separately gives `1:a3:b=c` and `3:a=b1:c`.
+
+    Low impact on the launch route specifically (the confusable fields are
+    non-price), but the fingerprint guards seven routes and a collision means a
+    silent replay.
+    """
+    from flask import request
+
+    def _key(data):
+        with form_app.test_request_context(
+            "/launch", method="POST", data=data,
+            content_type="application/x-www-form-urlencoded",
+        ):
+            request.form.get("_csrf")
+            return _compute_key(user_ctx.user_id, "/launch", b"")
+
+    assert _key({"_csrf": "t", "a": "b=c"}) != _key({"_csrf": "t", "a=b": "c"})
+
+
+def test_an_equals_bearing_field_name_survives_form_decoding(form_app):
+    """Precondition: if `=` could not appear in a decoded field name, the test
+    above would pass vacuously."""
+    from flask import request
+
+    with form_app.test_request_context(
+        "/launch", method="POST", data={"_csrf": "t", "a=b": "c"},
+        content_type="application/x-www-form-urlencoded",
+    ):
+        assert "a=b" in request.form
+
+
+def test_a_form_field_cannot_be_spelled_as_a_file_descriptor(form_app, user_ctx):
+    """File parts and form parts share one list, so they must not collide.
+
+    Pins the property, and deliberately does NOT attribute it to the "file" tag
+    on file descriptors: removing that tag changes no test, because the outer
+    per-part length prefix already frames each part whole and a 3-component file
+    part cannot equal a pair of 2-component form parts. The tag is debugging
+    aid, not the guard.
+    """
+    import io as _io
+
+    from flask import request
+
+    def _with_file():
+        with form_app.test_request_context(
+            "/launch", method="POST",
+            data={"_csrf": "t", "pdb": (_io.BytesIO(b"ATOM"), "x.pdb")},
+            content_type="multipart/form-data",
+        ):
+            request.form.get("_csrf")
+            assert request.files.getlist("pdb")
+            return _compute_key(user_ctx.user_id, "/launch", b"")
+
+    def _with_fields(data):
+        with form_app.test_request_context(
+            "/launch", method="POST", data=data,
+            content_type="application/x-www-form-urlencoded",
+        ):
+            request.form.get("_csrf")
+            return _compute_key(user_ctx.user_id, "/launch", b"")
+
+    # A form field trying to spell the file descriptor's components.
+    forged = _with_fields({"_csrf": "t", "file": "pdb", "x.pdb": "4"})
+    assert _with_file() != forged

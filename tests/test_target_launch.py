@@ -52,9 +52,61 @@ ALL_SEVEN = [
 ]
 
 
-def _spec(tool, designs=24, preset="pilot"):
-    return ToolLaunchSpec(tool=tool, preset=preset, requested_designs=designs,
-                          params={})
+# The preset the LAUNCH ROUTE would actually send for each tool. Five tools
+# carry the "pilot" tier; proteina and iggm take a design VARIANT instead, and
+# ``adapter.preset_for("pilot")`` is None for both -- so a spec built at "pilot"
+# prices a launch the route refuses outright with "unknown preset for this
+# tool". Every seven-tool money assertion below was priced that way, which made
+# the widest figures in this file describe a launch the product cannot produce.
+# Kept in sync with the route by test_the_presets_here_are_the_ones_the_route_sends.
+_LAUNCH_PRESET = {
+    "proteina": "protein_binder",
+    "iggm": "complex_prediction",
+}
+
+
+def _preset_for(tool):
+    return _LAUNCH_PRESET.get(tool, "pilot")
+
+
+def _spec(tool, designs=24, preset=None):
+    return ToolLaunchSpec(
+        tool=tool,
+        preset=preset or _preset_for(tool),
+        requested_designs=designs,
+        params={},
+    )
+
+
+def test_the_presets_here_are_the_ones_the_route_sends():
+    """Anti-drift between this file's cohort and the route's own resolution.
+
+    Two independent things have to hold, and neither is implied by the other:
+    the preset must be one the adapter accepts (else the launch 400s), and it
+    must be the one ``blueprints.targets._resolve_preset`` would derive from a
+    form (else these figures price a different launch than the product makes).
+    """
+    import tools.bindcraft  # noqa: F401
+    import tools.boltzgen  # noqa: F401
+    import tools.iggm  # noqa: F401
+    import tools.proteina  # noqa: F401
+    import tools.pxdesign  # noqa: F401
+    import tools.rfantibody  # noqa: F401
+    import tools.rfdiffusion  # noqa: F401
+    from blueprints.targets import _DEFAULT_VARIANT_PRESET, _resolve_preset
+    from tools import base as tool_base
+
+    assert _LAUNCH_PRESET == _DEFAULT_VARIANT_PRESET
+    for tool in ALL_SEVEN:
+        adapter = tool_base.get(tool)
+        assert adapter is not None, f"{tool} adapter is not registered"
+        preset = _preset_for(tool)
+        # An empty form, so the route falls back to exactly the same default.
+        assert _resolve_preset(tool, {}) == preset, tool
+        assert adapter.preset_for(preset) is not None, (
+            f"{tool}: preset {preset!r} is not one this adapter accepts, so "
+            f"every money assertion using it prices a launch that 400s"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -159,8 +211,10 @@ def test_the_widest_launch_stays_within_the_global_cap():
 def test_budget_is_the_sum_of_the_per_tool_budgets():
     specs = [_spec(t) for t in ALL_SEVEN]
     plan = plan_multi_launch(specs)
-    expected = sum((plan_chunks(t, 24, "pilot").budget_usd for t in ALL_SEVEN),
-                   Decimal("0"))
+    expected = sum(
+        (plan_chunks(t, 24, _preset_for(t)).budget_usd for t in ALL_SEVEN),
+        Decimal("0"),
+    )
     assert plan.budget_usd == expected
 
 

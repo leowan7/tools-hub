@@ -32,7 +32,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from typing import Mapping, Optional
 
 from shared.credits import get_service_client
@@ -749,21 +749,32 @@ def list_campaigns_for_target(
     way leaves drafts behind. A draft is inert in every sense that matters --
     ``drive_campaign`` refuses it, ``_campaign_spend_today`` skips it, no hold
     is ever placed -- so it is not a run, and listing it under a heading that
-    says "Runs" would assert something false about a row the user can neither
-    resume nor cancel into a useful state. The launch route tells the user what
-    did and did not start, so the omission is disclosed there, not hidden.
+    says "Runs" would assert something false about a row that never started.
+    The launch route tells the user what did and did not start, so the omission
+    is disclosed there, not hidden.
 
-    Two real costs, stated because they are not obvious:
+    The real cost, stated because it is not obvious: this hides the draft HERE
+    only. :func:`list_campaigns_for_user` is a DIFFERENT query, applies no
+    status filter, and is deliberately not changed here, so a stranded draft
+    still renders as a card on /campaigns while being absent from its own
+    target's page. The two lists disagree by design; filed as **A37**.
 
-    * A stranded draft becomes invisible to the product entirely and is
-      findable only in the database. Acceptable precisely because it is inert
-      and costs nothing to leave.
-    * :func:`list_campaigns_for_user`, which feeds /campaigns and the homepage,
-      is a DIFFERENT query and is deliberately not changed here, so the two
-      lists will disagree about a stranded draft. Filed rather than widened,
-      because that list feeds three surfaces.
+    Its blast radius, measured rather than assumed: **one** production caller,
+    ``blueprints/campaigns.py:95`` (``GET /campaigns``). Not the homepage, which
+    loads ``list_jobs_for_user`` (``tool_jobs``, not campaigns) and only links
+    to /campaigns.
 
-    Pass ``include_drafts=True`` for admin or diagnostic reads.
+    :func:`cancel_campaign` would accept a draft (it refuses only
+    completed/completed_with_failures/failed/cancelled), but **no UI reaches
+    it**: ``templates/runs/detail.html:102`` renders the Cancel button only for
+    ``funded``/``running``/``completing``/``paused_insufficient_funds``, and
+    ``templates/runs/list.html`` has no cancel affordance at all. So a stranded
+    draft is visible on /campaigns and not clearable from there; clearing it
+    needs the API or the database. Do not upgrade "the function accepts it" into
+    "the user can act on it".
+
+    Pass ``include_drafts=True`` for admin or diagnostic reads. No production
+    caller passes it today; the launch and detail paths both want the default.
 
     Not every run against the target. This reads ``compute_campaigns`` only,
     and migration 0039 also puts ``target_id`` on ``tool_jobs``: a standalone
@@ -1146,6 +1157,32 @@ def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
         else "This campaign cannot start right now.",
     )
     required = getattr(pre, "required_usd", None)
+    # ROUND_CEILING, not "%.2f". The gate holds a 4dp Decimal, so half-even
+    # rounding names a figure BELOW the one that just refused the user: a
+    # first wave of 573.6736 renders as $573.67, and a wallet topped to
+    # exactly $573.67 is refused again by the same message. A required amount
+    # has to round UP or it is not a ceiling.
+    # Coerced through str() before quantizing, the same way campaign_preauth
+    # coerces its own inputs, and wrapped: PreauthResult is a plain frozen
+    # dataclass with no coercion, so nothing stops a caller passing a float
+    # (no .quantize), a non-numeric string or an inf/NaN (InvalidOperation).
+    # This is the one path whose entire job is to explain a refusal to a user,
+    # so anything unrenderable falls back to the wording rather than becoming a
+    # 500. Every current caller passes a Decimal; the guard is for the next one.
+    shown = None
+    if required is not None:
+        try:
+            amount = Decimal(str(required))
+            # is_finite() first: NaN does NOT raise here, it quantizes to NaN
+            # and renders as the words "about $NaN to start".
+            if not amount.is_finite():
+                raise ValueError("non-finite")
+            shown = amount.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        except (ArithmeticError, TypeError, ValueError):
+            logger.warning(
+                "preauth_message: unrenderable required_usd %r", required,
+            )
+            shown = None
     return (
         msg.replace("{threshold}", f"${VERIFICATION_THRESHOLD_USD}")
            .replace("{subject}", f"these {count} runs" if plural else "this campaign")
@@ -1153,7 +1190,7 @@ def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
            .replace("{smaller}", "fewer tools" if plural else "a smaller campaign")
            .replace(
                "{required}",
-               f"${required:.2f}" if required else "the first batch",
+               f"${shown}" if shown is not None else "the first batch",
            )
     )
 
