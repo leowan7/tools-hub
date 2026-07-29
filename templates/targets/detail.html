@@ -55,6 +55,28 @@
   {% endif %}
 </div>
 
+{# Result of a just-completed multi-tool launch. This app has no flash(), so
+   the launch route puts the group id in the query string and the count is
+   taken from rows already loaded. An unknown or foreign group matches nothing
+   and this renders nothing at all. #}
+{% if launched_count %}
+<div class="panel" style="margin-top: 1.5rem; border-color: #2B9E7E;">
+  <div class="panel-body">
+    <p style="margin: 0;">
+      Started {{ launched_count }} run{{ '' if launched_count == 1 else 's' }}
+      against this target. They run in parallel and bill only for compute that
+      actually runs.
+    </p>
+    {% if stalled_count %}
+    <p style="margin: 0.6rem 0 0; color: #e8846b;">
+      {{ stalled_count }} more could not be started and {{ 'was' if stalled_count == 1 else 'were' }}
+      not charged. Launch {{ 'it' if stalled_count == 1 else 'them' }} again to retry.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if target.hotspot_residues or target.epitope_residues or target.notes %}
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header"><span class="panel-title">Defaults</span></div>

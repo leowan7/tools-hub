@@ -8,6 +8,17 @@ is exercised separately by test_iggm_smoke.py; here the focus is the fan-out.
 
 from __future__ import annotations
 
+import pytest as _pytest
+
+# This file boots create_app(), which triggers app.py's load_dotenv() and pulls
+# the repo-root PRODUCTION service-role credentials into os.environ for the
+# rest of the pytest process. Without this fixture the estimate tests issue a
+# real tool_jobs_p90 SELECT against production (they patch
+# shared.compute_campaigns.get_service_client, but _historical_p90_seconds
+# resolves shared.credits.get_service_client) and every unmarked test file that
+# runs afterwards inherits the poisoned environment.
+pytestmark = _pytest.mark.usefixtures("isolate_supabase")
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -120,17 +131,23 @@ def test_build_payload_affinity_keeps_stored_total():
 def test_iggm_gated_off_by_default(monkeypatch):
     monkeypatch.delenv("FLAG_TOOL_IGGM", raising=False)
     assert tool_enabled("iggm") is False
-    from blueprints.campaigns import _visible_campaign_tools, _campaign_tool_gated_off
-    assert "iggm" not in _visible_campaign_tools()
-    assert _campaign_tool_gated_off("iggm") is True
+    from shared.compute_campaigns import (
+        campaign_tool_gated_off,
+        visible_campaign_tools,
+    )
+    assert "iggm" not in visible_campaign_tools()
+    assert campaign_tool_gated_off("iggm") is True
 
 
 def test_iggm_visible_when_flag_on(monkeypatch):
     monkeypatch.setenv("FLAG_TOOL_IGGM", "on")
     assert tool_enabled("iggm") is True
-    from blueprints.campaigns import _visible_campaign_tools, _campaign_tool_gated_off
-    assert "iggm" in _visible_campaign_tools()
-    assert _campaign_tool_gated_off("iggm") is False
+    from shared.compute_campaigns import (
+        campaign_tool_gated_off,
+        visible_campaign_tools,
+    )
+    assert "iggm" in visible_campaign_tools()
+    assert campaign_tool_gated_off("iggm") is False
 
 
 # ---------------------------------------------------------------------------

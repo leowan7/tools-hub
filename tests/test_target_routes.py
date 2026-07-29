@@ -238,14 +238,23 @@ def test_target_detail_lists_only_this_targets_runs(client):
     everything.assert_not_called()
 
 
-def test_launch_hands_off_to_the_run_form_with_the_target_bound(client):
+def test_launch_renders_the_multi_tool_screen(client):
+    """Phase 2 replaced Phase 1's redirect to the single-tool create form with
+    a real screen. The single-tool form still exists and still accepts
+    ``?target_id=``; it is simply no longer where this button lands.
+
+    Coverage of the screen itself lives in
+    tests/test_target_multi_launch_routes.py; this only pins that the route
+    stopped redirecting."""
     _login(client)
     t = _target()
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t):
         resp = client.get(f"/targets/{t.id}/launch")
-    assert resp.status_code == 302
-    assert f"target_id={t.id}" in resp.headers["Location"]
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert 'name="tools" value="rfdiffusion"' in body
+    assert f'action="/targets/{t.id}/launch"' in body
 
 
 def test_archive_is_owner_scoped_and_redirects(client):

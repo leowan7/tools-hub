@@ -23,13 +23,28 @@ Key scheme
 ----------
 If the client sends an ``Idempotency-Key`` header, that value (prefixed
 with the route) is used verbatim. Otherwise the key is
-``sha256(user_id || route || body_bytes)``. Keys are scoped to a single
-user — different users posting identical bodies get different keys.
+``sha256(user_id || route || content)``, where ``content`` is the raw body
+when one is readable and a canonical encoding of the parsed form when it is
+not. Keys are scoped to a single user — different users posting identical
+bodies get different keys.
+
+The form fallback is load-bearing, not a nicety. ``_enforce_csrf`` in app.py
+is a ``before_request`` that reads ``request.form`` on every protected POST,
+which consumes the stream, so ``request.get_data()`` here returns ``b""`` for
+essentially every browser form submission. Hashing that empty body reduces the
+key to ``(user, route)`` and makes any two different submissions to the same
+route inside the TTL collide.
 
 TTL
 ---
 Default 60 s. Wide enough to absorb double-clicks and network retries,
 short enough that a legitimate re-submission a minute later works.
+
+Failures are not cached
+-----------------------
+A handler response of 4xx/5xx releases the claim instead of storing it. The
+request did not happen, so there is nothing to deduplicate, and caching it
+would block the user's corrected retry for the rest of the TTL.
 
 Failure modes
 -------------
@@ -65,6 +80,68 @@ IDEMPOTENCY_HEADER = "Idempotency-Key"
 _TABLE = "request_idempotency"
 
 
+# Form fields excluded from the content hash. The CSRF token is rotated
+# independently of what the user typed, so including it would make two
+# genuinely identical submissions hash differently and defeat the dedup.
+_KEY_EXCLUDED_FIELDS = frozenset({"_csrf"})
+
+
+def _form_fingerprint() -> bytes:
+    """A canonical, order-independent encoding of the parsed form.
+
+    Used when the raw body has already been consumed. Fully sorted, values and
+    file parts alike, so two identical submissions hash identically regardless
+    of the order the browser serialised them in. Built from ``lists()`` rather
+    than ``to_dict()`` so a multi-valued field (the launch screen's ``tools``
+    checkboxes) contributes every value: collapsing to the first would make
+    "run rfdiffusion" and "run rfdiffusion + 6 more" the same request.
+
+    File parts contribute field name, filename, and byte length only. The bytes
+    themselves are deliberately not hashed: reading them here would either cost
+    a full pass over every upload on every request or consume the stream the
+    handler needs. The honest consequence is that two submissions identical in
+    every form field AND uploading files of the same name and size within the
+    TTL still collide. That combination is a double-click far more often than
+    it is two distinct jobs.
+    """
+    parts: list[bytes] = []
+    try:
+        for field, values in sorted(request.form.lists()):
+            if field in _KEY_EXCLUDED_FIELDS:
+                continue
+            for value in sorted(values):
+                parts.append(f"{field}={value}".encode("utf-8"))
+    except Exception:  # pragma: no cover - defensive; form parsing already ran
+        logger.warning("Idempotency form fingerprint failed.", exc_info=True)
+        return b""
+    try:
+        # Build the descriptors first, then sort THOSE. Sorting the raw
+        # (name, FileStorage) pairs raises TypeError the moment one field name
+        # repeats, because Python falls through to comparing two FileStorage
+        # objects; sorting by name alone avoids the crash but leaves repeated
+        # parts in wire order, so the same two files posted in the other order
+        # would hash differently and fail to dedup. Sorting the finished
+        # strings gets both.
+        file_parts = []
+        for field, storage in request.files.items(multi=True):
+            size = -1
+            try:
+                stream = storage.stream
+                pos = stream.tell()
+                stream.seek(0, os.SEEK_END)
+                size = stream.tell()
+                stream.seek(pos)
+            except Exception:
+                size = -1
+            file_parts.append(
+                f"{field}@{storage.filename or ''}:{size}".encode("utf-8")
+            )
+        parts.extend(sorted(file_parts))
+    except Exception:  # pragma: no cover
+        logger.warning("Idempotency file fingerprint failed.", exc_info=True)
+    return b"\0".join(parts)
+
+
 def _compute_key(user_id: str, route: str, body: bytes) -> str:
     """Derive an idempotency key from the request.
 
@@ -72,6 +149,16 @@ def _compute_key(user_id: str, route: str, body: bytes) -> str:
     well-behaved integrations can retry on their own terms. Otherwise
     falls back to a content hash so replays of the same payload dedup
     automatically.
+
+    When the raw body is empty the content hash falls back to the parsed form.
+    This is the normal case for every cookie-authenticated form POST in this
+    app, not an edge case: ``app.py``'s ``_enforce_csrf`` ``before_request``
+    reads ``request.form``, which consumes the stream, so by the time this runs
+    ``request.get_data()`` returns ``b""``. Without the fallback the key
+    degenerates to ``sha256(user_id + route)`` and any two DIFFERENT
+    submissions to the same route inside the TTL collide: the second is treated
+    as a duplicate, never runs, and replays the first one's response. Do not
+    "simplify" this back to hashing ``body`` alone.
     """
     header_value = request.headers.get(IDEMPOTENCY_HEADER, "").strip()
     if header_value:
@@ -85,7 +172,7 @@ def _compute_key(user_id: str, route: str, body: bytes) -> str:
     hasher.update(b"\0")
     hasher.update(route.encode("utf-8"))
     hasher.update(b"\0")
-    hasher.update(body)
+    hasher.update(body if body else _form_fingerprint())
     return hasher.hexdigest()
 
 
@@ -218,6 +305,32 @@ def _store_response(key: str, response: Response) -> None:
             )
 
 
+def _release_key(key: str) -> bool:
+    """Drop a claim so a corrected retry can run. True iff the row is gone.
+
+    Called instead of :func:`_store_response` when the handler failed. The row
+    MUST go rather than simply be left unwritten: a claim with
+    ``response_status IS NULL`` reads as "in flight" to the next request, which
+    would answer every retry with a 409 for the rest of the TTL.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        response = client.table(_TABLE).delete().eq("key", key).execute()
+    except Exception:
+        logger.warning(
+            "Failed to release idempotency claim for key %s", key, exc_info=True
+        )
+        return False
+    # The deleted rows, not merely "the call did not raise". A delete that
+    # matched nothing leaves the claim in place with response_status NULL, and
+    # reporting success for that would skip the caller's cache fallback and
+    # hand every retry a 409 until the TTL expired -- the outcome this
+    # function exists to prevent.
+    return bool(getattr(response, "data", None))
+
+
 def _replay_response(row: dict) -> Response:
     """Reconstruct a Flask Response from a cached row."""
     status = int(row.get("response_status") or 200)
@@ -280,7 +393,19 @@ def idempotent(
             # Flask handler may return tuple (body, status) or a Response.
             flask_response = _as_flask_response(response)
             if state == "claimed":
-                _store_response(key, flask_response)
+                if flask_response.status_code >= 400:
+                    # A failed request did not happen, so there is nothing to
+                    # be idempotent about. Caching it means a user refused for
+                    # insufficient balance, who then tops up in another tab,
+                    # gets the same refusal replayed for the rest of the TTL.
+                    # If the release fails, fall back to caching: replaying a
+                    # 400 is a worse experience than a fresh attempt, but it is
+                    # better than the 409 "still in progress" that an orphaned
+                    # claim would produce until it expired.
+                    if not _release_key(key):
+                        _store_response(key, flask_response)
+                else:
+                    _store_response(key, flask_response)
             return flask_response
 
         return wrapped

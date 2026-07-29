@@ -3,9 +3,12 @@
 Self-serve batched design at /campaigns/* + /api/campaigns/* plus the
 /runs/* and /admin/campaigns/* legacy 301 redirects. Lifted verbatim from
 ``create_app()``; only ``@flask_app.route`` -> ``@campaigns_bp.route`` and
-compute-campaign endpoint self-refs -> ``campaigns.*``. The three helpers
-(_campaign_preauth_message, _campaign_passed_filters, _cutover_redirect)
-move in with the routes.
+compute-campaign endpoint self-refs -> ``campaigns.*``. The helpers
+(_campaign_passed_filters, _cutover_redirect) move in with the routes.
+
+The preauth copy and the campaign-tool flag gate are NOT here: Phase 2 moved
+them to shared/compute_campaigns.py so the multi-tool launch screen in
+blueprints/targets.py applies the identical gate without importing this module.
 """
 
 from __future__ import annotations
@@ -69,58 +72,11 @@ def _status_reconcile_due(campaign_id: str) -> bool:
 # wet-lab funnel moved to /lab-projects/* in the launch cutover; the old
 # /runs/* compute paths 301-redirect here for already-sent email links.
 
-_CAMPAIGN_PREAUTH_MESSAGES = {
-    "wallet_unavailable": "Your wallet is unavailable. Try again in a moment.",
-    "wallet_frozen": "Your wallet is on hold. Contact support to resume.",
-    "insufficient_balance": (
-        "Your balance does not cover the first batch of this campaign "
-        "(about ${required} to start). Top up your wallet and try again. "
-        "You only pay for compute that runs, and the campaign pauses if "
-        "your balance runs low."
-    ),
-    "verification_required": (
-        "Campaigns above ${threshold} need an approved account. "
-        "Contact us to raise your limit."
-    ),
-    "daily_campaign_cap": (
-        "This would exceed your daily campaign spending limit. "
-        "Try again tomorrow or with a smaller campaign."
-    ),
-}
-
-def _campaign_preauth_message(pre) -> str:
-    from shared import compute_campaigns as _cc  # noqa: PLC0415
-    msg = _CAMPAIGN_PREAUTH_MESSAGES.get(
-        pre.reason, "This campaign cannot start right now."
-    )
-    required = getattr(pre, "required_usd", None)
-    return (
-        msg.replace("${threshold}", str(_cc.VERIFICATION_THRESHOLD_USD))
-           .replace("${required}", f"{required:.2f}" if required else "the first batch")
-    )
-
-
-# Campaign tools that ship behind a FLAG_TOOL_<NAME> gate: hidden from the
-# create form + rejected on POST/estimate until the operator flips the flag in
-# prod (mirrors the atomic-tool flag-gating). The 5 original campaign tools are
-# unconditionally live and are NOT filtered by tool_enabled (which is
-# fail-closed — a tool with no flag env reads as off — so filtering the whole
-# list would wrongly hide them).
-_FLAG_GATED_CAMPAIGN_TOOLS = frozenset({"proteina", "iggm"})
-
-
-def _visible_campaign_tools() -> tuple:
-    from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.feature_flags import tool_enabled  # noqa: PLC0415
-    return tuple(
-        t for t in cc.SUPPORTED_TOOLS
-        if t not in _FLAG_GATED_CAMPAIGN_TOOLS or tool_enabled(t)
-    )
-
-
-def _campaign_tool_gated_off(tool: str) -> bool:
-    from shared.feature_flags import tool_enabled  # noqa: PLC0415
-    return tool in _FLAG_GATED_CAMPAIGN_TOOLS and not tool_enabled(tool)
+# The preauth copy and the campaign-tool flag gate now live in
+# shared/compute_campaigns.py (preauth_message, visible_campaign_tools,
+# campaign_tool_gated_off) so blueprints/targets.py can apply the same gate to
+# the multi-tool launch screen without importing this blueprint. One definition,
+# two callers.
 
 
 @campaigns_bp.route("/campaigns", methods=["GET"])
@@ -165,7 +121,7 @@ def compute_campaign_new():
             target = None
     return render_template(
         "runs/new.html",
-        supported_tools=_visible_campaign_tools(),
+        supported_tools=cc.visible_campaign_tools(),
         max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
         verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
         target=target,
@@ -183,7 +139,7 @@ def api_runs_estimate():
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
         requested = 0
-    if _campaign_tool_gated_off(tool):
+    if cc.campaign_tool_gated_off(tool):
         return jsonify({"ok": False, "error": "That tool is not available yet."})
     if preset == "validate":
         # The free pre-flight is not a paid campaign — mirror the create route.
@@ -246,7 +202,7 @@ def compute_campaign_create():
             "runs/new.html",
             # Filtered so a flag-gated tool (proteina) is not leaked into the
             # dropdown on a validation-error re-render, matching the GET form.
-            supported_tools=_visible_campaign_tools(),
+            supported_tools=cc.visible_campaign_tools(),
             max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
             verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
             error=msg,
@@ -272,7 +228,7 @@ def compute_campaign_create():
     #    flag-gated tool that is still off is treated as unknown (don't reveal a
     #    hidden tool exists) — defense-in-depth behind the dropdown filter.
     adapter = tool_base.get(tool)
-    if adapter is None or _campaign_tool_gated_off(tool):
+    if adapter is None or cc.campaign_tool_gated_off(tool):
         return _err("Unknown tool.")
     if adapter.preset_for(preset) is None:
         return _err("Unknown preset for this tool.")
@@ -302,6 +258,14 @@ def compute_campaign_create():
     #    injected by the driver).
     form_for_validate = dict(request.form)
     form_for_validate[plan.design_param_key] = "1"
+    # The route's own resolved preset, not the raw form value. The form's two
+    # `name="preset"` selects are BOTH disabled for the five pilot tools, so
+    # nothing posts the field for them, and bindcraft is the one adapter that
+    # does not default it -- it reads `(form.get("preset") or "").strip()` and
+    # rejects anything but "pilot". Every bindcraft campaign therefore failed
+    # validation with "Pick a preset." before this line existed. Safe for the
+    # others: `preset` was already validated against this adapter at step 0.
+    form_for_validate["preset"] = preset
     validated, verr = adapter.validate(form_for_validate, request.files)
     if validated is None:
         return _err(verr or "Invalid parameters.")
@@ -395,7 +359,7 @@ def compute_campaign_create():
         cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool)),
     )
     if not pre.ok:
-        return _err(_campaign_preauth_message(pre))
+        return _err(cc.preauth_message(pre))
 
     # 5. Stage the shared target once (when one was provided), then create +
     #    fund + first wave. A proteina curated-task run stages nothing.

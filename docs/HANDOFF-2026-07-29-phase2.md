@@ -126,8 +126,17 @@ rather than trust.
   (`:1103`), so dividing concurrency needs no new arithmetic.
 - **All 7 tools are in `SUPPORTED_TOOLS`** and all 7 appeared in the live
   production dropdown. proteina does **not** hard-block bring-your-own
-  targets, and bindcraft is not broken — an earlier analysis claimed both and
-  was wrong.
+  targets — an earlier analysis claimed it did and was wrong.
+- ~~**and bindcraft is not broken**~~ **CORRECTED 2026-07-29 (Phase 2): it
+  was.** `tools/bindcraft/__init__.py:25-27` is the only adapter with no
+  `preset` default, the create route never injected one into
+  `form_for_validate`, and both `name="preset"` controls in
+  `templates/runs/new.html` are `disabled` off proteina/iggm. So every
+  `POST /campaigns` with `tool=bindcraft` returned 400 "Pick a preset." on a
+  tool that was live on the production dropdown. No test posted `/campaigns`
+  with bindcraft, which is why a green suite hid it. Fixed in the Phase 2
+  diff; see audit item A36 for the same class of defect in PXDesign, which
+  fails silently instead of visibly.
 - **PostgREST clamps `.limit()` to `max_rows` (1000).** Only `.range()` paging
   escapes it. A clamped read is indistinguishable from a complete one at the
   call site.

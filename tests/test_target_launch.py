@@ -38,6 +38,7 @@ from shared.target_launch import (
     ToolLaunchSpec,
     concurrency_note,
     divide_concurrency,
+    first_wave_at_pace,
     plan_multi_launch,
     preauth_multi_launch,
 )
@@ -61,12 +62,29 @@ def _spec(tool, designs=24, preset="pilot"):
 # ---------------------------------------------------------------------------
 
 
-def test_one_tool_is_bit_identical_to_launching_it_alone():
+def test_one_tool_at_burst_is_bit_identical_to_launching_it_alone():
     """The composition layer must not change the existing single-tool path.
     If it does, every campaign created through the target flow silently starts
-    at a different concurrency than the same campaign created the old way."""
+    at a different concurrency than the same campaign created the old way.
+
+    Burst specifically -- see the steady case below. This is why the launch
+    route defaults a single-tool launch to burst."""
     for tool in ALL_SEVEN:
-        assert divide_concurrency([tool]) == (launch_concurrency_for(tool),)
+        assert divide_concurrency([tool], PACE_BURST) == (
+            launch_concurrency_for(tool),
+        )
+
+
+def test_one_tool_at_steady_is_deliberately_narrower_than_launching_it_alone():
+    """Steady divides by 4 unconditionally, so it narrows even at n=1. The
+    docstring on divide_concurrency used to claim n=1 was bit-identical without
+    qualifying the pace, which was false for exactly this case and unasserted
+    because the test above only exercised the default. Pinned so the claim and
+    the code cannot drift apart again."""
+    assert launch_concurrency_for("rfdiffusion") == 16
+    assert divide_concurrency(["rfdiffusion"], PACE_STEADY) == (8,)
+    # proteina's own throttle still wins over the wider steady share.
+    assert divide_concurrency(["proteina"], PACE_STEADY) == (4,)
 
 
 def test_proteina_is_never_widened_past_its_own_throttle():
@@ -208,8 +226,48 @@ def test_rows_itemise_every_tool():
     plan = plan_multi_launch([_spec(t) for t in ALL_SEVEN])
     rows = plan.rows()
     assert [r["tool"] for r in rows] == ALL_SEVEN
-    assert all(r["first_wave_usd"] > 0 for r in rows)
+    assert all(Decimal(r["first_wave_usd"]) > 0 for r in rows)
     assert plan.total_designs == 24 * 7
+
+
+def test_rows_encode_money_as_decimal_strings():
+    """Not float, and not str(float) either. These are 4dp-quantized Decimals
+    and float does not preserve the quantum, so Decimal("4.0200") would ship as
+    "4.02". The single-tool estimate endpoint already emits str(Decimal); two
+    sibling money APIs must not disagree on the encoding.
+
+    Asserting the QUANTUM, not that the string parses: `Decimal(s) == Decimal(s)`
+    compares a value to itself and cannot fail, and an isinstance check alone
+    passes against str(float)."""
+    plan = plan_multi_launch([_spec(t) for t in ALL_SEVEN])
+    for row, chunk_plan in zip(plan.rows(), plan.plans):
+        for key in ("budget_usd", "first_wave_usd"):
+            assert isinstance(row[key], str), f"{row['tool']}.{key} is not a str"
+            assert Decimal(row[key]).as_tuple().exponent == -4, (
+                f"{row['tool']}.{key} lost its 4dp quantum: {row[key]}"
+            )
+        assert row["budget_usd"] == str(chunk_plan.budget_usd)
+        assert isinstance(row["chunk_size"], int)
+        assert isinstance(row["concurrency"], int)
+
+
+def test_rows_add_up_to_the_plan_totals():
+    """The itemised breakdown is what the user reads before authorising spend.
+    If the rows and the headline figure could disagree, the headline is the one
+    they would not have agreed to.
+
+    Design count is deliberately far above every tool's concurrency. At the
+    24-design default every tool plans 1 to 3 sub-jobs, so
+    first_wave_hold_usd's `min(total_subjobs, concurrency)` clamps to the same
+    value whether the divided concurrency is threaded through or dropped, and
+    the row figures would agree with the totals even if rows() ignored it."""
+    plan = plan_multi_launch([_spec(t, designs=1000) for t in ALL_SEVEN])
+    rows = plan.rows()
+    assert all(r["total_subjobs"] > r["concurrency"] for r in rows), (
+        "cohort too small for this test to distinguish anything"
+    )
+    assert sum(Decimal(r["budget_usd"]) for r in rows) == plan.budget_usd
+    assert sum(Decimal(r["first_wave_usd"]) for r in rows) == plan.first_wave_usd
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +313,72 @@ def test_the_gate_is_the_first_wave_not_the_full_budget():
 # ---------------------------------------------------------------------------
 # concurrency_note
 # ---------------------------------------------------------------------------
+
+
+def test_first_wave_at_pace_matches_a_full_replan():
+    """The estimate endpoint re-prices the narrow-start alternative from the
+    plan it already has, instead of planning again, because pricing reaches
+    Supabase and that endpoint runs on every keystroke. The shortcut is only
+    legitimate if it agrees with the long way round, so pin the equivalence in
+    both directions rather than trusting that only concurrency differs."""
+    for tools in (ALL_SEVEN, ["rfdiffusion"], ["proteina", "bindcraft"]):
+        specs = [_spec(t) for t in tools]
+        burst = plan_multi_launch(specs, PACE_BURST)
+        steady = plan_multi_launch(specs, PACE_STEADY)
+        assert first_wave_at_pace(burst, PACE_STEADY) == steady.first_wave_usd
+        assert first_wave_at_pace(steady, PACE_BURST) == burst.first_wave_usd
+        # And asking for the pace it was already planned at changes nothing.
+        assert first_wave_at_pace(burst, PACE_BURST) == burst.first_wave_usd
+
+
+def test_a_pace_narrowed_launch_does_not_blame_the_shared_cap():
+    """Both of these narrow purely because of the pace the user chose, and
+    neither is narrowed at all by the cap: one tool at burst gets 16, and TWO
+    tools at burst get 32 // 2 = 16 each, which is still their full solo width.
+
+    n=2 is the case a `len(specs) > 1` branch gets wrong, which is why the
+    cause is detected by comparing against the burst division rather than
+    inferred from how many tools were picked."""
+    for tools in (["rfdiffusion"], ["rfdiffusion", "bindcraft"]):
+        assert concurrency_note(
+            plan_multi_launch([_spec(t) for t in tools], PACE_BURST)
+        ) is None, f"{tools} at burst is not narrowed by anything"
+        note = concurrency_note(
+            plan_multi_launch([_spec(t) for t in tools], PACE_STEADY)
+        )
+        assert note is not None
+        assert "shares" not in note, note
+        assert "sub-jobs in flight" not in note, note
+        assert "Starting narrow" in note
+
+
+def test_a_cap_narrowed_launch_names_the_shared_limit():
+    """Seven tools at burst get 32 // 7 = 4 each against solo widths of 16, so
+    this one really is the platform limit and should say so."""
+    note = concurrency_note(plan_multi_launch([_spec(t) for t in ALL_SEVEN]))
+    assert note is not None
+    assert "shares one limit of 32 sub-jobs in flight" in note
+    assert "Starting narrow" not in note, "burst is not the narrow pace"
+    # NOT "each starts narrower than it would alone": proteina is pinned to 4
+    # and a 7-way division leaves it exactly there.
+    assert "narrower than it would alone" not in note
+
+
+def test_a_launch_narrowed_by_both_causes_names_both():
+    note = concurrency_note(
+        plan_multi_launch([_spec(t) for t in ALL_SEVEN], PACE_STEADY)
+    )
+    assert "shares one limit" in note
+    assert "Starting narrow" in note
+
+
+def test_proteina_alone_is_never_told_it_was_narrowed():
+    """It is pinned to 4, and 4 survives both the cap division and the steady
+    division, so nothing moved and there is nothing to explain."""
+    for pace in (PACE_BURST, PACE_STEADY):
+        plan = plan_multi_launch([_spec("proteina")], pace)
+        assert plan.concurrency == (4,)
+        assert concurrency_note(plan) is None
 
 
 def test_a_single_tool_launch_says_nothing_about_sharing():

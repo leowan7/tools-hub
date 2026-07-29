@@ -136,6 +136,43 @@ _LAUNCH_CONCURRENCY_OVERRIDE: Mapping[str, int] = {"proteina": 4}
 # expose an atomic form for small single runs; proteina does not.
 CAMPAIGN_ONLY_TOOLS: frozenset[str] = frozenset({"proteina"})
 
+# Campaign tools that ship behind a FLAG_TOOL_<NAME> gate: hidden from every
+# create/launch form and rejected on POST/estimate until the operator flips the
+# flag in prod (mirrors the atomic-tool flag-gating). The 5 original campaign
+# tools are unconditionally live and must NOT be filtered by tool_enabled, which
+# is fail-closed — a tool with no flag env reads as off — so filtering the whole
+# list would wrongly hide all five.
+FLAG_GATED_CAMPAIGN_TOOLS: frozenset[str] = frozenset({"proteina", "iggm"})
+
+
+def visible_campaign_tools() -> tuple[str, ...]:
+    """The campaign tools a user may currently see and pick.
+
+    Read per call, not cached at import: the flag is an env var an operator
+    flips on the running service, and a module-level snapshot would need a
+    redeploy to take effect.
+    """
+    from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    return tuple(
+        t for t in SUPPORTED_TOOLS
+        if t not in FLAG_GATED_CAMPAIGN_TOOLS or tool_enabled(t)
+    )
+
+
+def campaign_tool_gated_off(tool: str) -> bool:
+    """True when ``tool`` is gated and its flag is still off.
+
+    The launch routes and the run-create POST answer this with the SAME message
+    they use for an unknown tool, so a probe cannot distinguish "hidden behind
+    a flag" from "does not exist". ``api_runs_estimate`` does NOT: it answers
+    "That tool is not available yet." while an unknown tool falls through to
+    ``plan_chunks``'s different message, which is distinguishable. Pre-existing
+    and low impact (the slug is guessable anyway), but do not describe that
+    endpoint as indistinguishable.
+    """
+    from shared.feature_flags import tool_enabled  # noqa: PLC0415
+    return tool in FLAG_GATED_CAMPAIGN_TOOLS and not tool_enabled(tool)
+
 
 def launch_concurrency_for(tool: str) -> int:
     """The in-flight shard target a new campaign of ``tool`` starts at.
@@ -700,9 +737,33 @@ assert _TARGET_RUN_PAGE_SIZE <= _POSTGREST_MAX_ROWS, (
 
 
 def list_campaigns_for_target(
-    target_id: str, *, user_id: Optional[str] = None
+    target_id: str,
+    *,
+    user_id: Optional[str] = None,
+    include_drafts: bool = False,
 ) -> list[ComputeCampaign]:
     """A target's COMPUTE-CAMPAIGN runs, newest first.
+
+    ``draft`` rows are EXCLUDED by default. A multi-tool launch inserts every
+    campaign as a draft and funds them afterwards, so a launch that fails part
+    way leaves drafts behind. A draft is inert in every sense that matters --
+    ``drive_campaign`` refuses it, ``_campaign_spend_today`` skips it, no hold
+    is ever placed -- so it is not a run, and listing it under a heading that
+    says "Runs" would assert something false about a row the user can neither
+    resume nor cancel into a useful state. The launch route tells the user what
+    did and did not start, so the omission is disclosed there, not hidden.
+
+    Two real costs, stated because they are not obvious:
+
+    * A stranded draft becomes invisible to the product entirely and is
+      findable only in the database. Acceptable precisely because it is inert
+      and costs nothing to leave.
+    * :func:`list_campaigns_for_user`, which feeds /campaigns and the homepage,
+      is a DIFFERENT query and is deliberately not changed here, so the two
+      lists will disagree about a stranded draft. Filed rather than widened,
+      because that list feeds three surfaces.
+
+    Pass ``include_drafts=True`` for admin or diagnostic reads.
 
     Not every run against the target. This reads ``compute_campaigns`` only,
     and migration 0039 also puts ``target_id`` on ``tool_jobs``: a standalone
@@ -744,6 +805,12 @@ def list_campaigns_for_target(
             query = client.table(_TABLE).select("*").eq("target_id", target_id)
             if user_id is not None:
                 query = query.eq("user_id", user_id)
+            if not include_drafts:
+                # Server-side, not an in-memory filter after the read: the
+                # page bound counts ROWS RETURNED, so dropping drafts locally
+                # would let a target with many stranded drafts exhaust the
+                # page budget and silently truncate its real runs.
+                query = query.neq("status", "draft")
             response = (
                 query.order("id")
                 .range(start, start + _TARGET_RUN_PAGE_SIZE - 1)
@@ -1037,6 +1104,60 @@ def campaign_preauth(
     return PreauthResult(True, PREAUTH_OK, balance, budget_usd, gate_usd)
 
 
+# User-facing copy for a refused start gate, keyed on PreauthResult.reason.
+# {required} is the FIRST WAVE, the balance needed to START, which under
+# fund-and-drain is smaller than the budget. Say "to start", never "total".
+# Placeholders are bare braces and the literal "$" is written into the message,
+# because the previous "${required}" token INCLUDED the dollar sign in the
+# string being replaced and so rendered "about 9.18 to start" with no currency.
+_PREAUTH_MESSAGES: Mapping[str, str] = {
+    PREAUTH_NO_WALLET: "Your wallet is unavailable. Try again in a moment.",
+    PREAUTH_FROZEN: "Your wallet is on hold. Contact support to resume.",
+    PREAUTH_INSUFFICIENT: (
+        "Your balance does not cover the first batch of {subject} "
+        "(about {required} to start). Top up your wallet and try again. "
+        "You only pay for compute that runs, and {pauses} if "
+        "your balance runs low."
+    ),
+    PREAUTH_VERIFICATION: (
+        "Campaigns above {threshold} need an approved account. "
+        "Contact us to raise your limit."
+    ),
+    PREAUTH_VELOCITY: (
+        "This would exceed your daily campaign spending limit. "
+        "Try again tomorrow or with {smaller}."
+    ),
+}
+
+
+def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
+    """One sentence explaining a refused start gate.
+
+    ``count`` is how many runs the gate covered. A multi-tool launch passes one
+    summed gate for N runs, so the singular copy ("this campaign cannot start")
+    would misdescribe what was refused and would point the user at the wrong
+    remedy: with several tools selected, dropping one is usually cheaper than
+    topping up.
+    """
+    plural = count > 1
+    msg = _PREAUTH_MESSAGES.get(
+        pre.reason,
+        "These runs cannot start right now." if plural
+        else "This campaign cannot start right now.",
+    )
+    required = getattr(pre, "required_usd", None)
+    return (
+        msg.replace("{threshold}", f"${VERIFICATION_THRESHOLD_USD}")
+           .replace("{subject}", f"these {count} runs" if plural else "this campaign")
+           .replace("{pauses}", "they pause" if plural else "the campaign pauses")
+           .replace("{smaller}", "fewer tools" if plural else "a smaller campaign")
+           .replace(
+               "{required}",
+               f"${required:.2f}" if required else "the first batch",
+           )
+    )
+
+
 def _campaign_spend_today(user_id: str) -> Decimal:
     """Sum of budgets authorized for this user's campaigns since UTC midnight.
 
@@ -1243,9 +1364,24 @@ def _wallet_balance_below(user_id: str, amount) -> bool:  # noqa: ANN001
         return False
 
 
-def fund_campaign(campaign_id: str) -> None:
-    """Mark a draft campaign funded (called by the route after preauth)."""
-    _update_campaign(campaign_id, {"status": "funded", "confirmed_at": _now_iso()})
+def fund_campaign(campaign_id: str) -> bool:
+    """Mark a draft campaign funded (called by the route after preauth).
+
+    Returns True iff the row actually moved out of ``draft``. This matters
+    because ``drive_campaign`` early-returns on a draft, so a fund that
+    silently failed leaves a campaign the user believes is running parked
+    forever with no signal. The old implementation went through
+    ``_update_campaign``, which returns None and swallows every exception, so
+    the caller could not tell. A multi-tool launch funds N rows in a loop and
+    has to report which ones started (audit item A12).
+
+    CAS on ``draft`` rather than an unconditional UPDATE, so this can no longer
+    rewind a campaign that has already progressed to ``running``. Nothing calls
+    it that way today; the constraint is here to keep it that way.
+    """
+    return _cas_transition(
+        campaign_id, "funded", ("draft",), {"confirmed_at": _now_iso()}
+    )
 
 
 def _dispatch_chunk(campaign: "ComputeCampaign", chunk_index: int) -> str:

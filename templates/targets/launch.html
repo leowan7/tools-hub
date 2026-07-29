@@ -1,0 +1,469 @@
+{% extends "base.html" %}
+{% from "components/field_group.html" import field_text %}
+{% block title %}Run tools against {{ target.display_name }} — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+<div class="hero">
+  <h1>Run tools against {{ target.display_name }}</h1>
+  <p class="subtitle">
+    Pick as many tools as you want. They run in parallel against this one
+    structure, and you pass a single start check for the whole set.
+  </p>
+  <p class="subtitle" style="margin-top: 0.5rem; font-size: 0.85rem;">
+    {{ target.filename or 'No structure staged' }}
+    {%- if target.residue_count %} · {{ target.residue_count }} residues{% endif %}
+    {%- if target.chains %} · {{ target.chains|length }} chain(s){% endif %}
+    · <a href="{{ url_for('targets.target_detail', target_id=target.id) }}">back to target</a>
+  </p>
+</div>
+
+{% if blocked %}
+{# A live target with no usable structure. Explained here rather than
+   redirected, because the detail page only describes that state inside its
+   archived branch and would otherwise say nothing. #}
+<div class="panel" style="margin-top: 2rem;">
+  <div class="panel-body">
+    <p style="margin: 0;">{{ blocked }}</p>
+    <p style="margin: 1rem 0 0;">
+      <a href="{{ url_for('targets.target_new') }}" class="btn-primary">Add a target</a>
+    </p>
+  </div>
+</div>
+{% else %}
+
+<div class="section" style="margin-top: 2rem; max-width: 820px;">
+  {% if error %}
+  <div class="panel" style="margin-bottom: 1.25rem; border-color: #e8846b;">
+    <div class="panel-body">
+      <p style="color: #e8846b; margin: 0;">{{ error }}</p>
+      <p style="margin: 0.6rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">
+        Nothing was started and nothing was charged.
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
+  <form method="POST" action="{{ url_for('targets.target_launch_submit', target_id=target.id) }}"
+        id="launch-form">
+    {{ csrf_input() }}
+
+    {{ field_text("name", "Name these runs",
+                  "Optional. Applied to every run in this launch.",
+                  placeholder="e.g. first pass", max_length=80,
+                  prefilled=pre_fill) }}
+
+    <div class="panel" style="margin-bottom: 1.5rem;">
+      <div class="panel-header"><span class="panel-title">Shared settings</span></div>
+      <div class="panel-body">
+        {{ field_text("target_chain", "Target chain",
+                      "Checked against this target's stored structure. Overrides the target default for these runs only.",
+                      placeholder="e.g. A", max_length=4, max_width="120px",
+                      prefilled=pre_fill) }}
+        {% if target.chains %}
+        <p style="margin: -0.5rem 0 1rem; font-size: 0.8rem; color: var(--text-tertiary);
+                  font-family: var(--font-mono);">
+          available:
+          {%- for c in target.chains %}
+          {{ c.chain_id }}{% if c.min_resnum is not none %} ({{ c.min_resnum }}-{{ c.max_resnum }}){% endif %}{% if not loop.last %}, {% endif %}
+          {%- endfor %}
+        </p>
+        {% endif %}
+        {{ field_text("hotspot_residues", "Hotspot residues",
+                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen; unused by Proteina and IgGM.",
+                      placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 1.5rem;">
+      <div class="panel-header"><span class="panel-title">Tools</span></div>
+      <div class="panel-body">
+        {% for t in tools %}
+        {# Every control inside a tool's block is disabled until its box is
+           ticked, so an unselected tool cannot post a value. That keeps the
+           request small and unambiguous; it is NOT the security boundary. The
+           server builds a parameter dict only for tools present in `tools`,
+           and each adapter returns a fresh whitelist, so a crafted post
+           carrying another tool's fields contributes nothing. #}
+        <div style="border-top: 1px solid var(--border); padding: 1rem 0;">
+          <label class="radio-label" style="font-weight: 600;">
+            <input type="checkbox" name="tools" value="{{ t }}"
+                   id="pick-{{ t }}" data-tool="{{ t }}" class="tool-pick"
+                   {% if t in selected_tools %}checked{% endif %}>
+            {{ labels[t] }}
+          </label>
+
+          <div id="panel-{{ t }}" class="tool-panel" data-tool="{{ t }}"
+               style="margin-top: 0.85rem; padding-left: 1.6rem; display: none;">
+
+            <div class="field-group">
+              <label for="{{ t }}__designs" class="field-label">Designs</label>
+              <input type="number" name="{{ t }}__designs" id="{{ t }}__designs"
+                     class="field-input tool-designs" style="max-width: 160px;"
+                     min="1" value="{{ pre_fill.get(t ~ '__designs', chunk_sizes[t]) }}"
+                     disabled>
+              <div class="field-helper">
+                {{ chunk_sizes[t] }} designs is one sub-job for this tool.
+              </div>
+            </div>
+
+            {% if t in ("rfdiffusion", "bindcraft", "boltzgen") %}
+            <div class="field-group">
+              <label class="field-label">Binder length</label>
+              <div style="display: flex; gap: 0.75rem; max-width: 320px;">
+                <input type="number" name="{{ t }}__binder_length_min"
+                       class="field-input" placeholder="min" disabled
+                       value="{{ pre_fill.get(t ~ '__binder_length_min', 55 if t == 'rfdiffusion' else 50) }}">
+                <input type="number" name="{{ t }}__binder_length_max"
+                       class="field-input" placeholder="max" disabled
+                       value="{{ pre_fill.get(t ~ '__binder_length_max', 65 if t == 'rfdiffusion' else 100) }}">
+              </div>
+            </div>
+            {% endif %}
+
+            {% if t == "boltzgen" %}
+            <div class="field-group">
+              <label for="boltzgen__protocol" class="field-label">Protocol</label>
+              <select name="boltzgen__protocol" id="boltzgen__protocol"
+                      class="field-input" style="max-width: 320px;" disabled>
+                {% for p in ("protein-anything", "nanobody-anything", "antibody-anything", "peptide-anything") %}
+                <option value="{{ p }}"
+                  {% if pre_fill.get('boltzgen__protocol') == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            {% endif %}
+
+            {% if t == "pxdesign" %}
+            {# PXDesign takes a SINGLE binder length, not a min/max pair. The
+               single-tool create form only offers min/max, which PXDesign does
+               not read, so every campaign there silently runs at the default
+               80. This field is the one place the value can actually be set. #}
+            <div class="field-group">
+              <label for="pxdesign__binder_length" class="field-label">Binder length</label>
+              <input type="number" name="pxdesign__binder_length"
+                     id="pxdesign__binder_length" class="field-input"
+                     style="max-width: 160px;" min="40" max="150" disabled
+                     value="{{ pre_fill.get('pxdesign__binder_length', 80) }}">
+              <div class="field-helper">A single length, 40 to 150 residues.</div>
+            </div>
+            {% endif %}
+
+            {% if t == "rfantibody" %}
+            <div class="field-group">
+              <label for="rfantibody__cdr_lengths" class="field-label">CDR lengths</label>
+              <input type="text" name="rfantibody__cdr_lengths"
+                     id="rfantibody__cdr_lengths" class="field-input"
+                     style="max-width: 320px;" disabled
+                     value="{{ pre_fill.get('rfantibody__cdr_lengths', 'H1:8,H2:7,H3:10-16') }}">
+              <div class="field-helper">
+                H1, H2 and H3 only; RFantibody designs a VHH heavy chain. A
+                length or a range, e.g. <code>H3:10-16</code>.
+              </div>
+            </div>
+            {% endif %}
+
+            {% if t == "proteina" %}
+            <div class="field-group">
+              <label for="proteina__preset" class="field-label">Design variant</label>
+              <select name="proteina__preset" id="proteina__preset"
+                      class="field-input" style="max-width: 320px;" disabled>
+                <option value="protein_binder"
+                  {% if pre_fill.get('proteina__preset') == 'protein_binder' %}selected{% endif %}>protein_binder</option>
+                <option value="motif_ame"
+                  {% if pre_fill.get('proteina__preset') == 'motif_ame' %}selected{% endif %}>motif_ame</option>
+              </select>
+              <div class="field-helper">
+                Proteina takes no hotspots and no binder length. The ligand
+                variant is not offered here: it needs a small-molecule SDF and
+                this target is a protein structure.
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="proteina__task_name" class="field-label">Target task</label>
+              <input type="text" name="proteina__task_name" id="proteina__task_name"
+                     class="field-input" style="max-width: 320px;" maxlength="64"
+                     disabled value="{{ pre_fill.get('proteina__task_name', '') }}">
+              <div class="field-helper">Leave blank for the variant's default task.</div>
+            </div>
+            {% endif %}
+
+            {% if t == "iggm" %}
+            <div class="field-group">
+              <label for="iggm__preset" class="field-label">Design mode</label>
+              <select name="iggm__preset" id="iggm__preset" class="field-input"
+                      style="max-width: 320px;" disabled>
+                {% for p in ("complex_prediction", "cdr_design", "fr_design", "inverse_design") %}
+                <option value="{{ p }}"
+                  {% if pre_fill.get('iggm__preset') == p %}selected{% endif %}>{{ p }}</option>
+                {% endfor %}
+              </select>
+              <div class="field-helper">
+                Affinity maturation is single-run only: it produces one design
+                per masked position, so its delivered count stops matching the
+                chunk size a campaign is built on.
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="iggm__fasta" class="field-label">
+                Antibody FASTA <span class="field-required">*</span>
+              </label>
+              <textarea name="iggm__fasta" id="iggm__fasta" class="field-input"
+                        rows="5" disabled>{{ pre_fill.get('iggm__fasta', '') }}</textarea>
+              <div class="field-helper">
+                <code>&gt;H</code> required, <code>&gt;L</code> optional (omit
+                it for a nanobody). Do not include an <code>&gt;A</code>
+                record; the antigen comes from this target. CDR and framework
+                design need at least one <code>X</code> to mark what to design.
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="iggm__epitope" class="field-label">
+                Epitope residues <span class="field-required">*</span>
+              </label>
+              <input type="text" name="iggm__epitope" id="iggm__epitope"
+                     class="field-input" disabled
+                     value="{{ pre_fill.get('iggm__epitope', pre_fill.get('epitope', '')) }}">
+              <div class="field-helper">
+                IgGM designs against a specific epitope and cannot infer one.
+                Antigen residue numbers, PDB numbering.
+              </div>
+            </div>
+            <div class="field-group">
+              <label for="iggm__max_antigen_size" class="field-label">Max antigen size</label>
+              <input type="number" name="iggm__max_antigen_size"
+                     id="iggm__max_antigen_size" class="field-input"
+                     style="max-width: 160px;" min="64" max="2000" disabled
+                     value="{{ pre_fill.get('iggm__max_antigen_size', 2000) }}">
+            </div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 1.5rem;">
+      <div class="panel-header"><span class="panel-title">Start speed</span></div>
+      <div class="panel-body">
+        <label class="radio-label">
+          <input type="radio" name="pace" value="burst" class="pace-pick"
+                 {% if pre_fill.get('pace', pace_default) != 'steady' %}checked{% endif %}>
+          Full speed. Every tool starts as wide as the platform allows.
+        </label>
+        <label class="radio-label" style="margin-top: 0.5rem;">
+          <input type="radio" name="pace" value="steady" class="pace-pick"
+                 {% if pre_fill.get('pace') == 'steady' %}checked{% endif %}>
+          Start narrow. Smaller amount held up front, slower ramp.
+        </label>
+        <p style="margin: 0.85rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">
+          Both settings deliver the same designs for the same total cost. Only
+          the amount held at the start and how quickly the work ramps change.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom: 1.5rem;" id="estimate-panel">
+      <div class="panel-header"><span class="panel-title">Estimate</span></div>
+      <div class="panel-body">
+        <table class="data-table" id="estimate-rows"
+               style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+          <thead>
+            <tr style="text-align: left; color: var(--text-secondary);">
+              <th style="padding: 0.35rem 0;">Tool</th>
+              <th style="padding: 0.35rem 0;">Designs</th>
+              <th style="padding: 0.35rem 0;">Sub-jobs</th>
+              <th style="padding: 0.35rem 0;">At once</th>
+              <th style="padding: 0.35rem 0; text-align: right;">Cost</th>
+              <th style="padding: 0.35rem 0; text-align: right;">Held to start</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <div style="margin-top: 1rem; display: flex; flex-wrap: wrap; gap: 1.5rem;
+                    font-family: var(--font-mono); font-size: 0.85rem;">
+          <span>Total cost <strong id="est-budget" style="color: var(--accent-text);">—</strong></span>
+          <span>Held to start <strong id="est-firstwave" style="color: var(--accent-text);">—</strong></span>
+          <span>Balance <strong id="est-balance" style="color: var(--accent-text);">—</strong></span>
+        </div>
+        <p id="est-note" style="margin: 0.85rem 0 0; font-size: 0.85rem;
+                                color: var(--text-secondary);">
+          Pick a tool to see what it costs.
+        </p>
+        <p style="margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-tertiary);">
+          "Held to start" is reserved, not spent. You are billed only for
+          compute that actually runs, and the rest is released.
+        </p>
+      </div>
+    </div>
+
+    <label class="radio-label" style="display: block; margin-bottom: 1rem;">
+      <input type="checkbox" id="confirm-cost"> I understand the amount above
+      will be held against my wallet balance.
+    </label>
+
+    <button type="submit" class="btn-primary" id="launch-submit" disabled>
+      Launch runs
+    </button>
+    <a href="{{ url_for('targets.target_detail', target_id=target.id) }}"
+       class="btn-secondary">Cancel</a>
+  </form>
+</div>
+
+<script>
+(function () {
+  var estURL = "{{ url_for('targets.api_target_launch_estimate', target_id=target.id) }}";
+  var variantPresetTools = {{ variant_preset_tools|tojson }};
+  var picks = Array.prototype.slice.call(document.querySelectorAll('.tool-pick'));
+  var submit = document.getElementById('launch-submit');
+  var confirmBox = document.getElementById('confirm-cost');
+  var note = document.getElementById('est-note');
+  var tbody = document.querySelector('#estimate-rows tbody');
+  var latest = { ok: false, affordable: false };
+
+  function money(x) { return '$' + Number(x).toFixed(2); }
+
+  function panelFor(tool) { return document.getElementById('panel-' + tool); }
+
+  // Show AND enable together. A hidden but enabled control still posts, which
+  // would send one tool's parameters along with another tool's launch.
+  function syncPanels() {
+    picks.forEach(function (pick) {
+      var panel = panelFor(pick.value);
+      if (!panel) { return; }
+      panel.style.display = pick.checked ? '' : 'none';
+      var fields = panel.querySelectorAll('input, select, textarea');
+      Array.prototype.forEach.call(fields, function (f) {
+        f.disabled = !pick.checked;
+      });
+    });
+  }
+
+  function selected() {
+    return picks.filter(function (p) { return p.checked; });
+  }
+
+  function presetFor(tool) {
+    if (variantPresetTools.indexOf(tool) === -1) { return 'pilot'; }
+    var el = document.getElementById(tool + '__preset');
+    return el ? el.value : 'pilot';
+  }
+
+  function syncSubmit() {
+    submit.disabled = !(latest.ok && latest.affordable && confirmBox.checked);
+  }
+
+  function setNote(text) { note.textContent = text; }
+
+  function render(d) {
+    tbody.innerHTML = '';
+    (d.rows || []).forEach(function (r) {
+      var tr = document.createElement('tr');
+      [r.tool, r.requested_designs, r.total_subjobs, r.concurrency,
+       money(r.budget_usd), money(r.first_wave_usd)].forEach(function (v, i) {
+        var td = document.createElement('td');
+        td.textContent = v;
+        td.style.padding = '0.35rem 0';
+        td.style.borderTop = '1px solid var(--border)';
+        if (i >= 4) { td.style.textAlign = 'right'; }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    document.getElementById('est-budget').textContent = money(d.budget_usd);
+    document.getElementById('est-firstwave').textContent = money(d.first_wave_usd);
+    document.getElementById('est-balance').textContent = money(d.balance_usd);
+  }
+
+  function clearTotals() {
+    tbody.innerHTML = '';
+    ['est-budget', 'est-firstwave', 'est-balance'].forEach(function (id) {
+      document.getElementById(id).textContent = '—';
+    });
+  }
+
+  function fetchEstimate() {
+    var chosen = selected();
+    if (!chosen.length) {
+      latest = { ok: false, affordable: false };
+      clearTotals();
+      setNote('Pick a tool to see what it costs.');
+      syncSubmit();
+      return;
+    }
+    var params = [];
+    var pace = document.querySelector('.pace-pick:checked');
+    params.push('pace=' + encodeURIComponent(pace ? pace.value : 'burst'));
+    chosen.forEach(function (pick) {
+      var tool = pick.value;
+      var count = document.getElementById(tool + '__designs');
+      params.push('tool=' + encodeURIComponent(tool));
+      params.push('designs=' + encodeURIComponent(count ? count.value : '0'));
+      params.push('preset=' + encodeURIComponent(presetFor(tool)));
+    });
+    fetch(estURL + '?' + params.join('&'), { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        latest = d;
+        if (!d.ok) {
+          clearTotals();
+          setNote(d.error || 'Estimate unavailable.');
+          syncSubmit();
+          return;
+        }
+        render(d);
+        var parts = [];
+        parts.push(d.total_subjobs + ' sub-job(s) across ' + d.rows.length + ' tool(s).');
+        if (!d.affordable) {
+          if (d.reason === 'insufficient_balance') {
+            parts.push('Your balance does not cover the ' + money(d.first_wave_usd) + ' needed to start.');
+            if (d.alternative) {
+              parts.push('Starting narrow would need ' + money(d.alternative.first_wave_usd) + '.');
+            }
+          } else if (d.reason === 'verification_required') {
+            parts.push('This size needs an approved account.');
+          } else {
+            parts.push('These runs cannot start right now.');
+          }
+        } else {
+          parts.push(money(d.first_wave_usd) + ' is held to start; you are billed only for what runs.');
+        }
+        if (d.concurrency_note) { parts.push(d.concurrency_note); }
+        setNote(parts.join(' '));
+        syncSubmit();
+      })
+      .catch(function () {
+        latest = { ok: false, affordable: false };
+        setNote('Estimate unavailable.');
+        syncSubmit();
+      });
+  }
+
+  var timer = null;
+  function debounced() {
+    clearTimeout(timer);
+    timer = setTimeout(fetchEstimate, 250);
+  }
+
+  picks.forEach(function (pick) {
+    pick.addEventListener('change', function () { syncPanels(); debounced(); });
+  });
+  document.querySelectorAll('.pace-pick').forEach(function (el) {
+    el.addEventListener('change', debounced);
+  });
+  document.querySelectorAll('.tool-designs').forEach(function (el) {
+    el.addEventListener('input', debounced);
+  });
+  variantPresetTools.forEach(function (tool) {
+    var el = document.getElementById(tool + '__preset');
+    if (el) { el.addEventListener('change', debounced); }
+  });
+  confirmBox.addEventListener('change', syncSubmit);
+
+  syncPanels();
+  fetchEstimate();
+})();
+</script>
+{% endif %}
+{% endblock %}

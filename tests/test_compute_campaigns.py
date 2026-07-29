@@ -276,6 +276,7 @@ class _Query:
         self._store = store
         self._table = table
         self._filters = []
+        self._neq_filters = []
         self._in_filters = []
         self._insert_row = None
         self._single = False
@@ -295,6 +296,15 @@ class _Query:
 
     def eq(self, col, val):
         self._filters.append((col, val))
+        return self
+
+    def neq(self, col, val):
+        # Modelled, not accepted-and-ignored. list_campaigns_for_target excludes
+        # drafts server-side, and its own except-clause swallows an
+        # AttributeError into an empty list, so a fake missing this method turns
+        # "the filter is broken" into "this target has no runs" -- which is the
+        # exact user-visible failure the server-side filter exists to avoid.
+        self._neq_filters.append((col, val))
         return self
 
     def in_(self, col, vals):
@@ -325,6 +335,8 @@ class _Query:
 
     def _matches(self, r):
         if not all(str(r.get(c)) == str(v) for c, v in self._filters):
+            return False
+        if any(str(r.get(c)) == str(v) for c, v in self._neq_filters):
             return False
         return all(str(r.get(c)) in vals for c, vals in self._in_filters)
 
@@ -418,12 +430,35 @@ def test_list_campaigns_for_user(fake_client):
     assert all(c.user_id == "user-1" for c in mine)
 
 
-def _run_row(i, *, target_id="t-1", user_id="user-1", created="2026-07-03T00:00:00Z"):
+def _run_row(i, *, target_id="t-1", user_id="user-1", created="2026-07-03T00:00:00Z",
+             status="running"):
     return {
         "id": f"c{i:05d}", "user_id": user_id, "target_id": target_id,
-        "tool": "rfdiffusion", "preset": "pilot", "status": "running",
+        "tool": "rfdiffusion", "preset": "pilot", "status": status,
         "name": f"run-{i}", "created_at": created,
     }
+
+
+def test_list_campaigns_for_target_hides_stranded_drafts(fake_client):
+    """A multi-tool launch inserts every run as a draft and funds them after,
+    so a launch that fails part way leaves drafts behind. A draft was never
+    funded, dispatched or billed, and there is no action the page can offer on
+    it, so listing it under a heading that says "Runs" claims something false."""
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1),
+        _run_row(2, status="draft"),
+        _run_row(3, status="completed"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+    assert [c.id for c in runs] == ["c00001", "c00003"]
+
+
+def test_list_campaigns_for_target_can_still_see_drafts_on_request(fake_client):
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1), _run_row(2, status="draft"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1", include_drafts=True)
+    assert [c.id for c in runs] == ["c00001", "c00002"]
 
 
 def test_list_campaigns_for_target_filters_server_side(fake_client):

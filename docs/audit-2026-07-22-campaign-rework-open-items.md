@@ -448,3 +448,138 @@ intent, when it is making a claim that has not been checked.
 - **detail:** Migration 0039 provisions exactly two indexes on `design_targets` (`design_targets_user_created_idx`, `design_targets_user_sha_idx`) and **both** carry `WHERE archived_at IS NULL`. No later migration adds another. So `archived_only=True`, which filters `archived_at IS NOT NULL` and sorts by `archived_at DESC`, can use neither: it is a scan plus a sort. `GET /targets` issues it unconditionally as its second read, so every user pays it on every load, including the majority who have archived nothing and get zero rows back.
 - **why it is only informational:** the table is tiny and per-user, the read is capped at 100 rows, and the alternative (one mixed query) reintroduces the bug the two-read split exists to prevent, since archived rows would then compete with live ones for the same capped page. The cost is real but currently unmeasurable.
 - *Next:* if `design_targets` ever grows, add a partial index on `(user_id, archived_at DESC) WHERE archived_at IS NOT NULL` in whichever migration is next free, or make the archived section load on demand instead of inline. Do not "fix" it by collapsing back to a single query. The docstring on `list_targets_for_user` states this cost so it is not rediscovered as a mystery.
+
+## Addendum 2026-07-29 — target-first Phase 2 (multi-tool launch)
+
+Found while building `GET|POST /targets/<id>/launch`. The first two were fixed
+in the Phase 2 diff because that route could not be built correctly around
+them; the rest are filed.
+
+### A35. `@idempotent()` keyed on `(user, route)` only, ignoring the form **(RESOLVED)**
+- **severity:** high (silent data loss) | **owner:** code
+- **found:** Phase 2 build, 2026-07-29. Verified empirically on Flask 3.1.3 / Werkzeug 3.1.8, not inferred.
+- **detail:** `app.py`'s `_enforce_csrf` is a `before_request` that reads `request.form.get("_csrf")` on every protected POST. Parsing the form consumes the request stream, and Werkzeug's `_load_form_data` does not populate `_cached_data`, so by the time `shared/idempotency.py` calls `request.get_data(cache=True)` it receives `b""`. The content hash was therefore `sha256(user_id + request.path + b"")` on all seven decorated routes.
+- **two live consequences:** (1) a second, DIFFERENT submission to the same route within the 60s TTL was treated as a duplicate: it never ran and replayed the first response, with the user given no indication. Worst on `blueprints/tools.py:846` `tool_submit` (submit a job for one structure, then another within a minute, and the second silently vanishes) and `blueprints/targets.py` `POST /targets` (the second distinct target is never created). (2) 4xx responses were cached, so a user refused for insufficient balance who topped up in another tab and resubmitted got the same refusal replayed.
+- **why the suite could not see it:** `tests/conftest.py:20` sets `CSRF_PROTECT=0` process-wide, which makes `_enforce_csrf` return before touching `request.form`, so every test exercised a code path production never takes.
+- **fix:** `_compute_key` falls back to a canonical encoding of the parsed form when the raw body is empty (sorted, built from `form.lists()` so multi-valued fields contribute every value, `_csrf` excluded so token rotation is not a new request, file parts contributing name/filename/size). Separately, a handler response of 4xx/5xx now releases the claim instead of storing it. Both narrow dedup strictly: real double-clicks still collapse. Tests reproduce the production posture with their own form-consuming `before_request`.
+- **known limitation, stated not hidden:** two submissions identical in every form field AND uploading files of the same name and size within the TTL still collide. Hashing upload bytes would cost a full pass over every upload on every request. That combination is a double-click far more often than two distinct jobs.
+
+### A12 (follow-up). `fund_campaign` could not report failure **(RESOLVED)**
+- **detail:** It called `_update_campaign`, which returns `None` and swallows every exception. `drive_campaign` early-returns on a `draft`, so a fund that silently failed left a campaign the user believed was running parked forever with no signal. Invisible at one campaign per click; a multi-tool launch funds N in a loop.
+- **fix:** `fund_campaign(id) -> bool` over the existing `_cas_transition(id, "funded", ("draft",), ...)`. The launch route drives only what actually funded and reports the rest. CAS on `draft` also means it can no longer rewind a `running` campaign; nothing calls it that way today.
+
+### A36. `/campaigns` still runs every PXDesign campaign at `binder_length=80`
+- **severity:** medium (silent wrong parameter) | **owner:** code
+- **detail:** `templates/runs/new.html` offers only `binder_length_min` / `binder_length_max`. PXDesign reads a **singular** `binder_length` (`tools/pxdesign/__init__.py:61`) and ignores the pair, so it falls back to its `"80"` default on every campaign and the user's entry is silently discarded. Same class as the bindcraft preset defect, without the visible 400.
+- **partially addressed:** the Phase 2 launch screen has a dedicated `pxdesign__binder_length` field, so the target flow is correct. The single-tool form is untouched.
+- *Next:* add a singular-length field to `runs/new.html` behind the existing per-tool show/hide, or fold the single-tool form into the launch screen at Phase 6.4. Related, lower impact: `rfantibody` campaigns always run at the default `cdr_lengths`, and `iggm` at `max_antigen_size=2000`, for the same reason.
+
+### A37. `list_campaigns_for_user` still lists stranded drafts
+- **severity:** low | **owner:** code
+- **detail:** Phase 2 excludes `draft` from `list_campaigns_for_target` (a draft was never funded, dispatched or billed, so it is not a run and the page can offer no action on it). `list_campaigns_for_user` is a different query feeding `/campaigns` and the homepage and is deliberately unchanged, so the two lists disagree about a stranded draft.
+- **why it was not widened here:** that list feeds three surfaces and deserves its own review rather than riding along on a launch diff.
+
+### A38. `CAMPAIGN_STATUSES` is missing `paused_insufficient_funds`
+- **severity:** low (latent) | **owner:** code
+- **detail:** `shared/compute_campaigns.py:179` says it mirrors the CHECK in migration 0034, but 0035 (`0035_phase2_remove_daily_cap.sql:110-114`) widened the DB CHECK to add `paused_insufficient_funds` and the constant was never updated. The driver writes and reads that status regardless. Any future validation written against the constant would reject a live status.
+- *Next:* add the member, or delete the constant if nothing validates against it. It currently has no consumers, which is the only reason this is latent.
+
+### A39. `status_badge` has no tint for any campaign status
+- **severity:** low (UX) | **owner:** code
+- **detail:** `templates/components/status_badge.html:16-23` maps the six `tool_jobs` statuses. `draft`, `funded`, `completing`, `completed_with_failures` and `paused_insufficient_funds` are all campaign statuses and all fall through to the untinted default pill, so a paused-for-funds run is visually identical to a healthy one on the target page.
+- *Next:* extend the tint map when Phase 6.4 builds the run strip.
+
+### A40. Several route-exercising test files lack `isolate_supabase`
+- **severity:** medium (test hygiene) | **owner:** code
+- **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` holds real production credentials, so a test that boots `create_app()` and exercises a route reads production unless it opts into `tests/conftest.py::isolate_supabase`. `tests/test_compute_campaign_routes.py` was missing it (added in this diff). `tests/test_iggm_campaign.py` and `tests/test_csrf_protection.py` still are; both happen to mock their write paths, so the exposure is reads.
+- *Next:* audit every test file that imports `app` and add the fixture. Better: make the fixture autouse in `conftest.py` and have the few tests that genuinely want live config opt out, so the safe direction is the default.
+
+### Two documentation claims corrected in place
+- `docs/HANDOFF-2026-07-29-phase2.md` asserted "bindcraft is not broken". Every `POST /campaigns` with `tool=bindcraft` returned 400 "Pick a preset." Fixed in this diff and the handoff corrected.
+- The 8-phase plan's §2.2 listed a `framework` control for rfantibody. Its `validate` never reads one; `build_payload` hardcodes `"VHH"`. The real per-tool field is `cdr_lengths`.
+
+## Addendum 2026-07-29b — independent QC over the Phase 2 diff
+
+Eight findings, all confirmed by the reviewer against running code rather than
+inferred from prose. All fixed in the same diff. Recorded because the pattern,
+not the individual bugs, is the finding.
+
+### The named recurring defect appeared five more times, about the same property
+`plan_chunks` prices through `_estimate_chunk_cost` -> `estimated_cost_for_tool`
+-> `_historical_p90_seconds`, which SELECTs `tool_jobs_p90`. Measured: **14
+Supabase reads during `plan_multi_launch` for a 7-tool launch, plus 7 more in
+`rows()`**. Five places claimed the opposite, including the `shared/target_launch.py`
+module docstring that **this diff had just rewritten to correct the previous
+purity claim** and a comment justifying a design decision as free.
+
+The suite could not see it: `isolate_supabase` blanks `SUPABASE_*`, so
+`get_service_client()` returns `None` and the p90 lookup short-circuits. Every
+test exercised the branch production does not take. That is the same shape as
+A35 (the CSRF fixture hiding the idempotency key defect) found earlier the same
+day: **a fixture that makes tests safe can also make an entire code path
+untested, and the two are hard to tell apart from inside the suite.**
+
+Consequence beyond the prose: the estimate endpoint answered "would starting
+narrow be affordable" by calling `plan_multi_launch` a second time, on a
+debounced keystroke path, justified by a comment saying planning was free.
+Replaced with `first_wave_at_pace(plan, pace)`, which re-prices from the plan
+already in hand (only the concurrency division differs between paces) and is
+pinned by an equivalence test against a full re-plan in both directions.
+
+### The other findings
+- **`_release_key` returned True without checking the delete matched anything.** A zero-row delete would report success, the caller would skip its cache fallback, and the orphaned claim would answer every retry with 409 for the rest of the TTL: exactly the outcome the function exists to prevent. Now returns `bool(response.data)`.
+- **`concurrency_note` told a one-tool launch it was sharing.** One tool at `PACE_STEADY` narrows 16 to 8, so a note is due, but the sentence read "Running 1 tools at once shares one limit of 32 sub-jobs in flight". Wrong cause, wrong grammar, wrong that anything was shared. Split into two sentences: sharing the cap, versus the pace the user chose.
+- **The launch page shipped both flag-gated slugs to every user** via `variant_preset_tools|tojson` in a `<script>` tag, undoing in one line the reason a gated tool is answered as "unknown" everywhere else. Now intersected with the visible set.
+- **The fake Supabase query builder had no `neq`,** so the new draft filter raised `AttributeError`, which `list_campaigns_for_target`'s own `except` swallowed into `[]`. Four tests failed; worse, the swallow means any future client mismatch on that query degrades to "nothing has ever been run against this target" rather than an error. Same lesson as the standing rule that a test fake must model the backend's real behaviour.
+- **Three assertions could not fail.** The affinity-maturation refusal test asserted only status 400, and that payload also fails the adapter's own mask check, so deleting the campaign-level refusal left it green; it now asserts the reason. A `patch("shared.storage.upload_input")` observed nothing because `blueprints/targets.py` never imports it. A concurrency floor test could not reach the floor it named.
+- **Two more prose over-claims:** `campaign_tool_gated_off` claimed all callers answer indistinguishably (`api_runs_estimate` does not), and `_resolve_preset` cited the wrong form's disabled controls.
+
+### What to carry forward
+Prose in this repo is now the single most defect-dense part of a diff, and the
+defects survive review because they read as documentation rather than as
+claims. Two habits earn their keep: measure anything a comment calls free or
+pure, and when a fixture makes a test pass, check whether it did so by removing
+the behaviour under test.
+
+## Addendum 2026-07-29c — second QC pass, over the Phase 2 FIXES
+
+Nine more findings, over the diff that fixed round 1. This is the third time on
+this project that reviewing the fixes has been as productive as reviewing the
+original work, and the second time a comment written to fix a false-claim
+defect contained a false claim.
+
+### The fix for the mis-attributed concurrency note reproduced the bug it fixed
+Round 1: one tool at `PACE_STEADY` announced *"Running 1 tools at once shares
+one limit of 32 sub-jobs in flight"* to somebody running exactly one tool. The
+fix branched on `len(specs) > 1`. But **two** tools at burst get `32 // 2 = 16`
+each, which is exactly their solo width, so at n=2 the cap takes nothing and
+all narrowing still comes from the pace: the width-based branch blamed the
+platform limit for the user's own radio button, at n>=2 instead of n=1. The
+docstring added by the fix asserted that the two causes were now distinguished.
+
+Now detected on its own terms: cap narrowing is `divide_concurrency(tools,
+PACE_BURST) < solo` (burst is the widest this module returns, so anything it
+takes off is the cap), pace narrowing is `chosen < burst`. Both, either, or
+neither sentence. Also corrected: *"so each starts narrower than it would
+alone"* is false whenever proteina is in the launch, since it is pinned to 4
+and a 7-way division leaves it there.
+
+### A fabricated number and a fabricated mechanism
+- *"``float(Decimal("280.91"))`` serializes as ``280.90999999999997``"* (in the `rows()` docstring **and** the test docstring). It does not: `str()` and `json.dumps()` both give `280.91`. The real, demonstrable loss is the quantum, `Decimal("4.0200")` -> `4.02`. The `str(Decimal)` change was right; the reason given for it was invented.
+- *"a second full plan would roughly double the reads per keystroke"*. Measured at 7 tools: 28 reads with the shortcut, 35 without. 1.25x, not 2x. The optimisation is still worth having; the figure justifying it was not measured.
+
+### Two assertions that could not fail, in tests written to prove the fixes
+- `assert Decimal(row[key]) == Decimal(row[key].strip())` compares a whitespace-free string to itself. Replacing `rows()` with a `str(float(...))` variant left the whole test green. Now asserts `Decimal(...).as_tuple().exponent == -4` and equality against the plan's own figure.
+- `test_rows_add_up_to_the_plan_totals` ran at 24 designs, where every tool plans 1 to 3 sub-jobs. `first_wave_hold_usd` clamps at `min(total_subjobs, concurrency)`, so dropping the divided concurrency entirely changed nothing. Now runs at 1000 designs and asserts the cohort is actually large enough to discriminate.
+
+### The rest
+- **`_form_fingerprint`'s "order-independent" became half-true.** Sorting the `(name, FileStorage)` pairs by name alone fixed the `TypeError` on a repeated field but left repeated parts in wire order, so the same two files posted in the other order would not dedup. Now builds the descriptor strings first and sorts those.
+- **"Only `divide_concurrency` and `concurrency_note` are genuinely pure"** excluded two free properties, and said "per tool" where the cost is per SPEC (the class docstring exists specifically to say a repeated tool is two entries).
+- **"it cannot disagree with the gate the POST will run"** overclaims: it matches `campaign_preauth`'s balance test exactly, but not the velocity or verification gates, so a launch also over the daily cap is offered a narrower start and then refused again.
+- **`tests/test_iggm_campaign.py` had no `isolate_supabase`** while the sibling file edited in the same round gained one. It boots `create_app()`, so it pulled production credentials into `os.environ` for the rest of the pytest process and issued a real `tool_jobs_p90` SELECT (it patched `shared.compute_campaigns.get_service_client`, but `_historical_p90_seconds` resolves `shared.credits.get_service_client`). Added. See A40: the fixture should be autouse with opt-out, not opt-in.
+
+### What to carry forward, sharpened
+Round 1 said: measure anything a comment calls free or pure. Round 2 adds two
+more that would have caught most of the above without a reviewer:
+- **A number in a comment is a claim.** "2x", "280.90999999999997", "one read per tool" are all assertions, and every one of them here was wrong. Run it or drop it.
+- **Fix the cause, not the symptom the reviewer showed you.** The n=1 note bug was reported at n=1 and fixed at n=1; the same defect at n=2 shipped in the fix. When a finding names one input, ask what class it belongs to before writing the branch.

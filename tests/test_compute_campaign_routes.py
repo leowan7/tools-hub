@@ -11,6 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
+# These exercise real routes through a real create_app(), and app.py calls
+# load_dotenv() at import, so without this fixture every render and every
+# get_service_client() in here reaches the PRODUCTION Supabase project.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 @pytest.fixture
 def app(monkeypatch):
@@ -115,3 +120,33 @@ def test_post_over_cap_rerenders_with_error(client):
         })
     assert resp.status_code == 400
     assert "sub-jobs" in resp.get_data(as_text=True)
+
+
+def test_a_bindcraft_campaign_gets_past_preset_validation(client):
+    """Regression: every bindcraft campaign used to 400 "Pick a preset."
+
+    The create form's two `name="preset"` selects are both disabled unless the
+    tool is proteina or iggm, so nothing posts the field for the five pilot
+    tools, and the route built its validation dict straight from request.form.
+    Four of the five adapters default the preset internally; bindcraft is the
+    one that does not, so it alone rejected. This posts exactly what the real
+    form posts for bindcraft -- note the deliberate absence of `preset` -- and
+    asserts the run gets far enough to need a PDB, which is the NEXT check
+    after validation.
+
+    Do not "improve" this by adding preset to the payload: sending it is what
+    the browser cannot do, and the test would then pass against the bug.
+    """
+    _login(client)
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()):
+        resp = client.post("/campaigns", data={
+            "tool": "bindcraft",
+            "requested_designs": "16",
+            "target_chain": "A",
+            "hotspot_residues": "417,453",
+            "binder_length_min": "50",
+            "binder_length_max": "100",
+        })
+    body = resp.get_data(as_text=True)
+    assert "Pick a preset" not in body
+    assert "Upload a target PDB" in body
