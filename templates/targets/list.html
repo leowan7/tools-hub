@@ -39,16 +39,74 @@
       </div>
     </div>
     {% endfor %}
+    {% if targets_capped %}
+    <p style="font-size: 0.8rem; color: var(--text-tertiary); margin-top: 0.6rem;">
+      Showing your {{ list_limit }} most recent targets. Older ones are still
+      there and still reachable by link.
+    </p>
+    {% endif %}
   {% else %}
     <div class="panel">
       <div class="panel-body" style="text-align: center; padding: 3rem 1.5rem;">
+        {# Two empty states, because they are not the same situation. A user
+           who archived their only target is not new, and telling them "no
+           targets yet" directly above that target's card reads as though the
+           archived one does not count. #}
+        {% if archived %}
+        <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
+          No live targets. Restore one below, or add another.
+        </p>
+        {% else %}
         <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
           No targets yet. Upload a structure and every run you launch against
           it stays linked to it.
         </p>
+        {% endif %}
         <a href="{{ url_for('targets.target_new') }}" class="btn-primary">Add a target</a>
       </div>
     </div>
   {% endif %}
 </div>
+
+{# Archived targets are a separate read, not a filter of the list above, so a
+   user holding many of them cannot push their live targets off the page. This
+   section is the only route to an archived target short of pasting a URL,
+   which is exactly why the cap below is disclosed instead of truncating
+   quietly: an archived target this page cannot show looks deleted. #}
+{% if archived %}
+<div class="section" style="margin-top: 2.5rem;">
+  <h2 style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em;
+             color: var(--text-secondary); font-family: var(--font-mono);
+             margin-bottom: 0.85rem;">Archived</h2>
+  {% for t in archived %}
+  <div class="panel" style="margin-bottom: 0.85rem; opacity: 0.72;">
+    <div class="panel-header">
+      <a href="{{ url_for('targets.target_detail', target_id=t.id) }}"
+         style="text-decoration: none; color: var(--text-secondary); font-weight: 600;">
+        {{ t.display_name }}
+      </a>
+      <form method="POST" action="{{ url_for('targets.target_unarchive', target_id=t.id) }}"
+            style="display: inline;">
+        {{ csrf_input() }}
+        {# Restoring from here usually means restoring several, so come back
+           to this page rather than bouncing through each target's detail. #}
+        <input type="hidden" name="return_to" value="list">
+        <button type="submit" class="btn-secondary">Restore</button>
+      </form>
+    </div>
+    <div class="panel-body" style="font-size: 0.85rem; color: var(--text-secondary);">
+      {{ t.filename or 'no structure' }}
+      {%- if t.target_chain %} · chain {{ t.target_chain }}{% endif %}
+      {%- if t.residue_count %} · {{ t.residue_count }} residues{% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  {% if archived_capped %}
+  <p style="font-size: 0.8rem; color: var(--text-tertiary); margin-top: 0.6rem;">
+    Showing the {{ list_limit }} most recently archived. Anything older is
+    still stored and still reachable by link, not deleted.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
 {% endblock %}

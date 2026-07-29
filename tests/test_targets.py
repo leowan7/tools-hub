@@ -34,6 +34,7 @@ from shared.targets import (
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    unarchive_target,
 )
 
 # Mirrors supabase/config.toml. PostgREST caps every response at this many
@@ -46,18 +47,44 @@ class _Resp:
         self.data = data
 
 
+class _NotBuilder:
+    """PostgREST's ``.not_.is_(col, "null")`` negation chain.
+
+    Two callers use it, and a fake lacking it fails DIFFERENTLY and worse for
+    each. ``list_targets_for_user(archived_only=True)`` would raise, get
+    swallowed by its except, and return an empty list, which an archived-only
+    test reads as "no archived targets". ``unarchive_target`` would do the
+    same and return False -- which is the ANSWER
+    ``test_unarchive_reports_false_when_the_target_was_never_archived``
+    asserts, so that test would pass on an AttributeError while the filter it
+    exists to pin was never exercised.
+    """
+
+    def __init__(self, table):
+        self._table = table
+
+    def is_(self, col, _val):
+        self._table._neg_filters.append((col, None))
+        return self._table
+
+
 class _FakeTable:
     def __init__(self, store, name):
         self._store = store
         self._name = name
         self._op = "select"
         self._filters = []
+        self._neg_filters = []
         self._payload = None
         self._range = None
         self._limit = None
         self._single = False
         self._projection = None
         self._order = None
+
+    @property
+    def not_(self):
+        return _NotBuilder(self)
 
     # -- builders ----------------------------------------------------------
     def select(self, *cols, **_k):
@@ -117,6 +144,7 @@ class _FakeTable:
         return [
             r for r in rows
             if all(r.get(c) == v for c, v in self._filters)
+            and all(r.get(c) != v for c, v in self._neg_filters)
         ]
 
     def execute(self):
@@ -420,6 +448,92 @@ def test_archive_is_owner_scoped(fake):
         target = create_target(user_id="u-1", upload=_Upload())
     assert archive_target(target.id, "u-2") is False
     assert not fake.store["design_targets"][0].get("archived_at")
+
+
+def test_unarchive_clears_the_timestamp_and_restores_the_target(fake):
+    """Archive was one-way from the UI, so a mis-click permanently removed a
+    structure the user had paid to run against."""
+    _seed_target(fake, id="t-1", archived_at="2026-07-02T00:00:00Z")
+
+    assert unarchive_target("t-1", "u-1") is True
+
+    row = fake.store["design_targets"][0]
+    assert row["archived_at"] is None
+    assert [t.id for t in list_targets_for_user("u-1")] == ["t-1"]
+
+
+def test_unarchive_is_owner_scoped(fake):
+    _seed_target(fake, id="t-1", archived_at="2026-07-02T00:00:00Z")
+    assert unarchive_target("t-1", "u-2") is False
+    assert fake.store["design_targets"][0]["archived_at"] == "2026-07-02T00:00:00Z"
+
+
+def test_archived_only_returns_exactly_the_complement_of_the_live_list(fake):
+    """The two reads must partition the user's targets, not overlap or drop
+    one: the archived list is the only route to the restore control short of
+    pasting a URL. The PREDICATE partitions; the per-section cap is a separate
+    limit that :func:`test_each_section_is_capped_independently` covers."""
+    _seed_target(fake, id="t-live-1")
+    _seed_target(fake, id="t-live-2")
+    _seed_target(fake, id="t-gone", archived_at="2026-07-02T00:00:00Z")
+
+    live = {t.id for t in list_targets_for_user("u-1")}
+    archived = {t.id for t in list_targets_for_user("u-1", archived_only=True)}
+
+    assert live == {"t-live-1", "t-live-2"}
+    assert archived == {"t-gone"}
+    assert live & archived == set()
+    assert live | archived == {"t-live-1", "t-live-2", "t-gone"}
+
+
+def test_archived_only_is_owner_scoped(fake):
+    _seed_target(fake, id="mine", archived_at="2026-07-02T00:00:00Z")
+    _seed_target(fake, id="theirs", user_id="u-2",
+                 archived_at="2026-07-02T00:00:00Z")
+    assert [t.id for t in list_targets_for_user("u-1", archived_only=True)] == ["mine"]
+
+
+def test_archived_list_is_ordered_by_when_it_was_archived(fake):
+    """Ordering the archived section by created_at buries the target the user
+    just archived under ones archived months earlier, and past the cap drops
+    it entirely -- which reads as "archiving deleted my target"."""
+    _seed_target(fake, id="old-file-just-archived",
+                 created_at="2025-01-01T00:00:00Z",
+                 archived_at="2026-07-20T00:00:00Z")
+    _seed_target(fake, id="new-file-long-archived",
+                 created_at="2026-07-01T00:00:00Z",
+                 archived_at="2026-02-01T00:00:00Z")
+
+    ids = [t.id for t in list_targets_for_user("u-1", archived_only=True)]
+
+    assert ids == ["old-file-just-archived", "new-file-long-archived"]
+
+
+def test_each_section_is_capped_independently(fake):
+    """The complement is exact as a predicate but neither list is exhaustive.
+    A caller that treats a full page as "all of them" is wrong, and on this
+    page a dropped archived target is indistinguishable from a deleted one."""
+    for i in range(7):
+        _seed_target(fake, id=f"arch-{i}",
+                     archived_at="2026-07-%02dT00:00:00Z" % (i + 1))
+    _seed_target(fake, id="live-1")
+
+    archived = list_targets_for_user("u-1", archived_only=True, limit=5)
+
+    assert len(archived) == 5
+    assert [t.id for t in archived] == [
+        "arch-6", "arch-5", "arch-4", "arch-3", "arch-2",
+    ]
+    # arch-1 and arch-0 exist and are archived, but this read cannot see them.
+    assert len(list_targets_for_user("u-1", archived_only=True, limit=100)) == 7
+
+
+def test_unarchive_reports_false_when_the_target_was_never_archived(fake):
+    """The bool has to mean "was archived, now live", not "row exists and is
+    yours". The route reports a successful restore off the back of it."""
+    _seed_target(fake, id="already-live", archived_at=None)
+
+    assert unarchive_target("already-live", "u-1") is False
 
 
 # ---------------------------------------------------------------------------

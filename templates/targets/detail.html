@@ -12,6 +12,37 @@
     {%- if target.residue_count %} · {{ target.residue_count }} residues{% endif %}
     {%- if target.chains %} · {{ target.chains|length }} chain(s){% endif %}
   </p>
+  {# An archived target must not offer "Run a tool": target_launch redirects an
+     archived id straight back here, so the button reloaded the same page with
+     no message and read as broken (A33). Show the state, and offer the one
+     action that actually does something. #}
+  {% if target.is_archived %}
+  <p style="margin-top: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
+    <span style="font-family: var(--font-mono); font-size: 0.72rem;
+                 text-transform: uppercase; letter-spacing: 0.06em;
+                 border: 1px solid var(--border); border-radius: 4px;
+                 padding: 0.15rem 0.45rem; color: var(--text-secondary);">Archived</span>
+    {# Conditional on the staged structure, because a target can legitimately
+       have none (create_target accepts upload=None) and the subtitle above
+       already says "No structure staged". Claiming otherwise here would
+       contradict the same page four lines up, and would promise a restore is
+       launchable when every launch path rejects a target with no path. #}
+    Hidden from your targets list. Its runs and designs are untouched.
+    {% if target.storage_path %}
+    The structure is still staged, so restoring makes it launchable again.
+    {% else %}
+    It has no staged structure, so restoring returns it to the list but not to
+    a launchable state.
+    {% endif %}
+  </p>
+  <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
+    <form method="POST" action="{{ url_for('targets.target_unarchive', target_id=target.id) }}"
+          style="display: inline;">
+      {{ csrf_input() }}
+      <button type="submit" class="btn-primary">Restore target</button>
+    </form>
+  </div>
+  {% else %}
   <div style="margin-top: 1.25rem; display: flex; gap: 0.6rem; flex-wrap: wrap;">
     <a href="{{ url_for('targets.target_launch', target_id=target.id) }}"
        class="btn-primary">Run a tool</a>
@@ -21,6 +52,7 @@
       <button type="submit" class="btn-secondary">Archive</button>
     </form>
   </div>
+  {% endif %}
 </div>
 
 {% if target.hotspot_residues or target.epitope_residues or target.notes %}
@@ -74,8 +106,12 @@
         <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
           Nothing has been run against this target yet.
         </p>
+        {# Same guard as the header: an archived target's launch link redirects
+           back to this page, so offering it here is a second dead button. #}
+        {% if not target.is_archived %}
         <a href="{{ url_for('targets.target_launch', target_id=target.id) }}"
            class="btn-primary">Run a tool</a>
+        {% endif %}
       </div>
     </div>
   {% endif %}
