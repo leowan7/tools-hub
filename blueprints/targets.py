@@ -36,6 +36,7 @@ from shared.targets import (
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    unarchive_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,11 @@ targets_bp = Blueprint("targets", __name__)
 # The cap only exists so a pasted spreadsheet column cannot become a 10k-element
 # Postgres array.
 _MAX_RESIDUES = 256
+
+# Rows per section on the targets page. The page does not paginate, so this is
+# also the point past which a target is reachable only by URL; the template
+# says so when a section hits it rather than truncating in silence.
+_LIST_LIMIT = 100
 
 
 def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
@@ -75,9 +81,31 @@ def targets_list():
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
+    # Two reads, not one mixed read: the live query is what migration 0039's
+    # partial index covers, and putting archived rows in the same capped page
+    # would let a user with many archived targets push their live ones off it.
+    #
+    # Both reads are capped and neither paginates, so a user past the cap has
+    # targets this page cannot show. That is disclosed rather than hidden:
+    # this section is otherwise the only route to an archived target, so a
+    # silent truncation here is indistinguishable from a deleted target.
+    #
+    # Both reads ask for one row MORE than they render. A page holding exactly
+    # _LIST_LIMIT rows is ambiguous -- it is either all of them or the first
+    # of many -- so testing len() against the limit itself makes the banner
+    # claim there are older targets when there are none. The extra row is the
+    # only thing that distinguishes the two, and it is dropped before render.
+    live = list_targets_for_user(ctx.user_id, limit=_LIST_LIMIT + 1)
+    archived = list_targets_for_user(
+        ctx.user_id, archived_only=True, limit=_LIST_LIMIT + 1
+    )
     return render_template(
         "targets/list.html",
-        targets=list_targets_for_user(ctx.user_id),
+        targets=live[:_LIST_LIMIT],
+        archived=archived[:_LIST_LIMIT],
+        targets_capped=len(live) > _LIST_LIMIT,
+        archived_capped=len(archived) > _LIST_LIMIT,
+        list_limit=_LIST_LIMIT,
     )
 
 
@@ -220,4 +248,30 @@ def target_archive(target_id):
     # wave, so removing the object would break every chunk of every run still
     # in flight. See shared.targets.archive_target.
     archive_target(target_id, ctx.user_id)
+    return redirect(url_for("targets.targets_list"))
+
+
+@targets_bp.route("/targets/<target_id>/unarchive", methods=["POST"])
+@login_required
+def target_unarchive(target_id):
+    """Restore an archived target.
+
+    Owner scope is enforced inside ``unarchive_target``'s query (it filters on
+    user_id), so an unowned id updates nothing and lands back on the list
+    without confirming the id exists. A target that was already live takes the
+    same path: nothing was restored, so nothing is claimed.
+
+    ``return_to`` decides where a success goes, because the two callers want
+    different things: from the detail page the user restored this target to
+    use it, and from the list they are likely restoring several. It is matched
+    against one literal and never used as a URL, so it cannot become an open
+    redirect.
+    """
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+    if unarchive_target(target_id, ctx.user_id):
+        if request.form.get("return_to") == "list":
+            return redirect(url_for("targets.targets_list"))
+        return redirect(url_for("targets.target_detail", target_id=target_id))
     return redirect(url_for("targets.targets_list"))

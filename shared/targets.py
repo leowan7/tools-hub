@@ -388,30 +388,65 @@ def get_target(
 
 
 def list_targets_for_user(
-    user_id: str, *, limit: int = 100, include_archived: bool = False
+    user_id: str, *, limit: int = 100, include_archived: bool = False,
+    archived_only: bool = False,
 ) -> list:
-    """Return the user's targets, newest first.
+    """Return the user's targets, newest first -- by creation for the live
+    and both-modes reads, by ARCHIVE time for ``archived_only``.
 
     ``limit`` is clamped to ``_PAGE_SIZE``. PostgREST would silently clamp a
     larger one to ``max_rows`` anyway, and a caller that thinks it asked for
     everything and got everything is exactly the failure mode this module's
     paged reads exist to avoid. A caller that genuinely needs more than one
     page should page, not raise the limit.
+
+    Three modes, and the default is the one that matters: live only, which is
+    the query migration 0039's partial index
+    (``WHERE archived_at IS NULL``) was built for. ``archived_only`` is its
+    complement and exists so the targets page can offer an un-archive control
+    without the archived rows competing for the SAME capped read as the live
+    ones -- with one mixed query a user holding many archived targets could
+    push their live ones off the end of the page. ``include_archived`` returns
+    both. ``archived_only`` wins if both flags are passed.
+
+    Two costs the caller should know rather than discover:
+
+    * The complement is exact as a PREDICATE, but neither list is exhaustive:
+      both are capped, and there is no pagination on the targets page. A row
+      past the cap of its own list is reachable only by URL. To DETECT that,
+      ask for one more row than you intend to render and check whether you
+      got it; a full page on its own proves nothing, since "exactly a page"
+      and "the first of many" are the same length. Do not instead raise
+      ``limit`` until it "covers" the user: this returns at most
+      ``_PAGE_SIZE`` however large a limit you pass, so a caller comparing
+      the row count against its own limit concludes "not truncated" at
+      precisely the point truncation begins. This function has no offset, so
+      the rows past the cap are not reachable through it at all.
+    * Only the default mode uses the partial index. Both 0039 indexes carry
+      ``WHERE archived_at IS NULL``, so ``archived_only`` is a scan and a
+      sort, and the targets page pays it on EVERY load including for the
+      majority of users who have archived nothing. Free on a small table;
+      an index is the fix if it stops being one.
     """
     client = get_service_client()
     if client is None:
         return []
     try:
-        query = (
-            client.table(_TABLE)
-            .select("*")
-            .eq("user_id", user_id)
-            .order("created_at", desc=True)
-            .limit(min(limit, _PAGE_SIZE))
-        )
-        if not include_archived:
-            query = query.is_("archived_at", "null")
-        response = query.execute()
+        query = client.table(_TABLE).select("*").eq("user_id", user_id)
+        if archived_only:
+            # Ordered by archive time, not creation time. This list exists to
+            # undo an archive, so the one just archived has to be at the top;
+            # ordering by created_at buries a freshly archived old structure
+            # under targets archived months ago, and past the cap drops it
+            # entirely, which reads as "archiving deleted it".
+            query = query.not_.is_("archived_at", "null").order(
+                "archived_at", desc=True
+            )
+        else:
+            if not include_archived:
+                query = query.is_("archived_at", "null")
+            query = query.order("created_at", desc=True)
+        response = query.limit(min(limit, _PAGE_SIZE)).execute()
     except Exception:
         logger.error("list_targets_for_user failed", exc_info=True)
         return []
@@ -478,6 +513,46 @@ def archive_target(target_id: str, user_id: str) -> bool:
         )
     except Exception:
         logger.error("archive_target failed for %s", target_id, exc_info=True)
+        return False
+    return bool(getattr(response, "data", None))
+
+
+def unarchive_target(target_id: str, user_id: str) -> bool:
+    """Restore an archived target to the live list. Owner-scoped.
+
+    The inverse of :func:`archive_target`, and it exists because archive was
+    one-way from the UI with no route, no function and no control: a mis-click
+    permanently removed a structure the user had paid to run against.
+
+    Storage is untouched in both directions, so restoring is only a flag flip.
+    One honest caveat, NOT a guarantee this function makes: an archived
+    target's object is excluded from the retention sweeper's protected set
+    (``cron/purge_old_storage.py::live_target_input_paths``), so a target
+    archived long enough could in principle come back with its structure aged
+    out. That sweeper is dry-run by default and is not scheduled anywhere
+    today, so no live target has ever been swept -- but do not read this
+    function as protecting against it. The caller cannot currently tell, and
+    the failure would surface as a run that dies in Storage.
+
+    Returns True only when a target that WAS archived is now live. Filtering
+    on ``archived_at IS NOT NULL`` as well as ownership is what makes that
+    true: without it a live id returns True and the caller reports a restore
+    that restored nothing.
+    """
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        response = (
+            client.table(_TABLE)
+            .update({"archived_at": None})
+            .eq("id", target_id)
+            .eq("user_id", user_id)
+            .not_.is_("archived_at", "null")
+            .execute()
+        )
+    except Exception:
+        logger.error("unarchive_target failed for %s", target_id, exc_info=True)
         return False
     return bool(getattr(response, "data", None))
 
