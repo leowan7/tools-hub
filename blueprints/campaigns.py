@@ -160,10 +160,20 @@ def api_runs_estimate():
         "requested_designs": plan.requested_designs,
         "chunk_size": plan.chunk_size,
         "total_subjobs": plan.total_subjobs,
+        # The exact 4dp values stay on the wire for anything that computes with
+        # them; the *_display strings are what the page renders. The page used to
+        # do its own 2dp rounding to NEAREST, which put a figure BELOW the real
+        # hold directly above the consent checkbox: rfdiffusion at 1 design holds
+        # $2.6219 and displayed "$2.62". Costs round UP, the balance rounds DOWN,
+        # both in Decimal, so neither direction can flatter the user.
         "per_chunk_usd": str(plan.est_cost_per_chunk),
+        "per_chunk_usd_display": cc.display_cost_usd(plan.est_cost_per_chunk),
         "budget_usd": str(plan.budget_usd),
+        "budget_usd_display": cc.display_cost_usd(plan.budget_usd),
         "first_wave_usd": str(first_wave),
+        "first_wave_usd_display": cc.display_cost_usd(first_wave),
         "balance_usd": str(pre.balance_usd),
+        "balance_usd_display": cc.display_balance_usd(pre.balance_usd),
         "affordable": pre.ok,
         "reason": pre.reason,
         "needs_verification": cc.CAMPAIGN_KYC_ENABLED and (plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD),
@@ -354,12 +364,17 @@ def compute_campaign_create():
     # 4. Prepaid START gate (checks, never debits): the wallet only has to
     #    cover the first wave; the rest funds as the campaign drains, and it
     #    pauses/resumes on balance (fund-and-drain).
-    pre = cc.campaign_preauth(
-        ctx.user_id, plan.budget_usd,
-        cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool)),
-    )
+    first_wave = cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool))
+    pre = cc.campaign_preauth(ctx.user_id, plan.budget_usd, first_wave)
     if not pre.ok:
-        return _err(cc.preauth_message(pre))
+        # Passed explicitly even though the default derives the same string
+        # today, because "the same by coincidence" is how the multi-tool route
+        # ended up printing $9.18 in this sentence over a $9.19 panel. This page
+        # ships `first_wave_usd_display` from the same helper, so the sentence
+        # and the panel are now the same string by construction.
+        return _err(cc.preauth_message(
+            pre, required_display=cc.display_cost_usd(first_wave),
+        ))
 
     # 5. Stage the shared target once (when one was provided), then create +
     #    fund + first wave. A proteina curated-task run stages nothing.

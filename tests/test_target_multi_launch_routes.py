@@ -22,6 +22,7 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from shared.compute_campaigns import PREAUTH_INSUFFICIENT, PREAUTH_OK
+from tests.money_display_guard import assert_template_prints_no_raw_money
 from shared.targets import DesignTarget
 
 
@@ -542,6 +543,173 @@ def test_the_estimate_encodes_money_as_strings(client):
     Decimal(data["balance_usd"])
 
 
+# ---------------------------------------------------------------------------
+# 2dp DISPLAY strings, and which way they are allowed to lose
+# ---------------------------------------------------------------------------
+#
+# The wire carries 4dp. The page shows 2dp. That conversion used to happen in
+# the page, to NEAREST, so a $2.6219 hold printed as "$2.62" -- below the amount
+# reserved, directly above a checkbox consenting to "the amount above will be
+# held". Now the server ships a *_display string per figure: costs and holds
+# round UP, balances round DOWN, neither can flatter us.
+#
+# rfdiffusion@12 is the cohort because BOTH its totals have sub-half-cent
+# digits (budget 2.0101, first wave 2.6219), so ceiling and nearest disagree on
+# each. A cohort landing on exact cents would pass this test with the rounding
+# direction reversed. One tool means the row figures are the totals, so the row
+# encoding is covered by the same assertions.
+
+
+_DISPLAY_COHORT = "pace=burst&tool=rfdiffusion&designs=12&preset=pilot"
+
+# The cohort that exposed the rows-do-not-sum-to-the-total defect: rows of
+# $2.02 + $5.03 against a total ceiled from the exact sum of $7.04, and held
+# rows of $2.63 + $6.56 against $9.18. Needs two tools; a single row trivially
+# equals its own total.
+_TWO_TOOL_COHORT = (
+    "pace=burst"
+    "&tool=rfdiffusion&designs=12&preset=pilot"
+    "&tool=pxdesign&designs=12&preset=pilot"
+)
+
+# 12 designs is ONE sub-job per tool, which clamps the first wave, so burst and
+# steady price identically: $9.19 either way. Any test whose subject is a
+# displayed hold is therefore blind to which pace was passed -- swapping
+# `plan.pace` for a hardcoded PACE_BURST in the refusal left 257 tests green.
+# These cohorts are chosen so the two paces DIVERGE, and each is asserted with
+# _assert_pace_is_observable_on() rather than trusted.
+#
+#   rfdiffusion+pxdesign @200: burst $100.96 vs steady $36.71, and the burst
+#   panel ($100.96) differs from the ceiling of its exact sum ($100.95), so it
+#   also observes the rows-do-not-sum defect.
+_PACE_OBSERVABLE_COHORT = (
+    "pace=burst"
+    "&tool=rfdiffusion&designs=200&preset=pilot"
+    "&tool=pxdesign&designs=200&preset=pilot"
+)
+#   bindcraft+rfantibody @200 is the only shape found where the STEADY panel
+#   ($419.50) also differs from the ceiling of the steady exact sum ($419.49),
+#   which is what the narrow-alternative test needs. Searched, not guessed.
+_STEADY_DIVERGENT_COHORT_TOOLS = ("bindcraft", "rfantibody")
+_STEADY_DIVERGENT_DESIGNS = 200
+
+
+def test_the_estimate_ships_display_strings_that_never_understate_a_cost(client):
+    """Red if a display figure is dropped, left at 4dp, or rounded to nearest."""
+    from decimal import ROUND_CEILING, ROUND_HALF_EVEN
+
+    _login(client)
+    data = _estimate(client, _target(), _DISPLAY_COHORT)
+    assert data["ok"] is True
+
+    costs = ["budget_usd", "first_wave_usd"]
+    # Precondition, asserted rather than assumed: unless ceiling and nearest
+    # disagree on these figures, every assertion below passes with the rounding
+    # direction reversed and the test pins nothing.
+    for key in costs:
+        exact = Decimal(data[key])
+        assert (
+            exact.quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+            != exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+        ), (
+            f"{key}={exact} rounds the same way to nearest as to ceiling, so "
+            f"this cohort cannot observe the direction. rfdiffusion@12 can."
+        )
+
+    for key in costs:
+        exact, shown = Decimal(data[key]), data[f"{key}_display"]
+        assert isinstance(shown, str)
+        assert Decimal(shown).as_tuple().exponent == -2, f"{key} not 2dp: {shown}"
+        # The whole point. A hold shown below the hold taken is not a ceiling.
+        assert Decimal(shown) >= exact, f"{key} understated: {shown} < {exact}"
+        assert Decimal(shown) == exact.quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING
+        )
+
+    # Rows carry their own copies, and the page prints those, not the totals.
+    for row in data["rows"]:
+        for key in costs:
+            assert Decimal(row[f"{key}_display"]) >= Decimal(row[key])
+
+
+def test_the_estimate_never_overstates_the_balance(client):
+    """The mirror image, and the reason there are two helpers rather than one.
+
+    A balance rounded UP claims money the wallet does not have.
+    """
+    from decimal import ROUND_FLOOR, ROUND_HALF_EVEN
+
+    _login(client)
+    balance = "573.6756"
+    exact = Decimal(balance)
+    # Precondition, asserted rather than assumed, exactly as the sibling cost
+    # test does it. An earlier version used 573.6736, where FLOOR and NEAREST
+    # are BOTH 573.67 -- so it could only ever have caught a switch to ceiling,
+    # and not the switch to nearest this whole change exists to prevent. It
+    # passed with display_balance_usd set to ROUND_HALF_UP.
+    assert (
+        exact.quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+        != exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
+    ), f"{balance} floors the same way it rounds to nearest; pick another"
+
+    data = _estimate(
+        client, _target(), _DISPLAY_COHORT,
+        preauth=_preauth(balance=balance),
+    )
+    assert data["balance_usd"] == balance
+    assert data["balance_usd_display"] == "573.67"
+    assert Decimal(data["balance_usd_display"]) <= exact
+
+
+def test_the_estimate_totals_agree_with_the_rows_printed_above_them(client):
+    """The panel has to add up to itself.
+
+    Each row display is ceiled independently, so summing the rows gives a bigger
+    number than ceiling the exact total: ``sum(ceil(r)) >= ceil(sum(r))``. When
+    the totals were ceiled from the exact sums, the Cost column of
+    rfdiffusion@12 + pxdesign@12 printed $2.02 and $5.03 above a Total of $7.04,
+    and the held column $2.63 and $6.56 above $9.18 -- one cent short in both,
+    directly under a checkbox that says "the amount above will be held".
+
+    The sum is the one part of the panel a reader can check without trusting us,
+    so it is the part that must not be wrong. The pre-existing
+    ``test_the_estimate_totals_equal_the_sum_of_its_rows`` compares only the 4dp
+    fields, which always agreed and still do; it could not see this.
+    """
+    _login(client)
+    data = _estimate(client, _target(), _TWO_TOOL_COHORT)
+
+    for key in ("budget_usd", "first_wave_usd"):
+        rows = [Decimal(r[f"{key}_display"]) for r in data["rows"]]
+        assert len(rows) > 1, "a one-row cohort cannot observe this"
+        assert Decimal(data[f"{key}_display"]) == sum(rows), (
+            f"{key}: total {data[f'{key}_display']} != sum of printed rows "
+            f"{sum(rows)}"
+        )
+        # And still a ceiling, which is the reason the displays exist at all.
+        assert sum(rows) >= Decimal(data[key])
+
+
+def test_the_launch_page_does_no_money_rounding_of_its_own(client):
+    """The drift guard for the fix above. See tests/money_display_guard.py."""
+    assert_template_prints_no_raw_money("templates/targets/launch.html")
+
+
+def test_the_launch_page_puts_each_figure_in_its_own_slot():
+    """A right figure under the wrong label is a wrong figure.
+
+    Putting `first_wave_usd_display` in the Balance slot, or the budget in
+    "Held to start", left 292 tests green on both consent pages. This is
+    SELECTION, not provenance: statically decidable, simply never checked.
+    """
+    from tests.money_display_guard import assert_money_slots_are_not_crossed
+    assert_money_slots_are_not_crossed("templates/targets/launch.html", {
+        "est-budget": "budget_usd_display",
+        "est-firstwave": "first_wave_usd_display",
+        "est-balance": "balance_usd_display",
+    })
+
+
 def test_a_desynced_estimate_request_is_rejected_not_zipped(client):
     """Three tools, two counts. zip() would silently price two and the POST
     would then launch three -- a bill for work that was never shown."""
@@ -1009,6 +1177,210 @@ def test_an_unaffordable_launch_creates_nothing(client):
     assert rec.calls == []
 
 
+def test_the_uncharged_claim_is_derived_and_not_a_literal():
+    """A SOURCE guard, because the value cannot be reached at runtime.
+
+    Every ``_err`` call site in ``target_launch_submit`` today has an empty
+    ``started``, so ``not started`` is a constant and no behavioural test can
+    tell it from ``True``. A reviewer confirmed exactly that: replacing it with
+    ``True`` left the whole suite green. The predecessor of this expression was
+    a ``funded_any`` flag with the same problem, and swapping one unpinnable
+    expression for another was not a fix.
+
+    What it protects is the NEXT error path, added after the fund loop, which
+    gets the right answer for free only while the derivation survives. Round 5
+    shipped that defect: a 400 telling a user with funded, billing campaigns
+    that nothing was charged, and because ``shared/idempotency.py`` releases the
+    claim on any status >= 400, the retry it invites funds a second full set.
+
+    This proves the expression's SHAPE and nothing about its value. That is a
+    real limit, and it is the reason the template half is tested separately.
+    """
+    import ast
+
+    src = open("blueprints/targets.py", encoding="utf-8").read()
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "target_launch_submit"
+    )
+    keywords = [
+        kw for node in ast.walk(fn) if isinstance(node, ast.Call)
+        for kw in node.keywords if kw.arg == "nothing_charged"
+    ]
+    assert len(keywords) == 1, (
+        f"expected exactly one nothing_charged= in the route, found "
+        f"{len(keywords)}"
+    )
+    value = keywords[0].value
+    assert not isinstance(value, ast.Constant), (
+        "nothing_charged is a literal. It must be derived from what the route "
+        "actually did, or a future error path after the fund loop will tell a "
+        "charged user they were not charged."
+    )
+    names = {n.id for n in ast.walk(value) if isinstance(n, ast.Name)}
+    assert "started" in names, (
+        f"nothing_charged does not reference `started`; it reads {names}"
+    )
+
+
+@pytest.mark.parametrize("pace", ["burst", "steady"])
+def test_the_refusal_sentence_quotes_the_same_hold_as_the_panel(client, pace):
+    """One screen, one hold figure.
+
+    The 400 re-renders the estimate panel, which totals its rows' 2dp displays.
+    ``preauth_message`` used to round the exact total up instead, and those are
+    different numbers (``sum(ceil) >= ceil(sum)``): the sentence said $9.18
+    while the panel above it said $9.19, over a consent line reading "the amount
+    above will be held". Topping up to the sentence's figure gets refused again.
+
+    Measured when this was written: 128 of 240 refused cohorts printed two
+    different holds.
+
+    Red if the route stops passing ``required_display``, or if the panel and the
+    sentence are derived by two different roundings again.
+    """
+    from shared.compute_campaigns import display_total_usd
+    from shared.target_launch import ToolLaunchSpec, plan_multi_launch
+
+    _login(client)
+    t = _target()
+    # bindcraft+rfantibody@100, not rfdiffusion+pxdesign@12. Three preconditions
+    # have to hold simultaneously and the original cohort met none of them:
+    #   1. the paces must price differently (at 12 designs one sub-job per tool
+    #      clamps the first wave and burst == steady, so the pace argument is
+    #      unpinnable -- that mutation stayed green across 257 tests);
+    #   2. the row sum must differ from the ceiling of the exact sum AT BURST;
+    #   3. and the same must hold AT STEADY, or the steady case below is vacuous.
+    # 81 cohorts satisfy all three; this is the smallest. Searched, not guessed.
+    _assert_pace_is_observable_on(["bindcraft", "rfantibody"], 100)
+
+    # The form is passed EXPLICITLY and the plan is built from the same numbers.
+    # The previous version computed rfdiffusion@12 + pxdesign@12 while _form()
+    # posts pxdesign@**24**, so the expected figure came from a cohort the route
+    # never priced. It passed only because those two different cohorts happen to
+    # display the same $9.19. Keep these two in step or the test proves nothing.
+    #
+    # Parametrized over BOTH paces, which is what actually pins the pace
+    # argument. Running burst only, the route's `plan.pace` and a hardcoded
+    # PACE_BURST are the same value, so the mutation swapping one for the other
+    # survived even after this cohort was widened to 200. Only the steady case
+    # can tell them apart.
+    form = _form(
+        tools=["bindcraft", "rfantibody"], pace=pace,
+        bindcraft__designs="100", bindcraft__binder_length_min="50",
+        bindcraft__binder_length_max="100",
+        rfantibody__designs="100", rfantibody__cdr_lengths="H1:8,H2:7,H3:10-16",
+    )
+    plan = plan_multi_launch(
+        [ToolLaunchSpec(tool=tool, preset="pilot", requested_designs=100,
+                        params={}) for tool in ("bindcraft", "rfantibody")],
+        pace,
+    )
+    panel = display_total_usd(r["first_wave_usd_display"] for r in plan.rows())
+    # The precondition. If the two roundings agreed on this cohort the test
+    # would pass with the bug reinstated.
+    from shared.compute_campaigns import display_cost_usd
+    assert panel != display_cost_usd(plan.first_wave_usd), (
+        "this cohort cannot observe the divergence; pick another"
+    )
+
+    resp, _ = _launch(
+        client, t, form=form,
+        preauth=_preauth(ok=False, reason=PREAUTH_INSUFFICIENT,
+                         balance="1", required=str(plan.first_wave_usd)),
+    )
+    body = resp.get_data(as_text=True)
+    assert f"${panel} to start" in body, f"sentence does not quote {panel}"
+    assert f"${display_cost_usd(plan.first_wave_usd)} to start" not in body
+
+
+def test_the_narrow_alternative_quotes_the_panel_it_produces(client):
+    """"Starting narrow would need $X" is a promise about the next screen.
+
+    Acting on it re-prices at steady pace and prints a panel; that panel totals
+    its rows, so this figure has to be totalled the same way rather than ceiled
+    from the steady exact sum.
+
+    Red if the alternative goes back to ``display_cost_usd`` of the total.
+    """
+    from shared.compute_campaigns import display_cost_usd, display_total_usd
+    from shared.target_launch import (
+        PACE_STEADY, ToolLaunchSpec, first_wave_at_pace, plan_multi_launch,
+    )
+
+    _login(client)
+    # bindcraft+rfantibody @200, not rfdiffusion+pxdesign @12. Two independent
+    # preconditions have to hold at once and only this shape satisfies both:
+    # the paces must diverge (else PACE_STEADY is unpinned), and the STEADY
+    # panel must differ from the ceiling of the steady exact sum (else the
+    # row-sum-versus-ceiling assertion is vacuous). Searched, not guessed.
+    _assert_pace_is_observable_on(
+        list(_STEADY_DIVERGENT_COHORT_TOOLS), _STEADY_DIVERGENT_DESIGNS
+    )
+    specs = [ToolLaunchSpec(tool=tool, preset="pilot",
+                            requested_designs=_STEADY_DIVERGENT_DESIGNS,
+                            params={})
+             for tool in _STEADY_DIVERGENT_COHORT_TOOLS]
+    steady_plan = plan_multi_launch(specs, PACE_STEADY)
+    steady_panel = display_total_usd(
+        r["first_wave_usd_display"] for r in steady_plan.rows()
+    )
+    # The precondition its sibling asserts and this one did not. The two
+    # roundings agree in 56 of 120 2- to 7-tool cohorts, so on the wrong cohort
+    # this test passes with the bug reinstated and says nothing. That is the
+    # exact failure round 7 shipped, and leaving it to the cohort's good luck
+    # is how it recurs.
+    assert steady_panel != display_cost_usd(
+        first_wave_at_pace(plan_multi_launch(specs, "burst"), PACE_STEADY)
+    ), "this cohort cannot observe the divergence; pick another"
+
+    # The query is built from the SAME tools and count the plan above uses.
+    # Its sibling was passing on a query the route priced differently from the
+    # plan the test computed, and only agreed because two unrelated cohorts
+    # rendered the same string.
+    query = "pace=burst" + "".join(
+        f"&tool={tool}&designs={_STEADY_DIVERGENT_DESIGNS}&preset=pilot"
+        for tool in _STEADY_DIVERGENT_COHORT_TOOLS
+    )
+    data = _estimate(
+        client, _target(), query,
+        preauth=_preauth(ok=False, reason=PREAUTH_INSUFFICIENT,
+                         balance=str(steady_plan.first_wave_usd)),
+    )
+    assert data.get("alternative"), "no narrow alternative offered"
+    assert data["alternative"]["first_wave_usd_display"] == steady_panel
+
+
+def test_the_pace_helper_reproduces_the_row_sum(client):
+    """The two ways of computing the displayed hold must not drift.
+
+    ``first_wave_display_at_pace`` exists for callers with no rows in hand, and
+    its docstring claims it equals ``display_total_usd`` over ``plan.rows()`` at
+    the plan's own pace. That equality is the whole reason it is safe to use in
+    the refusal sentence, so it is asserted rather than inspected.
+    """
+    from shared.compute_campaigns import display_total_usd
+    from shared.target_launch import (
+        PACE_BURST, PACE_STEADY, ToolLaunchSpec, first_wave_display_at_pace,
+        plan_multi_launch,
+    )
+
+    cohorts = [("rfdiffusion",), ("rfdiffusion", "pxdesign"),
+               ("rfdiffusion", "pxdesign", "boltzgen")]
+    for tools in cohorts:
+        for pace in (PACE_BURST, PACE_STEADY):
+            plan = plan_multi_launch(
+                [ToolLaunchSpec(tool=t, preset="pilot", requested_designs=12,
+                                params={}) for t in tools],
+                pace,
+            )
+            assert first_wave_display_at_pace(plan, plan.pace) == (
+                display_total_usd(
+                    r["first_wave_usd_display"] for r in plan.rows()
+                )
+            ), f"{tools} at {pace}"
+
+
 def test_the_refusal_reads_as_plural_for_a_multi_tool_launch(client):
     _login(client)
     t = _target()
@@ -1179,13 +1551,55 @@ def test_a_clean_launch_reports_no_stalled_runs(client):
 
 
 def test_a_launch_where_every_fund_fails_is_reported_as_started_nothing(client):
+    """The uncharged claim now comes from the TEMPLATE, gated on the route's
+    money state, so this asserts the rendered sentence rather than a phrase that
+    used to be baked into the route's message. Both halves matter: the route
+    must say nothing started, and the page must be willing to say nothing was
+    charged, which it only does while no campaign has been funded."""
     _login(client)
     t = _target()
     rec = _Recorder(fund_results=[False, False])
     resp, rec = _launch(client, t, recorder=rec)
     assert resp.status_code == 400
-    assert "was not charged" in resp.get_data(as_text=True)
+    body = _squash(resp.get_data(as_text=True))
+    assert "None of those runs could be started." in body
+    assert "Nothing was started and nothing was charged." in body
     assert [kind for kind, _ in rec.calls if kind == "drive"] == []
+    # Once, not twice. The route's message used to carry the claim as well as
+    # the template, so the panel printed it in consecutive sentences.
+    assert body.count("nothing was charged") == 1
+
+
+def test_the_launch_page_makes_no_money_claim_unless_the_route_makes_it(app):
+    """The template must not infer "nothing was charged" from the presence of an
+    error. Whether a campaign was funded is not a fact a template has, and this
+    is the most expensive sentence on the page to get wrong: said falsely it
+    invites a relaunch, and because an error here is a 400 the idempotency claim
+    has already been released, so that relaunch funds a second full set against
+    a gate the user passed once.
+
+    Pins the DEFAULT too. `_launch_context` leaves `nothing_charged` False, so a
+    render path that forgets to pass it stays silent instead of guessing. Red if
+    the sentence is moved back outside the conditional, and red if the default
+    flips to True.
+    """
+    from flask import render_template
+
+    from blueprints.targets import _launch_context
+
+    t = _target()
+    with app.test_request_context(f"/targets/{t.id}/launch"):
+        silent = render_template(
+            "targets/launch.html", **_launch_context(t, error="Boom."),
+        )
+        claimed = render_template(
+            "targets/launch.html",
+            **_launch_context(t, error="Boom.", nothing_charged=True),
+        )
+    # The error itself renders either way; only the money claim is gated.
+    assert "Boom." in silent and "Boom." in claimed
+    assert "nothing was charged" not in silent
+    assert "nothing was charged" in claimed
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1707,108 @@ def _run(tool, group, run_id="c1", status="funded", designs=12):
     )
 
 
+# ---------------------------------------------------------------------------
+# Detail-page banner, counted through the REAL query
+# ---------------------------------------------------------------------------
+#
+# `_render_detail` above patches `list_campaigns_for_target` out and hands the
+# template a fixed list, which is right for testing the template's wording and
+# WRONG for testing the arithmetic: `launched_count` is then a property of the
+# fixture, so no change to the draft filter or to the launch route can move it.
+# A test that claimed to pin the count against double-counting passed with
+# `include_drafts=True` and passed again with a drive-spawn failure re-routed to
+# `stalled`, because neither can alter a hardcoded list.
+#
+# These seed rows into a fake client instead and let the real function filter
+# them, so the count is produced by the code under test.
+
+
+def _row(tool, group, *, target_id, row_id="c1", status="funded", designs=12,
+         user_id="u-1"):
+    """A campaign row shaped as PostgREST returns it, not a namespace.
+
+    `from_row` subscripts id/user_id/tool/preset/status directly, so a partial
+    dict here would raise rather than fail an assertion.
+
+    ``target_id`` is keyword-only with NO default, so every caller states the
+    target it belongs to: the query filters on it, and a helper that stamped it
+    in silently would keep passing if that filter were dropped. ``user_id`` is
+    keyword-only but does default, so this rationale does not cover it; the
+    owner filter is pinned separately by the cross-tenant tests.
+    """
+    return {
+        "id": row_id, "user_id": user_id, "tool": tool, "preset": "pilot",
+        "status": status, "requested_designs": designs, "chunk_size": designs,
+        "total_subjobs": 1, "launch_group_id": group, "created_at": "2026-07-30",
+        "budget_usd": "1.0000", "name": None, "target_id": target_id,
+    }
+
+
+class _CampaignQuery:
+    """Just enough of the builder `list_campaigns_for_target` actually uses.
+
+    Models `neq` because the draft filter is applied SERVER-side: an in-memory
+    filter here would let the page-budget behaviour diverge from production.
+    """
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._eq = {}
+        self._neq = {}
+
+    def select(self, *_a, **_kw):
+        return self
+
+    def order(self, *_a, **_kw):
+        return self
+
+    def eq(self, col, val):
+        self._eq[col] = val
+        return self
+
+    def neq(self, col, val):
+        self._neq[col] = val
+        return self
+
+    def range(self, start, end):
+        self._slice = (start, end)
+        return self
+
+    def execute(self):
+        kept = [
+            r for r in self._rows
+            if all(r.get(c) == v for c, v in self._eq.items())
+            # PostgREST renders neq as `col <> val`, which is NULL and so
+            # DROPS the row when the column is NULL. Python `!=` KEEPS it,
+            # which is the opposite answer and decides whether a malformed row
+            # can reach the caller at all. Matches the sibling fake in
+            # tests/test_compute_campaigns.py.
+            and all(
+                r.get(c) is not None and r.get(c) != v
+                for c, v in self._neq.items()
+            )
+        ]
+        start, end = getattr(self, "_slice", (0, len(kept) - 1))
+        return SimpleNamespace(data=kept[start:end + 1])
+
+
+class _CampaignClient:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, _name):
+        return _CampaignQuery(self.rows)
+
+
+def _render_detail_through_the_query(client, target, query, rows):
+    """Render the detail page with the run list produced by the real query."""
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.get_target", return_value=target), \
+            patch("shared.compute_campaigns.get_service_client",
+                  return_value=_CampaignClient(rows)):
+        return client.get(f"/targets/{target.id}?{query}").get_data(as_text=True)
+
+
 @pytest.mark.parametrize("stalled,expected", [
     (1, "1 more could not be started and was not charged"),
     (3, "3 more could not be started and were not charged"),
@@ -1301,13 +1817,15 @@ def test_the_stalled_banner_renders_when_some_runs_did_not_start(
     client, stalled, expected,
 ):
     """The partial-failure path a user actually hits when the wallet drains
-    mid-launch. It is nested INSIDE the launched banner in detail.html, so it
-    can only render when this launch group also matched rows. No prior test
-    combined a MATCHING launch group with a non-zero ``stalled``: the one test
-    that passed ``stalled=99`` paired it with an unknown group (so the whole
-    banner was suppressed), and the one with a matching group passed no
-    ``stalled`` at all. Between them the stalled copy never rendered and its
-    singular/plural wording never executed.
+    mid-launch. No prior test combined a MATCHING launch group with a non-zero
+    ``stalled``: the one test that passed ``stalled=99`` paired it with an
+    unknown group, and the one with a matching group passed no ``stalled`` at
+    all. Between them the stalled copy never rendered and its singular/plural
+    wording never executed.
+
+    This case pairs it with a matching group, so it covers the "N more" wording.
+    The no-match wording is a separate test below, because the two halves of the
+    banner are now gated independently.
 
     "not charged" is the load-bearing half. A stalled run stayed ``draft``,
     which is inert -- never funded, never dispatched, never billed -- and a
@@ -1338,20 +1856,59 @@ def test_the_stalled_banner_is_absent_when_every_run_started(client):
     assert "could not be started" not in body
 
 
-def test_an_unknown_launch_group_renders_no_banner(client):
+def test_an_unknown_launch_group_starts_nothing_but_still_reports_stalled(
+    client,
+):
+    """The two halves are gated independently, and this is the cost of that.
+
+    "Started N" needs a real match, so an unknown group claims nothing started.
+    ``stalled`` rides the param alone, so a crafted one DOES render -- and that
+    is deliberate, not an oversight. The template cannot distinguish a crafted
+    count from the case this gating exists for: a real launch that funded some
+    campaigns and stranded others, where the run query then came back empty
+    because the same connection fault broke it too. Suppressing the crafted
+    count means suppressing that one, and only one of the two misleads someone
+    other than its author.
+    """
     _login(client)
     t = _target()
-    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[]):
-        body = client.get(
-            f"/targets/{t.id}?launched={uuid.uuid4()}&stalled=99"
-        ).get_data(as_text=True)
-    # A crafted `stalled` only misinforms whoever crafted it: the whole banner
-    # is gated on this launch group actually matching rows on the page.
+    body = _squash(_render_detail_through_the_query(
+        client, t, f"launched={uuid.uuid4()}&stalled=99", [],
+    ))
     assert "Started" not in body
-    assert "could not be started" not in body
+    assert "99 runs could not be started and were not charged" in body
+
+
+def test_the_stalled_half_survives_an_empty_run_query(client):
+    """The regression this gating exists for, and the reason it is not nested.
+
+    `launched_count` comes from `list_campaigns_for_target`, which excludes
+    `draft` AND returns the rows read so far if a page fails. So a launch that
+    funded some campaigns and stranded others can land here with nothing in the
+    list: either that read broke, or the fund outcome was MIXED, with the
+    stalled ones confirmed draft and the rest taking the launch route's "row
+    unreadable, treat as started" fall-through while in fact still draft, so
+    this query excludes them too. Both are the SAME fault that stranded them, so
+    the nested version went dark in precisely the case it was written to report
+    -- the user funded real compute, one run did not start, and the page said
+    nothing at all.
+
+    It has to be MIXED. If EVERY campaign took that fall-through then nothing is
+    stalled, the route drops the query param entirely, and there is no
+    disclosure for the nesting to suppress.
+
+    Red if the stalled block is nested back inside the started block.
+    """
+    _login(client)
+    t = _target()
+    group = str(uuid.uuid4())
+    body = _squash(_render_detail_through_the_query(
+        client, t, f"launched={group}&stalled=2", [],
+    ))
+    assert "Started" not in body
+    # "2 more" would be wrong with no "Started N" line above it to be more than.
+    assert "2 runs could not be started and were not charged" in body
+    assert "2 more" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -1400,7 +1957,21 @@ class _IdemTable:
         # swallowed the predicate would let the loser of a concurrent submit
         # overwrite the winner's cached 302 -- and would report the scoping as
         # working while it did nothing.
-        assert val is None, f"is_({col!r}, {val!r}) is not modelled"
+        #
+        # Accepts BOTH spellings of the null predicate. Of the 17 `.is_()` call
+        # sites in this repo's production code, only the 2 in
+        # `shared/idempotency.py` pass None; the other 15 pass the PostgREST
+        # string "null" (shared/api_keys.py x4, shared/targets.py x4,
+        # shared/jobs.py x3, shared/handoffs.py, shared/compute_campaigns.py,
+        # cron/purge_old_storage.py, webhooks/modal.py). Both spellings are
+        # valid. Refusing the string would not have caught anything either: an
+        # earlier version of this fake asserted `val is None` on the stated
+        # grounds that a refusal here escapes, and that was WRONG -- the builder
+        # chain in both _release_key and _store_response sits INSIDE the try
+        # whose bare `except Exception` swallows it. See the note on delete().
+        assert val is None or val == "null", (
+            f"is_({col!r}, {val!r}) is not a null predicate"
+        )
         self._is_null.append(col)
         return self
 
@@ -1413,14 +1984,22 @@ class _IdemTable:
         return self
 
     def delete(self):
-        # Modelled, because refusing does NOT work here. `_release_key` wraps
-        # `.delete()` in a bare `except Exception`, so raising is swallowed into
-        # the same `False` return as omitting the method entirely, and the
-        # wrapper then CACHES the failure instead of releasing it. A stub that
-        # raises therefore inverts the behaviour under test exactly as silently
-        # as a missing method, and makes any assertion about a released claim
-        # unfailable. (This is why `is_` above can refuse and this cannot: `is_`
-        # is called on the builder before `execute`, outside that except.)
+        # Modelled rather than raising, because a raise here is invisible:
+        # `_release_key` wraps the whole chain in a bare `except Exception`, so
+        # raising is swallowed into the same `False` as omitting the method
+        # entirely, and the wrapper then CACHES the failure instead of releasing.
+        #
+        # No test in THIS file reaches the release path -- every launch here ends
+        # 302 or 400-before-commit, and removing this method changes no result.
+        # tests/test_idempotency.py owns that path. It is modelled anyway because
+        # the release leg only becomes observable under a mutation that releases
+        # regardless of status, and a stub that inverted the behaviour under that
+        # mutation would make the double-fund assertion unfailable in exactly the
+        # direction it exists to catch.
+        #
+        # The same applies to `is_` above: nothing in this fake can usefully
+        # refuse, because every call site swallows. Assertions here document the
+        # contract for a reader; they are not a guard.
         self._pending_delete = True
         return self
 
@@ -1733,18 +2312,32 @@ def test_the_banner_counts_never_double_count_a_run(client):
     is non-draft, so the query counted it AND the param counted it, and a 2-tool
     launch rendered "Started 2 runs" plus "1 more could not be started" -- three
     runs implied where two exist, one of them billing.
+
+    Seeded through the real query rather than handed a fixed list, because
+    `launched_count` IS the thing under test. An earlier version of this test
+    patched `list_campaigns_for_target` and asserted against a hardcoded
+    one-element list, which made "Started 2 runs" unreachable by construction:
+    both `include_drafts=True` and re-routing a drive-spawn failure to `stalled`
+    left it green.
     """
     _login(client)
     t = _target()
     group = str(uuid.uuid4())
-    # What the page sees after a launch where one of two funds failed: the
-    # funded run is returned, the draft one is filtered out server-side.
-    body = _squash(_render_detail(
+    # Exactly the shape a launch leaves when one of two funds failed: both rows
+    # exist, one funded and one still draft. Only the filter decides the count.
+    body = _squash(_render_detail_through_the_query(
         client, t, f"launched={group}&stalled=1",
-        [_run("rfdiffusion", group)],
+        [
+            _row("rfdiffusion", group, target_id=t.id, row_id="c1",
+                 status="funded"),
+            _row("pxdesign", group, target_id=t.id, row_id="c2",
+                 status="draft"),
+        ],
     ))
     assert "Started 1 run against this target" in body
     assert "1 more could not be started and was not charged" in body
+    # The draft must not be counted as started. With the filter widened this
+    # reads "Started 2 runs" while `stalled=1` still claims one did not.
     assert "Started 2 runs" not in body
 
 
@@ -1782,14 +2375,14 @@ def _launch_with_fund_result(client, target, recorder, status_after):
 
 
 def test_a_confirmed_draft_is_the_only_thing_called_not_charged(client):
-    """The one case where "was not charged" is true: the row really is still
+    """The one case where "nothing was charged" is true: the row really is still
     draft, so no hold was placed and nothing will dispatch."""
     _login(client)
     t = _target()
     rec = _Recorder()
     resp = _launch_with_fund_result(client, t, rec, "draft")
     assert resp.status_code == 400
-    assert "not charged" in _visible_text(resp)
+    assert "nothing was charged" in _visible_text(resp)
     # Nothing was driven, because nothing moved.
     assert [k for k, _ in rec.calls if k == "drive"] == []
 

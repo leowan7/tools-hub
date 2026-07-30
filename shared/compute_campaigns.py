@@ -32,8 +32,8 @@ import math
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
-from typing import Mapping, Optional
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from typing import Iterable, Mapping, Optional
 
 from shared.credits import get_service_client
 from shared.wallet_estimates import (
@@ -235,6 +235,156 @@ _CHILD_STATUSES: tuple[str, ...] = (
 
 def _quantize_usd(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+# ---------------------------------------------------------------------------
+# 2dp display strings
+# ---------------------------------------------------------------------------
+#
+# Money is CARRIED at 4dp (`_quantize_usd`) and must be DISPLAYED at 2dp,
+# because a wallet figure with four decimals reads as a bug. That conversion is
+# lossy, and which way it loses decides whether the number lies in our favour
+# or the user's.
+#
+# It has to happen here rather than in the page. `Number(x).toFixed(2)` rounds
+# to NEAREST, so a $573.6736 hold rendered client-side became "$573.67" -- a
+# figure below the amount actually reserved, printed directly above a checkbox
+# reading "the amount above will be held against my wallet balance". That is the
+# same understatement `preauth_message` calls out by name for the refusal
+# sentence, and it was left on the number the user actually consents to. Doing
+# it in Decimal also means it is covered by the Python suite; the launch page's
+# script has no automated coverage at all (A47).
+
+
+def _display_usd(value, rounding: str) -> str:  # noqa: ANN001
+    """Shared body. Raises on anything that is not a finite number.
+
+    ``is_finite()`` FIRST, and not folded into the ``quantize`` call, because
+    quantize does not signal on NaN: ``Decimal("NaN").quantize(...)`` returns NaN
+    happily and renders the literal string "NaN" into the page. That is the same
+    trap ``preauth_message`` documents, and a "$NaN to start" is worse than an
+    error, because the page's failure handling clears the price and DISABLES the
+    submit button while a rendered NaN leaves it armed. (Neither failure handler
+    unticks the consent box; see ``display_balance_usd``.)
+    """
+    amount = Decimal(str(value))
+    if not amount.is_finite():
+        raise ValueError(f"cannot display a non-finite amount: {value!r}")
+    return str(amount.quantize(Decimal("0.01"), rounding=rounding))
+
+
+def display_cost_usd(value) -> str:  # noqa: ANN001
+    """A 2dp string for money the user will be CHARGED or have HELD.
+
+    Rounds UP. A displayed cost or hold that is below the real figure is not a
+    ceiling, and consent recorded against it is consent to the wrong number.
+    """
+    return _display_usd(value, ROUND_CEILING)
+
+
+def display_balance_usd(value) -> str:  # noqa: ANN001
+    """A 2dp string for money the user HAS.
+
+    Rounds DOWN, for the mirror-image reason: a balance rounded up claims funds
+    that are not there.
+
+    The asymmetry is visible in a narrow band, and that is deliberate rather
+    than overlooked. With a balance between the exact requirement and the
+    requirement as DISPLAYED, the page shows less available than it shows
+    needed, while the launch is in fact affordable: a $9.1800 balance against a
+    $9.1765 first wave reads "$9.18 available" under "$9.19 to start" and still
+    starts. The button state comes from the server's `affordable` flag, never
+    from comparing the two rendered strings. Erring toward "top up" beats
+    erring toward a hold the balance cannot cover.
+
+    Note the band is wider than the one cent this originally described. The
+    multi-tool panel's displayed requirement is the SUM of its rows' ceilings,
+    not the ceiling of the exact total, so it can sit a few cents above the
+    exact figure the gate uses. Measured across 2- to 7-tool cohorts, the gap
+    reached 2 cents.
+
+    All three helpers raise rather than guess on a non-numeric or non-finite
+    input. Callers split into two groups with DIFFERENT failure modes, and the
+    difference matters:
+
+    1. Estimate endpoints and what they reach: ``api_runs_estimate``,
+       ``api_target_launch_estimate``, and ``MultiLaunchPlan.rows()`` (called
+       by the estimate endpoint only, never by ``target_launch_submit``). Both
+       pages answer a failed estimate by clearing the figures and DISABLING the
+       submit button, so raising here fails CLOSED. The disabled button is the
+       mechanism; do not restate it as unticking the consent box, because
+       neither failure handler does that.
+    2. Renders with no submit button to disable: ``compute_campaign_create``'s
+       refusal path, ``target_launch_submit``'s refusal path, and the
+       ``display_cost_usd`` Jinja global that ``runs/detail.html`` and
+       ``runs/list.html`` call on a stored ``budget_usd``. A raise there is a
+       500 on a page, not a blocked spend. No gate depends on it, but it is not
+       "fail closed" either, and calling it that would be the kind of
+       comfortable claim this module has been wrong about before.
+
+    ``first_wave_display_at_pace()`` is in BOTH groups: ``blueprints/targets.py``
+    calls it from the estimate (fails closed) and from ``target_launch_submit``'s
+    refusal (a POST re-render, where a raise is a 500). An earlier version of
+    this paragraph put it in group 1 only, having carefully qualified
+    ``rows()`` one line above and then given its sibling no qualification.
+
+    Do NOT write that raising here is "not a regression because the previous
+    formatting raised on the same inputs". It did not. ``'%.2f' %
+    Decimal('NaN')`` returns ``'nan'`` where these raise, and Postgres numeric
+    can hold NaN; and ``compute_campaign_create``'s predecessor,
+    ``preauth_message(pre)`` with no override, catches inside its own derived
+    branch. Both of those paths became fallible, which may well be the right
+    trade, but it is a change and not a no-op.
+    """
+    return _display_usd(value, ROUND_FLOOR)
+
+
+def display_total_usd(displays: Iterable[str]) -> str:
+    """The 2dp total of a column of amounts that are ALREADY displayed at 2dp.
+
+    Sums what is printed instead of re-rounding the exact total, because those
+    are two different numbers: rounding each row up and rounding the exact sum
+    up gives ``sum(ceil(row)) >= ceil(sum(row))``, so a total taken from the
+    exact sum prints BELOW the column standing directly above it. Measured on
+    the two-tool cohort rfdiffusion@12 + pxdesign@12 at burst, the rows printed
+    $2.02 and $5.03 under a total of $7.04.
+
+    A consent panel whose rows do not add up to its own total is worse than
+    either figure being a cent out, because the sum is the one part of it the
+    reader can check for themselves.
+
+    Still a true ceiling: each row display is at or above its own exact value,
+    so their sum is at or above the exact total. The gate is applied to the
+    exact figures, never to these, so this can only overstate what will be held.
+
+    Use this for any figure that must reconcile with a panel of rows the reader
+    will see -- INCLUDING a panel on a screen they have not reached yet. The
+    steady-pace alternative is the example that matters: "Starting narrow would
+    need $X" is a promise about the panel produced by acting on it, so it is
+    totalled from the steady rows (``first_wave_display_at_pace``), not ceiled
+    from the steady exact sum. Those two differ in 64 of 120 2- to 7-tool
+    cohorts, so picking the wrong one is not theoretical.
+
+    An earlier version of this paragraph said the opposite -- that a standalone
+    figure is ceiled from its exact value directly -- and it was already false
+    when written, in the same change that made the alternative a row sum. The
+    behaviour is correct and pinned; only the description was wrong, which is
+    the more dangerous half, because it aims the next author straight back at
+    the defect.
+    """
+    total = Decimal("0")
+    for display in displays:
+        amount = Decimal(str(display))
+        if not amount.is_finite():
+            raise ValueError(f"cannot total a non-finite amount: {display!r}")
+        total += amount
+    # A no-op on every real input: a sum of 2dp Decimals is already 2dp, whole
+    # dollars included (Decimal("2.00") + Decimal("3.00") is "5.00", not "5").
+    # It is here for the EMPTY sum only, where the seed would otherwise render
+    # as "0". No PRODUCTION caller passes an empty sequence, but
+    # test_the_total_helper_also_fails_closed asserts the "0.00" directly, so
+    # this line is pinned even though no route reaches it.
+    return str(total.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
 
 
 # ---------------------------------------------------------------------------
@@ -676,10 +826,48 @@ def create_campaign(
         return None
 
 
+def _campaign_or_none(row) -> Optional[ComputeCampaign]:  # noqa: ANN001
+    """:meth:`ComputeCampaign.from_row` without the raise.
+
+    ``from_row`` subscripts five columns directly (``id``, ``user_id``, ``tool``,
+    ``preset``, ``status``) and coerces five more through ``int()``, so a row
+    missing a column or holding a non-numeric value raises KeyError or
+    ValueError. Four call sites in this module had it OUTSIDE the ``try`` that
+    exists to make them total, so a single unreadable row escaped as a 500 from
+    ``/campaigns`` and the target detail page, or aborted the paused-campaign
+    sweep part way -- in each case contradicting the ``None``/``[]``/best-effort
+    contract those functions document.
+
+    Row-shape faults are not currently reachable through ``select("*")`` on a
+    table whose columns the migrations pin, so this is a guard against a partial
+    migration or a renamed column, not a live bug. It is here because the
+    functions above promise not to raise, and a promise a reader can check is
+    worth more than one that happens to hold.
+
+    ``from_row`` itself stays strict: a caller that wants to know goes there.
+    """
+    try:
+        return ComputeCampaign.from_row(row)
+    except Exception:
+        logger.warning(
+            "compute_campaigns: unreadable campaign row (id=%r)",
+            (row or {}).get("id") if isinstance(row, dict) else None,
+            exc_info=True,
+        )
+        return None
+
+
 def get_campaign(
     campaign_id: str, *, user_id: Optional[str] = None
 ) -> Optional[ComputeCampaign]:
-    """Fetch a campaign by id. Pass ``user_id`` to enforce owner scope."""
+    """Fetch a campaign by id. Pass ``user_id`` to enforce owner scope.
+
+    Returns None on every failure, INCLUDING an unreadable row. The launch
+    route's fund loop leans on that: it calls this after the commit point to
+    decide whether a campaign is really still `draft`, and a raise there would
+    500 a request that has already spent money and release the idempotency
+    claim with it.
+    """
     client = get_service_client()
     if client is None:
         return None
@@ -693,7 +881,7 @@ def get_campaign(
     data = getattr(response, "data", None)
     if not data:
         return None
-    return ComputeCampaign.from_row(data)
+    return _campaign_or_none(data)
 
 
 def list_campaigns_for_user(
@@ -716,7 +904,9 @@ def list_campaigns_for_user(
     except Exception:
         logger.warning("list_campaigns_for_user failed for %s", user_id, exc_info=True)
         return []
-    return [ComputeCampaign.from_row(r) for r in rows]
+    # Unreadable rows are dropped and logged, not raised: this feeds
+    # `GET /campaigns`, where one bad row must not 500 the whole list.
+    return [c for c in (_campaign_or_none(r) for r in rows) if c is not None]
 
 
 # Paging for the per-target run list. Must stay at or below the PostgREST
@@ -750,8 +940,16 @@ def list_campaigns_for_target(
     ``drive_campaign`` refuses it, ``_campaign_spend_today`` skips it, no hold
     is ever placed -- so it is not a run, and listing it under a heading that
     says "Runs" would assert something false about a row that never started.
-    The launch route tells the user what did and did not start, so the omission
-    is disclosed there, not hidden.
+
+    The omission is disclosed rather than hidden, but NOT by this function and
+    not by anything it can guarantee. The count of what did not start rides the
+    launch redirect's ``stalled`` query param, and
+    ``templates/targets/detail.html`` gates that half of the banner on the param
+    ALONE. It has to: this function's count cannot carry the news, because a
+    stranded draft is exactly what it filters out, and because its own error
+    path (below) can return short. Do not re-nest the stalled line under the
+    started one -- the read failure that strands a campaign is usually the same
+    one that empties this list.
 
     The real cost, stated because it is not obvious: this hides the draft HERE
     only. :func:`list_campaigns_for_user` is a DIFFERENT query, applies no
@@ -842,7 +1040,10 @@ def list_campaigns_for_target(
             "list_campaigns_for_target: page bound hit for target %s; "
             "the run list may be incomplete", target_id,
         )
-    campaigns = [ComputeCampaign.from_row(r) for r in rows]
+    # Dropped-and-logged for the same reason the paging error above breaks
+    # instead of raising: this is a read-only strip, and "a short run strip
+    # beats a 500" is only true if converting the rows cannot raise either.
+    campaigns = [c for c in (_campaign_or_none(r) for r in rows) if c is not None]
     campaigns.sort(key=lambda c: str(getattr(c, "created_at", "") or ""), reverse=True)
     return campaigns
 
@@ -1141,7 +1342,9 @@ _PREAUTH_MESSAGES: Mapping[str, str] = {
 }
 
 
-def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
+def preauth_message(
+    pre: PreauthResult, *, count: int = 1, required_display: Optional[str] = None
+) -> str:
     """One sentence explaining a refused start gate.
 
     ``count`` is how many runs the gate covered. A multi-tool launch passes one
@@ -1149,6 +1352,19 @@ def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
     would misdescribe what was refused and would point the user at the wrong
     remedy: with several tools selected, dropping one is usually cheaper than
     topping up.
+
+    ``required_display`` is the figure the PAGE is showing for the same hold,
+    and callers that render a panel must pass it. Deriving it here instead used
+    to be safe, because both were ``ceil(exact)``. It stopped being safe the
+    moment the multi-tool panel started totalling its rows' 2dp displays, which
+    is a slightly larger number (``sum(ceil) >= ceil(sum)``): the refusal
+    sentence then named $9.18 while the panel above it, on the same 400, said
+    $9.19 and the consent line under it said "the amount above will be held".
+    A user who tops up to the number in the sentence is refused again.
+
+    So there is one displayed hold per screen and the caller owns it. Omitting
+    it falls back to rounding ``pre.required_usd`` up, which is right for a
+    caller with no panel of its own.
     """
     plural = count > 1
     msg = _PREAUTH_MESSAGES.get(
@@ -1170,7 +1386,14 @@ def preauth_message(pre: PreauthResult, *, count: int = 1) -> str:
     # so anything unrenderable falls back to the wording rather than becoming a
     # 500. Every current caller passes a Decimal; the guard is for the next one.
     shown = None
-    if required is not None:
+    if required_display:
+        # Rendered verbatim. It is already the string on the screen, and
+        # re-deriving it here is exactly how the two came apart. Truthiness, not
+        # `is not None`: an empty string would otherwise render a bare "$", and
+        # falling back to the derived figure is the better of the two wrong
+        # answers.
+        shown = required_display
+    elif required is not None:
         try:
             amount = Decimal(str(required))
             # is_finite() first: NaN does NOT raise here, it quantizes to NaN
@@ -2003,7 +2226,12 @@ def sweep_paused_campaigns(*, now=None, ttl_days: int = _PAUSE_TTL_DAYS) -> dict
         )
         unnotified = []
     for row in unnotified:
-        _notify_campaign_paused(ComputeCampaign.from_row(row))
+        # Skip an unreadable row rather than abort the sweep on it: the rows
+        # after it still need their notification.
+        campaign = _campaign_or_none(row)
+        if campaign is None:
+            continue
+        _notify_campaign_paused(campaign)
         summary["renotified"] += 1
 
     return summary

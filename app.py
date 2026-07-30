@@ -133,6 +133,7 @@ from shared.storage import (
     upload_input,
 )
 from shared import category_glyphs as _category_glyphs
+from shared import compute_campaigns as _compute_campaigns
 from shared import metric_glossary as _metric_glossary
 from shared import resample as _resample
 from shared import score_legends as _score_legends
@@ -394,6 +395,18 @@ def create_app() -> Flask:
             return {}
         return getattr(meta, "about", {}) or {}
     flask_app.jinja_env.globals["tool_about"] = _tool_about
+
+    # ``display_cost_usd(x)`` is the ONE 2dp rendering of a campaign cost, and
+    # it rounds UP in Decimal. Exposed to templates because a page that formats
+    # money itself rounds to NEAREST and prints a figure below the real amount.
+    # ``runs/detail.html`` and ``runs/list.html`` used ``'%.2f'|format(...)``,
+    # which is round-half-even over a float, and once the estimate panels moved
+    # to Decimal the same campaign printed two different budgets on two screens
+    # (5 of the 7 campaign tools: rfdiffusion 4.0202 rendered $4.03 there and
+    # $4.02 here). Templates must call this rather than format money.
+    flask_app.jinja_env.globals["display_cost_usd"] = (
+        _compute_campaigns.display_cost_usd
+    )
 
     # Inject Workspace context into every template so the shared header
     # can render the "Active Workspaces (N)" badge. Replaces the legacy

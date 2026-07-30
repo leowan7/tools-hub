@@ -46,7 +46,7 @@
             <span class="runs-badge {{ item.status }}">{{ item.status.replace('_', ' ') }}</span>
           </div>
           <div class="runs-card-meta">
-            {{ item.tool }} · {{ item.requested_designs }} designs · {{ item.total_subjobs }} sub-jobs · budget ${{ '%.2f'|format(item.budget_usd) }}
+            {{ item.tool }} · {{ item.requested_designs }} designs · {{ item.total_subjobs }} sub-jobs · budget ${{ display_cost_usd(item.budget_usd) }}
           </div>
         </a>
       {% else %}

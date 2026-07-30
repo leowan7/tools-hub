@@ -296,6 +296,10 @@ def _launch_context(target, **overrides) -> dict:  # noqa: ANN001
         "selected_tools": [],
         "error": None,
         "blocked": None,
+        # Whether the error being rendered is safe to describe as having charged
+        # nothing. Defaults to FALSE so the claim is never made by omission: only
+        # a caller that knows the money state may turn it on.
+        "nothing_charged": False,
     }
     context.update(overrides)
     return context
@@ -482,9 +486,15 @@ def target_detail(target_id):
 
     # "You just launched N runs" after a redirect from the launch screen. This
     # app has no flash(), so the result rides the query string. Counted from
-    # rows already loaded, so it costs no extra read. An unknown or foreign
-    # group matches nothing and the banner simply does not render; a crafted
-    # `stalled` only misinforms whoever crafted it.
+    # rows already loaded, so it costs no extra read.
+    #
+    # An unknown or foreign `launched` group matches nothing, so the launched
+    # half stays silent. The stalled half does NOT: it is gated on `stalled`
+    # alone, deliberately, because the run query it would otherwise depend on
+    # goes empty under the same fault that strands a run. So a crafted `stalled`
+    # does render, on its own, with no launched line above it. That only
+    # misinforms whoever crafted it, and it is the price of the disclosure
+    # surviving the case it exists to report.
     launched_group = (request.args.get("launched") or "").strip()
     launched_runs = (
         [r for r in runs if launched_group and r.launch_group_id == launched_group]
@@ -548,6 +558,7 @@ def api_target_launch_estimate(target_id):
         ToolLaunchSpec,
         concurrency_note,
         first_wave_at_pace,
+        first_wave_display_at_pace,
         plan_multi_launch,
         preauth_multi_launch,
     )
@@ -623,15 +634,33 @@ def api_target_launch_estimate(target_id):
 
     pre = preauth_multi_launch(ctx.user_id, plan)
 
+    rows = plan.rows()
     payload = {
         "ok": True,
         "pace": plan.pace,
-        "rows": plan.rows(),
+        "rows": rows,
         "total_designs": plan.total_designs,
         "total_subjobs": plan.total_subjobs,
         "budget_usd": str(plan.budget_usd),
         "first_wave_usd": str(plan.first_wave_usd),
         "balance_usd": str(pre.balance_usd),
+        # What the page RENDERS. The exact 4dp values above stay because the
+        # anti-drift tests compare them against the planner, but a 2dp
+        # conversion done in JS rounds to nearest and so can print a hold below
+        # the amount reserved. Costs round up, the balance rounds down.
+        #
+        # The two totals are summed from the ROW displays rather than ceiled
+        # from the exact totals, because the page prints the rows immediately
+        # above the totals and ceiling both independently makes the column
+        # exceed its own sum. See display_total_usd. The balance is not a total
+        # of anything on this page, so it is converted directly.
+        "budget_usd_display": cc.display_total_usd(
+            r["budget_usd_display"] for r in rows
+        ),
+        "first_wave_usd_display": cc.display_total_usd(
+            r["first_wave_usd_display"] for r in rows
+        ),
+        "balance_usd_display": cc.display_balance_usd(pre.balance_usd),
         "affordable": pre.ok,
         "reason": pre.reason,
         "needs_verification": (
@@ -661,6 +690,13 @@ def api_target_launch_estimate(target_id):
             payload["alternative"] = {
                 "pace": PACE_STEADY,
                 "first_wave_usd": str(steady_first_wave),
+                # Totalled from the steady ROWS, not ceiled from the steady
+                # exact sum. "Starting narrow would need $X" is a promise about
+                # the panel the user gets when they act on it, so it has to be
+                # that panel's number.
+                "first_wave_usd_display": first_wave_display_at_pace(
+                    plan, PACE_STEADY
+                ),
             }
     return jsonify(payload)
 
@@ -687,6 +723,7 @@ def target_launch_submit(target_id):
     from shared.target_launch import (  # noqa: PLC0415
         PACE_BURST,
         PACE_STEADY,
+        first_wave_display_at_pace,
         plan_multi_launch,
         preauth_multi_launch,
     )
@@ -700,6 +737,20 @@ def target_launch_submit(target_id):
     if target.is_archived:
         return redirect(url_for("targets.target_detail", target_id=target.id))
 
+    # Declared up here so `_err` can read `started` at CALL time. `started` holds
+    # exactly the campaigns whose fund was confirmed, so "nothing was charged" is
+    # DERIVED from what actually happened rather than asserted: the template used
+    # to print that sentence under every error unconditionally, which is the one
+    # claim round 5 restricted to a confirmed draft. An error path added after the
+    # commit point stops making the claim on its own.
+    #
+    # This deliberately reuses the list the redirect already counts instead of a
+    # separate `funded_any` flag. The flag was the first attempt and it was
+    # unpinnable: no error path after the fund loop is reachable today, so its
+    # `= True` write could be deleted with the whole suite green, and a tidy-up
+    # of "an assignment nobody reads" would have restored the round-5 defect.
+    started, stalled = [], []
+
     def _err(message, code=400):
         return render_template(
             "targets/launch.html",
@@ -712,6 +763,7 @@ def target_launch_submit(target_id):
                 # so without this the user's tool selection collapses to one
                 # checkbox on every validation error.
                 selected_tools=request.form.getlist("tools"),
+                nothing_charged=not started,
             ),
         ), code
 
@@ -737,7 +789,15 @@ def target_launch_submit(target_id):
 
     pre = preauth_multi_launch(ctx.user_id, plan)
     if not pre.ok:
-        return _err(cc.preauth_message(pre, count=len(specs)))
+        # The re-render carries the estimate panel, which totals its rows' 2dp
+        # displays, so the sentence must quote that same total and not a
+        # separate rounding of the exact figure. Computed only on the refusal
+        # path, because it costs one held-amount lookup per tool.
+        return _err(cc.preauth_message(
+            pre,
+            count=len(specs),
+            required_display=first_wave_display_at_pace(plan, plan.pace),
+        ))
 
     # After the gate, before the first insert. Not earlier, because a group id
     # in scope during validation invites persisting partial state; not later,
@@ -776,15 +836,20 @@ def target_launch_submit(target_id):
                 "%d earlier draft(s) left unfunded in group %s",
                 spec.tool, target.id, len(created), launch_group_id,
             )
+            # The "nothing was charged" half is left to the template, which
+            # renders it from whether anything reached `started`. Saying it here
+            # too printed it twice in one panel.
             return _err(
-                "Something went wrong starting these runs. Nothing was "
-                "started and nothing was charged. Try again in a moment."
+                "Something went wrong starting these runs. "
+                "Try again in a moment."
             )
         created.append(campaign)
 
     touch_target(target.id)
 
-    started, stalled = [], []
+    # `started` and `stalled` are bound at the top of the route, next to `_err`.
+    # Re-initialising them here would work, but only by accident of `_err` never
+    # being called in between, so the binding stays in one place.
     for campaign in created:
         # THE FUND IS THE COMMIT POINT and the only thing that decides started
         # vs stalled. `fund_campaign` is a CAS reporting whether the row moved
@@ -842,6 +907,8 @@ def target_launch_submit(target_id):
         # retry the copy invites would create and fund a SECOND full set against
         # a gate the user passed once. Thread exhaustion is process-wide, so
         # every tool in the launch fails together and `started` would be empty.
+        # Money is committed for this campaign. `_err` reads this list, so no
+        # error rendered from here on can tell the user nothing was charged.
         started.append(campaign)
         try:
             cc.drive_campaign_async(campaign.id)
@@ -857,9 +924,10 @@ def target_launch_submit(target_id):
             )
 
     if not started:
-        return _err(
-            "None of those runs could be started. Your wallet was not charged."
-        )
+        # Reached only when EVERY campaign was confirmed still `draft`, so
+        # `started` is empty and the template adds the uncharged line. Stating it
+        # in the message too printed it twice.
+        return _err("None of those runs could be started.")
     return redirect(
         url_for(
             "targets.target_detail",

@@ -139,8 +139,11 @@ class MultiLaunchPlan:
         ``budget_usd`` and ``first_wave_usd`` on the plan are the per-spec sums
         of these same two values, so the rows always add up to the totals.
         """
+        from shared.compute_campaigns import display_cost_usd  # noqa: PLC0415
+
         out = []
         for spec, plan, conc in zip(self.specs, self.plans, self.concurrency):
+            first_wave = first_wave_hold_usd(plan, conc)
             out.append({
                 "tool": spec.tool,
                 "preset": spec.preset,
@@ -149,7 +152,19 @@ class MultiLaunchPlan:
                 "total_subjobs": int(plan.total_subjobs),
                 "concurrency": int(conc),
                 "budget_usd": str(plan.budget_usd),
-                "first_wave_usd": str(first_wave_hold_usd(plan, conc)),
+                "first_wave_usd": str(first_wave),
+                # The exact 4dp value stays above because the anti-drift tests
+                # price it against the planner. These are what the page prints:
+                # the page must not do the 2dp conversion itself, because
+                # rounding to NEAREST there understated the hold the consent
+                # checkbox refers to.
+                #
+                # A 2dp row does not sum to a 2dp conversion of the exact total,
+                # so the endpoint totals THESE strings rather than re-rounding
+                # the plan's own totals. See compute_campaigns.display_total_usd
+                # for why the panel has to agree with itself.
+                "budget_usd_display": display_cost_usd(plan.budget_usd),
+                "first_wave_usd_display": display_cost_usd(first_wave),
             })
         return out
 
@@ -255,6 +270,31 @@ def first_wave_at_pace(plan: MultiLaunchPlan, pace: str) -> Decimal:
     return sum(
         (first_wave_hold_usd(p, c) for p, c in zip(plan.plans, concurrency)),
         Decimal("0"),
+    )
+
+
+def first_wave_display_at_pace(plan: MultiLaunchPlan, pace: str) -> str:
+    """The 2dp hold the PAGE shows for this plan at ``pace``.
+
+    Totals the per-row 2dp displays, which is what the panel prints, rather than
+    rounding the exact total, which is a slightly smaller number. Any figure
+    quoted beside that panel has to be the panel's figure: a refusal sentence
+    naming $9.18 under a panel reading $9.19 sends the user to top up to an
+    amount that is refused again.
+
+    At ``pace == plan.pace`` this reproduces ``display_total_usd`` over
+    ``plan.rows()`` exactly, because the rows use the same concurrency division.
+    That equality is pinned by a test rather than left to inspection. Use this
+    where the rows are not already in hand, and sum the rows where they are.
+    """
+    from shared.compute_campaigns import (  # noqa: PLC0415
+        display_cost_usd, display_total_usd,
+    )
+
+    concurrency = divide_concurrency([s.tool for s in plan.specs], pace)
+    return display_total_usd(
+        display_cost_usd(first_wave_hold_usd(p, c))
+        for p, c in zip(plan.plans, concurrency)
     )
 
 

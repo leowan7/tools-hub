@@ -19,6 +19,15 @@ from flask import Flask, jsonify
 
 from shared.idempotency import _compute_key, idempotent
 
+# This file is already hermetic by a different mechanism -- it builds a bare
+# `Flask(__name__)` rather than calling create_app(), and `patch_deps` below is
+# autouse and replaces `shared.idempotency.get_service_client`. The marker is
+# here so it does not LOOK like one of the files that reads production: the
+# project's stated contract is that any test touching a route opts in explicitly,
+# and a reader grepping for the fixture should find it. It also fails closed if
+# someone later adds a create_app() test here.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 # ---------------------------------------------------------------------------
 # Fake Supabase table + client
@@ -76,13 +85,28 @@ class _FakeTable:
         losing sibling wiping the winner's cached success -- would be untestable
         in exactly the direction that matters.
 
-        postgrest-py renders ``.is_(col, None)`` as ``is.null``; anything else
-        is not a predicate this codebase issues, so it is refused rather than
-        approximated.
+        postgrest-py renders both ``.is_(col, None)`` and ``.is_(col, "null")``
+        as ``is.null``, and this repo issues both. Of its 17 production call
+        sites, only the 2 in ``shared/idempotency.py`` pass None; the other 15
+        pass the string, across ``shared/api_keys.py`` (x4),
+        ``shared/targets.py`` (x4), ``shared/jobs.py`` (x3),
+        ``shared/handoffs.py``, ``shared/compute_campaigns.py``,
+        ``cron/purge_old_storage.py`` and ``webhooks/modal.py``. Both are
+        accepted, because a fake that refused the string would break the moment
+        this module was refactored to the majority convention -- and break
+        SILENTLY, since the caller swallows it (below).
+
+        The raise is documentation, not a guard. An earlier version of this
+        docstring justified refusing on the grounds that a raise here escapes to
+        the test. It does not: the builder chain in ``_release_key`` sits inside
+        the ``try`` whose bare ``except Exception`` returns False, and in
+        ``_store_response`` it is inside the ``_write`` closure called from the
+        same kind of ``try``. Either way a refusal is swallowed into the same
+        result as a fake that ignored the predicate.
         """
-        if value is not None:
+        if value is not None and value != "null":
             raise AssertionError(
-                f"is_({column!r}, {value!r}) is not modelled; only IS NULL is"
+                f"is_({column!r}, {value!r}) is not a null predicate"
             )
         self._is_null.append(column)
         return self
@@ -728,9 +752,14 @@ def test_an_error_is_cached_when_the_claim_cannot_be_released(failing_app):
 def test_a_nul_in_a_field_value_cannot_forge_a_part_boundary(form_app, user_ctx):
     """Two genuinely different launches must not hash alike.
 
-    The fingerprint is a list of ``field=value`` parts. Joined on a separator,
-    a field VALUE containing that separator can spell out an extra part, and
-    ``%00`` survives urlencoded decoding into ``request.form``, so NUL is not a
+    The fingerprint frames every component by LENGTH -- ``len:field len:value``,
+    with no delimiter anywhere. This test pins the reason, which is a defect in
+    the encoding it replaced, so the paragraphs below describe that older shape
+    rather than the current one.
+
+    A delimited encoding -- ``field=value`` parts joined on a separator -- lets a
+    field VALUE containing that separator spell out an extra part, and ``%00``
+    survives urlencoded decoding into ``request.form``, so NUL is not a
     theoretical separator here. These two forms are different launches:
 
         A: name="a\\x00tools=iggm", tools=["rfdiffusion"]
@@ -741,8 +770,8 @@ def test_a_nul_in_a_field_value_cannot_forge_a_part_boundary(form_app, user_ctx)
     TTL, would be answered from A's cache and never run. B launches two tools
     where A launched one, which is real money that silently does not happen.
 
-    A length prefix cannot be spelled from inside a value, which is why the
-    parts are prefixed rather than delimited.
+    A length prefix cannot be spelled from inside a value, which is why every
+    component is prefixed rather than delimited.
     """
     from flask import request
 

@@ -209,7 +209,37 @@
   var boundTarget = {% if target %}true{% else %}false{% endif %};
   var latest = { ok: false, affordable: false, budget: 0 };
 
-  function money(x) { return '$' + Number(x).toFixed(2); }
+  // Monotonic request counter. The debounce only collapses changes inside
+  // 250 ms, so two edits a little further apart put two fetches in flight and
+  // whichever RESOLVES last wins, which is not necessarily the one describing
+  // what is now in the form. Each response checks its own sequence against the
+  // current one and drops itself if superseded. Same guard as the multi-tool
+  // launch page.
+  var reqSeq = 0;
+
+  // Renders a *_display string from the estimate and does no arithmetic of its
+  // own. It used to round the 4dp wire value to 2dp to NEAREST, which showed a
+  // figure below the real hold above the consent checkbox. The rounding now
+  // happens in Decimal on the server, where costs round up and the balance
+  // rounds down; a fixed-point rounding call reintroduced here would silently
+  // undo that, so a test forbids one anywhere in this file.
+  // A missing field renders "$—" rather than a bare "$", which reads as a
+  // broken zero. That matches the empty state of the headline budget slot only
+  // (markup :173, clearFigures()); per-sub-job, first-wave and balance all sit
+  // empty as a bare "—", so a null there is visually distinct rather than
+  // matching. It cannot happen today (the endpoint ships a *_display sibling
+  // for every money key) and nothing here disarms the button, so this is
+  // legibility, not a guard.
+  function money(x) { return x == null ? '$—' : '$' + String(x); }
+
+  // One clearing path for both failure branches. The earlier version cleared
+  // four of the six figures inline, so a failed estimate left the PREVIOUS
+  // request's first-wave hold and balance on screen beside the consent box.
+  function clearFigures() {
+    document.getElementById('rp-budget').textContent = '$—';
+    ['rp-designs', 'rp-subjobs', 'rp-perchunk', 'rp-firstwave', 'rp-balance']
+      .forEach(function (id) { document.getElementById(id).textContent = '—'; });
+  }
 
   function show(id, on) { document.getElementById(id).style.display = on ? '' : 'none'; }
 
@@ -282,45 +312,77 @@
   }
 
   function fetchEstimate() {
+    var mySeq = reqSeq;
     var q = estURL + '?tool=' + encodeURIComponent(tool.value) +
             '&requested_designs=' + encodeURIComponent(count.value || '0');
     fetch(q, { headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (d) {
+        if (mySeq !== reqSeq) { return; }
         latest = d;
         if (!d.ok) {
-          document.getElementById('rp-budget').textContent = '$—';
-          document.getElementById('rp-designs').textContent = '—';
-          document.getElementById('rp-subjobs').textContent = '—';
-          document.getElementById('rp-perchunk').textContent = '—';
+          clearFigures();
           setNote('warn', d.error || 'Cannot plan this campaign.');
           syncSubmit();
           return;
         }
-        document.getElementById('rp-budget').textContent = money(d.budget_usd);
+        document.getElementById('rp-budget').textContent = money(d.budget_usd_display);
         document.getElementById('rp-designs').textContent = d.requested_designs;
         document.getElementById('rp-subjobs').textContent = d.total_subjobs;
-        document.getElementById('rp-perchunk').textContent = money(d.per_chunk_usd);
-        document.getElementById('rp-firstwave').textContent = money(d.first_wave_usd);
-        document.getElementById('rp-balance').textContent = money(d.balance_usd);
+        document.getElementById('rp-perchunk').textContent = money(d.per_chunk_usd_display);
+        document.getElementById('rp-firstwave').textContent = money(d.first_wave_usd_display);
+        document.getElementById('rp-balance').textContent = money(d.balance_usd_display);
         document.getElementById('rp-confirm-label').textContent =
           'I understand I pay only for compute that runs, and it pauses if my balance runs low.';
         if (d.needs_verification && !d.affordable && d.reason === 'verification_required') {
           setNote('warn', 'Campaigns this large need an approved account. Contact us to raise your limit.');
         } else if (!d.affordable && d.reason === 'insufficient_balance') {
-          setNote('warn', 'Top up to cover the first batch (' + money(d.first_wave_usd) + ') to start.');
+          setNote('warn', 'Top up to cover the first batch (' + money(d.first_wave_usd_display) + ') to start.');
         } else if (!d.affordable) {
           setNote('warn', 'This campaign cannot start yet (' + d.reason + ').');
         } else {
-          setNote('ok', 'Ready to run. Starts on ' + money(d.first_wave_usd) + '; ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
+          setNote('ok', 'Ready to run. Starts on ' + money(d.first_wave_usd_display) + '; ' + d.total_subjobs + ' sub-jobs fan out as it funds.');
         }
         syncSubmit();
       })
-      .catch(function () { setNote('warn', 'Estimate unavailable.'); });
+      .catch(function () {
+        if (mySeq !== reqSeq) { return; }
+        // Reset the state, not just the note. `latest` holds the LAST
+        // SUCCESSFUL estimate, so leaving it alone after a failed re-estimate
+        // leaves the submit button armed beside figures that priced a different
+        // design count. This is also what makes the server's display helpers
+        // safe to raise on a value they cannot render: a 500 here disarms.
+        latest = { ok: false, affordable: false, budget: 0 };
+        clearFigures();
+        setNote('warn', 'Estimate unavailable.');
+        syncSubmit();
+      });
   }
 
   var t;
-  function debounced() { clearTimeout(t); t = setTimeout(fetchEstimate, 250); }
+  function debounced() {
+    // Invalidate the consent AND the figures the moment anything changes,
+    // BEFORE the 250 ms fetch fires. Without this the tick survives a reprice:
+    // tick the box at 24 designs, type 5000, submit inside the debounce, and
+    // the POST prices 5000 against consent recorded for 24. Consent is per
+    // price, so a new price has to take a new tick. (A51.)
+    //
+    // clearFigures() is not decoration. Clearing only the internal `latest`
+    // leaves the PREVIOUS request's hold and balance rendered for the whole
+    // repricing window, and the rendered number is the only price the user
+    // ever actually sees. Blank plus "Repricing..." is the honest state.
+    //
+    // Order matters: invalidate first, schedule second. Doing it after the
+    // setTimeout leaves the same window open.
+    reqSeq += 1;
+    clearTimeout(t);
+    latest = { ok: false, affordable: false, budget: 0 };
+    confirm.checked = false;
+    clearFigures();
+    setNote('warn', 'Repricing...');
+    syncSubmit();
+    t = setTimeout(fetchEstimate, 250);
+  }
   tool.addEventListener('change', function () { refreshTool(); debounced(); });
   preset.addEventListener('change', refreshTarget);
   count.addEventListener('input', debounced);

@@ -490,10 +490,20 @@ def idempotent(
                 # "nothing happened, retry freely", which is a lie if the
                 # handler already mutated state before raising. That is why a
                 # handler that spends money must not raise after its first
-                # write -- see target_launch_submit, whose fund/drive loop
-                # catches and returns a partial-success redirect rather than
-                # propagating. Left un-released the duplicate happens anyway,
-                # 60 s later; this only stops the lockout in front of it.
+                # write.
+                #
+                # `target_launch_submit`'s fund/drive loop is the one that
+                # matters, and it holds by TOTALITY of its callees, not by
+                # catching: `fund_campaign` and `get_campaign` each swallow
+                # everything and return False/None, and only the
+                # `drive_campaign_async` spawn is wrapped in a try. Do not
+                # restate this as "the loop catches" -- it does not, and an
+                # earlier version of this comment said so and was wrong. Adding
+                # a fallible call to that loop without a guard reintroduces the
+                # exact hazard this paragraph describes.
+                #
+                # Left un-released the duplicate happens anyway, 60 s later;
+                # this only stops the lockout in front of it.
                 if state == "claimed":
                     _release_key(key)
                 raise

@@ -7,9 +7,12 @@ fake Supabase client. No live Modal or Supabase.
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -290,6 +293,8 @@ class _Query:
         self._filters = []
         self._neq_filters = []
         self._in_filters = []
+        self._lt_filters = []
+        self._is_null = []
         self._insert_row = None
         self._update_fields = None
         self._single = False
@@ -339,6 +344,27 @@ class _Query:
         # Date-window filter; accept-all keeps tests date-independent.
         return self
 
+    def lt(self, col, val):
+        # Modelled, not accepted-and-ignored, for the same reason as neq: BOTH
+        # queries in sweep_paused_campaigns sit inside a try whose bare except
+        # turns an AttributeError into an empty list. A fake missing .lt() or
+        # .is_() therefore reports "nothing stale, nothing to renotify" and the
+        # sweep's whole body never runs, so a test using THAT fake passes while
+        # exercising nothing. That is how this file read before these were
+        # added. (tests/test_compute_campaigns_driver.py has its own fake, which
+        # already models both, and its sweep tests did exercise the body.)
+        self._lt_filters.append((col, val))
+        return self
+
+    def is_(self, col, val):
+        # Accepts both spellings of the null predicate; this module passes the
+        # PostgREST string, shared/idempotency.py passes None.
+        assert val is None or val == "null", (
+            f"is_({col!r}, {val!r}) is not a null predicate"
+        )
+        self._is_null.append(col)
+        return self
+
     def order(self, col, **kw):
         self._order = (col, bool(kw.get("desc", False)))
         return self
@@ -360,8 +386,21 @@ class _Query:
     def _matches(self, r):
         if not all(str(r.get(c)) == str(v) for c, v in self._filters):
             return False
-        if any(str(r.get(c)) == str(v) for c, v in self._neq_filters):
-            return False
+        for col, val in self._neq_filters:
+            current = r.get(col)
+            # PostgREST renders this as `col <> val`, which evaluates to NULL
+            # (not true) when the column is NULL, so the row is DROPPED. Python
+            # `!=` KEEPS it, which is the opposite answer, and it is the answer
+            # that decides whether a malformed row can reach a caller at all.
+            if current is None or str(current) == str(val):
+                return False
+        for col in self._is_null:
+            if r.get(col) is not None:
+                return False
+        for col, val in self._lt_filters:
+            current = r.get(col)
+            if current is None or not str(current) < str(val):
+                return False
         return all(str(r.get(c)) in vals for c, vals in self._in_filters)
 
     def execute(self):
@@ -915,19 +954,31 @@ def test_a_zero_required_amount_still_renders_as_money():
     assert "(about $0.00 to start)" in msg
 
 
-def test_a_missing_required_amount_falls_back_to_words():
+def test_a_missing_required_amount_falls_back_to_words(caplog):
     """Unreachable from ``campaign_preauth`` (``required_usd`` defaults to
     ``Decimal("0")``), so this pins the guard, not a live path. Note the
     fallback reads oddly in this particular template -- "does not cover the
     first batch of this campaign (about the first batch to start)" -- which is
-    tolerable precisely because nothing in production can produce it."""
+    tolerable precisely because nothing in production can produce it.
+
+    The log assertion is what pins the ``is not None`` half. Without it the test
+    passes against ``if True``: ``Decimal(str(None))`` raises InvalidOperation,
+    the coercion guard catches it, and ``shown`` ends up None either way. The
+    difference is that the fallback was CHOSEN rather than recovered from, and
+    the warning is the only place that shows.
+    """
     pre = SimpleNamespace(
         ok=False, reason=cc.PREAUTH_INSUFFICIENT,
         balance_usd=Decimal("0"), budget_usd=Decimal("50"), required_usd=None,
     )
-    msg = cc.preauth_message(pre)
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        msg = cc.preauth_message(pre)
     assert "(about the first batch to start)" in msg
     assert "$" not in msg
+    assert "unrenderable required_usd" not in caplog.text, (
+        "None reached the Decimal coercion and was recovered by the except "
+        "clause; the `is not None` guard should have skipped it outright"
+    )
 
 
 @pytest.mark.parametrize("reason", _ALL_REFUSAL_REASONS)
@@ -1066,11 +1117,24 @@ def test_fund_campaign_reports_false_for_an_unknown_id(fake_client):
     assert cc.fund_campaign("no-such-campaign") is False
 
 
-def test_fund_campaign_reports_false_with_no_client(monkeypatch):
+def test_fund_campaign_reports_false_with_no_client(monkeypatch, caplog):
     """The route funds N rows in a loop; a missing client must read as "did not
-    start", never as success."""
+    start", never as success.
+
+    The log assertion is what makes this test able to fail. Returning False is
+    NOT evidence the `client is None` guard exists: delete the guard and
+    `None.table(...)` raises AttributeError inside `_cas_transition`'s own bare
+    `except Exception`, which returns False too -- byte-identical result, test
+    still green. The guard's only observable signature is that it returns
+    WITHOUT going through the handler, so the handler's warning must be absent.
+    """
     monkeypatch.setattr(cc, "get_service_client", lambda: None)
-    assert cc.fund_campaign("camp-1") is False
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        assert cc.fund_campaign("camp-1") is False
+    assert "_cas_transition failed" not in caplog.text, (
+        "the no-client path went through the exception handler, which means it "
+        "reached the client instead of being refused up front"
+    )
 
 
 def test_only_the_first_of_two_concurrent_funds_wins(fake_client):
@@ -1122,3 +1186,220 @@ def test_an_unrenderable_required_amount_falls_back_instead_of_500ing(bad):
     msg = cc.preauth_message(pre)
     assert "(about the first batch to start)" in msg
     assert "NaN" not in msg and "$" not in msg
+
+
+# ---------------------------------------------------------------------------
+# 2dp display strings: which direction each one is allowed to lose
+# ---------------------------------------------------------------------------
+#
+# Money is carried at 4dp and shown at 2dp. That conversion used to happen in
+# the launch page as `Number(x).toFixed(2)`, which rounds to NEAREST, so a
+# $573.6736 hold printed as "$573.67" -- below the amount reserved, above a
+# checkbox consenting to "the amount above will be held". These pin the
+# direction, which is the entire content of the fix.
+
+
+@pytest.mark.parametrize("exact,shown", [
+    ("573.6736", "573.68"),   # the reported case: nearest would say 573.67
+    ("2.0101", "2.02"),        # rfdiffusion@12 budget
+    ("2.6219", "2.63"),        # rfdiffusion@12 first wave
+    ("0.0001", "0.01"),        # a hold of a hundredth of a cent still holds a cent
+    ("30.0000", "30.00"),      # already whole cents: unchanged, not bumped
+    ("0", "0.00"),
+])
+def test_a_displayed_cost_never_falls_below_the_real_one(exact, shown):
+    """Red if the rounding flips to nearest, floor, or truncation."""
+    assert cc.display_cost_usd(Decimal(exact)) == shown
+    assert Decimal(shown) >= Decimal(exact)
+
+
+@pytest.mark.parametrize("exact,shown", [
+    ("573.6736", "573.67"),   # ceiling would claim 573.68 the wallet lacks
+    ("2.0199", "2.01"),
+    ("0.0099", "0.00"),        # under a cent available is not a cent available
+    ("30.0000", "30.00"),
+    ("0", "0.00"),
+])
+def test_a_displayed_balance_never_rises_above_the_real_one(exact, shown):
+    """The mirror image, and the reason there are two functions not one."""
+    assert cc.display_balance_usd(Decimal(exact)) == shown
+    assert Decimal(shown) <= Decimal(exact)
+
+
+def test_the_two_display_directions_actually_differ():
+    """Anti-vacuity: if both helpers rounded the same way, every assertion above
+    would still pass for whichever direction happened to be shared. This is the
+    one figure that proves they are opposites."""
+    assert cc.display_cost_usd(Decimal("573.6736")) == "573.68"
+    assert cc.display_balance_usd(Decimal("573.6736")) == "573.67"
+
+
+@pytest.mark.parametrize("fn", [cc.display_cost_usd, cc.display_balance_usd])
+def test_a_display_helper_fails_closed_rather_than_guessing(fn):
+    """Unlike ``preauth_message``, these do NOT swallow. Silently rendering
+    "0.00" for a broken figure would arm the button against a price nobody
+    computed.
+
+    Two claims removed from this docstring rather than repeated. **"Their only
+    caller is the estimate endpoint"** is false: both refusal paths and the
+    ``display_cost_usd`` Jinja global on ``runs/detail.html`` / ``runs/list.html``
+    also call them, and those are plain renders where a raise is a 500 rather
+    than a blocked spend. **"Unticking consent"** is false and is contradicted
+    twice in ``shared/compute_campaigns.py`` itself, once by a line that says in
+    so many words not to describe it that way; the mechanism is the DISABLED
+    submit button. See that module's caller enumeration, which is the one place
+    this is written down, and which has itself been wrong twice."""
+    for bad in ["abc", float("nan"), float("inf"), None, object()]:
+        with pytest.raises(Exception):
+            fn(bad)
+
+
+def test_the_total_helper_also_fails_closed():
+    """``display_total_usd`` is the third helper and was left out of the
+    parametrized case above, so the module docstring's "all three helpers raise"
+    was asserted for two of them.
+
+    It takes an iterable rather than a scalar, which is why it does not fit the
+    parametrization -- and that is exactly the kind of small awkwardness that
+    leaves a helper uncovered while a comment says otherwise. NaN matters most
+    here: ``Decimal.quantize`` does NOT signal on NaN, so a non-finite row would
+    render "NaN" into a consent panel unless the explicit ``is_finite`` check
+    fires first."""
+    for bad in [["abc"], [float("nan")], ["1.00", float("inf")], [None]]:
+        with pytest.raises(Exception):
+            cc.display_total_usd(bad)
+    # The empty sum is the one case that must NOT raise.
+    assert cc.display_total_usd([]) == "0.00"
+
+
+# ---------------------------------------------------------------------------
+# An unreadable row must not escape as a 500
+# ---------------------------------------------------------------------------
+
+
+def test_an_unreadable_row_reads_as_none_rather_than_raising(caplog):
+    """``from_row`` subscripts five columns directly, and four call sites had it
+    OUTSIDE the try that makes them total. The fund/drive loop calls
+    ``get_campaign`` after the commit point, where a raise would 500 a request
+    that has already spent money AND release the idempotency claim with it.
+
+    Red if ``_campaign_or_none`` stops catching, and red if it catches silently.
+    """
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        assert cc._campaign_or_none({"id": "c-1"}) is None          # no status
+        assert cc._campaign_or_none({}) is None                      # no id
+        assert cc._campaign_or_none(None) is None
+    assert caplog.text.count("unreadable campaign row") == 3
+
+
+def test_a_list_of_runs_drops_the_unreadable_row_and_keeps_the_rest(fake_client):
+    """A read-only run strip must survive one bad row. The docstring's promise
+    that "a short run strip beats a 500" was only true of the paging error; the
+    row conversion sat outside it, so one malformed row took the whole page.
+
+    Red if ``list_campaigns_for_target`` converts rows with bare ``from_row``.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    rows = fake_client.store["compute_campaigns"]
+    for row in rows:
+        row["target_id"] = "t-1"
+    rows.append(_unreadable_row(target_id="t-1"))
+
+    out = cc.list_campaigns_for_target("t-1", user_id="u-1")
+    assert [c.id for c in out] == [good]
+
+
+def _unreadable_row(**extra):
+    """A row this query could actually deliver, that ``from_row`` cannot read.
+
+    It carries a real ``status`` on purpose. An earlier version left status out,
+    which reads as a stronger malformation but is one PostgREST filters away
+    first: ``neq("status", "draft")`` renders ``status <> 'draft'``, which is
+    NULL for a NULL status, so the row is dropped server-side and never reaches
+    the conversion. ``tool`` and ``preset`` are the missing keys instead, and
+    ``from_row`` subscripts both.
+    """
+    return {
+        "id": "bad-row", "user_id": "u-1", "status": "funded", **extra,
+    }
+
+
+def test_a_null_status_row_never_reaches_the_conversion(fake_client):
+    """Pins the fake's neq semantics, which decide what the code under test can
+    even be handed.
+
+    PostgREST renders ``.neq("status", "draft")`` as ``status <> 'draft'``,
+    which is NULL for a NULL status, so the row is DROPPED. Python's ``!=``
+    keeps it. This row is otherwise perfectly readable, so if the filter kept it
+    it would come back as a campaign and this assertion would fail.
+
+    It is also why the unreadable-row fixtures carry a real status: a NULL
+    status is a malformation this query cannot deliver, so a test built on one
+    would pin a shape production never produces.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    rows = fake_client.store["compute_campaigns"]
+    for row in rows:
+        row["target_id"] = "t-1"
+    rows.append({
+        "id": "null-status", "user_id": "u-1", "target_id": "t-1",
+        "tool": "rfdiffusion", "preset": "pilot", "status": None,
+        "requested_designs": 1, "chunk_size": 1, "total_subjobs": 1,
+        "budget_usd": "1.0000", "created_at": "2026-07-03T00:00:00Z",
+    })
+
+    out = cc.list_campaigns_for_target("t-1", user_id="u-1")
+    assert [c.id for c in out] == [good]
+
+
+def test_one_unreadable_row_does_not_take_the_whole_campaign_list(fake_client):
+    """``list_campaigns_for_user`` feeds /campaigns and the homepage.
+
+    Red if it converts rows with bare ``from_row``.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    fake_client.store["compute_campaigns"].append(_unreadable_row())
+
+    out = cc.list_campaigns_for_user("u-1")
+    assert [c.id for c in out] == [good]
+
+
+def test_an_unreadable_row_makes_get_campaign_return_none_not_raise(fake_client):
+    """The one that matters most: the fund/drive loop calls ``get_campaign``
+    AFTER the commit point, to confirm what a failed ``fund_campaign`` really
+    did. A raise there 500s a request that has already spent money, and
+    ``shared/idempotency.py`` releases the claim on any status >= 400, so the
+    retry the error invites would fund a second full set.
+
+    Red if ``get_campaign`` converts with bare ``from_row``.
+    """
+    fake_client.store["compute_campaigns"] = [_unreadable_row()]
+
+    assert cc.get_campaign("bad-row") is None
+
+
+def test_an_unreadable_row_does_not_abort_the_paused_sweep(fake_client):
+    """``sweep_paused_campaigns`` is cron housekeeping over every paused
+    campaign. A raise part way leaves the campaigns AFTER the bad row
+    unfinalized and un-renotified, silently, until someone reads the cron log.
+
+    So the assertion is that the good row still gets its notification, not
+    merely that the call returns: a sweep that aborted on row one would also
+    "not raise" if the bad row were last. The bad row is seeded first.
+
+    Red if the sweep converts with bare ``from_row``.
+    """
+    PAUSED = "paused_insufficient_funds"
+    good = _seed_campaign(fake_client, status=PAUSED, campaign_id="camp-good")
+    rows = fake_client.store["compute_campaigns"]
+    # Recent, so the TTL half of the sweep leaves both rows alone and this test
+    # is about the renotify half only.
+    for row in rows:
+        row["paused_at"] = datetime.now(timezone.utc).isoformat()
+    rows.insert(0, _unreadable_row(status=PAUSED))
+
+    with patch.object(cc, "_notify_campaign_paused") as notify:
+        summary = cc.sweep_paused_campaigns()
+
+    assert summary == {"finalized": 0, "renotified": 1}
+    assert [c.args[0].id for c in notify.call_args_list] == [good]

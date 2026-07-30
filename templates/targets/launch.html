@@ -37,9 +37,17 @@
   <div class="panel" style="margin-bottom: 1.25rem; border-color: #e8846b;">
     <div class="panel-body">
       <p style="color: #e8846b; margin: 0;">{{ error }}</p>
+      {# Gated on the route's money state, never on the mere presence of an
+         error. A template cannot know whether a campaign was funded, and this
+         sentence is the single most expensive thing on the page to get wrong:
+         said falsely it invites a relaunch, and because an error here is a 400
+         the idempotency claim has already been released, so that relaunch funds
+         a second full set against a gate the user passed once. #}
+      {% if nothing_charged %}
       <p style="margin: 0.6rem 0 0; font-size: 0.85rem; color: var(--text-secondary);">
         Nothing was started and nothing was charged.
       </p>
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -322,7 +330,22 @@
   var tbody = document.querySelector('#estimate-rows tbody');
   var latest = { ok: false, affordable: false };
 
-  function money(x) { return '$' + Number(x).toFixed(2); }
+  // Prepends a symbol and NOTHING ELSE. Every argument is a server-rendered
+  // *_display string, already at 2dp with the rounding direction chosen in
+  // Decimal (costs and holds up, balances down). This used to round here
+  // instead, to NEAREST, over the 4dp values the wire actually carries -- so a
+  // $573.6736 hold printed as "$573.67" directly above a checkbox consenting to
+  // "the amount above will be held". Do not reintroduce arithmetic here: a test
+  // asserts this file contains no fixed-point rounding call at all, and it
+  // matches on the method name, so even naming that method in a comment fails
+  // the suite. That is why this paragraph describes it instead of spelling it.
+  // A missing field renders "$—" rather than a bare "$", which reads as a
+  // broken zero. Note this is NOT the empty state used elsewhere: the three
+  // totals and clearTotals() both use a bare "—", so a null here is visually
+  // distinct from "no estimate yet" rather than matching it. It cannot happen
+  // today (the endpoint ships a *_display sibling for every money key) and
+  // nothing here disarms the button, so this is legibility, not a guard.
+  function money(x) { return x == null ? '$—' : '$' + String(x); }
 
   function panelFor(tool) { return document.getElementById('panel-' + tool); }
 
@@ -361,7 +384,8 @@
     (d.rows || []).forEach(function (r) {
       var tr = document.createElement('tr');
       [r.tool, r.requested_designs, r.total_subjobs, r.concurrency,
-       money(r.budget_usd), money(r.first_wave_usd)].forEach(function (v, i) {
+       money(r.budget_usd_display),
+       money(r.first_wave_usd_display)].forEach(function (v, i) {
         var td = document.createElement('td');
         td.textContent = v;
         td.style.padding = '0.35rem 0';
@@ -371,9 +395,11 @@
       });
       tbody.appendChild(tr);
     });
-    document.getElementById('est-budget').textContent = money(d.budget_usd);
-    document.getElementById('est-firstwave').textContent = money(d.first_wave_usd);
-    document.getElementById('est-balance').textContent = money(d.balance_usd);
+    document.getElementById('est-budget').textContent = money(d.budget_usd_display);
+    document.getElementById('est-firstwave').textContent =
+      money(d.first_wave_usd_display);
+    document.getElementById('est-balance').textContent =
+      money(d.balance_usd_display);
   }
 
   function clearTotals() {
@@ -431,9 +457,11 @@
         parts.push(d.total_subjobs + ' sub-job(s) across ' + d.rows.length + ' tool(s).');
         if (!d.affordable) {
           if (d.reason === 'insufficient_balance') {
-            parts.push('Your balance does not cover the ' + money(d.first_wave_usd) + ' needed to start.');
+            parts.push('Your balance does not cover the '
+              + money(d.first_wave_usd_display) + ' needed to start.');
             if (d.alternative) {
-              parts.push('Starting narrow would need ' + money(d.alternative.first_wave_usd) + '.');
+              parts.push('Starting narrow would need '
+                + money(d.alternative.first_wave_usd_display) + '.');
             }
           } else if (d.reason === 'verification_required') {
             parts.push('This size needs an approved account.');
@@ -441,7 +469,8 @@
             parts.push('These runs cannot start right now.');
           }
         } else {
-          parts.push(money(d.first_wave_usd) + ' is held to start; you are billed only for what runs.');
+          parts.push(money(d.first_wave_usd_display)
+            + ' is held to start; you are billed only for what runs.');
         }
         if (d.concurrency_note) { parts.push(d.concurrency_note); }
         setNote(parts.join(' '));
