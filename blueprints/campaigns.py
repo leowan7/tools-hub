@@ -181,7 +181,40 @@ def api_runs_estimate():
 
 @campaigns_bp.route("/campaigns", methods=["POST"])
 @login_required
+@idempotent()
 def compute_campaign_create():
+    # A58. This was the ONLY money-spending POST in the app without this
+    # decorator, and the omission was live: a double-submit funded TWO campaigns
+    # against one consent, gating the same first wave twice against the same
+    # balance. Measured at two identical POSTs -> created=2, funded=2. There is
+    # no client-side guard either (runs/new.html registers no submit handler),
+    # the CSRF token is session-scoped and reusable, and the POST takes seconds.
+    #
+    # Every sibling already had it: POST /targets, POST /targets/<id>/launch,
+    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score,
+    # /library-planner/plan. This repo's own docs name this exact failure mode
+    # as a defect, for a route that HAS the decorator.
+    #
+    # Safe to add only because of the hardening in this same branch: the key
+    # falls back to a canonical encoding of request.form when _enforce_csrf has
+    # already consumed the raw body (otherwise every submission to this route
+    # would share one key and a genuine second campaign would vanish), and 4xx
+    # responses release the claim so a corrected resubmission is not answered
+    # with the stale rejection.
+    #
+    # Scope, stated because the copy above is easy to over-read. This dedups
+    # SEQUENTIAL resubmissions -- refresh, back button, network retry, the
+    # second click of a slow double-click. It does NOT serialise genuinely
+    # concurrent ones: `_claim_key` upserts, so `ON CONFLICT DO UPDATE` succeeds
+    # for both racing writers and the preceding SELECT is a TOCTOU, not a lock.
+    # That residue is filed as A41 and is unchanged here.
+    #
+    # And the discriminator for THIS route is weaker than it looks: the key
+    # folds the upload's filename and BYTE LENGTH, never its content. Two posts
+    # whose form fields all match, carrying same-named files of identical
+    # length, collapse inside the 60s TTL and the second structure is silently
+    # discarded. Distinct proteins almost never collide; an in-place
+    # single-character edit of the same file does.
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -414,11 +447,73 @@ def compute_campaign_create():
     if target is not None:
         touch_target(target.id)
 
-    cc.fund_campaign(campaign.id)
+    # A59. The return value used to be discarded, so a failed fund redirected as
+    # success and left the row at `draft` forever -- `cron/tick_campaigns.py`
+    # excludes draft from _ACTIVE_STATES, so nothing ever picks it up. That is
+    # the round-5 inversion in the other direction: round 5 told a charged user
+    # nothing was charged; this told an uncharged user their campaign started.
+    #
+    # `fund_campaign` is three-valued, not two. It cannot raise (_cas_transition
+    # swallows everything and returns False), so False means EITHER "the row was
+    # not in draft" OR "the UPDATE raised and I cannot tell" -- and a write that
+    # commits in Postgres while the response times out lands in the second
+    # bucket. So False alone is not grounds for claiming nothing was charged;
+    # it is confirmed by an owner-scoped read, exactly as target_launch_submit
+    # does. Keep the two routes' policies identical.
+    if not cc.fund_campaign(campaign.id):
+        row = cc.get_campaign(campaign.id, user_id=ctx.user_id)
+        if row is not None and row.status == "draft":
+            # Confirmed inert: drive_campaign early-returns on draft,
+            # _campaign_spend_today skips it, no hold was ever placed. Saying
+            # "nothing was charged" here is TRUE, which matters because this
+            # route is @idempotent and idempotency releases its claim on any
+            # 4xx -- so the retry this invites must be safe. It is safe about
+            # MONEY, which is the claim the copy makes. It is not free: each
+            # retry strands another `draft` row and another staged PDB object,
+            # and nothing reclaims either (`cron/tick_campaigns.py` excludes
+            # draft, and there is no delete path). Those ghosts are visible in
+            # the user's campaign list. Filed as A62.
+            logger.warning(
+                "compute_campaign_create: %s is still draft after fund; not "
+                "driven", campaign.id,
+            )
+            return _err(
+                "That campaign could not be started, and nothing was charged. "
+                "Try again in a moment."
+            )
+        # Either it did move (the fund succeeded) or the read could not tell.
+        # Fall through and treat it as started: claiming "not charged" about
+        # money that may be committed is the more expensive error, and it is the
+        # one that produces a duplicate.
+        logger.warning(
+            "compute_campaign_create: fund_campaign reported False for %s but "
+            "its status is %s; treating it as started",
+            campaign.id, getattr(row, "status", "unreadable"),
+        )
+
     # Kick the first wave off the request path (daemon thread); the cron
     # tick backstops if the thread dies. At the raised concurrency an inline
     # drive would make many Modal + Supabase round-trips before responding.
-    cc.drive_campaign_async(campaign.id)
+    try:
+        cc.drive_campaign_async(campaign.id)
+    except Exception:
+        # A60. `threading.Thread(...).start()` is OUTSIDE the try inside
+        # `drive_campaign_async` (the try wraps the drive, not the spawn), so
+        # this call is fallible: it raises RuntimeError when the process cannot
+        # start another thread. Nothing may propagate past here. The campaign is
+        # funded and `cron/tick_campaigns.py::_ACTIVE_STATES` will drive and
+        # bill it, so a 500 out of this line would ALSO release the idempotency
+        # claim -- and the retry it invites re-runs the whole handler, creating
+        # and funding a SECOND campaign against one consent. That is verbatim
+        # the A58 failure this route's decorator exists to stop, reachable
+        # through the fix's own error path. `shared/idempotency.py` states the
+        # rule this restores: a handler that spends money must not raise after
+        # its first write. `target_launch_submit` already guards the same call.
+        logger.exception(
+            "compute_campaign_create: could not spawn the first-wave drive "
+            "for %s; it is funded and the campaign tick will drive it",
+            campaign.id,
+        )
     return redirect(url_for("campaigns.compute_campaign_detail", campaign_id=campaign.id))
 
 @campaigns_bp.route("/campaigns/<campaign_id>", methods=["GET"])

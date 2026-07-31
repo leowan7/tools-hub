@@ -806,7 +806,7 @@ def send_reengagement_email(
     suggestions = list(getattr(candidate, "suggestions", []) or [])
     context = {
         "base_url":    base_url,
-        "balance_usd": _money(getattr(candidate, "balance_usd", 0) or 0),
+        "balance_usd": _money(getattr(candidate, "balance_usd", 0) or 0, "down"),
         "suggestions": suggestions,
     }
     try:
@@ -1012,7 +1012,7 @@ def _result_summary(job, *, tone: str) -> str:  # noqa: ANN001
 # logged but never raise to the caller.
 # ---------------------------------------------------------------------------
 
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import jinja2
@@ -1058,13 +1058,38 @@ def _label_for_tool(slug: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _money(amount) -> str:
+_MONEY_DIRECTIONS = ("down", "up", "nearest")
+
+
+def _money(amount, direction: str = "nearest") -> str:
     """Format any numeric type as a plain dollar amount string.
+
+    ``direction`` picks the rounding, matching the server-side display helpers:
+    ``"down"`` for a balance or a cap (``display_balance_usd``), ``"up"`` for a
+    cost, a spend or a required top-up (``display_cost_usd``), ``"nearest"``
+    (the default) for a figure that is neither, such as a credit granted or a
+    fixed advertised amount. Outbound email was the fourth class of money
+    surface found in this review and the first outside ``templates/``; if you
+    add a figure here, pick its direction deliberately.
+
+    The default is named ``"nearest"`` and not ``"exact"``: it rounds to
+    NEAREST, so calling it exact would have made it sound like
+    ``display_ledger_usd``, which is a different behaviour entirely.
+
+    Unknown directions RAISE. A template that names a missing helper is a hard
+    ``UndefinedError``, so the server side cannot fail silently; a bare string
+    compare here would have let ``_money(bal, "DOWN")`` fall through to NEAREST
+    and quietly reintroduce the defect this argument exists to remove.
 
     Returns the integer form when the value is whole (e.g. "5"), else two
     decimals (e.g. "12.50"). Used in template variables so the rendered email
     body says "$5" instead of "$5.00" for the signup credit case.
     """
+    if direction not in _MONEY_DIRECTIONS:
+        raise ValueError(
+            f"unknown money direction {direction!r}; use one of "
+            f"{_MONEY_DIRECTIONS}"
+        )
     if amount is None:
         return "0"
     try:
@@ -1073,6 +1098,14 @@ def _money(amount) -> str:
         return str(amount)
     if d == d.to_integral_value():
         return str(int(d))
+    if direction == "down":
+        # A balance rounds DOWN. `{d:.2f}` rounds to NEAREST, so a wallet
+        # holding $24.4950 was told it had "$24.50".
+        return str(d.quantize(Decimal("0.01"), rounding=ROUND_FLOOR))
+    if direction == "up":
+        # A cost or a required top-up rounds UP: never quote less than is
+        # actually taken. Matches display_cost_usd.
+        return str(d.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
     return f"{d:.2f}"
 
 
@@ -1381,8 +1414,10 @@ def send_topup_confirmation_email(
             "send_topup_confirmation_email: no email for user %s", user_id
         )
         return False
-    amt = _money(amount_usd)
-    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd)
+    # Credit added and the resulting balance: both balance-like, so DOWN.
+    # Overstating either overstates the user's position.
+    amt = _money(amount_usd, "down")
+    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd, "down")
     base_url = _base_url()
     subject = f"${amt} added to your Ranomics tools wallet"
     html = _render_template(
@@ -1416,8 +1451,10 @@ def send_auto_reload_charged_email(
             "send_auto_reload_charged_email: no email for user %s", user_id
         )
         return False
-    amt = _money(amount_usd)
-    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd)
+    # `amt` is what was charged to the CARD, so it rounds UP; `bal` is the
+    # resulting balance, so it rounds DOWN. Same line, opposite directions.
+    amt = _money(amount_usd, "up")
+    bal = _money(new_balance_usd if new_balance_usd is not None else amount_usd, "down")
     base_url = _base_url()
     subject = f"Auto reload added ${amt} to your Ranomics tools wallet"
     html = _render_template(
@@ -1527,8 +1564,8 @@ def send_auto_reload_monthly_cap_email(
     html = _render_template(
         "send_auto_reload_monthly_cap.html",
         base_url=base_url,
-        total_usd=_money(total_usd),
-        cap_usd=_money(cap_usd),
+        total_usd=_money(total_usd, "up"),
+        cap_usd=_money(cap_usd, "down"),
     )
     return _post_resend(
         to_email=email,
@@ -1560,7 +1597,12 @@ def send_low_balance_email(
     html = _render_template(
         "send_low_balance.html",
         base_url=base_url,
-        balance_usd=_money(balance_usd),
+        # A61. The message whose ENTIRE purpose is to make the reader act on a
+        # balance. A wallet holding $24.4950 was told "$24.50". An earlier pass
+        # claimed to have fixed this and changed send_reengagement_email
+        # instead, while the guard test named for THIS call site asserted the
+        # other one's source text and stayed green.
+        balance_usd=_money(balance_usd, "down"),
     )
     return _post_resend(
         to_email=email,
@@ -1637,8 +1679,11 @@ def send_job_capped_email(
         "send_job_capped.html",
         base_url=base_url,
         tool_label=label,
-        attempted_usd=_money(attempted_usd),
-        cap_usd=_money(cap_usd),
+        # Compute actually consumed: a COST. These three emails exist to
+        # justify a charge the user did not expect, so quoting it low is the
+        # one thing they must not do.
+        attempted_usd=_money(attempted_usd, "up"),
+        cap_usd=_money(cap_usd, "down"),
         contact_url=contact_url,
     )
     return _post_resend(
@@ -1678,8 +1723,11 @@ def send_overrun_warning_email(
         "send_overrun_warning.html",
         base_url=base_url,
         tool_label=label,
-        attempted_usd=_money(attempted_usd),
-        cap_usd=_money(cap_usd),
+        # Compute actually consumed: a COST. These three emails exist to
+        # justify a charge the user did not expect, so quoting it low is the
+        # one thing they must not do.
+        attempted_usd=_money(attempted_usd, "up"),
+        cap_usd=_money(cap_usd, "down"),
     )
     return _post_resend(
         to_email=email,
@@ -1719,8 +1767,11 @@ def send_overrun_kill_email(
         "send_overrun_kill.html",
         base_url=base_url,
         tool_label=label,
-        attempted_usd=_money(attempted_usd),
-        cap_usd=_money(cap_usd),
+        # Compute actually consumed: a COST. These three emails exist to
+        # justify a charge the user did not expect, so quoting it low is the
+        # one thing they must not do.
+        attempted_usd=_money(attempted_usd, "up"),
+        cap_usd=_money(cap_usd, "down"),
     )
     return _post_resend(
         to_email=email,
@@ -1754,7 +1805,7 @@ def send_pilot_intro_email(
     html = _render_template(
         "send_pilot_intro.html",
         base_url=base_url,
-        spent_30d_usd=_money(spent_30d_usd),
+        spent_30d_usd=_money(spent_30d_usd, "up"),
         pilot_url="https://ranomics.com/binder-pilot",
     )
     return _post_resend(
@@ -1866,7 +1917,7 @@ def alert_sales_slack(
 ) -> bool:
     """Internal Slack alert: pilot qualified lead (30 day spend >= $5000)."""
     email = _resolve_user_email(user_id) or "unknown"
-    spent = _money(spent_30d_usd)
+    spent = _money(spent_30d_usd, "up")
     text = (
         ":fire: Pilot-qualified lead\n"
         f"User: {email} ({user_id})\n"
@@ -1889,7 +1940,7 @@ def alert_sales_slack_high(
 ) -> bool:
     """Internal Slack alert: high value spend (30 day spend >= $10000)."""
     email = _resolve_user_email(user_id) or "unknown"
-    spent = _money(spent_30d_usd)
+    spent = _money(spent_30d_usd, "up")
     text = (
         ":rotating_light: High value spend\n"
         f"User: {email} ({user_id})\n"

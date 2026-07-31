@@ -2037,8 +2037,12 @@ class _IdemStore:
     """In-memory `request_idempotency` good enough for the real decorator.
 
     Models the `IS NULL` write scoping (see `_IdemTable.is_`) because
-    `_store_response` depends on it. It does NOT model the delete path;
-    tests/test_idempotency.py owns that and models it there.
+    `_store_response` depends on it, and the delete path (see `_IdemTable`),
+    which `execute` completes by popping the row -- so `store.rows == {}` after
+    a 4xx is a real observation of the release. An earlier version of this
+    docstring said the delete path was NOT modelled, which contradicted the
+    method sitting directly above it; tests/test_idempotency.py owns the
+    exhaustive coverage of that path, not its only model.
     """
 
     def __init__(self):

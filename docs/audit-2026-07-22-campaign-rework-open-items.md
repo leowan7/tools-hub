@@ -1920,3 +1920,184 @@ Round 13 adds one:
   followed the changed lines. The two defects found here are both one line, both
   deployed, and both visible to anyone who compared that route's decorators
   against its six siblings.
+
+---
+
+## Addendum o - round 14 (two independent reviewers, split by concern)
+
+Two reviewers ran in parallel against the same uncommitted diff, one on the live
+route changes and one on the money display sweep. Both returned defects: 1
+blocker + 4 serious, and 2 blockers + 4 serious. Neither had written the code.
+
+### A60 - the drive spawn was fallible and unguarded under a new @idempotent (FIXED)
+
+`blueprints/campaigns.py` gained `@idempotent()` in this branch (A58). It also
+called `cc.drive_campaign_async(campaign.id)` bare, AFTER `fund_campaign` had
+committed. The `try` inside `drive_campaign_async` wraps the drive, not
+`threading.Thread(...).start()`, so the call raises `RuntimeError` under thread
+exhaustion. That exception escapes the view, `@idempotent` RELEASES the claim
+and re-raises, Flask returns 500, and the retry the error invites re-runs the
+whole handler: a second campaign created and funded against one consent. That is
+verbatim the A58 failure the decorator was added to prevent, reached through the
+fix's own error path, and thread exhaustion is process-wide so it fires for
+every concurrent submitter at once.
+
+`shared/idempotency.py` already stated the rule, in a comment written in an
+earlier round: "Adding a fallible call to that loop without a guard reintroduces
+the exact hazard this paragraph describes." `target_launch_submit` already
+guarded the same call. The A59 comment on the campaigns route asserted "Keep the
+two routes' policies identical" while they were not.
+
+Fixed by wrapping the spawn, matching the sibling. Pinned by
+`test_a_failed_drive_spawn_does_not_double_fund_the_campaign`.
+
+### A61 - the low-balance email was never changed (FIXED)
+
+Round 12 filed outbound email as the fourth class of money surface and named
+`send_low_balance_email` as the case: "the one message whose entire purpose is
+to make the reader act on a balance". The fix changed `send_reengagement_email`
+instead. `send_low_balance_email` stayed on NEAREST, so a wallet holding
+$24.4950 was still told "$24.50" while the header chip, the wallet page and the
+reengagement email all said $24.49.
+
+The guard test was named `test_the_low_balance_email_call_site_asks_for_down`
+and asserted a source substring belonging to the OTHER function. It was green
+throughout.
+
+Fixed at the real call site. The test now RENDERS the email with `_post_resend`
+patched and asserts on the body, which is the only form that cannot pass for the
+wrong function.
+
+Twelve of the module's other `_money` call sites were also still on the NEAREST
+default, including `attempted_usd` in the three overrun emails, which exist
+specifically to justify an unexpected charge. All now carry an explicit
+direction, and `_money` RAISES on an unknown one rather than falling through to
+NEAREST. `test_no_email_money_figure_is_left_on_the_nearest_default` enumerates
+the module the way the template guard enumerates `templates/`.
+
+### A62 - stranded drafts and orphaned uploads on the confirmed-draft retry (FILED)
+
+The A59 error path returns 400 with "nothing was charged", which is true about
+money and only about money. Each retry mints a fresh `campaign-{uuid4}` storage
+object and inserts another `draft` row. Nothing reclaims either:
+`cron/tick_campaigns.py::_ACTIVE_STATES` excludes draft and there is no delete
+path. `list_campaigns_for_user` does not filter draft, so the ghosts appear in
+the user's campaign list as ordinary entries. The 4xx also releases the
+idempotency claim, so the retry is unbounded. Compounded by the upload: an HTML
+form cannot repopulate a file input, so `pre_fill` restores every field except
+the one that matters.
+
+Not fixed here. The comment now claims only what it proves.
+
+### A63 - the ledger column mixes 2dp and 4dp under tabular-nums (FILED)
+
+`display_ledger_usd` emits 2dp for clean values and 4dp for sub-cent ones, by
+design. `static/wallet.css` styles that column `text-align: right` +
+`font-variant-numeric: tabular-nums`, which aligns decimal points only when
+every cell has the same fractional width. A $100.00 top-up above a -$24.4950
+charge misaligns by two characters. Every fix has a real cost: padding to 4dp
+everywhere renders "$100.0000", and per-page adaptive precision is stateful.
+Filed rather than silently accepted.
+
+### The exemption that rested on a browser attribute
+
+`_ALLOWED` in the display guard exempted five auto-reload figures on the stated
+grounds that `step="1"` / `step="50"` made the stored values "whole dollars by
+construction". `blueprints/wallet.py::_coerce` is `Decimal(raw)` with three
+MINIMUM clamps and no integrality check, and the columns are `numeric(8,2)`. A
+crafted POST, or a devtools edit of the step, stores $5.60. The diff had also
+WIDENED two of those figures from `'%.2f'` to `'%.0f'` on the customer-facing
+wallet page to fit the exemption, and the same `'%.0f'` renders into the form's
+`value` attribute, so opening the settings and pressing Save rewrote 5.60 to 6.
+A display defect became a data mutation.
+
+All five now go through display helpers, the three form inputs render exactly
+via `display_ledger_usd` with `step="0.01"` matching what the server accepts, and
+the replacement test asserts against `blueprints/wallet.py` rather than markup.
+
+### The guard could not see the class it existed to prevent
+
+Round 12 added `_money_format_sites()` to make a fifth undiscovered class
+impossible. Round 14 found two live NEAREST sites it was structurally blind to:
+`templates/wallet/overview.html` signup-credit-used (reads a `{% set %}` alias,
+so no money token reaches the expression) and `templates/wallet/transactions.html`
+"net for this job" (the column is named `ann.net`), the latter sitting directly
+beside two `display_ledger_usd` figures it is meant to be the arithmetic of.
+
+Four structural causes, all now fixed:
+
+1. **Token allowlist as the only money signal.** A literal `$` on the line now
+   qualifies too. Provenance is not decidable by pattern matching, but `$` is
+   the thing actually being printed.
+2. **`Path("templates")` was CWD-relative.** `rglob` on a missing directory
+   yields nothing and raises nothing, so the whole guard passed vacuously from
+   any other working directory. Now anchored to the repo root and asserted.
+3. **One mechanism and one file type.** `'%.Nf'|format` only, `*.html` only.
+   Now also `|round(`, `.toFixed(`, `*.txt`, and `static/**/*.js`.
+4. **The can-it-fail test never called the guard.** It re-implemented the regex
+   inline, so the token filter, the exemption filter and the directory walk were
+   all untested. It now runs the real function over a fixture tree covering all
+   five shapes, including one the old guard would have missed.
+
+Exemptions are now keyed on a substring of the offending LINE rather than a
+variable name, and a dead exemption is a hard failure. Two of the previous seven
+could never match, which is what made the auto-reload fields look covered.
+
+### Reviewer 1's test findings, all confirmed and fixed
+
+- The preauth mock patched `shared.target_launch.campaign_preauth` while the
+  route calls `cc.campaign_preauth`, so the REAL gate ran in all new tests. They
+  passed by coincidence (wallet mocked to $1000, KYC off, spend-today 0 under
+  `isolate_supabase`) and would have turned red on any preauth env change.
+  Verified fixed by an INVERTED mutation: break the real function, tests stay
+  green.
+- No test pinned the form-fingerprint fallback the A58 comment names as the sole
+  reason the decorator is safe. Both existing tests posted IDENTICAL forms, so
+  they could not distinguish "the key is a function of the form" from "the key
+  is a function of nothing". Added
+  `test_two_different_campaigns_in_the_ttl_both_run`.
+- `get_campaign=None` was a sentinel meaning "apply no patch", so the
+  unreadable-row test injected nothing and asserted against an
+  `isolate_supabase` side effect. Now `_UNSET`, with the read recorded and
+  asserted.
+- Both fund-branch tests ran with idempotency effectively disabled while one
+  docstring asserted idempotency behaviour as the reason its assertion matters.
+  The store is now injected and the release is observed via `store.rows == {}`.
+- The third fund branch (row moved but `fund_campaign` reported False) had no
+  test at all, though the whole three-valued read exists for it.
+
+### Also corrected
+
+- `display_ledger_usd` was documented as EXACT while quantizing anything finer
+  than 4dp with the context default, ROUND_HALF_EVEN. It now raises, and the
+  4dp precondition is stated rather than assumed. Its "fail-closed" claim is
+  now "fail-fast", matching `display_balance_usd`: this page has no submit
+  button, so a raise is a 500, not a blocked spend.
+- The `_IdemStore` docstring said the delete path was not modelled, directly
+  above an `_IdemTable.delete()` that models it and an `execute()` that pops the
+  row. That is what makes `store.rows == {}` a real observation of the release.
+- `templates/wallet/_partials.html` rounded the per-job charge CEILING down with
+  the balances. A ceiling understated understates maximum exposure; it now
+  rounds up. The headroom argument that groups caps with balances fits a monthly
+  reload cap, not a per-job charge ceiling.
+- `templates/admin/campaign_detail.html` rendered a quote into a form `value`
+  with `'%.2f'`, the same data-mutation shape as the auto-reload inputs. Now
+  exact.
+
+### Standing lessons
+
+- **A comment is a claim, and the most dangerous ones are written in the commit
+  that falsifies them.** Three this round: "Keep the two routes' policies
+  identical", "whole dollars by construction", and a test named for a function
+  it did not test. The rule that catches these is to verify the claim against
+  the code at the moment of writing it, not to write it from intent.
+- **A guard that has never been seen to fire is not a guard.** The can-it-fail
+  test must exercise the real entry point, not a copy of its regex.
+- **An exemption is a claim about a system property.** Assert it against the
+  system (a module constant, a route's coercion), never against markup that only
+  a browser enforces.
+- **A form `value` attribute is not a display.** Rounding it rewrites the stored
+  value on the next save.
+- **Split the reviewers by concern.** One agent over a 17-file diff reviews
+  everything shallowly. Two over halves found 3 blockers between them, and
+  neither blocker was in the other's half.

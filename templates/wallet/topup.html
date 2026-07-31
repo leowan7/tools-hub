@@ -41,7 +41,7 @@
       <div class="panel-header">
         <span class="panel-title">Payment received</span>
         {% if wallet %}
-          <span class="nav-link">New balance ${{ '%.2f'|format(wallet.balance_usd|float if wallet.balance_usd is not none else 0) }}</span>
+          <span class="nav-link">New balance ${{ display_balance_usd(wallet.balance_usd or 0) }}</span>
         {% endif %}
       </div>
       <div class="panel-body">
@@ -128,7 +128,7 @@
         <p class="wallet-section-body">
           <strong>Top up and run.</strong> Your job estimate exceeds your
           current balance by
-          <strong>${{ '%.2f'|format(_deficit_raw|float) }}</strong>. Add at
+          <strong>${{ display_cost_usd(_deficit_raw) }}</strong>. Add at
           least that amount and we will pick up the job submission right
           where you left off.
         </p>
@@ -140,7 +140,7 @@
     <div class="panel-header">
       <span class="panel-title">Pick an amount</span>
       {% if wallet %}
-        <span class="nav-link">Balance ${{ '%.2f'|format(wallet.balance_usd|float if wallet.balance_usd is not none else 0) }}</span>
+        <span class="nav-link">Balance ${{ display_balance_usd(wallet.balance_usd or 0) }}</span>
       {% endif %}
     </div>
     <div class="panel-body">
@@ -256,22 +256,22 @@
           <div class="field-group">
             <label for="auto_reload_threshold_usd" class="field-label">Trigger below ($)</label>
             <input type="number" id="auto_reload_threshold_usd" name="auto_reload_threshold_usd"
-                   class="field-input" min="5" step="1" style="max-width: 200px;"
-                   value="{{ '%.0f'|format(wallet.auto_reload_threshold_usd|float if wallet and wallet.auto_reload_threshold_usd is not none else 10) }}">
+                   class="field-input" min="5" step="0.01" style="max-width: 200px;"
+                   value="{{ display_ledger_usd(wallet.auto_reload_threshold_usd if wallet and wallet.auto_reload_threshold_usd is not none else 10) }}">
             <div class="field-helper">When balance drops below this, we charge.</div>
           </div>
           <div class="field-group">
             <label for="auto_reload_amount_usd" class="field-label">Reload amount ($)</label>
             <input type="number" id="auto_reload_amount_usd" name="auto_reload_amount_usd"
-                   class="field-input" min="{{ '%.0f'|format(_min) }}" step="1" style="max-width: 200px;"
-                   value="{{ '%.0f'|format(wallet.auto_reload_amount_usd|float if wallet and wallet.auto_reload_amount_usd is not none else 50) }}">
+                   class="field-input" min="{{ '%.0f'|format(_min) }}" step="0.01" style="max-width: 200px;"
+                   value="{{ display_ledger_usd(wallet.auto_reload_amount_usd if wallet and wallet.auto_reload_amount_usd is not none else 50) }}">
             <div class="field-helper">How much we add per auto reload.</div>
           </div>
           <div class="field-group">
             <label for="auto_reload_monthly_cap_usd" class="field-label">Monthly cap ($)</label>
             <input type="number" id="auto_reload_monthly_cap_usd" name="auto_reload_monthly_cap_usd"
-                   class="field-input" min="100" step="50" style="max-width: 200px;"
-                   value="{{ '%.0f'|format(wallet.auto_reload_monthly_cap_usd|float if wallet and wallet.auto_reload_monthly_cap_usd is not none else 1000) }}">
+                   class="field-input" min="100" step="0.01" style="max-width: 200px;"
+                   value="{{ display_ledger_usd(wallet.auto_reload_monthly_cap_usd if wallet and wallet.auto_reload_monthly_cap_usd is not none else 1000) }}">
             <div class="field-helper">Hard ceiling on auto reload per calendar month.</div>
           </div>
         </div>

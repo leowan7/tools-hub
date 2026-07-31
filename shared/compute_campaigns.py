@@ -339,6 +339,55 @@ def display_balance_usd(value) -> str:  # noqa: ANN001
     return _display_usd(value, ROUND_FLOOR)
 
 
+def display_ledger_usd(value) -> str:  # noqa: ANN001
+    """The EXACT stored amount, for a historical row that must reconcile.
+
+    Not a rounding direction. 2dp when the value is exactly 2dp, full 4dp when
+    it is not, so nothing is ever misstated in either direction.
+
+    Why this exists rather than reusing the two above. The wallet ledger prints
+    ``tx.amount_usd`` (a cost) beside ``tx.balance_after_usd`` (a balance) in
+    the SAME ROW, and consecutive rows are meant to add up. Costs round UP and
+    balances round DOWN, so applying those two rules here would make the column
+    stop reconciling in a fixed direction, on the one page whose entire purpose
+    is that the reader can check the arithmetic themselves.
+
+    The direction rules exist to protect DECISIONS: never show a hold below what
+    will be taken, never claim a balance the wallet does not have. A ledger is a
+    record, not a decision surface -- nobody spends from it -- so the property
+    worth protecting there is internal consistency, and the only display that
+    gives it is the exact one.
+
+    PRECONDITION: the value carries at most 4 decimal places. Every wallet money
+    column is ``numeric(12,4)`` and every API figure passes through
+    ``_quantize_usd``, so that holds for both current callers. It is enforced
+    rather than assumed, because an earlier version of this docstring said
+    "EXACT" while the code quantized anything finer to 4dp with the context
+    default of ROUND_HALF_EVEN -- NEAREST, the very behaviour this whole family
+    of helpers exists to remove, inside the one function documented as exact.
+
+    Raises on a non-finite, non-numeric, or finer-than-4dp input. Note what that
+    does and does not buy, in the same terms as ``display_balance_usd`` above:
+    this renders a page with no submit button, so a raise here is a 500 on the
+    wallet ledger, not a blocked spend. It is fail-FAST, not fail-closed.
+    """
+    # Same shape as _display_usd: is_finite() FIRST, because quantize does not
+    # signal on NaN and would render the literal string "NaN" into the ledger.
+    amount = Decimal(str(value))
+    if not amount.is_finite():
+        raise ValueError(f"cannot display a non-finite amount: {value!r}")
+    four = amount.quantize(Decimal("0.0001"))
+    if four != amount:
+        raise ValueError(
+            f"display_ledger_usd is exact and cannot render more than 4 decimal "
+            f"places without rounding to NEAREST: {value!r}"
+        )
+    two = amount.quantize(Decimal("0.01"))
+    # `==` on Decimal compares numerically, so Decimal("2.50") == Decimal("2.5000")
+    # is True and a stored 2.5000 still renders as the clean "2.50".
+    return str(two if two == amount else four)
+
+
 def display_total_usd(displays: Iterable[str]) -> str:
     """The 2dp total of a column of amounts that are ALREADY displayed at 2dp.
 

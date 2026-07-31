@@ -55,7 +55,7 @@
               <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">
                 {{ u.created_at[:10] if u.created_at else '—' }}
               </td>
-              <td style="padding:.5rem .75rem;text-align:right;">${{ '%.2f'|format(u.wallet_usd or 0) }}</td>
+              <td style="padding:.5rem .75rem;text-align:right;">${{ display_balance_usd(u.wallet_usd or 0) }}</td>
               <td style="padding:.5rem .75rem;text-align:right;">{{ u.runs_30d }}</td>
               <td style="padding:.5rem .75rem;text-align:right;">{{ u.events_30d }}</td>
               <td style="padding:.5rem .75rem;color:var(--text-secondary);font-size:.82rem;">

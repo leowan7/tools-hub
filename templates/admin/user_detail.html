@@ -7,7 +7,7 @@
   <h1>{{ target.email or target.user_id }}</h1>
   <p class="subtitle">
     Signed up {{ target.created_at[:10] if target.created_at else '—' }} ·
-    ${{ '%.2f'|format(target.wallet_usd or 0) }} wallet ·
+    ${{ display_balance_usd(target.wallet_usd or 0) }} wallet ·
     quality <strong>{{ target.profile.signup_quality or 'legacy' }}</strong>
     {% if target.profile.domain_class %}· domain {{ target.profile.domain_class }}{% endif %}
   </p>

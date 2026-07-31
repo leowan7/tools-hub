@@ -407,6 +407,24 @@ def create_app() -> Flask:
     flask_app.jinja_env.globals["display_cost_usd"] = (
         _compute_campaigns.display_cost_usd
     )
+    # The other two directions, so no template has to pick a rounding mode by
+    # hand. Four separate QC rounds each found a class of money surface nobody
+    # had enumerated -- costs, balances, the required top-up, outbound email --
+    # because each was formatted at its call site with `'%.2f'|format`, which
+    # rounds to NEAREST and therefore flatters the user half the time.
+    #
+    #   display_cost_usd     costs, holds, spend, required top-up   -> UP
+    #   display_balance_usd  balances, caps, thresholds             -> DOWN
+    #   display_ledger_usd   historical rows that must reconcile    -> EXACT
+    #
+    # A cap rounds DOWN with the balances: a cap shown above its real value
+    # overstates the headroom, which is the same error as overstating a balance.
+    flask_app.jinja_env.globals["display_balance_usd"] = (
+        _compute_campaigns.display_balance_usd
+    )
+    flask_app.jinja_env.globals["display_ledger_usd"] = (
+        _compute_campaigns.display_ledger_usd
+    )
 
     # Inject Workspace context into every template so the shared header
     # can render the "Active Workspaces (N)" badge. Replaces the legacy
