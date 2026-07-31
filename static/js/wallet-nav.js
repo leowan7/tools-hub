@@ -23,7 +23,12 @@
     if (typeof usd !== "number" || !isFinite(usd)) return;
     var prev = parseFloat(chip.getAttribute("data-wallet-usd") || "0");
     chip.setAttribute("data-wallet-usd", String(usd));
-    chip.textContent = " $" + usd.toFixed(2) + " ";
+    // A balance rounds DOWN, matching display_balance_usd, which renders the
+    // same figure server-side into _header.html. toFixed(2) rounds to NEAREST,
+    // so this rewrote a floored $24.49 back to $24.50 on every window focus and
+    // would have silently undone the server-side fix.
+    var floored = Math.floor(Number((usd * 100).toFixed(6))) / 100;
+    chip.textContent = " $" + floored.toFixed(2) + " ";
     var low = usd < LOW_THRESHOLD;
     chip.classList.toggle("nav-wallet-low", low);
     if (topupBtn) {

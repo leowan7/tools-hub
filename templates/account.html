@@ -35,7 +35,7 @@
         </div>
         <div class="account-summary-item">
           <span class="account-summary-label">Wallet balance</span>
-          <span class="account-summary-value">${{ '%.2f'|format(nav_wallet_usd or 0) }}</span>
+          <span class="account-summary-value">${{ display_balance_usd(nav_wallet_usd or 0) }}</span>
         </div>
       </div>
 

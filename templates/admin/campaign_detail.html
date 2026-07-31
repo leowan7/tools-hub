@@ -141,7 +141,7 @@
                 <label for="quote_total_usd" style="display:block;margin-bottom:.3rem;font-size:.875rem;font-weight:500;">Total (USD)</label>
                 <input type="number" id="quote_total_usd" name="quote_total_usd" class="form-control"
                        step="0.01" min="0" inputmode="decimal"
-                       value="{{ '%.2f'|format(campaign.quote_total_usd) if campaign.quote_total_usd is not none else '' }}"
+                       value="{{ display_ledger_usd(campaign.quote_total_usd) if campaign.quote_total_usd is not none else '' }}"
                        placeholder="e.g. 48000.00">
               </div>
               <div class="form-field">

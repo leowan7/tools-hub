@@ -31,7 +31,7 @@
              class="nav-link-public nav-wallet-chip{% if _low %} nav-wallet-low{% endif %}"
              data-wallet-usd="{{ nav_wallet_usd }}"
              title="Wallet balance">
-            ${{ '%.2f'|format(nav_wallet_usd) }}
+            ${{ display_balance_usd(nav_wallet_usd) }}
           </a>
           {% if _low %}
             <a href="{{ url_for('wallet.wallet_topup') }}"

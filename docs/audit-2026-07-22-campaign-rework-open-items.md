@@ -448,3 +448,1656 @@ intent, when it is making a claim that has not been checked.
 - **detail:** Migration 0039 provisions exactly two indexes on `design_targets` (`design_targets_user_created_idx`, `design_targets_user_sha_idx`) and **both** carry `WHERE archived_at IS NULL`. No later migration adds another. So `archived_only=True`, which filters `archived_at IS NOT NULL` and sorts by `archived_at DESC`, can use neither: it is a scan plus a sort. `GET /targets` issues it unconditionally as its second read, so every user pays it on every load, including the majority who have archived nothing and get zero rows back.
 - **why it is only informational:** the table is tiny and per-user, the read is capped at 100 rows, and the alternative (one mixed query) reintroduces the bug the two-read split exists to prevent, since archived rows would then compete with live ones for the same capped page. The cost is real but currently unmeasurable.
 - *Next:* if `design_targets` ever grows, add a partial index on `(user_id, archived_at DESC) WHERE archived_at IS NOT NULL` in whichever migration is next free, or make the archived section load on demand instead of inline. Do not "fix" it by collapsing back to a single query. The docstring on `list_targets_for_user` states this cost so it is not rediscovered as a mystery.
+
+## Addendum 2026-07-29 — target-first Phase 2 (multi-tool launch)
+
+Found while building `GET|POST /targets/<id>/launch`. The first two were fixed
+in the Phase 2 diff because that route could not be built correctly around
+them; the rest are filed.
+
+### A35. `@idempotent()` keyed on `(user, route)` only, ignoring the form **(RESOLVED)**
+- **severity:** high (silent data loss) | **owner:** code
+- **found:** Phase 2 build, 2026-07-29. Verified empirically on Flask 3.1.3 / Werkzeug 3.1.8, not inferred.
+- **detail:** `app.py`'s `_enforce_csrf` is a `before_request` that reads `request.form.get("_csrf")` on every protected POST. Parsing the form consumes the request stream, and Werkzeug's `_load_form_data` does not populate `_cached_data`, so by the time `shared/idempotency.py` calls `request.get_data(cache=True)` it receives `b""`. The content hash was therefore `sha256(user_id + request.path + b"")` on all seven decorated routes.
+- **two live consequences:** (1) a second, DIFFERENT submission to the same route within the 60s TTL was treated as a duplicate: it never ran and replayed the first response, with the user given no indication. Worst on `blueprints/tools.py:846` `tool_submit` (submit a job for one structure, then another within a minute, and the second silently vanishes) and `blueprints/targets.py` `POST /targets` (the second distinct target is never created). (2) 4xx responses were cached, so a user refused for insufficient balance who topped up in another tab and resubmitted got the same refusal replayed.
+- **why the suite could not see it:** `tests/conftest.py:20` sets `CSRF_PROTECT=0` process-wide, which makes `_enforce_csrf` return before touching `request.form`, so every test exercised a code path production never takes.
+- **fix:** `_compute_key` falls back to a canonical encoding of the parsed form when the raw body is empty (sorted, built from `form.lists()` so multi-valued fields contribute every value, `_csrf` excluded so token rotation is not a new request, file parts contributing name/filename/size). Separately, a handler response of 4xx/5xx now releases the claim instead of storing it. Both narrow dedup strictly: real double-clicks still collapse. Tests reproduce the production posture with their own form-consuming `before_request`.
+- **known limitation, stated not hidden:** two submissions identical in every form field AND uploading files of the same name and size within the TTL still collide. Hashing upload bytes would cost a full pass over every upload on every request. That combination is a double-click far more often than two distinct jobs.
+
+### A12 (follow-up). `fund_campaign` could not report failure **(RESOLVED)**
+- **detail:** It called `_update_campaign`, which returns `None` and swallows every exception. `drive_campaign` early-returns on a `draft`, so a fund that silently failed left a campaign the user believed was running parked forever with no signal. Invisible at one campaign per click; a multi-tool launch funds N in a loop.
+- **fix:** `fund_campaign(id) -> bool` over the existing `_cas_transition(id, "funded", ("draft",), ...)`. The launch route drives only what actually funded and reports the rest. CAS on `draft` also means it can no longer rewind a `running` campaign; nothing calls it that way today.
+
+### A36. `/campaigns` still runs every PXDesign campaign at `binder_length=80`
+- **severity:** medium (silent wrong parameter) | **owner:** code
+- **detail:** `templates/runs/new.html` offers only `binder_length_min` / `binder_length_max`. PXDesign reads a **singular** `binder_length` (`tools/pxdesign/__init__.py:61`) and ignores the pair, so it falls back to its `"80"` default on every campaign and the user's entry is silently discarded. Same class as the bindcraft preset defect, without the visible 400.
+- **partially addressed:** the Phase 2 launch screen has a dedicated `pxdesign__binder_length` field, so the target flow is correct. The single-tool form is untouched.
+- *Next:* add a singular-length field to `runs/new.html` behind the existing per-tool show/hide, or fold the single-tool form into the launch screen at Phase 6.4. Related, lower impact: `rfantibody` campaigns always run at the default `cdr_lengths`, and `iggm` at `max_antigen_size=2000`, for the same reason.
+
+### A37. `list_campaigns_for_user` still lists stranded drafts
+- **severity:** low | **owner:** code
+- **detail:** Phase 2 excludes `draft` from `list_campaigns_for_target` (a draft was never funded, dispatched or billed, so it is not a run and the page can offer no action on it). `list_campaigns_for_user` is a different query, applies no status filter, and is deliberately unchanged, so the two lists disagree about a stranded draft.
+- **corrected 2026-07-29 (QC round 5):** this entry and the docstring citing it both said the query "feeds `/campaigns` and the homepage" and "three surfaces". **Measured: one production caller**, `blueprints/campaigns.py:95` (`GET /campaigns`). The homepage loads `list_jobs_for_user` (`tool_jobs`, not campaigns) and only renders a link to `/campaigns`. So a stranded draft does NOT appear on the homepage.
+- **why it was not widened here:** it is a separate query on a separate surface and deserves its own review rather than riding along on a launch diff. The blast radius is smaller than this entry originally claimed, which makes it cheaper to fix, not less real.
+
+### A38. `CAMPAIGN_STATUSES` is missing `paused_insufficient_funds`
+- **severity:** low (latent) | **owner:** code
+- **detail:** `shared/compute_campaigns.py:179` says it mirrors the CHECK in migration 0034, but 0035 (`0035_phase2_remove_daily_cap.sql:110-114`) widened the DB CHECK to add `paused_insufficient_funds` and the constant was never updated. The driver writes and reads that status regardless. Any future validation written against the constant would reject a live status.
+- *Next:* add the member, or delete the constant if nothing validates against it. It currently has no consumers, which is the only reason this is latent.
+
+### A39. `status_badge` has no tint for any campaign status
+- **severity:** low (UX) | **owner:** code
+- **detail:** `templates/components/status_badge.html:16-23` maps the six `tool_jobs` statuses. `draft`, `funded`, `completing`, `completed_with_failures` and `paused_insufficient_funds` are all campaign statuses and all fall through to the untinted default pill, so a paused-for-funds run is visually identical to a healthy one on the target page.
+- *Next:* extend the tint map when Phase 6.4 builds the run strip.
+
+### A40. Several route-exercising test files lack `isolate_supabase`
+- **severity:** medium (test hygiene) | **owner:** code
+- **detail:** `app.py` calls `load_dotenv()` at import and the repo-root `.env` holds real production credentials, so a test that boots `create_app()` and exercises a route reads production unless it opts into `tests/conftest.py::isolate_supabase`. `tests/test_compute_campaign_routes.py` was missing it (added in this diff). `tests/test_iggm_campaign.py` and `tests/test_csrf_protection.py` still are; both happen to mock their write paths, so the exposure is reads.
+- **measured 2026-07-29 (QC round 3):** **26 of the 32 test files that reference `create_app` have no `isolate_supabase`.** The audit above named three by inspection and undercounted by an order of magnitude. Not fixed in this round: the fixture blanks four env vars for the whole module, so adding it to 26 files changes the environment of several hundred existing tests, which is its own change with its own blast radius (the reason the fixture was made opt-in in the first place, per its own docstring).
+- **also in this round:** `tests/test_compute_campaigns.py` gained the fixture. It does not boot `create_app()`, so it was not in the class named above, and it still read production: its `fake_client` binds `cc.get_service_client`, while `plan_chunks` prices through `wallet_estimates._historical_p90_seconds`, which late-imports `credits.get_service_client`. Every planner test was pricing money against the live `tool_jobs_p90` view. The module docstring said "No live Modal or Supabase" throughout.
+- *Next:* make the fixture autouse in `conftest.py` and have the few tests that genuinely want live config opt out, so the safe direction is the default. Note that patching one module's `get_service_client` is not sufficient on its own: any call that reaches pricing resolves `credits.get_service_client` at call time.
+
+### Two documentation claims corrected in place
+- `docs/HANDOFF-2026-07-29-phase2.md` asserted "bindcraft is not broken". Every `POST /campaigns` with `tool=bindcraft` returned 400 "Pick a preset." Fixed in this diff and the handoff corrected.
+- The 8-phase plan's §2.2 listed a `framework` control for rfantibody. Its `validate` never reads one; `build_payload` hardcodes `"VHH"`. The real per-tool field is `cdr_lengths`.
+
+## Addendum 2026-07-29b — independent QC over the Phase 2 diff
+
+Eight findings, all confirmed by the reviewer against running code rather than
+inferred from prose. All fixed in the same diff. Recorded because the pattern,
+not the individual bugs, is the finding.
+
+### The named recurring defect appeared five more times, about the same property
+`plan_chunks` prices through `_estimate_chunk_cost` -> `estimated_cost_for_tool`
+-> `_historical_p90_seconds`, which SELECTs `tool_jobs_p90`. Measured: **14
+Supabase reads during `plan_multi_launch` for a 7-tool launch, plus 7 more in
+`rows()`**. Five places claimed the opposite, including the `shared/target_launch.py`
+module docstring that **this diff had just rewritten to correct the previous
+purity claim** and a comment justifying a design decision as free.
+
+The suite could not see it: `isolate_supabase` blanks `SUPABASE_*`, so
+`get_service_client()` returns `None` and the p90 lookup short-circuits. Every
+test exercised the branch production does not take. That is the same shape as
+A35 (the CSRF fixture hiding the idempotency key defect) found earlier the same
+day: **a fixture that makes tests safe can also make an entire code path
+untested, and the two are hard to tell apart from inside the suite.**
+
+Consequence beyond the prose: the estimate endpoint answered "would starting
+narrow be affordable" by calling `plan_multi_launch` a second time, on a
+debounced keystroke path, justified by a comment saying planning was free.
+Replaced with `first_wave_at_pace(plan, pace)`, which re-prices from the plan
+already in hand (only the concurrency division differs between paces) and is
+pinned by an equivalence test against a full re-plan in both directions.
+
+### The other findings
+- **`_release_key` returned True without checking the delete matched anything.** A zero-row delete would report success, the caller would skip its cache fallback, and the orphaned claim would answer every retry with 409 for the rest of the TTL: exactly the outcome the function exists to prevent. Now returns `bool(response.data)`.
+- **`concurrency_note` told a one-tool launch it was sharing.** One tool at `PACE_STEADY` narrows 16 to 8, so a note is due, but the sentence read "Running 1 tools at once shares one limit of 32 sub-jobs in flight". Wrong cause, wrong grammar, wrong that anything was shared. Split into two sentences: sharing the cap, versus the pace the user chose.
+- **The launch page shipped both flag-gated slugs to every user** via `variant_preset_tools|tojson` in a `<script>` tag, undoing in one line the reason a gated tool is answered as "unknown" everywhere else. Now intersected with the visible set.
+- **The fake Supabase query builder had no `neq`,** so the new draft filter raised `AttributeError`, which `list_campaigns_for_target`'s own `except` swallowed into `[]`. Four tests failed; worse, the swallow means any future client mismatch on that query degrades to "nothing has ever been run against this target" rather than an error. Same lesson as the standing rule that a test fake must model the backend's real behaviour.
+- **Three assertions could not fail.** The affinity-maturation refusal test asserted only status 400, and that payload also fails the adapter's own mask check, so deleting the campaign-level refusal left it green; it now asserts the reason. A `patch("shared.storage.upload_input")` observed nothing because `blueprints/targets.py` never imports it. A concurrency floor test could not reach the floor it named.
+- **Two more prose over-claims:** `campaign_tool_gated_off` claimed all callers answer indistinguishably (`api_runs_estimate` does not), and `_resolve_preset` cited the wrong form's disabled controls.
+
+### What to carry forward
+Prose in this repo is now the single most defect-dense part of a diff, and the
+defects survive review because they read as documentation rather than as
+claims. Two habits earn their keep: measure anything a comment calls free or
+pure, and when a fixture makes a test pass, check whether it did so by removing
+the behaviour under test.
+
+## Addendum 2026-07-29c — second QC pass, over the Phase 2 FIXES
+
+Nine more findings, over the diff that fixed round 1. This is the third time on
+this project that reviewing the fixes has been as productive as reviewing the
+original work, and the second time a comment written to fix a false-claim
+defect contained a false claim.
+
+### The fix for the mis-attributed concurrency note reproduced the bug it fixed
+Round 1: one tool at `PACE_STEADY` announced *"Running 1 tools at once shares
+one limit of 32 sub-jobs in flight"* to somebody running exactly one tool. The
+fix branched on `len(specs) > 1`. But **two** tools at burst get `32 // 2 = 16`
+each, which is exactly their solo width, so at n=2 the cap takes nothing and
+all narrowing still comes from the pace: the width-based branch blamed the
+platform limit for the user's own radio button, at n>=2 instead of n=1. The
+docstring added by the fix asserted that the two causes were now distinguished.
+
+Now detected on its own terms: cap narrowing is `divide_concurrency(tools,
+PACE_BURST) < solo` (burst is the widest this module returns, so anything it
+takes off is the cap), pace narrowing is `chosen < burst`. Both, either, or
+neither sentence. Also corrected: *"so each starts narrower than it would
+alone"* is false whenever proteina is in the launch, since it is pinned to 4
+and a 7-way division leaves it there.
+
+### A fabricated number and a fabricated mechanism
+- *"``float(Decimal("280.91"))`` serializes as ``280.90999999999997``"* (in the `rows()` docstring **and** the test docstring). It does not: `str()` and `json.dumps()` both give `280.91`. The real, demonstrable loss is the quantum, `Decimal("4.0200")` -> `4.02`. The `str(Decimal)` change was right; the reason given for it was invented.
+- *"a second full plan would roughly double the reads per keystroke"*. Measured at 7 tools: 28 reads with the shortcut, 35 without. 1.25x, not 2x. The optimisation is still worth having; the figure justifying it was not measured.
+
+### Two assertions that could not fail, in tests written to prove the fixes
+- `assert Decimal(row[key]) == Decimal(row[key].strip())` compares a whitespace-free string to itself. Replacing `rows()` with a `str(float(...))` variant left the whole test green. Now asserts `Decimal(...).as_tuple().exponent == -4` and equality against the plan's own figure.
+- `test_rows_add_up_to_the_plan_totals` ran at 24 designs, where every tool plans 1 to 3 sub-jobs. `first_wave_hold_usd` clamps at `min(total_subjobs, concurrency)`, so dropping the divided concurrency entirely changed nothing. Now runs at 1000 designs and asserts the cohort is actually large enough to discriminate.
+
+### The rest
+- **`_form_fingerprint`'s "order-independent" became half-true.** Sorting the `(name, FileStorage)` pairs by name alone fixed the `TypeError` on a repeated field but left repeated parts in wire order, so the same two files posted in the other order would not dedup. Now builds the descriptor strings first and sorts those.
+- **"Only `divide_concurrency` and `concurrency_note` are genuinely pure"** excluded two free properties, and said "per tool" where the cost is per SPEC (the class docstring exists specifically to say a repeated tool is two entries).
+- **"it cannot disagree with the gate the POST will run"** overclaims: it matches `campaign_preauth`'s balance test exactly, but not the velocity or verification gates, so a launch also over the daily cap is offered a narrower start and then refused again.
+- **`tests/test_iggm_campaign.py` had no `isolate_supabase`** while the sibling file edited in the same round gained one. It boots `create_app()`, so it pulled production credentials into `os.environ` for the rest of the pytest process and issued a real `tool_jobs_p90` SELECT (it patched `shared.compute_campaigns.get_service_client`, but `_historical_p90_seconds` resolves `shared.credits.get_service_client`). Added. See A40: the fixture should be autouse with opt-out, not opt-in.
+
+### What to carry forward, sharpened
+Round 1 said: measure anything a comment calls free or pure. Round 2 adds two
+more that would have caught most of the above without a reviewer:
+- **A number in a comment is a claim.** "2x", "280.90999999999997", "one read per tool" are all assertions, and every one of them here was wrong. Run it or drop it.
+- **Fix the cause, not the symptom the reviewer showed you.** The n=1 note bug was reported at n=1 and fixed at n=1; the same defect at n=2 shipped in the fix. When a finding names one input, ask what class it belongs to before writing the branch.
+
+## Addendum 2026-07-29d — third QC pass, and the items it filed rather than fixed
+
+Four independent agents reviewed `git diff 02d2a24 HEAD` (4150 lines, 16 files),
+one per slice: idempotency, routes + template, shared engine, test integrity.
+Verdicts: FIX FIRST x3, SUITE PARTIALLY TRUSTWORTHY. No live production bug, but
+two tests that could not fail, one money-copy bug, and a production read from a
+test file. All ten remediation items (A-J in
+`docs/HANDOFF-2026-07-29-qc-round3.md`) are done and mutation-verified.
+
+The items below are deliberately NOT fixed. Each is either pre-existing, or a
+fix whose blast radius exceeds this diff.
+
+### A41. `blueprints/tools.py` error paths return HTTP 200, so `@idempotent` caches their failures
+- **severity:** medium | **owner:** code
+- **detail:** The release-on-failure logic in `shared/idempotency.py` keys on the status code: a response `>= 400` releases the claim so a corrected retry can run. `tool_submit`'s validation-failure paths re-render the form with a bare `render_template`, which Flask serves as **200**, so those failures are cached for the full TTL and a corrected resubmission inside 60 s replays the stale error page. The module docstring claimed "Failures are not cached" without qualification; corrected in this diff to state the status-code dependency.
+- *Next:* give those paths real 4xx codes. That changes what the browser and every existing `tool_submit` test see, so it is its own change.
+
+### A42. `_claim_key`'s upsert is a TOCTOU, not mutual exclusion
+- **severity:** medium | **owner:** code
+- **detail:** `_claim_key` SELECTs for a live row, then upserts with `on_conflict="key"`. `ON CONFLICT DO UPDATE` succeeds for **both** racing writers, so two concurrent identical submissions can each see "not claimed" and each run the handler. Pre-existing. The `_release_key` scoping added in this diff (`.is_("response_status", None)`) removes the new leg this created for `target_launch_submit` — a losing sibling can no longer delete the winner's cached success — but the underlying race is untouched.
+- *Next:* a conditional insert that can actually fail (plain `insert` and treat the unique-violation as "lost the race"), or a DB-level advisory lock.
+
+### A43. `_store_response`'s own failure path leaves `response_status` NULL
+- **severity:** low | **owner:** code
+- **detail:** If the UPDATE that caches the response fails, the claim row keeps `response_status NULL`, which reads as "in flight" to every subsequent request for the rest of the TTL — the 409-until-expiry state `_release_key` exists to prevent, reached by a different route. Pre-existing.
+
+### A44. The single-tool `/campaigns` route still discards `fund_campaign`'s bool
+- **severity:** low | **owner:** code
+- **detail:** `fund_campaign` now reports whether the row actually moved out of `draft` (audit item A12), and the multi-tool launch route branches on it to report stalled runs. `blueprints/campaigns.py` still ignores the return, so a single-tool campaign whose fund silently fails is left `draft` — inert and unbilled, but presented to the user as started. A12 is half closed.
+
+### A45. A deliberate identical re-launch inside 60 s is a silent no-op
+- **severity:** low (UX) | **owner:** product
+- **detail:** `@idempotent()` on `target_launch_submit` cannot distinguish a double-click from a user who genuinely wants the same tools run against the same target twice (adding 400 more BindCraft designs is a legitimate launch). The second is answered from cache and replays "Started N runs", so the UI asserts something that did not happen. The TTL is 60 s, so the window is small, but nothing marks a replay as a replay.
+- *Next:* surface `Idempotent-Replay` in the banner, or give the form a nonce the user's second submit would change.
+
+### What this round adds to the carry-forward list
+
+Rounds 1 and 2 said: measure anything a comment calls free or pure, and a number
+in a comment is a claim. Round 3 adds two about tests rather than comments.
+
+- **A test that cannot fail is worse than a missing test**, because it is
+  counted. Both dead tests here were dead for the same reason: the fixture's
+  arithmetic collapsed the distinction under test. `32 // 2 == 16` is
+  rfdiffusion's solo width, so dividing concurrency across 2 tools is an
+  identity. One sub-job per tool clamps the first wave to 1, so burst and steady
+  price identically. Neither is visible by reading the test. Both were found by
+  computing the two branches and comparing.
+- **So state the precondition as an assertion.** Every cohort-sensitive test in
+  this round now carries one: `_assert_pace_is_observable_on`,
+  `_assert_float_encoding_is_distinguishable`,
+  `test_the_typed_field_cases_all_differ_from_the_adapter_default`,
+  `test_csrf_enforcement_is_actually_on_in_this_fixture`,
+  `test_a_nul_bearing_value_survives_form_decoding`, and an inline guard in the
+  page-budget test. If someone later shrinks a cohort to something cheaper, the
+  precondition fails with a message naming the fix instead of the test quietly
+  passing forever.
+- **A fake that omits a method does not fail loudly; it fails silently in the
+  safe-looking direction.** Two instances this round. `tests/test_idempotency.py::_FakeTable`
+  had no `is_()`, so the `_release_key` scoping added in this diff raised
+  `AttributeError` into a bare `except` and the fix read as a no-op — both the
+  fix and its removal left 26 tests green. `tests/test_compute_campaigns.py::_Query`
+  had no `update()`, so `fund_campaign`'s CAS could not be modelled at all and
+  had zero coverage across 9 behaviours. Compare
+  `feedback_test_fakes_must_model_backend_limits`: same lesson, third occurrence.
+
+## Addendum 2026-07-29e — independent QC over the round-3 REMEDIATION
+
+Two agents over the 1759-line remediation diff: one on production code, one on
+test integrity. Verdicts: **FIX FIRST** and **SUITE PARTIALLY TRUSTWORTHY**.
+The test agent ran 35 production mutations; 33 reddened a named test, 2 did not.
+
+**Fourth consecutive round in which reviewing the fixes was as productive as
+reviewing the original work**, and this time the fix contained a defect strictly
+worse than the one it fixed.
+
+### The fund/drive guard inverted the reporting on a money path
+Round 3 wrapped the launch route's fund/drive loop so nothing could raise past
+it. The wrap set `moved = False` in the handler. But **`fund_campaign` cannot
+raise** — `_cas_transition` catches everything and returns `False` — so the only
+exception the block could ever catch came from `drive_campaign_async`, i.e.
+`threading.Thread(...).start()`, i.e. **exactly the case where the campaign is
+already `funded`**. And `funded` is in `cron/tick_campaigns.py::_ACTIVE_STATES`,
+so the tick drives it within a minute or two and it bills.
+
+So the guard reported N funded, billing campaigns as *"None of those runs could
+be started. Your wallet was not charged."* Thread exhaustion is process-wide, so
+every tool in a launch fails together and `started` would be empty every time.
+
+The second half is worse than the wrong banner. That answer is a **400**, and
+round 3's own `shared/idempotency.py` change releases the claim on any status
+>= 400 — so the retry the error copy invites would create and fund a **second
+full set** against a gate the user passed once. At HEAD the exception propagated
+to a 500, which left `response_status NULL` and 409'd every retry: accidental
+protection that the fix removed and replaced with an invitation.
+
+Now: the fund is the sole commit point and the only thing that decides
+started-vs-stalled; a drive-spawn failure logs and the campaign stays *started*,
+because the cron owns it. Three tests added — **no test anywhere made
+`fund_campaign` or `drive_campaign_async` raise**, which is how a whole-launch
+reporting inversion shipped inside a QC fix.
+
+### `_release_key`'s scoping was necessary but not sufficient
+Scoping the release to `response_status IS NULL` stops a losing sibling deleting
+the winner's cached success. It does not stop the loser **overwriting** it: when
+the release matches nothing the wrapper falls through to `_store_response`, whose
+UPDATE was unscoped. The loser's 400 replaced the winner's cached 302, so the
+browser was shown "nothing was started and nothing was charged" for a funded,
+billing launch, and every click inside the TTL replayed it. `_store_response` now
+carries the same predicate. The isolated `_release_key` test could not see this;
+it is the composition that fails.
+
+### The consent-staleness fix cleared the variable, not the number
+`debounced()` cleared the internal `latest` and unticked the box but left the
+PREVIOUS launch's total and held-to-start **rendered**, for the whole repricing
+window. The rendered figure is the only price a user reads, and someone who sees
+the tick vanish re-ticks while "$3.20" is still on screen. `clearTotals()`
+already existed for this. Separately, `fetchEstimate` had no request-generation
+guard, so with two fetches in flight the one that RESOLVED last won — not the one
+describing the form as it now stands. Both fixed (`clearTotals()` in
+`debounced()`, plus a monotonic `reqSeq` every response checks).
+
+### Tests that could not fail, inside tests written to prove the fixes
+- `test_no_placeholder_survives_for_any_reason_or_count` parametrized over a
+  hardcoded 5-tuple rather than `_PREAUTH_MESSAGES`. A new refusal reason is the
+  normal way a new placeholder arrives, so the case the test exists to catch
+  shipped green: proven by adding a `{oops}` reason and getting 94 passed. Now
+  derived from the table, with a companion test that the table is complete.
+- `test_a_launch_touches_the_target_once_after_every_insert` asserted count and
+  argument against a standalone mock, which observes neither order. Moving
+  `touch_target` from after the create loop to just after the preauth gate left
+  it green. Now logged in the same recorder as create/fund/drive and asserted
+  positionally.
+- `test_singular_and_plural_copy_differ_where_the_subject_appears` read its
+  branch off the very table it asserted on, so stripping the count-sensitive
+  placeholders flipped it into the `else` arm where `one == many` then held. The
+  regression asserted itself away. Count-sensitivity is now declared per reason.
+- The typed-field precondition claimed to relaunch "with the field ABSENT", but
+  `_form()` hardcodes `rfdiffusion__binder_length_min/_max`, so it measured the
+  FORM default. It agreed with the adapter's only by coincidence.
+
+### Four more false claims, three of them numbers
+- **"that total (3.5176)"** — rfdiffusion@12 plans 2.0101 and 2.6219. 3.5176 is
+  not produced by that cohort at any figure; it is half of the two-tool total,
+  presented as measured. (Caught by the author before review, which is the only
+  reason it is not a fifth.)
+- **"all four asserted figures carry a trailing zero"** — the test asserts SIX,
+  and two carry none (rows 20.1009 and 30.1461). The `any()` precondition still
+  holds, so the cohort works; the count was invented.
+- **"For all of these except pxdesign the two defaults are byte-identical"** —
+  pxdesign's template default is `80` and its adapter default is `"80"`, so it is
+  byte-identical too. The carve-out named the wrong tool, and pxdesign is not
+  even in the list it annotates.
+- **"the previous tests here all drove launched_count to 0"** —
+  `test_the_banner_counts_only_the_runs_from_this_launch` asserts "Started 2
+  runs". The true statement is that no prior test combined a MATCHING group with
+  a non-zero `stalled`.
+- Also corrected: a **wrong audit citation** ("Filed as A35", which is a
+  different and already-RESOLVED item; the right one is A37); a claim that
+  `shared.tools_catalog` entries carry a trailing "-- one line about the tool"
+  (measured across all 14 registered adapters: not one label contains any dash,
+  and the catalog stores the tagline in a separate key); and a claim that a user
+  seeing a stranded draft on /campaigns "can still clear it" (`cancel_campaign`
+  would accept it, but no template renders a Cancel control for `draft`).
+
+### What to carry forward, sharpened again
+Rounds 1-3 gave: measure anything called free or pure; a number in a comment is
+a claim; fix the class, not the reported input; state the precondition as an
+assertion. Round 4 adds two that are specifically about *fixes*:
+
+- **A guard is a claim about which exceptions can reach it.** The fund/drive wrap
+  was written for the failure the reviewer described (money committed, exception
+  escaping) without checking which callee could actually raise. Both callees were
+  in the same file; one line of reading would have shown that the reachable case
+  was the opposite of the one being handled. Before catching, enumerate what
+  throws.
+- **A fake that omits a method fails silently in the safe-looking direction, and
+  refusing beats omitting.** Four instances now across two rounds:
+  `_FakeTable.is_()` missing (the release scoping read as a no-op, and both
+  adding and removing the fix left 26 tests green), `_Query.update()` missing
+  (`fund_campaign`'s CAS unmodellable, 9 behaviours uncovered), `_FakeTable`
+  honouring `is_` on DELETE but not UPDATE (the scoping looked effective while
+  the clobber still happened), and `_IdemTable.delete()` missing (swallowed into
+  a `False` return that caches instead of releasing). The pattern that works is
+  the one `is_()` now uses: **raise on anything not modelled**, so an unmodelled
+  path is a loud error instead of a plausible wrong answer. See
+  `feedback_test_fakes_must_model_backend_limits` — third and fourth occurrences.
+
+## Addendum 2026-07-29f — QC round 5, over the round-4 fixes
+
+One agent over the 461-line production slice of the round-4 remediation.
+Verdict **FIX FIRST**. It ran the four safe test files (226 passed) and
+re-checked the launch JS with `node --check`.
+
+**Fifth consecutive round finding defects in the previous round's fixes, and the
+second in a row where the defect was in a fix to a money path.**
+
+### `fund_campaign` returning False is AMBIGUOUS, and round 4 leaned on it
+Round 4 made the fund the sole commit point: `False` -> stalled -> "was not
+charged". But `_cas_transition` catches **every** exception and returns `False`,
+so `False` means either "the row was not in draft" or "the UPDATE raised and I
+cannot tell". A write that commits in Postgres while the response read times out
+lands in the second bucket (see `reference_tools_hub_supabase_http2_railway` for
+that failure class on this stack). The route rendered it as the first: the
+campaign is `funded`, it bills, and the user is told it was not charged and
+invited to launch it again.
+
+This is round 4's own headline defect arriving through the other branch, which is
+the point: fixing the reported input is not the same as fixing the class.
+
+Now the route confirms a `False` with an owner-scoped `get_campaign` and only
+calls a campaign stalled when the row is **confirmed** still `draft`. Anything
+else (moved, or unreadable) is treated as started, because claiming "not charged"
+about money that may be committed is the more expensive error and the one that
+produces the duplicate. Five tests added; and `_launch()` now models the
+confirming read, without which every `fund_results=[False]` test silently took
+the indeterminate branch.
+
+### A46. The campaign tick has no schedule in this repo
+- **severity:** medium | **owner:** ops (Leo)
+- **detail:** Round 4's reasoning ("a funded campaign has started, because the
+  cron drives it") depends on `campaigns:tick` actually running. `"funded"` is in
+  `cron/tick_campaigns.py::_ACTIVE_STATES` and that module puts a tick at
+  ~60-90 s, but the schedule lives **outside the repo**: the `Procfile` declares
+  only `release` and `web`, there is no `railway.json`/`railway.toml`, and
+  `campaigns:tick` is a Flask CLI command with no in-repo caller. The inline hook
+  in `shared/jobs.complete_job` cannot substitute, because a campaign whose
+  first-wave drive never spawned has no children to complete.
+- **failure scenario:** thread exhaustion on a multi-tool launch plus an absent or
+  paused Railway cron leaves N campaigns parked at `funded` forever, with an
+  untinted badge (A39), while the user reads "Started N runs".
+- **RESOLVED 2026-07-30 by direct observation**, not by document. Checked in the
+  Railway dashboard: service `tools-hub-campaigns-tick`, start command
+  `flask --app app campaigns:tick`, schedule `*/5 * * * *`, source
+  `leowan7/tools-hub` branch `main` with auto deploy, current deployment the
+  PR #99 merge. Recent executions ran unbroken every 5 minutes from 11:05 to
+  12:11 and every one succeeded; it fired live during the check and took 8 s.
+  Sibling cron `tools-hub-sweep-stuck` also present and succeeding.
+  **The round-4 reasoning holds** and no code change is needed.
+- **Correction:** this entry and `docs/COMPUTE-CAMPAIGNS-PLAN.md:66` both said
+  the tick runs at ~60-90 s. It runs every **5 minutes**. A campaign stranded at
+  `funded` therefore waits up to 5 minutes, not 90 seconds. Functionally fine,
+  and one more document asserting a property the system does not have.
+- **Watch item, not a defect:** run durations are mostly 4 to 30 s but the two
+  most recent were 1m59s and 2m21s. Still inside the 5 minute window so nothing
+  overlaps, but the trend is upward.
+
+### A47. The launch page's JavaScript has no automated coverage at all
+- **severity:** medium (test hygiene) | **owner:** code
+- **detail:** `grep -rl "reqSeq\|clearTotals\|Repricing" tests/` returns nothing.
+  Three consecutive rounds have found defects in this one `<script>` block (the
+  consent surviving a reprice, the previous price staying rendered, the
+  superseded-response race) and it is still only syntax-checked with
+  `node --check`. The block is what decides whether the submit button is live
+  against a price the user agreed to.
+- *Next:* the cheapest real coverage is a headless-DOM harness over the extracted
+  script with `fetch` stubbed; a browser walk needs auth and a real target, which
+  needs production credentials.
+
+### Corrected in place
+- **"three surfaces"** (both `list_campaigns_for_target`'s docstring and A37
+  itself): `list_campaigns_for_user` has exactly **one** production caller,
+  `blueprints/campaigns.py:95`. The homepage loads `list_jobs_for_user`
+  (`tool_jobs`, not campaigns) and only links to /campaigns, so a stranded draft
+  never appears there.
+- **`_IdemTable.delete()` raising `NotImplementedError` did not "fail loudly".**
+  `_release_key` wraps `.delete()` in a bare `except Exception`, so raising is
+  swallowed into the same `False` as omitting the method, and the wrapper then
+  caches the failure. The stub therefore inverted the behaviour under test as
+  silently as a missing method would, and made the double-fund assertion in
+  `test_a_drive_spawn_failure_does_not_release_the_idempotency_claim`
+  **unfailable**. Now modelled faithfully; the assertion has been verified to
+  fire, with its own message, under a mutation that releases regardless of status.
+  Note the asymmetry this teaches: `is_()` CAN refuse, because it is called on the
+  builder outside the `except`; `delete()` cannot.
+- **The coercion comment overstated its protection.** `Decimal(str(x))` raises
+  `InvalidOperation` for a non-numeric string, for `inf`, and for a large
+  exponent, and **NaN does not raise at all** -- it quantizes to NaN and rendered
+  "about $NaN to start". Now guarded with an `is_finite()` check and a
+  try/except that falls back to the wording, so the claim is true. The
+  parenthetical about an `AttributeError` also described no state that existed:
+  HEAD's expression was `f"${required:.2f}"`, which formats floats fine.
+- **The length prefix closed the boundary between parts but not inside one.**
+  Parts were a single `f"{field}={value}"` string, and a field NAME may contain
+  `=` (`%3D` decodes into `request.form`), so `{"a": "b=c"}` and `{"a=b": "c"}`
+  both encoded to `5:a=b=c`. Each component is now framed separately
+  (`1:a3:b=c` vs `3:a=b1:c`).
+- **A "file" tag was added to file descriptors with a comment claiming it stops a
+  form field being spelled as one. Removing the tag changes no test**, because the
+  outer per-part prefix already frames each part whole. The comment now says the
+  tag is a debugging aid and the framing is the guard. Caught by mutating the
+  author's own new code, which is the only reason it is recorded as a correction
+  rather than a fifth false claim.
+
+### Carry-forward, after five rounds
+Cumulative: measure anything called free or pure; a number in a comment is a
+claim; fix the class, not the reported input; state the precondition as an
+assertion; a guard is a claim about which exceptions can reach it; a fake that
+omits a method fails silently in the safe-looking direction. Round 5 adds:
+
+- **A boolean from a function that swallows exceptions is three-valued.** `True`,
+  `False`, and "I could not tell" all arrive as two values. Any user-facing claim
+  built on such a bool -- especially "you were not charged" -- has to either
+  confirm independently or refuse to make the claim. Two rounds in a row produced
+  a money-reporting inversion from treating one of these as definitive.
+- **Mutate your own fix, not just the code it touches.** The false "file tag"
+  claim and the unfailable double-fund assertion were both found by mutating
+  lines written minutes earlier. Adding a test is not evidence the test can fail.
+
+## Addendum 2026-07-29g — QC round 6, over the round-5 fixes
+
+Two independent agents: one over the production slice of `216a2b5` (with the
+four unreviewed round-5 fixes as its primary target), one auditing whether the
+~1700 new test lines can actually fail. Verdicts **FIX FIRST** and **SUITE
+UNTRUSTWORTHY**. Every finding below was re-verified against source before it
+was acted on; one was partly misattributed and is recorded as such.
+
+**The round-5 fixes themselves held.** For the first time in six rounds no money
+inversion was found in the previous round's work, and unusually, every factual
+claim in the round-5 comments measured out (14 adapter labels, the single
+`list_campaigns_for_user` caller, the exact `runs/detail.html` status list, the
+`_framed` collision pairs, 26 probed inputs to `preauth_message`'s guard). What
+broke was around them.
+
+### The stalled disclosure was suppressed exactly when it was needed
+`templates/targets/detail.html` nested the stalled block inside the started one.
+`launched_count` comes from `list_campaigns_for_target`, which excludes `draft`
+and is documented as returning short on a paging error, so a launch that funded
+some campaigns and stranded others could arrive with `launched_count == 0`:
+either that read failed, or every campaign took round 5's own "row unreadable,
+treat as started" fall-through while still in draft. Both are the SAME
+connection fault that stranded the campaigns, so the nested block went dark in
+precisely the case it existed to report -- the user funded real compute, one run
+did not start, and the page said nothing at all.
+
+The two halves are now gated independently. The cost, taken deliberately: a
+crafted `stalled` param now renders. The template cannot tell a crafted count
+from a real one whose run query came back empty, and only one of those two
+misleads somebody other than its author.
+
+Also corrected: `list_campaigns_for_target`'s docstring claimed "the launch
+route tells the user what did and did not start, so the omission is disclosed
+there". It is disclosed by the query PARAM and the template, neither of which
+this function controls, and it was conditional on a read this same function
+documents as unreliable. (The reviewer also attributed this claim to
+`blueprints/targets.py:478-480`; that comment is about draft exclusion and is
+accurate. One location, not two.)
+
+### The launch template asserted "nothing was charged" under every error
+`templates/targets/launch.html` printed it unconditionally whenever `error` was
+set -- the exact claim round 5 had just restricted to a confirmed draft, made by
+the one component that cannot know whether a campaign was funded. It held only
+by accident of where the six `_err` sites happen to sit, and it printed the
+sentence TWICE in one panel, because the route's own message said it too.
+
+Now derived, not asserted: `target_launch_submit` sets `funded_any` at the
+commit point, `_err` passes `nothing_charged=not funded_any`, and
+`_launch_context` defaults it to **False** so the claim is never made by
+omission. An error path added after the fund loop stops making the claim on its
+own, with nobody having to remember why.
+
+### The consent figure rounded the hold DOWN
+`money()` in the launch page rounded the 4dp wire values to 2dp to NEAREST, so a
+$2.6219 hold printed as "$2.62" directly above a checkbox reading "the amount
+above will be held against my wallet balance". This is the identical
+understatement `preauth_message` calls out by name and that round 5 fixed for
+the refusal sentence -- left in place on the number the user actually consents
+to.
+
+Fixed in Decimal rather than JS, because that is where the money discipline
+already lives and because the launch script has no automated coverage at all
+(A47): `display_cost_usd` (ROUND_CEILING) and `display_balance_usd`
+(ROUND_FLOOR) ship `*_display` strings, and `money()` now prepends a symbol and
+nothing else. A static test forbids any fixed-point rounding call in that
+template. The asymmetry is documented where it shows: a balance between a
+requirement and that requirement's ceiling reads as "$573.67 available" under
+"$573.68 to start" while still being affordable, which is the safe direction and
+does not gate the button.
+
+Writing the guard test found a bug in the guard: a Decimal NaN quantizes without
+raising, so the first version of these helpers would have rendered "$NaN". Same
+trap round 5 recorded for `preauth_message`, walked into again one round later,
+which is the argument for the test rather than for the care.
+
+### `ComputeCampaign.from_row` sat outside four callers' `try`
+`from_row` subscripts five columns directly and coerces five more with `int()`.
+`get_campaign`, `list_campaigns_for_user`, `list_campaigns_for_target` and
+`sweep_paused_campaigns` all called it OUTSIDE the `try` that exists to make
+them total, so one unreadable row escaped as a 500 from `/campaigns` and the
+target detail page, or aborted the paused-campaign sweep part way. It falsified
+`list_campaigns_for_target`'s own "a short run strip beats a 500", and it
+mattered most in the fund/drive loop, which calls `get_campaign` after the
+commit point where a raise 500s a request that has already spent money and
+releases the idempotency claim with it. All four now route through
+`_campaign_or_none`. Not reachable through `select("*")` on a schema the
+migrations pin; fixed because those functions promise not to raise.
+
+And the claim at `shared/idempotency.py:492` that `target_launch_submit`'s loop
+"catches and returns a partial-success redirect rather than propagating" was
+false -- it wraps one of its three fallible statements. The property is real but
+comes from the TOTALITY of its callees, and the comment now says so, and says
+not to restate it as catching.
+
+### Tests that could not fail
+- `test_the_banner_counts_never_double_count_a_run` was a duplicate of a wording
+  test wearing a docstring about arithmetic. `_render_detail` patches
+  `list_campaigns_for_target` out, so `launched_count` was a property of the
+  fixture: the reviewer reintroduced BOTH regressions the docstring names
+  (widening the draft filter, and a drive-spawn failure re-routed to stalled)
+  and it stayed green. It now seeds a funded and a draft row into a fake client
+  and lets the real query produce the count.
+- `test_fund_campaign_reports_false_with_no_client` could not observe its guard:
+  delete the `client is None` check and the resulting AttributeError is caught
+  by `_cas_transition`'s own bare `except`, returning the same False.
+- `test_a_missing_required_amount_falls_back_to_words` could not observe the
+  `is not None` half: coercing None raises and is caught, so the fallback
+  arrives either way.
+
+Both of the latter now assert on the LOG. A guard's only signature is that it
+returns without going through the handler, so the handler's warning must be
+absent. Same shape both times: **a bare `except` at the call site erases the
+difference between "guarded" and "recovered", so the result cannot distinguish
+them and only the log can.**
+
+### The `is_` refusal rationale was wrong, in both fakes
+Round 5 recorded that `is_()` may raise where `delete()` may not, "because `is_`
+is called on the builder before `execute`, outside that except". False:
+`_release_key` wraps the entire chain, `.is_()` included, in the `try` whose
+bare `except Exception` returns False, and `_store_response` calls its chain
+from inside a closure invoked in the same kind of `try` -- where the swallow is
+worse, since it retries, logs, and returns having cached nothing. Nothing in
+either fake can usefully refuse.
+
+Both fakes now accept the `"null"` string as well as `None`. This repo issues
+the string in 14 places (`shared/api_keys.py`, `shared/targets.py`,
+`shared/jobs.py`, `shared/handoffs.py`, `shared/compute_campaigns.py:1997`,
+`cron/`); only `shared/idempotency.py` passes None. A fake refusing the majority
+convention would have broken silently on the refactor that adopted it.
+
+`_IdemTable.delete`'s comment also claimed to keep "any assertion about a
+released claim" failable. Removing the method changes no result in that file --
+no test there reaches the release path. It is retained for the mutation under
+which the leg becomes observable, and the comment now says that instead.
+
+### A48. The same money-rounding defect is LIVE on the single-tool route
+- **severity:** medium (live) | **owner:** Leo to scope
+- **detail:** `templates/runs/new.html:212` is a byte-identical `money()`
+  helper, feeding `rp-budget`, `rp-perchunk`, `rp-firstwave` and `rp-balance`
+  above its own consent checkbox at `:182`. `/campaigns` is deployed, so every
+  non-2dp hold on that screen is understated today.
+  `templates/wallet/_partials.html:195` has the same shape (`fmt()`) on a top-up
+  deficit figure -- suspected, not confirmed.
+- **RESOLVED 2026-07-30, round 7** (Leo authorised it explicitly). Filed as "not
+  fixed here" because it is deployed code on a different endpoint
+  (`api_runs_estimate`) with its own tests. `api_runs_estimate` now ships
+  `*_display` strings for all four figures and `templates/runs/new.html` does no
+  arithmetic. Checked, not assumed: this panel is NOT the H1 shape, because
+  `BUDGET_BUFFER` is 1.15 so the budget is not the per-chunk price times the
+  sub-job count, and nothing on it is presented as the total of anything else.
+  `templates/wallet/_partials.html:195` remains **unconfirmed and untouched**;
+  its inputs come from a different estimator and were not measured.
+
+### A49. Both fakes assume PostgREST returns the updated representation
+- **severity:** low (unverified assumption) | **owner:** code
+- **detail:** `_cas_transition` decides whether a CAS won by inspecting
+  `resp.data`, and `_store_response` depends on the same. Every fake in the
+  suite returns the matched rows from `.update()`, which is correct for
+  `returning=representation` (the supabase-py default) but has never been
+  verified against the live backend. If a future client version or a
+  `Prefer: return=minimal` default changed it, every CAS in this module would
+  read as a loss and the suite would stay green.
+
+### A50. The confirming read narrows the fund ambiguity but cannot close it
+- **severity:** low (inherent) | **owner:** none
+- **detail:** if the fund UPDATE commits in Postgres after the client-side read
+  timed out, a confirming `get_campaign` that lands before that commit sees
+  `draft`, and the route answers 400 "nothing was charged" for a row that then
+  becomes `funded` and is driven by the tick. Inherent to a non-transactional
+  confirm. Recorded rather than fixed; closing it needs the fund and the read in
+  one transaction, which this stack does not offer through PostgREST.
+
+### Carry-forward, after six rounds
+Round 6 adds two:
+
+- **A bare `except` at the call site erases a guard's signature.** When the
+  unguarded path is swallowed into the same return value, the result cannot
+  distinguish guarded from recovered, and a test asserting only the result
+  cannot fail. Assert the log, or assert nothing.
+- **Patching out the function that computes the number under test makes the
+  number a fixture.** `test_the_banner_counts_never_double_count_a_run` survived
+  both regressions it named. If a test is about a COUNT, the count has to come
+  through the code that derives it.
+
+Still true, and now six rounds deep: a number in a comment is a claim; fix the
+class, not the reported input; state the precondition as an assertion; a guard
+is a claim about which exceptions can reach it; a boolean from a function that
+swallows is three-valued; mutate your own fix.
+
+## Addendum 2026-07-29h — QC round 7, over the round-6 fixes, plus A48
+
+One agent over the uncommitted round-6 diff, with the three claimed mutations
+to reproduce itself. Verdict **FIX FIRST**. It restored the working tree
+byte-identically and said so, which is the check that makes a mutation report
+worth reading. Every finding below was re-verified against source or by
+measurement before it was acted on.
+
+Leo separately authorised the A48 fix (the same rounding defect, live on the
+single-tool campaign route), so that is in this round too.
+
+### The round-6 money fix introduced a money regression
+Ceiling each row independently and ceiling the exact total are different
+numbers: `sum(ceil(row)) >= ceil(sum(row))`. The launch panel prints the rows
+directly above the totals, so the column stopped adding up to its own headline.
+
+Reproduced exactly on the cohort the reviewer named, rfdiffusion@12 +
+pxdesign@12 at burst: Cost rows of $2.02 and $5.03 above a printed **Total cost
+$7.04**, held rows of $2.63 and $6.56 above **Held to start $9.18**. One cent
+short in both, immediately under "I understand the amount above will be held".
+Measured across 2- to 5-tool cohorts, 50 of 52 tables no longer added up, where
+the old nearest-rounding produced 18 of 52 and unbiased.
+
+The sum is the one part of a consent panel a reader can check without trusting
+us, so it is the part that must not be wrong. Fixed with `display_total_usd`,
+which sums the DISPLAYED rows instead of re-rounding the exact total. Still a
+true ceiling: each row display is at or above its own exact value, so the sum is
+at or above the exact total, and the gate is applied to the exact figures. Now
+measured clean: 224 cohorts, 0 mismatches, 0 totals below exact.
+
+The pre-existing `test_the_estimate_totals_equal_the_sum_of_its_rows` states
+this invariant in prose and compares only the 4dp fields, which always agreed
+and still do. It could not see this. `rows()` even carried a comment
+acknowledging "a 2dp row does not add up" as a reason to keep the 4dp field, and
+never followed the thought to what the page actually prints.
+
+**A48 is fixed and is NOT the same shape.** On `/campaigns/new` the reason is
+`BUDGET_BUFFER = 1.15`: the budget is not the per-chunk price times the sub-job
+count, so the H1 correction genuinely does not apply. Checked rather than
+assumed, because the reflex was to apply it to both.
+
+(The second reason originally given here, that "nothing on that panel is
+presented as the total of anything else on it", was wrong and is struck. The
+panel labels the headline "Estimated total" and prints "Sub-jobs" and "Per
+sub-job" directly beneath it, so a reader is plainly invited to multiply. The
+product misses by 15%, not by a cent, which is why the rounding fix is still
+correct as made. Caught in round 8.)
+
+### Three of the change's own safety mechanisms could be reverted green
+- **The commit-point flag.** Deleting `funded_any = True` left the suite fully
+  passing: no error path after the fund loop is reachable, so the `True` branch
+  had no coverage, and a tidy-up of "an assignment nobody reads" would have
+  restored the round-5 defect. Replaced by deriving from `started`, the list the
+  redirect already counts. **The claim made here that "existing tests do pin"
+  that derivation was false, and round 8 proved it**: those tests pin `started`
+  as a list, not `nothing_charged`'s dependence on it, and `nothing_charged=True`
+  passed the whole suite. See addendum 2026-07-29i.
+- **Three of the four `_campaign_or_none` conversions.** `get_campaign`,
+  `list_campaigns_for_user` and `sweep_paused_campaigns` each reverted to bare
+  `from_row` with the suite green; only `list_campaigns_for_target` was pinned.
+  `get_campaign` carries the change's strongest money claim. All three now have
+  a test, and all three mutations now redden.
+- **The JS drift guard.** It checked the arguments of `money()` and the absence
+  of a fixed-point call, so `'$' + d.balance_usd` rendered the raw 4dp balance
+  into the page with the suite green. The guard now also forbids any reference
+  to an exact money field anywhere in the template, and lives in
+  `tests/money_display_guard.py` so the launch page and the campaign page cannot
+  drift apart. Both pages pass it.
+
+### A test that could not fail in the direction it named
+`test_the_estimate_never_overstates_the_balance` used $573.6736, where FLOOR and
+NEAREST are both 573.67. It could only ever have caught a switch to ceiling, not
+the switch to nearest the whole change exists to prevent, and it passed with
+`display_balance_usd` set to ROUND_HALF_UP. Now $573.6756, with the
+ceiling-vs-nearest precondition asserted the way the sibling cost test already
+did it.
+
+### The fake disabled the code the new test was written to exercise
+`sweep_paused_campaigns` issues `.lt()` and `.is_()`, and both queries sit in a
+try whose bare `except` turns an AttributeError into an empty list. The fake
+`_Query` had neither method, so the sweep's entire body never ran and the first
+version of the sweep test passed while exercising nothing. Both are modelled
+now, and the sweep test asserts the good row still gets notified rather than
+merely that the call returns.
+
+`neq` was also wrong in a way that decides what the code can be handed:
+PostgREST renders it as `col <> val`, which is NULL for a NULL column and so
+DROPS the row, where Python `!=` keeps it. Corrected, and pinned by a test. That
+also settles the fixture question the reviewer raised: a NULL-status row is a
+malformation this query cannot deliver, so the unreadable-row fixtures now carry
+a real status and fail on a missing `tool`/`preset` instead.
+
+### False claims in comments, again
+- The banner comment still said an unknown group "simply does not render" after
+  the diff deliberately made a crafted `stalled` render on its own. The diff had
+  removed that same sentence from the test and left it in the route.
+- The un-nesting was justified with "every campaign took the fall-through",
+  which cannot occur: if every campaign takes it, nothing is stalled, the route
+  drops the query param, and there is nothing to suppress. The real cause is the
+  MIXED outcome, plus the failed read. Corrected in both places it appears.
+- "The only caller is the estimate endpoint" was said of both display helpers;
+  `display_cost_usd` is also called by `MultiLaunchPlan.rows()`, and now by
+  `api_runs_estimate` too.
+- The fail-closed mechanism was described as "unticking the consent box".
+  Neither failure handler unticks it. The mechanism is the DISABLED button, and
+  on `/campaigns/new` that was not even true until this round: the handler set a
+  warning and left `latest` holding the last successful estimate, so the button
+  stayed armed beside figures priced for a different design count. Fixed, and
+  that is what makes the helpers safe to raise.
+- **A number in a comment, wrong for the third time.** The `is_` null-spelling
+  count went 13, then 14, now 15. Re-derived by listing all 17 `.is_()` call
+  sites: 2 pass `None` (both in `shared/idempotency.py`), 15 pass `"null"`, and
+  the module list had been omitting `webhooks/modal.py`.
+- `target_id` and `user_id` were described as keyword-required; `user_id` has a
+  default, so the rationale covered a parameter it did not apply to.
+
+### Known limits, stated rather than left implied
+- Blanking the body of the fake's `is_()` leaves the sweep test green. Only the
+  method's ABSENCE is pinned, which is the failure the comment warns about; the
+  filter's fidelity is not observable through this fixture.
+- Neither page's `<script>` is executed by any test (A47). Every guard here is
+  static: they prove the two known routes to a wrong figure are closed, never
+  that the right figure is printed.
+- ~~The steady-pace `alternative` figure is still ceiled from its exact value.
+  It is prose with no row breakdown beside it, so it has no column to agree
+  with.~~ **STRUCK 2026-07-30 (round 9).** False when written, and in the same
+  change that made it false: round 8 moved the alternative to
+  `first_wave_display_at_pace`, a row sum. The two differ in **64 of 120**
+  reachable burst cohorts (max gap 2 cents), re-measured this round. The
+  "no column to agree with" reasoning is the error: the column is on the screen
+  the user reaches by ACTING on the offer, which is what the sentence promises.
+  It is still compared against the balance as an exact value; see S1 below.
+
+### Carry-forward
+Round 7 adds one, and it is about the fix rather than the code:
+
+- **A rounding rule is not local.** Choosing a direction for a single figure is
+  arithmetic; applying it to figures a reader will add up is a change to what
+  the panel asserts. Before rounding anything, ask what else on the page is
+  supposed to reconcile with it.
+
+Still true after seven rounds: a number in a comment is a claim, and this one
+was wrong three times running; a fake that omits a method fails silently in the
+safe-looking direction, and it did so again here on the very test written to
+close the previous round's gap; mutate your own fix, because two of this round's
+new tests could not fail when first written.
+
+## Addendum 2026-07-29i — QC round 8, over rounds 6 and 7
+
+One agent over the whole uncommitted stack, told to treat round 6 as reviewed
+but not proven and round 7 as the primary target. Verdict **FIX FIRST**. It
+restored 13 mutated files and verified each by sha256, which is the check that
+makes a mutation report worth reading. Both HIGH findings were reproduced by
+measurement before anything was changed.
+
+### The round-7 money fix moved the same defect one screen over
+Round 7 made the launch panel total its rows' 2dp displays, so the column adds
+up. It did not ask what ELSE prints that number. `preauth_message` still
+rounded the exact total up, and `sum(ceil) >= ceil(sum)`, so the refusal
+sentence and the panel it renders beside disagreed.
+
+Reproduced: rfdiffusion@12 + pxdesign@12 at burst, refused. The red panel reads
+"about **$9.18** to start"; the estimate panel on the same 400, above the line
+"the amount above will be held", reads **$9.19**. A user who tops up to the
+sentence's figure is refused again by the same sentence. Measured across 2- to
+7-tool cohorts at 12 designs, both paces: **128 of 240 refused cohorts printed
+two different holds**.
+
+This is the round-7 finding recurring inside round 7's own fix. The question
+asked was "what else on this page must reconcile with the total", answered
+"the rows", and never extended to the only other place the figure appears.
+
+Fixed by making the displayed hold singular and owned by the caller:
+`preauth_message` takes `required_display` and renders it verbatim, and
+`first_wave_display_at_pace()` produces it. Re-measured over 254 cohorts: the
+refusal sentence, the panel total and the row sum agree everywhere, and the
+steady-pace alternative now agrees with the panel a user gets by acting on it
+(**M-2**, which was the same defect on the "Starting narrow would need $X"
+line: it promised $9.18 and produced a panel reading $9.19).
+
+### The round-7 fix for "an unpinnable safety mechanism" pinned nothing
+Round 7 replaced the `funded_any` flag with `nothing_charged=not started` and
+this register claimed existing tests pin the derivation. **They do not**, and
+that claim has been struck above. What they pin is `started` as a list. Every
+reachable `_err` has `started == []`, so `not started` is a constant, and the
+reviewer's mutation to `True` passed all 277 tests in the opted-in files. One
+unpinnable expression had been swapped for another.
+
+The property is genuinely unreachable at runtime, so it is now guarded at the
+source: an AST test asserts the route passes a derived expression referencing
+`started` rather than a literal. That prevents precisely the "simplify the
+constant nobody can make false" tidy-up that would restore the round-5 defect,
+and its docstring says plainly that it proves the expression's shape and
+nothing about its value.
+
+### The drift guard had three ways past it
+All three demonstrated by the reviewer with the suite green: arithmetic on a
+display string (`Number(d.first_wave_usd_display) - 0.01`, printing a cent below
+the hold in the consent sentence), a rounding call the guard did not know
+(`toPrecision(3)`, rendering a $573.68 hold as "$574"), and a field reached by a
+computed key (`d['balance' + '_usd']`, rendering $573.6736).
+
+The first two are now closed: the guard forbids the whole family of numeric
+coercions, not just the one method. The third is not closable by pattern
+matching, and the guard's docstring now says so instead of claiming "no exact
+4dp field reaches the renderer at all". A guard that overstates its reach is
+worse than a narrow one, because the next author trusts the docstring.
+
+### Smaller corrections
+- `tests/money_display_guard.py` was **untracked**. Committing the tracked diff
+  alone would have been a collection error across two whole test files, not one
+  failure. Now `git add`ed.
+- The balance-band docstring described a one-cent window; since round 7 the
+  displayed requirement is a row sum, so the window is wider. Measured at 2
+  cents across 2- to 7-tool cohorts, and now documented as measured.
+- Two docstrings 39 lines apart contradicted each other on the fail-closed
+  mechanism, because round 7 corrected one and left the other.
+- `display_total_usd`'s trailing comment justified its `quantize` with whole
+  dollars; a sum of 2dp Decimals is already 2dp, whole dollars included. Only
+  the empty case needs it, no caller passes empty, and the comment now says the
+  line is not load-bearing.
+- The `_Query.lt` comment claimed "every test of it" passes while exercising
+  nothing. True of tests using THAT fake; `tests/test_compute_campaigns_driver.py`
+  has its own fake which already modelled both methods.
+- Round 7 corrected `neq`'s NULL semantics in one fake and left a new fake in
+  the same diff using Python `!=`. Both now drop NULL rows the way PostgREST
+  does.
+- The failed-estimate handler test asserted three statements were present but
+  not their order; reversing them re-arms the button and stayed green. It now
+  asserts the order, with the reason.
+
+### A51. Consent on `/campaigns/new` is not invalidated when the inputs change
+- **RESOLVED 2026-07-30**, authorised by Leo. `debounced()` now bumps a request
+  sequence, unticks the box, clears the figures, shows "Repricing...", and
+  disables submit BEFORE scheduling the refetch; both response handlers drop
+  themselves if superseded. Ported from the multi-tool page, with the local
+  variable named `confirm` rather than `confirmBox`. **5 mutations, 5 killed**,
+  including moving the invalidation after the `setTimeout`, which is the shape
+  that reads as correct and is not.
+- Coverage note against **A47**: these assertions are STATIC, because no test
+  executes this script. They prove the statements are present and ORDERED, not
+  that the browser behaves. The first draft of the ordering assertion matched
+  the word `setTimeout` inside the explanatory comment and failed on a correct
+  implementation; comments are now stripped before the check. A guard that
+  fails on correct code is how a real guard gets deleted for being flaky.
+- **severity:** medium (live) | **owner:** Leo to authorise
+- **detail:** `templates/runs/new.html`'s `debounced()` only schedules a
+  re-estimate. It does not untick the consent box, clear the figures, or
+  sequence responses. Tick the box at 24 designs ($4.03 shown), type 5000, and
+  submit inside the 250 ms window: the POST prices 5000 against consent recorded
+  for 24. The multi-tool launch page was hardened against exactly this in an
+  earlier round (`clearTotals()` plus a request sequence number); the deployed
+  single-tool page was not.
+- **not fixed here:** it is a behaviour change to a deployed route, and the
+  authorisation this round carried was for the rounding defect. Same shape as
+  A48: filed, and cheap to fix on a word.
+
+### Carry-forward
+Round 8 adds one:
+
+- **A display rule has a blast radius, and it is every place the figure is
+  printed.** Round 7 learned that a rounded figure must reconcile with the rows
+  beside it, fixed that, and shipped the identical defect to the refusal
+  sentence on the same screen. Before changing how a number is displayed,
+  enumerate every surface that prints it, not just the one in front of you.
+
+And one that is now three rounds old and still biting: **a claim that a test
+pins something is itself a claim, and it needs a mutation, not a reading.**
+Round 7 wrote "which existing tests do pin" without running the mutation that
+would have disproved it in thirty seconds.
+
+## Addendum 2026-07-30j — QC round 9, over round 8
+
+One agent over the whole uncommitted stack, round 8 as primary target. Verdict
+**FIX FIRST**, 8 confirmed defects plus 1 suspected. It restored all 8 files it
+mutated and verified each by sha256. Every finding below was reproduced by
+measurement here before anything changed.
+
+**Round 8's headline fix survived.** 26 of 27 meaningful mutations died, and the
+254-cohort re-measurement found zero disagreement between the refusal sentence,
+the panel total and the row sum. It also independently confirmed the `.is_()`
+count (17 sites, 2 `None`, 15 `"null"`) that three earlier rounds got wrong.
+What broke was the layer around the fix.
+
+### The drift guard let a one-cent understatement through, on both consent pages
+`money(d.first_wave_usd_display - 0.01)` passed every check with the suite
+green: it names no coercion from the forbidden list, and its 4dp field is hidden
+behind the `_display` suffix that check 2 looks past. JS coerces implicitly for
+`-`, `*`, `/` and unary `+`. On rfdiffusion@12 + pxdesign@12 the page would print
+"Held to start $9.18" directly above "the amount above will be held", over a
+column summing to $9.19.
+
+Reproduced here on three variants (`- 0.01`, `Math.trunc(x * 100) / 100`,
+`+x + 0`), all passing. Check 3 is now a **full match** on the `money()`
+argument, which kills all three.
+
+The same docstring was **also wrong in the opposite direction**: it called the
+computed-key route (`d['balance' + '_usd']`) unclosable, when check 3 has caught
+it since the day it was written, and check 3's own comment called itself
+"redundant with check 2". Acting on that word and deleting it would have
+re-opened the row. Both claims corrected. One route genuinely stays open and is
+now documented as open: an expression that never names a 4dp field, never names
+a coercion, and never passes through `money()`.
+
+### A display rule's blast radius, one round after that became the carry-forward
+`templates/runs/detail.html` and `templates/runs/list.html` render the stored
+budget with a nearest-rounding format filter over a float. Neither is in the
+launch diff, and that is the point: **the diff created a disagreement in files
+it never touched.** Before it, both screens agreed; after, the panel that takes
+consent says $4.03 for rfdiffusion@24 while the run's own page says $4.02.
+
+Measured, 5 of the 7 campaign tools diverge:
+
+| tool | exact | panel | detail + list |
+|---|---|---|---|
+| rfdiffusion | 4.0202 | $4.03 | $4.02 |
+| bindcraft | 80.4020 | $80.41 | $80.40 |
+| rfantibody | 80.4020 | $80.41 | $80.40 |
+| proteina | 43.4103 | $43.42 | $43.41 |
+| iggm | 3.3501 | $3.36 | $3.35 |
+
+Fixed by exposing `display_cost_usd` as a Jinja global and calling it from both.
+Round 8 wrote "enumerate every surface that prints it" as the carry-forward and
+then did not do it; the handoff's own list named only `wallet/_partials.html`.
+
+### The source-guard argument was applied to one money route and not its sibling
+Round 8 accepted that `nothing_charged` could not be pinned behaviourally and
+guarded it at the source. `blueprints/campaigns.py`'s `required_display` has the
+identical problem and got only a comment claiming the sentence and the panel are
+"the same string by construction". They are the same string by **coincidence**:
+`pre.required_usd` is `gate_usd` is `first_wave`, so the default derives the
+same text and deleting the kwarg leaves 247 tests green, as the reviewer showed.
+Now guarded by an AST test with the same honest docstring about what it proves.
+
+### Smaller corrections
+- `display_total_usd`'s docstring said a standalone figure such as the
+  steady-pace alternative "is ceiled from its exact value directly". Round 8
+  made it a row sum in the same change. The two differ in **64 of 120**
+  reachable burst cohorts, max gap 2 cents. The same false claim was written
+  into the handoff's "Known limits" while the same file said the opposite two
+  paragraphs earlier, and left un-struck at line 1198 above. All three fixed.
+- `display_balance_usd`'s caller enumeration omitted `compute_campaign_create`,
+  and wrongly said `MultiLaunchPlan.rows()` is reached from the launch POST. It
+  is not; only the estimate endpoint calls it. Rewritten as two groups, because
+  the fix above adds callers on plain page renders where a raise is a 500 and
+  **not** the fail-closed disabled button the old paragraph claimed for all.
+- `money()`'s comment claimed a null renders "the same placeholder as no
+  estimate yet". It renders a dollar sign plus a dash; the launch page's three
+  totals and three of the four figures on the campaign page use a bare dash.
+  Corrected in both.
+- `test_the_narrow_alternative_quotes_the_panel_it_produces` omitted the
+  precondition its sibling asserts. Its cohort does observe the divergence, so
+  not a live hole, but the two roundings agree in 56 of 120 cohorts and a cohort
+  change would make it silently vacuous. That is the failure round 7 shipped.
+
+### A52. The campaign estimate never sends `preset`, so it always prices as pilot
+- **severity:** low (latent, not live) | **owner:** code
+- **detail:** `templates/runs/new.html`'s `fetchEstimate()` sends only `tool` and
+  `requested_designs`. `blueprints/campaigns.py:137` reads `preset` and defaults
+  it to `"pilot"`, and its comment says the threading exists so the estimate
+  matches the create path "if pricing ever becomes preset-dependent".
+- **the comment is TRUE, measured 2026-07-30.** Pricing does not vary: proteina
+  across pilot / protein_binder / motif_ame gives chunk 8, 3 sub-jobs, budget
+  $43.42, first wave $45.00 identically; iggm across pilot / cdr_design /
+  fr_design / inverse_design / complex_prediction gives chunk 40, 1 sub-job,
+  budget $3.36, first wave $4.37 identically.
+- **so why file it:** the preset threading is dead code for the only two tools
+  whose preset a user can pick, and estimate and submission agree by a
+  coincidence of `_campaign_container_seconds` that nothing pins.
+- *Next:* not a one-line fix. Two `<select>`s share `name="preset"` and only the
+  enabled one submits, so the page must send the enabled one. Cheapest real
+  guard is a test asserting `plan_chunks` is preset-invariant for proteina and
+  iggm, so the day it stops being true something goes red.
+
+### A53. `templates/wallet/_partials.html` is the third live rounding instance
+- **severity:** low (live, pre-existing) | **owner:** Leo to authorise
+- **detail:** `fmt()` at `:192-196` parses a cost to a float and re-rounds it to
+  NEAREST, then renders the job estimate, the balance, the balance-after, the
+  soft cap, and the top-up gate's estimate/deficit/rounded figures (`:214-235`).
+  Against `estimated_cost_for_tool(None, slug)` it prints **below** the real
+  estimate for **6 of 13** deployed tool forms:
+
+  | tool | exact | shown | should be |
+  |---|---|---|---|
+  | af2 | 0.5243 | $0.52 | $0.53 |
+  | esmfold | 0.0728 | $0.07 | $0.08 |
+  | esmfold2-design | 9.8614 | $9.86 | $9.87 |
+  | iggm | 0.0728 | $0.07 | $0.08 |
+  | mpnn | 0.0241 | $0.02 | $0.03 |
+  | opendde | 14.7920 | $14.79 | $14.80 |
+
+  The other 7 (bindcraft, boltz2, boltzgen, colabfold, pxdesign, rfantibody,
+  rfdiffusion) round the same either way. Included by every
+  `templates/tools/*_form.html`.
+- **Correction to the round-9 report, which said 7 of 14.** Measured here
+  independently: it is **6 of 13**. The reviewer counted `wallet/_partials.html`
+  itself as a form, and included proteina, which has no form template at all
+  (only `proteina_results.html`) and so never includes this partial. The defect
+  is real; the blast radius was overstated. Filing an agent's figure without
+  re-measuring it is the same error this register keeps recording, and it was
+  made here.
+- **not caused by this diff.** `rounded_topup_usd` is rounded up server-side so
+  the top-up CTA is safe; the displayed deficit is not.
+- *Next:* the handoff carried this as "not called a third instance until someone
+  measures its inputs". It is now measured, and it is one. Same shape as A48 and
+  A51, on 14 deployed forms rather than 1, so it is Leo's call.
+
+### A54. The narrow alternative is gated on the exact figure but quotes the ceiling
+- **severity:** low | **owner:** code
+- **detail:** `blueprints/targets.py:685-700` offers the steady alternative when
+  `first_wave_at_pace(...) <= pre.balance_usd`, both exact, then renders the
+  row-sum ceiling. Constructed: exact steady 9.1765, balance 9.1800 renders
+  "Starting narrow would need $9.19" beside "Balance $9.18", and switching to
+  steady would in fact start.
+- **direction is safe**: it under-promises, so nobody is encouraged into a
+  refusal. But an affirmative recommendation whose job is to be reachable is
+  different in kind from a requirement figure, and this one reads as unreachable
+  when it is not.
+- *Next:* gate on the displayed figure, so the offer and its price are the same
+  number. Not fixed this round: it is a behaviour change to the offer logic on
+  an unshipped route, and round 9 exists because round 8 widened its own scope.
+
+### Carry-forward
+Round 9 adds nothing new. It re-proves the two already written down, which is
+itself the finding:
+
+- **A display rule's blast radius is every surface that prints the figure.**
+  Written as the carry-forward at the end of round 8, then broken by round 8's
+  own diff in two files it never opened.
+- **A comment asserting a property is a claim needing a mutation.** Four of the
+  eight findings are exactly this, including two docstrings that describe the
+  opposite of what the same commit shipped.
+
+## Addendum 2026-07-30k — QC round 10, over round 9 and A51
+
+Verdict **FIX FIRST**: 8 confirmed (1 high, 5 medium, 2 low), 0 suspected. The
+reviewer restored every mutated file and verified by sha256. All eight are
+defects in work written the same day, and four are in the guards and comments
+meant to prevent exactly these defects.
+
+### The consent guard did not pin the statement that enforces consent
+**Consent has no server-side component.** Neither `rp-confirm` nor
+`confirm-cost` carries a `name`, neither is POSTed, and no route reads one. The
+submit button's `disabled` attribute is the entire mechanism and `syncSubmit()`
+is the only thing that sets it. So `syncSubmit()` must run AFTER the resets it
+reads.
+
+The A51 test ordered `confirm.checked = false` and `clearFigures()` against the
+`setTimeout` and asserted `syncSubmit()` was merely PRESENT. Hoisting
+`syncSubmit()` to the first statement of `debounced()` left the suite green
+while restoring the whole defect, and it reads *more* correct than the bug does:
+the box is visibly unticked and the figures are blank, but the button's state
+was computed from the previous estimate and nothing re-evaluates it for 250 ms.
+
+The sibling test 200 lines above (`test_a_failed_estimate_disarms...`) asserts
+exactly this ordering for the `.catch` handler and states the reason. The
+pattern was adjacent and was not applied.
+
+### The port was guarded; the page it was ported FROM was not
+`_debounced_body()` was written this round with a `path` parameter and only ever
+called with its default. Deleting `confirmBox.checked = false` from
+`templates/targets/launch.html`, or dropping its `.then` sequence guard, was
+green. That is the page whose checkbox reads "the amount above will be held
+against my wallet balance". Both A51 tests are now parametrized over both pages.
+
+### The guard fix had a second open route, and its docstring said it had none
+Round 9's grammar was `[\w.]+_display|x`. The `|x` alternative existed for the
+definition `function money(x)` and therefore accepted `money(x)` at **every call
+site**, so anything could be laundered through a local:
+
+    var x = d.first_wave_usd_display - 0.01; money(x)   // the $9.18-over-$9.19 bug
+    var x = d.first_wave_usd_display.slice(0,-1); money(x)
+    var x = d['first_wave' + '_usd']; money(x)          // the "dies here" route
+
+All three passed. Fixed by matching calls with a lookbehind that excludes the
+definition, and requiring a dotted or indexed path ending in `_display` with an
+optional string-literal fallback. That also fixes the mirror defect: the old
+grammar REJECTED `money(d.rows[0].x_display)`, `money(d.x_display || '0.00')`
+and any local not spelled `x`, so accept/reject turned on a variable's name.
+
+**That docstring has now been wrong twice in opposite directions** and says so.
+
+### The caller enumeration was wrong again, one round after being rewritten
+`first_wave_display_at_pace()` was placed in the fail-closed group. It has two
+call sites: the estimate, and `target_launch_submit`'s refusal at
+`blueprints/targets.py:799`, a POST re-render where a raise is a 500. The same
+paragraph carefully qualified `rows()` one line above and gave its sibling no
+qualification.
+
+Also struck: **"That is not a regression (`'%.2f'|format` raised on the same
+inputs)"**. It did not. `'%.2f' % Decimal('NaN')` returns `'nan'` where these
+raise, and Postgres numeric can hold NaN; and `compute_campaign_create`'s
+predecessor caught inside its own derived branch. Two total paths became
+fallible. Possibly the right trade, but not a no-op, and it was written as one.
+
+### A docstring contradicting its own change-set, again
+`tests/test_compute_campaigns.py` said the helpers' "only caller is the estimate
+endpoint" and that failure is handled by "unticking consent", while
+`shared/compute_campaigns.py` in the same diff says neither failure handler
+unticks anything and contains a line explicitly instructing the reader not to
+describe it that way. Both claims removed.
+
+### A55. The balance now rounds two different ways on the same screen
+- **severity:** low (live) | **owner:** Leo to authorise, fix WITH A53
+- **detail:** the estimate panel renders the balance FLOOR (correct: a balance
+  rounded up claims money the wallet does not have). Every other surface renders
+  it NEAREST via `'%.2f'|format`: `_header.html:34` (on every page, beside the
+  panel), `account.html:38`, `base.html:180`, `jobs_list.html:123`,
+  `wallet/overview.html:59`, `wallet/topup.html:44` and `:143`,
+  `wallet/transactions.html:60`, `wallet/_partials.html:46/:60/:66`.
+- **measured:** 573.6756 renders $573.68 in the header and $573.67 in the panel;
+  24.4950 renders $24.50 and $24.49. Half of all 4dp balances disagree.
+- **this diff created it.** Before it the panel used a nearest-rounding JS call
+  and matched. The panel is the surface that is now RIGHT; the others were
+  always a cent generous.
+- *Next:* a `display_balance_usd` Jinja global applied to all of the above, the
+  same shape as the `display_cost_usd` global this diff added for costs. Not
+  done here: round 9's carry-forward enumerated the COST surfaces and this is
+  the BALANCE enumeration, 9 further deployed templates, and widening a diff
+  mid-review is what produced rounds 9 and 10. Pairs naturally with A53.
+
+### Carry-forward
+Round 10 adds one, and it is about the harness rather than the code:
+
+- **Line endings are per file, not per repo.** `templates/runs/new.html` is
+  CRLF; `templates/targets/launch.html` is **LF**. A mutation harness that
+  assumes one silently no-ops on the other and reports SURVIVED, which reads as
+  a missing test and sends the next author looking for a hole that is not there.
+  Two of this round's six mutations "survived" for exactly that reason plus one
+  wrong test-file argument; all six died once the harness was corrected. Detect
+  the ending per file, and assert the file actually changed.
+
+And the two that keep recurring, now at rounds 8, 9 and 10:
+
+- **A guard's docstring is a claim about the guard, and it needs a bypass
+  attempt, not a reading.** Wrong in both directions on consecutive rounds.
+- **A display rule's blast radius is every surface that prints the figure.**
+  Round 9 enumerated costs and fixed two files. Nobody enumerated balances.
+
+## Addendum 2026-07-30l — QC round 11, over round 10
+
+Verdict **FIX FIRST**: 2 high, 3 medium, 3 low confirmed, 2 suspected. The
+reviewer detected line endings per file and asserted a sha256 change before
+every conclusion, so this round produced no false SURVIVED results.
+
+### The guard's grammar still turned on a variable's name
+Round 10 required `money()`'s argument to be a path ending in `_display`, and
+its docstring said "It rejects a BARE LOCAL". It did not. The root token
+`[A-Za-z_$][\w$]*` **backtracks**, so a single identifier ending in the suffix
+satisfies the whole pattern: `fw_display` matched where `x` did not. Every
+round-10 bypass reopened under a different variable name:
+
+    var fw_display = d.first_wave_usd_display - 0.01; money(fw_display)
+
+Applied to BOTH consent pages at once: **100 passed**. Accept/reject still
+turned on what the author named the variable, which is precisely what round 10
+claimed to have fixed.
+
+Fixed by requiring the final hop to be a member access (`\.[A-Za-z_$][\w$]*_display`),
+so the value's origin is always readable at the call site. Verified against all
+14 real call sites and every known bypass.
+
+**The open-route count in that docstring has now been wrong three rounds
+running, each time written in the same commit that made it false.** The
+docstring now says so and instructs the reader to re-test rather than read it.
+
+### Nothing pinned that the fix is ever reached
+Both A51 tests read `debounced()`'s body. Neither asserted anything CALLS it,
+and a grep of all of `tests/` for `addEventListener` returned **nothing at
+all**. Deleting the design-count listener from either page left **100 passed**
+while making the entire A51 remediation unreachable, on the exact input the
+defect was filed against.
+
+This is round 10's finding one level up. Round 10 caught a test asserting a
+statement was PRESENT without asserting WHERE; this is a test asserting a
+function body is correct without asserting anything invokes it. Both pages now
+have a wiring assertion.
+
+### Smaller corrections
+- `_debounced_body()`'s brace matcher was not string-aware: a `{` inside a
+  string widened the extracted body from 310 to 578 characters and swallowed
+  the listener block, so the ordering assertions would have been matching text
+  from outside the function. Fixed with a single pass that tracks strings and
+  comments together. The two intermediate attempts are recorded in the code,
+  because each is individually wrong: stripping `//` first deletes a `//` inside
+  a URL, and tracking strings first treats the apostrophe in `// the user's
+  balance` as opening a string, which both files contain and which broke the
+  extraction outright.
+- `display_total_usd` was excluded from the parametrized "all three helpers
+  raise" test, because it takes an iterable rather than a scalar, so the module
+  docstring's claim was asserted for two of three. It has its own test now.
+  NaN matters most there: `Decimal.quantize` does not signal on NaN, so the
+  explicit `is_finite` check is the only thing between a non-finite row and
+  "NaN" rendered into a consent panel.
+- Known false positives in the grammar are now listed rather than fixed:
+  `d['first_wave_usd_display']`, `d.rows[i].x_display`, `??`, template literals.
+  None is used by either template. A guard that fails closed on a valid-but-
+  unused form costs one rewrite; a guard that fails open costs money on a
+  consent screen. Widening the grammar is how the last two holes were opened.
+
+### A53 EXTENDED — a third class of money figure nobody had enumerated
+`templates/wallet/topup.html:131` renders the 4dp `deficit_usd` with a
+nearest-rounding filter, under the words **"Add at least that amount"**. On the
+same 6 of 13 forms as the cost defect, that instruction is short: opendde needs
+$14.80 and the page asks for $14.79. A53 was scoped to `_partials.html` and A55
+listed only topup's balances, so this fell between them. Costs were enumerated
+in round 9, balances in round 10, and required-top-up by nobody.
+
+### A55 CORRECTED — the enumeration was incomplete, and the fix as filed would break the ledger
+Four balance surfaces were missing: `admin/user_detail.html:10`,
+`admin/users_list.html:58`, `wallet/overview.html:203`,
+`wallet/transactions.html:162`.
+
+More important, and a genuine design constraint rather than a miscount:
+`tx.amount_usd` (a cost, would round UP) and `tx.balance_after_usd` (a balance,
+would round DOWN) sit in the **same row** of the transactions table. Applying
+both rules mechanically makes consecutive rows fail to reconcile in a fixed
+direction, on the one page whose entire purpose is that the reader can check the
+arithmetic. **A53 and A55 must not be executed as a blind find-and-replace.**
+The ledger needs a deliberate decision about which rule governs a running
+balance beside a signed amount, and that decision belongs to Leo along with the
+authorisation.
+
+### Suspected, not confirmed, filed as A56
+Consent may survive a page load on both pages: `fetchEstimate()` runs at load
+without going through `debounced()`, and browsers restore checkbox state across
+a soft reload. Not reproduced in a browser, so it is suspected only.
+`preset`/`iggm_preset` on `runs/new.html` also have no invalidation, which is
+safe exactly as long as A52's measured preset-invariance holds.
+
+### Carry-forward
+Round 11 adds one:
+
+- **Check that the thing under test is reachable, not just correct.** Every
+  assertion about a handler's body is describing dead code until something
+  asserts the handler is wired. A grep for the wiring primitive across the whole
+  test suite is a ten-second check and it had never been run.
+
+And the recurring pair, now at rounds 8 through 11:
+
+- **A guard's docstring is a claim about the guard, and it needs a bypass
+  attempt, not a reading.** Wrong three rounds running.
+- **A display rule's blast radius is every surface that prints the figure.**
+  Three classes found so far by three separate rounds: costs, balances,
+  required top-up. Assume there is a fourth.
+
+## Addendum 2026-07-30m — QC round 12, over round 11
+
+Verdict **FIX FIRST**: 2 high, 1 medium, 2 low, 1 suspected. 13 of the round-11
+mutations were killed, so the remediation was not uniformly weak; the failures
+concentrated in the two artefacts round 11 added and in one cohort choice.
+
+### The one that was a real money path, not a guard
+**Every displayed hold's pace argument was unpinned.** Swapping `plan.pace` for
+a hardcoded `PACE_BURST` in the refusal at `blueprints/targets.py:799`, and
+`PACE_STEADY` for `plan.pace` in the narrow alternative at `:697`, both left
+**257 tests green**.
+
+Cause: every money test written since round 7 runs 12 designs, where one sub-job
+per tool clamps the first wave and **burst and steady price identically**
+($9.19 either way). The tests could not observe the argument they depended on.
+At steady with three tools at 480 the two figures are $38.36 and $191.77.
+
+Fixing this took three attempts, each of which the mutation rejected:
+
+1. Widening the cohort to 200 designs. **Insufficient**: the test still posted
+   `pace=burst`, so `plan.pace` and a hardcoded `PACE_BURST` are the same value.
+   The mutation survived.
+2. Parametrizing over both paces. **Broke its own precondition**: at
+   rfdiffusion+pxdesign@200 the steady panel equals the ceiling of the steady
+   exact sum, so the steady case asserted nothing.
+3. Searching for a cohort satisfying all three conditions at once — paces
+   diverge, AND the row sum differs from the ceiling at burst, AND the same at
+   steady. 81 cohorts qualify; bindcraft+rfantibody@100 is the smallest.
+
+The file already contained `_assert_pace_is_observable_on()` for exactly this,
+with a docstring explaining the clamp. The new tests neither called it nor
+honoured it.
+
+**A second defect surfaced while fixing it.** The refusal test computed its
+expected figure from rfdiffusion@12 + pxdesign@12 while `_form()` posts
+pxdesign@**24**, so the expectation came from a cohort the route never priced.
+It passed only because those two different cohorts render the same $9.19. The
+form and the plan are now built from the same numbers.
+
+### The guard: stopping, rather than escalating a fifth time
+Round 11 required the final hop to be a member access so a bare local would
+fail. It does. But **a member is as easy to assign as a local**:
+
+    d.fw_display = d.first_wave_usd_display - 0.01;   money(d.fw_display)
+
+passed on both consent pages, printing $9.18 above "the amount above will be
+held" for a $9.19 hold. Four further routes were measured: `money (v)` with a
+space (which `money\(` does not see at all), `money\n(v)`, `window.w_display`,
+in-place mutation of the field, and a `defineProperty` getter.
+
+**The space is fixed** (`money\s*\(`), because a call the matcher cannot see
+makes every check inapplicable. **The laundering route is not, deliberately.**
+A pattern matcher cannot establish where a value came from; closing one
+assignment shape does not make the next unreachable, and four consecutive
+rounds of trying produced four false docstrings, each written in the commit that
+falsified it.
+
+The docstring now says this outright: it is a lint for the ACCIDENTAL mistake,
+the real protection is that the server computes every displayed string in
+Decimal, and **no route count belongs in it**. The member-laundering mutation is
+left surviving, on purpose, and is recorded here rather than hidden:
+
+    templates/runs/new.html:  money(d.first_wave_usd_display) -> money(d.fw_display)
+    result: 21 passed. Documented limitation, not an unknown gap.
+
+### The wiring assertions did not assert wiring
+Round 11's fix for "nothing proves the handler is reachable" was a substring
+test naming neither the element nor the collection. Three mutations, all green:
+repointing `querySelectorAll('.tool-designs')` at a class that does not exist,
+repointing `getElementById('requested_designs')` at a dead id, and **replacing
+the entire listener block with a comment containing the same characters**. Its
+own limit statement -- "it proves the listener is registered in the source" --
+was false.
+
+Now: comments are stripped before the assertion, the selector must appear in
+live source, and the selector must resolve against the page's own markup. Note
+the markup literal is the full attribute as written (`class="field-input
+tool-designs"`); asserting `class="tool-designs"` failed against correct markup,
+which is the false-positive direction and would have got the guard deleted.
+
+### A57. A fourth surface family: outbound email
+- **severity:** low (live) | **owner:** Leo, with A53/A55
+- **detail:** `shared/email.py:_money()` formats with `f"{d:.2f}"`, which rounds
+  to NEAREST, disagreeing with both rules. `$24.4950` renders as **"$24.50"** in
+  `send_low_balance_email` -- the one message whose entire purpose is to make a
+  user act on a balance, and it overstates it.
+- A53, A55 and A53-EXTENDED all stop at `templates/`. Nobody had looked outside
+  the template directory at all.
+
+### Carry-forward
+Round 12 adds one, and it is the most useful of the series:
+
+- **A test cohort is a precondition, and preconditions must be asserted, not
+  chosen by habit.** Every money test written across five rounds reused a
+  12-design cohort in which the quantity under test is mathematically
+  invisible. A helper to catch exactly that already existed in the same file and
+  went uncalled. Before asserting anything about a computed figure, assert the
+  inputs can distinguish right from wrong.
+
+And the standing pair, now at rounds 8 through 12:
+
+- **A guard's docstring is a claim about the guard.** Wrong four rounds running,
+  now replaced with a statement of what it cannot do.
+- **A display rule's blast radius is every surface that prints the figure.**
+  Four classes found by four separate rounds: costs, balances, required top-up,
+  outbound email. Assume there is a fifth.
+
+## Addendum 2026-07-30n — QC round 13, over round 12
+
+Verdict **FIX FIRST**, but for nothing in the diff.
+
+### The finding the last four rounds were building toward
+**The shipping code in this diff is sound.** 18 of 18 mutations aimed at its
+shipping behaviour were killed, including all five of round 12's own fixes. The
+reviewer could not construct a wrong figure, a wrong charge, a double charge, an
+ungated launch, or a misstated refusal on any path the diff touches. The pace
+argument, the row-sum totals, both refusal sentences, the uncharged claim, the
+row-level guards and both consent pages all survive adversarial measurement.
+
+That is the first round since 5 to return no shipping defect in the work under
+review, and it is what closes the loop opened at round 6.
+
+### But every round since 3 walked past the same deployed route
+Both new shipping defects are in `blueprints/campaigns.py`, the SINGLE-tool
+campaign create route. Ten rounds passed through that file on the way to the
+multi-tool one and none looked at its decorators.
+
+### A58. `POST /campaigns` is the only money-spending POST with no `@idempotent()`
+- **severity:** HIGH (live) | **owner:** Leo to authorise
+- **detail:** `blueprints/campaigns.py:182-184` carries `@login_required` and
+  nothing else. Every sibling has the decorator: `POST /targets`
+  (`targets.py:395`), `POST /targets/<id>/launch` (`:706`),
+  `POST /tools/<tool>/submit` (`tools.py:846`), `/campaigns/<id>/refold`
+  (`campaigns.py:660`), `/developability/score` (`tools.py:96`),
+  `/library-planner/plan` (`tools.py:175`).
+- **failure scenario:** a double-submit funds TWO campaigns against one consent.
+  Measured with a temporary probe: two identical POSTs gave `created=2
+  funded=2`, the same $5.2438 first wave gated twice against the same balance.
+  `runs/new.html` has no submit handler, so nothing collapses it client-side;
+  the CSRF token is session-scoped and reusable; the POST takes seconds.
+- **this repo already calls this a defect** for a route that HAS the decorator:
+  `docs/HANDOFF-2026-07-27-target-first-phase0.md:54` and this register at
+  `:294` both name the exact failure mode.
+- *Next:* one decorator, matching six siblings. Note the diff already hardens
+  `shared/idempotency.py` (keys on the form body when CSRF has consumed the
+  stream, releases on 4xx), which is what makes adding it safe rather than a
+  new way to silently drop a legitimate second submission.
+
+### A59. The single-tool route discards `fund_campaign`'s boolean
+- **severity:** medium (live) | **owner:** code, with A58
+- **detail:** `blueprints/campaigns.py:417` calls `cc.fund_campaign(campaign.id)`
+  and ignores the result, so a failed fund redirects as success and strands the
+  campaign at `draft` forever -- `cron/tick_campaigns.py:28` excludes draft from
+  `_ACTIVE_STATES`, so nothing ever picks it up.
+- No money is lost; this is the round-5 inversion in the other direction (that
+  one told a charged user nothing was charged; this tells an uncharged user it
+  started). `fund_campaign` was given a real return value in this very diff, and
+  the multi-tool route consumes it. The single-tool route was never updated.
+
+### A53 EXTENDED AGAIN — a third rounding DIRECTION, and a JS writer that would undo A55
+- `templates/wallet/_partials.html:192` `fmt()` renders costs (must round UP),
+  balances (must round DOWN) **and caps** (`scaled_hard_cap_usd`, which must
+  round DOWN) through one function. **A53's prescribed fix gets caps backwards.**
+  Same shape as the A55 ledger warning: these items are not a find-and-replace.
+- `static/js/wallet-nav.js:26` rewrites the header balance on every window
+  focus, using its own formatting. Fixing `_header.html:34` per A55 without
+  fixing this would be undone the first time the user changes tab.
+- Two further nearest-rounding sites in `shared/email.py` outside `_money()`,
+  which A57 named.
+
+### Fixed here: the one in-diff finding
+Nothing pinned WHICH server figure lands in WHICH slot. Five mutations, all
+green across 292 tests: `budget_usd_display` into the "Held to start" slot,
+`first_wave_usd_display` into the Balance slot, on both consent pages. The
+budget is always the larger number, so that particular crossing overstates the
+amount about to be held, directly above the line consenting to it.
+
+This is **selection**, not the documented **provenance** limitation: the
+assignment names both destination and source on one line, so it is statically
+decidable and was simply never checked. `assert_money_slots_are_not_crossed()`
+now checks it on both pages; 2 mutations, 2 killed.
+
+### Carry-forward
+Round 13 adds one:
+
+- **Scope the review by the ROUTE, not by the diff.** Ten rounds inspected
+  `blueprints/campaigns.py` and none read its decorator list, because attention
+  followed the changed lines. The two defects found here are both one line, both
+  deployed, and both visible to anyone who compared that route's decorators
+  against its six siblings.
+
+---
+
+## Addendum o - round 14 (two independent reviewers, split by concern)
+
+Two reviewers ran in parallel against the same uncommitted diff, one on the live
+route changes and one on the money display sweep. Both returned defects: 1
+blocker + 4 serious, and 2 blockers + 4 serious. Neither had written the code.
+
+### A60 - the drive spawn was fallible and unguarded under a new @idempotent (FIXED)
+
+`blueprints/campaigns.py` gained `@idempotent()` in this branch (A58). It also
+called `cc.drive_campaign_async(campaign.id)` bare, AFTER `fund_campaign` had
+committed. The `try` inside `drive_campaign_async` wraps the drive, not
+`threading.Thread(...).start()`, so the call raises `RuntimeError` under thread
+exhaustion. That exception escapes the view, `@idempotent` RELEASES the claim
+and re-raises, Flask returns 500, and the retry the error invites re-runs the
+whole handler: a second campaign created and funded against one consent. That is
+verbatim the A58 failure the decorator was added to prevent, reached through the
+fix's own error path, and thread exhaustion is process-wide so it fires for
+every concurrent submitter at once.
+
+`shared/idempotency.py` already stated the rule, in a comment written in an
+earlier round: "Adding a fallible call to that loop without a guard reintroduces
+the exact hazard this paragraph describes." `target_launch_submit` already
+guarded the same call. The A59 comment on the campaigns route asserted "Keep the
+two routes' policies identical" while they were not.
+
+Fixed by wrapping the spawn, matching the sibling. Pinned by
+`test_a_failed_drive_spawn_does_not_double_fund_the_campaign`.
+
+### A61 - the low-balance email was never changed (FIXED)
+
+Round 12 filed outbound email as the fourth class of money surface and named
+`send_low_balance_email` as the case: "the one message whose entire purpose is
+to make the reader act on a balance". The fix changed `send_reengagement_email`
+instead. `send_low_balance_email` stayed on NEAREST, so a wallet holding
+$24.4950 was still told "$24.50" while the header chip, the wallet page and the
+reengagement email all said $24.49.
+
+The guard test was named `test_the_low_balance_email_call_site_asks_for_down`
+and asserted a source substring belonging to the OTHER function. It was green
+throughout.
+
+Fixed at the real call site. The test now RENDERS the email with `_post_resend`
+patched and asserts on the body, which is the only form that cannot pass for the
+wrong function.
+
+Twelve of the module's other `_money` call sites were also still on the NEAREST
+default, including `attempted_usd` in the three overrun emails, which exist
+specifically to justify an unexpected charge. All now carry an explicit
+direction, and `_money` RAISES on an unknown one rather than falling through to
+NEAREST. `test_no_email_money_figure_is_left_on_the_nearest_default` enumerates
+the module the way the template guard enumerates `templates/`.
+
+### A62 - stranded drafts and orphaned uploads on the confirmed-draft retry (FILED)
+
+The A59 error path returns 400 with "nothing was charged", which is true about
+money and only about money. Each retry mints a fresh `campaign-{uuid4}` storage
+object and inserts another `draft` row. Nothing reclaims either:
+`cron/tick_campaigns.py::_ACTIVE_STATES` excludes draft and there is no delete
+path. `list_campaigns_for_user` does not filter draft, so the ghosts appear in
+the user's campaign list as ordinary entries. The 4xx also releases the
+idempotency claim, so the retry is unbounded. Compounded by the upload: an HTML
+form cannot repopulate a file input, so `pre_fill` restores every field except
+the one that matters.
+
+Not fixed here. The comment now claims only what it proves.
+
+### A63 - the ledger column mixes 2dp and 4dp under tabular-nums (FILED)
+
+`display_ledger_usd` emits 2dp for clean values and 4dp for sub-cent ones, by
+design. `static/wallet.css` styles that column `text-align: right` +
+`font-variant-numeric: tabular-nums`, which aligns decimal points only when
+every cell has the same fractional width. A $100.00 top-up above a -$24.4950
+charge misaligns by two characters. Every fix has a real cost: padding to 4dp
+everywhere renders "$100.0000", and per-page adaptive precision is stateful.
+Filed rather than silently accepted.
+
+### The exemption that rested on a browser attribute
+
+`_ALLOWED` in the display guard exempted five auto-reload figures on the stated
+grounds that `step="1"` / `step="50"` made the stored values "whole dollars by
+construction". `blueprints/wallet.py::_coerce` is `Decimal(raw)` with three
+MINIMUM clamps and no integrality check, and the columns are `numeric(8,2)`. A
+crafted POST, or a devtools edit of the step, stores $5.60. The diff had also
+WIDENED two of those figures from `'%.2f'` to `'%.0f'` on the customer-facing
+wallet page to fit the exemption, and the same `'%.0f'` renders into the form's
+`value` attribute, so opening the settings and pressing Save rewrote 5.60 to 6.
+A display defect became a data mutation.
+
+All five now go through display helpers, the three form inputs render exactly
+via `display_ledger_usd` with `step="0.01"` matching what the server accepts, and
+the replacement test asserts against `blueprints/wallet.py` rather than markup.
+
+### The guard could not see the class it existed to prevent
+
+Round 12 added `_money_format_sites()` to make a fifth undiscovered class
+impossible. Round 14 found two live NEAREST sites it was structurally blind to:
+`templates/wallet/overview.html` signup-credit-used (reads a `{% set %}` alias,
+so no money token reaches the expression) and `templates/wallet/transactions.html`
+"net for this job" (the column is named `ann.net`), the latter sitting directly
+beside two `display_ledger_usd` figures it is meant to be the arithmetic of.
+
+Four structural causes, all now fixed:
+
+1. **Token allowlist as the only money signal.** A literal `$` on the line now
+   qualifies too. Provenance is not decidable by pattern matching, but `$` is
+   the thing actually being printed.
+2. **`Path("templates")` was CWD-relative.** `rglob` on a missing directory
+   yields nothing and raises nothing, so the whole guard passed vacuously from
+   any other working directory. Now anchored to the repo root and asserted.
+3. **One mechanism and one file type.** `'%.Nf'|format` only, `*.html` only.
+   Now also `|round(`, `.toFixed(`, `*.txt`, and `static/**/*.js`.
+4. **The can-it-fail test never called the guard.** It re-implemented the regex
+   inline, so the token filter, the exemption filter and the directory walk were
+   all untested. It now runs the real function over a fixture tree covering all
+   five shapes, including one the old guard would have missed.
+
+Exemptions are now keyed on a substring of the offending LINE rather than a
+variable name, and a dead exemption is a hard failure. Two of the previous seven
+could never match, which is what made the auto-reload fields look covered.
+
+### Reviewer 1's test findings, all confirmed and fixed
+
+- The preauth mock patched `shared.target_launch.campaign_preauth` while the
+  route calls `cc.campaign_preauth`, so the REAL gate ran in all new tests. They
+  passed by coincidence (wallet mocked to $1000, KYC off, spend-today 0 under
+  `isolate_supabase`) and would have turned red on any preauth env change.
+  Verified fixed by an INVERTED mutation: break the real function, tests stay
+  green.
+- No test pinned the form-fingerprint fallback the A58 comment names as the sole
+  reason the decorator is safe. Both existing tests posted IDENTICAL forms, so
+  they could not distinguish "the key is a function of the form" from "the key
+  is a function of nothing". Added
+  `test_two_different_campaigns_in_the_ttl_both_run`.
+- `get_campaign=None` was a sentinel meaning "apply no patch", so the
+  unreadable-row test injected nothing and asserted against an
+  `isolate_supabase` side effect. Now `_UNSET`, with the read recorded and
+  asserted.
+- Both fund-branch tests ran with idempotency effectively disabled while one
+  docstring asserted idempotency behaviour as the reason its assertion matters.
+  The store is now injected and the release is observed via `store.rows == {}`.
+- The third fund branch (row moved but `fund_campaign` reported False) had no
+  test at all, though the whole three-valued read exists for it.
+
+### Also corrected
+
+- `display_ledger_usd` was documented as EXACT while quantizing anything finer
+  than 4dp with the context default, ROUND_HALF_EVEN. It now raises, and the
+  4dp precondition is stated rather than assumed. Its "fail-closed" claim is
+  now "fail-fast", matching `display_balance_usd`: this page has no submit
+  button, so a raise is a 500, not a blocked spend.
+- The `_IdemStore` docstring said the delete path was not modelled, directly
+  above an `_IdemTable.delete()` that models it and an `execute()` that pops the
+  row. That is what makes `store.rows == {}` a real observation of the release.
+- `templates/wallet/_partials.html` rounded the per-job charge CEILING down with
+  the balances. A ceiling understated understates maximum exposure; it now
+  rounds up. The headroom argument that groups caps with balances fits a monthly
+  reload cap, not a per-job charge ceiling.
+- `templates/admin/campaign_detail.html` rendered a quote into a form `value`
+  with `'%.2f'`, the same data-mutation shape as the auto-reload inputs. Now
+  exact.
+
+### Standing lessons
+
+- **A comment is a claim, and the most dangerous ones are written in the commit
+  that falsifies them.** Three this round: "Keep the two routes' policies
+  identical", "whole dollars by construction", and a test named for a function
+  it did not test. The rule that catches these is to verify the claim against
+  the code at the moment of writing it, not to write it from intent.
+- **A guard that has never been seen to fire is not a guard.** The can-it-fail
+  test must exercise the real entry point, not a copy of its regex.
+- **An exemption is a claim about a system property.** Assert it against the
+  system (a module constant, a route's coercion), never against markup that only
+  a browser enforces.
+- **A form `value` attribute is not a display.** Rounding it rewrites the stored
+  value on the next save.
+- **Split the reviewers by concern.** One agent over a 17-file diff reviews
+  everything shallowly. Two over halves found 3 blockers between them, and
+  neither blocker was in the other's half.

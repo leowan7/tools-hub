@@ -7,8 +7,12 @@ fake Supabase client. No live Modal or Supabase.
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -26,6 +30,17 @@ from shared.compute_campaigns import (
     plan_chunks,
     sanitize_shared_params,
 )
+
+# The docstring above is only true with this fixture. The fake client is bound
+# to ``cc.get_service_client``, but ``plan_chunks`` prices through
+# ``wallet_estimates._historical_p90_seconds``, which late-imports
+# ``credits.get_service_client`` -- a different module attribute the fake never
+# replaces. Without the fixture every planner test SELECTs the live
+# ``tool_jobs_p90`` view with the service-role key from the repo-root ``.env``,
+# and the money it plans is priced off production history. Nothing here asserts
+# an exact planned figure (the plan-derived assertions are all inequalities), so
+# the fixture changes no expected value; it removes the production read.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +291,12 @@ class _Query:
         self._store = store
         self._table = table
         self._filters = []
+        self._neq_filters = []
         self._in_filters = []
+        self._lt_filters = []
+        self._is_null = []
         self._insert_row = None
+        self._update_fields = None
         self._single = False
         self._count = None
         self._head = False
@@ -293,8 +312,28 @@ class _Query:
         self._insert_row = dict(row)
         return self
 
+    def update(self, fields):
+        # Modelled because the CAS semantics live entirely in the RETURN value.
+        # ``_cas_transition`` does `.update(...).eq("id").in_("status", allowed)`
+        # and reads `bool(resp.data)`: PostgREST applies the UPDATE only to rows
+        # matching the filters and returns exactly those rows, so an empty list
+        # IS the "someone else already moved it" answer. A fake that applied the
+        # write but returned all rows, or returned a truthy stub, would make
+        # every CAS look like it won.
+        self._update_fields = dict(fields)
+        return self
+
     def eq(self, col, val):
         self._filters.append((col, val))
+        return self
+
+    def neq(self, col, val):
+        # Modelled, not accepted-and-ignored. list_campaigns_for_target excludes
+        # drafts server-side, and its own except-clause swallows an
+        # AttributeError into an empty list, so a fake missing this method turns
+        # "the filter is broken" into "this target has no runs" -- which is the
+        # exact user-visible failure the server-side filter exists to avoid.
+        self._neq_filters.append((col, val))
         return self
 
     def in_(self, col, vals):
@@ -303,6 +342,27 @@ class _Query:
 
     def gte(self, *_a, **_k):
         # Date-window filter; accept-all keeps tests date-independent.
+        return self
+
+    def lt(self, col, val):
+        # Modelled, not accepted-and-ignored, for the same reason as neq: BOTH
+        # queries in sweep_paused_campaigns sit inside a try whose bare except
+        # turns an AttributeError into an empty list. A fake missing .lt() or
+        # .is_() therefore reports "nothing stale, nothing to renotify" and the
+        # sweep's whole body never runs, so a test using THAT fake passes while
+        # exercising nothing. That is how this file read before these were
+        # added. (tests/test_compute_campaigns_driver.py has its own fake, which
+        # already models both, and its sweep tests did exercise the body.)
+        self._lt_filters.append((col, val))
+        return self
+
+    def is_(self, col, val):
+        # Accepts both spellings of the null predicate; this module passes the
+        # PostgREST string, shared/idempotency.py passes None.
+        assert val is None or val == "null", (
+            f"is_({col!r}, {val!r}) is not a null predicate"
+        )
+        self._is_null.append(col)
         return self
 
     def order(self, col, **kw):
@@ -326,6 +386,21 @@ class _Query:
     def _matches(self, r):
         if not all(str(r.get(c)) == str(v) for c, v in self._filters):
             return False
+        for col, val in self._neq_filters:
+            current = r.get(col)
+            # PostgREST renders this as `col <> val`, which evaluates to NULL
+            # (not true) when the column is NULL, so the row is DROPPED. Python
+            # `!=` KEEPS it, which is the opposite answer, and it is the answer
+            # that decides whether a malformed row can reach a caller at all.
+            if current is None or str(current) == str(val):
+                return False
+        for col in self._is_null:
+            if r.get(col) is not None:
+                return False
+        for col, val in self._lt_filters:
+            current = r.get(col)
+            if current is None or not str(current) < str(val):
+                return False
         return all(str(r.get(c)) in vals for c, vals in self._in_filters)
 
     def execute(self):
@@ -339,6 +414,12 @@ class _Query:
             rows.append(row)
             return _Result([row])
         matched = [r for r in rows if self._matches(r)]
+        if self._update_fields is not None:
+            for row in matched:
+                row.update(self._update_fields)
+            # The matched rows only. Empty when the filters excluded everything,
+            # which is how a losing CAS reports that it lost.
+            return _Result(matched)
         if self._count == "exact":
             # Mirror PostgREST head+exact count: count set, data omitted on head.
             return _Result(None if self._head else matched, count=len(matched))
@@ -418,12 +499,35 @@ def test_list_campaigns_for_user(fake_client):
     assert all(c.user_id == "user-1" for c in mine)
 
 
-def _run_row(i, *, target_id="t-1", user_id="user-1", created="2026-07-03T00:00:00Z"):
+def _run_row(i, *, target_id="t-1", user_id="user-1", created="2026-07-03T00:00:00Z",
+             status="running"):
     return {
         "id": f"c{i:05d}", "user_id": user_id, "target_id": target_id,
-        "tool": "rfdiffusion", "preset": "pilot", "status": "running",
+        "tool": "rfdiffusion", "preset": "pilot", "status": status,
         "name": f"run-{i}", "created_at": created,
     }
+
+
+def test_list_campaigns_for_target_hides_stranded_drafts(fake_client):
+    """A multi-tool launch inserts every run as a draft and funds them after,
+    so a launch that fails part way leaves drafts behind. A draft was never
+    funded, dispatched or billed, and there is no action the page can offer on
+    it, so listing it under a heading that says "Runs" claims something false."""
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1),
+        _run_row(2, status="draft"),
+        _run_row(3, status="completed"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+    assert [c.id for c in runs] == ["c00001", "c00003"]
+
+
+def test_list_campaigns_for_target_can_still_see_drafts_on_request(fake_client):
+    fake_client.store["compute_campaigns"] = [
+        _run_row(1), _run_row(2, status="draft"),
+    ]
+    runs = list_campaigns_for_target("t-1", user_id="user-1", include_drafts=True)
+    assert [c.id for c in runs] == ["c00001", "c00002"]
 
 
 def test_list_campaigns_for_target_filters_server_side(fake_client):
@@ -459,6 +563,42 @@ def test_list_campaigns_for_target_pages_past_the_row_clamp(fake_client):
 
     assert len(runs) == n, "run list was truncated at the PostgREST row clamp"
     assert {c.id for c in runs} == {f"c{i:05d}" for i in range(n)}
+
+
+def test_stranded_drafts_do_not_consume_the_page_budget(fake_client):
+    """WHY the draft filter is in the query and not in memory.
+
+    That the drafts are omitted is already covered above; this covers the cost
+    of omitting them in the wrong place. The read is bounded at
+    ``_MAX_TARGET_RUN_PAGES`` pages of ``_TARGET_RUN_PAGE_SIZE`` rows, and that
+    bound counts ROWS RETURNED BY POSTGRES. Drop drafts locally instead and a
+    target carrying enough stranded drafts spends its entire page budget on
+    rows that are then thrown away, so its real runs vanish from the page with
+    no error -- the failure mode the paging exists to prevent, reintroduced one
+    layer up.
+
+    Drafts are given the LOW ids deliberately: pages are ordered by ``id``, so
+    this is the arrangement where an in-memory filter loses everything rather
+    than merely some of it.
+    """
+    budget = cc._MAX_TARGET_RUN_PAGES * cc._TARGET_RUN_PAGE_SIZE
+    real = 400
+    assert real < cc._TARGET_RUN_PAGE_SIZE, (
+        "the real runs must fit in ONE filtered page, so this test fails only "
+        "because of the drafts"
+    )
+    fake_client.store["compute_campaigns"] = (
+        [_run_row(i, status="draft") for i in range(budget)]
+        + [_run_row(budget + i) for i in range(real)]
+    )
+
+    runs = list_campaigns_for_target("t-1", user_id="user-1")
+
+    assert len(runs) == real, (
+        f"{real} real runs exist but {len(runs)} came back; the drafts ate the "
+        f"page budget"
+    )
+    assert all(c.status != "draft" for c in runs)
 
 
 def test_list_campaigns_for_target_returns_newest_first(fake_client):
@@ -734,3 +874,532 @@ def test_non_num_designs_tool_prices_under_its_own_key():
     # chunk (iggm is not fixed-container).
     assert "iggm" not in cc._FIXED_CONTAINER_TOOLS
     assert cc.child_hold_usd("iggm", 40) > cc.child_hold_usd("iggm", 1)
+
+
+# ---------------------------------------------------------------------------
+# preauth_message (the copy a refused user actually reads)
+# ---------------------------------------------------------------------------
+
+# DERIVED from the message table, not listed. A new refusal reason is the normal
+# way a new placeholder arrives, so a hardcoded tuple would let exactly the case
+# the placeholder test promises to catch ship green: add
+# `_PREAUTH_MESSAGES["chargeback_hold"] = "... {subject} {oops}."` and the
+# parametrization would never visit it, so `{oops}` reaches the user as template
+# source. Deriving means adding a reason automatically adds its coverage.
+_ALL_REFUSAL_REASONS = tuple(cc._PREAUTH_MESSAGES)
+
+
+def test_every_refusal_reason_constant_is_in_the_message_table():
+    """The derivation above is only complete if the table is. A reason constant
+    with no entry falls through to the generic sentence, which is a deliberate
+    fallback -- but it must be deliberate, not an omission nobody noticed."""
+    declared = {
+        cc.PREAUTH_NO_WALLET,
+        cc.PREAUTH_FROZEN,
+        cc.PREAUTH_INSUFFICIENT,
+        cc.PREAUTH_VERIFICATION,
+        cc.PREAUTH_VELOCITY,
+    }
+    assert declared == set(_ALL_REFUSAL_REASONS)
+    assert cc.PREAUTH_OK not in _ALL_REFUSAL_REASONS
+
+# Every placeholder preauth_message substitutes. A leftover brace means the
+# user was shown template source.
+_PLACEHOLDERS = ("{threshold}", "{subject}", "{pauses}", "{smaller}", "{required}")
+
+
+def _refused(reason, required="1", balance="0", budget="50"):
+    return cc.PreauthResult(
+        ok=False,
+        reason=reason,
+        balance_usd=Decimal(balance),
+        budget_usd=Decimal(budget),
+        required_usd=Decimal(required),
+    )
+
+
+def test_the_required_amount_rounds_up_never_down():
+    """The refusal must name a figure that would actually clear the gate.
+
+    This is the money bug the whole message exists to avoid. The gate holds a
+    4dp Decimal, and "%.2f"/ROUND_HALF_EVEN on 573.6736 names $573.67 -- one
+    third of a cent BELOW the amount that just refused the user. Topping up to
+    exactly the figure in the sentence gets you refused again by the same
+    sentence. A required amount is a ceiling or it is nothing.
+    """
+    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="573.6736"))
+    assert "$573.68" in msg
+    assert "573.67" not in msg
+
+
+def test_the_required_amount_is_never_rounded_up_past_a_whole_cent():
+    """ROUND_CEILING, not "add a cent". An exact 2dp figure must not inflate:
+    quoting more than the gate needs is its own wrong number."""
+    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="573.6700"))
+    assert "$573.67" in msg
+    assert "573.68" not in msg
+
+
+def test_a_zero_required_amount_still_renders_as_money():
+    """Decimal("0") is falsy. Testing `if required` instead of
+    `if required is not None` swaps a real $0.00 gate for the fallback wording,
+    which reads as though the amount were unknown.
+
+    Asserted on the substituted CONTEXT, not on the absence of the fallback
+    phrase: the fallback is the words "the first batch", which the INSUFFICIENT
+    template already contains verbatim ("does not cover the first batch of
+    ..."), so a plain negative substring assertion can never fail here.
+    """
+    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT, required="0"))
+    assert "(about $0.00 to start)" in msg
+
+
+def test_a_missing_required_amount_falls_back_to_words(caplog):
+    """Unreachable from ``campaign_preauth`` (``required_usd`` defaults to
+    ``Decimal("0")``), so this pins the guard, not a live path. Note the
+    fallback reads oddly in this particular template -- "does not cover the
+    first batch of this campaign (about the first batch to start)" -- which is
+    tolerable precisely because nothing in production can produce it.
+
+    The log assertion is what pins the ``is not None`` half. Without it the test
+    passes against ``if True``: ``Decimal(str(None))`` raises InvalidOperation,
+    the coercion guard catches it, and ``shown`` ends up None either way. The
+    difference is that the fallback was CHOSEN rather than recovered from, and
+    the warning is the only place that shows.
+    """
+    pre = SimpleNamespace(
+        ok=False, reason=cc.PREAUTH_INSUFFICIENT,
+        balance_usd=Decimal("0"), budget_usd=Decimal("50"), required_usd=None,
+    )
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        msg = cc.preauth_message(pre)
+    assert "(about the first batch to start)" in msg
+    assert "$" not in msg
+    assert "unrenderable required_usd" not in caplog.text, (
+        "None reached the Decimal coercion and was recovered by the except "
+        "clause; the `is not None` guard should have skipped it outright"
+    )
+
+
+@pytest.mark.parametrize("reason", _ALL_REFUSAL_REASONS)
+@pytest.mark.parametrize("count", [1, 2, 7])
+def test_no_placeholder_survives_for_any_reason_or_count(reason, count):
+    """Red if a new placeholder is added to the table without a substitution,
+    which would ship template source into a user-facing refusal."""
+    msg = cc.preauth_message(_refused(reason), count=count)
+    for token in _PLACEHOLDERS:
+        assert token not in msg, f"{token} unsubstituted for {reason}/{count}"
+    assert "{" not in msg and "}" not in msg
+
+
+# Which refusals are count-sensitive, DECLARED rather than derived from the
+# template. Reading the branch off the very table under assertion means stripping
+# {subject} from the INSUFFICIENT copy silently flips the test into the `else`
+# arm, where `one == many` then holds -- so the regression asserts itself away.
+_COUNT_SENSITIVE = {
+    cc.PREAUTH_NO_WALLET: False,     # "Your wallet is unavailable." No placeholders.
+    cc.PREAUTH_FROZEN: False,        # "Your wallet is on hold." No placeholders.
+    cc.PREAUTH_INSUFFICIENT: True,   # {subject}, {pauses}
+    cc.PREAUTH_VERIFICATION: False,  # {threshold} only, which does not vary
+    cc.PREAUTH_VELOCITY: True,       # {smaller}
+}
+
+
+def test_every_refusal_reason_declares_whether_its_copy_varies_by_count():
+    """So a new reason cannot slip past the parametrization below by defaulting
+    to "identical is fine"."""
+    assert set(_COUNT_SENSITIVE) == set(_ALL_REFUSAL_REASONS)
+
+
+@pytest.mark.parametrize("reason", _ALL_REFUSAL_REASONS)
+def test_singular_and_plural_copy_differ_where_the_subject_appears(reason):
+    """A 7-tool launch told "this campaign cannot start" misdescribes what was
+    refused and points at the wrong remedy: with several tools selected,
+    dropping one is usually cheaper than topping up."""
+    one = cc.preauth_message(_refused(reason), count=1)
+    many = cc.preauth_message(_refused(reason), count=7)
+    if _COUNT_SENSITIVE[reason]:
+        assert one != many, f"{reason} renders identically at count 1 and 7"
+    else:
+        assert one == many, f"{reason} is not supposed to vary by count"
+
+
+def test_the_plural_subject_names_the_run_count():
+    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT), count=7)
+    assert "these 7 runs" in msg
+    assert "this campaign" not in msg
+
+
+def test_the_singular_subject_says_campaign():
+    msg = cc.preauth_message(_refused(cc.PREAUTH_INSUFFICIENT), count=1)
+    assert "this campaign" in msg
+    assert "runs" not in msg.split("Top up")[0]
+
+
+def test_the_velocity_refusal_suggests_dropping_tools_when_plural():
+    """The two remedies are different actions, not a wording change: one tells
+    you to shrink a single campaign, the other to deselect a tool."""
+    assert "fewer tools" in cc.preauth_message(
+        _refused(cc.PREAUTH_VELOCITY), count=3
+    )
+    assert "a smaller campaign" in cc.preauth_message(
+        _refused(cc.PREAUTH_VELOCITY), count=1
+    )
+
+
+def test_the_verification_refusal_names_the_real_threshold():
+    msg = cc.preauth_message(_refused(cc.PREAUTH_VERIFICATION))
+    assert f"${cc.VERIFICATION_THRESHOLD_USD}" in msg
+
+
+@pytest.mark.parametrize("count,expected", [(1, "This campaign"), (2, "These runs")])
+def test_an_unknown_reason_still_produces_a_sentence(count, expected):
+    msg = cc.preauth_message(_refused("some_reason_added_later"), count=count)
+    assert msg.startswith(expected)
+    assert msg.endswith(".")
+
+
+# ---------------------------------------------------------------------------
+# fund_campaign (the launch route branches on this bool)
+# ---------------------------------------------------------------------------
+
+
+def _seed_campaign(fake_client, status="draft", campaign_id="camp-fund"):
+    fake_client.store.setdefault("compute_campaigns", []).append({
+        "id": campaign_id, "user_id": "u-1", "tool": "rfdiffusion",
+        "preset": "pilot", "status": status, "requested_designs": 12,
+        "chunk_size": 12, "total_subjobs": 1, "budget_usd": "4.02",
+        "reserved_usd": "0", "spent_usd": "0", "refunded_usd": "0",
+        "created_at": "2026-07-03T00:00:00Z",
+    })
+    return campaign_id
+
+
+def _status_of(fake_client, campaign_id):
+    for row in fake_client.store.get("compute_campaigns", []):
+        if row["id"] == campaign_id:
+            return row["status"]
+    raise AssertionError(f"{campaign_id} not in the fake store")
+
+
+def test_fund_campaign_reports_true_and_moves_the_row(fake_client):
+    """The whole point of the bool. ``drive_campaign`` early-returns on a
+    draft, so a fund that silently failed leaves a campaign the user believes
+    is running parked forever. The launch route reads this to decide whether to
+    drive, and to count stalled runs (audit item A12)."""
+    cid = _seed_campaign(fake_client, status="draft")
+    assert cc.fund_campaign(cid) is True
+    assert _status_of(fake_client, cid) == "funded"
+
+
+def test_fund_campaign_stamps_confirmed_at(fake_client):
+    cid = _seed_campaign(fake_client, status="draft")
+    cc.fund_campaign(cid)
+    row = next(r for r in fake_client.store["compute_campaigns"] if r["id"] == cid)
+    assert row.get("confirmed_at")
+
+
+@pytest.mark.parametrize(
+    "status", ["funded", "running", "completed", "cancelled", "failed"]
+)
+def test_fund_campaign_refuses_a_row_that_is_not_draft(fake_client, status):
+    """CAS on ``draft``, so this can no longer rewind a campaign that has
+    already progressed. The pre-Phase-2 implementation used an unconditional
+    UPDATE through ``_update_campaign``, which both rewound a running campaign
+    to ``funded`` and returned None either way."""
+    cid = _seed_campaign(fake_client, status=status)
+    assert cc.fund_campaign(cid) is False
+    assert _status_of(fake_client, cid) == status
+
+
+def test_fund_campaign_reports_false_for_an_unknown_id(fake_client):
+    _seed_campaign(fake_client, status="draft")
+    assert cc.fund_campaign("no-such-campaign") is False
+
+
+def test_fund_campaign_reports_false_with_no_client(monkeypatch, caplog):
+    """The route funds N rows in a loop; a missing client must read as "did not
+    start", never as success.
+
+    The log assertion is what makes this test able to fail. Returning False is
+    NOT evidence the `client is None` guard exists: delete the guard and
+    `None.table(...)` raises AttributeError inside `_cas_transition`'s own bare
+    `except Exception`, which returns False too -- byte-identical result, test
+    still green. The guard's only observable signature is that it returns
+    WITHOUT going through the handler, so the handler's warning must be absent.
+    """
+    monkeypatch.setattr(cc, "get_service_client", lambda: None)
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        assert cc.fund_campaign("camp-1") is False
+    assert "_cas_transition failed" not in caplog.text, (
+        "the no-client path went through the exception handler, which means it "
+        "reached the client instead of being refused up front"
+    )
+
+
+def test_only_the_first_of_two_concurrent_funds_wins(fake_client):
+    """Exactly the property the CAS exists for: the second caller sees the row
+    already out of draft and reports False rather than re-funding it."""
+    cid = _seed_campaign(fake_client, status="draft")
+    assert cc.fund_campaign(cid) is True
+    assert cc.fund_campaign(cid) is False
+
+
+@pytest.mark.parametrize("required,expected", [
+    (573.6736, "$573.68"),          # float
+    (574, "$574.00"),               # int
+    ("573.6736", "$573.68"),        # str
+])
+def test_the_required_amount_survives_a_non_decimal(required, expected):
+    """A refusal must never become a 500.
+
+    `PreauthResult` is a plain frozen dataclass with no coercion, so nothing
+    stops a caller passing a float; `float.quantize` does not exist. This is the
+    one function whose entire job is to explain a refusal to a user, and an
+    AttributeError here replaces "top up $573.68" with an error page. Rounding
+    still goes UP for every input type.
+    """
+    pre = SimpleNamespace(
+        ok=False, reason=cc.PREAUTH_INSUFFICIENT,
+        balance_usd=Decimal("0"), budget_usd=Decimal("50"),
+        required_usd=required,
+    )
+    msg = cc.preauth_message(pre)
+    assert expected in msg
+
+
+@pytest.mark.parametrize("bad", ["abc", float("inf"), float("nan"), None, object()])
+def test_an_unrenderable_required_amount_falls_back_instead_of_500ing(bad):
+    """A refusal must never become an error page.
+
+    `Decimal(str(x))` raises InvalidOperation for a non-numeric string, for inf,
+    and for a huge exponent, and TypeError for an arbitrary object. All of those
+    reach here only through a future caller, but this function's entire job is to
+    explain a refusal, so the failure mode has to be the fallback wording rather
+    than a 500. NaN is included deliberately: it does not raise, it renders, and
+    "about $NaN to start" is not an acceptable thing to show a user.
+    """
+    pre = SimpleNamespace(
+        ok=False, reason=cc.PREAUTH_INSUFFICIENT,
+        balance_usd=Decimal("0"), budget_usd=Decimal("50"), required_usd=bad,
+    )
+    msg = cc.preauth_message(pre)
+    assert "(about the first batch to start)" in msg
+    assert "NaN" not in msg and "$" not in msg
+
+
+# ---------------------------------------------------------------------------
+# 2dp display strings: which direction each one is allowed to lose
+# ---------------------------------------------------------------------------
+#
+# Money is carried at 4dp and shown at 2dp. That conversion used to happen in
+# the launch page as `Number(x).toFixed(2)`, which rounds to NEAREST, so a
+# $573.6736 hold printed as "$573.67" -- below the amount reserved, above a
+# checkbox consenting to "the amount above will be held". These pin the
+# direction, which is the entire content of the fix.
+
+
+@pytest.mark.parametrize("exact,shown", [
+    ("573.6736", "573.68"),   # the reported case: nearest would say 573.67
+    ("2.0101", "2.02"),        # rfdiffusion@12 budget
+    ("2.6219", "2.63"),        # rfdiffusion@12 first wave
+    ("0.0001", "0.01"),        # a hold of a hundredth of a cent still holds a cent
+    ("30.0000", "30.00"),      # already whole cents: unchanged, not bumped
+    ("0", "0.00"),
+])
+def test_a_displayed_cost_never_falls_below_the_real_one(exact, shown):
+    """Red if the rounding flips to nearest, floor, or truncation."""
+    assert cc.display_cost_usd(Decimal(exact)) == shown
+    assert Decimal(shown) >= Decimal(exact)
+
+
+@pytest.mark.parametrize("exact,shown", [
+    ("573.6736", "573.67"),   # ceiling would claim 573.68 the wallet lacks
+    ("2.0199", "2.01"),
+    ("0.0099", "0.00"),        # under a cent available is not a cent available
+    ("30.0000", "30.00"),
+    ("0", "0.00"),
+])
+def test_a_displayed_balance_never_rises_above_the_real_one(exact, shown):
+    """The mirror image, and the reason there are two functions not one."""
+    assert cc.display_balance_usd(Decimal(exact)) == shown
+    assert Decimal(shown) <= Decimal(exact)
+
+
+def test_the_two_display_directions_actually_differ():
+    """Anti-vacuity: if both helpers rounded the same way, every assertion above
+    would still pass for whichever direction happened to be shared. This is the
+    one figure that proves they are opposites."""
+    assert cc.display_cost_usd(Decimal("573.6736")) == "573.68"
+    assert cc.display_balance_usd(Decimal("573.6736")) == "573.67"
+
+
+@pytest.mark.parametrize("fn", [cc.display_cost_usd, cc.display_balance_usd])
+def test_a_display_helper_fails_closed_rather_than_guessing(fn):
+    """Unlike ``preauth_message``, these do NOT swallow. Silently rendering
+    "0.00" for a broken figure would arm the button against a price nobody
+    computed.
+
+    Two claims removed from this docstring rather than repeated. **"Their only
+    caller is the estimate endpoint"** is false: both refusal paths and the
+    ``display_cost_usd`` Jinja global on ``runs/detail.html`` / ``runs/list.html``
+    also call them, and those are plain renders where a raise is a 500 rather
+    than a blocked spend. **"Unticking consent"** is false and is contradicted
+    twice in ``shared/compute_campaigns.py`` itself, once by a line that says in
+    so many words not to describe it that way; the mechanism is the DISABLED
+    submit button. See that module's caller enumeration, which is the one place
+    this is written down, and which has itself been wrong twice."""
+    for bad in ["abc", float("nan"), float("inf"), None, object()]:
+        with pytest.raises(Exception):
+            fn(bad)
+
+
+def test_the_total_helper_also_fails_closed():
+    """``display_total_usd`` is the third helper and was left out of the
+    parametrized case above, so the module docstring's "all three helpers raise"
+    was asserted for two of them.
+
+    It takes an iterable rather than a scalar, which is why it does not fit the
+    parametrization -- and that is exactly the kind of small awkwardness that
+    leaves a helper uncovered while a comment says otherwise. NaN matters most
+    here: ``Decimal.quantize`` does NOT signal on NaN, so a non-finite row would
+    render "NaN" into a consent panel unless the explicit ``is_finite`` check
+    fires first."""
+    for bad in [["abc"], [float("nan")], ["1.00", float("inf")], [None]]:
+        with pytest.raises(Exception):
+            cc.display_total_usd(bad)
+    # The empty sum is the one case that must NOT raise.
+    assert cc.display_total_usd([]) == "0.00"
+
+
+# ---------------------------------------------------------------------------
+# An unreadable row must not escape as a 500
+# ---------------------------------------------------------------------------
+
+
+def test_an_unreadable_row_reads_as_none_rather_than_raising(caplog):
+    """``from_row`` subscripts five columns directly, and four call sites had it
+    OUTSIDE the try that makes them total. The fund/drive loop calls
+    ``get_campaign`` after the commit point, where a raise would 500 a request
+    that has already spent money AND release the idempotency claim with it.
+
+    Red if ``_campaign_or_none`` stops catching, and red if it catches silently.
+    """
+    with caplog.at_level(logging.WARNING, logger="shared.compute_campaigns"):
+        assert cc._campaign_or_none({"id": "c-1"}) is None          # no status
+        assert cc._campaign_or_none({}) is None                      # no id
+        assert cc._campaign_or_none(None) is None
+    assert caplog.text.count("unreadable campaign row") == 3
+
+
+def test_a_list_of_runs_drops_the_unreadable_row_and_keeps_the_rest(fake_client):
+    """A read-only run strip must survive one bad row. The docstring's promise
+    that "a short run strip beats a 500" was only true of the paging error; the
+    row conversion sat outside it, so one malformed row took the whole page.
+
+    Red if ``list_campaigns_for_target`` converts rows with bare ``from_row``.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    rows = fake_client.store["compute_campaigns"]
+    for row in rows:
+        row["target_id"] = "t-1"
+    rows.append(_unreadable_row(target_id="t-1"))
+
+    out = cc.list_campaigns_for_target("t-1", user_id="u-1")
+    assert [c.id for c in out] == [good]
+
+
+def _unreadable_row(**extra):
+    """A row this query could actually deliver, that ``from_row`` cannot read.
+
+    It carries a real ``status`` on purpose. An earlier version left status out,
+    which reads as a stronger malformation but is one PostgREST filters away
+    first: ``neq("status", "draft")`` renders ``status <> 'draft'``, which is
+    NULL for a NULL status, so the row is dropped server-side and never reaches
+    the conversion. ``tool`` and ``preset`` are the missing keys instead, and
+    ``from_row`` subscripts both.
+    """
+    return {
+        "id": "bad-row", "user_id": "u-1", "status": "funded", **extra,
+    }
+
+
+def test_a_null_status_row_never_reaches_the_conversion(fake_client):
+    """Pins the fake's neq semantics, which decide what the code under test can
+    even be handed.
+
+    PostgREST renders ``.neq("status", "draft")`` as ``status <> 'draft'``,
+    which is NULL for a NULL status, so the row is DROPPED. Python's ``!=``
+    keeps it. This row is otherwise perfectly readable, so if the filter kept it
+    it would come back as a campaign and this assertion would fail.
+
+    It is also why the unreadable-row fixtures carry a real status: a NULL
+    status is a malformation this query cannot deliver, so a test built on one
+    would pin a shape production never produces.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    rows = fake_client.store["compute_campaigns"]
+    for row in rows:
+        row["target_id"] = "t-1"
+    rows.append({
+        "id": "null-status", "user_id": "u-1", "target_id": "t-1",
+        "tool": "rfdiffusion", "preset": "pilot", "status": None,
+        "requested_designs": 1, "chunk_size": 1, "total_subjobs": 1,
+        "budget_usd": "1.0000", "created_at": "2026-07-03T00:00:00Z",
+    })
+
+    out = cc.list_campaigns_for_target("t-1", user_id="u-1")
+    assert [c.id for c in out] == [good]
+
+
+def test_one_unreadable_row_does_not_take_the_whole_campaign_list(fake_client):
+    """``list_campaigns_for_user`` feeds /campaigns and the homepage.
+
+    Red if it converts rows with bare ``from_row``.
+    """
+    good = _seed_campaign(fake_client, status="funded")
+    fake_client.store["compute_campaigns"].append(_unreadable_row())
+
+    out = cc.list_campaigns_for_user("u-1")
+    assert [c.id for c in out] == [good]
+
+
+def test_an_unreadable_row_makes_get_campaign_return_none_not_raise(fake_client):
+    """The one that matters most: the fund/drive loop calls ``get_campaign``
+    AFTER the commit point, to confirm what a failed ``fund_campaign`` really
+    did. A raise there 500s a request that has already spent money, and
+    ``shared/idempotency.py`` releases the claim on any status >= 400, so the
+    retry the error invites would fund a second full set.
+
+    Red if ``get_campaign`` converts with bare ``from_row``.
+    """
+    fake_client.store["compute_campaigns"] = [_unreadable_row()]
+
+    assert cc.get_campaign("bad-row") is None
+
+
+def test_an_unreadable_row_does_not_abort_the_paused_sweep(fake_client):
+    """``sweep_paused_campaigns`` is cron housekeeping over every paused
+    campaign. A raise part way leaves the campaigns AFTER the bad row
+    unfinalized and un-renotified, silently, until someone reads the cron log.
+
+    So the assertion is that the good row still gets its notification, not
+    merely that the call returns: a sweep that aborted on row one would also
+    "not raise" if the bad row were last. The bad row is seeded first.
+
+    Red if the sweep converts with bare ``from_row``.
+    """
+    PAUSED = "paused_insufficient_funds"
+    good = _seed_campaign(fake_client, status=PAUSED, campaign_id="camp-good")
+    rows = fake_client.store["compute_campaigns"]
+    # Recent, so the TTL half of the sweep leaves both rows alone and this test
+    # is about the renotify half only.
+    for row in rows:
+        row["paused_at"] = datetime.now(timezone.utc).isoformat()
+    rows.insert(0, _unreadable_row(status=PAUSED))
+
+    with patch.object(cc, "_notify_campaign_paused") as notify:
+        summary = cc.sweep_paused_campaigns()
+
+    assert summary == {"finalized": 0, "renotified": 1}
+    assert [c.args[0].id for c in notify.call_args_list] == [good]

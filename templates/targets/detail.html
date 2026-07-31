@@ -55,6 +55,54 @@
   {% endif %}
 </div>
 
+{# Result of a just-completed multi-tool launch. This app has no flash(), so the
+   launch route puts the group id in the query string. An unknown or foreign
+   group matches no run, so the "Started N" half renders nothing.
+
+   The two halves are gated SEPARATELY, and the stalled half must not depend on
+   the started one. `launched_count` is counted from `list_campaigns_for_target`,
+   which is documented as NOT complete on its error path (a failed page returns
+   the rows read so far and logs), and which excludes `draft`. So a launch that
+   funded some campaigns and stranded others can arrive here with
+   `launched_count == 0` while `stalled_count` is non-zero, from either:
+
+     - that read failing or paging short, so the funded rows are simply absent
+       from `runs`; or
+     - a MIXED fund outcome, where the campaigns that stalled were confirmed
+       draft and the ones counted as started took the launch route's "row
+       unreadable, treat as started" fall-through and are in fact still draft,
+       so `list_campaigns_for_target` excludes them.
+
+   Both are the SAME connection fault that stranded the campaigns, so a nested
+   `stalled` block goes dark in precisely the case it exists to report. Note it
+   has to be MIXED: if EVERY campaign took that fall-through then nothing is
+   stalled, the route drops the query param, and there is no disclosure to
+   suppress either way. #}
+{% if launched_count or stalled_count %}
+<div class="panel" style="margin-top: 1.5rem;
+     border-color: {{ '#2B9E7E' if launched_count else '#e8846b' }};">
+  <div class="panel-body">
+    {% if launched_count %}
+    <p style="margin: 0;">
+      Started {{ launched_count }} run{{ '' if launched_count == 1 else 's' }}
+      against this target. They run in parallel and bill only for compute that
+      actually runs.
+    </p>
+    {% endif %}
+    {% if stalled_count %}
+    <p style="margin: {{ '0.6rem 0 0' if launched_count else '0' }}; color: #e8846b;">
+      {# "more" only reads correctly after a "Started N" line. On its own the
+         sentence has to name the thing itself. #}
+      {{ stalled_count }}
+      {{- ' more' if launched_count else (' run' if stalled_count == 1 else ' runs') }}
+      could not be started and {{ 'was' if stalled_count == 1 else 'were' }}
+      not charged. Launch {{ 'it' if stalled_count == 1 else 'them' }} again to retry.
+    </p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 {% if target.hotspot_residues or target.epitope_residues or target.notes %}
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header"><span class="panel-title">Defaults</span></div>

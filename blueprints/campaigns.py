@@ -3,9 +3,12 @@
 Self-serve batched design at /campaigns/* + /api/campaigns/* plus the
 /runs/* and /admin/campaigns/* legacy 301 redirects. Lifted verbatim from
 ``create_app()``; only ``@flask_app.route`` -> ``@campaigns_bp.route`` and
-compute-campaign endpoint self-refs -> ``campaigns.*``. The three helpers
-(_campaign_preauth_message, _campaign_passed_filters, _cutover_redirect)
-move in with the routes.
+compute-campaign endpoint self-refs -> ``campaigns.*``. The helpers
+(_campaign_passed_filters, _cutover_redirect) move in with the routes.
+
+The preauth copy and the campaign-tool flag gate are NOT here: Phase 2 moved
+them to shared/compute_campaigns.py so the multi-tool launch screen in
+blueprints/targets.py applies the identical gate without importing this module.
 """
 
 from __future__ import annotations
@@ -69,58 +72,11 @@ def _status_reconcile_due(campaign_id: str) -> bool:
 # wet-lab funnel moved to /lab-projects/* in the launch cutover; the old
 # /runs/* compute paths 301-redirect here for already-sent email links.
 
-_CAMPAIGN_PREAUTH_MESSAGES = {
-    "wallet_unavailable": "Your wallet is unavailable. Try again in a moment.",
-    "wallet_frozen": "Your wallet is on hold. Contact support to resume.",
-    "insufficient_balance": (
-        "Your balance does not cover the first batch of this campaign "
-        "(about ${required} to start). Top up your wallet and try again. "
-        "You only pay for compute that runs, and the campaign pauses if "
-        "your balance runs low."
-    ),
-    "verification_required": (
-        "Campaigns above ${threshold} need an approved account. "
-        "Contact us to raise your limit."
-    ),
-    "daily_campaign_cap": (
-        "This would exceed your daily campaign spending limit. "
-        "Try again tomorrow or with a smaller campaign."
-    ),
-}
-
-def _campaign_preauth_message(pre) -> str:
-    from shared import compute_campaigns as _cc  # noqa: PLC0415
-    msg = _CAMPAIGN_PREAUTH_MESSAGES.get(
-        pre.reason, "This campaign cannot start right now."
-    )
-    required = getattr(pre, "required_usd", None)
-    return (
-        msg.replace("${threshold}", str(_cc.VERIFICATION_THRESHOLD_USD))
-           .replace("${required}", f"{required:.2f}" if required else "the first batch")
-    )
-
-
-# Campaign tools that ship behind a FLAG_TOOL_<NAME> gate: hidden from the
-# create form + rejected on POST/estimate until the operator flips the flag in
-# prod (mirrors the atomic-tool flag-gating). The 5 original campaign tools are
-# unconditionally live and are NOT filtered by tool_enabled (which is
-# fail-closed — a tool with no flag env reads as off — so filtering the whole
-# list would wrongly hide them).
-_FLAG_GATED_CAMPAIGN_TOOLS = frozenset({"proteina", "iggm"})
-
-
-def _visible_campaign_tools() -> tuple:
-    from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.feature_flags import tool_enabled  # noqa: PLC0415
-    return tuple(
-        t for t in cc.SUPPORTED_TOOLS
-        if t not in _FLAG_GATED_CAMPAIGN_TOOLS or tool_enabled(t)
-    )
-
-
-def _campaign_tool_gated_off(tool: str) -> bool:
-    from shared.feature_flags import tool_enabled  # noqa: PLC0415
-    return tool in _FLAG_GATED_CAMPAIGN_TOOLS and not tool_enabled(tool)
+# The preauth copy and the campaign-tool flag gate now live in
+# shared/compute_campaigns.py (preauth_message, visible_campaign_tools,
+# campaign_tool_gated_off) so blueprints/targets.py can apply the same gate to
+# the multi-tool launch screen without importing this blueprint. One definition,
+# two callers.
 
 
 @campaigns_bp.route("/campaigns", methods=["GET"])
@@ -165,7 +121,7 @@ def compute_campaign_new():
             target = None
     return render_template(
         "runs/new.html",
-        supported_tools=_visible_campaign_tools(),
+        supported_tools=cc.visible_campaign_tools(),
         max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
         verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
         target=target,
@@ -183,7 +139,7 @@ def api_runs_estimate():
         requested = int(request.args.get("requested_designs") or "0")
     except ValueError:
         requested = 0
-    if _campaign_tool_gated_off(tool):
+    if cc.campaign_tool_gated_off(tool):
         return jsonify({"ok": False, "error": "That tool is not available yet."})
     if preset == "validate":
         # The free pre-flight is not a paid campaign — mirror the create route.
@@ -204,10 +160,20 @@ def api_runs_estimate():
         "requested_designs": plan.requested_designs,
         "chunk_size": plan.chunk_size,
         "total_subjobs": plan.total_subjobs,
+        # The exact 4dp values stay on the wire for anything that computes with
+        # them; the *_display strings are what the page renders. The page used to
+        # do its own 2dp rounding to NEAREST, which put a figure BELOW the real
+        # hold directly above the consent checkbox: rfdiffusion at 1 design holds
+        # $2.6219 and displayed "$2.62". Costs round UP, the balance rounds DOWN,
+        # both in Decimal, so neither direction can flatter the user.
         "per_chunk_usd": str(plan.est_cost_per_chunk),
+        "per_chunk_usd_display": cc.display_cost_usd(plan.est_cost_per_chunk),
         "budget_usd": str(plan.budget_usd),
+        "budget_usd_display": cc.display_cost_usd(plan.budget_usd),
         "first_wave_usd": str(first_wave),
+        "first_wave_usd_display": cc.display_cost_usd(first_wave),
         "balance_usd": str(pre.balance_usd),
+        "balance_usd_display": cc.display_balance_usd(pre.balance_usd),
         "affordable": pre.ok,
         "reason": pre.reason,
         "needs_verification": cc.CAMPAIGN_KYC_ENABLED and (plan.budget_usd > cc.VERIFICATION_THRESHOLD_USD),
@@ -215,7 +181,40 @@ def api_runs_estimate():
 
 @campaigns_bp.route("/campaigns", methods=["POST"])
 @login_required
+@idempotent()
 def compute_campaign_create():
+    # A58. This was the ONLY money-spending POST in the app without this
+    # decorator, and the omission was live: a double-submit funded TWO campaigns
+    # against one consent, gating the same first wave twice against the same
+    # balance. Measured at two identical POSTs -> created=2, funded=2. There is
+    # no client-side guard either (runs/new.html registers no submit handler),
+    # the CSRF token is session-scoped and reusable, and the POST takes seconds.
+    #
+    # Every sibling already had it: POST /targets, POST /targets/<id>/launch,
+    # POST /tools/<tool>/submit, /campaigns/<id>/refold, /developability/score,
+    # /library-planner/plan. This repo's own docs name this exact failure mode
+    # as a defect, for a route that HAS the decorator.
+    #
+    # Safe to add only because of the hardening in this same branch: the key
+    # falls back to a canonical encoding of request.form when _enforce_csrf has
+    # already consumed the raw body (otherwise every submission to this route
+    # would share one key and a genuine second campaign would vanish), and 4xx
+    # responses release the claim so a corrected resubmission is not answered
+    # with the stale rejection.
+    #
+    # Scope, stated because the copy above is easy to over-read. This dedups
+    # SEQUENTIAL resubmissions -- refresh, back button, network retry, the
+    # second click of a slow double-click. It does NOT serialise genuinely
+    # concurrent ones: `_claim_key` upserts, so `ON CONFLICT DO UPDATE` succeeds
+    # for both racing writers and the preceding SELECT is a TOCTOU, not a lock.
+    # That residue is filed as A41 and is unchanged here.
+    #
+    # And the discriminator for THIS route is weaker than it looks: the key
+    # folds the upload's filename and BYTE LENGTH, never its content. Two posts
+    # whose form fields all match, carrying same-named files of identical
+    # length, collapse inside the 60s TTL and the second structure is silently
+    # discarded. Distinct proteins almost never collide; an in-place
+    # single-character edit of the same file does.
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
@@ -246,7 +245,7 @@ def compute_campaign_create():
             "runs/new.html",
             # Filtered so a flag-gated tool (proteina) is not leaked into the
             # dropdown on a validation-error re-render, matching the GET form.
-            supported_tools=_visible_campaign_tools(),
+            supported_tools=cc.visible_campaign_tools(),
             max_subjobs=cc.MAX_SUBJOBS_PER_CAMPAIGN,
             verification_threshold=str(cc.VERIFICATION_THRESHOLD_USD),
             error=msg,
@@ -272,7 +271,7 @@ def compute_campaign_create():
     #    flag-gated tool that is still off is treated as unknown (don't reveal a
     #    hidden tool exists) — defense-in-depth behind the dropdown filter.
     adapter = tool_base.get(tool)
-    if adapter is None or _campaign_tool_gated_off(tool):
+    if adapter is None or cc.campaign_tool_gated_off(tool):
         return _err("Unknown tool.")
     if adapter.preset_for(preset) is None:
         return _err("Unknown preset for this tool.")
@@ -302,6 +301,14 @@ def compute_campaign_create():
     #    injected by the driver).
     form_for_validate = dict(request.form)
     form_for_validate[plan.design_param_key] = "1"
+    # The route's own resolved preset, not the raw form value. The form's two
+    # `name="preset"` selects are BOTH disabled for the five pilot tools, so
+    # nothing posts the field for them, and bindcraft is the one adapter that
+    # does not default it -- it reads `(form.get("preset") or "").strip()` and
+    # rejects anything but "pilot". Every bindcraft campaign therefore failed
+    # validation with "Pick a preset." before this line existed. Safe for the
+    # others: `preset` was already validated against this adapter at step 0.
+    form_for_validate["preset"] = preset
     validated, verr = adapter.validate(form_for_validate, request.files)
     if validated is None:
         return _err(verr or "Invalid parameters.")
@@ -390,12 +397,17 @@ def compute_campaign_create():
     # 4. Prepaid START gate (checks, never debits): the wallet only has to
     #    cover the first wave; the rest funds as the campaign drains, and it
     #    pauses/resumes on balance (fund-and-drain).
-    pre = cc.campaign_preauth(
-        ctx.user_id, plan.budget_usd,
-        cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool)),
-    )
+    first_wave = cc.first_wave_hold_usd(plan, cc.launch_concurrency_for(tool))
+    pre = cc.campaign_preauth(ctx.user_id, plan.budget_usd, first_wave)
     if not pre.ok:
-        return _err(_campaign_preauth_message(pre))
+        # Passed explicitly even though the default derives the same string
+        # today, because "the same by coincidence" is how the multi-tool route
+        # ended up printing $9.18 in this sentence over a $9.19 panel. This page
+        # ships `first_wave_usd_display` from the same helper, so the sentence
+        # and the panel are now the same string by construction.
+        return _err(cc.preauth_message(
+            pre, required_display=cc.display_cost_usd(first_wave),
+        ))
 
     # 5. Stage the shared target once (when one was provided), then create +
     #    fund + first wave. A proteina curated-task run stages nothing.
@@ -435,11 +447,73 @@ def compute_campaign_create():
     if target is not None:
         touch_target(target.id)
 
-    cc.fund_campaign(campaign.id)
+    # A59. The return value used to be discarded, so a failed fund redirected as
+    # success and left the row at `draft` forever -- `cron/tick_campaigns.py`
+    # excludes draft from _ACTIVE_STATES, so nothing ever picks it up. That is
+    # the round-5 inversion in the other direction: round 5 told a charged user
+    # nothing was charged; this told an uncharged user their campaign started.
+    #
+    # `fund_campaign` is three-valued, not two. It cannot raise (_cas_transition
+    # swallows everything and returns False), so False means EITHER "the row was
+    # not in draft" OR "the UPDATE raised and I cannot tell" -- and a write that
+    # commits in Postgres while the response times out lands in the second
+    # bucket. So False alone is not grounds for claiming nothing was charged;
+    # it is confirmed by an owner-scoped read, exactly as target_launch_submit
+    # does. Keep the two routes' policies identical.
+    if not cc.fund_campaign(campaign.id):
+        row = cc.get_campaign(campaign.id, user_id=ctx.user_id)
+        if row is not None and row.status == "draft":
+            # Confirmed inert: drive_campaign early-returns on draft,
+            # _campaign_spend_today skips it, no hold was ever placed. Saying
+            # "nothing was charged" here is TRUE, which matters because this
+            # route is @idempotent and idempotency releases its claim on any
+            # 4xx -- so the retry this invites must be safe. It is safe about
+            # MONEY, which is the claim the copy makes. It is not free: each
+            # retry strands another `draft` row and another staged PDB object,
+            # and nothing reclaims either (`cron/tick_campaigns.py` excludes
+            # draft, and there is no delete path). Those ghosts are visible in
+            # the user's campaign list. Filed as A62.
+            logger.warning(
+                "compute_campaign_create: %s is still draft after fund; not "
+                "driven", campaign.id,
+            )
+            return _err(
+                "That campaign could not be started, and nothing was charged. "
+                "Try again in a moment."
+            )
+        # Either it did move (the fund succeeded) or the read could not tell.
+        # Fall through and treat it as started: claiming "not charged" about
+        # money that may be committed is the more expensive error, and it is the
+        # one that produces a duplicate.
+        logger.warning(
+            "compute_campaign_create: fund_campaign reported False for %s but "
+            "its status is %s; treating it as started",
+            campaign.id, getattr(row, "status", "unreadable"),
+        )
+
     # Kick the first wave off the request path (daemon thread); the cron
     # tick backstops if the thread dies. At the raised concurrency an inline
     # drive would make many Modal + Supabase round-trips before responding.
-    cc.drive_campaign_async(campaign.id)
+    try:
+        cc.drive_campaign_async(campaign.id)
+    except Exception:
+        # A60. `threading.Thread(...).start()` is OUTSIDE the try inside
+        # `drive_campaign_async` (the try wraps the drive, not the spawn), so
+        # this call is fallible: it raises RuntimeError when the process cannot
+        # start another thread. Nothing may propagate past here. The campaign is
+        # funded and `cron/tick_campaigns.py::_ACTIVE_STATES` will drive and
+        # bill it, so a 500 out of this line would ALSO release the idempotency
+        # claim -- and the retry it invites re-runs the whole handler, creating
+        # and funding a SECOND campaign against one consent. That is verbatim
+        # the A58 failure this route's decorator exists to stop, reachable
+        # through the fix's own error path. `shared/idempotency.py` states the
+        # rule this restores: a handler that spends money must not raise after
+        # its first write. `target_launch_submit` already guards the same call.
+        logger.exception(
+            "compute_campaign_create: could not spawn the first-wave drive "
+            "for %s; it is funded and the campaign tick will drive it",
+            campaign.id,
+        )
     return redirect(url_for("campaigns.compute_campaign_detail", campaign_id=campaign.id))
 
 @campaigns_bp.route("/campaigns/<campaign_id>", methods=["GET"])

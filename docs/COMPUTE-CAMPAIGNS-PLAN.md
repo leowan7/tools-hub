@@ -63,7 +63,9 @@ set_modal_call sequence (must span the Modal network call). Triggers:
   complete_job/cancel_job: after CAS-win side effects commit and settlement lands, if
   `fresh.campaign_id` is set, enqueue best-effort drive_campaign (swallow errors, never
   block the terminal write);
-- (c) `cron/tick_campaigns.py` (flask campaigns:tick, ~60-90s, modeled on
+- (c) `cron/tick_campaigns.py` (flask campaigns:tick; planned at ~60-90s, but
+  the Railway cron actually runs `*/5 * * * *` -- verified in the dashboard
+  2026-07-30, see A46 -- so a stranded campaign waits up to 5 min; modeled on
   sweep_stuck_jobs.py) as authoritative backstop.
 Idempotency guarantee = DB `UNIQUE(campaign_id, chunk_index, attempt)` partial index +
 `INSERT..ON CONFLICT DO NOTHING` + CAS launch (`UPDATE..WHERE modal_function_call_id

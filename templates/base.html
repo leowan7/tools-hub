@@ -177,7 +177,7 @@
         <div class="onboarding-ribbon-inner">
           <span class="onboarding-ribbon-eyebrow">Welcome</span>
           <span class="onboarding-ribbon-body">
-            You have <strong>${{ '%.2f'|format(nav_wallet_usd or 0) }}</strong> in your wallet.
+            You have <strong>${{ display_balance_usd(nav_wallet_usd or 0) }}</strong> in your wallet.
             <span class="onboarding-step"><span class="onboarding-step-num">1</span> Pick a tool</span>
             <span class="onboarding-step"><span class="onboarding-step-num">2</span> Add your input</span>
             <span class="onboarding-step"><span class="onboarding-step-num">3</span> Run your first design</span>

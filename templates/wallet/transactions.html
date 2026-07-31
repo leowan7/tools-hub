@@ -57,7 +57,7 @@
       <div class="wallet-balance-row">
         <div class="wallet-balance-headline">
           <span class="wallet-balance-label">Current balance</span>
-          <span class="wallet-balance-value">${{ '%.2f'|format(wallet.balance_usd|float if wallet and wallet.balance_usd is not none else 0) }}</span>
+          <span class="wallet-balance-value">${{ display_balance_usd(wallet.balance_usd if wallet and wallet.balance_usd is not none else 0) }}</span>
         </div>
         <div class="wallet-balance-actions">
           <a href="/account/wallet" class="btn-secondary">Wallet overview</a>
@@ -142,7 +142,7 @@
                   {% elif ann and ann.role == 'release' %}
                     <span class="wallet-tx-hint">unused part of the hold returned to your wallet</span>
                   {% elif ann and ann.role == 'settlement' and ann.net is not none %}
-                    <span class="wallet-tx-net">net for this job ${{ '%.2f'|format((0 - ann.net)|float) }}</span>
+                    <span class="wallet-tx-net">net for this job ${{ display_ledger_usd(0 - ann.net) }}</span>
                   {% endif %}
                   {% if tx.notes %}
                     <span class="wallet-tx-note">{{ tx.notes }}</span>
@@ -155,11 +155,11 @@
                   {% endif %}
                 </td>
                 <td class="wallet-tx-amount wallet-tx-amount-{{ 'pos' if (tx.amount_usd|float) > 0 else 'neg' }}">
-                  {% if (tx.amount_usd|float) > 0 %}+{% endif %}${{ '%.2f'|format(tx.amount_usd|float) }}
+                  {% if (tx.amount_usd|float) > 0 %}+{% endif %}${{ display_ledger_usd(tx.amount_usd) }}
                 </td>
                 <td class="wallet-tx-amount">
                   {% if tx.balance_after_usd is not none %}
-                    ${{ '%.2f'|format(tx.balance_after_usd|float) }}
+                    ${{ display_ledger_usd(tx.balance_after_usd) }}
                   {% endif %}
                 </td>
               </tr>

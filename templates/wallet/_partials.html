@@ -43,7 +43,7 @@
        id="wallet-estimate-panel"
        data-tool-slug="{{ tool_slug }}"
        data-estimate-endpoint="{{ endpoint or '/api/wallet/estimate' }}"
-       data-initial-balance-usd="{{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}"
+       data-initial-balance-usd="{{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}"
        aria-live="polite">
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Estimated cost</span>
@@ -57,13 +57,13 @@
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Your balance</span>
       <span class="wallet-estimate-value" data-estimate-balance>
-        ${{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}
+        ${{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}
       </span>
     </div>
     <div class="wallet-estimate-row">
       <span class="wallet-estimate-label">Balance after this job</span>
       <span class="wallet-estimate-value" data-estimate-balance-after>
-        ${{ '%.2f'|format((balance_usd|float) if balance_usd is not none else 0) }}
+        ${{ display_balance_usd(balance_usd if balance_usd is not none else 0) }}
       </span>
     </div>
 
@@ -189,11 +189,28 @@
 
       var submitBtn = form.querySelector('[data-submit-cta], button[type="submit"]:not([data-gate-button])');
 
-      function fmt(v) {
+      // Three directions, not one. This block renders a cost, two balances, a
+      // cap and a required top-up through what used to be a single NEAREST
+      // rounding, so it printed BELOW the real estimate on 6 of 13 tool forms
+      // (opendde 14.7920 as $14.79, mpnn 0.0241 as $0.02).
+      //
+      //   cost / required top-up -> UP    (never ask for less than is needed)
+      //   balance / cap          -> DOWN  (never claim headroom that is absent)
+      //
+      // Mirrors display_cost_usd / display_balance_usd on the server. This file
+      // is not one of the two consent templates, so the guard forbidding
+      // arithmetic there does not apply here; these figures are advisory and
+      // the server re-gates every one of them.
+      function _q(v, up) {
         var n = parseFloat(v);
         if (!isFinite(n)) n = 0;
-        return '$' + n.toFixed(2);
+        // Strip IEEE754 noise BEFORE rounding directionally: 0.07 * 100 is
+        // 7.000000000000001, and a bare Math.ceil turns $0.07 into $0.08.
+        var scaled = Number((n * 100).toFixed(6));
+        return (up ? Math.ceil(scaled) : Math.floor(scaled)) / 100;
       }
+      function fmtUp(v) { return '$' + _q(v, true).toFixed(2); }
+      function fmtDown(v) { return '$' + _q(v, false).toFixed(2); }
 
       function setHidden(el, hidden) {
         if (!el) return;
@@ -211,10 +228,10 @@
         var rounded = parseFloat(data.rounded_topup_usd || 20);
         var cap = parseFloat(data.scaled_hard_cap_usd || 0);
 
-        if (costEl) costEl.textContent = fmt(estimate);
-        if (balanceEl) balanceEl.textContent = fmt(balance);
+        if (costEl) costEl.textContent = fmtUp(estimate);
+        if (balanceEl) balanceEl.textContent = fmtDown(balance);
         if (balanceAfterEl) {
-          balanceAfterEl.textContent = fmt(balanceAfter);
+          balanceAfterEl.textContent = fmtDown(balanceAfter);
           balanceAfterEl.classList.toggle('wallet-estimate-value-neg', balanceAfter < 0);
         }
 
@@ -224,15 +241,20 @@
         setHidden(ceilingBlockEl, !ceiling);
         setHidden(hardBlockEl, !hard);
         setHidden(softWarnEl, !soft);
-        if (softCapEl && cap) softCapEl.textContent = fmt(cap);
+        // A charge CEILING, not headroom. `cap` is compute_hard_cap: the most
+        // this single job may cost. Understating a ceiling understates the
+        // user's maximum exposure, which is the cost direction. The headroom
+        // argument that puts caps with balances fits a monthly reload cap; it
+        // does not fit a per-job charge ceiling.
+        if (softCapEl && cap) softCapEl.textContent = fmtUp(cap);
 
         var insufficient = deficit > 0 && !ceiling && !hard;
         setHidden(gate, !insufficient);
         if (insufficient) {
-          if (gateEstimateEl) gateEstimateEl.textContent = fmt(estimate);
-          if (gateBalanceEl) gateBalanceEl.textContent = fmt(balance);
-          if (gateDeficitEl) gateDeficitEl.textContent = fmt(deficit);
-          if (gateRoundedEl) gateRoundedEl.textContent = fmt(rounded);
+          if (gateEstimateEl) gateEstimateEl.textContent = fmtUp(estimate);
+          if (gateBalanceEl) gateBalanceEl.textContent = fmtDown(balance);
+          if (gateDeficitEl) gateDeficitEl.textContent = fmtUp(deficit);
+          if (gateRoundedEl) gateRoundedEl.textContent = fmtUp(rounded);
         }
 
         if (submitBtn) {
