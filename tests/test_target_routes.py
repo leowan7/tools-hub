@@ -54,7 +54,7 @@ def _agg(runs=(), **over):
         "tools": [], "per_tool": {}, "campaigns": list(runs),
         "standalone_jobs": 0, "refold_jobs": 0, "passed_total": 0,
         "provisional": False, "sort_mode": "percentile", "multi_tool": False,
-        "limit": 300,
+        "limit": 300, "split_tools": [],
     }
     env.update(over)
     # The aggregator computes ``provisional`` as ``partial or any(non-terminal
@@ -586,7 +586,9 @@ def test_a_target_whose_every_launch_stranded_at_draft_says_so(client):
     ]
     body = _detail(client, drafts=drafts)
     assert "2 runs were created against this target but never funded" in body
-    assert "Nothing was charged." in body
+    # Scoped to the drafts. Round 17 removed the unqualified variant entirely;
+    # see test_a_stranded_draft_never_preempts_another_fact.
+    assert "Nothing was charged for those." in body
     assert _NOTHING not in body
 
 
@@ -653,6 +655,9 @@ def test_a_failed_read_is_disclosed_and_does_not_claim_nothing_was_run(client):
     body = _detail(client, partial=True)
     assert "could not be read" in body
     assert _NOTHING not in body
+    # With no table, the banner must not point at one (round 17).
+    assert "this page is missing runs, designs, or both" in body
+    assert "what is shown below is incomplete" not in body
 
 
 def test_the_partial_banner_still_renders_when_there_is_a_table(client):
@@ -660,10 +665,17 @@ def test_the_partial_banner_still_renders_when_there_is_a_table(client):
 
     Without this, deleting the banner from the table branch and adding it to
     the empty one would pass the test above.
+
+    ROUND 17: this asserted "could not be read", which THREE separate sentences
+    on this page now contain (the banner, the empty-state paragraph, and the
+    third provisional sentence round 16 added). Deleting the banner outright
+    left it green, so the round-15 BLOCKER fix was pinned by nothing. It now
+    asserts the banner's own wording.
     """
     body = _detail(client, partial=True, tools=["bindcraft"],
                    candidates=_one_design(), total=1, shown=1)
-    assert "could not be read" in body
+    assert "what is shown below is incomplete" in body
+    assert "Reload to try again" in body
 
 
 def test_one_run_that_returned_nothing_reads_correctly(client):
@@ -749,8 +761,24 @@ def test_a_running_run_alone_still_gets_the_shifting_percentiles_sentence(client
     assert "paused waiting on wallet balance" not in body
 
 
+def _paragraph_containing(body, needle):
+    """The whole ``<p>`` holding ``needle``, whitespace collapsed.
+
+    A containment assertion cannot see a sentence added IN FRONT of the text it
+    pins, which is exactly how the unranked disclosure carried a positional
+    claim through a round of review that was looking for one. Extracting the
+    paragraph turns the assertion into an equality, so a clause added at either
+    end fails.
+    """
+    i = body.index(needle)
+    start = body.index(">", body.rindex("<p", 0, i)) + 1
+    return " ".join(body[start:body.index("</p>", i)].split())
+
+
 @pytest.mark.parametrize("capped,total,shown", [(True, 900, 1), (False, 5, 5)])
-def test_the_unranked_disclosure_makes_no_positional_claim(client, capped, total, shown):
+def test_the_unranked_disclosure_makes_no_positional_claim(
+    client, capped, total, shown,
+):
     """This sentence has been wrong twice, in opposite directions.
 
     It said "listed last", then (round 15) "fall below the cap rather than
@@ -766,14 +794,100 @@ def test_the_unranked_disclosure_makes_no_positional_claim(client, capped, total
     So the copy must claim the exclusion and nothing about position, in EVERY
     state. Parametrised over capped and uncapped because the previous two
     versions each got exactly one of those right.
-    """
-    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
-                   total=total, shown=shown, unranked=4, capped=capped)
 
-    assert "excluded from the percentiles" in body
-    for wrong in ("listed last", "fall below the cap",
-                  "rather than appearing in the table"):
-        assert wrong not in body, wrong
+    ROUND 17. A THIRD version then said "ranked below the scored designs they
+    share a filter verdict with", and this test was green over it, because it
+    only rejected the two DEAD phrasings and never rendered the grouped mode.
+    That claim is true in canonical order and false under ``?sort=tool``, which
+    the same page offers: grouping by slug puts an unranked row of an
+    alphabetically earlier tool above the scored rows of every later one.
+
+    ROUND 18. The round-17 rewrite anchored only the END of the sentence, so a
+    positional claim added as a PRECEDING sentence inside the same paragraph
+    still passed, and dropping the deny-list lost coverage of the two historical
+    phrasings outright. An equality and a deny-list fail on different mutations
+    and both are cheap, so this keeps both, and it compares the two sort modes
+    to each other rather than merely rendering each.
+    """
+    def render(mode):
+        return _detail(client, tools=["bindcraft", "boltzgen"], multi_tool=True,
+                       candidates=_one_design(), total=total, shown=shown,
+                       unranked=4, capped=capped, sort_mode=mode)
+
+    expected = (
+        "4 designs carry no value for their tool's ranking metric, so they are "
+        "excluded from the percentiles. The CSV export lists every design."
+    )
+    paragraphs = {}
+    for mode in ("percentile", "tool"):
+        body = render(mode)
+        paragraphs[mode] = _paragraph_containing(
+            body, "excluded from the percentiles")
+        # Equality, not containment: anchored at BOTH ends.
+        assert paragraphs[mode] == expected, mode
+        for wrong in ("listed last", "fall below the cap",
+                      "rather than appearing in the table", "ranked below"):
+            assert wrong not in body, f"{mode}: {wrong}"
+
+    # The invariant this test is NAMED for. A sentence that states no position
+    # cannot depend on the ordering, so the two modes must render it
+    # identically; anything gated on sort_mode fails right here.
+    assert paragraphs["percentile"] == paragraphs["tool"]
+
+
+def test_one_tool_at_two_presets_does_not_render_cross_tool_copy(client):
+    """ROUND 18. A75 widened ``multi_tool`` to mean "more than one COHORT",
+    which one tool at two presets satisfies, and left every consumer of the flag
+    still speaking tool-language.
+
+    The page then printed "N designs from 1 tool" eight lines above "Different
+    tools score on different scales", offered a "Grouped by tool" toggle that
+    cannot reorder anything (``apply_sort_mode`` keys SORT_TOOL on
+    ``_source_tool`` alone, so with one tool it returns the canonical order it
+    was already in), and showed one slug on every row of the Tool column.
+
+    The pooled COLUMNS were right and stay keyed on the cohort flag. Only the
+    cross-tool prose and the toggle move to ``len(tools)``.
+    """
+    body = _detail(client, tools=["proteina"], multi_tool=True,
+                   split_tools=["proteina"], candidates=_one_design(),
+                   total=1, shown=1)
+    assert "from 1 tool" in body
+    assert "Different tools score on different scales" not in body
+    assert "One tool at two presets does not score on one scale" in body
+    # A control that cannot change the table must not be rendered.
+    assert "Grouped by tool" not in body
+
+
+def test_several_tools_still_get_the_cross_tool_copy_and_the_toggle(client):
+    """The pair. Suppressing both for everyone passes the test above."""
+    body = _detail(client, tools=["bindcraft", "boltzgen"], multi_tool=True,
+                   candidates=_one_design(), total=1, shown=1)
+    assert "Different tools score on different scales" in body
+    assert "Grouped by tool" in body
+
+
+def test_a_split_cohort_row_names_its_preset(client):
+    """The Tool column prints a slug, and for a tool that ran at two presets the
+    slug does not identify the population the row was ranked against."""
+    cand = dict(_one_design()[0], _source_tool="proteina",
+                _source_preset="motif_ame", _metric_key="total_reward",
+                _metric_value=12.4)
+    body = _detail(client, tools=["proteina"], multi_tool=True,
+                   split_tools=["proteina"], candidates=[cand],
+                   total=1, shown=1)
+    assert "motif_ame" in body
+
+
+def test_an_unsplit_tool_gets_no_preset_chip(client):
+    """The pair. Where the tool IS the cohort, a preset on every row is noise,
+    and rendering it unconditionally would pass the test above."""
+    cand = dict(_one_design()[0], _source_tool="proteina",
+                _source_preset="motif_ame", _metric_key="total_reward",
+                _metric_value=12.4)
+    body = _detail(client, tools=["proteina", "bindcraft"], multi_tool=True,
+                   split_tools=[], candidates=[cand], total=1, shown=1)
+    assert "motif_ame" not in body
 
 
 def test_the_unranked_disclosure_is_absent_when_every_design_is_ranked(client):
@@ -852,12 +966,98 @@ def test_a_stranded_draft_does_not_claim_nothing_was_charged_over_real_designs(c
     assert "<strong>Nothing was charged.</strong>" not in body
 
 
-def test_a_stranded_draft_with_no_designs_keeps_its_unqualified_wording(client):
-    """The pair. When there is nothing else on the page, "Nothing was charged"
-    is exactly true and is the user's first question."""
+@pytest.mark.parametrize("over,other_fact", [
+    ({"refold_jobs": 3}, "3 validation folds ran against this target"),
+    ({"standalone_jobs": 2},
+     "2 runs finished against this target without returning a design"),
+    ({"partial": True}, "this may not be the whole picture"),
+])
+def test_a_stranded_draft_never_preempts_another_fact(client, over, other_fact):
+    """ROUND 17. Round 16 hoisted ``agg.tools`` above ``draft_count`` and left
+    the identical defect on every branch BELOW drafts.
+
+    A stranded draft beside billed standalone runs or refolds still preempted
+    them: the disclosure vanished from the page entirely and the unqualified
+    bold "Nothing was charged." was the only money statement on a target whose
+    standalone jobs reserve a wallet hold and whose refolds bill on the
+    completion path. Drafts also preempted the failed-read sentence.
+
+    The predecessor of this test asserted the unqualified wording under the
+    docstring premise "when there is nothing else on the page", and never
+    constructed a case where there was.
+    """
+    drafts = [SimpleNamespace(id="c-1", status="draft")]
+    body = _detail(client, drafts=drafts, **over)
+    assert "never funded" in body
+    assert other_fact in body
+    assert "Nothing was charged for that." in body
+    assert "<strong>Nothing was charged.</strong>" not in body
+    assert _NOTHING not in body
+
+
+@pytest.mark.parametrize("bits", range(32))
+def test_no_empty_state_fact_preempts_another(client, bits):
+    """The WHOLE matrix, because this block has now been wrong three times and
+    every time the case that broke was a pair nobody had rendered together.
+
+    Round 15 ordered it drafts-first. Round 16 hoisted ``agg.tools`` above
+    drafts and left drafts preempting the three branches below. Each fix was
+    verified against the pairs someone thought of. Five independent facts is 32
+    states, which is small enough to simply enumerate, so the next person does
+    not have to think of the right pair either.
+
+    Each fact asserts ONLY its own presence. Nothing here says where a
+    paragraph sits or what it sits beside: that would re-import the ordering
+    assumption this test exists to retire.
+    """
+    tools = ["bindcraft"] if bits & 1 else []
+    partial = bool(bits & 2)
+    standalone = 2 if bits & 4 else 0
+    refold = 3 if bits & 8 else 0
+    drafts = [SimpleNamespace(id="c-1", status="draft")] if bits & 16 else []
+
+    body = _detail(
+        client, drafts=drafts, tools=tools, partial=partial,
+        standalone_jobs=standalone, refold_jobs=refold,
+        candidates=_one_design() if tools else [],
+        total=1 if tools else 0, shown=1 if tools else 0,
+    )
+
+    if tools:
+        assert "No campaign runs yet" in body
+    if partial:
+        assert "could not be read" in body
+    if drafts:
+        assert "never funded" in body
+        # Scoped in EVERY one of the 32 states, which is the property that
+        # makes a single draft paragraph sufficient.
+        assert "Nothing was charged for that." in body
+    if (refold or standalone) and not tools:
+        assert ("without returning a design" in body
+                or "validation fold" in body)
+
+    # The one sentence that must never coexist with any other fact.
+    nothing_claimed = _NOTHING in body
+    assert nothing_claimed == (
+        not tools and not partial and not standalone and not refold
+        and not drafts
+    )
+    # The unqualified money claim is gone from the template outright.
+    assert "<strong>Nothing was charged.</strong>" not in body
+
+
+def test_the_draft_money_claim_is_scoped_even_as_the_only_fact(client):
+    """The pair, and the reason there is only ONE draft paragraph now.
+
+    "Nothing was charged." is true here and was kept for that reason, which is
+    how two variants of this paragraph came to exist and how the wrong one came
+    to render. The scoped form is true in EVERY state, so keeping the stronger
+    one bought nothing and cost a branch that had to be maintained in step.
+    """
     drafts = [SimpleNamespace(id="c-1", status="draft")]
     body = _detail(client, drafts=drafts)
-    assert "Nothing was charged." in body
+    assert "Nothing was charged for that." in body
+    assert "<strong>Nothing was charged.</strong>" not in body
     assert "produced the designs listed below" not in body
 
 
@@ -879,3 +1079,37 @@ def test_a_capped_complete_table_still_promises_the_csv_is_complete(client):
                    total=412, shown=1, capped=True)
     assert "The CSV and FASTA exports contain every design" in body
     assert "could be read" not in body
+
+
+def test_a_capped_table_says_its_row_numbers_do_not_match_the_export(client):
+    """ROUND 17. The page's # column and the export's ``rank`` column number
+    the same target from different bases.
+
+    The page ranks with DEFAULT_LIMIT and prints the display index; the CSV and
+    FASTA rank the whole set. They agree until ``select_under_cap``'s per-tool
+    floor reserves a row from beyond the cap, which is precisely the case the
+    floor exists for, and then "row 298" on screen and "rank 298" in the file
+    are two different molecules. ``shared/exports.py::export_key`` asserted the
+    opposite in its own docstring.
+
+    Said here rather than fixed by renumbering, because ``export_key`` is
+    shared with the campaign export and its ``rank`` column is a shipped
+    contract. Naming the join key is the useful half.
+
+    ROUND 18: the sentence used to say the files "number every design from 1",
+    which the FASTA falsifies. ``candidates_to_fasta`` skips rows with no
+    sequence but still numbers from the full list, so not every design appears
+    and the numbering has gaps.
+    """
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=412, shown=1, capped=True)
+    assert "rank the whole set rather than this page's top" in body
+    assert "Match rows on the source job and file name" in body
+
+
+def test_an_uncapped_table_makes_no_claim_about_export_numbering(client):
+    """The pair. Uncapped, the two numberings DO agree, so the warning would be
+    false and would send a reader looking for a mismatch that is not there."""
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=1, shown=1, capped=False)
+    assert "rank the whole set rather than this page's top" not in body

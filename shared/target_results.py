@@ -440,6 +440,7 @@ def _not_found(sort_mode: str, limit: Optional[int]) -> dict[str, Any]:
         "provisional": False,
         "sort_mode": sort_mode,
         "multi_tool": False,
+        "split_tools": [],
     }
 
 
@@ -506,9 +507,12 @@ def aggregate_target_candidates(
         unranked       rows with no usable primary metric
         capped         total > shown
         limit          the cap that was applied
-        columns        [] multi-tool, columns_for(tool) when exactly one tool
-                       contributed, so the page can degrade to today's
-                       single-tool table
+        columns        [] in pooled mode; columns_for(tool) only when there is
+                       exactly ONE COHORT (one tool at one preset), so the page
+                       can degrade to today's single-tool table. Gated on the
+                       same flag as ``multi_tool``, never on len(tools)
+        split_tools    slugs that contributed more than one preset, so the row
+                       label can name the cohort the tool alone does not
         tools          sorted slugs contributing >= 1 design
         per_tool       build_tool_stats entry per tool, plus ``campaigns``
         campaigns      the ComputeCampaign objects, so the route does not read
@@ -521,7 +525,9 @@ def aggregate_target_candidates(
         passed_total     see below
         provisional      see below
         sort_mode      the mode actually applied
-        multi_tool     len(tools) > 1
+        multi_tool     more than one (tool, preset) COHORT, so it is also true
+                       for one tool run at two presets; see the note at the
+                       return statement
 
     ``ok`` IS THE SENTINEL, not ``tools == []``. ``_campaign_export`` gates on
     ``agg.get("tool") is None`` (blueprints/campaigns.py:687-688); under that
@@ -687,6 +693,35 @@ def aggregate_target_candidates(
 
     tools = sorted(per_tool)
 
+    # COHORTS, not tools. The comparable population is (tool, preset), which is
+    # what cohort_key_for keys on and why build_tool_stats reports `presets` per
+    # tool at all. Deriving the display flag from the TOOL count instead sent a
+    # target holding one tool at two presets down the single-tool path: today's
+    # table, whose Score column carries `data-col` and is therefore re-sortable
+    # in the browser, pooling two populations whose numbers do not mean the same
+    # thing. proteina's `total_reward` is `-i_pAE` under protein_binder and an
+    # RF3 composite under its other variants (shared/ranking.py::cohort_key_for),
+    # and templates/targets/launch.html offers proteina at two presets and iggm
+    # at four, so this is a form the launch screen itself can produce.
+    #
+    # That is the exact error the preset half of the cohort key exists to
+    # prevent, reappearing at the display layer where the ranking math cannot
+    # see it. One cohort means one comparable population and today's table is
+    # correct; more than one, by either route, means the pooled presentation.
+    multi_cohort = len(tools) > 1 or any(
+        len(stats.get("presets") or ()) > 1 for stats in per_tool.values()
+    )
+    # The tools whose rows need a preset to identify their cohort. Without it
+    # the Tool column shows ONE label over two populations the ranking
+    # deliberately kept apart, which is the split the pooled table entered
+    # pooled mode to disclose. Empty for every target where the tool alone is
+    # the cohort, which is all of them until someone runs proteina or iggm at
+    # two presets.
+    split_tools = sorted(
+        slug for slug, stats in per_tool.items()
+        if len(stats.get("presets") or ()) > 1
+    )
+
     return {
         "ok": True,
         "partial": partial,
@@ -696,10 +731,12 @@ def aggregate_target_candidates(
         "unranked": ranked["unranked"],
         "capped": ranked["capped"],
         "limit": ranked["limit"],
-        # [] in multi-tool mode: no single column set describes rows from tools
-        # whose metrics are not comparable. With exactly one contributing tool
-        # the page degrades to today's single-tool table.
-        "columns": columns_for(tools[0]) if len(tools) == 1 else [],
+        # [] in pooled mode: no single column set describes rows whose metrics
+        # are not comparable. Gated on the same flag as `multi_tool` and not on
+        # `len(tools)`, because the two disagree for one tool at two presets and
+        # a non-empty `columns` there would render that tool's native columns
+        # BESIDE the pooled Tool/Score/Pctile ones.
+        "columns": columns_for(tools[0]) if len(tools) == 1 and not multi_cohort else [],
         "tools": tools,
         "per_tool": per_tool,
         "campaigns": campaigns,
@@ -725,5 +762,11 @@ def aggregate_target_candidates(
             for c in campaigns
         ),
         "sort_mode": ranked["sort_mode"],
-        "multi_tool": len(tools) > 1,
+        # Named for the display mode it selects, not for its input: it is true
+        # for more than one COHORT, which one tool at two presets also
+        # satisfies. It therefore does NOT license cross-TOOL copy; the page
+        # gates that on len(tools) instead, and labels split cohorts from
+        # ``split_tools``.
+        "multi_tool": multi_cohort,
+        "split_tools": split_tools,
     }

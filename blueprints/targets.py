@@ -550,7 +550,7 @@ _TARGET_ZIP_EXPORT_LIMIT = 300
 def _target_export(target_id: str, fmt: str):
     """Pooled CSV / FASTA / ZIP across every run against one target.
 
-    Mirrors :func:`blueprints.campaigns._campaign_export`, with two deliberate
+    Mirrors :func:`blueprints.campaigns._campaign_export`, with three deliberate
     differences.
 
     THE OWNERSHIP SENTINEL IS ``ok``, not an empty field. The campaign version
@@ -564,6 +564,17 @@ def _target_export(target_id: str, fmt: str):
     the sort mode changes the ORDER of rows and never the SET: the cap is
     applied in canonical order before the display sort, so "top 300" is the same
     300 designs either way and only their order in the CSV differs.
+
+    A PARTIAL READ IS MARKED IN THE FILENAME. A target has many reads behind it
+    and any one of them can fail, which yields a short file rather than an error;
+    see the note beside ``incomplete`` below. The campaign export has no
+    equivalent because it has no equivalent flag.
+
+    The ``rank`` column is NOT the on-screen row number when the page is capped:
+    the page ranks with :data:`DEFAULT_LIMIT` and these files rank the whole set,
+    so a floor-reserved row sits at a different ordinal in each. The rows carry
+    ``source_job`` and ``pdb_key``, which identify a design across both; see
+    :func:`shared.exports.export_key`.
     """
     from flask import Response  # noqa: PLC0415
     from shared.exports import (  # noqa: PLC0415
@@ -587,20 +598,48 @@ def _target_export(target_id: str, fmt: str):
     candidates = agg.get("candidates", [])
     stem = "target_" + str(target_id)[:8]
 
+    # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
+    # the two are byte-indistinguishable. The aggregate sets `partial` precisely
+    # so "we could not look" can be told apart from "you have nothing", and
+    # target_detail discloses it; this route was written with the flag in hand
+    # and dropped it, so a target whose reads failed downloaded as a complete
+    # 200 and the FASTA positively asserted there were no sequences.
+    #
+    # Disclosed in the FILENAME, for the same reason `capped` already is below:
+    # the artifact leaves this process and is opened later, out of the page's
+    # context, so a banner on the page cannot travel with it. Not disclosed as a
+    # leading CSV comment row, which would change a shape every existing
+    # consumer parses (`candidates_to_csv` is shared with the campaign export).
+    partial = bool(agg.get("partial"))
+    incomplete = "_incomplete" if partial else ""
+
     if fmt == "csv":
         return Response(
             candidates_to_csv(candidates),
             mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={stem}_scores.csv"},
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}_scores{incomplete}.csv",
+            },
         )
     if fmt == "fasta":
-        body = candidates_to_fasta(candidates) or (
-            "# No sequences found in this target's output.\n"
-        )
+        body = candidates_to_fasta(candidates)
+        if not body:
+            # "No sequences found" is a claim about the target. Under `partial`
+            # it is a claim about a read that did not happen.
+            body = (
+                "# Part of this target could not be read, so no sequences could"
+                " be listed. Reload the target page and try again.\n"
+                if partial
+                else "# No sequences found in this target's output.\n"
+            )
         return Response(
             body,
             mimetype="text/plain",
-            headers={"Content-Disposition": f"attachment; filename={stem}.fasta"},
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}{incomplete}.fasta",
+            },
         )
 
     def _fetch(src_job_id: str, filename: str):
@@ -623,9 +662,9 @@ def _target_export(target_id: str, fmt: str):
     data = candidates_to_zip(candidates, _fetch, namespace=True)
     if agg.get("capped"):
         total = agg.get("total", len(candidates))
-        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}.zip"
+        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}{incomplete}.zip"
     else:
-        zip_name = f"{stem}_pdbs.zip"
+        zip_name = f"{stem}_pdbs{incomplete}.zip"
     return Response(
         data,
         mimetype="application/zip",

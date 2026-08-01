@@ -87,8 +87,24 @@ _PROVENANCE_COLUMNS = (
 def export_key(cand: dict, i: int) -> dict:
     """The provenance block for one exported row, at global index ``i``.
 
-    ``rank`` is the **global** row index, so it is monotonic and matches the
-    on-screen order of the merged table. The tool's own rank is demoted to
+    ``rank`` is the row's 1-based index in the CANDIDATE LIST handed to the
+    serializer. For the CSV that is also its position in the file. For the FASTA
+    it is not: :func:`candidates_to_fasta` skips rows carrying no sequence but
+    still numbers from the full list, so a target whose best design is a
+    backbone with no sequence produces a file whose first record is ``rank2``.
+    The numbers are monotonic and unique either way, which is what the ids need
+    them for; they are not a count of the file's own records.
+
+    It is NOT a cross-surface identifier. This docstring used to claim it
+    "matches the on-screen order of the merged table", which holds only while
+    the page is uncapped: the target page ranks with
+    :data:`shared.ranking.DEFAULT_LIMIT` and these files rank the whole set, so
+    a row the page numbers 298 can be rank 377 here whenever
+    :func:`shared.ranking.select_under_cap`'s per-tool floor reserved it from
+    beyond the cap, which is the very case the floor exists for. ``source_job``
+    plus ``pdb_key`` identify a design across both surfaces; the rank does not.
+
+    The tool's own rank is demoted to
     ``source_rank``: across a merged export those collide (every tool emits a
     rank 1), so using it as the export rank made the CSV look shuffled and made
     "row 7" ambiguous. ``pdb_key`` collides the same way (every tool emits

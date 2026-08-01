@@ -153,46 +153,25 @@
       <div class="panel-body" style="text-align: center; padding: 2.5rem 1.5rem;">
         {# This block means "no COMPUTE-CAMPAIGN runs". That is not the same as
            "nothing happened", and saying "nothing has been run" to someone who
-           tried is the one wrong answer here. Five ways in, in priority order:
+           tried is the one wrong answer here.
 
-           1. Drafts. A launch whose funding never completed leaves a `draft`
-              row, which list_campaigns_for_target excludes. Nothing was charged
-              for those, which the copy says outright because that is the user's
-              first question. Checked first because it is the only branch that
-              tells the user what to DO.
-           2. A read failed (`agg.partial`). Nothing below is known to be true,
-              so nothing below may be asserted.
-           3. Standalone jobs that DID produce designs. A target can have zero
-              campaigns while its target-tagged standalone jobs returned plenty:
-              the table renders below from `agg.tools`, and this panel used to
-              sit above it saying nothing had been run.
-           4. Standalone activity that produced no design. Split by the
-              aggregator into refolds, which are counted and deliberately never
-              ranked (a refold re-measures a design that already exists, so
-              ranking it would double count the molecule under the refolder's
-              tool), and non-refold runs that succeeded without returning a
-              candidate record. The rollup line that discloses refolds is itself
-              gated on a non-empty agg.tools, so without this branch a
-              refold-only target reads as untouched. That is register item A31's
-              exact user-visible failure, reached through the other population.
-           5. Genuinely nothing.
+           FIVE FACTS, NOT FIVE BRANCHES. These were an if/elif chain, and the
+           chain was wrong twice for the same reason: the facts are independent,
+           so whichever one was tested first deleted the others from the page.
+           Ordering drafts first printed "1 run was created against this target
+           but never funded ... Nothing was charged." directly above a populated
+           table. Hoisting agg.tools above drafts fixed that one pairing and
+           left drafts preempting BOTH the failed-read sentence and the
+           standalone/refold disclosure, so a target holding a stranded draft
+           beside billed standalone runs still read as one where nothing had
+           been charged, with the runs themselves deleted from the page.
 
-           Branches 3 and 4 were ONE branch gated on `agg.standalone_jobs`
-           alone, which announced "3 runs finished against this target without
-           returning a design" directly above a table of those designs. #}
-        {# DESIGNS-EXIST is checked FIRST, ahead of drafts.
-
-           Ordering drafts first made the draft branch preempt this one, so a
-           target with one stranded draft AND standalone runs that returned
-           designs rendered "1 run was created against this target but never
-           funded ... Nothing was charged." directly above a populated table.
-           Two panels contradicting each other, and an unqualified money claim
-           over designs the user WAS billed for, since standalone tool_jobs are
-           wallet charged.
-
-           The two facts are independent, so they are no longer branches of one
-           `if`: the attribution leads, and the draft note appends. #}
+           Each paragraph is now gated on its OWN fact and they compose. Only
+           the last is exclusive, because "nothing" is exactly the claim that
+           the other four are all absent. #}
         {% if agg.tools %}
+        {# Attribution. Reached with no campaigns, so every design below came
+           from a target-tagged standalone job. #}
         <p style="color: var(--text-secondary); margin-bottom: 0.6rem;">
           No campaign runs yet.
           {% if agg.standalone_jobs %}
@@ -202,39 +181,37 @@
           The designs listed below came from runs outside this target's campaign list.
           {% endif %}
         </p>
-        {% if draft_count %}
-        <p style="color: var(--text-tertiary); font-size: 0.85rem; margin-bottom: 1.25rem;">
-          {{ draft_count }} campaign{{ 's were' if draft_count != 1 else ' was' }} also created
-          against this target but never funded, so {{ 'they' if draft_count != 1 else 'it' }}
-          never started. Nothing was charged for {{ 'those' if draft_count != 1 else 'that' }}.
-          <a href="{{ url_for('wallet.wallet_overview') }}">Check your balance</a>.
-        </p>
         {% endif %}
-        {% elif draft_count %}
-        <p style="color: var(--text-secondary); margin-bottom: 0.6rem;">
-          {{ draft_count }} run{{ 's were' if draft_count != 1 else ' was' }} created against this
-          target but never funded, so {{ 'they' if draft_count != 1 else 'it' }} never started.
-          <strong>Nothing was charged.</strong>
-        </p>
-        <p style="color: var(--text-tertiary); font-size: 0.85rem; margin-bottom: 1.25rem;">
-          This usually means the wallet balance was too low at the moment of launch.
-          <a href="{{ url_for('wallet.wallet_overview') }}">Check your balance</a>, then launch again.
-        </p>
-        {% elif agg.partial %}
+        {% if agg.partial %}
         {# A read FAILED, so "nothing has been run" is not known to be true and
-           must not be asserted. The banner above already says what happened.
+           must not be asserted.
 
            Worded for what `partial` actually means. It is a TARGET-level flag,
-           set by the standalone read or by any campaign's child read, so
-           "this target's runs could not be loaded" named a specific read that
-           may well have succeeded. #}
-        <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
-          Part of this target could not be read, so nothing can be listed here
-          right now.
+           set by the standalone read or by any campaign's child read, so "this
+           target's runs could not be loaded" named a specific read that may
+           well have succeeded. It no longer says "nothing can be listed here
+           right now" either: the paragraphs below it can now list something. #}
+        <p style="color: var(--text-secondary); margin-bottom: 0.6rem;">
+          Part of this target could not be read, so this may not be the whole picture.
         </p>
-        {% elif agg.refold_jobs or agg.standalone_jobs %}
-        {# Branch 4. Reached only when no tool contributed, so no standalone job
-           produced a design and counting all of them is exactly right here. #}
+        {% endif %}
+        {% if (agg.refold_jobs or agg.standalone_jobs) and not agg.tools %}
+        {# Standalone activity that produced no design, split by the aggregator
+           into refolds (counted and deliberately never ranked: a refold
+           re-measures a design that already exists, so ranking it would double
+           count the molecule under the refolder's tool) and non-refold runs
+           that succeeded without returning a candidate record.
+
+           `not agg.tools` is the load-bearing half of this gate rather than
+           tidiness. standalone_jobs counts every succeeded non-refold
+           standalone job INCLUDING the ones whose designs are in the table, so
+           without it this announces "3 runs finished against this target
+           without returning a design" directly above those runs' designs.
+
+           The rollup line that discloses refolds is itself gated on a non-empty
+           agg.tools, so without this paragraph a refold-only target reads as
+           untouched. That is register item A31's exact user-visible failure,
+           reached through the other population. #}
         <p style="color: var(--text-secondary); margin-bottom: 0.6rem;">
           {% if agg.standalone_jobs %}
           {{ agg.standalone_jobs }} run{{ 's' if agg.standalone_jobs != 1 else '' }}
@@ -252,7 +229,28 @@
           of its own.
         </p>
         {% endif %}
-        {% else %}
+        {% endif %}
+        {% if draft_count %}
+        {# ONE draft paragraph, and its money claim is scoped to the drafts in
+           every context it can render in.
+
+           The unqualified "Nothing was charged." this replaces was true only on
+           a target where nothing else had happened. Standalone tool_jobs
+           reserve a wallet hold (shared/wallet_guard.py::reserve_hold) and
+           refolds bill on the completion path (charge_for_job), so on any
+           target carrying either it was a false statement about money. Scoped
+           to the drafts it needs no context to be true, which is why there is
+           no longer a second variant of this paragraph to keep in step with
+           this one. #}
+        <p style="color: var(--text-{{ 'tertiary' if agg.tools else 'secondary' }}); font-size: 0.85rem; margin-bottom: 1.25rem;">
+          {{ draft_count }} run{{ 's were' if draft_count != 1 else ' was' }} created against this
+          target but never funded, so {{ 'they' if draft_count != 1 else 'it' }} never started.
+          Nothing was charged for {{ 'those' if draft_count != 1 else 'that' }}. This usually
+          means the wallet balance was too low at the moment of launch.
+          <a href="{{ url_for('wallet.wallet_overview') }}">Check your balance</a>, then launch again.
+        </p>
+        {% endif %}
+        {% if not (agg.tools or agg.partial or agg.refold_jobs or agg.standalone_jobs or draft_count) %}
         <p style="color: var(--text-secondary); margin-bottom: 1.25rem;">
           Nothing has been run against this target yet.
         </p>
@@ -289,7 +287,13 @@
 {% if agg.partial %}
 <p class="panel-badge"
    style="display:block;background:rgba(251,191,36,.14);color:#fbbf24;margin:1.5rem 0 0;padding:.5rem .75rem;">
-  Part of this target could not be read, so what is shown below is incomplete.
+  {# "below" is conditional because there is not always a below. With no
+     contributing tool this banner is the LAST element on the page, and it was
+     pointing at a table that does not render. #}
+  Part of this target could not be read, so
+  {%- if agg.tools %} what is shown below is incomplete.
+  {%- else %} this page is missing runs, designs, or both.
+  {%- endif %}
   Reload to try again.
 </p>
 {% endif %}
@@ -367,6 +371,15 @@
     {% else %}
     The CSV and FASTA exports contain every design; the PDB ZIP is limited to the top {{ agg.shown }}.
     {% endif %}
+    {# Said only under `capped`, because that is the only state where the two
+       numberings can disagree. The page ranks with DEFAULT_LIMIT and those
+       files rank the whole set, so a row PER_TOOL_FLOOR reserved from beyond
+       the cap carries a much larger rank in the file than the position it
+       holds here. Naming the join key matters more than naming the mismatch:
+       source job plus file name identify a design on both surfaces. #}
+    Those files rank the whole set rather than this page's top {{ agg.shown }},
+    so their rank column does not line up with the # column here. Match rows on
+    the source job and file name.
   </p>
   {% endif %}
 
@@ -387,18 +400,40 @@
        unranked row is `_passed` unless its cohort filtered it. Grouping by
        tool moves it again.
 
+       A THIRD version then said "ranked below the scored designs they share a
+       filter verdict with". That one is true in canonical order, and false on
+       this same page under `?sort=tool`: grouping by tool slug puts an
+       unranked row of an alphabetically earlier tool above the scored rows of
+       every later one, and those rows share its filter verdict. The comment
+       here already claimed position was not stated while the copy beneath it
+       stated one, which is how it survived a round of review.
+
        So this now claims only what is true in every ordering: the exclusion
-       itself, and where to find the full set. Position is not stated at all. #}
+       itself, and where to find the full set. Position is not stated at all,
+       and any reintroduction of it has to hold in BOTH sort modes. #}
     {{ agg.unranked }} design{{ '' if agg.unranked == 1 else 's' }} carr{{ 'ies' if agg.unranked == 1 else 'y' }}
     no value for {{ 'its' if agg.unranked == 1 else 'their' }} tool's ranking metric, so
-    {{ 'it is' if agg.unranked == 1 else 'they are' }} excluded from the percentiles and
-    ranked below the scored designs {{ 'it shares' if agg.unranked == 1 else 'they share' }}
-    a filter verdict with. The CSV export lists
+    {{ 'it is' if agg.unranked == 1 else 'they are' }} excluded from the percentiles.
+    The CSV export lists
     {% if agg.partial %}every design that could be read{% else %}every design{% endif %}.
   </p>
   {% endif %}
 
   {% if agg.multi_tool %}
+  {# TWO gates here, and the difference between them is the whole point.
+
+     `agg.multi_tool` is true for more than one COHORT, and one tool at two
+     presets is one. That IS the right trigger for the pooled columns, because
+     the Score column then carries two populations whose numbers do not mean
+     the same thing.
+
+     It is NOT the right trigger for either control below.
+     `apply_sort_mode`'s SORT_TOOL keys on `_source_tool` alone, so on a
+     one-tool target "Grouped by tool" returns a byte-identical table: a
+     rendered control that cannot do anything. And the cross-TOOL sentence is
+     simply false there, eight lines under a rollup reading "N designs from 1
+     tool". Both gate on len(tools). #}
+  {% if agg.tools|length > 1 %}
   <div style="display:flex;gap:.5rem;align-items:center;margin:0 0 0.75rem;font-size:.85rem;">
     <span style="color:var(--text-tertiary);">Order</span>
     {# Server-side, because a browser re-sort cannot change WHICH rows are
@@ -411,10 +446,17 @@
        class="{{ 'btn-primary' if sort_mode == 'tool' else 'btn-secondary' }}"
        style="font-size:.8rem;padding:.25rem .6rem;">Grouped by tool</a>
   </div>
+  {% endif %}
   <p style="color: var(--text-tertiary); font-size: 0.8rem; margin: 0 0 0.9rem;">
-    Designs are ranked by percentile <em>within their own tool</em>. Different tools score on
-    different scales, so the Score column is shown with each design's own metric name and those
-    numbers are not comparable across rows.
+    Designs are ranked by percentile <em>within their own tool and preset</em>.
+    {% if agg.tools|length > 1 %}
+    Different tools score on different scales, so the Score column is shown with each
+    design's own metric name and those numbers are not comparable across rows.
+    {% else %}
+    One tool at two presets does not score on one scale either, so the Score column is
+    shown with each design's own metric name and those numbers are not comparable across
+    rows.
+    {% endif %}
   </p>
   {% endif %}
 
@@ -425,7 +467,7 @@
      mismatch by a different door. #}
   {{ candidate_table(
        agg.candidates, agg.columns, '', (agg.tools[0] if agg.tools|length == 1 else ''),
-       '', '', target.id, agg.multi_tool, sort_mode) }}
+       '', '', target.id, agg.multi_tool, sort_mode, agg.split_tools) }}
 </div>
 {% elif runs %}
 <div class="section" style="margin-top: 2rem;">

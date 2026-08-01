@@ -2594,3 +2594,134 @@ silently meant "last month" for two days in every thirty, and the surrounding
 code had a second window that made those two days unsatisfiable. Anchor
 fixtures to the boundary the code under test actually uses, and stub the gates
 the test is not about.
+
+## Addendum s - round 17, the pre-PR review
+
+Twelve agents, three lenses, nine of nine verifiers returned (round 16 lost all
+seven to a spend limit and reported `confirmed: 0`, which reads exactly like a
+clean pass; this one did not). 21 findings, 9 blocker/serious, 8 confirmed and 1
+refuted. Every confirmed finding was re-verified by hand against the code before
+any of it was acted on. The eight collapse to six distinct defects: two lenses
+independently found the unranked positional claim, and two independently found
+the empty-state chain.
+
+**The pattern held for a third round.** Round 15's fix created round 16's defect;
+round 16's fix created two of these. Round 16 hoisted `agg.tools` above
+`draft_count` and verified the pair it was thinking of, leaving drafts
+preempting the three branches BELOW them. Round 16 also added a third sentence
+containing "could not be read", which silently falsified round 15's banner test.
+
+- **A72. The empty state's facts were an if/elif chain.** A stranded draft
+  preempted both the failed-read sentence and the standalone/refold disclosure,
+  printing an unqualified "Nothing was charged." over runs that ARE billed
+  (standalone jobs reserve a wallet hold; refolds bill through `charge_for_job`)
+  and deleting the A31 disclosure from the page. **fix:** five independently
+  gated paragraphs that compose, only "nothing" exclusive; the two divergent
+  draft paragraphs unified on the scoped money claim, which is true in every
+  state, so there is no longer a second variant to keep in step. Pinned by a
+  32-state matrix test rather than by the pairs someone thought of.
+- **A73. The unranked disclosure still made a positional claim.** "Ranked below
+  the scored designs they share a filter verdict with" is true in canonical
+  order and false under `?sort=tool`, which the same page offers. The comment
+  directly above it asserted "Position is not stated at all". **fix:** clause
+  dropped; the test now pins the whole sentence up to its closing tag, in both
+  sort modes, instead of denying three dead phrasings.
+- **A74. `_target_export` never read `agg["partial"]`.** A failed read
+  downloaded as a complete file, and the FASTA positively asserted the target
+  had no sequences. **fix:** the filename carries `_incomplete`, mirroring how
+  `capped` is already disclosed, and the FASTA says what actually happened. Not
+  a leading CSV comment row: `candidates_to_csv` is shared with the campaign
+  export and every existing consumer parses that shape.
+- **A75. `multi_tool` was `len(tools) > 1`.** The property the display depends
+  on is more than one COHORT. One tool at two presets rendered today's
+  single-tool table: a browser-sortable native metric column pooling two
+  populations whose numbers do not mean the same thing, no percentile column,
+  no disclosure. That is the error the preset half of the cohort key exists to
+  prevent, reappearing at the display layer. Reachable from the launch form,
+  which offers proteina at two presets and iggm at four. **fix:** derived from
+  `per_tool[t]["presets"]`, with `columns` gated on the same flag.
+- **A76 (filed, not fixed). The page and the export number rows from different
+  bases.** The page ranks with `DEFAULT_LIMIT`; the CSV and FASTA rank the whole
+  set. They agree until `select_under_cap`'s per-tool floor reserves a row from
+  beyond the cap, which is the case the floor exists for, and then "row 298" on
+  screen and "rank 298" in the file are different molecules. `export_key`
+  asserted the opposite in its own docstring. **Half fixed:** the docstring is
+  corrected and the capped banner now names the join key (source job plus file
+  name). **Not fixed:** the numbering itself, because `export_key` is shared
+  with the shipped campaign export and renaming its `rank` column is a contract
+  change that deserves its own diff.
+- **The one refutation.** A reviewer claimed `tests/test_wallet.py` could reach
+  a live Stripe charge with a production key. The key in `.env` is `sk_test_`.
+  The mechanism is real and the exposure question behind A71 stands; the
+  severity does not. *Note: this reviewer's claim about the key was not
+  independently confirmed here, since reading credentials is blocked.*
+
+**Round 17 minors not actioned**, each real and each smaller than its fix: the
+`source_rank` fallback fabricates a global index for pipelines that emit no rank
+of their own; `PER_TOOL_FLOOR` and `_floor_reserved`'s value are unpinned
+downward; `_CampaignQuery` does not implement `.is_()`, so the tests rendering
+through it all run with `partial=True`; the `total_reward` glossary entry names
+two variants where proteina has more; and three pieces of new copy carry no
+assertion.
+
+### Standing lesson
+
+**A fix verified against the pair you were thinking of is not verified.** Three
+consecutive rounds broke on a state nobody had rendered, and each time the fix
+was correct for the case that prompted it. Where the state space is small,
+enumerate it: the 32-state matrix test costs less than the three rounds of
+review that found these one pair at a time.
+
+## Addendum t - round 18, over the round-17 fixes
+
+11 agents, 3 lenses (fix correctness, test strength, comments-as-claims), 8 of 8
+verifiers returned. 16 findings, 8 blocker/serious, **6 confirmed**. Run against
+the uncommitted round-17 diff, before it was committed, which is the point.
+
+**A fourth consecutive round in which the previous round's FIX was the defect.**
+Three of the six confirmed findings are one root cause, and it is A75's.
+
+- **A77. A75 renamed what `multi_tool` MEANS and left every consumer speaking
+  the old language.** Widening it to "more than one cohort" was right for the
+  pooled COLUMNS, which is what it was needed for. But the same flag also gates
+  the sort toggle and the explanatory prose, so one tool at two presets rendered
+  "N designs from 1 tool" eight lines above "Different tools score on different
+  scales", with a "Grouped by tool" control that provably cannot reorder
+  anything (`apply_sort_mode` keys SORT_TOOL on `_source_tool` alone; a verifier
+  confirmed both modes return a byte-identical tbody) and a Tool column showing
+  one slug over two populations 40x apart in raw value. **fix:** the cohort flag
+  keeps driving `columns` and the pooled column set; the toggle and the
+  cross-tool prose move to `len(tools) > 1`; the envelope gains `split_tools`
+  and rows of a split tool carry a preset chip. Four route tests, all
+  mutation-verified.
+  *Refuted sub-claims, recorded so they are not re-derived:* the PER_TOOL_FLOOR
+  half of the finding is immaterial (probed at 400+5 with cap 300 the small
+  cohort still gets 4 of its 5 rows, because canonical order is already
+  cohort-normalised), and the preset IS named on the Pctile tooltip; what was
+  missing is the per-ROW value.
+- **A78. The round-17 test for the unranked disclosure anchored only its END.**
+  A positional claim added as a PRECEDING sentence in the same paragraph passed,
+  and deleting the old deny-list lost coverage of the two historical phrasings
+  outright. **fix:** the whole paragraph is extracted and compared for equality,
+  the deny-list is restored, and the two sort modes are compared to each other
+  rather than merely rendered. Mutation N5 (prepend "Unranked designs are listed
+  last.") reddens it now and would have passed before.
+- **A79. `export_key`'s rewritten docstring replaced one false claim with
+  another.** "The row's index WITHIN THIS FILE" is false for the FASTA:
+  `candidates_to_fasta` skips rows with no sequence but numbers from the full
+  list, so a target whose best design is a sequenceless backbone yields a file
+  whose first record is `rank2`. The user-facing sentence round 17 added
+  ("those files number every design from 1") was false for the same reason.
+  **fix:** both say what is true of all three serializers.
+- **A80. The envelope docstring described two mutually exclusive behaviours.**
+  A75 updated the `multi_tool` entry and left the `columns` entry two lines
+  above it stating the pre-A75 rule. **fix:** rewritten to name the cohort.
+
+### Standing lesson
+
+**Widening what a flag MEANS is an interface change, and its blast radius is
+every consumer, not every producer.** A75 was verified where it was computed and
+where its value was asserted, and shipped with a test that pinned three dict
+keys while its own docstring promised a display property no test rendered. The
+question to ask of a renamed flag is not "is the new value right" but "what does
+each reader still believe the old name promised".

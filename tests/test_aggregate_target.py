@@ -1124,6 +1124,9 @@ def test_columns_are_empty_multi_tool_and_the_tools_own_when_single(
     _install(monkeypatch, rows=solo)
     single = target_results.aggregate_target_candidates("T", user_id=OWNER)
     assert single["multi_tool"] is False
+    # The pair for split_tools: where the tool IS the cohort it stays empty, so
+    # no row carries a preset chip it does not need.
+    assert single["split_tools"] == []
     assert single["columns"] == [
         "ipTM", "pLDDT", "RMSD", "shape_complementarity", "SAP",
     ]
@@ -1138,6 +1141,53 @@ def test_columns_are_empty_multi_tool_and_the_tools_own_when_single(
     multi = target_results.aggregate_target_candidates("T", user_id=OWNER)
     assert multi["multi_tool"] is True
     assert multi["columns"] == []
+
+
+def test_one_tool_at_two_presets_is_pooled_not_shown_as_a_single_tool(
+    monkeypatch,
+):
+    """ROUND 17. ``multi_tool`` was ``len(tools) > 1``, but the property the
+    display depends on is "more than one COMPARABLE POPULATION", and that is
+    the cohort, ``(tool, preset)``.
+
+    proteina's ``total_reward`` is ``-i_pAE`` under protein_binder and an RF3
+    composite under its other variants, which is exactly why ``cohort_key_for``
+    carries the preset. Keyed on the tool count instead, two proteina runs at
+    two presets rendered TODAY's table: one native metric column, carrying
+    ``data-col`` and therefore re-sortable in the browser, over two populations
+    whose numbers do not mean the same thing, with no percentile column and no
+    disclosure. That is the error Decision 1 exists to prevent, reappearing at
+    the display layer where the ranking math cannot see it.
+
+    Reachable from the launch screen itself: templates/targets/launch.html
+    offers proteina at two presets and iggm at four, and ``_REFUSED_PRESETS``
+    blocks only ``(proteina, ligand_binder)`` and ``(iggm,
+    affinity_maturation)``.
+    """
+    rows = [
+        _job_row(
+            "solo-1", tool="proteina", preset="protein_binder", target_id="T",
+            candidates=[{"pdb_key": "a.pdb", "scores": {"total_reward": 12.4}}],
+        ),
+        _job_row(
+            "solo-2", tool="proteina", preset="motif_ame", target_id="T",
+            candidates=[{"pdb_key": "b.pdb", "scores": {"total_reward": 9.1}}],
+        ),
+    ]
+    _install(monkeypatch, rows=rows)
+    agg = target_results.aggregate_target_candidates("T", user_id=OWNER)
+
+    assert agg["tools"] == ["proteina"]
+    assert len(agg["per_tool"]["proteina"]["presets"]) == 2
+    assert agg["multi_tool"] is True
+    # ROUND 18: the flag alone is not enough. Every affordance downstream keys
+    # on the TOOL, so the page needs to know which tools the slug fails to
+    # identify or the Tool column shows one label over two populations.
+    assert agg["split_tools"] == ["proteina"]
+    # ``columns`` has to follow the SAME flag. Left on ``len(tools) == 1`` it
+    # would hand the macro this tool's native columns to render beside the
+    # pooled Tool/Score/Pctile ones.
+    assert agg["columns"] == []
 
 
 # ---------------------------------------------------------------------------

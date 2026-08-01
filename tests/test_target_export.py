@@ -219,3 +219,64 @@ def test_the_export_is_scoped_to_the_caller(client):
 def test_signed_out_redirects_rather_than_exporting(client):
     resp = client.get(f"/targets/{_TID}/export.csv")
     assert resp.status_code in (301, 302)
+
+
+# ---------------------------------------------------------------------------
+# Round 17: a failed read is not an empty target
+#
+# `_target_export` never read `agg["partial"]`, so a target whose reads failed
+# downloaded as a COMPLETE file: a 200 with a filename byte-indistinguishable
+# from a genuinely empty target's, and a FASTA that positively asserted there
+# were no sequences. The aggregate sets that flag precisely so "we could not
+# look" can be told apart from "you have nothing", and target_detail discloses
+# it; this route was written in the same commit with the flag in hand.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("fmt,marker", [
+    ("csv", "_scores_incomplete.csv"),
+    ("fasta", "_incomplete.fasta"),
+    ("zip", "_pdbs_incomplete.zip"),
+])
+def test_a_partial_read_is_marked_in_the_download_filename(client, fmt, marker):
+    """Disclosed in the filename because the artifact leaves this process and
+    is opened later, out of the page's context, so the page's banner cannot
+    travel with it."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(tools=["bindcraft"], candidates=[],
+                                    partial=True)):
+        resp = client.get(f"/targets/{_TID}/export.{fmt}")
+    assert resp.status_code == 200
+    assert marker in resp.headers["Content-Disposition"]
+
+
+@pytest.mark.parametrize("fmt,stem_part", [
+    ("csv", "_scores.csv"), ("fasta", ".fasta"), ("zip", "_pdbs.zip"),
+])
+def test_a_complete_read_is_not_marked_incomplete(client, fmt, stem_part):
+    """The pair. Marking every file discloses nothing at all."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(tools=["bindcraft"], candidates=[])):
+        resp = client.get(f"/targets/{_TID}/export.{fmt}")
+    disposition = resp.headers["Content-Disposition"]
+    assert "incomplete" not in disposition
+    assert stem_part in disposition
+
+
+def test_an_empty_fasta_under_a_failed_read_does_not_assert_there_are_none(
+    client,
+):
+    """"No sequences found in this target's output" is a claim about the
+    TARGET. Under `partial` it is a claim about a read that did not happen, and
+    it is the harmful direction: it tells a paying user their runs produced
+    nothing when the truth is that we could not look."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(tools=[], candidates=[], partial=True)):
+        body = client.get(f"/targets/{_TID}/export.fasta").get_data(as_text=True)
+    assert "No sequences found" not in body
+    assert "could not be read" in body

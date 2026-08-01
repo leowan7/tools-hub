@@ -10,7 +10,12 @@
   candidates : list[dict]   — job.result["candidates"]
   columns    : list[str]    — metric keys to display, e.g. ['ipTM','pLDDT','RMSD']
   job_id     : str          — tool_jobs.id (UUID string)
-  tool_slug  : str          — e.g. 'bindcraft'
+  tool_slug  : str          — e.g. 'bindcraft'. Only consumed to resolve score
+                              legends, which pooled mode does not use, so it is
+                              free to be set alongside ``multi_tool``
+  split_tools: seq[str]     — tools that ran at more than one preset on this
+                              target; their rows carry a preset chip because
+                              the slug alone does not name the cohort
   clone_url  : str          — URL for "Run again" button (optional)
   target_id  : str          — design_targets.id; switches exports to the target
   multi_tool : bool         — render the cross-tool table (see below)
@@ -35,7 +40,7 @@
   load-bearing rather than documentation, and it omitted ``ordinal`` in the
   same change that introduced the call.
 #}
-{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='') %}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=()) %}
 {# ``scope`` is the shortlist storage key + element-id suffix: the target id in
    target mode (pooled across tools), the campaign id in campaign mode (merged
    across sub-jobs of one tool), else the job id. ``export_base`` routes exports
@@ -399,7 +404,21 @@
             {% set mval     = cand.get('_metric_value') %}
             {% set pct      = cand.get('_rank_percentile') %}
             {# No data-col anywhere in this branch; see the thead comment. #}
-            <td>{{ row_tool }}</td>
+            <td>
+              {{ row_tool }}
+              {# ``split_tools`` holds the tools that ran at MORE THAN ONE
+                 preset on this target, and for those the slug alone does not
+                 identify the cohort the row was ranked in. proteina's
+                 total_reward is -i_pAE under one preset and an RF3 composite
+                 under another, so two rows both labelled "proteina" can be
+                 orders of magnitude apart and both correct. Rendered only
+                 where it disambiguates: on every other target the tool IS the
+                 cohort and a preset chip on every row would be noise. #}
+              {% if row_tool in split_tools %}
+              <span class="cand-subjob-tag"
+                    title="Preset. This design was ranked against this tool's other {{ cand.get('_source_preset') or 'default' }} designs, not against its runs at other presets.">{{ cand.get('_source_preset') or 'default' }}</span>
+              {% endif %}
+            </td>
             <td>
               {% if mkey and mval is not none %}
                 {% set leg = score_legend_for(row_tool, mkey) if score_legend_for else None %}
