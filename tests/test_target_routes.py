@@ -34,6 +34,50 @@ END
 """
 
 
+def _agg(runs=(), **over):
+    """A minimal ``aggregate_target_candidates`` envelope for route-level tests.
+
+    The target page's runs AND its designs now come from ONE call to
+    ``aggregate_target_candidates``, which binds ``get_target`` and
+    ``list_campaigns_for_target`` at ITS OWN module level, so patching
+    ``shared.compute_campaigns`` no longer reaches it.
+
+    Patching the aggregator at the route boundary is the right seam rather than
+    a convenience: what it RETURNS is this route's input, and what it DOES is
+    covered by tests/test_aggregate_target.py. Reaching past it to patch three
+    of its internals would couple these route tests to the fan-in's private
+    shape.
+    """
+    env = {
+        "ok": True, "partial": False, "candidates": [], "total": 0,
+        "shown": 0, "unranked": 0, "capped": False, "columns": [],
+        "tools": [], "per_tool": {}, "campaigns": list(runs),
+        "standalone_jobs": 0, "refold_jobs": 0, "passed_total": 0,
+        "provisional": False, "sort_mode": "percentile", "multi_tool": False,
+        "limit": 300,
+    }
+    env.update(over)
+    # The aggregator computes ``provisional`` as ``partial or any(non-terminal
+    # run)``, so partial=True with provisional=False is a combination it can
+    # NEVER return. A fake that allows it lets the page be tested in a state
+    # production cannot reach, which is exactly how the provisional banner came
+    # to assert "Not every run has finished" on a target whose runs were all
+    # complete: both partial tests ran with the default provisional=False and
+    # never entered that branch.
+    #
+    # Enforced rather than defaulted, so a test that passes the impossible pair
+    # fails loudly instead of being silently corrected.
+    if env["partial"] and not env["provisional"]:
+        if "provisional" in over:
+            raise AssertionError(
+                "partial=True with provisional=False is unreachable: "
+                "aggregate_target_candidates computes provisional as "
+                "`partial or any(...)`. Drop the provisional override."
+            )
+        env["provisional"] = True
+    return env
+
+
 @pytest.fixture
 def app(monkeypatch):
     monkeypatch.setenv("SESSION_SECRET_KEY", "test-secret")
@@ -218,8 +262,8 @@ def test_target_detail_lists_only_this_targets_runs(client):
     )
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[mine]) as fetch, \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(runs=[mine])) as fetch, \
             patch("shared.compute_campaigns.list_campaigns_for_user") as everything:
         resp = client.get(f"/targets/{t.id}")
 
@@ -299,8 +343,8 @@ def test_an_archived_targets_page_offers_restore_and_not_a_dead_run_button(clien
     t = _target(archived_at="2026-07-02T00:00:00Z")
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[]):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
 
     body = resp.get_data(as_text=True)
@@ -318,8 +362,8 @@ def test_a_live_targets_page_still_offers_run_and_archive(client):
     t = _target()
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[]):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
 
     body = resp.get_data(as_text=True)
@@ -467,8 +511,8 @@ def test_an_archived_target_with_no_structure_does_not_promise_one(client):
                 filename=None)
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[]):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
 
     body = resp.get_data(as_text=True)
@@ -483,8 +527,355 @@ def test_an_archived_target_with_a_structure_still_says_it_is_staged(client):
     t = _target(archived_at="2026-07-02T00:00:00Z")
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=[]):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
 
     assert "structure is still staged" in resp.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# The empty state. Three ways to reach it, and only one of them means nothing
+# happened.
+#
+# All four tests are required together, and none of the smaller sets works.
+# Each disclosure test alone is satisfied by deleting the "nothing has been
+# run" sentence outright, and the last test alone is satisfied by never
+# disclosing anything. Only the pair pins "say the true thing AND stop saying
+# the false one".
+#
+# Nothing pinned this block before Phase 3, including the draft disclosure the
+# Phase 2 route was built for.
+# ---------------------------------------------------------------------------
+
+_NOTHING = "Nothing has been run against this target yet."
+
+
+def _flat(body):
+    """Collapse whitespace so an assertion is not pinned to template wrapping."""
+    return " ".join(body.split())
+
+
+def _detail(client, drafts=(), **agg_over):
+    """Render the detail page and return its text with whitespace collapsed.
+
+    Every keyword goes through to ``_agg``, so passing nothing gives the empty
+    state and passing ``runs=`` / ``tools=`` / ``partial=`` gives the others.
+    """
+    _login(client)
+    t = _target()
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(**agg_over)), \
+            patch("shared.compute_campaigns.list_campaigns_for_target",
+                  return_value=list(drafts)):
+        resp = client.get(f"/targets/{t.id}")
+    assert resp.status_code == 200
+    return _flat(resp.get_data(as_text=True))
+
+
+def test_a_target_whose_every_launch_stranded_at_draft_says_so(client):
+    """A draft was never funded, so list_campaigns_for_target excludes it and
+    the page has no runs to show. Telling someone who tried that nothing has
+    been run is the one wrong answer, and "nothing was charged" is their first
+    question."""
+    drafts = [
+        SimpleNamespace(id="c-1", status="draft"),
+        SimpleNamespace(id="c-2", status="draft"),
+    ]
+    body = _detail(client, drafts=drafts)
+    assert "2 runs were created against this target but never funded" in body
+    assert "Nothing was charged." in body
+    assert _NOTHING not in body
+
+
+def test_a_refold_only_target_discloses_the_folds_instead_of_claiming_nothing_ran(client):
+    """Register item A31's exact user-visible failure, reached through the other
+    population. Refolds carry target_id with campaign_id NULL, so they are read,
+    counted, and deliberately never ranked. The rollup line that discloses them
+    is gated on a non-empty ``agg.tools``, which a refold-only target does not
+    have, so without its own branch this page reads as untouched."""
+    body = _detail(client, refold_jobs=3)
+    assert "3 validation folds ran against this target" in body
+    assert "re-measures a design that already exists" in body
+    assert _NOTHING not in body
+
+
+def test_a_standalone_run_that_returned_no_design_is_not_silence_either(client):
+    """The non-refold half of the same population: a succeeded standalone job
+    that produced no candidate record. It contributes to neither ``tools`` nor
+    ``refold_jobs``, so it needs naming separately or it disappears."""
+    body = _detail(client, standalone_jobs=1)
+    assert "1 run finished against this target without returning a design" in body
+    assert "validation fold" not in body
+    assert _NOTHING not in body
+
+
+def test_a_genuinely_untouched_target_does_say_nothing_has_been_run(client):
+    """The anchor. Without this, deleting the sentence passes all three above."""
+    body = _detail(client)
+    assert _NOTHING in body
+    assert "never funded" not in body
+    assert "validation fold" not in body
+
+
+# ---------------------------------------------------------------------------
+# Round 15 (independent split QC): the partial disclosure and the empty state
+#
+# Every test below pins a defect an independent reviewer reproduced against the
+# real route. None was caught by the four empty-state tests above, because
+# those only varied the COUNTS: never `partial`, and never an empty RUN list
+# beside a non-empty design table.
+# ---------------------------------------------------------------------------
+
+def _one_design():
+    """Minimum a candidate row needs to survive the macro in pooled mode."""
+    return [{
+        "scores": {"ipTM": 0.9}, "pdb_key": "designs/d.pdb",
+        "sequence": "MKTAY", "_source_tool": "bindcraft",
+        "_source_job_id": "job-1", "_source_index": 0,
+        "_metric_key": "ipTM", "_metric_value": 0.9,
+        "_rank_percentile": 90, "_ranked": True, "_rank_position": 1,
+    }]
+
+
+def test_a_failed_read_is_disclosed_and_does_not_claim_nothing_was_run(client):
+    """BLOCKER. The partial banner was nested inside `{% if agg.tools %}`, so
+    it was structurally unreachable in the one state it exists for.
+
+    ``_unreadable`` returns ok=True, partial=True, tools=[]. The page fell
+    through to the empty state and told a paying user "Nothing has been run
+    against this target yet" because a READ HAD FAILED. Three reachable seams
+    produce that envelope: the standalone read raising, every campaign child
+    read raising, and the ownership re-ask raising.
+    """
+    body = _detail(client, partial=True)
+    assert "could not be read" in body
+    assert _NOTHING not in body
+
+
+def test_the_partial_banner_still_renders_when_there_is_a_table(client):
+    """The pair. Hoisting the banner must not lose the case it already had.
+
+    Without this, deleting the banner from the table branch and adding it to
+    the empty one would pass the test above.
+    """
+    body = _detail(client, partial=True, tools=["bindcraft"],
+                   candidates=_one_design(), total=1, shown=1)
+    assert "could not be read" in body
+
+
+def test_one_run_that_returned_nothing_reads_correctly(client):
+    """SERIOUS. The singular branch read "but it has returned a completed
+    design so far", the opposite of the sentence it belongs to, and it is the
+    branch every freshly launched one-run target hits for its whole first run.
+    """
+    run = SimpleNamespace(id="c-1", name="sweep", tool="bindcraft",
+                          status="running", requested_designs=10,
+                          total_subjobs=1)
+    body = _detail(client, runs=[run], tools=[])
+    assert "no run has returned a completed design so far" in body
+    assert "but it has returned a completed design" not in body
+
+
+def test_standalone_designs_are_not_announced_as_having_returned_nothing(client):
+    """SERIOUS. Zero campaigns plus standalone jobs that DID return designs.
+
+    The run list is empty so the empty state renders, while the table renders
+    below it off ``agg.tools``. Gated on ``agg.standalone_jobs`` alone, the
+    panel announced "3 runs finished against this target without returning a
+    design" directly above a table of those designs.
+    """
+    body = _detail(client, tools=["bindcraft"], standalone_jobs=3,
+                   candidates=_one_design(), total=1, shown=1)
+    assert "without returning a design" not in body
+    assert _NOTHING not in body
+    assert "3 standalone runs produced the designs listed below" in body
+
+
+def test_standalone_jobs_that_really_returned_nothing_still_say_so(client):
+    """The pair to the above: the branch must survive for its own real case,
+    or gating it on `not agg.tools` would be indistinguishable from deleting
+    it."""
+    body = _detail(client, standalone_jobs=3)
+    assert "3 runs finished against this target without returning a design" in body
+
+
+# ---------------------------------------------------------------------------
+# Round 15 minors that were false statements rather than untidiness
+# ---------------------------------------------------------------------------
+
+def _run(cid, status):
+    return SimpleNamespace(id=cid, name=cid, tool="bindcraft", status=status,
+                           requested_designs=10, total_subjobs=1)
+
+
+def test_a_paused_run_and_a_running_run_are_both_reported(client):
+    """The banner branched on paused_runs alone, so a target with one paused
+    and one still-running campaign was told only that a top-up was needed. The
+    reason its percentiles were about to move was silently dropped.
+
+    They are independent facts, so both sentences render.
+    """
+    body = _detail(
+        client, tools=["bindcraft"], provisional=True, total=1, shown=1,
+        candidates=_one_design(),
+        runs=[_run("c-1", "paused_insufficient_funds"), _run("c-2", "running")],
+    )
+    assert "paused waiting on wallet balance" in body
+    assert "Not every run has finished" in body
+
+
+def test_a_paused_run_alone_does_not_claim_designs_are_still_landing(client):
+    """The pair. Rendering both sentences unconditionally would satisfy the
+    test above while telling a user whose only run is stopped that more designs
+    are on the way."""
+    body = _detail(
+        client, tools=["bindcraft"], provisional=True, total=1, shown=1,
+        candidates=_one_design(),
+        runs=[_run("c-1", "paused_insufficient_funds")],
+    )
+    assert "paused waiting on wallet balance" in body
+    assert "Not every run has finished" not in body
+
+
+def test_a_running_run_alone_still_gets_the_shifting_percentiles_sentence(client):
+    body = _detail(
+        client, tools=["bindcraft"], provisional=True, total=1, shown=1,
+        candidates=_one_design(), runs=[_run("c-1", "running")],
+    )
+    assert "Not every run has finished" in body
+    assert "paused waiting on wallet balance" not in body
+
+
+@pytest.mark.parametrize("capped,total,shown", [(True, 900, 1), (False, 5, 5)])
+def test_the_unranked_disclosure_makes_no_positional_claim(client, capped, total, shown):
+    """This sentence has been wrong twice, in opposite directions.
+
+    It said "listed last", then (round 15) "fall below the cap rather than
+    appearing in the table". Round 16 showed neither survives
+    ``canonical_sort_key``, whose key is
+    ``(passed, unranked, -rank_fraction, ...)``. ``passed`` LEADS, so an
+    unranked row nobody rejected sorts ABOVE every row its own tool marked
+    failed, and ``unranked`` only sinks it within its own pass bucket. Under a
+    cap it is not reliably dropped either: PER_TOOL_FLOOR reserves slots for
+    every tool with passing rows, and an unranked row is ``_passed`` unless its
+    own cohort filtered it. Grouping by tool moves it again.
+
+    So the copy must claim the exclusion and nothing about position, in EVERY
+    state. Parametrised over capped and uncapped because the previous two
+    versions each got exactly one of those right.
+    """
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=total, shown=shown, unranked=4, capped=capped)
+
+    assert "excluded from the percentiles" in body
+    for wrong in ("listed last", "fall below the cap",
+                  "rather than appearing in the table"):
+        assert wrong not in body, wrong
+
+
+def test_the_unranked_disclosure_is_absent_when_every_design_is_ranked(client):
+    """The pair. Deleting the sentence entirely satisfies the test above."""
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=5, shown=5, unranked=0, capped=False)
+    assert "excluded from the percentiles" not in body
+
+
+# ---------------------------------------------------------------------------
+# Round 16: defects the round-15 FIXES introduced
+#
+# This repo's documented pattern is that each round's fix creates the next
+# round's defect. Round 15 restructured the empty state and widened
+# `provisional`; these are the states that combination got wrong.
+# ---------------------------------------------------------------------------
+
+def test_a_settled_target_with_a_failed_read_is_not_told_its_runs_are_unfinished(client):
+    """Round 15 made ``provisional = partial or any(non-terminal)``, so it is
+    True on a target whose every run is COMPLETE when a read failed. The banner
+    then branched on ``unfinished or not paused_runs``, and the second disjunct
+    converted "there is no paused run" into "there is a running one".
+
+    Result: "Not every run has finished, so percentiles will shift as more
+    designs land" rendered directly under a run strip showing every run green.
+    Absence of one fact is not evidence of another.
+    """
+    body = _detail(
+        client, tools=["bindcraft"], candidates=_one_design(), total=1, shown=1,
+        partial=True, runs=[_run("c-1", "completed"), _run("c-2", "completed")],
+    )
+    assert "Ranking is provisional" in body
+    assert "Not every run has finished" not in body
+    assert "paused waiting on wallet balance" not in body
+    # It must still explain ITSELF rather than trailing off after "provisional".
+    assert "computed on incomplete data" in body
+
+
+def test_a_provisional_target_always_gives_a_reason(client):
+    """The pair for the branch above: every route into the banner names its
+    own cause, so "Ranking is provisional." never stands alone."""
+    running = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                      total=1, shown=1, provisional=True,
+                      runs=[_run("c-1", "running")])
+    assert "Not every run has finished" in running
+    assert "computed on incomplete data" not in running
+
+
+def test_a_stranded_draft_does_not_claim_nothing_was_charged_over_real_designs(client):
+    """Round 15 ordered the empty state drafts-first, so the draft branch
+    preempted the designs-exist branch.
+
+    A target with one stranded draft AND standalone runs that returned designs
+    rendered "1 run was created against this target but never funded ...
+    Nothing was charged." directly above a populated table. Two panels
+    contradicting each other, and an unqualified money claim over designs the
+    user WAS billed for, since standalone tool_jobs are wallet charged.
+    """
+    _login(client)
+    t = _target()
+    drafts = [SimpleNamespace(id="c-1", status="draft")]
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(tools=["bindcraft"], standalone_jobs=2,
+                                    candidates=_one_design(), total=1, shown=1)), \
+            patch("shared.compute_campaigns.list_campaigns_for_target",
+                  return_value=drafts):
+        body = _flat(client.get(f"/targets/{t.id}").get_data(as_text=True))
+
+    # The attribution leads, so the page never points at designs and says nothing ran.
+    assert "2 standalone runs produced the designs listed below" in body
+    # The draft is still disclosed, but as an additional fact and without the
+    # unqualified bold claim that reads as covering everything on screen.
+    assert "never funded" in body
+    assert "<strong>Nothing was charged.</strong>" not in body
+
+
+def test_a_stranded_draft_with_no_designs_keeps_its_unqualified_wording(client):
+    """The pair. When there is nothing else on the page, "Nothing was charged"
+    is exactly true and is the user's first question."""
+    drafts = [SimpleNamespace(id="c-1", status="draft")]
+    body = _detail(client, drafts=drafts)
+    assert "Nothing was charged." in body
+    assert "produced the designs listed below" not in body
+
+
+def test_a_capped_partial_table_does_not_promise_the_csv_is_complete(client):
+    """The capped block states counts from the same read that set ``partial``
+    and claimed "The CSV and FASTA exports contain every design". That is not
+    merely unknown, it is false: the export route re-runs the same aggregate,
+    so a partial read yields a short CSV served as 200 with no disclosure of
+    its own."""
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=412, shown=1, capped=True, partial=True)
+    assert "cover every design that could be read" in body
+    assert "The CSV and FASTA exports contain every design" not in body
+
+
+def test_a_capped_complete_table_still_promises_the_csv_is_complete(client):
+    """The pair: with no failed read the stronger claim is true and useful."""
+    body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
+                   total=412, shown=1, capped=True)
+    assert "The CSV and FASTA exports contain every design" in body
+    assert "could be read" not in body

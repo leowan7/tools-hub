@@ -69,9 +69,23 @@
   {% if candidates %}
     {% if candidates_capped %}
       <p class="rd-progress-label" style="margin:1.5rem 0 .5rem;">
+        {# The "(up to the first 1000 completed sub-jobs)" caveat that used to sit
+           here described the un-paged PostgREST read, which
+           iter_succeeded_children replaced, so the specific 1000-row clamp it
+           named is gone. Left in place it would have been copied onto the
+           target page as a second false claim.
+
+           NOT claiming the exports are unconditionally complete, which an
+           earlier draft of this comment did. iter_succeeded_children still
+           stops at _MAX_CHILD_PAGES with only a logger.error and then returns
+           NORMALLY, so a truncated read is indistinguishable from a complete
+           one here. Out of reach with today's constants (100,000 possible
+           children against a 101,000-row budget) but reachable by a campaign
+           whose max_attempts was raised out of band. shared/target_results.py's
+           module docstring carries the same carve-out. #}
         Showing the top <strong>{{ candidates|length }}</strong> designs by score of
         <strong>{{ candidates_total }}</strong> total. The CSV and FASTA exports include
-        the full ranked set (up to the first 1000 completed sub-jobs); the PDB ZIP is
+        the full ranked set; the PDB ZIP is
         limited to these top <strong>{{ candidates|length }}</strong>.
       </p>
     {% endif %}

@@ -151,6 +151,31 @@ GLOSSARY: dict[str, dict] = {
         "good_range": "higher is better; more epitope engagement",
         "citation": "",
     },
+    # Proteina's declared primary metric (shared/result_columns.py). Added for
+    # the combined target table, whose Score cell prints the primary metric's
+    # LABEL beside its value, so a metric with no glossary entry would render
+    # its raw key.
+    #
+    # The definition names both variants deliberately. This is NOT one quantity:
+    # tools/proteina/run_pipeline.py:116-117, verified there against the P-2 and
+    # P-3 canary reward CSVs, records that the protein_binder reward comes from
+    # the AF2 refold and equals -i_pAE, while the ligand_binder reward comes
+    # from the RF3 fold. Describing it as a single score would be wrong, and it
+    # is why shared/ranking.py keys its cohorts on (tool, preset) rather than on
+    # tool alone: two proteina runs at different presets must never be ranked
+    # against each other.
+    "total_reward": {
+        "label": "Reward",
+        "definition": (
+            "Proteina's composite design reward. What it measures depends on "
+            "the preset: for protein binders it is the negated AF2 interface "
+            "pAE (so a value of -6 means an i_pAE of 6 Å), and for ligand "
+            "binders it is derived from the RF3 fold instead. Comparable "
+            "within one preset, not across two."
+        ),
+        "good_range": "higher is better, within a single preset",
+        "citation": "",
+    },
 }
 
 # Display format per metric (Python format spec applied to the float value).
@@ -169,6 +194,10 @@ _FORMAT: dict[str, str] = {
     "filter_status": "str",
     "n_hotspot_contacts": ".0f",
     "epitope_contacts": ".0f",
+    # Two decimals, matching ipAE: under the protein_binder preset this IS an
+    # interface pAE in Angstrom, negated. Without an entry it fell to the ".3f"
+    # default and printed a third digit the underlying number does not carry.
+    "total_reward": ".2f",
 }
 
 

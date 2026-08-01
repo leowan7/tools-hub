@@ -2101,3 +2101,496 @@ could never match, which is what made the auto-reload fields look covered.
 - **Split the reviewers by concern.** One agent over a 17-file diff reviews
   everything shallowly. Two over halves found 3 blockers between them, and
   neither blocker was in the other's half.
+
+## Addendum p - target-first Phase 3 (the combined ranked table)
+
+Phase 3 turns `/targets/<id>` from a list of runs into one ranked table pooling
+every design from every run against that target, plus CSV, FASTA and ZIP of it.
+Two new modules: `shared/ranking.py` (cohort and percentile math, no I/O, no
+Supabase import) and `shared/target_results.py` (the fan-in over both tables).
+
+Two decisions taken before building shape everything below and are recorded here
+so a later reader does not read them as gaps.
+
+**No cross-tool metric aliasing.** The master plan's section 3.3
+(`CANONICAL_COLUMNS`, `_METRIC_ALIASES`, `canonical_metric`) is dropped. Each row
+prints its own tool's primary metric under that metric's own name, and ranking is
+by within-tool percentile, which is scale invariant and so needs no aliasing at
+all. The driving evidence is that `tools/proteina/run_pipeline.py:118-121`
+resolves `af2_iptm` to an RF3 interface pTM for two of three presets and a
+log-transformed AF2 value for the third, so the planned `af2_iptm -> ipTM` alias
+would have mis-ranked paid GPU output under a header naming the wrong model.
+Proteina's pLDDT is also 0 to 1 while every other tool is 0 to 100, a silent 100x
+error a percentile hides forever. `shared/score_legends.py:8-13` already stated
+the non-comparability thesis in prose, and its table already encoded it in
+numbers: the same `ipTM` label carries good thresholds of 0.65 for rfdiffusion,
+0.70 for boltzgen and boltz2, and 0.75 for bindcraft and pxdesign, a spread of
+0.10 on what is nominally one metric.
+
+**Cohorts key on (target, tool, preset), not (target, tool).** Proteina's
+`total_reward` is the negated AF2 interface pAE under `protein_binder` and an RF3
+composite under `ligand_binder`. Two proteina runs at different presets on one
+target would otherwise be percentile-ranked against each other across two
+incompatible scales, which is the same error the decision above exists to
+prevent, reappearing one level down where it is much harder to see.
+
+### A31 (follow-up). Target-tagged standalone runs are now read - HALF CLOSED, not resolved
+
+`shared/target_results.py` reads both tables by construction: this target's
+compute-campaign children, and `tool_jobs` rows carrying `target_id` with
+`campaign_id` NULL. So `target:` token standalone runs are genuinely read,
+ranked and exported, which is the half that closes.
+
+The half that does not: yardstick refolds land in that same population and are
+deliberately **counted but never ranked**. A refold re-measures a design that is
+already a row in the table, so ranking it would double count the molecule and
+file it under the refolder's tool, turning one design into two rows attributed to
+two tools. `candidate_records` reads `designs[]`, which is exactly what boltz2
+and esmfold emit, so unfiltered they would merge in silently. The exclusion is
+mutation-verified. Making refolds a yardstick column instead is Phase 4 and
+depends on a FASTA-header join key nobody has validated.
+
+**Found while writing this entry, and fixed:** A31's own user-visible failure
+survived Phase 3 through the refold population. The rollup line that discloses
+refolds sits inside the `agg.tools` branch, and a target holding only refolds has
+no contributing tool, so the page fell through to "Nothing has been run against
+this target yet" while `refold_jobs` was non-zero. Same sentence, same class of
+wrongness, different table. The empty state now has three branches (drafts,
+standalone/refold activity, genuinely nothing) and four tests, mutation-verified
+five ways. Worth noting that **nothing pinned that block before**, including the
+draft disclosure the Phase 2 route was written for.
+
+### A39. `status_badge` has no tint for any campaign status (RESOLVED)
+
+Six tints added, not the five A39 enumerated. That entry listed `draft`,
+`funded`, `completing`, `completed_with_failures` and
+`paused_insufficient_funds`, and omitted campaign `completed`, which is a
+distinct status from `tool_jobs` `succeeded` and was untinted for the same
+reason. Counted against migration 0034's CHECK rather than against the register
+entry. `paused_insufficient_funds` is amber rather than red because the run is
+recoverable by topping up; red stays reserved for `failed`, which no top-up
+brings back. `completed_with_failures` and `paused_insufficient_funds` also get
+label overrides, since raw snake_case is not a status a scientist should have to
+parse.
+
+### A38 stays latent, and Phase 3 is the reason to keep checking
+
+This design consumes `CAMPAIGN_TERMINAL_STATUSES` for the `provisional` flag,
+never `CAMPAIGN_STATUSES`, so the missing `paused_insufficient_funds` member
+still has no consumer and still cannot go live. That is a property of this
+diff, not a fix.
+
+**The reason usually given for that choice is wrong, and this entry gave it
+too.** The Phase 3 brief, the plan's section 5, and the first draft of this
+paragraph all said the danger was "a paused run misjudged as terminal". It is
+not. Enumerated directly against both constants:
+
+- `CAMPAIGN_STATUSES` is draft, funded, running, completing, completed,
+  completed_with_failures, failed, cancelled.
+- `CAMPAIGN_TERMINAL_STATUSES` is completed, completed_with_failures, failed,
+  cancelled.
+- `paused_insufficient_funds` is in **neither**, so it is non-terminal under
+  both and `provisional` is true for it whichever set is consulted.
+
+The two sets disagree on exactly draft, funded, running and completing. So
+swapping in `CAMPAIGN_STATUSES` as a terminality proxy would report an
+**actively running** campaign as finished, which is the worse failure of the
+two: the page would drop the "still producing designs" banner while designs
+were still arriving. Do not reach for `CAMPAIGN_STATUSES` here, but reach for
+the right reason.
+
+### The Pctile column shipped "93th", and a test asserted it did
+
+Found by driving the finished page in a real browser, which is the only step
+that had not been done. `templates/components/candidate_table.html` rendered
+`{{ pct }}th`. Percentiles run 0 to 99 (`rank_statistics` clamps at 99), so a
+bare "th" is wrong for every x1, x2 and x3 outside the teens: **27 of the 100
+reachable values**. "93th" sat directly beside "97th" on the flagship new
+column of the flagship new page.
+
+Never shipped, since the column is new on this branch. What makes it worth an
+entry is the test:
+
+```python
+def test_percentile_column_renders_a_percentile():
+    pctiles = [cells[4] for cells in table.rows]
+    assert all(p.endswith("th") for p in pctiles)
+```
+
+Green throughout. It asserted the shape the code **happened to have** rather
+than the shape it should have, which is the same defect class as round 14's
+test named for one function while asserting another. A test written from the
+implementation cannot fail with it.
+
+Fixed with `shared.ranking.ordinal`, registered as a Jinja global beside the
+other two. Two follow-on notes worth carrying:
+
+- **The obvious guard would have reintroduced the bug.** The neighbouring
+  `score_legend_for` is called as `x if score_legend_for else None`, and copying
+  that idiom here gives `ordinal(pct) if ordinal else (pct ~ 'th')`, whose
+  fallback is the defect verbatim. It is deliberately unguarded so an
+  unregistered global raises instead.
+- **The first replacement tests were self-referential and mutation caught it.**
+  Both render tests built their expected ordinals by calling
+  `ranking.ordinal_suffix`, the function under test, so breaking that function
+  moved the expectation with it and both stayed green. They now use a literal
+  membership table sharing no logic with the implementation. Verified: with the
+  literal table, breaking the helper reddens them; before, it did not.
+
+### A64. `_campaign_passed_filters` does not dedupe retry siblings while the aggregator does (FILED)
+
+- **severity:** low (latent) | **owner:** code
+- **detail:** `blueprints/campaigns.py:617` sums `count_passed_candidates` over
+  every succeeded child returned by `iter_succeeded_children`, with no dedupe.
+  The aggregators reduce by chunk, keeping the highest attempt. A chunk with two
+  succeeded attempts therefore double counts in the campaign page's "Passed
+  filters" card and counts once in the target table.
+- **why it is latent:** a retry is spawned when a chunk fails, so two succeeded
+  attempts of one chunk should not occur.
+- **why it is filed anyway:** Phase 3 puts the two numbers on adjacent pages a
+  user navigates between, so a divergence that was previously invisible now has
+  a place to show up. Routing the card through the aggregator is the fix, and it
+  is a campaign-page change rather than a ranking change.
+
+### A65. SEVEN metrics format two ways on two adjacent pages (FILED)
+
+**Widened by round 15.** This entry originally said two. An independent
+reviewer enumerated every column in `_TOOL_RESULT_COLUMNS` instead of spotting
+cases, and found five more: `af2_iptm`, `af2_plddt`, `rf3_score`,
+`binder_scrmsd` and `cluster_id` have no `_FORMAT` entry at all, so
+`format_value` falls to its `.3f` default while the template's inline chain
+gives them `%.2f` (and `cluster_id`, a discrete id, gets `%d`). Seven metrics,
+not two. The original wording is kept below because the reasoning still holds
+and only the count was wrong; the lesson is that spotting finds instances and
+enumerating finds the set.
+
+- **severity:** low (cosmetic, but it is a number) | **owner:** code
+- **detail:** `templates/components/candidate_table.html` formats native metric
+  columns inline, with a `'%.2f'` else branch. `shared/metric_glossary._FORMAT`
+  registers `epitope_contacts` and `n_hotspot_contacts` as `.0f`. The new Score
+  cell uses `format_value`, the native columns do not, so an IgGM design reads
+  `9` in the target table's Score column and `9.00` in the per-run table's
+  `epitope_contacts` column. Both are contact counts, which are integers.
+- **not fixed here** because the inline branch is shared with 14 `results_panel`
+  call sites on live pages, and changing it is a visible change to shipped run
+  pages for zero Phase 3 benefit. The fix is to route the inline branch through
+  `format_value` and delete the duplicated format table.
+
+### A66. The `result_columns` sync fence is membership only, not render based (FILED)
+
+- **severity:** informational | **owner:** code
+- **detail:** `tests/test_result_columns_sync.py` asserts
+  `primary_metric_for(t)[0] in columns_for(t)` for all seven tools, plus that
+  every primary metric has a non-blank glossary label. That is a real fence: the
+  Score column renders the primary metric's NAME, so drift would print a wrong
+  name beside a real number. It is not the render-based test the Phase 0 plan
+  named, which needs seven per-tool fixtures; `tests/test_export_shapes.py` has
+  two generic shapes.
+- **the honest limit:** membership does not prove the column is populated for any
+  real result, only that the two registries agree about its name.
+
+### A67. Which epitope produced which design is answerable, and not answered (FILED)
+
+- **severity:** low (missing information) | **owner:** code
+- **the fact, established rather than assumed:** a multi-chain target can take a
+  different `target_chain` and hotspot set per launch
+  (`blueprints/targets.py:82`, `_SHARED_LAUNCH_FIELDS`), and those overrides
+  **do** persist. `ToolLaunchSpec.params` is the adapter's validated form, and
+  `sanitize_shared_params` strips only underscore-prefixed keys, every tool's
+  design-count key, and `preset`, so `target_chain`, `hotspot_residues` and
+  iggm's `epitope_pdb_resnums` all survive into `compute_campaigns.params`. The
+  standalone side carries the same keys in `tool_jobs.inputs`, which the
+  aggregator already selects.
+- **so the column is buildable, not blocked.** The envelope already carries the
+  whole `ComputeCampaign` objects, so `campaign.params` needs no extra read.
+- **two things to get right when it is built:** iggm names its epitope
+  differently from every other tool, and a launch that overrode nothing inherits
+  the target's default chain, so the column has to distinguish "same as target"
+  from "not recorded" rather than rendering both as blank.
+
+### A68. The ZIP can contain fewer structures than the table has rows (FILED)
+
+- **severity:** low | **owner:** code
+- **detail:** the `_fetch` closure swallows `StorageError` and skips the member
+  (`blueprints/campaigns.py:713`), so a purged or missing object silently
+  reduces the archive. Pre-existing on the campaign export and inherited by the
+  target export, where it is likelier: a target pools more runs, over a longer
+  window, against the same retention purge.
+- *Next:* the archive needs a count-mismatch line, or a manifest member naming
+  what was skipped. Silence currently reads as completeness.
+
+### A69. Target-level cancel (FILED, deliberately not built)
+
+- **severity:** low (UX) | **owner:** code
+- **detail:** seven runs against one target is seven cancel clicks, and Phase 3
+  makes the target page the one you would look on. A target cancel has to fan
+  out to the existing per-run cancels so the refund path stays untouched.
+- **why it is not in this diff:** refunds are the money surface with the worst
+  history in this repo (see the rounds 6 to 14 narrative above). It gets its own
+  change and its own QC rather than riding on a ranking diff.
+
+### Recorded so they are not later mistaken for oversights
+
+- **The CSV and FASTA exports are uncapped by design; the ZIP is capped at 300.**
+  The asymmetry is deliberate and it is not about row count: the ZIP pulls every
+  candidate's PDB bytes into web-process memory, and the text exports do not. A
+  14,000-design target therefore builds a several-megabyte string, which matches
+  the campaign export and is accepted.
+- **The campaign fan-in is a loop, never `.in_()`.** `_MAX_CHILD_PAGES` is
+  derived per campaign, so widening it to an IN list silently truncates at 101k
+  rows with only a `logger.error`; one pathological campaign could exhaust a
+  shared page budget; and per-campaign merging makes the retry-dedupe collision
+  unwriteable rather than patched, since `best_by_chunk` keys on `chunk_index`,
+  which is unique only within a campaign. A mutation test pins it. Do not
+  "optimise" it later.
+- **`ok` is the export ownership sentinel, not `tools == []`.** The campaign
+  export gates on `agg.get("tool") is None`, which is sound there because a
+  campaign has exactly one tool. A target has a list, and an owned target whose
+  runs have not yet produced a design has an empty one, so the same idiom would
+  404 a paying user's freshly launched work. Two tests hold it from both sides
+  because either alone passes under the wrong gate.
+- **Multi-tool table headers omit `data-col` deliberately.**
+  `static/js/candidate_table.js:180` binds its sort handler to `th[data-col]`,
+  not to `.sortable-col`, which is only hover CSS. Leaving the headers alone
+  would let a user client-side sort 0.91 against 12.40 in the browser and
+  reintroduce exactly the cross-tool comparison the whole design forbids.
+  Omitting the attribute disables the sorter with zero JavaScript change, and it
+  is provable by parsing the rendered header row. A render test does exactly
+  that; asserting on `sortable-col` would have passed while the handler still
+  bound.
+
+### One documentation claim corrected in place
+
+`docs/PRODUCT-PLAN.md:82` marked item 8, "Cross-run results comparison: pick N
+past jobs, see a stacked table of top candidates ranked by composite score", as
+shipped. It was never built, and the same file already said so at :585 while the
+checkbox above kept claiming otherwise. Phase 3 does not make it true either: it
+is scoped to one target rather than an arbitrary set of jobs, and there is no
+composite score at all, by decision. The checkbox now says both things.
+
+## Addendum q - round 15, independent split QC over the whole Phase 3 diff
+
+Two reviewers in parallel over the uncommitted diff, split by concern (ranking
+plus aggregation; presentation plus export), each required to write its
+enumeration BEFORE reading. Every blocker and serious finding then went to a
+separate agent instructed to REFUTE it. 17 findings, 7 blocker or serious, 6
+survived refutation. **All six were in the presentation half**, which is the
+half that had had no adversarial review of its own: the aggregator had already
+had three lenses, and the ranking half came back with nothing confirmed.
+
+That distribution is the argument for splitting by concern, again. See
+[[feedback_split_reviewers_by_concern]] in the workspace memory.
+
+### The blocker: the failure disclosure was unreachable in the failure case
+
+`templates/targets/detail.html` carried the `agg.partial` banner INSIDE
+`{% if agg.tools %}`. `shared/target_results.py::_unreadable` returns
+`ok=True, partial=True, tools=[]`, and its docstring says outright that
+"`partial` True is the disclosure that the emptiness is a failure and not an
+answer". With `tools` empty the banner could not render, so the page fell
+through to the empty state and told a paying user **"Nothing has been run
+against this target yet"** because a read had FAILED.
+
+Three seams reach it, none contrived: the standalone read raising, every
+campaign's child read raising, and the ownership re-ask raising. The reviewer
+reproduced all three against the real route without injecting an envelope.
+
+The reviewer's stated mechanism was wrong, and the refuter caught it: it
+claimed `get_service_client()` returning None takes that path, when the route's
+own `get_target` 404s first, so the template never renders. The defect stood on
+the other three seams. Recorded because a finding can be right about the defect
+and wrong about how you get there, and only the second half is checkable
+cheaply.
+
+Fixed by hoisting the banner above the branch, and by teaching every
+"nothing has been run" / "none returned a design" sentence to stand down while
+`partial` is set. Neither is known to be true when a read failed.
+
+### Five more, all copy that was false under real data
+
+- **The singular branch said the opposite of its own sentence.** With exactly
+  one run and no designs the page read "but **it has** returned a completed
+  design so far". The negation existed only in the plural branch. That is the
+  state every freshly launched one-run target sits in for its whole first run,
+  so it was the copy most users would have seen first. Now one sentence with no
+  singular branch.
+- **Standalone designs were announced as having returned nothing.** A target
+  with zero campaigns and standalone runs that DID produce designs renders the
+  runs empty state (the run list is campaigns only) above a populated table.
+  Gated on `agg.standalone_jobs` alone, the panel said "3 runs finished against
+  this target without returning a design" directly above those designs. The
+  empty state now has five branches in priority order and the comment
+  enumerates all five.
+- **The export links did not carry `?sort=`.** Both the sort toggle's comment
+  and `_target_export`'s docstring asserted that they had to, "for the file to
+  match the screen". They carried nothing, so under `?sort=tool` the CSV came
+  back in percentile order. The guard test was even named
+  `test_the_sort_mode_is_forwarded_so_the_file_matches_the_screen` and asserted
+  only that the ROUTE reads `?sort` when present, which was the half never in
+  doubt.
+- **"Top" meant top of the view, not top of the ranking.** The badge, its
+  tooltip ("Top-ranked design across every tool run against this target") and
+  the highlight rail were all on `loop.first`. Under `?sort=tool` that is the
+  alphabetically first tool's best design, so bindcraft outranked rfdiffusion
+  by spelling. Now anchored on `_rank_position`, which the ranking layer stamps
+  in canonical order before any display sort.
+- **A single-tool target table numbered its rows per sub-job.** The pooled
+  branch was keyed on `multi_tool`, which understates pooling by exactly the
+  case that reads worst: one target run twice with bindcraft, two sub-jobs
+  each, read 1,2,3,1,2,3,1,2,3,1,2,3 beside a CSV that ranked the same rows
+  1 to 12. Keyed on `target_id` now, under a `pooled` flag that says what it
+  means.
+
+### One finding refuted, and worth recording
+
+A reviewer reported that the multi-tool `#` column should render
+`_rank_position` rather than `loop.index`. Mechanically true and the harm was
+false: the fix would make the visible row numbers non-contiguous under
+`?sort=tool` (1, 7, 12, ...) for no gain, since the CSV already carries
+`source_rank` separately. Rejected with evidence rather than applied.
+
+### Minors that were not cosmetic
+
+- **`provisional` was False whenever the run list could not be read.**
+  `campaigns` stays `[]` and `any()` over an empty list is False, so a target
+  whose runs were mid-flight was certified as settled by a read that never saw
+  them. Now `partial or any(...)`: a read that could not enumerate the runs
+  cannot certify they are terminal, and provisional is the safe direction.
+- **The provisional banner was an either/or.** Any paused run suppressed the
+  "not every run has finished" sentence entirely, so a user with one paused and
+  one running campaign was told only that a top-up was needed. They are
+  independent facts; both sentences now render, and `CAMPAIGN_TERMINAL_STATUSES`
+  is a Jinja global so the template does not carry a second copy of the set.
+- **"Listed last" was false under a cap.** Unranked rows sort to the bottom of
+  canonical order, so under a cap they are the first rows dropped and are
+  usually not in the table at all. The copy sent users scrolling for rows that
+  were not there. It now names the cap and points at the CSV.
+- **Three comments contradicted the code written in the same change.** The
+  `runs/detail.html` note claimed the exports "really are the full ranked set
+  now", which `_MAX_CHILD_PAGES` still falsifies; `tests/test_status_badge.py`
+  said five campaign statuses while the template comment beside it said six;
+  and the macro's "Requires in Jinja globals" list omitted `ordinal`, which the
+  percentile cell calls UNGUARDED so a missing registration raises. All three
+  corrected. This is the same defect class as rounds 6 to 14, in a diff written
+  with that class explicitly in mind.
+- **One assertion in `tests/test_ranking.py` could not fail with the code.** It
+  compared `_rank_fraction` against `max(r["_rank_fraction"] for r in
+  canonical)`, both sides recomputed by `annotate_rows` from the same input, so
+  any error in the statistic moved them together. Replaced by the hand-computed
+  79/80 that the fixture fixes. Mutation-verified: inflating the numerator now
+  reddens 13 tests, including this one.
+
+### A70. The pooled CSV and FASTA carry no ranking statistic (FILED)
+
+- **severity:** low (missing information) | **owner:** code
+- **detail:** `shared/exports.py::_metric_columns` skips every key beginning
+  with `_`, so `_rank_percentile`, `_metric_key`, `_metric_value` and
+  `_rank_within_cohort` are all dropped. The downloaded file's row ORDER is
+  determined by the percentile, but the number itself is not in the file, so a
+  user cannot see why one row outranks another, or reproduce the ordering.
+- **why it is filed rather than fixed:** the provenance columns are a declared
+  list in `_PROVENANCE_COLUMNS`, and adding ranking columns means deciding
+  whether they appear on campaign exports too, which changes a live download.
+  That is the same reasoning that kept provenance stamping off the campaign
+  path in Phase 3.
+
+## Addendum r - round 16, review of the round-15 fixes themselves
+
+Two reviewers over the round-15 fix set, split by concern. **7 blocker/serious,
+and every one of them was a defect the round-15 FIX had introduced or left.**
+That is this project's oldest pattern, holding for the eleventh consecutive
+round: each round's fix creates the next round's defect. The fixes are the
+highest-risk surface in a diff, not the lowest.
+
+**The verify stage never ran.** All seven refutation agents died on a spend
+limit, so the workflow returned `confirmed: 0` with an empty `refuted` list
+carrying `why_not: null`. That number is an artifact, not a verdict. Every
+finding below was therefore verified by hand against source before being acted
+on. Recorded because a harness that reports zero confirmed findings when its
+verifiers all crashed is indistinguishable, at a glance, from a clean run.
+
+### The round-15 fixes that were themselves wrong
+
+- **Absence of one fact was used as evidence of another.** Round 15 made the
+  provisional banner render both its sentences by gating the second on
+  `unfinished or not paused_runs`. Round 15 ALSO widened `provisional` to
+  `partial or any(non-terminal)`. Together: a target whose every run is
+  COMPLETE, on which a read failed, has `unfinished == []` and
+  `paused_runs == []`, so the fallback fired and the page asserted "Not every
+  run has finished, so percentiles will shift as more designs land" directly
+  under a run strip showing every run green. Each sentence is now gated on its
+  own fact, and a third names the remaining cause so "Ranking is provisional."
+  never stands alone.
+- **The unranked disclosure was wrong twice, in opposite directions.** It said
+  "listed last"; round 15 changed it to "fall below the cap rather than
+  appearing in the table". Neither survives `canonical_sort_key`, whose key is
+  `(passed, unranked, -rank_fraction, ...)`. **`passed` LEADS**, so an unranked
+  row nobody rejected sorts ABOVE every row its own tool marked failed, and
+  `unranked` only sinks it within its own pass bucket. Under a cap it is not
+  reliably dropped either: `PER_TOOL_FLOOR` reserves slots for every tool with
+  passing rows and an unranked row is `_passed` unless its own cohort filtered
+  it. Grouping by tool moves it again. Both versions guessed at position from
+  the name of a sort term. The copy now claims the exclusion and nothing about
+  position, and the test is parametrised over capped and uncapped because each
+  previous version got exactly one of those right.
+- **Reordering the empty state introduced a false money claim.** Round 15 put
+  drafts first, so the draft branch preempted the designs-exist branch: a
+  target with one stranded draft AND standalone runs that returned designs
+  rendered "1 run was created against this target but never funded ...
+  **Nothing was charged.**" directly above a populated table of designs the
+  user WAS billed for, since standalone `tool_jobs` are wallet charged. The two
+  facts are independent and are no longer branches of one `if`.
+- **The capped block was never stood down under partial.** Round 15 applied
+  that principle to the empty state only. The capped block states counts from
+  the failed read and claimed "The CSV and FASTA exports contain every design",
+  which is not merely unknown but false: `_target_export` re-runs the same
+  aggregate, so a partial read yields a short CSV served as 200 with no
+  disclosure of its own.
+- **The envelope fake did not model the invariant the fix created.** With
+  `provisional = partial or any(...)`, `partial=True` with `provisional=False`
+  is unreachable, yet both partial tests ran in exactly that state and so never
+  entered the branch that was broken. `_agg` now RAISES on the impossible pair
+  rather than silently correcting it. See
+  [[feedback_test_fakes_must_model_backend_limits]].
+
+### A71. A wallet test makes live Stripe calls and is date dependent (FIXED)
+
+- **severity:** medium (test hygiene, live external call) | **owner:** code
+- **found:** 2026-08-01, when this session crossed midnight UTC and
+  `tests/test_wallet.py::test_auto_reload_monthly_cap_blocks` went from green
+  to red with no code change. Nothing in the Phase 3 diff touches
+  `tests/test_wallet.py`, `shared/wallet.py` or `billing/checkout.py`.
+- **two independent causes, and fixing only the first is not enough:**
+  1. The test seeded its "already reloaded this month" row at `now - 2 days`
+     while `_auto_reload_total_month` sums the CALENDAR month. On the 1st and
+     2nd the row lands in the previous month, `month_total` reads 0, and the
+     cap does not block.
+  2. `auto_reload_if_needed` checks the 24 HOUR rate limit (`:766`) BEFORE the
+     monthly cap (`:769`). Early on the 1st, "inside this calendar month" and
+     "more than 24 hours ago" have NO OVERLAP, so no seed timestamp can reach
+     the cap check at all. Anchoring to the month start alone just trades a
+     `monthly_cap` failure for a `rate_limited` one, which is what happened on
+     the first attempt.
+- **what it did when it failed:** fell through to
+  `create_off_session_payment_intent`, which issued a REAL Stripe API call.
+  Observed request id `req_iy1E5cceO4bkhu`, rejected with "No such
+  PaymentMethod: 'pm_test'", so no money moved. The exposure is real: `.env`
+  holds live Stripe config, `app.py` calls `load_dotenv()` at import, and this
+  test does not mock the charge. **Same class as the Supabase hazard behind
+  A40, against a different vendor.** Only the fake payment method id stopped it.
+- **fix:** the row is anchored inside the current month with
+  `max(month_start, now - 2 days)`, and `_auto_reload_count_24h` is stubbed to
+  0 so the test exercises the gate it is named for. The rate limiter has its
+  own test directly above. Mutation-verified both ways: reverting the anchor
+  reddens it, and dropping the stub reddens it with `rate_limited`.
+- *Next, not done here:* the wider question is which other tests can reach a
+  live Stripe call. A40 counted the Supabase exposure and found 26 files;
+  nobody has counted this one.
+
+### Standing lesson
+
+**A relative date in a fixture is a claim about the calendar.** "Two days ago"
+silently meant "last month" for two days in every thirty, and the surrounding
+code had a second window that made those two days unsatisfiable. Anchor
+fixtures to the boundary the code under test actually uses, and stub the gates
+the test is not about.

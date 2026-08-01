@@ -997,15 +997,33 @@ def test_auto_reload_monthly_cap_blocks(store, email_log):
         auto_reload_amount=Decimal("100.00"),
         auto_reload_monthly_cap=Decimal("150.00"),
     )
-    # Already $100 reloaded this month
+    # Already $100 reloaded this month.
+    #
+    # This test was DATE DEPENDENT and went red on 2026-08-01 with no code
+    # change, when a long session crossed midnight UTC. Two separate causes,
+    # and fixing only the first is not enough:
+    #
+    # 1. The row was seeded at "now minus 2 days" while the cap sums the
+    #    CALENDAR month, so on the 1st and 2nd it landed in the PREVIOUS month,
+    #    month_total read 0, the cap did not block, and the call fell through
+    #    to a real off-session Stripe charge. Anchored to the month start now.
+    # 2. auto_reload_if_needed checks the 24 HOUR rate limit BEFORE the monthly
+    #    cap (shared/wallet.py:766 vs :769). Early on the 1st, "inside this
+    #    calendar month" and "more than 24 hours ago" have no overlap at all,
+    #    so no seed timestamp can reach the cap check. The rate limiter is a
+    #    different gate with its own test above, so it is stubbed out here
+    #    rather than worked around: this test is about the cap.
+    _now = datetime.now(timezone.utc)
+    _month_start = _now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     store.tables["wallet_transactions"].append({
         "id": store.fresh_id(),
         "user_id": USER_A,
         "kind": "auto_reload",
         "amount_usd": 100.0,
-        "created_at": (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(),
+        "created_at": max(_month_start, _now - timedelta(days=2)).isoformat(),
     })
-    assert auto_reload_if_needed(USER_A) == "monthly_cap"
+    with patch("shared.wallet._auto_reload_count_24h", return_value=0):
+        assert auto_reload_if_needed(USER_A) == "monthly_cap"
     assert any(
         name == "send_auto_reload_monthly_cap_email" for name, _ in email_log
     )

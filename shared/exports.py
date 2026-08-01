@@ -43,11 +43,32 @@ def _decode_b64(encoded) -> Optional[bytes]:
 
 def _safe_arcname(name: str, prefix: str = "") -> str:
     """A ZIP entry name with any traversal (``..``, absolute, backslash)
-    stripped, legit sub-directories preserved, optionally namespaced."""
+    stripped, legit sub-directories preserved, optionally namespaced.
+
+    Only ``name`` is cleaned here. ``prefix`` is trusted and must already be
+    built from :func:`_safe_component` segments — see :func:`candidates_to_zip`,
+    the only caller that passes one.
+    """
     cleaned = (name or "").replace("\\", "/").lstrip("/")
     parts = [p for p in cleaned.split("/") if p not in ("", ".", "..")]
     safe = "/".join(parts) or "candidate.pdb"
     return f"{prefix}{safe}" if prefix else safe
+
+
+def _safe_component(value, fallback: str = "unknown") -> str:
+    """One ZIP path segment, with separators and traversal removed.
+
+    A namespace prefix is interpolated into the arcname rather than passed
+    through :func:`_safe_arcname`'s cleaner, so anything that reaches a prefix
+    has to be made safe here. Today's inputs cannot contain a separator (a tool
+    slug comes from the adapter registry and a job id is a uuid), so this is
+    defence in depth rather than a fix: the traversal guard belongs with the
+    function whose job is traversal safety, not with the caller that happens to
+    supply clean values.
+    """
+    text = str(value or "").replace("\\", "/")
+    segment = "".join(p for p in text.split("/") if p not in ("", ".", ".."))
+    return segment or fallback
 
 
 # Provenance the aggregator stamps onto every merged candidate, mapped to the
@@ -246,9 +267,21 @@ def candidates_to_zip(
     ``fetch_bytes(source_job_id, pdb_key)`` (Storage). ``source_job_id`` is the
     candidate's ``_source_job_id`` (campaign merge) or ``default_job_id``
     (single job). Candidates that resolve via neither path are skipped rather
-    than failing the archive. With ``namespace=True`` each entry is prefixed by
-    its source sub-job (``chunk###/`` or ``<job8>/``) so identically-named
-    designs from different sub-jobs don't collide.
+    than failing the archive.
+
+    With ``namespace=True`` each entry is prefixed so identically-named designs
+    from different sources do not collide. Which prefix depends on the
+    provenance the rows actually carry:
+
+    * ``<tool>/<job8>/`` when the row carries ``_source_tool``, which only the
+      TARGET aggregate stamps. Chunk index is not enough there: every campaign
+      starts at chunk 0, so a bindcraft and a boltzgen ``chunk000/design_1.pdb``
+      would be one arcname and one design would silently overwrite the other.
+      The job id rather than the chunk is the second segment because two
+      campaigns of the SAME tool on one target both have a chunk 0 too.
+    * ``chunk###/`` or ``<job8>/`` otherwise, which is every campaign and
+      single-job export. Gating on ``_source_tool`` is what keeps those
+      byte-identical to what they produced before this branch existed.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -263,8 +296,13 @@ def candidates_to_zip(
                 continue
             prefix = ""
             if namespace:
+                tool = key.get("tool")
                 chunk = key.get("source_chunk")
-                if chunk is not None:
+                if tool:
+                    tool_seg = _safe_component(tool, "unknown-tool")
+                    job_seg = _safe_component(str(job_id or "")[:8], "unknown-job")
+                    prefix = f"{tool_seg}/{job_seg}/"
+                elif chunk is not None:
                     prefix = f"chunk{int(chunk):03d}/"
                 elif job_id:
                     prefix = f"{str(job_id)[:8]}/"
