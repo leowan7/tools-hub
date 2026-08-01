@@ -154,6 +154,78 @@ def test_zip_namespaces_by_subjob_and_blocks_traversal():
     assert not any(".." in n for n in names)
 
 
+def test_zip_namespaces_by_tool_and_job_when_the_row_carries_a_tool():
+    """A TARGET export merges tools, and every campaign starts at chunk 0.
+
+    Two designs that are both chunk 0 / design_1.pdb, from different tools, are
+    one arcname under the campaign scheme, so one silently overwrites the other.
+    The pair above (test_zip_namespaces_by_subjob_and_blocks_traversal) pins the
+    campaign scheme unchanged; this pins the target scheme. Both must hold, or
+    the gate is satisfied by a namespace that is merely different.
+    """
+    a = base64.b64encode(b"ATOM A").decode()
+    b = base64.b64encode(b"ATOM B").decode()
+    cands = [
+        {"pdb_key": "designs/design_1.pdb", "pdb_content_b64": a,
+         "_source_chunk": 0, "_source_job_id": "job-aaaa1111", "_source_tool": "bindcraft"},
+        {"pdb_key": "designs/design_1.pdb", "pdb_content_b64": b,
+         "_source_chunk": 0, "_source_job_id": "job-bbbb2222", "_source_tool": "boltzgen"},
+    ]
+    data = exports.candidates_to_zip(cands, lambda j, f: None, namespace=True)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = zf.namelist()
+
+    assert "bindcraft/job-aaaa/designs/design_1.pdb" in names
+    assert "boltzgen/job-bbbb/designs/design_1.pdb" in names
+    # Both survive: the point of the whole change.
+    assert len(names) == 2
+    assert zf.read("bindcraft/job-aaaa/designs/design_1.pdb") == b"ATOM A"
+    assert zf.read("boltzgen/job-bbbb/designs/design_1.pdb") == b"ATOM B"
+
+
+def test_zip_two_runs_of_one_tool_do_not_collide():
+    """Same tool twice on one target: both runs have a chunk 0, so the second
+    segment has to be the job id and not the chunk index.
+
+    Asserts on the SET of names and reads both members back. A plain
+    ``len(namelist()) == 2`` does NOT discriminate here: zipfile happily writes
+    two entries under one arcname (with a UserWarning), so the list stays length
+    2 while one design has in practice been overwritten for any reader that
+    resolves by name. Verified by mutation: keying the second segment on the
+    chunk index left the length assertion green.
+    """
+    a = base64.b64encode(b"ATOM A").decode()
+    b = base64.b64encode(b"ATOM B").decode()
+    cands = [
+        {"pdb_key": "designs/design_1.pdb", "pdb_content_b64": a,
+         "_source_chunk": 0, "_source_job_id": "job-first000", "_source_tool": "bindcraft"},
+        {"pdb_key": "designs/design_1.pdb", "pdb_content_b64": b,
+         "_source_chunk": 0, "_source_job_id": "job-second00", "_source_tool": "bindcraft"},
+    ]
+    data = exports.candidates_to_zip(cands, lambda j, f: None, namespace=True)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    names = zf.namelist()
+
+    assert len(set(names)) == 2, f"arcnames collided: {names}"
+    assert sorted(names) == [
+        "bindcraft/job-firs/designs/design_1.pdb",
+        "bindcraft/job-seco/designs/design_1.pdb",
+    ]
+    assert {zf.read(n) for n in names} == {b"ATOM A", b"ATOM B"}
+
+
+def test_zip_tool_segment_cannot_escape_the_archive():
+    """The prefix is interpolated into the arcname rather than passed through
+    _safe_arcname's cleaner, so the tool segment carries its own guard."""
+    a = base64.b64encode(b"ATOM A").decode()
+    cands = [{"pdb_key": "d.pdb", "pdb_content_b64": a,
+              "_source_job_id": "j1", "_source_tool": "../../etc"}]
+    data = exports.candidates_to_zip(cands, lambda j, f: None, namespace=True)
+    names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+    assert not any(".." in n for n in names), names
+    assert names == ["etc/j1/d.pdb"]
+
+
 def test_zip_fetches_from_storage_when_no_inline():
     calls = []
 

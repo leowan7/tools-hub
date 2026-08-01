@@ -6,9 +6,20 @@
     {{ status_badge(job.status) }}
     {{ status_badge(job.status, id="status-badge") }}
 
-  Maps tool_jobs.status values to tinted pills so a scientist can scan
-  the list / detail page without reading the word. Matches the existing
-  .panel-badge look for unrecognised statuses (forward-compat).
+  Maps a status to a tinted pill so a scientist can scan a list or detail page
+  without reading the word. Covers BOTH tool_jobs.status and
+  compute_campaigns.status (mirroring the CHECK in migration 0034, plus
+  paused_insufficient_funds from 0035). Matches the plain .panel-badge look for
+  anything unrecognised, so a new status degrades rather than breaking.
+
+  The campaign half was added for the target page, which renders one badge per
+  run. Before it, all SIX campaign-only states fell through untinted, so a run
+  PAUSED FOR AN EMPTY WALLET looked identical to a healthy one on the one page
+  where that is most likely to be misread (register item A39).
+
+  Six, not the five A39 enumerated: that entry omitted campaign 'completed',
+  which is a distinct status from tool_jobs 'succeeded' and was therefore
+  untinted too. Counted against migration 0034's CHECK, not against the entry.
 #}
 {% macro status_badge(status, id="") -%}
   {% set s = (status or '')|lower %}
@@ -19,10 +30,23 @@
     'failed':    ('rgba(248, 113, 113, 0.14)', '#f87171'),
     'timeout':   ('rgba(251, 191, 36, 0.14)',  '#fbbf24'),
     'cancelled': ('rgba(148, 163, 184, 0.14)', '#94a3b8'),
+    'draft':     ('rgba(148, 163, 184, 0.14)', '#94a3b8'),
+    'funded':    ('rgba(148, 163, 184, 0.14)', '#cbd5e1'),
+    'completing':               ('rgba(59, 130, 246, 0.14)',  '#60a5fa'),
+    'completed':                ('rgba(74, 222, 128, 0.14)',  '#4ade80'),
+    'completed_with_failures':  ('rgba(251, 191, 36, 0.14)',  '#fbbf24'),
+    'paused_insufficient_funds':('rgba(251, 191, 36, 0.14)',  '#fbbf24'),
   }.get(s) %}
+  {# Amber, not red, for paused_insufficient_funds: the run is recoverable by
+     topping up, so it reads as needs-attention rather than as terminal. Red is
+     reserved for failed, which no top-up will bring back. #}
+  {% set label = {
+    'completed_with_failures':   'completed with failures',
+    'paused_insufficient_funds': 'paused, low balance',
+  }.get(s, s) %}
   {% if tint %}
     <span class="panel-badge"{% if id %} id="{{ id }}"{% endif %}
-      style="background: {{ tint[0] }}; color: {{ tint[1] }};">{{ s }}</span>
+      style="background: {{ tint[0] }}; color: {{ tint[1] }};">{{ label }}</span>
   {% else %}
     <span class="panel-badge"{% if id %} id="{{ id }}"{% endif %}>{{ status }}</span>
   {% endif %}

@@ -10,19 +10,53 @@
   candidates : list[dict]   — job.result["candidates"]
   columns    : list[str]    — metric keys to display, e.g. ['ipTM','pLDDT','RMSD']
   job_id     : str          — tool_jobs.id (UUID string)
-  tool_slug  : str          — e.g. 'bindcraft'
+  tool_slug  : str          — e.g. 'bindcraft'. Only consumed to resolve score
+                              legends, which pooled mode does not use, so it is
+                              free to be set alongside ``multi_tool``
+  split_tools: seq[str]     — tools that ran at more than one preset on this
+                              target; their rows carry a preset chip because
+                              the slug alone does not name the cohort
   clone_url  : str          — URL for "Run again" button (optional)
+  target_id  : str          — design_targets.id; switches exports to the target
+  multi_tool : bool         — render the cross-tool table (see below)
+
+  MULTI-TOOL MODE. With ``multi_tool``, ``candidates`` are pooled from SEVERAL
+  tools run against one target and ``columns`` is ignored (pass []). Three
+  metric columns replace the per-tool ones: Tool, Score and Pctile, where Score
+  prints each row's OWN primary metric beside that metric's name. No number is
+  ever compared across tools, because the tools do not share a scale: the same
+  ``ipTM`` label is an AF2 re-score for rfdiffusion and BoltzGen's own
+  confidence head for boltzgen, and shared/score_legends.py:8-11 already records
+  that they do not mean the same thing. Ranking is by WITHIN-tool percentile,
+  which is scale invariant, so it needs no such comparison.
 
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
+    format_metric_value, score_legend_for, ordinal — multi-tool mode only
+
+  ``ordinal`` is called UNGUARDED by the percentile cell, unlike its
+  neighbours, so a missing registration raises rather than silently printing a
+  wrong suffix. That is deliberate; see the cell for why. It means this list is
+  load-bearing rather than documentation, and it omitted ``ordinal`` in the
+  same change that introduced the call.
 #}
-{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='') %}
-{# ``scope`` is the shortlist storage key + element-id suffix: the campaign id
-   in campaign mode (merged table, candidates from many sub-jobs), else the job
-   id. ``export_base`` routes exports to the campaign or the single job. #}
-{% set scope = campaign_id if campaign_id else job_id %}
-{% set export_base = ('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id) %}
+{% macro candidate_table(candidates, columns, job_id, tool_slug, clone_url='', campaign_id='', target_id='', multi_tool=false, sort_mode='', split_tools=()) %}
+{# ``scope`` is the shortlist storage key + element-id suffix: the target id in
+   target mode (pooled across tools), the campaign id in campaign mode (merged
+   across sub-jobs of one tool), else the job id. ``export_base`` routes exports
+   to whichever of the three owns this table. #}
+{% set scope = target_id if target_id else (campaign_id if campaign_id else job_id) %}
+{% set export_base = ('/targets/' ~ target_id) if target_id else (('/campaigns/' ~ campaign_id) if campaign_id else ('/jobs/' ~ job_id)) %}
 {% set table_id = 'cand-table-' ~ scope %}
+{# ``pooled`` = this table merges rows from more than one source job, so the
+   per-job rank each row carries is meaningless as a column and the ranking
+   layer's own ordering is authoritative. Keyed on target_id rather than on
+   multi_tool: a SINGLE-tool target still pools every run and sub-job of that
+   tool, so multi_tool understates it by exactly the case that reads worst
+   (the # column restarting at 1 for each sub-job). Campaign tables merge
+   sub-jobs too, but they are unchanged here on purpose, since their rank
+   column predates this work and is out of Phase 3's scope. #}
+{% set pooled = true if target_id else false %}
 
 <style>
 /* ── Candidate table ─────────────────────────────────────────── */
@@ -208,11 +242,33 @@
 
 {# ── Action bar ────────────────────────────────────────────────── #}
 <div class="cand-action-bar" data-cand-table-id="{{ table_id }}" data-job-id="{{ job_id }}" data-scope="{{ scope }}"{% if campaign_id %} data-campaign-id="{{ campaign_id }}"{% endif %}>
+  {# The export routes accept ?sort=, and the sort toggle on the target page
+     claims "the export links have to carry the same mode for the file to match
+     the screen". They did not carry it, so under ?sort=tool the CSV came back
+     in percentile order while the screen was grouped by tool. The route-side
+     test was named test_the_sort_mode_is_forwarded_so_the_file_matches_the_screen
+     and asserted only that the ROUTE reads ?sort when present, which is the
+     half that was never in doubt. #}
+  {% set export_q = ('?sort=' ~ sort_mode) if sort_mode else '' %}
   <div class="cand-export-btns">
-    <a href="{{ export_base }}/export.csv"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export CSV</a>
-    <a href="{{ export_base }}/export.fasta" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export FASTA</a>
-    <a href="{{ export_base }}/export.zip"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download PDBs (ZIP)</a>
+    <a href="{{ export_base }}/export.csv{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export CSV</a>
+    <a href="{{ export_base }}/export.fasta{{ export_q }}" class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Export FASTA</a>
+    <a href="{{ export_base }}/export.zip{{ export_q }}"  class="btn-secondary" style="font-size:.82rem;padding:.3rem .7rem;">Download PDBs (ZIP)</a>
   </div>
+  {# The shortlist bar is HIDDEN in target mode, deliberately.
+
+     The modal's hidden inputs below branch on ``campaign_id`` and otherwise
+     fall back to ``source_job_id={{ job_id }}``. In target mode BOTH are
+     empty, so the form would POST source_job_id="" with candidate_indices=[]
+     and the submission would be meaningless. Shipping a visibly broken primary
+     CTA is worse than shipping none.
+
+     The stars themselves stay: candidate_table.js persists the selection in
+     sessionStorage and emits {job_id, index} refs, which are globally unique
+     and already target-ready. Wiring a target branch needs a
+     lab_campaigns.source_target_id column (migration 0040, reserved) and is
+     Phase 5.3. #}
+  {% if not target_id %}
   <div class="cand-shortlist-bar">
     <span><span id="shortlist-count-{{ scope }}">0</span> starred</span>
     <button id="send-to-lab-btn-{{ scope }}"
@@ -223,19 +279,39 @@
       Send shortlist to Ranomics lab
     </button>
   </div>
+  {% endif %}
 </div>
 
 {# ── Table ─────────────────────────────────────────────────────── #}
 {# Per-tool score legend lookup. Returns ``{col_key: {good, excellent,
    direction, explanation}}``; empty dict if the tool has no legends.
    Registered as a Jinja global in app.py from shared.score_legends. #}
-{% set legends = score_legends_for(tool_slug) if score_legends_for else {} %}
+{# NOT resolved in multi-tool mode: legends are per (tool, column), and a header
+   spans rows from several tools. bindcraft passes ipTM at 0.75 while
+   rfdiffusion passes at 0.65 (shared/score_legends.py), so a header legend
+   would state one tool's bar over another tool's number. Multi-tool resolves
+   the legend PER CELL from that row's own tool instead. #}
+{% set legends = {} if multi_tool else (score_legends_for(tool_slug) if score_legends_for else {}) %}
 <div class="cand-table-scroll">
   <table id="{{ table_id }}" class="cand-table">
     <thead>
       <tr>
         <th style="width:2.5rem;">#</th>
         <th style="width:2rem;" title="Click to shortlist for lab submission">★</th>
+        {% if multi_tool %}
+        {# NO data-col on any of these three.
+
+           static/js/candidate_table.js:180 binds its click-to-sort handler to
+           `th[data-col]` (not to .sortable-col, which is only the hover CSS),
+           and sortTable reorders rows numerically on td[data-val]. Leave the
+           attribute on and a user can click Score and sort ipTM 0.91 against
+           reward 12.40 against ipAE 3.70 in the browser, which is exactly the
+           cross-scale comparison this table exists to avoid. Omitting the
+           attribute means no listener binds, with no JavaScript change. #}
+        <th style="width:7rem;">Tool</th>
+        <th title="Each row shows its own tool's primary metric. Different tools do not share a scale, so these numbers are not comparable across rows.">Score</th>
+        <th style="width:5rem;" title="This design's rank within its own tool and preset, as a percentile. Scale invariant, so it IS comparable across tools.">Pctile</th>
+        {% else %}
         {% for col in columns %}
           {% set g = metric_glossary.get(col, {}) %}
           {% set leg = legends.get(col) %}
@@ -259,6 +335,7 @@
             {% endif %}
           </th>
         {% endfor %}
+        {% endif %}
         <th style="width:4.5rem;">3D</th>
         <th style="width:4.5rem;">PDB</th>
       </tr>
@@ -288,20 +365,92 @@
         {# Candidates arrive pre-ranked from the pipeline. Visually
            anchor the first row so the eye lands on the top design.
            Ordering is unchanged; only styling differs. #}
-        <tr class="cand-row{% if loop.first %} cand-row-top{% endif %}" data-idx="{{ idx }}">
+        {# "Top" means top of the RANKING, never top of the current view.
+           Anchored on _rank_position, which shared/ranking.py stamps in
+           canonical order before any display sort, because under ?sort=tool
+           loop.first is the alphabetically-first tool's best design and the
+           badge, its tooltip and the highlight rail all asserted it was the
+           target's best. bindcraft would outrank rfdiffusion by spelling. #}
+        {% set is_top = (cand.get('_rank_position') == 1) if pooled else loop.first %}
+        <tr class="cand-row{% if is_top %} cand-row-top{% endif %}" data-idx="{{ idx }}">
           <td>
-            {{ cand.get('rank', loop.index) }}
-            {% if loop.first %}
-              <span class="cand-rank-top-badge" title="Top-ranked design in this run">Top</span>
+            {# A POOLED table uses the global row index, and pooled is not the
+               same as multi-tool. cand.rank is the source job's own rank, so it
+               restarts at 1 for every sub-job and every campaign: one target
+               run twice with bindcraft, 2 sub-jobs each, read 1,2,3,1,2,3,...
+               beside a CSV that ranked the same rows 1..12. A single-tool
+               target table pools exactly as much as a two-tool one.
+               shared/exports.py:69-75 already demoted it to source_rank for the
+               CSV; the screen never was. #}
+            {{ loop.index if pooled else cand.get('rank', loop.index) }}
+            {% if is_top %}
+              <span class="cand-rank-top-badge" title="{{ 'Top-ranked design across every tool run against this target' if multi_tool else ('Top-ranked design across every run against this target' if pooled else 'Top-ranked design in this run') }}">Top</span>
             {% endif %}
             {% if cand.get('_source_chunk') is not none %}
-              <span class="cand-subjob-tag" title="From sub-job {{ src_job[:8] }}">#{{ cand.get('_source_chunk') }}</span>
+              {# Chunk 0 exists in EVERY campaign, so a bare "#0" appears once
+                 per tool meaning something different each time. #}
+              <span class="cand-subjob-tag" title="From sub-job {{ src_job[:8] }}">{% if multi_tool %}{{ cand.get('_source_tool') }} {% endif %}#{{ cand.get('_source_chunk') }}</span>
+            {% elif multi_tool and cand.get('_source_tool') %}
+              <span class="cand-subjob-tag" title="From job {{ src_job[:8] }}">{{ cand.get('_source_tool') }} {{ src_job[:8] }}</span>
             {% endif %}
           </td>
           <td class="star-cell">
             <button class="star-btn" data-idx="{{ idx }}" data-job="{{ src_job }}" data-ref-idx="{{ src_idx }}" title="Shortlist">&#9734;</button>
           </td>
 
+          {% if multi_tool %}
+            {% set row_tool = cand.get('_source_tool') or '—' %}
+            {% set mkey     = cand.get('_metric_key') %}
+            {% set mval     = cand.get('_metric_value') %}
+            {% set pct      = cand.get('_rank_percentile') %}
+            {# No data-col anywhere in this branch; see the thead comment. #}
+            <td>
+              {{ row_tool }}
+              {# ``split_tools`` holds the tools that ran at MORE THAN ONE
+                 preset on this target, and for those the slug alone does not
+                 identify the cohort the row was ranked in. proteina's
+                 total_reward is -i_pAE under one preset and an RF3 composite
+                 under another, so two rows both labelled "proteina" can be
+                 orders of magnitude apart and both correct. Rendered only
+                 where it disambiguates: on every other target the tool IS the
+                 cohort and a preset chip on every row would be noise. #}
+              {% if row_tool in split_tools %}
+              <span class="cand-subjob-tag"
+                    title="Preset. This design was ranked against this tool's other {{ cand.get('_source_preset') or 'default' }} designs, not against its runs at other presets.">{{ cand.get('_source_preset') or 'default' }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if mkey and mval is not none %}
+                {% set leg = score_legend_for(row_tool, mkey) if score_legend_for else None %}
+                {# The legend is resolved from THIS ROW'S tool, never from a
+                   table-wide tool_slug: "what counts as good" for ipTM differs
+                   between bindcraft (0.75) and rfdiffusion (0.65). #}
+                <span{% if leg %} title="{{ leg.explanation }}"{% endif %}>{{ metric_glossary.get(mkey, {}).get('label', mkey) }} {{ format_metric_value(mkey, mval) }}</span>
+              {% else %}
+                <span title="This design carries no value for its tool's ranking metric, so it is listed but not ranked.">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if pct is not none %}
+                {# ordinal(), not a hardcoded "th": percentiles run 0 to 99 and
+                   a bare "th" is wrong for every x1/x2/x3 outside the teens.
+
+                   Deliberately NOT guarded the way score_legend_for above is.
+                   That guard degrades to "no tooltip", which is harmless; the
+                   obvious guard here would degrade to `pct ~ 'th'`, which is
+                   the defect verbatim. An unregistered global raises instead,
+                   which is the outcome worth having. #}
+                {{ ordinal(pct) }}
+              {% elif cand.get('_ranked') and cand.get('_rank_within_cohort') %}
+                {# Cohort too small for a percentile to mean anything, so the
+                   raw position is shown instead of a number implying precision
+                   the sample does not support. #}
+                <span title="Only {{ cand.get('_cohort_n') }} designs from this tool and preset, too few for a meaningful percentile.">{{ cand.get('_rank_within_cohort') }} of {{ cand.get('_cohort_n') }}</span>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+          {% else %}
           {% for col in columns %}
             {% set raw = scores.get(col) %}
             {% if raw is none %}
@@ -333,6 +482,7 @@
               <td data-col="{{ col }}" data-val="{{ fval }}">{{ disp }}</td>
             {% endif %}
           {% endfor %}
+          {% endif %}
 
           <td>
             {% if has_pdb %}
@@ -364,7 +514,10 @@
         </tr>
 
         <tr class="viewer-row" id="viewer-row-{{ idx }}" style="display:none;">
-          <td colspan="{{ columns | length + 4 }}" style="padding:0;background:var(--bg-deep);">
+          {# Fixed cells are #, star, 3D, PDB = 4. Multi-tool adds Tool, Score
+             and Pctile in place of `columns`, so its span is 4 + 3 = 7 and
+             `columns` is empty. Miss this and every viewer row mis-spans. #}
+          <td colspan="{{ 7 if multi_tool else (columns | length + 4) }}" style="padding:0;background:var(--bg-deep);">
             <div id="mol-viewer-{{ idx }}" class="mol-viewer-container"></div>
           </td>
         </tr>
@@ -380,7 +533,14 @@
 </div>
 {% endif %}
 
-{# ── Campaign submit modal ─────────────────────────────────────── #}
+{# ── Campaign submit modal ───────────────────────────────────────
+   Guarded by the same condition as the bar above, and for the same reason
+   carried one step further. Hiding the opener leaves this form in the DOM with
+   source_job_id="" pointing at a live POST endpoint, reachable by anything that
+   ever calls openCampaignModal (a window global) or un-hides the overlay. There
+   is no opener on a target page today, so this is defence in depth rather than
+   a live fix, but a dead form that submits garbage is not worth carrying. #}
+{% if not target_id %}
 <div id="campaign-modal-{{ scope }}"
      class="modal-overlay"
      style="display:none;"
@@ -470,6 +630,7 @@
     </form>
   </div>
 </div>
+{% endif %}
 
 <script src="{{ url_for('static', filename='js/mol_viewer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/candidate_table.js') }}"></script>

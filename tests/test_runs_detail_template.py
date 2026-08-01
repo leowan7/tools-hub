@@ -142,13 +142,27 @@ def test_capped_note_renders_top_n_of_m(app):
         )
     assert "900" in html
     assert "designs by score" in html
-    # Banner honesty (guards the QC fix): CSV/FASTA are described as the full
-    # ranked set BUT qualified by the 1000-sub-job PostgREST clamp, the ZIP is
-    # described as limited, and the old false "download all" wording is gone.
+    # Banner honesty: CSV/FASTA are the full ranked set, the ZIP is described as
+    # limited, and the old false "download all" wording is gone.
     assert "full ranked set" in html
-    assert "up to the first 1000 completed sub-jobs" in html
     assert "PDB ZIP is" in html and "limited" in html
     assert "download all" not in html
+
+    # This assertion is inverted from what it used to be, deliberately.
+    #
+    # `5f1300c` added the qualifier "(up to the first 1000 completed sub-jobs)"
+    # to the banner and pinned it here, correctly: the fan-in was an un-paged
+    # .select() and PostgREST clamped it at max_rows. `e1311e4`, later the SAME
+    # DAY, replaced that read with iter_succeeded_children, which pages with
+    # .range() and is itself pinned by
+    # test_aggregate_pages_past_the_postgrest_max_rows_clamp. From that commit
+    # the qualifier was false and this assertion was pinning it in place.
+    #
+    # So the export really is the full ranked set now, and saying otherwise
+    # understates it. Phase 3 builds the same banner on the target page, which
+    # is why this surfaced: the false sentence was about to be copied.
+    assert "up to the first 1000" not in html
+    assert "1000 completed sub-jobs" not in html
 
 
 def test_partial_completion_does_not_overstate_generated_count(app):

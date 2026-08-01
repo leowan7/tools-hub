@@ -1625,8 +1625,8 @@ def test_the_banner_counts_only_the_runs_from_this_launch(client):
     ]
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=runs):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_detail_agg(runs)):
         body = client.get(
             f"/targets/{t.id}?launched={group}"
         ).get_data(as_text=True)
@@ -1692,11 +1692,34 @@ def test_a_refused_launch_does_not_touch_the_target(client):
     touch.assert_not_called()
 
 
+def _detail_agg(runs=(), **over):
+    """A minimal ``aggregate_target_candidates`` envelope carrying ``runs``.
+
+    Phase 3 moved the detail page's run list out of a direct
+    ``list_campaigns_for_target`` call and into the aggregator, which binds that
+    name at its own module level, so the old patch target no longer reaches it.
+
+    The banner tests below still count through the REAL filter: the route
+    receives this list and applies its own ``launch_group_id`` matching to it.
+    Only where the list comes from has changed.
+    """
+    env = {
+        "ok": True, "partial": False, "candidates": [], "total": 0,
+        "shown": 0, "unranked": 0, "capped": False, "columns": [],
+        "tools": [], "per_tool": {}, "campaigns": list(runs),
+        "standalone_jobs": 0, "refold_jobs": 0, "passed_total": 0,
+        "provisional": False, "sort_mode": "percentile", "multi_tool": False,
+        "limit": 300,
+    }
+    env.update(over)
+    return env
+
+
 def _render_detail(client, target, query, runs):
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=target), \
-            patch("shared.compute_campaigns.list_campaigns_for_target",
-                  return_value=runs):
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_detail_agg(runs)):
         return client.get(f"/targets/{target.id}?{query}").get_data(as_text=True)
 
 
@@ -1801,9 +1824,22 @@ class _CampaignClient:
 
 
 def _render_detail_through_the_query(client, target, query, rows):
-    """Render the detail page with the run list produced by the real query."""
+    """Render the detail page with the run list produced by the real query.
+
+    Deliberately does NOT patch ``aggregate_target_candidates``: the whole point
+    of this helper is that ``list_campaigns_for_target`` really runs, so the
+    banner counts come out of the real filter rather than a hand-built list.
+
+    Phase 3 moved that call inside the aggregator, which resolves its own
+    ``get_target`` and its own service client at ITS module level. Both are
+    patched here so the aggregator reaches the campaign read; the read itself
+    is still the real one against ``_CampaignClient``.
+    """
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=target), \
+            patch("shared.target_results.get_target", return_value=target), \
+            patch("shared.target_results.get_service_client",
+                  return_value=_CampaignClient(rows)), \
             patch("shared.compute_campaigns.get_service_client",
                   return_value=_CampaignClient(rows)):
         return client.get(f"/targets/{target.id}?{query}").get_data(as_text=True)

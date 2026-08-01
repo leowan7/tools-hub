@@ -79,8 +79,18 @@ unused credits.
    pre-selected hotspots already filled in.
 7. ✅ User can clone any past job from the `/jobs` list, edit one
    parameter, re-submit. Iteration UX.
-8. ✅ Cross-run results comparison: pick N past jobs, see a stacked
-   table of top candidates ranked by composite score.
+8. Cross-run results comparison: pick N past jobs, see a stacked
+   table of top candidates ranked by composite score. **NOT BUILT as
+   written**, and the correction further down this file (under "Product
+   gaps surfaced while planning the target-first rework") has said so
+   since 2026-07-29 while this checkbox still claimed otherwise. The
+   nearest real thing is target-first Phase 3: one ranked table pooling
+   every design from every run against ONE target. It differs from this
+   line in two ways that are deliberate, not partial. It is scoped to a
+   target rather than an arbitrary set of jobs, and there is **no
+   composite score** at all, because no metric is comparable across
+   tools (`shared/score_legends.py`). Ranking is by within-tool
+   percentile instead.
 
 Items 1–5 are **Phase 1 — shipping in this session**.
 Items 6–8 are **Phase 2 — next session**.

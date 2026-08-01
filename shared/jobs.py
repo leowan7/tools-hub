@@ -153,12 +153,27 @@ def candidate_passed_filter(cand: object) -> bool:
     return str(status or "").strip().lower() in PASS_FILTER_STATUSES
 
 
-def _record_has_filter_signal(cand: object) -> bool:
+def record_has_filter_signal(cand: object) -> bool:
     """True iff a record carries any per-candidate filter signal — a boolean
-    ``passed`` flag or a non-empty ``filter_status``."""
+    ``passed`` flag or a non-empty ``filter_status``.
+
+    Public because the regime it selects has to be decidable at more than one
+    scope. :func:`count_passed_candidates` decides it per RESULT, which keeps a
+    campaign total equal to the sum of its children. ``shared.ranking`` decides
+    it per (target, tool, preset) COHORT, because only 2 of the 7 campaign tools
+    emit a filter at all: judging each record on its own would sort every
+    bindcraft, boltzgen, rfantibody, proteina and iggm design below every
+    passing pxdesign and rfdiffusion one, which is a partition on tool identity
+    rather than on design quality.
+    """
     if _candidate_passed_flag(cand) is not None:
         return True
     return bool(str(_candidate_filter_status(cand) or "").strip())
+
+
+# Pre-existing private name, kept so the module-internal caller below reads the
+# same as it did before this became public. Not an alias for outside use.
+_record_has_filter_signal = record_has_filter_signal
 
 
 def count_passed_candidates(result: Optional[dict]) -> int:

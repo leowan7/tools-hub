@@ -40,6 +40,11 @@ from shared.credits import load_user_context
 from shared.idempotency import idempotent
 from shared.pdb_intake import resolve_target_upload
 from shared.storage import StorageError
+from shared.target_results import (
+    SORT_MODES,
+    SORT_PERCENTILE,
+    aggregate_target_candidates,
+)
 from shared.targets import (
     archive_target,
     create_target,
@@ -465,24 +470,43 @@ def target_detail(target_id):
         return render_template("404.html"), 404
 
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    # Phase 1 shows this target's COMPUTE-CAMPAIGN runs. Standalone jobs that
-    # carry target_id with campaign_id NULL (the `target:` reuse token, and
-    # Phase 4's yardstick refolds) are not shown: reading both tables is
-    # Phase 3's fan-in. Currently invisible rather than wrong, because no
-    # template mints a `target:` token yet. The combined ranked table over all
-    # of them is also Phase 3; until then each run links to its own results
-    # page.
+
+    # Phase 3's fan-in. ONE call, which reads both tables (this target's
+    # compute-campaign runs and its target-tagged standalone jobs) and returns
+    # the runs alongside the pooled ranked designs, so this route does NOT also
+    # call list_campaigns_for_target: `agg["campaigns"]` is that list.
     #
-    # One server-side read filtered on target_id. This previously fetched the
-    # target's run ids and then intersected them with the user's 200 most
-    # recent campaigns, which is capped over their ENTIRE campaign history: a
-    # target whose runs all fell outside that window rendered the empty state,
-    # telling the user nothing had ever been run against a target they had paid
-    # to run against.
-    # Drafts are excluded (see list_campaigns_for_target): a stranded draft was
-    # never funded, dispatched or billed, so it is not a run, and there is no
-    # action the page could offer on it.
-    runs = cc.list_campaigns_for_target(target.id, user_id=ctx.user_id)
+    # Drafts stay excluded (see list_campaigns_for_target): a stranded draft was
+    # never funded, dispatched or billed, so it is not a run. The empty state
+    # below counts them separately rather than implying nothing was attempted.
+    #
+    # Unknown ?sort= falls back rather than 400ing: it arrives from a query
+    # string, and a link a user pasted from an older version of this page should
+    # render, not error.
+    sort_mode = request.args.get("sort") or SORT_PERCENTILE
+    if sort_mode not in SORT_MODES:
+        sort_mode = SORT_PERCENTILE
+    agg = aggregate_target_candidates(
+        target.id, user_id=ctx.user_id, sort_mode=sort_mode,
+    )
+    if not agg["ok"]:
+        # get_target already resolved above, so this is a read failure rather
+        # than a tenancy one; render 404 for the same reason the aggregate does.
+        return render_template("404.html"), 404
+    runs = agg["campaigns"]
+
+    # A target whose every launch stranded at `draft` has no runs AND no
+    # designs, so the empty state would otherwise read "nothing has been run"
+    # to someone who tried and was not charged. Counting drafts costs a second
+    # query, so it is issued ONLY on the empty path, where there is by
+    # definition nothing else to pay for it.
+    draft_count = 0
+    if not runs:
+        draft_count = len(
+            [c for c in cc.list_campaigns_for_target(
+                target.id, user_id=ctx.user_id, include_drafts=True,
+            ) if c.status == "draft"]
+        )
 
     # "You just launched N runs" after a redirect from the launch screen. This
     # app has no flash(), so the result rides the query string. Counted from
@@ -510,7 +534,160 @@ def target_detail(target_id):
         runs=runs,
         launched_count=len(launched_runs),
         stalled_count=stalled_count,
+        agg=agg,
+        draft_count=draft_count,
+        sort_mode=agg["sort_mode"],
     )
+
+
+# The ZIP pulls every PDB's bytes into the web process, so it stays capped
+# while CSV and FASTA do not. Mirrors _CAMPAIGN_ZIP_EXPORT_LIMIT
+# (blueprints/campaigns.py:659); a target pools MORE tools than a campaign, so
+# if anything the bound matters more here.
+_TARGET_ZIP_EXPORT_LIMIT = 300
+
+
+def _target_export(target_id: str, fmt: str):
+    """Pooled CSV / FASTA / ZIP across every run against one target.
+
+    Mirrors :func:`blueprints.campaigns._campaign_export`, with three deliberate
+    differences.
+
+    THE OWNERSHIP SENTINEL IS ``ok``, not an empty field. The campaign version
+    gates on ``agg.get("tool") is None``, which works there because a campaign
+    always has exactly one tool. A target has a LIST, and an owned target with
+    no succeeded designs yet has an empty one, so reusing that idiom would 404 a
+    paying user's freshly launched work. ``ok`` is False only for missing or
+    foreign; owned-and-empty exports an empty file.
+
+    ``?sort=`` is forwarded so the file matches the screen. That is safe because
+    the sort mode changes the ORDER of rows and never the SET: the cap is
+    applied in canonical order before the display sort, so "top 300" is the same
+    300 designs either way and only their order in the CSV differs.
+
+    A PARTIAL READ IS MARKED IN THE FILENAME. A target has many reads behind it
+    and any one of them can fail, which yields a short file rather than an error;
+    see the note beside ``incomplete`` below. The campaign export has no
+    equivalent because it has no equivalent flag.
+
+    The ``rank`` column is NOT the on-screen row number when the page is capped:
+    the page ranks with :data:`DEFAULT_LIMIT` and these files rank the whole set,
+    so a floor-reserved row sits at a different ordinal in each. The rows carry
+    ``source_job`` and ``pdb_key``, which identify a design across both; see
+    :func:`shared.exports.export_key`.
+    """
+    from flask import Response  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+    )
+    from shared.storage import download_output  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+
+    sort_mode = request.args.get("sort") or SORT_PERCENTILE
+    if sort_mode not in SORT_MODES:
+        sort_mode = SORT_PERCENTILE
+    export_limit = _TARGET_ZIP_EXPORT_LIMIT if fmt == "zip" else None
+    agg = aggregate_target_candidates(
+        target_id, user_id=ctx.user_id, limit=export_limit, sort_mode=sort_mode,
+    )
+    if not agg["ok"]:
+        return render_template("404.html"), 404
+    candidates = agg.get("candidates", [])
+    stem = "target_" + str(target_id)[:8]
+
+    # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
+    # the two are byte-indistinguishable. The aggregate sets `partial` precisely
+    # so "we could not look" can be told apart from "you have nothing", and
+    # target_detail discloses it; this route was written with the flag in hand
+    # and dropped it, so a target whose reads failed downloaded as a complete
+    # 200 and the FASTA positively asserted there were no sequences.
+    #
+    # Disclosed in the FILENAME, for the same reason `capped` already is below:
+    # the artifact leaves this process and is opened later, out of the page's
+    # context, so a banner on the page cannot travel with it. Not disclosed as a
+    # leading CSV comment row, which would change a shape every existing
+    # consumer parses (`candidates_to_csv` is shared with the campaign export).
+    partial = bool(agg.get("partial"))
+    incomplete = "_incomplete" if partial else ""
+
+    if fmt == "csv":
+        return Response(
+            candidates_to_csv(candidates),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}_scores{incomplete}.csv",
+            },
+        )
+    if fmt == "fasta":
+        body = candidates_to_fasta(candidates)
+        if not body:
+            # "No sequences found" is a claim about the target. Under `partial`
+            # it is a claim about a read that did not happen.
+            body = (
+                "# Part of this target could not be read, so no sequences could"
+                " be listed. Reload the target page and try again.\n"
+                if partial
+                else "# No sequences found in this target's output.\n"
+            )
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}{incomplete}.fasta",
+            },
+        )
+
+    def _fetch(src_job_id: str, filename: str):
+        try:
+            return download_output(
+                user_id=ctx.user_id, job_id=src_job_id, filename=filename,
+            )
+        except StorageError:
+            logger.warning(
+                "target export_zip: storage miss for %s/%s",
+                src_job_id, filename, exc_info=True,
+            )
+            return None
+
+    # namespace=True prefixes each entry <tool>/<job8>/ here rather than
+    # chunk###/, because every campaign starts at chunk 0 and a bindcraft and a
+    # boltzgen chunk000/designs/design_1.pdb would be one arcname. The switch is
+    # driven by _source_tool, which only the target aggregate stamps, so the
+    # campaign ZIP is unchanged (shared/exports.py::candidates_to_zip).
+    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    if agg.get("capped"):
+        total = agg.get("total", len(candidates))
+        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}{incomplete}.zip"
+    else:
+        zip_name = f"{stem}_pdbs{incomplete}.zip"
+    return Response(
+        data,
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={zip_name}"},
+    )
+
+
+@targets_bp.route("/targets/<target_id>/export.csv", methods=["GET"])
+@login_required
+def target_export_csv(target_id):
+    return _target_export(target_id, "csv")
+
+
+@targets_bp.route("/targets/<target_id>/export.fasta", methods=["GET"])
+@login_required
+def target_export_fasta(target_id):
+    return _target_export(target_id, "fasta")
+
+
+@targets_bp.route("/targets/<target_id>/export.zip", methods=["GET"])
+@login_required
+def target_export_zip(target_id):
+    return _target_export(target_id, "zip")
 
 
 @targets_bp.route("/targets/<target_id>/launch", methods=["GET"])
