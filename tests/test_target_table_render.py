@@ -580,9 +580,18 @@ def test_the_top_badge_marks_the_ranked_best_not_the_first_row_shown():
                    target_id="t-1", multi_tool=True, sort_mode="tool")
     badge_at = _top_row_index(html)
     assert badge_at is not None, "no Top badge rendered"
-    assert displayed[badge_at - 1]["_source_tool"] == "rfdiffusion", (
-        f"badge landed on display row {badge_at}, "
-        f"tool {displayed[badge_at - 1]['_source_tool']}")
+
+    # IDENTITY, not tool. An earlier version asserted only that the badged row
+    # belonged to rfdiffusion, which holds canonical positions 1, 3 and 4 in
+    # this fixture, so mutating the gate to `_rank_position == 3` or `== 4`
+    # left it GREEN. Verified by mutation: with the tool assertion it caught
+    # only `== 2`; with this one it catches every off-by-N.
+    badged = displayed[badge_at - 1]
+    assert (badged["_source_job_id"], badged["_source_index"]) == (
+        winner[0]["_source_job_id"], winner[0]["_source_index"]
+    ), (f"badge landed on display row {badge_at} "
+        f"(_rank_position {badged.get('_rank_position')}), expected the row at "
+        f"_rank_position 1")
 
 
 def test_the_top_badge_is_on_row_one_under_the_default_sort():
