@@ -2725,3 +2725,52 @@ where its value was asserted, and shipped with a test that pinned three dict
 keys while its own docstring promised a display property no test rendered. The
 question to ask of a renamed flag is not "is the new value right" but "what does
 each reader still believe the old name promised".
+
+## Addendum u - live browser walk, and one new finding
+
+**Phase 3 browser walk DONE 2026-08-01 on the deployed site, zero defects.**
+It needed a real two-tool target, which the account did not have, so a miniature
+campaign was launched with explicit approval: rfdiffusion 20 + pxdesign 1,
+quoted hold $11.81, actual hold $11.36, actual spend **$4.48**. Verified on 29
+designs from 2 tools: 28 ordinals against an independently written English rule
+with zero wrong (including `32nd`, the exact case the old hardcoded `th` broke);
+within-tool percentile ranking proven (pxdesign's ipTM 0.100 TIES rfdiffusion's
+best raw value yet correctly ranks below its 0.090, because rank fraction 0.5 <
+0.6875 - a raw sort would have put it joint first); zero of the 7 pooled headers
+carry `data-col`; ZIP arcnames namespaced `rfdiffusion/01c3b3a6/...` beside
+`pxdesign/a3429923/...` where the old `chunk000/` scheme gave both ONE name;
+suppressed and ranked cohorts rendering in one table; the provisional banner
+present while running and absent once terminal; `?sort=tool` regrouping; CSV
+matching the screen and unioning pxdesign's sparse `pAE` column.
+
+Two gates confirmed in passing. The all-or-nothing launch gate rejected an IgGM
+tool for a missing antibody chain with "Nothing was started and nothing was
+charged", leaving the two valid tools in the same submission unlaunched and
+unbilled. And the `@idempotent()` guard held through repeated submit clicks
+during a diagnosis: exactly two campaigns exist, not four.
+
+- **A81 (NEW, filed for Phase 5, not fixed). The campaigns list does not group a
+  multi-tool launch.** `launch_group_id` is a real column
+  (`0039_design_targets.sql:107-116`, "ties the N runs created by one multi-tool
+  launch together") and is populated on every multi-tool launch
+  (`blueprints/targets.py:982,1001`). It is consumed in exactly ONE place in the
+  app: the "you just launched N runs" banner at `blueprints/targets.py:524`.
+  `compute_campaigns_list` (`blueprints/campaigns.py:84`) builds a flat feed of
+  campaigns plus standalone runs and never reads it, so one launch renders as N
+  cards carrying the IDENTICAL name with nothing tying them together. Observed
+  live: `phase3-pooled-walk` appears twice.
+  **Not a collapse to one row.** Each campaign keeps its own status, budget,
+  sub-job count, cancel action and results page, and they genuinely diverge (one
+  can pause on funds while the other runs). The fix is one card per launch group
+  with per-tool rows nested inside, group status as the rollup and budget as the
+  sum. Campaigns with a null `launch_group_id` - every pre-Phase-2 campaign and
+  every standalone run - render exactly as today, so it is additive.
+  The target page's Runs section has the same shape but reads correctly there,
+  because it is already scoped to one target and headed "Runs".
+
+### Standing lesson
+
+**A column added for one consumer stays invisible to every other surface that
+needs it.** `launch_group_id` shipped in Phase 1's migration and Phase 2 filled
+it in, and the list view that most needed it was never taught to read it. When a
+schema change lands, enumerate the surfaces that display the same entity.
