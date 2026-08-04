@@ -63,11 +63,24 @@
    column predates this work and is out of Phase 3's scope. #}
 {% set pooled = true if target_id else false %}
 {# ``grouped`` = the table is drawn as one block per tool, with a header row
-   between blocks. Gated on ``multi_tool`` as well as the mode because
-   apply_sort_mode's SORT_TOOL keys on _source_tool alone: on a one-tool target
-   it returns a byte-identical row list, and a lone group header over the whole
-   table would announce a grouping that did not happen. #}
-{% set grouped = pooled and multi_tool and sort_mode == 'tool' %}
+   between blocks. apply_sort_mode's SORT_TOOL keys on _source_tool alone, so a
+   table holding ONE tool comes back byte-identical and a lone group header
+   over the whole thing would announce a grouping that did not happen.
+
+   ``row_tools`` counts the distinct tools in the rows about to be rendered,
+   under the same ``_source_tool or ''`` normalisation the group loop applies
+   below, so the gate and the loop cannot disagree about what a group is. A row
+   with no tool is its own group there and is counted as one here.
+
+   NOT ``multi_tool``, which this gate used to read: Phase 3 redefined it as
+   more than one COHORT, so one tool at two presets satisfies it, which is
+   precisely the lone-header case. The route honours a pasted ``?sort=tool``
+   even though the toggle is hidden at one tool, so that path is reachable.
+   NOT ``per_tool | length`` either: correct today, but it makes the gate
+   depend on a second source of truth the caller has to remember to pass. #}
+{% set row_tools = candidates | map(attribute='_source_tool', default='')
+                              | map('default', '', true) | unique | list %}
+{% set grouped = pooled and sort_mode == 'tool' and row_tools | length > 1 %}
 {# Fixed cells are #, star, 3D, PDB = 4; multi-tool replaces `columns` with
    Tool, Score and Pctile. Computed once because both the viewer rows and the
    group header rows have to span it, and they drifted apart once already. #}

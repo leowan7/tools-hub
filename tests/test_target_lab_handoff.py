@@ -86,13 +86,34 @@ class _Harness:
         self.staged: list[dict] = []
         self.emails: list[dict] = []
         self.job_lookups: list[str] = []
+        # (id, user_id) per call. The user_id half is the point: it is the only
+        # thing that fails when the route stops passing the owner scope, and
+        # both of these reads previously went through a `return_value=` patch
+        # that discarded it (register item A-1).
+        self.target_lookups: list[tuple] = []
+        self.campaign_id_lookups: list[tuple] = []
 
 
-def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,)):
+_CREATE_OK = object()
+
+
+def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
+            campaign_ids_complete=True, create_result=_CREATE_OK,
+            target_owner="u-1", campaign_owner="u-1"):
     """Drive POST /lab-projects/submit and return (response, harness).
 
     ``jobs`` maps job id -> job (or None for "not the caller's"), which is
     exactly what an owner-scoped ``get_job`` returns.
+
+    ``campaign_ids_complete`` is the second half of what
+    ``campaign_ids_for_target`` returns: False means the id read was cut short
+    by a fault or the page bound, so the ids are a prefix of the real set.
+    Defaults True because that is the only shape a healthy read produces.
+
+    ``create_result`` overrides what ``create_campaign_from_target_refs``
+    returns. It is a parameter rather than an outer ``patch`` because this
+    helper patches that same name itself, and its patch is entered later and
+    therefore wins.
     """
     h = _Harness()
 
@@ -112,6 +133,8 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,)):
 
     def fake_create(**kw):
         h.created.append(kw)
+        if create_result is not _CREATE_OK:
+            return create_result
         return SimpleNamespace(id="lab-1", **{
             k: v for k, v in kw.items() if k != "user_id"
         })
@@ -122,6 +145,24 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,)):
 
     def fake_email(**kw):
         h.emails.append(kw)
+
+    def fake_get_target(tid, *, user_id=None):
+        # Models shared.targets.get_target, which applies user_id as a QUERY
+        # filter: another tenant's target comes back None, indistinguishable
+        # from absent. A `return_value=` patch hands the row back regardless
+        # and so stays green against a route that dropped the scope.
+        h.target_lookups.append((tid, user_id))
+        if target is None or (user_id is not None and target_owner != user_id):
+            return None
+        return target
+
+    def fake_campaign_ids(tid, *, user_id=None):
+        # Same, for the parentage id set. Owner-scoped inside the real
+        # function, so a foreign campaign is simply not in the returned list.
+        h.campaign_id_lookups.append((tid, user_id))
+        if user_id is not None and campaign_owner != user_id:
+            return [], campaign_ids_complete
+        return list(campaign_ids), campaign_ids_complete
 
     body = {
         "source_target_id": _TID,
@@ -137,9 +178,9 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,)):
             patch("blueprints.lab_projects.get_job", side_effect=fake_get_job), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   side_effect=fake_stage), \
-            patch("shared.targets.get_target", return_value=target), \
+            patch("shared.targets.get_target", side_effect=fake_get_target), \
             patch("shared.targets.campaign_ids_for_target",
-                  return_value=list(campaign_ids)), \
+                  side_effect=fake_campaign_ids), \
             patch("shared.campaigns.create_campaign_from_target_refs",
                   side_effect=fake_create), \
             patch("shared.email.send_campaign_submitted_emails",
@@ -217,14 +258,56 @@ def test_a_ref_naming_the_callers_own_job_on_another_target_creates_nothing(clie
     assert h.staged == []
 
 
-def test_a_foreign_target_creates_nothing(client):
-    """The parent gate. ``get_target`` is owner-scoped, so a target id that is
-    not the caller's returns None before any job is read at all."""
+def test_a_missing_target_creates_nothing(client):
+    """The parent gate short-circuits BEFORE any job is read.
+
+    Renamed in round 19. As `test_a_foreign_target_creates_nothing` it claimed
+    to prove the read was owner-scoped, but `target=None` only makes the
+    patched function return None: it shows the route handles that answer, not
+    that it asks the question. The two tests below are the ones that fail if
+    the scope is dropped (register item A-1).
+    """
     jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
     resp, h = _submit(client, jobs, target=None)
     assert resp.status_code == 302
     assert h.created == []
     assert h.job_lookups == []
+
+
+def test_a_target_belonging_to_someone_else_creates_nothing(client):
+    """A-1, the half that was missing. The target EXISTS and its campaign
+    really is this shortlist's parent; the only thing between the caller and
+    another tenant's target is the owner scope on `get_target`.
+
+    The fake models that scope the way `fake_get_job` models `get_job`'s, so
+    dropping `user_id=ctx.user_id` at the call site makes this return the row
+    and the assertions below fail.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, target_owner="u-2")
+    assert resp.status_code == 302
+    assert h.created == []
+    assert h.job_lookups == [], "no job may be read for a target that is not yours"
+    # The direct half: the scope has to be ON THE WIRE, not merely honoured by
+    # a fake that was never asked.
+    assert h.target_lookups == [(_TID, "u-1")], h.target_lookups
+
+
+def test_the_parentage_read_is_owner_scoped_too(client):
+    """The third owner-scoped read, and the one whose absence is silent rather
+    than loud: `campaign_ids_for_target` decides which campaigns count as this
+    target's parents, so an unscoped read would admit another tenant's campaign
+    id as valid provenance.
+
+    Asserted on the kwarg because the behavioural consequence needs a foreign
+    campaign that happens to share this target id, which the schema makes
+    unreachable -- so the call itself is the only observable.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs)
+    assert resp.status_code == 302
+    assert len(h.created) == 1, "fixture assumption: the happy path ran"
+    assert h.campaign_id_lookups == [(_TID, "u-1")], h.campaign_id_lookups
 
 
 def test_only_the_accepted_refs_reach_the_insert(client):
@@ -420,9 +503,94 @@ def test_an_empty_target_shortlist_returns_to_the_target_not_to_jobs(client):
     """Phase 5.2 made the send button live at zero stars, so this body is now
     reachable from the UI. Gated on `and candidate_refs`, it fell through both
     ref branches to the legacy single-job one, which has no source_job_id and
-    redirects to /jobs -- an unrelated list."""
+    redirects to /jobs -- an unrelated list.
+
+    ROUND 19 (A-8): it now also SAYS so. Landing back on the page you came
+    from with nothing changed and no message is indistinguishable from a dead
+    button, and this is the action that hands work to the wet lab.
+    """
     resp, h = _submit(client, {}, form={"candidate_refs": "[]"})
     assert resp.status_code == 302
-    assert resp.headers["Location"].endswith(f"/targets/{_TID}")
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=none")
     assert h.created == []
     assert h.job_lookups == []
+
+
+# ---------------------------------------------------------------------------
+# ROUND 19: what the user is told when the shortlist does not arrive whole
+#
+# Every one of these was a bare `redirect(detail)`: same page, nothing changed,
+# no message. On an action that hands work to a wet lab and bills for it, that
+# is indistinguishable from a button that does nothing (register items A-7,
+# A-8).
+# ---------------------------------------------------------------------------
+
+def _two_refs():
+    return json.dumps([{"job_id": "j-bc", "index": 0},
+                       {"job_id": "j-gone", "index": 0}])
+
+
+def test_a_partly_rejected_shortlist_reports_what_was_dropped(client):
+    """Two starred, one accepted. The submit proceeds -- correctly, the user
+    does want the design that IS valid -- but both the confirmation page and
+    the emails otherwise report "1" with nothing to compare it against, and a
+    user who starred two reads that as the number they chose."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, form={"candidate_refs": _two_refs()})
+    assert resp.status_code == 302
+    assert len(h.created) == 1
+    assert h.created[0]["candidate_refs"] == [{"job_id": "j-bc", "index": 0}]
+    assert resp.headers["Location"].endswith("?submitted=1&dropped=1")
+    # Ops reads the email, not the page, so the count has to reach both.
+    assert h.emails and h.emails[0]["dropped"] == 1
+
+
+def test_a_fully_accepted_shortlist_reports_no_drops(client):
+    """The pair. Sending `dropped` unconditionally would satisfy the test above
+    while telling every clean submission that something went missing, and would
+    change the URL of the overwhelmingly common case."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs)
+    assert resp.headers["Location"].endswith("?submitted=1")
+    assert h.emails and h.emails[0]["dropped"] == 0
+
+
+def test_an_incomplete_campaign_read_refuses_rather_than_narrow(client):
+    """A-7's sharper half. `owned_by_target` consults the campaign id set, so
+    when that read came back short a legitimate design is indistinguishable
+    from a ref belonging to another target. Proceeding hands the wet lab a
+    shortlist quietly missing designs the user selected and paid to compute.
+
+    Refusing is recoverable: the stars live in sessionStorage and survive the
+    redirect, so a retry costs one click.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, form={"candidate_refs": _two_refs()},
+                      campaign_ids=(), campaign_ids_complete=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.created == [], "a partial shortlist must not reach the lab"
+    assert h.staged == []
+
+
+def test_an_incomplete_campaign_read_that_rejected_nothing_still_submits(client):
+    """The pair, and the reason the refusal is gated on `dropped` too. A short
+    id read that changed no decision is not a reason to refuse a shortlist
+    every ref of which was accepted by the standalone-job route."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", target_id=_TID)}
+    resp, h = _submit(client, jobs, campaign_ids=(),
+                      campaign_ids_complete=False)
+    assert resp.status_code == 302
+    assert len(h.created) == 1
+    assert "?submitted=1" in resp.headers["Location"]
+
+
+def test_a_failed_lab_project_creation_says_so(client):
+    """A-8. Until migration 0040 is applied the insert violates 0037's
+    `submission_source` CHECK, the exception is swallowed below the call, and
+    this returns None. The user was redirected back with no banner at all."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, create_result=None)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=failed")
+    assert h.staged == [], "nothing may be staged for a campaign that failed"

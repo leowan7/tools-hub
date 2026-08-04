@@ -528,6 +528,15 @@ def target_detail(target_id):
         stalled_count = max(0, int(request.args.get("stalled") or 0))
     except ValueError:
         stalled_count = 0
+
+    # Why the lab handoff sent the user back here. Every one of these was a
+    # bare `redirect(detail)` with no banner and nothing changed, which on the
+    # one action that hands work to the wet lab reads as a dead button
+    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
+    # renders nothing at all rather than an empty alert.
+    handoff = (request.args.get("handoff") or "").strip()
+    if handoff not in ("none", "noname", "unverified", "failed"):
+        handoff = ""
     return render_template(
         "targets/detail.html",
         target=target,
@@ -537,6 +546,7 @@ def target_detail(target_id):
         agg=agg,
         draft_count=draft_count,
         sort_mode=agg["sort_mode"],
+        handoff=handoff,
     )
 
 
@@ -548,7 +558,8 @@ _TARGET_ZIP_EXPORT_LIMIT = 300
 
 
 def _starred_refs():
-    """The starred-only filter for a POSTed export, or ``None`` on a GET.
+    """``(filter_set, truncated)`` for a POSTed export, or ``(None, False)``
+    on a GET.
 
     A POST to an export route ALWAYS means "only these designs". A body with
     no ``refs`` field, an unparseable one, or one naming nothing yields an
@@ -557,18 +568,30 @@ def _starred_refs():
     filename that says ``_starred``.
 
     The refs are parsed with the same function the lab-handoff POST uses, so
-    the two consumers of the star selection cannot disagree about the payload
+    the consumers of the star selection cannot disagree about the payload
     shape. It is imported here rather than duplicated: a second ten-line
     parser is exactly the kind of thing that drifts.
+
+    IT ALSO INHERITS THAT PARSER'S 500-REF CEILING, which it does not announce
+    (register item A-2). ``truncated`` is how the caller finds out, because
+    hitting the bound means the file is a prefix of what the user asked for
+    and the export otherwise described itself as exact.
+
+    ``>=`` deliberately over-detects by one case: a selection of exactly 500
+    valid refs is complete but reported as truncated, because the parser
+    stops at the bound without saying whether more were waiting. Over-warning
+    on a filename is the harmless direction; under-warning ships a short file
+    claiming to be whole.
     """
-    from blueprints.lab_projects import _parse_candidate_refs  # noqa: PLC0415
+    from blueprints.lab_projects import (  # noqa: PLC0415
+        _MAX_CANDIDATE_REFS, _parse_candidate_refs,
+    )
 
     if request.method != "POST":
-        return None
-    return {
-        (str(r["job_id"]), int(r["index"]))
-        for r in _parse_candidate_refs(request.form.get("refs", ""))
-    }
+        return None, False
+    parsed = _parse_candidate_refs(request.form.get("refs", ""))
+    refs = {(str(r["job_id"]), int(r["index"])) for r in parsed}
+    return refs, len(parsed) >= _MAX_CANDIDATE_REFS
 
 
 def _row_ref(cand: dict) -> tuple:
@@ -638,14 +661,48 @@ def _target_export(target_id: str, fmt: str):
     # already been shown, so it can only ever narrow what this same route
     # would otherwise serve -- it is not a second way to address data.
     #
-    # Exact for csv/fasta because those aggregate with limit=None. It is NOT
-    # offered for the ZIP, which caps at 300 in canonical order: a starred
-    # design below that cap would be missing from the archive with nothing to
-    # say so. The macro renders the control for CSV only.
-    starred = _starred_refs()
+    # Exact for csv/fasta UP TO 500 STARRED DESIGNS. Those aggregate with
+    # limit=None, so nothing is lost on the aggregate side, but the selection
+    # itself arrives through `_parse_candidate_refs`, which stops at
+    # `_MAX_CANDIDATE_REFS` and returns a prefix without saying so. This
+    # comment claimed "exact" unqualified (register item A-2); `truncated`
+    # below is what makes the bound visible instead of theoretical.
+    #
+    # It is NOT offered for the ZIP, which caps at 300 in canonical order: a
+    # starred design below that cap would be missing from the archive with
+    # nothing to say so. The macro renders the control for CSV only.
+    starred, starred_truncated = _starred_refs()
     if starred is not None:
+        requested = len(starred)
         candidates = [c for c in candidates if _row_ref(c) in starred]
         stem += "_starred"
+        # THE SELECTION IS ASSEMBLED IN THE BROWSER, so every way that can go
+        # wrong arrives here as the same thing: a POST whose refs name nothing
+        # this target has. static/js/candidate_table.js fills the hidden `refs`
+        # field at submit time from sessionStorage, and there is no JS harness
+        # in this repo, so renaming `.cand-starred-export`, dropping the submit
+        # listener, or emitting a different key shape all survive the suite and
+        # all land exactly here (register item B-3). Undisclosed, each one
+        # ships a header-only CSV at HTTP 200 under a filename saying
+        # `_starred`, which reads as "you starred nothing" rather than "the
+        # page failed to tell us what you starred".
+        #
+        # In the filename for the reason `incomplete` and `capped` already are,
+        # stated below: the artifact leaves this process and is opened later,
+        # out of this page's context, so nothing on the page travels with it.
+        # `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}` rather than
+        # inventing a second vocabulary for the same idea.
+        #
+        # `first{N}` is checked FIRST and is not an alternative to the counts
+        # below: when the parser truncated, `requested` is already the capped
+        # number, so the NofM comparison is drawn against a figure that is
+        # itself short and can only understate the loss.
+        if starred_truncated:
+            stem += f"_first{len(starred)}"
+        elif not candidates:
+            stem += "_empty"
+        elif len(candidates) < requested:
+            stem += f"_{len(candidates)}of{requested}"
 
     # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
     # the two are byte-indistinguishable. The aggregate sets `partial` precisely

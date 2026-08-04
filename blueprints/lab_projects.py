@@ -38,8 +38,16 @@ lab_projects_bp = Blueprint("lab_projects", __name__)
 # (the results table itself renders at most a few hundred rows), and it exists
 # for the failure mode rather than the feature: each accepted ref that names an
 # unseen job costs one Supabase round trip in the loops below, so an unbounded
-# array is a request-amplification lever. Applied at parse time so BOTH the
-# campaign and the target branch inherit it.
+# array is a request-amplification lever.
+#
+# THREE consumers, not two. Applied at parse time, so the campaign branch and
+# the target branch of /lab-projects/submit both inherit it -- and so does
+# `blueprints.targets._starred_refs`, which reuses this parser for the
+# starred-only CSV export. That third one arrived in the same change as this
+# comment and was left out of it, which is how the export came to describe
+# itself as "exact" while silently dropping the 501st starred design
+# (register item A-2). Anything added here must state what it does about the
+# bound.
 _MAX_CANDIDATE_REFS = 500
 
 
@@ -194,17 +202,25 @@ def _submit_target_shortlist(
     from shared.targets import campaign_ids_for_target, get_target  # noqa: PLC0415
 
     detail = url_for("targets.target_detail", target_id=source_target_id)
-    if not target_name or not candidate_refs:
-        return redirect(detail)
+    # Two causes, two answers. `candidate_refs` empty is the observable of
+    # every client-side way the star selection can fail to reach us (register
+    # item B-3), and telling that user "name your target" would be a lie.
+    if not candidate_refs:
+        return redirect(detail + "?handoff=none")
+    if not target_name:
+        return redirect(detail + "?handoff=noname")
     if get_target(source_target_id, user_id=ctx.user_id) is None:
         return redirect(url_for("targets.targets_list"))
 
     # Read ONCE, before the loop. Owner-scoped and paged; membership is all
     # this needs, so its documented arbitrary order does not matter. Fetching
     # it per ref would issue one paged read per shortlisted design.
-    target_campaign_ids = set(
-        campaign_ids_for_target(source_target_id, user_id=ctx.user_id)
+    #
+    # `complete` is load-bearing rather than diagnostic; see the refusal below.
+    campaign_id_list, campaign_ids_complete = campaign_ids_for_target(
+        source_target_id, user_id=ctx.user_id,
     )
+    target_campaign_ids = set(campaign_id_list)
 
     jobs_by_id: dict = {}
     # Rejected ids are remembered too. Without this, a body naming the same
@@ -241,8 +257,26 @@ def _submit_target_shortlist(
         refs_by_job[jid].append(idx)
         clean_refs.append({"job_id": jid, "index": idx})
 
+    # Every ref the checks above threw away. `candidate_refs` is already the
+    # parsed, de-malformed list, so this counts rejections and nothing else.
+    dropped = len(candidate_refs) - len(clean_refs)
+
+    # A REJECTION UNDER AN INCOMPLETE READ IS NOT A VERDICT. `owned_by_target`
+    # consults `target_campaign_ids`, so when that set is a prefix of the real
+    # one, a legitimate campaign-sourced design is indistinguishable from a ref
+    # belonging to some other target. This route stages a PAID order, so
+    # proceeding would hand the wet lab a shortlist quietly missing designs the
+    # user selected and paid to compute. Refusing is recoverable: the stars
+    # live in sessionStorage and survive the redirect, so a retry costs a click.
+    #
+    # Gated on `dropped` as well, not on `complete` alone: if nothing was
+    # rejected then the short list changed no decision and there is nothing to
+    # warn anyone about.
+    if dropped and not campaign_ids_complete:
+        return redirect(detail + "?handoff=unverified")
+
     if not clean_refs:
-        return redirect(detail)
+        return redirect(detail + "?handoff=none")
 
     try:
         lab_campaign = create_campaign_from_target_refs(
@@ -256,10 +290,22 @@ def _submit_target_shortlist(
             affinity_goal_kd_nm=affinity_goal_kd_nm,
             timeline_weeks=timeline_weeks,
         )
+    # THE SILENT NO-OP THIS ROUTE SHIPPED WITH (register item A-8). Both arms
+    # land here whenever the lab project cannot be created, and the likeliest
+    # of those is entirely predictable: until migration 0040 is applied the
+    # insert violates 0037's `submission_source` CHECK, the exception is
+    # swallowed below the call, and this returns None. The user was then sent
+    # back to the page they came from with no banner, no error and nothing
+    # changed, which reads as "the button does nothing" rather than "your
+    # submission failed" -- on the one action that hands work to the wet lab.
+    #
+    # Scoped to the target branch on purpose. `_submit_campaign_shortlist`
+    # above has a byte-identical pair of returns and is out of Phase 5's
+    # scope; it is filed rather than fixed here.
     except ValueError:
-        return redirect(detail)
+        return redirect(detail + "?handoff=failed")
     if lab_campaign is None:
-        return redirect(detail)
+        return redirect(detail + "?handoff=failed")
 
     for jid, idxs in refs_by_job.items():
         job = jobs_by_id[jid]
@@ -289,13 +335,19 @@ def _submit_target_shortlist(
         send_campaign_submitted_emails(
             campaign=lab_campaign, user_email=session.get("user_email", ""),
             source_tools=_source_tool_counts(jobs_by_id, refs_by_job),
+            dropped=dropped,
         )
     except Exception:
         logger.warning("campaign submit emails failed", exc_info=True)
 
+    # `dropped` rides the query string so the confirmation page can state what
+    # was NOT sent. Without it the page reports the accepted count with nothing
+    # to compare it against, and a user who starred ten designs reads "7" as
+    # the number they chose (register item A-7). Omitted when zero, so the
+    # common case keeps exactly today's URL.
     return redirect(
         url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
-        + "?submitted=1"
+        + "?submitted=1" + (f"&dropped={dropped}" if dropped else "")
     )
 
 
@@ -451,10 +503,19 @@ def campaign_detail(campaign_id: str):
     if campaign is None:
         return render_template("404.html"), 404
     submitted_flash = request.args.get("submitted") == "1"
+    # How many starred designs the submit REJECTED. Only the target branch
+    # sends it, and only when non-zero. Clamped rather than validated: this is
+    # a display count on a page the user already owns, so a crafted value
+    # misinforms nobody but its author.
+    try:
+        dropped_count = max(0, int(request.args.get("dropped") or 0))
+    except ValueError:
+        dropped_count = 0
     return render_template(
         "campaigns/detail.html",
         campaign=campaign,
         submitted_flash=submitted_flash,
+        dropped_count=dropped_count,
     )
 
 # Legacy stub redirect — old results pages linked here.

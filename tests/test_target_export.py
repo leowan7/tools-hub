@@ -344,6 +344,57 @@ def test_a_post_with_no_usable_refs_exports_nothing_not_everything(client):
     assert _csv_rows(resp.get_data(as_text=True)) == []
 
 
+def _filename(resp):
+    return resp.headers["Content-Disposition"].split("filename=")[1]
+
+
+def test_an_empty_starred_export_says_so_in_its_filename(client):
+    """ROUND 19 (B-3). The star selection is assembled in the BROWSER, and this
+    repo has no JS harness, so every way static/js/candidate_table.js can fail
+    to report it survives the whole suite and arrives here as the same thing:
+    a POST naming nothing. Four such mutations were confirmed to survive --
+    renaming `.cand-starred-export`, dropping the submit listener, emitting
+    {j,i} instead of {job_id,index}, and renaming `shortlist-hint-`.
+
+    Undisclosed, every one of them shipped a header-only CSV at HTTP 200 under
+    a filename saying `_starred`, which reads as "you starred nothing" rather
+    than "the page failed to tell us what you starred". This assertion is what
+    makes that class of breakage visible without a JS runtime.
+    """
+    _login(client)
+    cands = [_cand("bindcraft", "job-bc", 0), _cand("pxdesign", "job-px", 0)]
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(cands)):
+        resp = client.post(f"/targets/{_TID}/export.csv", data={})
+    assert _csv_rows(resp.get_data(as_text=True)) == []
+    assert _filename(resp) == f"target_{_TID[:8]}_starred_empty_scores.csv"
+
+
+def test_a_fully_resolved_starred_export_carries_no_shortfall_marker(client):
+    """The pair. Appending the marker unconditionally satisfies the test above
+    while mislabelling every real selection as broken."""
+    _login(client)
+    resp = _starred_post(client, [{"job_id": "job-bc", "index": 0}],
+                         [_cand("bindcraft", "job-bc", 0)])
+    assert _filename(resp) == f"target_{_TID[:8]}_starred_scores.csv"
+
+
+def test_a_starred_export_whose_refs_partly_miss_reports_the_shortfall(client):
+    """Between the two: refs that named real designs, of which this target can
+    resolve only some. Stale sessionStorage after a retention purge does this,
+    and the count is the only thing that distinguishes it from a smaller
+    selection. `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}`."""
+    _login(client)
+    resp = _starred_post(
+        client,
+        [{"job_id": "job-bc", "index": 0}, {"job_id": "job-gone", "index": 7}],
+        [_cand("bindcraft", "job-bc", 0)],
+    )
+    assert len(_csv_rows(resp.get_data(as_text=True))) == 1
+    assert _filename(resp) == f"target_{_TID[:8]}_starred_1of2_scores.csv"
+
+
 def test_a_get_is_unfiltered(client):
     """The pair. The starred filter must not leak onto the plain download."""
     _login(client)
@@ -376,3 +427,37 @@ def test_only_csv_accepts_a_post(client, fmt):
     _login(client)
     resp = client.post(f"/targets/{_TID}/export.{fmt}", data={"refs": "[]"})
     assert resp.status_code == 405
+
+
+def test_a_starred_export_above_the_ref_ceiling_says_it_is_a_prefix(client):
+    """ROUND 19 (A-2). `_starred_refs` reuses `_parse_candidate_refs`, which
+    stops at `_MAX_CANDIDATE_REFS` and returns a prefix without saying so, and
+    the export's own comment described itself as "exact". A user who starred
+    600 designs got 500 under a filename claiming to be their selection.
+
+    The count in the name is the number actually applied, so the file states
+    what it is rather than what was asked for.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+
+    _login(client)
+    over = _MAX_CANDIDATE_REFS + 100
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(over)]
+    refs = [{"job_id": "job-bc", "index": i} for i in range(over)]
+    resp = _starred_post(client, refs, cands)
+    assert resp.status_code == 200
+    rows = _csv_rows(resp.get_data(as_text=True))
+    assert len(rows) == _MAX_CANDIDATE_REFS, len(rows)
+    assert _filename(resp) == (
+        f"target_{_TID[:8]}_starred_first{_MAX_CANDIDATE_REFS}_scores.csv")
+
+
+def test_a_starred_export_under_the_ceiling_claims_no_prefix(client):
+    """The pair. Marking every starred export as a prefix would satisfy the
+    test above and libel every ordinary selection."""
+    _login(client)
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(3)]
+    refs = [{"job_id": "job-bc", "index": i} for i in range(3)]
+    resp = _starred_post(client, refs, cands)
+    assert len(_csv_rows(resp.get_data(as_text=True))) == 3
+    assert _filename(resp) == f"target_{_TID[:8]}_starred_scores.csv"

@@ -16,6 +16,11 @@ import pytest
 
 from shared import email as em
 
+# Register item B-12: the only file in this slice that lacked it. Nothing here
+# reaches Supabase today, but `shared.email` is one import away from code that
+# does, and the fixture is what makes that stay true.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _flat(text: str) -> str:
     """Collapse whitespace: the HTML template wraps mid-sentence, so the
@@ -195,3 +200,55 @@ def test_without_source_tools_no_designs_from_line_is_printed(sent):
     )
     assert "Designs from" not in sent[1]["text"]
     assert "Designs from" not in sent[1]["html"]
+
+
+# ---------------------------------------------------------------------------
+# ROUND 19 (register item A-7): the accepted count is not the requested one
+# ---------------------------------------------------------------------------
+
+def test_a_dropped_count_is_reported_to_both_parties(sent):
+    """A user who starred ten designs and had three rejected reads "7
+    candidates" as the number they chose, and ops reads it as the whole order.
+    Neither message previously carried anything to compare it against.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)]),
+        user_email="scientist@example.com",
+        dropped=3,
+    )
+    user_mail, staff_mail = sent
+    user_html = _flat(user_mail["html"])
+    assert "7 candidates)" in user_html
+    assert "3 starred designs could not be matched" in user_html
+    assert "Only the 7 above were sent" in user_html
+    assert "3 starred design" in _flat(user_mail["text"])
+    # Ops reads the staff mail, so the shortfall has to reach it too.
+    assert "3 starred designs rejected" in _flat(staff_mail["html"])
+    assert "Not included: 3 starred design(s) rejected" in staff_mail["text"]
+
+
+def test_no_dropped_count_means_no_shortfall_wording_anywhere(sent):
+    """The pair. Rendering the note unconditionally would satisfy the test
+    above while telling every clean submission something went missing."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+    )
+    for mail in sent:
+        assert "could not be matched" not in _flat(mail["html"])
+        assert "Not included" not in _flat(mail["html"])
+        assert "Not included" not in mail["text"]
+
+
+def test_a_single_dropped_design_reads_as_singular(sent):
+    """`1 starred designs were not included` is the kind of thing that makes a
+    paid-intake message look automated and untrustworthy."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+        dropped=1,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "1 starred design could not be matched" in user_html
+    assert "was not included" in user_html
+    assert "Only the 1 above was sent" in user_html

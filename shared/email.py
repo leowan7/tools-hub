@@ -448,7 +448,7 @@ def _source_tools_line(source_tools) -> str:  # noqa: ANN001
 
 
 def send_campaign_submitted_emails(
-    *, campaign, user_email: str, source_tools=None,  # noqa: ANN001
+    *, campaign, user_email: str, source_tools=None, dropped: int = 0,  # noqa: ANN001
 ) -> None:
     """Send user confirmation + internal staff notification on campaign submit.
 
@@ -457,6 +457,12 @@ def send_campaign_submitted_emails(
     spans tools and the spread is the whole point; omitted by the campaign and
     single-job branches, which have exactly one tool by construction
     (``compute_campaigns.tool`` is NOT NULL) and would only print it back.
+
+    ``dropped`` is how many refs the caller REJECTED before creating this
+    campaign. Both messages otherwise report the accepted count with nothing to
+    compare it against, so a user who starred ten designs reads "7 candidates"
+    as the number they chose, and ops reads it as the whole order (register
+    item A-7). Zero is the overwhelmingly common case and prints nothing.
 
     Best-effort: failures are logged but not raised to the caller.
     """
@@ -496,6 +502,30 @@ def send_campaign_submitted_emails(
         campaign.candidate_refs or []
     )
 
+    # Built out here, not inline, for the PEP 701 reason given above: an
+    # f-string nested in another f-string's replacement field does not parse on
+    # every interpreter this can deploy onto.
+    dropped_note_html = ""
+    dropped_note_text = ""
+    dropped_row = ""
+    if dropped:
+        _plural = "s" if dropped != 1 else ""
+        _sentence = (
+            f"{dropped} starred design{_plural} could not be matched to this "
+            f"target and {'were' if dropped != 1 else 'was'} not included. "
+            f"Only the {n_candidates} above "
+            f"{'were' if n_candidates != 1 else 'was'} sent."
+        )
+        dropped_note_html = (
+            '<p style="color:#8a5a00;background:#fff6e5;border-radius:6px;'
+            f'padding:10px 12px;">{_sentence}</p>'
+        )
+        dropped_note_text = "\n" + _sentence + "\n"
+        dropped_row = (
+            f"<tr><td {_td}>Not included</td><td>{dropped} "
+            f"starred design{_plural} rejected</td></tr>"
+        )
+
     # User confirmation
     user_subject = f"Scoping request received — {campaign.target_name}"
     user_html = f"""
@@ -505,6 +535,7 @@ def send_campaign_submitted_emails(
       <p>We've received your yeast display scoping request for
          <strong>{campaign.target_name}</strong> ({n_candidates}
          candidate{'s' if n_candidates != 1 else ''}).</p>
+      {dropped_note_html}
       <p>The Ranomics team will review feasibility against current lab capacity
          and follow up within <strong>2 business days</strong>.</p>
       <p style="margin:24px 0;">
@@ -521,7 +552,8 @@ def send_campaign_submitted_emails(
     </div>
     """.strip()
     user_text = (
-        f"Scoping request received for {campaign.target_name}.\n\n"
+        f"Scoping request received for {campaign.target_name}.\n"
+        f"{dropped_note_text}\n"
         "The Ranomics team will review and follow up within 2 business days.\n\n"
         f"View campaign: {campaign_url}\n\n"
         "Ranomics Tools — tools.ranomics.com"
@@ -543,6 +575,7 @@ def send_campaign_submitted_emails(
             <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
             <td>{n_candidates}</td></tr>
+        {dropped_row}
         {tools_row}
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
             <td>{campaign.budget_band.title()}</td></tr>
@@ -564,6 +597,8 @@ def send_campaign_submitted_emails(
         f"From: {user_email}\n"
         f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
         f"Candidates: {n_candidates}\n"
+        + (f"Not included: {dropped} starred design(s) rejected\n"
+           if dropped else "")
         + (f"Designs from: {tools_line}\n" if tools_line else "")
         + f"Budget: {campaign.budget_band.title()}\n"
         + (f"{source_link[0]}: {source_link[1]}\n" if source_link else "")

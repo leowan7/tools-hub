@@ -319,7 +319,26 @@ def test_campaign_ids_for_target_is_owner_scoped(fake):
         {"id": "c-1", "target_id": "t-1", "user_id": "u-1"},
         {"id": "c-2", "target_id": "t-1", "user_id": "u-2"},
     ]
-    assert campaign_ids_for_target("t-1", user_id="u-1") == ["c-1"]
+    assert campaign_ids_for_target("t-1", user_id="u-1") == (["c-1"], True)
+
+
+def test_campaign_ids_for_target_reports_a_failed_read_as_incomplete(fake):
+    """ROUND 19 (A-7). The ids and the completeness flag are one answer.
+
+    This returned its partial list from inside its own ``except``, so the one
+    caller -- the wet-lab shortlist's parentage check -- could not tell a
+    transient database fault from "that design does not belong to this
+    target", and quietly dropped designs the user had starred and paid to
+    compute.
+    """
+    def _boom(*_a, **_kw):
+        raise RuntimeError("PostgREST is down")
+
+    fake.store["compute_campaigns"] = [
+        {"id": "c-1", "target_id": "t-1", "user_id": "u-1"},
+    ]
+    with patch.object(fake, "table", side_effect=_boom):
+        assert campaign_ids_for_target("t-1", user_id="u-1") == ([], False)
 
 
 # ---------------------------------------------------------------------------
@@ -406,10 +425,14 @@ def test_campaign_ids_for_target_pages_past_the_row_clamp(fake):
         {"id": f"c-{i:05d}", "target_id": "t-1", "user_id": "u-1"}
         for i in range(2400)
     ]
-    ids = campaign_ids_for_target("t-1", user_id="u-1")
+    ids, complete = campaign_ids_for_target("t-1", user_id="u-1")
     assert len(ids) == 2400
     assert ids[0] == "c-00000"
     assert ids[-1] == "c-02399"
+    # Read the whole set, so it says so. The flag is only meaningful if the
+    # happy path actually asserts True; a function returning False forever
+    # would satisfy the failure test above on its own.
+    assert complete is True
 
     # Proof the assertion above has teeth: against this same fake, the two
     # non-paged reads someone might "simplify" back to both come up short, and

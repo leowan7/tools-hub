@@ -556,11 +556,15 @@ def _flat(body):
     return " ".join(body.split())
 
 
-def _detail(client, drafts=(), **agg_over):
+def _detail(client, drafts=(), query="", **agg_over):
     """Render the detail page and return its text with whitespace collapsed.
 
     Every keyword goes through to ``_agg``, so passing nothing gives the empty
     state and passing ``runs=`` / ``tools=`` / ``partial=`` gives the others.
+
+    ``query`` is appended to the URL. The route reads ``?sort`` straight off
+    the query string, so this is the only way to exercise a mode the page's
+    own toggle refuses to offer.
     """
     _login(client)
     t = _target()
@@ -570,7 +574,7 @@ def _detail(client, drafts=(), **agg_over):
                   return_value=_agg(**agg_over)), \
             patch("shared.compute_campaigns.list_campaigns_for_target",
                   return_value=list(drafts)):
-        resp = client.get(f"/targets/{t.id}")
+        resp = client.get(f"/targets/{t.id}{query}")
     assert resp.status_code == 200
     return _flat(resp.get_data(as_text=True))
 
@@ -865,6 +869,46 @@ def test_several_tools_still_get_the_cross_tool_copy_and_the_toggle(client):
                    candidates=_one_design(), total=1, shown=1)
     assert "Different tools score on different scales" in body
     assert "Grouped by tool" in body
+
+
+# The class appears in the macro's <style> block as `.cand-group-row td`, so an
+# assertion on the bare slug is true of every render. Only the attribute is
+# unique to an actual header row.
+_GROUP_ROW = 'class="cand-group-row"'
+
+
+def test_a_pasted_sort_tool_url_draws_no_group_header_on_a_one_tool_target(client):
+    """ROUND 19 (B-1), the route half. The toggle is correctly hidden at one
+    tool by the test above, but ``target_detail`` reads ``?sort`` straight off
+    the query string, so a pasted or bookmarked URL still reaches grouped
+    mode. The macro gated its group headers on ``multi_tool``, which is True
+    here because two presets are two cohorts, so this drew a lone header over
+    rows ``apply_sort_mode`` had returned in percentile order.
+    """
+    rows = [dict(_one_design()[0], _source_tool="proteina",
+                 _source_preset=preset, _source_index=i)
+            for i, preset in enumerate(("protein_binder", "ligand_binder"))]
+    body = _detail(client, query="?sort=tool", tools=["proteina"],
+                   multi_tool=True, split_tools=["proteina"],
+                   candidates=rows, total=2, shown=2, sort_mode="tool",
+                   per_tool={"proteina": {"total": 2, "shown": 2,
+                                          "cohort_n": 2, "unranked": 0}})
+    assert _GROUP_ROW not in body
+
+
+def test_two_tools_under_sort_tool_do_draw_group_headers(client):
+    """The pair. Never drawing a header at all satisfies the test above, and
+    would silently delete A82."""
+    rows = [dict(_one_design()[0], _source_tool=tool, _source_index=i)
+            for i, tool in enumerate(("bindcraft", "boltzgen"))]
+    body = _detail(client, query="?sort=tool",
+                   tools=["bindcraft", "boltzgen"], multi_tool=True,
+                   candidates=rows, total=2, shown=2, sort_mode="tool",
+                   per_tool={"bindcraft": {"total": 1, "shown": 1,
+                                           "cohort_n": 1, "unranked": 0},
+                             "boltzgen": {"total": 1, "shown": 1,
+                                          "cohort_n": 1, "unranked": 0}})
+    assert body.count(_GROUP_ROW) == 2, body.count(_GROUP_ROW)
 
 
 def test_a_split_cohort_row_names_its_preset(client):

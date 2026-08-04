@@ -800,7 +800,12 @@ def test_percentile_mode_keeps_one_global_numbering_and_no_group_headers():
 def test_a_one_tool_target_draws_no_group_header_under_sort_tool():
     """`apply_sort_mode` keys SORT_TOOL on `_source_tool` alone, so on a
     one-tool target it returns a byte-identical row list. A lone header over
-    the whole table would announce a grouping that did not happen."""
+    the whole table would announce a grouping that did not happen.
+
+    One tool at ONE preset, so `multi_tool` is genuinely False here. The
+    harder case, where the caller passes True, is the test below; this one
+    would pass under a gate reading either flag and is kept only as its pair.
+    """
     rows = [_row("bindcraft", "ipTM", 0.9 - 0.01 * i, job="job-a", index=i)
             for i in range(4)]
     ranked = ranking.rank_candidates(rows, limit=None,
@@ -812,6 +817,46 @@ def test_a_one_tool_target_draws_no_group_header_under_sort_tool():
     assert table.group_rows == []
     ranks = [cells[0].split()[0] for cells in table.rows]
     assert ranks == ["1", "2", "3", "4"], ranks
+
+
+def test_one_tool_at_two_presets_draws_no_group_header_either():
+    """ROUND 19 (B-1). The test above passes `multi_tool=False`, which is NOT
+    what the caller passes for this shape. `multi_tool` means more than one
+    COHORT, and one tool at two presets is two cohorts, so the aggregator
+    sends True. The gate read `multi_tool`, so this rendered a LONE group
+    header over rows `apply_sort_mode` had returned in percentile order --
+    verbatim the failure the gate's own comment claimed to prevent, and the
+    third recurrence of this misreading (A75, A77, now B-1).
+
+    Reachable despite the hidden toggle: targets/detail.html gates the control
+    on `agg.tools|length > 1`, but blueprints/targets.py reads `?sort` straight
+    off the query string, so a pasted or bookmarked URL renders it.
+
+    proteina because it is a tool the launch screen really does offer at more
+    than one preset, and its `total_reward` is `-i_pAE` under protein_binder
+    and an RF3 composite under ligand_binder, which is why the two presets are
+    separate cohorts in the first place.
+    """
+    rows = ([_row("proteina", "total_reward", 12.0 - 0.1 * i,
+                  job="job-p1", index=i, preset="protein_binder")
+             for i in range(20)]
+            + [_row("proteina", "total_reward", 9.0 - 0.1 * i,
+                    job="job-p2", index=i, preset="ligand_binder")
+               for i in range(20)])
+    ranked = ranking.rank_candidates(rows, limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+    assert len({r["_cohort_preset"] for r in ranked["rows"]}) == 2, (
+        "fixture assumption: two cohorts")
+    assert list(ranked["tools"]) == ["proteina"], (
+        "fixture assumption: exactly one tool")
+
+    table = _parse(_render(candidates=ranked["rows"], columns=[], job_id="",
+                           tool_slug="", target_id="t-1",
+                           multi_tool=True, sort_mode="tool",
+                           split_tools=["proteina"], per_tool=ranked["tools"]))
+    assert table.group_rows == [], table.group_rows
+    ranks = [cells[0].split()[0] for cells in table.rows]
+    assert ranks == [str(i + 1) for i in range(40)], ranks[:6]
 
 
 def test_grouped_mode_badges_one_row_in_the_whole_table_not_one_per_group():
@@ -930,9 +975,25 @@ def test_the_zero_star_state_is_an_inline_hint_not_a_disabled_button():
 
 def test_the_star_tooltip_names_a_general_shortlist_not_lab_submission():
     """The star drives "Starred only (CSV)" as well as the optional handoff, so
-    a tooltip naming one consumer hid the other."""
+    a tooltip naming one consumer hid the other.
+
+    ROUND 19 (B-7). Asserted at BOTH sites, separately. The tooltip lives on
+    the header cell AND on every star button, and a single `in html` check is
+    satisfied by either one, so dropping it from the buttons -- the place a
+    user actually hovers -- left this green.
+    """
     html = _multi_tool_table()
-    assert 'title="Star to shortlist"' in html
+    table = _parse(html)
+
+    star_headers = [a for a in table.header_cells
+                    if a.get("title") == "Star to shortlist"]
+    assert len(star_headers) == 1, table.header_cells
+
+    buttons = re.findall(r'<button[^>]*class="star-btn"[^>]*>', html)
+    assert buttons, "no star buttons rendered at all"
+    missing = [b for b in buttons if 'title="Star to shortlist"' not in b]
+    assert not missing, missing[:2]
+
     assert "Click to shortlist for lab submission" not in html
 
 
@@ -969,3 +1030,37 @@ def test_campaign_mode_offers_no_starred_export():
     labels = [c[2] for c in _bar(html)]
     assert "Starred only (CSV)" not in labels, labels
     assert "cand-starred-export" not in html
+
+
+def test_a_tool_less_group_still_shows_its_counts():
+    """ROUND 19 (B-6). `raw_tool` is the key `build_tool_stats` filed the row
+    under ('' for a row carrying no tool); `this_tool` is what the header
+    PRINTS, where '' becomes an em dash so the group is visible at all.
+
+    Looking the stats up by the display fallback drops the counts for exactly
+    that group. The template says so, correctly, in a comment -- but every
+    other fixture in this file puts a tool on every row, so mutating
+    `per_tool.get(raw_tool)` to `per_tool.get(this_tool)` survived the entire
+    suite. A recovered job with no tool slug is the real shape.
+
+    Asserted on the counts rather than on the dash: the label is a non-ASCII
+    character and this is a claim about the LOOKUP, not about the glyph.
+    """
+    rows = ([_row("bindcraft", "ipTM", 0.9 - 0.001 * i, job="job-bc", index=i)
+             for i in range(3)]
+            + [_row("", "ipTM", 0.5 - 0.001 * i, job="job-x", index=i)
+               for i in range(2)])
+    ranked = ranking.rank_candidates(rows, limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+    assert "" in ranked["tools"], "fixture assumption: a tool-less cohort"
+
+    table = _parse(_render(candidates=ranked["rows"], columns=[], job_id="",
+                           tool_slug="", target_id="t-1", multi_tool=True,
+                           sort_mode="tool", per_tool=ranked["tools"]))
+    assert len(table.group_rows) == 2, table.group_rows
+    untooled = [g for g in table.group_rows if not g.startswith("bindcraft")]
+    assert len(untooled) == 1, table.group_rows
+    # total and shown come straight from the stats dict; a missed lookup
+    # renders the header with no counts at all.
+    assert "2 of 2 shown" in untooled[0], untooled[0]
+    assert "0 ranked" in untooled[0], untooled[0]

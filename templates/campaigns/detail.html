@@ -18,6 +18,21 @@
   </div>
 {% endif %}
 
+{# Separate from the banner above, and rendered on its own condition. Folding
+   it in would make a partial submission look like a clean one with a footnote,
+   and it has to survive a reload of this URL for the same reason the count
+   travels in the query string at all: this is the only place the user is told
+   what did NOT reach the lab. #}
+{% if dropped_count %}
+  <div style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.85rem 1rem;margin-bottom:1.25rem;">
+    <strong style="color:#d69e2e;">{{ dropped_count }} starred design{{ '' if dropped_count == 1 else 's' }} {{ 'was' if dropped_count == 1 else 'were' }} not included.</strong>
+    <span style="color:var(--text-secondary);">
+      {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to this target, so only the designs listed below were sent.
+      If that looks wrong, star them again on the target page and submit a second request.
+    </span>
+  </div>
+{% endif %}
+
 <div class="panel" style="margin-bottom:1rem;">
   <div class="panel-header">
     <span class="panel-title">Status</span>

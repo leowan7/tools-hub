@@ -30,10 +30,22 @@
 -- lab_campaigns both CASCADE) order-independent.
 --
 -- The safety of CASCADE here rests on a UI promise, so state it: the product
--- must never offer a hard delete of a target. shared/targets.py exposes
--- archive_target / unarchive_target and no delete path; the only hard delete
--- is account deletion, where cascading is the wanted behaviour. If a hard
--- delete ever ships, it silently destroys paid CRO scoping requests.
+-- must never offer a USER-FACING hard delete of a target. What exists today:
+--
+--   * archive_target / unarchive_target -- the soft path, and the only one
+--     any route calls.
+--   * _delete_target_row (shared/targets.py) -- a real DELETE, but reachable
+--     only as creation rollback, when the upload fails immediately after the
+--     row is inserted. No lab_campaigns row can reference a target that never
+--     finished being created, so this cascade has nothing to destroy.
+--   * account deletion (auth.users -> design_targets -> lab_campaigns, both
+--     CASCADE), where cascading is the wanted behaviour.
+--
+-- An earlier draft of this comment said "no delete path" flatly, which is the
+-- kind of claim that stops being checked (register item A-3). The rule is
+-- about REACHABILITY, not about the absence of a DELETE statement: if a hard
+-- delete ever becomes reachable from a target that has been shortlisted, it
+-- silently destroys paid CRO scoping requests.
 ALTER TABLE public.lab_campaigns
     ADD COLUMN IF NOT EXISTS source_target_id uuid
         REFERENCES public.design_targets(id) ON DELETE CASCADE;

@@ -5,13 +5,25 @@ Read this before touching `blueprints/lab_projects.py`, `blueprints/targets.py`,
 
 ## State
 
-Phase 5 is **built, independently QC'd, and NOT remediated**. The code is
-committed on branch `docs/a81-campaigns-launch-grouping` as a WIP checkpoint.
-It is **not merged, not pushed, and not deployable as-is**.
+Phase 5 is **built, independently QC'd, and PARTLY remediated**. The build is
+committed on branch `docs/a81-campaigns-launch-grouping` as a WIP checkpoint
+(`daf75da`). It is **not merged, not pushed, and not deployable as-is**.
 
 - Baseline before Phase 5: 2088 passed / 6 skipped.
-- Now: **2136 passed / 6 skipped**, +48 tests, zero regressions.
+- After the build: 2136 passed / 6 skipped.
+- After round 19 remediation: **2181 passed / 6 skipped**, zero regressions.
 - Phase 3 is on `origin/main` at `f230f14` (PR #101), deployed and verified.
+
+**Round 19 (2026-08-04, second session) closed 13 of the 22 findings**: every
+must-fix, every false claim, plus B-10 and B-12. Nine remain, all in the
+robustness / disclosure / low tiers, listed below. Each fix was
+mutation-verified: the change reverted, exactly the intended test observed
+going red as a *failure*, then restored and re-verified in a fresh process.
+
+**The round 19 fixes are UNCOMMITTED and have NOT been independently QC'd.**
+In this repo the fix set is reliably the highest-risk surface in a diff (Phase
+3 needed four rounds; round 18's findings were all caused by round 17's own
+fixes), so the author's own mutation runs are necessary and not sufficient.
 
 **Migration `0040_lab_campaign_target_source.sql` has NOT been applied.** It must
 run in the Supabase SQL editor *before* this code deploys. Pre-0040 the insert
@@ -72,9 +84,33 @@ Repaired and verified: line endings unchanged (1208 CRLF / 0 bare LF),
 `_row_ref` back to 2 references, and every site either reviewer reported as a
 *surviving* mutation re-checked by hand and found correct.
 
-## Open findings: 22, none remediated
+## Round 19 remediation: 13 closed
+
+Kept in full below rather than deleted, because each one records a defect this
+codebase has produced before and the reasoning is the only thing stopping it
+recurring. What changed, per finding:
+
+| # | What was done |
+|---|---|
+| **B-1** | `grouped` no longer reads `multi_tool`. It counts the distinct tools in the rows about to be rendered, under the same `_source_tool or ''` normalisation the group loop applies, so the gate and the loop cannot disagree. |
+| **B-2** | The old test kept (renamed intent in its docstring) and paired with `test_one_tool_at_two_presets_draws_no_group_header_either`, which passes the `multi_tool=True` the aggregator really sends. Pinned again at route level through a pasted `?sort=tool`. |
+| **B-3** | New `tests/test_candidate_table_js_contract.py`: 13 JS↔template hooks pinned on the **executable** JS token, the posted ref shape driven through the production parser, and the submit listener bounded to its own block. All four surviving mutations now fail, from either side. Plus the server-side backstop below. |
+| **A-7** | `campaign_ids_for_target` returns `(ids, complete)`; a rejection under an incomplete read now **refuses** the submission (`?handoff=unverified`) rather than shipping a silently narrowed order. Accepted-vs-requested counts reach the confirmation page and both emails. |
+| **A-8** | All five silent `redirect(detail)` exits carry a `handoff=` reason, rendered as four distinct sentences on the target page. Scoped to the target branch; the campaign branch's identical pair is filed, not touched. |
+| **A-2** | `_starred_refs` reports truncation; the export filename carries `_first{N}`. The `_MAX_CANDIDATE_REFS` comment now names all **three** consumers. |
+| **B-11** | New `tests/test_results_action_bar.py` parses the action bar in all three modes and the wet-lab panel, pinning "exactly one primary, and it is Download CSV" on the campaign page and the 13 tool results pages, not just the target page. |
+| **A-1** | The `get_target` and `campaign_ids_for_target` fakes now model the owner scope and record the kwarg. Two new tests fail if either scope is dropped. The docstring that claimed more than its test proved was corrected and the test renamed. |
+| **A-3** | Migration 0040's comment now states what `_delete_target_row` is and why its cascade has nothing to destroy, and frames the rule as reachability rather than "no delete path". |
+| **B-6** | New tool-less-group fixture: `per_tool.get(this_tool)` now fails. |
+| **B-7** | Asserted at both sites separately; dropping the tooltip from either the header or the buttons now fails. |
+| **B-10** | An empty starred export is `_starred_empty`; a partly-unresolvable one is `_starred{n}of{m}`. This is also what makes B-3's four JS mutations observable without a JS runtime. |
+| **B-12** | `isolate_supabase` added. |
+
+## Open findings: 9 remain
 
 ### Must fix before commit to main
+
+**All seven were closed in round 19; kept for the reasoning.**
 
 - **B-1 (HIGH). The A82 group-header gate misreads `multi_tool`.** It is gated
   on `multi_tool`, which Phase 3 deliberately redefined as multi-**cohort**
@@ -115,6 +151,8 @@ Repaired and verified: line endings unchanged (1208 CRLF / 0 bare LF),
 
 ### False claims to correct (house rule: a comment is a claim)
 
+**All four were closed in round 19; kept for the reasoning.**
+
 - **A-1.** Two of the three owner-scoped reads are unpinned because the test
   fakes accept and discard `user_id`. Drop the scope from either and all 102
   tests stay green. A docstring asserts "`get_target` is owner-scoped" when the
@@ -133,6 +171,8 @@ Repaired and verified: line endings unchanged (1208 CRLF / 0 bare LF),
   either leaves the test green.
 
 ### Robustness and disclosure
+
+**Still open except B-10 and B-12.** These are the bulk of what is left.
 
 - **A-4 / A-5.** `_ref_shortlist_view` miscounts refs lacking a `job_id`, and
   **500s on a non-dict element** in `candidate_refs`. Both latent (the app's own
@@ -175,13 +215,36 @@ once per ref, now bounded at 500.
 
 ## Recommended next actions
 
-1. Remediate B-1, B-2, B-3, A-7, A-8, A-2, B-11, then every false claim.
-2. **Re-QC the fix set.** In this repo the fix set is reliably the highest-risk
-   surface in the diff: Phase 3 needed four rounds, and round 18's findings were
-   *all* caused by round 17's own fixes.
-3. Apply `0040` in Supabase, then deploy.
-4. A browser walk. Phase 3's browser walk found A81 and A82 in about ten minutes
-   after four adversarial review rounds and 2088 tests had missed both.
+1. ~~Remediate B-1, B-2, B-3, A-7, A-8, A-2, B-11, then every false claim.~~
+   **Done in round 19, uncommitted.**
+2. **Re-QC the round 19 fix set.** In this repo the fix set is reliably the
+   highest-risk surface in the diff: Phase 3 needed four rounds, and round 18's
+   findings were *all* caused by round 17's own fixes. The author
+   mutation-verified every change, which catches a fix that does nothing; it
+   does not catch a fix that does something *else*. **Serialise any mutating
+   reviewer** and never run one alongside another agent on this tree.
+3. Clear the nine remaining findings (A-4, A-5, A-6, A-9, A-10, B-4, B-5, B-8,
+   and B-9's `disabled`-button half).
+4. Apply `0040` in Supabase, then deploy.
+5. A browser walk. Phase 3's browser walk found A81 and A82 in about ten minutes
+   after four adversarial review rounds and 2088 tests had missed both. Round 19
+   added two things a walk is the natural check for: the four `handoff=`
+   banners on the target page, and the drop-count banner on the confirmation
+   page.
+
+### What round 19 changed, for a reviewer picking this up cold
+
+Production: `blueprints/lab_projects.py`, `blueprints/targets.py`,
+`shared/targets.py`, `shared/email.py`,
+`templates/components/candidate_table.html`, `templates/targets/detail.html`,
+`templates/campaigns/detail.html`, and the 0040 comment.
+
+Two new test files: `tests/test_candidate_table_js_contract.py`,
+`tests/test_results_action_bar.py`.
+
+One signature change with a real blast radius: **`campaign_ids_for_target` now
+returns `(ids, complete)`**, not a bare list. One production caller, two tests
+updated.
 
 ## Non-negotiable constraints for whoever picks this up
 

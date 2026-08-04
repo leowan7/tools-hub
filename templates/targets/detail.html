@@ -103,6 +103,38 @@
 </div>
 {% endif %}
 
+{# Why the lab handoff sent the user back here. Four ways to fail, four
+   sentences, because "something went wrong" on a paid intake tells a user
+   nothing about whether to retry, re-star, or wait.
+
+   `unverified` is the one that is NOT a malfunction to hide: the submit
+   deliberately refused rather than ship a shortlist quietly missing designs,
+   and saying so is the only thing that makes the refusal legible as a
+   decision rather than a bug. Stars survive in sessionStorage, so every
+   message that says "try again" is telling the truth. #}
+{% if handoff %}
+<div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
+  <div class="panel-body">
+    <p style="margin: 0; color: #e8846b;">
+      {% if handoff == 'none' %}
+      Nothing was sent to the lab, because the request arrived with no designs in it.
+      Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
+      {% elif handoff == 'noname' %}
+      Nothing was sent to the lab. The request needs a name for the target so the
+      Ranomics team knows what they are quoting. Reopen the form and add one.
+      {% elif handoff == 'unverified' %}
+      Nothing was sent to the lab. Some of the designs you starred could not be
+      confirmed as belonging to this target, and sending a shortlist that might be
+      quietly missing designs is worse than sending none. Nothing was charged. Try again in a moment.
+      {% else %}
+      Your request could not be submitted, and nothing was sent to the lab or charged.
+      Your stars are still here. Try again, and contact us if it keeps failing.
+      {% endif %}
+    </p>
+  </div>
+</div>
+{% endif %}
+
 {% if target.hotspot_residues or target.epitope_residues or target.notes %}
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header"><span class="panel-title">Defaults</span></div>
