@@ -20,16 +20,35 @@
 
 {# Separate from the banner above, and rendered on its own condition. Folding
    it in would make a partial submission look like a clean one with a footnote,
-   and it has to survive a reload of this URL for the same reason the count
-   travels in the query string at all: this is the only place the user is told
-   what did NOT reach the lab. #}
-{% if dropped_count %}
+   and it has to survive a reload of this URL for the same reason the counts
+   travel in the query string at all: this is the only place the user is told
+   what did NOT reach the lab.
+
+   TWO COUNTS, TWO SENTENCES, OPPOSITE ADVICE. `dropped_count` designs were
+   read and refused, and re-starring them changes nothing; `truncated_count`
+   refs were never read at all because the request hit its size cap, and those
+   only need a second, smaller request. The old copy gave the re-star advice to
+   both, and pointed at "the designs listed below" on a page that lists a COUNT
+   and no designs. #}
+{% if dropped_count or truncated_count %}
   <div style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.85rem 1rem;margin-bottom:1.25rem;">
-    <strong style="color:#d69e2e;">{{ dropped_count }} starred design{{ '' if dropped_count == 1 else 's' }} {{ 'was' if dropped_count == 1 else 'were' }} not included.</strong>
-    <span style="color:var(--text-secondary);">
-      {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to this target, so only the designs listed below were sent.
-      If that looks wrong, star them again on the target page and submit a second request.
-    </span>
+    {% if dropped_count %}
+    <p style="margin:0;">
+      <strong style="color:#d69e2e;">{{ dropped_count }} starred design{{ '' if dropped_count == 1 else 's' }} {{ 'was' if dropped_count == 1 else 'were' }} not included.</strong>
+      <span style="color:var(--text-secondary);">
+        {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to a design on the source target, so this request does not cover {{ 'it' if dropped_count == 1 else 'them' }}.
+        Starring {{ 'it' if dropped_count == 1 else 'them' }} again will be refused the same way — if that looks wrong, contact us and we will trace where {{ 'it went' if dropped_count == 1 else 'they went' }}.
+      </span>
+    </p>
+    {% endif %}
+    {% if truncated_count %}
+    <p style="margin:{{ '.6rem 0 0' if dropped_count else '0' }};">
+      <strong style="color:#d69e2e;">{{ truncated_count }} further starred design{{ '' if truncated_count == 1 else 's' }} {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit.</strong>
+      <span style="color:var(--text-secondary);">
+        {{ 'It was' if truncated_count == 1 else 'They were' }} not read at all. Star {{ 'it' if truncated_count == 1 else 'them' }} again on the target page and submit a second request.
+      </span>
+    </p>
+    {% endif %}
   </div>
 {% endif %}
 

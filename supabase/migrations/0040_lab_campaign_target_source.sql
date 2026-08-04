@@ -35,9 +35,14 @@
 --   * archive_target / unarchive_target -- the soft path, and the only one
 --     any route calls.
 --   * _delete_target_row (shared/targets.py) -- a real DELETE, but reachable
---     only as creation rollback, when the upload fails immediately after the
---     row is inserted. No lab_campaigns row can reference a target that never
---     finished being created, so this cascade has nothing to destroy.
+--     only as creation rollback. TWO call sites, both inside create_target and
+--     both after the row is inserted: the upload raises, OR the upload
+--     SUCCEEDS and the follow-up _update_target that points the row at those
+--     bytes does not. (An earlier draft of this line said "when the upload
+--     fails", which is true of the first site and false of the second.)
+--     Either way the target never became usable, and no lab_campaigns row can
+--     reference a target that never finished being created, so this cascade
+--     has nothing to destroy.
 --   * account deletion (auth.users -> design_targets -> lab_campaigns, both
 --     CASCADE), where cascading is the wanted behaviour.
 --

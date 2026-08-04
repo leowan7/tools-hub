@@ -103,15 +103,29 @@
 </div>
 {% endif %}
 
-{# Why the lab handoff sent the user back here. Four ways to fail, four
+{# Why the lab handoff sent the user back here. FIVE ways to fail, five
    sentences, because "something went wrong" on a paid intake tells a user
    nothing about whether to retry, re-star, or wait.
+
+   `none` and `rejected` are the pair that must not be merged, and round 19
+   merged them. `none` means the POST carried no designs, which is a client
+   fault and retrying is the right advice. `rejected` means it carried designs
+   and not one of them could be attributed to this target, which the SAME refs
+   will do again, so telling that user to press the button again is telling
+   them to repeat a no-op forever.
 
    `unverified` is the one that is NOT a malfunction to hide: the submit
    deliberately refused rather than ship a shortlist quietly missing designs,
    and saying so is the only thing that makes the refusal legible as a
-   decision rather than a bug. Stars survive in sessionStorage, so every
-   message that says "try again" is telling the truth. #}
+   decision rather than a bug.
+
+   NO MESSAGE HERE SAYS "nothing was charged". /lab-projects/submit has no
+   wallet or Stripe code on any path -- it inserts a lab_campaigns row and
+   stages PDBs -- and the modal that opens this flow says "No commitment --
+   this is a scoping request". A reassurance that no money moved implies money
+   could have moved, which contradicts the modal three panels up and is at best
+   noise on a page where the only charge already happened, back when the runs
+   were dispatched. #}
 {% if handoff %}
 <div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
   <div class="panel-body">
@@ -119,15 +133,22 @@
       {% if handoff == 'none' %}
       Nothing was sent to the lab, because the request arrived with no designs in it.
       Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
+      {% elif handoff == 'rejected' %}
+      Nothing was sent to the lab. The request did carry designs, but none of them
+      could be matched to a design on this target, so there was nothing to send.
+      Sending the same selection again will be refused the same way. Star designs
+      from the table on this page, or contact us and we will trace where they went.
       {% elif handoff == 'noname' %}
       Nothing was sent to the lab. The request needs a name for the target so the
       Ranomics team knows what they are quoting. Reopen the form and add one.
       {% elif handoff == 'unverified' %}
-      Nothing was sent to the lab. Some of the designs you starred could not be
-      confirmed as belonging to this target, and sending a shortlist that might be
-      quietly missing designs is worse than sending none. Nothing was charged. Try again in a moment.
+      Nothing was sent to the lab. We could not read the full list of runs on this
+      target, so some of the designs you starred could not be confirmed as belonging
+      to it, and sending a shortlist that might be quietly missing designs is worse
+      than sending none. Your stars are still here, so try again. If it happens every
+      time, it is not a passing fault and we should look at it — contact us.
       {% else %}
-      Your request could not be submitted, and nothing was sent to the lab or charged.
+      Your request could not be submitted and nothing was sent to the lab.
       Your stars are still here. Try again, and contact us if it keeps failing.
       {% endif %}
     </p>

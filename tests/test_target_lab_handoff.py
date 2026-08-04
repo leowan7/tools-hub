@@ -111,9 +111,12 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
     Defaults True because that is the only shape a healthy read produces.
 
     ``create_result`` overrides what ``create_campaign_from_target_refs``
-    returns. It is a parameter rather than an outer ``patch`` because this
-    helper patches that same name itself, and its patch is entered later and
-    therefore wins.
+    returns, or -- when it is an ``Exception`` instance -- what it RAISES. The
+    real function raises ``ValueError`` on an unknown assay_type or
+    budget_band, so the route's ``except ValueError`` arm is live and needs a
+    fake that can reach it. It is a parameter rather than an outer ``patch``
+    because this helper patches that same name itself, and its patch is
+    entered later and therefore wins.
     """
     h = _Harness()
 
@@ -133,6 +136,8 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
 
     def fake_create(**kw):
         h.created.append(kw)
+        if isinstance(create_result, Exception):
+            raise create_result
         if create_result is not _CREATE_OK:
             return create_result
         return SimpleNamespace(id="lab-1", **{
@@ -556,16 +561,30 @@ def test_a_fully_accepted_shortlist_reports_no_drops(client):
 
 
 def test_an_incomplete_campaign_read_refuses_rather_than_narrow(client):
-    """A-7's sharper half. `owned_by_target` consults the campaign id set, so
-    when that read came back short a legitimate design is indistinguishable
-    from a ref belonging to another target. Proceeding hands the wet lab a
-    shortlist quietly missing designs the user selected and paid to compute.
+    """A-7's sharper half, and THE CENTRAL CASE: a shortlist that is genuinely
+    PARTIAL. One ref is accepted by the standalone-job route, the other is
+    rejected by the campaign arm under an id set that came back short -- so the
+    submission the route would otherwise send is a real shortlist quietly
+    missing a design the user selected and paid to compute.
+
+    Round 19's version of this test built no partial at all: both of its refs
+    were rejected, so `clean_refs` was empty and the refusal fired for the
+    wrong reason. Under that fixture the gate could be narrowed to
+    `if not clean_refs and not campaign_ids_complete` with the whole suite
+    green, and a ten-ref shortlist with nine dropped would ship.
 
     Refusing is recoverable: the stars live in sessionStorage and survive the
     redirect, so a retry costs one click.
     """
-    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
-    resp, h = _submit(client, jobs, form={"candidate_refs": _two_refs()},
+    jobs = {
+        # Accepted: the standalone route does not consult the campaign id set.
+        "j-ok": _job("j-ok", "bindcraft", target_id=_TID),
+        # Rejected, and rejected BY THE CAMPAIGN ARM -- its campaign is real,
+        # it is simply not in a set that came back short.
+        "j-cmp": _job("j-cmp", "pxdesign", campaign_id=_CID),
+    }
+    refs = [{"job_id": "j-ok", "index": 0}, {"job_id": "j-cmp", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
                       campaign_ids=(), campaign_ids_complete=False)
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
@@ -573,16 +592,84 @@ def test_an_incomplete_campaign_read_refuses_rather_than_narrow(client):
     assert h.staged == []
 
 
+def test_an_incomplete_read_that_rejected_everything_still_says_unverified(client):
+    """Guard ORDER, which the `rejected` reason introduced. Every ref here is
+    refused AND the id read was short, so both exits are eligible; the
+    unverified one has to win. `rejected` tells the user the selection can
+    never work, and under an incomplete read that is precisely what we do not
+    know."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, form={"candidate_refs": _two_refs()},
+                      campaign_ids=(), campaign_ids_complete=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.created == []
+
+
+def test_an_incomplete_read_does_not_refuse_a_rejection_it_could_not_have_caused(client):
+    """The gate is `campaign_arm_rejected`, not `dropped`. This shortlist has a
+    real rejection -- `j-gone` resolves to nothing at all -- under a short id
+    read, but no campaign id could have rescued a job that does not exist, so
+    the read is not implicated and refusing would send the user away from a
+    submission that was correct.
+
+    Widening the gate back to `dropped` reds exactly this test.
+    """
+    jobs = {"j-ok": _job("j-ok", "bindcraft", target_id=_TID)}
+    refs = [{"job_id": "j-ok", "index": 0}, {"job_id": "j-gone", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
+                      campaign_ids=(), campaign_ids_complete=False)
+    assert resp.status_code == 302
+    assert len(h.created) == 1, "the read could not have caused this rejection"
+    assert h.created[0]["candidate_refs"] == [{"job_id": "j-ok", "index": 0}]
+    assert "?submitted=1&dropped=1" in resp.headers["Location"]
+
+
 def test_an_incomplete_campaign_read_that_rejected_nothing_still_submits(client):
-    """The pair, and the reason the refusal is gated on `dropped` too. A short
-    id read that changed no decision is not a reason to refuse a shortlist
-    every ref of which was accepted by the standalone-job route."""
+    """The pair, and the reason the refusal is gated on a rejection at all. A
+    short id read that changed no decision is not a reason to refuse a
+    shortlist every ref of which was accepted by the standalone-job route."""
     jobs = {"j-bc": _job("j-bc", "bindcraft", target_id=_TID)}
     resp, h = _submit(client, jobs, campaign_ids=(),
                       campaign_ids_complete=False)
     assert resp.status_code == 302
     assert len(h.created) == 1
     assert "?submitted=1" in resp.headers["Location"]
+
+
+def test_a_shortlist_whose_every_ref_was_rejected_says_rejected_not_none(client):
+    """The second producer of what round 19 called `handoff=none`.
+
+    `none` is emitted by the early guard, for a POST that carried no designs;
+    its banner says the request "arrived with no designs in it" and tells the
+    user to press the button again. Reaching the SAME banner from here made
+    both of those false: designs did arrive, and pressing the button again
+    resubmits the identical refs to the identical checks, forever.
+    """
+    jobs = {"j-far": _job("j-far", "boltzgen", target_id=_OTHER_TID)}
+    refs = [{"job_id": "j-far", "index": 0}, {"job_id": "j-gone", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=rejected")
+    assert h.created == []
+    assert h.staged == []
+
+
+def test_an_unnamed_target_says_so_rather_than_failing_silently(client):
+    """The `noname` exit, unpinned until now. The modal's name field is not
+    required by the browser, so an empty one is one keystroke away, and the
+    remedy ("reopen the form and add one") is the only one of the five nobody
+    else can give.
+
+    Ordered AFTER the empty-refs guard on purpose: telling a user with nothing
+    starred to name their target answers a question they did not ask.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, form={"target_name": "  "})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=noname")
+    assert h.created == []
+    assert h.job_lookups == [], "no job may be read for a request we will refuse"
 
 
 def test_a_failed_lab_project_creation_says_so(client):
@@ -594,3 +681,173 @@ def test_a_failed_lab_project_creation_says_so(client):
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=failed")
     assert h.staged == [], "nothing may be staged for a campaign that failed"
+
+
+def test_a_rejected_assay_type_says_so_rather_than_failing_silently(client):
+    """The OTHER arm of the same exit. `create_campaign_from_target_refs`
+    raises ValueError on an assay_type or budget_band outside its enum, and
+    both come straight off the POST body, so this arm is live -- but the only
+    test covering the exit drove the `is None` return, and deleting the
+    `except ValueError:` handler left the suite green while a raised
+    ValueError escaped to a 500 on a paid intake.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(
+        client, jobs,
+        form={"assay_type": "not_a_real_assay"},
+        create_result=ValueError("invalid assay_type: 'not_a_real_assay'"),
+    )
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=failed")
+    assert len(h.created) == 1, "fixture assumption: the insert was attempted"
+    assert h.staged == [], "nothing may be staged for a campaign that raised"
+
+
+# ---------------------------------------------------------------------------
+# ROUND 20: the write path decides what the order CONTAINS
+#
+# Everything downstream -- `dropped`, both emails, the confirmation banner and
+# the ops fulfilment page -- counts the refs this function persisted. Deduping
+# and range-checking at READ time (blueprints/admin.py) makes those pages
+# disagree with the staff email about the same order; doing it here means the
+# disagreement cannot arise.
+# ---------------------------------------------------------------------------
+
+def test_the_same_design_named_twice_is_ordered_once(client):
+    """A repeated (job_id, index) is ONE physical design. Persisting it twice
+    tells ops to order the same structure twice, and counting the repeat as a
+    rejection tells the user a design went missing when none did."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    refs = [{"job_id": "j-bc", "index": 0}, {"job_id": "j-bc", "index": 0},
+            {"job_id": "j-bc", "index": 1}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert h.created[0]["candidate_refs"] == [
+        {"job_id": "j-bc", "index": 0}, {"job_id": "j-bc", "index": 1},
+    ]
+    assert [c["indices"] for c in h.staged] == [[0, 1]]
+    # The repeat is not a shortfall, so nothing may tell the user one occurred.
+    assert h.emails[0]["dropped"] == 0
+    assert resp.headers["Location"].endswith("?submitted=1")
+
+
+def test_a_ref_naming_an_index_past_the_end_of_its_job_is_refused(client):
+    """`stage_campaign_candidates` silently skips an out-of-range index, so an
+    unvalidated ref is persisted, counted on the staff email and counted on the
+    customer's page -- and then no PDB reaches the bucket for it. The lab
+    receives fewer structures than every number anyone can see."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID, n=3)}
+    refs = [{"job_id": "j-bc", "index": 0}, {"job_id": "j-bc", "index": 7}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert h.created[0]["candidate_refs"] == [{"job_id": "j-bc", "index": 0}]
+    assert [c["indices"] for c in h.staged] == [[0]]
+    # Counted as a shortfall, because it IS one: the user starred something we
+    # cannot deliver.
+    assert h.emails[0]["dropped"] == 1
+    assert resp.headers["Location"].endswith("?submitted=1&dropped=1")
+
+
+def test_a_job_whose_record_count_is_unknown_keeps_all_its_refs(client):
+    """The pair, and the reason the range check is gated on a POSITIVE count.
+    `candidate_records` returns [] both for a job with no results and for a
+    result shape it cannot read, so zero means "length unknown". Refusing every
+    design of such a job would be a louder wrong answer than saying nothing
+    about it -- the same rule blueprints/admin.py applies on the read side."""
+    job = _job("j-odd", "boltz2", target_id=_TID)
+    job.result = {"something_else": [1, 2, 3]}   # candidate_records -> []
+    refs = [{"job_id": "j-odd", "index": 0}, {"job_id": "j-odd", "index": 9}]
+    resp, h = _submit(client, {"j-odd": job},
+                      form={"candidate_refs": json.dumps(refs)})
+    assert h.created[0]["candidate_refs"] == refs
+    assert h.emails[0]["dropped"] == 0
+    assert resp.headers["Location"].endswith("?submitted=1")
+
+
+# ---------------------------------------------------------------------------
+# ROUND 20: what the per-request cap removed
+# ---------------------------------------------------------------------------
+
+def test_starred_designs_past_the_cap_are_reported_not_silently_dropped(client):
+    """`_MAX_CANDIDATE_REFS` truncates at parse time, so a count derived from
+    `len(candidate_refs)` saturates and reports ZERO drops for a shortlist that
+    lost designs to the bound. Stars persist in sessionStorage and the pooled
+    table renders 300 rows a view, so accumulating past 500 is an ordinary
+    path -- and the free CSV export announces its truncation while the PAID
+    handoff did not.
+
+    Reported SEPARATELY from `dropped`: these designs were never read, so
+    "could not be matched to this target" would be a verdict nobody reached,
+    and unlike a rejection a second smaller request does deliver them.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+    cap = _MAX_CANDIDATE_REFS
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID, n=cap + 200)}
+    refs = [{"job_id": "j-bc", "index": i} for i in range(cap + 120)]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert resp.status_code == 302
+    assert len(h.created[0]["candidate_refs"]) == cap
+    assert resp.headers["Location"].endswith(f"?submitted=1&truncated=120")
+    assert h.emails[0]["truncated"] == 120
+    # Not a rejection: nothing about these refs was ever judged.
+    assert h.emails[0]["dropped"] == 0
+
+
+def test_a_shortlist_inside_the_cap_reports_no_truncation(client):
+    """The pair. Sending `truncated` unconditionally would satisfy the test
+    above while telling every ordinary submission that designs were cut, and
+    would change the URL of the overwhelmingly common case."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs)
+    assert resp.headers["Location"].endswith("?submitted=1")
+    assert h.emails[0]["truncated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# ROUND 20: the confirmation page's shortfall banners
+#
+# Both counts reach the template through `render_template` kwargs, and
+# `{% if dropped_count %}` treats a Jinja Undefined as falsy -- so deleting
+# either kwarg removes the banner with no error anywhere. These render the page
+# and read the result.
+# ---------------------------------------------------------------------------
+
+def _lab_project_page(client, query=""):
+    from shared.campaigns import Campaign
+    campaign = Campaign.from_row({
+        "id": "lab-9", "user_id": "u-1", "target_name": "HER2",
+        "assay_type": "yeast_display", "budget_band": "pilot",
+        "status": "submitted", "submission_source": "target",
+        "source_target_id": _TID, "candidate_indices": [],
+        "candidate_refs": [{"job_id": "j-bc", "index": 0}],
+    })
+    _login(client)
+    with patch("blueprints.lab_projects.load_user_context", return_value=_ctx()), \
+            patch("shared.campaigns.get_campaign", return_value=campaign):
+        resp = client.get("/lab-projects/lab-9" + query)
+    assert resp.status_code == 200
+    return resp.get_data(as_text=True)
+
+
+def test_the_confirmation_page_states_how_many_designs_were_refused(client):
+    """`?dropped=` is the only place the user learns that their selection was
+    not delivered whole, and it has to survive a reload of this URL."""
+    html = _lab_project_page(client, "?submitted=1&dropped=3")
+    assert "3 starred designs were not included" in html
+    assert "could not be matched to a design on the source target" in html
+
+
+def test_the_confirmation_page_states_how_many_designs_were_over_the_limit(client):
+    """The second banner, with the OPPOSITE remedy: these were never read, so
+    a second smaller request does deliver them."""
+    html = _lab_project_page(client, "?submitted=1&truncated=120")
+    assert "120 further starred designs were over the per-request limit" in html
+    assert "submit a second request" in html
+
+
+def test_a_clean_confirmation_page_carries_neither_banner(client):
+    """The pair for both. Rendering either unconditionally would satisfy the
+    two tests above while telling every clean submission that designs went
+    missing."""
+    html = _lab_project_page(client, "?submitted=1")
+    assert "not included" not in html
+    assert "over the per-request limit" not in html
+    assert "Scoping request submitted." in html

@@ -1,11 +1,15 @@
 """The results action bar is SHARED, so Phase 5.2's button hierarchy landed on
 every page that renders it, not only on the target page it was designed for.
 
-REGISTER ITEM B-11. ``components/candidate_table.html`` and
-``components/results_shell.html`` are imported by 14 pages: ``runs/detail.html``
-(the compute-campaign results screen) and 13 ``tools/*_results.html`` pages.
-Nothing parsed those action bars, so a later edit could reintroduce a second
-primary CTA on all of them at once and the suite would stay green.
+REGISTER ITEM B-11. ``components/results_shell.html`` is imported by 14 pages:
+``runs/detail.html`` (the compute-campaign results screen) and 13
+``tools/*_results.html`` pages. ``components/candidate_table.html`` is imported
+by exactly three templates -- that panel, ``targets/detail.html``, and its own
+usage example -- and reaches the same 14 pages through the panel, which renders
+it. (The earlier wording said both were "imported by 14 pages"; the
+measurement below was right and the sentence was not.) Nothing parsed those
+action bars, so a later edit could reintroduce a second primary CTA on all of
+them at once and the suite would stay green.
 
 Both invariants below are claims the templates make about themselves, in
 comments, in the imperative:
@@ -194,12 +198,26 @@ def test_the_blast_radius_this_file_claims_is_real():
     A lower bound, not an equality: adding a fifteenth tool only widens the
     surface these invariants protect, and failing a build for that would be
     noise.
+
+    BOTH HOPS, because the second is the one the docstring used to state
+    wrongly: ``candidate_table.html`` is imported by three templates, not
+    fourteen, and what reaches the fourteen is ``results_panel``, which renders
+    the table inside itself. Sever that single import and the action bar this
+    whole file is about stops rendering on all 14 pages while every count in
+    the first half stays exactly as it is.
     """
-    consumers = sorted(
-        p.relative_to(_TEMPLATES).as_posix()
-        for p in _TEMPLATES.rglob("*.html")
-        if "import results_panel" in p.read_text(encoding="utf-8")
-    )
+    def importers(symbol):
+        return sorted(
+            p.relative_to(_TEMPLATES).as_posix()
+            for p in _TEMPLATES.rglob("*.html")
+            if f"import {symbol}" in p.read_text(encoding="utf-8")
+        )
+
+    consumers = importers("results_panel")
     assert len(consumers) >= 14, consumers
     assert "runs/detail.html" in consumers, consumers
     assert sum(1 for c in consumers if c.startswith("tools/")) >= 13, consumers
+
+    tables = importers("candidate_table")
+    assert "components/results_shell.html" in tables, tables
+    assert "targets/detail.html" in tables, tables

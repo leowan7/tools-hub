@@ -67,20 +67,49 @@
    table holding ONE tool comes back byte-identical and a lone group header
    over the whole thing would announce a grouping that did not happen.
 
-   ``row_tools`` counts the distinct tools in the rows about to be rendered,
-   under the same ``_source_tool or ''`` normalisation the group loop applies
-   below, so the gate and the loop cannot disagree about what a group is. A row
-   with no tool is its own group there and is counted as one here.
+   The tail of this expression counts the distinct tools in the rows about to
+   be rendered, under the same ``_source_tool or ''`` normalisation the group
+   loop applies below. A row with no tool is its own group there and is counted
+   as one here.
+
+   ``unique(TRUE)``, not a bare ``unique``: Jinja's filter defaults to
+   case-INSENSITIVE (jinja2.filters.do_unique, case_sensitive=False), while the
+   loop below compares raw strings with ``!=`` and ``apply_sort_mode`` sorts
+   case-sensitively. Rows carrying ``BindCraft`` and ``bindcraft`` therefore
+   gave the gate 1 and the loop 2: genuinely reordered into two blocks with no
+   boundary drawn between them, which is register item A82 verbatim. The two
+   sides now fold case identically, which is to say not at all.
+   (``shared/ranking.py`` applies a third normalisation, ``str(x or "")``. It
+   differs from this one only for a non-string slug, which no pooled row can
+   carry: ``shared/target_results.py:205`` assigns ``_source_tool`` from the
+   run's own ``tool`` column on every row it builds.)
+
+   THE WHOLE COUNT HANGS OFF ``and``, and that is load-bearing rather than
+   stylistic. As a separate ``{% set %}`` it ran on EVERY render of this shared
+   macro, job and campaign mode included, where ``pooled`` is False and the
+   result is discarded: ~300 attrgetter calls and a set build per campaign
+   table, and a hard 500 on any job whose adapter put a non-hashable value in
+   ``_source_tool``, since ``unique`` hashes. ``and`` short-circuits, so
+   nothing but a target table under ``?sort=tool`` pays or risks anything.
 
    NOT ``multi_tool``, which this gate used to read: Phase 3 redefined it as
    more than one COHORT, so one tool at two presets satisfies it, which is
    precisely the lone-header case. The route honours a pasted ``?sort=tool``
    even though the toggle is hidden at one tool, so that path is reachable.
    NOT ``per_tool | length`` either: correct today, but it makes the gate
-   depend on a second source of truth the caller has to remember to pass. #}
-{% set row_tools = candidates | map(attribute='_source_tool', default='')
-                              | map('default', '', true) | unique | list %}
-{% set grouped = pooled and sort_mode == 'tool' and row_tools | length > 1 %}
+   depend on a second source of truth the caller has to remember to pass.
+
+   ``pooled`` is not redundant with ``sort_mode``. No caller passes a sort mode
+   outside target mode TODAY, so dropping it would keep the suite green, but
+   grouping is a claim only a pooled table can make; a campaign or job table
+   that grew a sort toggle would start drawing tool blocks over rows whose #
+   column means something else entirely. Pinned by
+   tests/test_target_table_render.py::test_a_sort_tool_campaign_or_job_table_
+   draws_no_group_headers. #}
+{% set grouped = pooled and sort_mode == 'tool'
+                 and (candidates | map(attribute='_source_tool', default='')
+                                 | map('default', '', true)
+                                 | unique(true) | list | length) > 1 %}
 {# Fixed cells are #, star, 3D, PDB = 4; multi-tool replaces `columns` with
    Tool, Score and Pctile. Computed once because both the viewer rows and the
    group header rows have to span it, and they drifted apart once already. #}

@@ -430,13 +430,16 @@ def test_only_csv_accepts_a_post(client, fmt):
 
 
 def test_a_starred_export_above_the_ref_ceiling_says_it_is_a_prefix(client):
-    """ROUND 19 (A-2). `_starred_refs` reuses `_parse_candidate_refs`, which
+    """ROUND 19 (A-2). `_starred_refs` reuses the shared ref parser, which
     stops at `_MAX_CANDIDATE_REFS` and returns a prefix without saying so, and
     the export's own comment described itself as "exact". A user who starred
     600 designs got 500 under a filename claiming to be their selection.
 
-    The count in the name is the number actually applied, so the file states
-    what it is rather than what was asked for.
+    ROUND 20. Both numbers in the name are REF counts: how many were applied,
+    of how many the payload carried. The first version wrote a bare
+    `first{len(starred)}` -- the DEDUPED filter set -- which is neither the
+    bound the truncation happened at nor the number of rows in the file; see
+    test_the_prefix_marker_counts_refs_not_designs.
     """
     from blueprints.lab_projects import _MAX_CANDIDATE_REFS
 
@@ -449,7 +452,8 @@ def test_a_starred_export_above_the_ref_ceiling_says_it_is_a_prefix(client):
     rows = _csv_rows(resp.get_data(as_text=True))
     assert len(rows) == _MAX_CANDIDATE_REFS, len(rows)
     assert _filename(resp) == (
-        f"target_{_TID[:8]}_starred_first{_MAX_CANDIDATE_REFS}_scores.csv")
+        f"target_{_TID[:8]}_starred_first{_MAX_CANDIDATE_REFS}of{over}"
+        f"_scores.csv")
 
 
 def test_a_starred_export_under_the_ceiling_claims_no_prefix(client):
@@ -461,3 +465,107 @@ def test_a_starred_export_under_the_ceiling_claims_no_prefix(client):
     resp = _starred_post(client, refs, cands)
     assert len(_csv_rows(resp.get_data(as_text=True))) == 3
     assert _filename(resp) == f"target_{_TID[:8]}_starred_scores.csv"
+
+
+def test_a_selection_of_exactly_the_ceiling_is_not_called_a_prefix(client):
+    """The boundary, which the round-19 version got wrong in the safe
+    direction and defended in its docstring.
+
+    Truncation was derived from `len(parsed) >= _MAX_CANDIDATE_REFS`, and
+    `len(parsed)` saturates at the cap, so a selection of exactly 500 -- whole,
+    nothing dropped -- was labelled a prefix. `_parse_candidate_refs_counted`
+    reports what the payload CARRIED, so the bound no longer has to be guessed
+    from a saturated length, and over-warning stops being the price of
+    detecting it at all.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+
+    _login(client)
+    n = _MAX_CANDIDATE_REFS
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(n)]
+    refs = [{"job_id": "job-bc", "index": i} for i in range(n)]
+    resp = _starred_post(client, refs, cands)
+    assert len(_csv_rows(resp.get_data(as_text=True))) == n
+    assert _filename(resp) == f"target_{_TID[:8]}_starred_scores.csv"
+
+
+# ---------------------------------------------------------------------------
+# Round 20: the two markers COMPOSE
+#
+# `first{N}of{M}` answers "how much of what you posted was applied", `_empty`
+# and `{n}of{m}` answer "what did it resolve to". They were an if/elif chain,
+# so crossing the ref ceiling deleted the second answer outright and these
+# three outcomes -- nothing resolved, some resolved, all resolved -- shared one
+# filename. The first of them is the B-3 disclosure this route exists for.
+# ---------------------------------------------------------------------------
+
+def _over_ceiling_post(client, resolvable, ref_job="job-bc"):
+    """POST `_MAX_CANDIDATE_REFS + 100` refs, of which `resolvable` exist."""
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+
+    over = _MAX_CANDIDATE_REFS + 100
+    refs = [{"job_id": ref_job, "index": i} for i in range(over)]
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(resolvable)]
+    return _starred_post(client, refs, cands), _MAX_CANDIDATE_REFS, over
+
+
+def test_a_truncated_selection_that_resolves_nothing_still_says_empty(client):
+    """Every ref stale -- a retention purge after the tab was left open, or any
+    of the JS failures B-3 exists to make visible. Under the if/elif chain this
+    came back as `_starred_first500`, indistinguishable from a selection that
+    resolved perfectly."""
+    _login(client)
+    resp, kept, over = _over_ceiling_post(client, 0, ref_job="job-gone")
+    assert _csv_rows(resp.get_data(as_text=True)) == []
+    assert _filename(resp) == (
+        f"target_{_TID[:8]}_starred_first{kept}of{over}_empty_scores.csv")
+
+
+def test_a_truncated_selection_that_partly_resolves_reports_both(client):
+    """The middle outcome: cut to the first 500 refs, of which 50 named designs
+    this target still has. Both facts survive, and the row shortfall is drawn
+    against the refs that were APPLIED rather than against everything posted --
+    an honest denominator, with the prefix marker beside it saying that the
+    denominator is itself short."""
+    _login(client)
+    resp, kept, over = _over_ceiling_post(client, 50)
+    assert len(_csv_rows(resp.get_data(as_text=True))) == 50
+    assert _filename(resp) == (
+        f"target_{_TID[:8]}_starred_first{kept}of{over}_50of{kept}_scores.csv")
+
+
+def test_a_truncated_selection_that_fully_resolves_claims_no_shortfall(client):
+    """The third outcome, and the pair for both tests above: appending a row
+    marker unconditionally would satisfy them while libelling a file that lost
+    nothing except to the ref ceiling it already names."""
+    _login(client)
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+
+    resp, kept, over = _over_ceiling_post(client, _MAX_CANDIDATE_REFS)
+    assert len(_csv_rows(resp.get_data(as_text=True))) == _MAX_CANDIDATE_REFS
+    assert _filename(resp) == (
+        f"target_{_TID[:8]}_starred_first{kept}of{over}_scores.csv")
+
+
+def test_the_prefix_marker_counts_refs_not_designs(client):
+    """The number in `first{N}of{M}` is a REF count, and the two counts in the
+    name are of different things on purpose.
+
+    600 entries naming 3 distinct designs is what a crafted or duplicated
+    payload looks like. The round-19 marker used the deduped filter-set size,
+    so this file was named `_starred_first3` while holding all 3 designs it
+    could ever hold: a COMPLETE export labelled a prefix, with a 3 that was
+    neither the bound nor the row count. The row comparison is the one that
+    uses the distinct set, and here it correctly finds nothing missing.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+
+    _login(client)
+    over = _MAX_CANDIDATE_REFS + 100
+    refs = [{"job_id": "job-bc", "index": i % 3} for i in range(over)]
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(3)]
+    resp = _starred_post(client, refs, cands)
+    assert len(_csv_rows(resp.get_data(as_text=True))) == 3
+    assert _filename(resp) == (
+        f"target_{_TID[:8]}_starred_first{_MAX_CANDIDATE_REFS}of{over}"
+        f"_scores.csv")

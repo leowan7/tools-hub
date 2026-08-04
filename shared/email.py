@@ -449,6 +449,7 @@ def _source_tools_line(source_tools) -> str:  # noqa: ANN001
 
 def send_campaign_submitted_emails(
     *, campaign, user_email: str, source_tools=None, dropped: int = 0,  # noqa: ANN001
+    truncated: int = 0,
 ) -> None:
     """Send user confirmation + internal staff notification on campaign submit.
 
@@ -458,11 +459,26 @@ def send_campaign_submitted_emails(
     single-job branches, which have exactly one tool by construction
     (``compute_campaigns.tool`` is NOT NULL) and would only print it back.
 
-    ``dropped`` is how many refs the caller REJECTED before creating this
-    campaign. Both messages otherwise report the accepted count with nothing to
-    compare it against, so a user who starred ten designs reads "7 candidates"
-    as the number they chose, and ops reads it as the whole order (register
-    item A-7). Zero is the overwhelmingly common case and prints nothing.
+    ``dropped`` is how many DISTINCT designs the caller REJECTED before
+    creating this campaign; ``truncated`` is how many refs its per-request cap
+    discarded before it looked at them at all. Both messages otherwise report
+    the accepted count with nothing to compare it against, so a user who
+    starred ten designs reads "7 candidates" as the number they chose, and ops
+    reads it as the whole order (register item A-7). Zero for both is the
+    overwhelmingly common case and prints nothing.
+
+    THEY ARE TWO ARGUMENTS BECAUSE THEY HAVE OPPOSITE REMEDIES. A rejected
+    design will be rejected identically on a retry; a truncated one only needs
+    a second, smaller request. Summing them into one number would force one
+    sentence to be wrong about half of what it counts.
+
+    WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
+    sentence below asserts that any PDB was written:
+    ``stage_campaign_candidates`` silently skips a candidate that resolves to
+    no bytes, and the caller swallows ``StorageError`` per source job. The
+    verified fact is what the ROW names -- ``candidate_refs``, deduped and
+    index-checked at the write path -- so the copy says the request "covers" N
+    designs rather than that N "were sent".
 
     Best-effort: failures are logged but not raised to the caller.
     """
@@ -505,26 +521,43 @@ def send_campaign_submitted_emails(
     # Built out here, not inline, for the PEP 701 reason given above: an
     # f-string nested in another f-string's replacement field does not parse on
     # every interpreter this can deploy onto.
-    dropped_note_html = ""
-    dropped_note_text = ""
+    _sentences: list = []
     dropped_row = ""
+    truncated_row = ""
     if dropped:
         _plural = "s" if dropped != 1 else ""
-        _sentence = (
-            f"{dropped} starred design{_plural} could not be matched to this "
-            f"target and {'were' if dropped != 1 else 'was'} not included. "
-            f"Only the {n_candidates} above "
-            f"{'were' if n_candidates != 1 else 'was'} sent."
+        # "matched to a DESIGN on this target", not "matched to this target":
+        # the write path rejects on four grounds, and one of them is an index
+        # past the end of an otherwise-legitimate run of this very target.
+        _sentences.append(
+            f"{dropped} starred design{_plural} could not be matched to a "
+            f"design on this target and {'were' if dropped != 1 else 'was'} "
+            f"left out. This request covers "
+            f"{n_candidates} design{'s' if n_candidates != 1 else ''}."
         )
-        dropped_note_html = (
-            '<p style="color:#8a5a00;background:#fff6e5;border-radius:6px;'
-            f'padding:10px 12px;">{_sentence}</p>'
-        )
-        dropped_note_text = "\n" + _sentence + "\n"
         dropped_row = (
             f"<tr><td {_td}>Not included</td><td>{dropped} "
             f"starred design{_plural} rejected</td></tr>"
         )
+    if truncated:
+        _tplural = "s" if truncated != 1 else ""
+        _twas = "were" if truncated != 1 else "was"
+        _sentences.append(
+            f"{truncated} further starred design{_tplural} {_twas} over the "
+            f"per-request limit and {_twas} not read. Star "
+            f"{'them' if truncated != 1 else 'it'} again on the target page "
+            f"and send a second request."
+        )
+        truncated_row = (
+            f"<tr><td {_td}>Over the limit</td><td>{truncated} "
+            f"starred ref{_tplural} past the per-request cap</td></tr>"
+        )
+    dropped_note_html = "".join(
+        '<p style="color:#8a5a00;background:#fff6e5;border-radius:6px;'
+        f'padding:10px 12px;">{s}</p>'
+        for s in _sentences
+    )
+    dropped_note_text = ("\n" + "\n".join(_sentences) + "\n") if _sentences else ""
 
     # User confirmation
     user_subject = f"Scoping request received — {campaign.target_name}"
@@ -551,8 +584,14 @@ def send_campaign_submitted_emails(
       </p>
     </div>
     """.strip()
+    # The count is in the FIRST LINE, not only in the HTML lead. The shortfall
+    # note below it names a figure and compares it against the request size, so
+    # a text body that never states the request size left that comparison
+    # pointing at nothing (the note previously read "Only the 7 above were
+    # sent" in a body with no 7 anywhere above it).
     user_text = (
-        f"Scoping request received for {campaign.target_name}.\n"
+        f"Scoping request received for {campaign.target_name} "
+        f"({n_candidates} candidate{'s' if n_candidates != 1 else ''}).\n"
         f"{dropped_note_text}\n"
         "The Ranomics team will review and follow up within 2 business days.\n\n"
         f"View campaign: {campaign_url}\n\n"
@@ -576,6 +615,7 @@ def send_campaign_submitted_emails(
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
             <td>{n_candidates}</td></tr>
         {dropped_row}
+        {truncated_row}
         {tools_row}
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
             <td>{campaign.budget_band.title()}</td></tr>
@@ -599,6 +639,8 @@ def send_campaign_submitted_emails(
         f"Candidates: {n_candidates}\n"
         + (f"Not included: {dropped} starred design(s) rejected\n"
            if dropped else "")
+        + (f"Over the limit: {truncated} starred ref(s) past the "
+           f"per-request cap\n" if truncated else "")
         + (f"Designs from: {tools_line}\n" if tools_line else "")
         + f"Budget: {campaign.budget_band.title()}\n"
         + (f"{source_link[0]}: {source_link[1]}\n" if source_link else "")

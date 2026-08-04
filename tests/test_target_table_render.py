@@ -859,6 +859,130 @@ def test_one_tool_at_two_presets_draws_no_group_header_either():
     assert ranks == [str(i + 1) for i in range(40)], ranks[:6]
 
 
+def test_two_tools_differing_only_in_case_still_draw_their_boundary():
+    """ROUND 20 (A82 again). The gate counted distinct tools with a bare
+    ``unique``, whose Jinja default is case-INSENSITIVE, while the group loop
+    compares raw strings with ``!=`` and ``apply_sort_mode`` sorts
+    case-SENSITIVELY. ``BindCraft`` beside ``bindcraft`` therefore gave the gate
+    1 and the loop 2: the rows really were reordered into two blocks and no
+    boundary was drawn between them, which is the exact failure the gate's own
+    comment claimed it had made impossible.
+
+    Two slugs differing only in case is not a shape this product ships today,
+    and that is beside the point. The comment's claim is that the gate and the
+    loop CANNOT disagree; one reachable example of them disagreeing is what
+    makes the claim false.
+    """
+    rows = ([_row("BindCraft", "ipTM", 0.90 - 0.002 * i, job="job-a", index=i)
+             for i in range(25)]
+            + [_row("bindcraft", "ipTM", 0.80 - 0.002 * i, job="job-b", index=i)
+               for i in range(25)])
+    ranked = ranking.rank_candidates(rows, limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+
+    shown = [r["_source_tool"] for r in ranked["rows"]]
+    assert shown[0] == "BindCraft" and shown[-1] == "bindcraft", (
+        "fixture assumption: the sort really does separate the two blocks")
+    assert sorted(ranked["tools"]) == ["BindCraft", "bindcraft"], ranked["tools"]
+
+    table = _parse(_render(candidates=ranked["rows"], columns=[], job_id="",
+                           tool_slug="", target_id="t-1", multi_tool=True,
+                           sort_mode="tool", per_tool=ranked["tools"]))
+    assert len(table.group_rows) == 2, table.group_rows
+    # The sharper half: a drawn boundary that does not restart the counter is
+    # still asserting one continuous cross-tool ranking.
+    ranks = [cells[0].split()[0] for cells in table.rows]
+    assert ranks == [str(i + 1) for i in range(25)] * 2, ranks[:30]
+
+
+@pytest.mark.parametrize("name,kw", [
+    ("compute campaign (runs/detail.html)", {"campaign_id": "c-1"}),
+    ("single job (13 tools/*_results.html pages)", {"job_id": "job-1"}),
+], ids=["campaign", "job"])
+def test_a_sort_tool_campaign_or_job_table_draws_no_group_headers(name, kw):
+    """The ``pooled`` half of the gate, which nothing pinned.
+
+    No caller passes a sort mode outside target mode today, so deleting
+    ``pooled`` from the gate left the entire suite green. Grouping is a claim
+    only a pooled table can make: these two print the SOURCE JOB's own rank in
+    the ``#`` column, so tool blocks drawn over them would restart a counter
+    that already restarts for an unrelated reason.
+    """
+    rows = ([_row("bindcraft", "ipTM", 0.9 - 0.001 * i, job="job-a", index=i)
+             for i in range(3)]
+            + [_row("boltzgen", "ipTM", 0.5 - 0.001 * i, job="job-b", index=i)
+               for i in range(3)])
+    ranked = ranking.rank_candidates(rows, limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+    assert len(ranked["tools"]) == 2, "fixture assumption: two tools"
+
+    table = _parse(_render(candidates=ranked["rows"], columns=["ipTM"],
+                           tool_slug="bindcraft", sort_mode="tool",
+                           per_tool=ranked["tools"], **kw))
+    assert table.group_rows == [], (name, table.group_rows)
+
+
+class _ProbeRow(dict):
+    """A candidate row that counts SUBSCRIPT reads of ``_source_tool``.
+
+    Jinja's ``map(attribute='_source_tool')`` resolves through
+    ``environment.getitem``, i.e. ``row['_source_tool']``. Every OTHER read of
+    that key in the macro is ``cand.get(...)``, and ``dict.get`` does not route
+    through ``__getitem__``, so a non-zero count here means the group gate
+    evaluated and nothing else in the macro can produce one.
+    """
+
+    reads = 0
+
+    def __getitem__(self, key):
+        if key == "_source_tool":
+            _ProbeRow.reads += 1
+        return dict.__getitem__(self, key)
+
+
+def _probe_rows(*tools):
+    _ProbeRow.reads = 0
+    return [_ProbeRow(_row(t, "ipTM", 0.9 - 0.01 * i, job=f"job-{i}", index=i))
+            for i, t in enumerate(tools)]
+
+
+_UNGROUPABLE = [
+    ("single job (13 tools/*_results.html pages)",
+     {"job_id": "job-1", "sort_mode": "tool"}),
+    ("compute campaign (runs/detail.html)",
+     {"campaign_id": "c-1", "sort_mode": "tool"}),
+    ("design target under the default sort",
+     {"target_id": "t-1", "sort_mode": "percentile"}),
+]
+
+
+@pytest.mark.parametrize("name,kw", _UNGROUPABLE, ids=[m[0] for m in _UNGROUPABLE])
+def test_the_group_gate_costs_nothing_where_it_cannot_group(name, kw):
+    """ROUND 20 (B-11 again). B-1's fix landed as a standalone ``{% set %}``,
+    which is a STATEMENT and not a lazy sub-expression: it ran on EVERY render
+    of this shared macro, job and campaign mode included, where ``pooled`` is
+    False and the result is discarded. That is an attrgetter per row plus a set
+    build per campaign table for a value nobody reads, and ``unique`` hashes, so
+    a job whose adapter left a non-hashable value under ``_source_tool`` 500'd a
+    results page that had rendered fine until then.
+
+    Folding the count into the gate's ``and`` chain makes it short-circuit.
+    Counted rather than timed, on the one read that is unique to the gate.
+    """
+    rows = _probe_rows("bindcraft", "boltzgen")
+    _render(candidates=rows, columns=["ipTM"], tool_slug="bindcraft", **kw)
+    assert _ProbeRow.reads == 0, (name, _ProbeRow.reads)
+
+
+def test_the_group_gate_does_evaluate_on_a_grouped_target_table():
+    """The pair. A gate that never evaluated would satisfy every case above
+    while silently switching grouping off everywhere."""
+    rows = _probe_rows("bindcraft", "boltzgen")
+    _render(candidates=rows, columns=["ipTM"], target_id="t-1",
+            tool_slug="bindcraft", sort_mode="tool")
+    assert _ProbeRow.reads == len(rows), _ProbeRow.reads
+
+
 def test_grouped_mode_badges_one_row_in_the_whole_table_not_one_per_group():
     """THE DECISION A82 left open, pinned.
 

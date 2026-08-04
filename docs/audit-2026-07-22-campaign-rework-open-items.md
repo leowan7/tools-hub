@@ -2905,6 +2905,42 @@ in-product handoff the plan prefers.
   *Next:* backport the four-line negative cache to
   `_submit_campaign_shortlist`.
 
+- **A88 (NEW, not fixed). Everything round 19 and round 20 fixed on the TARGET
+  shortlist branch is still broken on the CAMPAIGN one.**
+  `_submit_campaign_shortlist` is the sibling of `_submit_target_shortlist` in
+  `blueprints/lab_projects.py` and was left alone to keep Phase 5's diff scoped
+  to the new path. It now trails it in four ways, all of them on a route that
+  hands work to a wet lab:
+  1. **Four silent `redirect(detail)` exits with no reason.** The
+     `not target_name or not candidate_refs` guard, the `not clean_refs`
+     guard, the `except ValueError` arm and the `lab_campaign is None` arm all
+     return the user to the compute-campaign page with nothing changed and no
+     message, which is the A-8 defect verbatim. Round 19's comment beside the
+     target branch's own version claimed this pair "is filed rather than fixed
+     here"; nothing filed it — the register ended at A87, which is a different
+     defect. This item is that filing, and the comment now names it.
+  2. **No truncation disclosure.** It inherits `_MAX_CANDIDATE_REFS = 500`
+     from the shared parser and never tells anyone what the bound removed, so
+     a 620-design shortlist is announced as 500 with the other 120 unmentioned
+     — the A-2 defect, on the paid path rather than the free export. The
+     target branch now takes `requested_refs` from
+     `_parse_candidate_refs_counted` and reports `truncated` separately from
+     `dropped`; that helper is already shared and the campaign branch simply
+     does not call it.
+  3. **No dedupe and no index validation at the write path.** A repeated
+     `(job_id, index)` is persisted twice and tells ops to order the same
+     structure twice; an index past the end of its job's results is persisted,
+     counted on both emails, and then silently skipped by
+     `stage_campaign_candidates`, so the lab receives fewer PDBs than every
+     number anyone can see. `blueprints/admin.py::_ref_shortlist_view` handles
+     both at READ time, so the staff email and the ops fulfilment page can
+     legitimately disagree about the same campaign-sourced order.
+  4. **No negative cache** — that half is A87, kept separate because it is a
+     load defect rather than a correctness one.
+  *Next:* lift the target branch's loop into a shared helper rather than
+  copying it a second time; the two branches now differ only in their
+  parentage test, which is the one thing that must stay distinct.
+
 ### Divergences from the master plan, resolved in favour of the code
 
 - The plan states admin fulfilment "already renders from `candidate_refs` for

@@ -219,12 +219,33 @@ def test_a_dropped_count_is_reported_to_both_parties(sent):
     user_mail, staff_mail = sent
     user_html = _flat(user_mail["html"])
     assert "7 candidates)" in user_html
-    assert "3 starred designs could not be matched" in user_html
-    assert "Only the 7 above were sent" in user_html
+    assert "3 starred designs could not be matched to a design on this target" \
+        in user_html
+    assert "This request covers 7 designs." in user_html
     assert "3 starred design" in _flat(user_mail["text"])
     # Ops reads the staff mail, so the shortfall has to reach it too.
     assert "3 starred designs rejected" in _flat(staff_mail["html"])
     assert "Not included: 3 starred design(s) rejected" in staff_mail["text"]
+
+
+def test_the_plain_text_body_carries_the_count_its_shortfall_note_compares_to(sent):
+    """ROUND 20. The note names a request size and the text body never stated
+    one: it read "Only the 7 above were sent" in a message with no 7 anywhere
+    above it, because the count lived only in the HTML lead. The sentence was
+    also a claim about STAGING, which nothing in this module observes -- so it
+    now reports what the ROW covers, and the text body states that figure.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)]),
+        user_email="scientist@example.com",
+        dropped=3,
+    )
+    user_text = sent[0]["text"]
+    assert "(7 candidates)" in user_text
+    assert "This request covers 7 designs." in user_text
+    # The claim that was never verified, in either body.
+    assert "were sent" not in user_text
+    assert "were sent" not in _flat(sent[0]["html"])
 
 
 def test_no_dropped_count_means_no_shortfall_wording_anywhere(sent):
@@ -238,6 +259,8 @@ def test_no_dropped_count_means_no_shortfall_wording_anywhere(sent):
         assert "could not be matched" not in _flat(mail["html"])
         assert "Not included" not in _flat(mail["html"])
         assert "Not included" not in mail["text"]
+        assert "over the per-request limit" not in _flat(mail["html"])
+        assert "Over the limit" not in mail["text"]
 
 
 def test_a_single_dropped_design_reads_as_singular(sent):
@@ -250,5 +273,61 @@ def test_a_single_dropped_design_reads_as_singular(sent):
     )
     user_html = _flat(sent[0]["html"])
     assert "1 starred design could not be matched" in user_html
-    assert "was not included" in user_html
-    assert "Only the 1 above was sent" in user_html
+    assert "was left out" in user_html
+    assert "This request covers 1 design." in user_html
+
+
+def test_a_truncated_count_is_reported_separately_from_a_rejection(sent):
+    """ROUND 20. `_MAX_CANDIDATE_REFS` cuts the shortlist at parse time, so
+    those designs were never judged against the target at all. Folding them
+    into `dropped` would assert a verdict nobody reached, and would give them
+    the rejection's remedy -- when the one that works is a second, smaller
+    request.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    user_mail, staff_mail = sent
+    user_html = _flat(user_mail["html"])
+    assert "120 further starred designs were over the per-request limit" \
+        in user_html
+    assert "send a second request" in user_html
+    # It is NOT a rejection, so the rejection wording must not appear.
+    assert "could not be matched" not in user_html
+    assert "120 starred refs past the per-request cap" in _flat(staff_mail["html"])
+    assert "Over the limit: 120 starred ref(s) past the per-request cap" \
+        in staff_mail["text"]
+
+
+def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
+    """They can co-occur: a 620-star shortlist is truncated to 500 AND can have
+    refs among those 500 that fail the provenance check. One merged number
+    would have to be wrong about one of the two."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(498)]),
+        user_email="scientist@example.com",
+        dropped=2,
+        truncated=120,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "2 starred designs could not be matched" in user_html
+    assert "120 further starred designs were over the per-request limit" \
+        in user_html
+    assert "This request covers 498 designs." in user_html
+    staff_text = sent[1]["text"]
+    assert "Not included: 2 starred design(s) rejected" in staff_text
+    assert "Over the limit: 120 starred ref(s)" in staff_text
+
+
+def test_a_single_truncated_design_reads_as_singular(sent):
+    """Exactly 501 starred designs is one over, and reads as one."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+        truncated=1,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "1 further starred design was over the per-request limit" in user_html
+    assert "Star it again" in user_html

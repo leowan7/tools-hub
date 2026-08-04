@@ -48,6 +48,18 @@ lab_projects_bp = Blueprint("lab_projects", __name__)
 # itself as "exact" while silently dropping the 501st starred design
 # (register item A-2). Anything added here must state what it does about the
 # bound.
+#
+# WHAT THE TARGET SUBMIT DOES ABOUT IT: it takes the requested count from
+# `_parse_candidate_refs_counted` and reports the overflow to the user and to
+# ops as `truncated`, separately from the refs it rejected on provenance. The
+# free CSV export got that disclosure and the PAID handoff did not, so a
+# 620-star shortlist was announced to both parties as "500 candidates" with
+# nothing anywhere naming the 120 designs the bound had already discarded, and
+# its drop count -- derived from the already-truncated list -- read zero.
+# Stars persist in sessionStorage and the pooled table renders 300 rows per
+# view, so accumulating past 500 is an ordinary path, not an attack.
+#
+# The CAMPAIGN branch still has no equivalent; filed as A88.
 _MAX_CANDIDATE_REFS = 500
 
 
@@ -59,15 +71,46 @@ def _parse_candidate_refs(raw: str) -> list[dict]:
     Truncated at :data:`_MAX_CANDIDATE_REFS`, not rejected: a shortlist that
     long is not a real submission, and refusing outright would turn a bounded
     read into a silent no-op the user cannot tell from a network failure.
+
+    Thin wrapper over :func:`_parse_candidate_refs_counted` that DISCARDS the
+    requested count. Every caller that must know what the bound removed uses
+    the counted form directly; this name survives as the parse-only contract
+    two test modules pin (``tests/test_campaign_results.py`` and
+    ``tests/test_candidate_table_js_contract.py``, which assert the sanitizer's
+    accept/reject rules and nothing about the cap).
+    """
+    return _parse_candidate_refs_counted(raw)[0]
+
+
+def _parse_candidate_refs_counted(raw: str) -> tuple[list[dict], int]:
+    """``(refs, requested)`` — the sanitized list CAPPED at
+    :data:`_MAX_CANDIDATE_REFS`, and how many well-formed refs the payload
+    actually carried.
+
+    ``requested`` is what makes the bound observable. ``len(refs)`` saturates
+    at the cap, so a count derived from it reports ZERO drops for a shortlist
+    that lost designs to truncation.
+
+    Malformed entries are excluded from BOTH numbers: they are a client defect
+    rather than a design the user chose, and counting them as dropped would
+    tell a user that designs went missing when nothing they starred did.
+
+    The loop no longer stops at the cap, because stopping is what made the
+    overflow uncountable. That costs one extra pass over an array
+    ``json.loads`` has already materialised in full, and it adds no Supabase
+    round trips: the cap on ``refs`` -- which is what bounds those -- is
+    unchanged, and the request body is bounded by the app's 20 MB
+    ``MAX_CONTENT_LENGTH``.
     """
     import json  # noqa: PLC0415
     try:
         parsed = json.loads(raw or "[]")
     except Exception:
-        return []
+        return [], 0
     if not isinstance(parsed, list):
-        return []
+        return [], 0
     out: list[dict] = []
+    requested = 0
     for entry in parsed:
         if not isinstance(entry, dict):
             continue
@@ -76,11 +119,12 @@ def _parse_candidate_refs(raw: str) -> list[dict]:
             idx = int(entry.get("index"))
         except (TypeError, ValueError):
             continue
-        if jid and idx >= 0:
+        if not jid or idx < 0:
+            continue
+        requested += 1
+        if len(out) < _MAX_CANDIDATE_REFS:
             out.append({"job_id": jid, "index": idx})
-        if len(out) >= _MAX_CANDIDATE_REFS:
-            break
-    return out
+    return out, requested
 
 
 def _submit_campaign_shortlist(
@@ -177,9 +221,15 @@ def _submit_campaign_shortlist(
 def _submit_target_shortlist(
     ctx, source_target_id, candidate_refs, target_name, target_context,
     assay_type, budget_band, affinity_goal_kd_nm, timeline_weeks,
+    *, requested_refs,
 ):
     """Create a lab campaign from a shortlist spanning many TOOLS run against
     one design target, then stage each shortlisted PDB.
+
+    ``requested_refs`` is how many well-formed refs the POST body carried
+    BEFORE :data:`_MAX_CANDIDATE_REFS` truncated it. Required rather than
+    defaulted: a default would silently mean "nothing was truncated", which is
+    the exact wrong answer in the one case the argument exists for.
 
     Same shape as :func:`_submit_campaign_shortlist`, with the parentage test
     widened by exactly one clause, because a target's designs reach it by two
@@ -223,17 +273,49 @@ def _submit_target_shortlist(
     target_campaign_ids = set(campaign_id_list)
 
     jobs_by_id: dict = {}
+    # ``{job_id: len(candidate_records(job.result))}``, filled from the job
+    # already in hand so the index check below costs no extra read.
+    n_records: dict = {}
     # Rejected ids are remembered too. Without this, a body naming the same
     # foreign job 500 times issues 500 identical Supabase round trips, because
     # a miss never writes to ``jobs_by_id`` and so is never a cache hit. The
-    # campaign branch above still has that shape; see the register addendum.
+    # campaign branch above still has that shape; filed as A88.
     rejected: set = set()
+    # ``(job_id, index)`` pairs already decided, so a repeat is collapsed
+    # rather than counted twice. See the dedupe note in the loop.
+    seen: set = set()
     refs_by_job = defaultdict(list)
     clean_refs: list[dict] = []
+    # Distinct DESIGNS the checks below refused. Not derived by subtraction
+    # from the ref count: a repeat and a truncation are neither of them a
+    # refusal, and folding all three into one number is what made the previous
+    # count unable to say anything true about any of them.
+    dropped = 0
+    # Set when a rejection was decided BY THE CAMPAIGN ARM -- the job exists,
+    # is the caller's own, carries a campaign_id, and that id was not in the
+    # set. Those are exactly the rejections a short id read could have got
+    # wrong; see the refusal below.
+    campaign_arm_rejected = False
     for ref in candidate_refs:
         jid = ref["job_id"]
         idx = ref["index"]
+        # DEDUPE FIRST, before ownership and before counting. A repeated
+        # (job_id, index) names ONE physical design, so the second occurrence
+        # is not a design that went missing and must not reach `dropped`, and
+        # persisting it would tell ops to order the same structure twice
+        # (the read-side half of this is blueprints/admin.py's `duplicates`).
+        #
+        # HERE AND NOT IN THE PARSER. The parser's other consumer,
+        # `blueprints.targets._starred_refs`, needs the ref count rather than
+        # the design count -- its export filename says `first{kept}of{
+        # requested}` and both of those are ref counts by design. Deduping
+        # upstream would silently redefine the 500 bound as 500 distinct
+        # designs and make that filename report a number it does not mean.
+        if (jid, idx) in seen:
+            continue
+        seen.add((jid, idx))
         if jid in rejected:
+            dropped += 1
             continue
         job = jobs_by_id.get(jid)
         if job is None:
@@ -252,31 +334,61 @@ def _submit_target_shortlist(
             )
             if not owned_by_target:
                 rejected.add(jid)
+                dropped += 1
+                if job is not None and job.campaign_id is not None:
+                    campaign_arm_rejected = True
                 continue
             jobs_by_id[jid] = job
+            n_records[jid] = len(candidate_records(job.result))
+        # The index has to exist in the source job's results. Unvalidated, an
+        # out-of-range ref is persisted, counted on the staff email, counted on
+        # the customer's page -- and then silently skipped by
+        # `stage_campaign_candidates`, so the lab receives fewer PDBs than
+        # every number anyone can see. Same rule as the read side in
+        # blueprints/admin.py: applied only when the record count is POSITIVE,
+        # because `candidate_records` returns [] both for a job with no results
+        # and for a result shape it cannot read, so zero means "length
+        # unknown" and refusing every design of such a job would be a louder
+        # wrong answer than saying nothing about it.
+        n = n_records.get(jid, 0)
+        if n and idx >= n:
+            dropped += 1
+            continue
         refs_by_job[jid].append(idx)
         clean_refs.append({"job_id": jid, "index": idx})
 
-    # Every ref the checks above threw away. `candidate_refs` is already the
-    # parsed, de-malformed list, so this counts rejections and nothing else.
-    dropped = len(candidate_refs) - len(clean_refs)
+    # Refs the parse-time cap discarded before any check ran. Counted in REFS,
+    # not designs: the tail past the bound was never parsed into pairs, so a
+    # duplicate hiding in it cannot be subtracted. Over-stating here is the
+    # harmless direction, the same trade `_starred_refs` makes for its own
+    # truncation flag.
+    truncated = max(0, requested_refs - len(candidate_refs))
 
     # A REJECTION UNDER AN INCOMPLETE READ IS NOT A VERDICT. `owned_by_target`
     # consults `target_campaign_ids`, so when that set is a prefix of the real
     # one, a legitimate campaign-sourced design is indistinguishable from a ref
     # belonging to some other target. This route stages a PAID order, so
     # proceeding would hand the wet lab a shortlist quietly missing designs the
-    # user selected and paid to compute. Refusing is recoverable: the stars
-    # live in sessionStorage and survive the redirect, so a retry costs a click.
+    # user selected and paid to compute.
     #
-    # Gated on `dropped` as well, not on `complete` alone: if nothing was
-    # rejected then the short list changed no decision and there is nothing to
-    # warn anyone about.
-    if dropped and not campaign_ids_complete:
+    # Gated on `campaign_arm_rejected`, NOT on `dropped`. `dropped` also counts
+    # refs naming a job that does not exist, one belonging to another tenant,
+    # one whose target is a different protein, and an index past the end of its
+    # job -- none of which the campaign id set could have decided differently,
+    # so refusing on those blames the read for a verdict it did not make and
+    # sends the user away from a submission that was correct.
+    if campaign_arm_rejected and not campaign_ids_complete:
         return redirect(detail + "?handoff=unverified")
 
+    # NOT `none`. The request DID carry designs; every one of them failed the
+    # tenancy or provenance or index check. The two cases share nothing but
+    # their outcome: `none` is recoverable by retrying (the stars are still in
+    # sessionStorage and the likely cause is that they did not reach us),
+    # `rejected` is not, because the same refs will be refused the same way.
+    # Round 19 collapsed both onto `none` and so told this user to keep
+    # pressing a button that can never work.
     if not clean_refs:
-        return redirect(detail + "?handoff=none")
+        return redirect(detail + "?handoff=rejected")
 
     try:
         lab_campaign = create_campaign_from_target_refs(
@@ -301,7 +413,10 @@ def _submit_target_shortlist(
     #
     # Scoped to the target branch on purpose. `_submit_campaign_shortlist`
     # above has a byte-identical pair of returns and is out of Phase 5's
-    # scope; it is filed rather than fixed here.
+    # scope; it is filed as A88 in
+    # docs/audit-2026-07-22-campaign-rework-open-items.md. (Round 19 claimed
+    # it was filed and it was not: the register ended at A87, a different
+    # defect.)
     except ValueError:
         return redirect(detail + "?handoff=failed")
     if lab_campaign is None:
@@ -336,18 +451,23 @@ def _submit_target_shortlist(
             campaign=lab_campaign, user_email=session.get("user_email", ""),
             source_tools=_source_tool_counts(jobs_by_id, refs_by_job),
             dropped=dropped,
+            truncated=truncated,
         )
     except Exception:
         logger.warning("campaign submit emails failed", exc_info=True)
 
-    # `dropped` rides the query string so the confirmation page can state what
-    # was NOT sent. Without it the page reports the accepted count with nothing
-    # to compare it against, and a user who starred ten designs reads "7" as
-    # the number they chose (register item A-7). Omitted when zero, so the
-    # common case keeps exactly today's URL.
+    # Both counts ride the query string so the confirmation page can state what
+    # was NOT sent. Without them the page reports the accepted count with
+    # nothing to compare it against, and a user who starred ten designs reads
+    # "7" as the number they chose (register item A-7). They stay SEPARATE
+    # because their remedies are opposite: a rejected design will be rejected
+    # again, while a truncated one only needs a second, smaller request.
+    # Each omitted when zero, so the common case keeps exactly today's URL.
     return redirect(
         url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
-        + "?submitted=1" + (f"&dropped={dropped}" if dropped else "")
+        + "?submitted=1"
+        + (f"&dropped={dropped}" if dropped else "")
+        + (f"&truncated={truncated}" if truncated else "")
     )
 
 
@@ -400,7 +520,13 @@ def campaigns_submit():
     # both cannot use the narrower parentage test to smuggle in a job the
     # target branch would have rejected. The legacy single-job form is last.
     source_target_id = request.form.get("source_target_id", "").strip()
-    candidate_refs = _parse_candidate_refs(request.form.get("candidate_refs", ""))
+    # The counted form, because the target branch below reports what the
+    # parse-time cap removed. `requested_refs` is the well-formed ref count
+    # BEFORE truncation; `candidate_refs` is capped at _MAX_CANDIDATE_REFS, so
+    # its length cannot tell the two apart.
+    candidate_refs, requested_refs = _parse_candidate_refs_counted(
+        request.form.get("candidate_refs", ""),
+    )
     # Gated on the parent ALONE, not on `and candidate_refs`, unlike the
     # campaign arm below. Phase 5.2 removed the `disabled` attribute from the
     # send button, so a user with nothing starred can now open the modal and
@@ -414,7 +540,7 @@ def campaigns_submit():
         return _submit_target_shortlist(
             ctx, source_target_id, candidate_refs, target_name,
             target_context, assay_type, budget_band, affinity_goal_kd_nm,
-            timeline_weeks,
+            timeline_weeks, requested_refs=requested_refs,
         )
 
     source_campaign_id = request.form.get("source_campaign_id", "").strip()
@@ -503,19 +629,27 @@ def campaign_detail(campaign_id: str):
     if campaign is None:
         return render_template("404.html"), 404
     submitted_flash = request.args.get("submitted") == "1"
-    # How many starred designs the submit REJECTED. Only the target branch
-    # sends it, and only when non-zero. Clamped rather than validated: this is
-    # a display count on a page the user already owns, so a crafted value
-    # misinforms nobody but its author.
+    # How many starred designs the submit REJECTED, and how many the
+    # per-request cap discarded before it ever looked at them. Two counts and
+    # not one, because a rejected design will be rejected again and a
+    # truncated one only needs a second, smaller request. Only the target
+    # branch sends either, and only when non-zero. Clamped rather than
+    # validated: these are display counts on a page the user already owns, so
+    # a crafted value misinforms nobody but its author.
     try:
         dropped_count = max(0, int(request.args.get("dropped") or 0))
     except ValueError:
         dropped_count = 0
+    try:
+        truncated_count = max(0, int(request.args.get("truncated") or 0))
+    except ValueError:
+        truncated_count = 0
     return render_template(
         "campaigns/detail.html",
         campaign=campaign,
         submitted_flash=submitted_flash,
         dropped_count=dropped_count,
+        truncated_count=truncated_count,
     )
 
 # Legacy stub redirect — old results pages linked here.

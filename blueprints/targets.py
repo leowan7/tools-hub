@@ -535,7 +535,14 @@ def target_detail(target_id):
     # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
     # renders nothing at all rather than an empty alert.
     handoff = (request.args.get("handoff") or "").strip()
-    if handoff not in ("none", "noname", "unverified", "failed"):
+    # `rejected` is distinct from `none` and the distinction is the whole
+    # point: `none` means the request carried no designs, `rejected` means it
+    # carried designs and none of them could be attributed to this target.
+    # Round 19 collapsed both onto `none`, so a user whose five starred designs
+    # were all rejected was told the request "arrived with no designs in it"
+    # and advised to retry, which can never work. Two QC reviewers found this
+    # independently (round 20, A-H1 / B-F1).
+    if handoff not in ("none", "noname", "rejected", "unverified", "failed"):
         handoff = ""
     return render_template(
         "targets/detail.html",
@@ -558,8 +565,8 @@ _TARGET_ZIP_EXPORT_LIMIT = 300
 
 
 def _starred_refs():
-    """``(filter_set, truncated)`` for a POSTed export, or ``(None, False)``
-    on a GET.
+    """``(filter_set, kept, requested)`` for a POSTed export, or
+    ``(None, 0, 0)`` on a GET.
 
     A POST to an export route ALWAYS means "only these designs". A body with
     no ``refs`` field, an unparseable one, or one naming nothing yields an
@@ -567,31 +574,41 @@ def _starred_refs():
     POST indistinguishable from a GET and hand the user the full file under a
     filename that says ``_starred``.
 
-    The refs are parsed with the same function the lab-handoff POST uses, so
-    the consumers of the star selection cannot disagree about the payload
-    shape. It is imported here rather than duplicated: a second ten-line
-    parser is exactly the kind of thing that drifts.
+    The refs are parsed with the same function the TARGET lab-handoff POST
+    uses (``blueprints/lab_projects.py:521``), so the two consumers of one star
+    selection cannot disagree about the payload shape or about how much of it
+    the ceiling removed. It is imported rather than duplicated: a second
+    ten-line parser is exactly the kind of thing that drifts.
 
     IT ALSO INHERITS THAT PARSER'S 500-REF CEILING, which it does not announce
-    (register item A-2). ``truncated`` is how the caller finds out, because
-    hitting the bound means the file is a prefix of what the user asked for
-    and the export otherwise described itself as exact.
+    (register item A-2). ``requested > kept`` is how the caller finds out,
+    because losing refs to the bound means the file is a prefix of what the
+    user asked for and the export otherwise described itself as exact.
 
-    ``>=`` deliberately over-detects by one case: a selection of exactly 500
-    valid refs is complete but reported as truncated, because the parser
-    stops at the bound without saying whether more were waiting. Over-warning
-    on a filename is the harmless direction; under-warning ships a short file
-    claiming to be whole.
+    ``kept`` is how many refs the parser returned and ``requested`` how many
+    well-formed refs the payload actually carried, both straight from
+    ``_parse_candidate_refs_counted``. The earlier version derived the flag
+    from ``len(parsed) >= _MAX_CANDIDATE_REFS`` and had to defend the
+    over-detection that comes with it -- a selection of EXACTLY 500 is whole
+    and was reported as a prefix. There is nothing to defend: ``len(refs)``
+    saturates at the cap, which is the whole reason the counted form exists,
+    and its own docstring says a caller needing to know what the bound removed
+    should call it rather than re-derive it. This one does.
+
+    NEITHER NUMBER IS A ROW COUNT and neither is the size of the returned set.
+    Refs may repeat, so the distinct filter set can be far smaller than
+    ``kept``; the row shortfall is the caller's to compute against the set it
+    actually filtered with.
     """
     from blueprints.lab_projects import (  # noqa: PLC0415
-        _MAX_CANDIDATE_REFS, _parse_candidate_refs,
+        _parse_candidate_refs_counted,
     )
 
     if request.method != "POST":
-        return None, False
-    parsed = _parse_candidate_refs(request.form.get("refs", ""))
+        return None, 0, 0
+    parsed, requested = _parse_candidate_refs_counted(request.form.get("refs", ""))
     refs = {(str(r["job_id"]), int(r["index"])) for r in parsed}
-    return refs, len(parsed) >= _MAX_CANDIDATE_REFS
+    return refs, len(parsed), requested
 
 
 def _row_ref(cand: dict) -> tuple:
@@ -661,19 +678,20 @@ def _target_export(target_id: str, fmt: str):
     # already been shown, so it can only ever narrow what this same route
     # would otherwise serve -- it is not a second way to address data.
     #
-    # Exact for csv/fasta UP TO 500 STARRED DESIGNS. Those aggregate with
+    # Exact for csv/fasta UP TO 500 POSTED REFS. Those aggregate with
     # limit=None, so nothing is lost on the aggregate side, but the selection
-    # itself arrives through `_parse_candidate_refs`, which stops at
-    # `_MAX_CANDIDATE_REFS` and returns a prefix without saying so. This
-    # comment claimed "exact" unqualified (register item A-2); `truncated`
-    # below is what makes the bound visible instead of theoretical.
+    # itself arrives through `_parse_candidate_refs_counted`, which stops at
+    # `_MAX_CANDIDATE_REFS` and would return a prefix without saying so. This
+    # comment claimed "exact" unqualified (register item A-2); the
+    # `requested > kept` marker below is what makes the bound visible instead
+    # of theoretical.
     #
     # It is NOT offered for the ZIP, which caps at 300 in canonical order: a
     # starred design below that cap would be missing from the archive with
     # nothing to say so. The macro renders the control for CSV only.
-    starred, starred_truncated = _starred_refs()
+    starred, kept, requested = _starred_refs()
     if starred is not None:
-        requested = len(starred)
+        applied = len(starred)
         candidates = [c for c in candidates if _row_ref(c) in starred]
         stem += "_starred"
         # THE SELECTION IS ASSEMBLED IN THE BROWSER, so every way that can go
@@ -693,16 +711,32 @@ def _target_export(target_id: str, fmt: str):
         # `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}` rather than
         # inventing a second vocabulary for the same idea.
         #
-        # `first{N}` is checked FIRST and is not an alternative to the counts
-        # below: when the parser truncated, `requested` is already the capped
-        # number, so the NofM comparison is drawn against a figure that is
-        # itself short and can only understate the loss.
-        if starred_truncated:
-            stem += f"_first{len(starred)}"
-        elif not candidates:
+        # THE TWO MARKERS COMPOSE, and they answer different questions. The
+        # first is about the SELECTION -- how much of what the browser posted
+        # was applied at all -- and the second about the ROWS that selection
+        # resolved to. An `if/elif` chain collapsed three outcomes onto one
+        # filename: 600 stale refs (0 rows), 600 refs of which 50 resolved, and
+        # 500 refs that all resolved every produced `_starred_first500`, so the
+        # `_empty` disclosure this route exists for was deleted at exactly the
+        # ref count where a user is most likely to be carrying stale
+        # sessionStorage. "The NofM comparison can only understate the loss"
+        # was the argument for ordering them; it is not an argument for
+        # dropping the other one entirely.
+        #
+        # `first{kept}of{requested}` counts REFS, not designs. An earlier
+        # version wrote `first{len(starred)}`, the DEDUPED filter-set size,
+        # while the truncation happened at `_MAX_CANDIDATE_REFS` RAW entries:
+        # a 500-entry payload naming 3 distinct designs was named
+        # `_starred_first3` over a file holding all 3 of them, where 3 was
+        # neither the bound nor the row count. `applied` -- the distinct set
+        # actually filtered with -- is the only honest denominator for the row
+        # comparison, and it is a different number from both.
+        if requested > kept:
+            stem += f"_first{kept}of{requested}"
+        if not candidates:
             stem += "_empty"
-        elif len(candidates) < requested:
-            stem += f"_{len(candidates)}of{requested}"
+        elif len(candidates) < applied:
+            stem += f"_{len(candidates)}of{applied}"
 
     # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
     # the two are byte-indistinguishable. The aggregate sets `partial` precisely
