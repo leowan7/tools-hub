@@ -95,10 +95,31 @@
                 {% for slug, n in shortlist.tools %}{{ slug }} ({{ n }}){{ ', ' if not loop.last }}{% endfor %}
               </div>
               {% endif %}
+              {# The count above is DISTINCT designs, so everything that makes it
+                 differ from the submitted list has to be stated here or ops is
+                 reconciling a paid order against a number nothing explains. The
+                 three amber lines partition it: unresolved + out_of_range +
+                 the per-tool numbers equal the count, and duplicates +
+                 malformed are the rest of the raw list (A-4 / A-6). #}
               {% if shortlist.unresolved %}
               <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
                 {{ shortlist.unresolved }} design{{ '' if shortlist.unresolved == 1 else 's' }}
                 could not be attributed to a tool (source job unreadable).
+              </div>
+              {% endif %}
+              {% if shortlist.out_of_range %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
+                {{ shortlist.out_of_range }} design{{ '' if shortlist.out_of_range == 1 else 's' }}
+                point{{ 's' if shortlist.out_of_range == 1 else '' }} past the end of the source job's results.
+              </div>
+              {% endif %}
+              {% if shortlist.duplicates or shortlist.malformed %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
+                Submitted list held {{ shortlist.raw }} entr{{ 'y' if shortlist.raw == 1 else 'ies' }};
+                {%- if shortlist.duplicates %} {{ shortlist.duplicates }} duplicate{{ '' if shortlist.duplicates == 1 else 's' }}{% endif %}
+                {%- if shortlist.duplicates and shortlist.malformed %} and{% endif %}
+                {%- if shortlist.malformed %} {{ shortlist.malformed }} unreadable{% endif %}
+                not counted above.
               </div>
               {% endif %}
             </dd>

@@ -154,21 +154,60 @@ def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
     of another user's submission -- the ownership decision was made when the
     row was created, and re-applying the submitter's scope here is not
     available to an admin session anyway.
+
+    ``count`` is the number of DISTINCT designs the shortlist names, NOT the
+    length of the stored list. ``candidate_refs`` is JSON off a database row,
+    so it can hold repeats and entries this page cannot resolve to a design,
+    and ops fulfils a paid order against the number printed here. Every counted
+    design lands in exactly one of ``tools``, ``unresolved`` and
+    ``out_of_range``, so those three sum to ``count``; ``duplicates`` and
+    ``malformed`` account for the rest of ``raw``. All of those are rendered --
+    a number on this page that ops cannot reconcile against the numbers beneath
+    it is the failure this shape exists to avoid (register items A-4 / A-6).
+    ``by_job`` is the resolved job-id -> indices map and is not rendered.
     """
+    from collections.abc import Mapping  # noqa: PLC0415
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
     refs = list(getattr(campaign, "candidate_refs", None) or [])
     if not refs:
         return None
 
+    # One pass over the stored list, applying the same (job_id, index) contract
+    # blueprints.lab_projects._parse_candidate_refs writes: a mapping, a
+    # non-empty job_id, an index that coerces to a non-negative int. Anything
+    # else is counted as malformed instead of being handed to ``.get`` -- a
+    # bare string in this column used to raise AttributeError and 500 the whole
+    # fulfilment page (register item A-5).
     by_job: dict = {}
+    seen: set = set()
+    malformed = 0
+    duplicates = 0
     for ref in refs:
-        jid = str((ref or {}).get("job_id") or "")
-        if jid:
-            by_job.setdefault(jid, []).append(ref.get("index"))
+        jid = ""
+        idx = -1
+        if isinstance(ref, Mapping):
+            jid = str(ref.get("job_id") or "").strip()
+            try:
+                idx = int(ref.get("index"))
+            except (TypeError, ValueError):
+                idx = -1
+        if not jid or idx < 0:
+            malformed += 1
+            continue
+        if (jid, idx) in seen:
+            # The same physical design named twice. Counting it twice would
+            # tell ops to order it twice (register item A-6).
+            duplicates += 1
+            continue
+        seen.add((jid, idx))
+        by_job.setdefault(jid, []).append(idx)
 
     looked_up = list(by_job)[:_ADMIN_REF_JOB_LOOKUPS]
     skipped = set(by_job) - set(looked_up)
 
     tools: dict = {}
+    out_of_range = 0
     unresolved = sum(len(by_job[jid]) for jid in skipped)
     for jid in looked_up:
         job = get_job(jid)
@@ -176,9 +215,28 @@ def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
             unresolved += len(by_job[jid])
             continue
         slug = str(getattr(job, "tool", "") or "unknown")
-        tools[slug] = tools.get(slug, 0) + len(by_job[jid])
+        # The job is read anyway for its tool slug, so its record count is
+        # already in hand -- no extra read to check an index against it. Only
+        # applied when that count is POSITIVE: candidate_records returns [] both
+        # for a job with no results and for a result shape it cannot read, so
+        # zero means "length unknown", and flagging every design of such a job
+        # would be a louder wrong answer than saying nothing about it.
+        n_records = len(candidate_records(getattr(job, "result", None)))
+        indices = by_job[jid]
+        resolved = (
+            [i for i in indices if i < n_records] if n_records else list(indices)
+        )
+        out_of_range += len(indices) - len(resolved)
+        # Guarded so a job whose every index is past the end never prints as
+        # "slug (0)"; _source_tools_line drops zero-count tools the same way.
+        if resolved:
+            tools[slug] = tools.get(slug, 0) + len(resolved)
     return {
-        "count": len(refs),
+        # Summed over by_job rather than over the buckets below, so that a
+        # bucket dropped in a later edit shows up as a page whose numbers do
+        # not add up -- which tests/test_admin_shortlist_fulfilment.py asserts
+        # against the RENDERED page.
+        "count": sum(len(v) for v in by_job.values()),
         "jobs": len(by_job),
         # Descending by count then slug, matching _source_tools_line in
         # shared/email.py so the page and the email cannot order differently.
@@ -188,6 +246,14 @@ def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
         # tool breakdown that quietly omits rows is worse than one that says so
         # -- its numbers would not add up to the design count printed above it.
         "unresolved": unresolved,
+        # Designs whose source job WAS read but whose index is past the end of
+        # its results. Kept out of ``tools`` so a per-tool number never counts
+        # a design that is not there to pull.
+        "out_of_range": out_of_range,
+        # The stored list as submitted, and the two ways it exceeds ``count``.
+        "raw": len(refs),
+        "duplicates": duplicates,
+        "malformed": malformed,
         "by_job": by_job,
     }
 
