@@ -547,6 +547,42 @@ def target_detail(target_id):
 _TARGET_ZIP_EXPORT_LIMIT = 300
 
 
+def _starred_refs():
+    """The starred-only filter for a POSTed export, or ``None`` on a GET.
+
+    A POST to an export route ALWAYS means "only these designs". A body with
+    no ``refs`` field, an unparseable one, or one naming nothing yields an
+    EMPTY set, not None: falling back to "everything" would make a malformed
+    POST indistinguishable from a GET and hand the user the full file under a
+    filename that says ``_starred``.
+
+    The refs are parsed with the same function the lab-handoff POST uses, so
+    the two consumers of the star selection cannot disagree about the payload
+    shape. It is imported here rather than duplicated: a second ten-line
+    parser is exactly the kind of thing that drifts.
+    """
+    from blueprints.lab_projects import _parse_candidate_refs  # noqa: PLC0415
+
+    if request.method != "POST":
+        return None
+    return {
+        (str(r["job_id"]), int(r["index"]))
+        for r in _parse_candidate_refs(request.form.get("refs", ""))
+    }
+
+
+def _row_ref(cand: dict) -> tuple:
+    """A pooled row's identity as the star buttons emit it.
+
+    ``candidate_table.html`` stamps ``data-job`` from ``_source_job_id`` and
+    ``data-ref-idx`` from ``_source_index``, and ``shared.target_results``
+    stamps both on every pooled row, so this is the same pair on both sides
+    with no fallback needed. A row missing either simply matches nothing.
+    """
+    idx = cand.get("_source_index")
+    return (str(cand.get("_source_job_id") or ""), idx if idx is not None else -1)
+
+
 def _target_export(target_id: str, fmt: str):
     """Pooled CSV / FASTA / ZIP across every run against one target.
 
@@ -597,6 +633,19 @@ def _target_export(target_id: str, fmt: str):
         return render_template("404.html"), 404
     candidates = agg.get("candidates", [])
     stem = "target_" + str(target_id)[:8]
+
+    # Starred-only filter. Applied AFTER the aggregate, on rows the user has
+    # already been shown, so it can only ever narrow what this same route
+    # would otherwise serve -- it is not a second way to address data.
+    #
+    # Exact for csv/fasta because those aggregate with limit=None. It is NOT
+    # offered for the ZIP, which caps at 300 in canonical order: a starred
+    # design below that cap would be missing from the archive with nothing to
+    # say so. The macro renders the control for CSV only.
+    starred = _starred_refs()
+    if starred is not None:
+        candidates = [c for c in candidates if _row_ref(c) in starred]
+        stem += "_starred"
 
     # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
     # the two are byte-indistinguishable. The aggregate sets `partial` precisely
@@ -672,7 +721,10 @@ def _target_export(target_id: str, fmt: str):
     )
 
 
-@targets_bp.route("/targets/<target_id>/export.csv", methods=["GET"])
+# POST is the starred-only variant, and only CSV carries it. See _starred_refs
+# for why a POST never falls back to the full export, and the note in
+# _target_export for why the ZIP is not offered this way.
+@targets_bp.route("/targets/<target_id>/export.csv", methods=["GET", "POST"])
 @login_required
 def target_export_csv(target_id):
     return _target_export(target_id, "csv")

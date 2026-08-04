@@ -280,3 +280,99 @@ def test_an_empty_fasta_under_a_failed_read_does_not_assert_there_are_none(
         body = client.get(f"/targets/{_TID}/export.fasta").get_data(as_text=True)
     assert "No sequences found" not in body
     assert "could not be read" in body
+
+
+# ---------------------------------------------------------------------------
+# "Starred only (CSV)" — POST carries the selection (Phase 5.2)
+# ---------------------------------------------------------------------------
+
+def _csv_rows(body):
+    return list(csv.DictReader(io.StringIO(body)))
+
+
+def _starred_post(client, refs, candidates):
+    import json
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(candidates)):
+        return client.post(
+            f"/targets/{_TID}/export.csv", data={"refs": json.dumps(refs)},
+        )
+
+
+def test_a_posted_ref_set_narrows_the_csv_to_those_designs(client):
+    """The star's payoff for a user who never contacts Ranomics. Refs are the
+    same {job_id, index} pairs the lab-submit modal posts, matched against the
+    row's own _source_job_id / _source_index."""
+    _login(client)
+    cands = [_cand("bindcraft", "job-bc", 0), _cand("bindcraft", "job-bc", 1),
+             _cand("pxdesign", "job-px", 0)]
+    resp = _starred_post(
+        client,
+        [{"job_id": "job-bc", "index": 1}, {"job_id": "job-px", "index": 0}],
+        cands,
+    )
+    assert resp.status_code == 200
+    rows = _csv_rows(resp.get_data(as_text=True))
+    assert len(rows) == 2, rows
+    assert {r["tool"] for r in rows} == {"bindcraft", "pxdesign"}
+    assert {r["source_job"] for r in rows} == {"job-bc", "job-px"}
+
+
+def test_the_starred_file_is_named_as_such(client):
+    """The artifact leaves the process and is opened later, so the narrowing
+    has to travel with it. A file named like the full export but holding three
+    rows is the same class of silent partial the `_incomplete` suffix exists
+    for."""
+    _login(client)
+    resp = _starred_post(client, [{"job_id": "job-bc", "index": 0}],
+                         [_cand("bindcraft", "job-bc", 0)])
+    assert "_starred" in resp.headers["Content-Disposition"]
+
+
+def test_a_post_with_no_usable_refs_exports_nothing_not_everything(client):
+    """A POST ALWAYS means "only these". Falling back to the full export would
+    make a malformed POST indistinguishable from a GET and hand back every
+    design under a filename claiming it was a selection."""
+    _login(client)
+    cands = [_cand("bindcraft", "job-bc", 0), _cand("pxdesign", "job-px", 0)]
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(cands)):
+        resp = client.post(f"/targets/{_TID}/export.csv", data={})
+    assert resp.status_code == 200
+    assert _csv_rows(resp.get_data(as_text=True)) == []
+
+
+def test_a_get_is_unfiltered(client):
+    """The pair. The starred filter must not leak onto the plain download."""
+    _login(client)
+    cands = [_cand("bindcraft", "job-bc", 0), _cand("pxdesign", "job-px", 0)]
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(cands)):
+        resp = client.get(f"/targets/{_TID}/export.csv")
+    assert len(_csv_rows(resp.get_data(as_text=True))) == 2
+    assert "_starred" not in resp.headers["Content-Disposition"]
+
+
+def test_a_starred_export_still_404s_a_foreign_target(client):
+    """The ownership sentinel is upstream of the filter and stays upstream."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg(ok=False, tools=[])):
+        resp = client.post(f"/targets/{_TID}/export.csv",
+                           data={"refs": '[{"job_id":"job-bc","index":0}]'})
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("fmt", ["fasta", "zip"])
+def test_only_csv_accepts_a_post(client, fmt):
+    """Scoped on purpose. The ZIP caps at 300 in canonical order, so a starred
+    design below the cap would be silently missing from the archive; rather
+    than pick a second cap rule, the control is CSV only and the other two
+    routes stay GET."""
+    _login(client)
+    resp = client.post(f"/targets/{_TID}/export.{fmt}", data={"refs": "[]"})
+    assert resp.status_code == 405

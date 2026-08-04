@@ -57,13 +57,14 @@ def _render(**kwargs) -> str:
     params = dict(
         candidates=[], columns=[], job_id="", tool_slug="",
         clone_url="", campaign_id="", target_id="", multi_tool=False,
-        sort_mode="",
+        sort_mode="", split_tools=(), per_tool={},
     )
     params.update(kwargs)
     tmpl = _env().from_string(
         '{% from "components/candidate_table.html" import candidate_table %}'
         "{{ candidate_table(candidates, columns, job_id, tool_slug, clone_url,"
-        "                   campaign_id, target_id, multi_tool, sort_mode) }}"
+        "                   campaign_id, target_id, multi_tool, sort_mode,"
+        "                   split_tools, per_tool) }}"
     )
     return tmpl.render(**params)
 
@@ -73,11 +74,20 @@ def _render(**kwargs) -> str:
 # ---------------------------------------------------------------------------
 
 class _Table(HTMLParser):
-    """Collects the first table's header cells and its body rows.
+    """Collects the first table's header cells and its CANDIDATE rows.
 
-    Rows are split on ``tr``; a row's cells are the text of each ``td``.
-    ``viewer_colspans`` collects the colspan of every viewer row's single cell,
-    which is what the header-count assertion compares against.
+    ``rows`` holds only candidate rows: a row's cells are the text of each
+    ``td``. Two other row kinds are pulled out rather than counted, because
+    every positional assertion below indexes ``rows`` against the list of
+    candidate dicts that produced it, and a non-candidate row in that list
+    silently shifts the mapping:
+
+    ``viewer_colspans``
+        the colspan of every viewer row's single cell, which is what the
+        header-count assertion compares against.
+    ``group_rows``
+        the text of every ``cand-group-row`` header, in render order. These
+        appear only under ``sort_mode='tool'`` (register item A82).
     """
 
     def __init__(self):
@@ -86,10 +96,13 @@ class _Table(HTMLParser):
         self.header_text: list[str] = []
         self.rows: list[list[str]] = []
         self.viewer_colspans: list[int] = []
+        self.group_rows: list[str] = []
+        self.group_colspans: list[int] = []
         self._in_thead = False
         self._cell: list[str] | None = None
         self._row: list[str] | None = None
         self._row_is_viewer = False
+        self._row_is_group = False
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -98,12 +111,15 @@ class _Table(HTMLParser):
         elif tag == "tr":
             self._row = []
             self._row_is_viewer = "viewer-row" in (a.get("class") or "")
+            self._row_is_group = "cand-group-row" in (a.get("class") or "")
         elif tag in ("th", "td"):
             self._cell = []
             if tag == "th" and self._in_thead:
                 self.header_cells.append(a)
             if tag == "td" and self._row_is_viewer and a.get("colspan"):
                 self.viewer_colspans.append(int(a["colspan"]))
+            if tag == "td" and self._row_is_group and a.get("colspan"):
+                self.group_colspans.append(int(a["colspan"]))
 
     def handle_endtag(self, tag):
         if tag == "thead":
@@ -116,10 +132,13 @@ class _Table(HTMLParser):
                 self._row.append(text)
             self._cell = None
         elif tag == "tr":
-            if self._row and not self._row_is_viewer:
+            if self._row and self._row_is_group:
+                self.group_rows.append(" ".join(self._row))
+            elif self._row and not self._row_is_viewer:
                 self.rows.append(self._row)
             self._row = None
             self._row_is_viewer = False
+            self._row_is_group = False
 
     def handle_data(self, data):
         if self._cell is not None:
@@ -377,12 +396,13 @@ def test_the_subjob_chip_names_its_tool():
 # The shortlist bar
 # ---------------------------------------------------------------------------
 
-def test_target_mode_hides_the_shortlist_button():
-    """It would POST source_job_id="" with candidate_indices=[]: the modal's
-    hidden inputs branch on campaign_id and fall back to job_id, and in target
-    mode both are empty. Phase 5.3 wires it."""
+def test_target_mode_shows_the_shortlist_button():
+    """Phase 5.3. The bar was hidden here because the modal's hidden inputs
+    branched on campaign_id and fell back to source_job_id, and in target mode
+    both were empty, so the POST would have named no parent. Migration 0040 and
+    the source_target_id branch give it one, so the button ships."""
     html = _multi_tool_table()
-    assert "Send shortlist to Ranomics lab" not in html
+    assert "Send shortlist to Ranomics lab" in html
 
 
 def test_campaign_mode_still_shows_the_shortlist_button():
@@ -421,21 +441,85 @@ def test_campaign_mode_export_base_is_unchanged():
     assert "/targets/" not in html
 
 
-def test_target_mode_emits_no_lab_submit_form_at_all():
-    """Hiding the opener is not the same as not shipping the form.
+class _Forms(HTMLParser):
+    """Every ``<form>``'s action plus its hidden inputs as ``{name: value}``.
 
-    Before this, the modal markup was emitted on a target page regardless: a
-    real ``POST /lab-projects/submit`` carrying ``source_job_id=""``, sitting in
-    the DOM behind ``display:none`` with no opener. Confirmed inert in a browser
-    (``openCampaignModal`` is a window global with no internal callers, so with
-    the bar gone nothing calls it), which makes this defence in depth rather
-    than a live fix. A dead form pointed at a live endpoint is still not worth
-    carrying.
+    Parsed, not grepped: the assertions below are about which parent field a
+    given form carries, and a substring search over the whole page cannot tell
+    the lab-submit form from the starred-export form sitting beside it.
     """
-    html = _multi_tool_table()
-    assert "/lab-projects/submit" not in html
-    assert 'name="source_job_id"' not in html
-    assert "campaign-modal-" not in html
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.forms: list[tuple[str, dict]] = []
+        self._current: dict | None = None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "form":
+            self._current = {}
+            self.forms.append((a.get("action") or "", self._current))
+        elif tag == "input" and self._current is not None:
+            if a.get("name"):
+                self._current[a["name"]] = a.get("value", "")
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self._current = None
+
+
+def _form_for(html: str, action_contains: str) -> dict:
+    p = _Forms()
+    p.feed(html)
+    for action, fields in p.forms:
+        if action_contains in action:
+            return fields
+    raise AssertionError(
+        f"no form whose action contains {action_contains!r}; "
+        f"saw {[a for a, _ in p.forms]}"
+    )
+
+
+def test_target_mode_posts_a_source_target_id_and_no_source_job_id():
+    """THE Phase 5.3 wiring, and the reason the bar could not ship before it.
+
+    ``campaigns_submit`` dispatches on which parent field is present. A target
+    page that posted ``source_job_id=""`` fell through to the legacy single-job
+    branch, which reads ``candidate_indices`` (empty here) and would have
+    created nothing while looking like it worked. The form must name the
+    target and carry refs.
+    """
+    fields = _form_for(_multi_tool_table(), "/lab-projects/submit")
+    assert fields.get("source_target_id") == "t-abc12345"
+    assert "candidate_refs" in fields
+    assert "source_job_id" not in fields
+    assert "source_campaign_id" not in fields
+    assert "candidate_indices" not in fields
+
+
+def test_campaign_mode_still_posts_a_source_campaign_id():
+    """The pair. Adding the target branch above the campaign one must not
+    capture the campaign page, whose refs are scoped by a different parentage
+    test on the server."""
+    rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb", "_source_job_id": "j1"}]
+    html = _render(candidates=rows, columns=["ipTM"], job_id="",
+                   tool_slug="bindcraft", campaign_id="c-1")
+    fields = _form_for(html, "/lab-projects/submit")
+    assert fields.get("source_campaign_id") == "c-1"
+    assert "source_target_id" not in fields
+
+
+def test_single_job_mode_still_posts_a_source_job_id():
+    """The third arm. The legacy single-job form is the only one that posts
+    candidate_indices, and both ref-based branches must leave it alone."""
+    rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb"}]
+    html = _render(candidates=rows, columns=["ipTM"], job_id="job-1",
+                   tool_slug="bindcraft")
+    fields = _form_for(html, "/lab-projects/submit")
+    assert fields.get("source_job_id") == "job-1"
+    assert "candidate_indices" in fields
+    assert "source_target_id" not in fields
+    assert "candidate_refs" not in fields
 
 
 def test_campaign_mode_still_emits_the_lab_submit_form():
@@ -645,3 +729,243 @@ def test_a_genuine_single_job_table_still_shows_its_own_rank():
 
     ranks = [cells[0].split()[0] for cells in _parse(html).rows]
     assert ranks == ["90", "91", "92"], ranks
+
+
+# ---------------------------------------------------------------------------
+# Grouped by tool: the groups have to be VISIBLE (register item A82)
+# ---------------------------------------------------------------------------
+
+def _grouped_table(**kw):
+    ranked = ranking.rank_candidates(_two_tool_rows(), limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+    params = dict(
+        candidates=ranked["rows"], columns=[], job_id="", tool_slug="",
+        target_id="t-1", multi_tool=True, sort_mode="tool",
+        per_tool=ranked["tools"],
+    )
+    params.update(kw)
+    return _parse(_render(**params))
+
+
+def test_grouped_mode_draws_one_header_per_tool():
+    """A82. `apply_sort_mode`'s SORT_TOOL branch only reordered the row list;
+    the macro then rendered one flat tbody with no header, no separator and no
+    subtotal, so the boundary between two tools was invisible and the only
+    signal the mode had changed was that some rows moved."""
+    table = _grouped_table()
+    assert len(table.group_rows) == 2, table.group_rows
+    assert table.group_rows[0].startswith("bindcraft")
+    assert table.group_rows[1].startswith("rfantibody")
+
+
+def test_a_group_header_carries_that_tools_counts():
+    """The counts come from `agg.per_tool`, which the aggregate already builds
+    and which nothing on this page read. 25 designs per tool, all shown, all
+    carrying a resolvable metric."""
+    table = _grouped_table()
+    for line in table.group_rows:
+        assert "25 of 25 shown" in line, line
+        assert "25 ranked" in line, line
+
+
+def test_a_group_header_spans_the_whole_table():
+    """A short group header would leave the columns to its right looking like
+    an empty data row."""
+    table = _grouped_table()
+    assert table.group_colspans == [len(table.header_text)] * 2, (
+        table.group_colspans, table.header_text)
+
+
+def test_the_row_number_restarts_inside_each_group():
+    """A82's sharper half. `#` was `loop.index`, so it counted straight through
+    the tool boundary (1,2,...,25,26,...) and actively argued the rows were one
+    continuous cross-tool ranking -- the exact claim this table refuses to make
+    everywhere else."""
+    ranks = [cells[0].split()[0] for cells in _grouped_table().rows]
+    assert ranks == [str(i + 1) for i in range(25)] * 2, ranks[:30]
+
+
+def test_percentile_mode_keeps_one_global_numbering_and_no_group_headers():
+    """The pair. Grouping must not leak into the default mode, whose numbering
+    IS a single ranking and is correct as a running index."""
+    ranked = ranking.rank_candidates(_two_tool_rows(), limit=None)
+    table = _parse(_render(candidates=ranked["rows"], columns=[], job_id="",
+                           tool_slug="", target_id="t-1", multi_tool=True,
+                           sort_mode="percentile", per_tool=ranked["tools"]))
+    assert table.group_rows == []
+    ranks = [cells[0].split()[0] for cells in table.rows]
+    assert ranks == [str(i + 1) for i in range(50)]
+
+
+def test_a_one_tool_target_draws_no_group_header_under_sort_tool():
+    """`apply_sort_mode` keys SORT_TOOL on `_source_tool` alone, so on a
+    one-tool target it returns a byte-identical row list. A lone header over
+    the whole table would announce a grouping that did not happen."""
+    rows = [_row("bindcraft", "ipTM", 0.9 - 0.01 * i, job="job-a", index=i)
+            for i in range(4)]
+    ranked = ranking.rank_candidates(rows, limit=None,
+                                     sort_mode=ranking.SORT_TOOL)
+    table = _parse(_render(candidates=ranked["rows"], columns=[], job_id="",
+                           tool_slug="bindcraft", target_id="t-1",
+                           multi_tool=False, sort_mode="tool",
+                           per_tool=ranked["tools"]))
+    assert table.group_rows == []
+    ranks = [cells[0].split()[0] for cells in table.rows]
+    assert ranks == ["1", "2", "3", "4"], ranks
+
+
+def test_grouped_mode_badges_one_row_in_the_whole_table_not_one_per_group():
+    """THE DECISION A82 left open, pinned.
+
+    A82 asked whether, once groups are visible, grouped mode should badge each
+    group's own best instead of the target's. It should not, and does not: the
+    badge's tooltip is a claim about the TARGET ("Top-ranked design across
+    every tool run against this target"), and a badge whose meaning changes
+    with the sort mode is a worse control than one that lands where it lands.
+    The group header now supplies the context that made it read oddly.
+
+    Two tools, two groups, ONE badge. WHERE it lands is pinned separately and
+    non-trivially by test_the_top_badge_marks_the_ranked_best_not_the_first_
+    row_shown, whose fixture puts the canonical winner outside the first group;
+    this fixture's winner is in the first group, so counting is all this one
+    can honestly assert.
+    """
+    table = _grouped_table()
+    assert len(table.group_rows) == 2
+    badged = [i for i, cells in enumerate(table.rows) if "Top" in cells[0]]
+    assert len(badged) == 1, badged
+
+
+# ---------------------------------------------------------------------------
+# Action-bar hierarchy: download is the outcome, the handoff is an option (5.2)
+# ---------------------------------------------------------------------------
+
+class _ActionBar(HTMLParser):
+    """The clickable controls INSIDE ``.cand-action-bar``, in document order.
+
+    Scoped to that subtree by div depth. A page-wide search cannot answer "how
+    many primary buttons are in the action bar", because the lab-submit modal
+    lower down legitimately carries its own ``btn-primary`` submit.
+
+    Each entry is ``(tag, class, text, href)``.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.controls: list[tuple[str, str, str, str]] = []
+        self._depth = 0            # div depth inside the bar, 0 = outside
+        self._pending: list | None = None
+        self._text: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "div":
+            if self._depth:
+                self._depth += 1
+            elif "cand-action-bar" in (a.get("class") or ""):
+                self._depth = 1
+        elif self._depth and tag in ("a", "button"):
+            self._pending = [tag, a.get("class") or "", "", a.get("href") or ""]
+            self._text = []
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        if tag == "div" and self._depth:
+            self._depth -= 1
+        elif self._pending is not None and tag == self._pending[0]:
+            self._pending[2] = " ".join("".join(self._text).split())
+            self.controls.append(tuple(self._pending))
+            self._pending = None
+
+    def handle_data(self, data):
+        if self._pending is not None:
+            self._text.append(data)
+
+
+def _bar(html: str) -> list:
+    p = _ActionBar()
+    p.feed(html)
+    assert p.controls, "no controls found inside .cand-action-bar"
+    return p.controls
+
+
+def test_download_csv_is_the_only_primary_control_in_the_action_bar():
+    """Phase 5.2. "Send shortlist to Ranomics lab" was the ONLY btn-primary in
+    this bar and all three exports were secondary, which framed the CRO handoff
+    as the goal of the results page rather than as one option after it. Per
+    decision 5 download wins and there is exactly one primary."""
+    controls = _bar(_multi_tool_table())
+    primaries = [c for c in controls if "btn-primary" in c[1]]
+    assert len(primaries) == 1, primaries
+    assert primaries[0][2] == "Download CSV"
+    assert primaries[0][3].endswith("/targets/t-abc12345/export.csv")
+
+
+def test_the_lab_handoff_is_secondary_and_adjacent_not_above():
+    """Demoted, not deleted. It stays in the same bar at equal weight with the
+    exports rather than being moved or hidden."""
+    controls = _bar(_multi_tool_table())
+    handoff = [c for c in controls if "Send shortlist" in c[2]]
+    assert len(handoff) == 1, controls
+    assert "btn-secondary" in handoff[0][1]
+    assert "btn-primary" not in handoff[0][1]
+
+
+def test_the_zero_star_state_is_an_inline_hint_not_a_disabled_button():
+    """The dead-button state. With no stars the button was `disabled` carrying
+    only a `title`, which reads as broken software and is unhoverable on
+    touch. The button stays live; the hint says what to do."""
+    html = _multi_tool_table()
+    assert 'id="shortlist-hint-t-abc12345"' in html
+    send = [c for c in _bar(html) if "Send shortlist" in c[2]][0]
+    # `disabled` is a bare boolean attribute, so HTMLParser reports it as a
+    # separate attr rather than in class; assert on the raw tag instead.
+    tag = re.search(r"<button[^>]*id=\"send-to-lab-btn-t-abc12345\"[^>]*>", html)
+    assert tag is not None
+    assert "disabled" not in tag.group(0), tag.group(0)
+    assert send[0] == "button"
+
+
+def test_the_star_tooltip_names_a_general_shortlist_not_lab_submission():
+    """The star drives "Starred only (CSV)" as well as the optional handoff, so
+    a tooltip naming one consumer hid the other."""
+    html = _multi_tool_table()
+    assert 'title="Star to shortlist"' in html
+    assert "Click to shortlist for lab submission" not in html
+
+
+def test_target_mode_offers_a_starred_only_csv_export():
+    """The star earns its place whether or not the user ever contacts Ranomics.
+
+    A POST, because the selection lives in sessionStorage and can run to
+    hundreds of refs; the `refs` field is filled by candidate_table.js at
+    submit time.
+    """
+    html = _multi_tool_table()
+    fields = _form_for(html, "/targets/t-abc12345/export.csv")
+    assert "refs" in fields
+    labels = [c[2] for c in _bar(html)]
+    assert "Starred only (CSV)" in labels, labels
+    # THE TWO ATTRIBUTES THE JS BINDS ON, asserted because nothing else does.
+    # candidate_table.js finds this form by `.cand-starred-export` and matches
+    # `data-scope` against the table's scope before wiring its submit handler.
+    # Rename or drop either and the form still renders, still posts, and still
+    # returns a 200 -- carrying the render-time `refs="[]"`, so the user gets an
+    # empty CSV named `_starred` with nothing to say it failed. Verified by
+    # mutation: renaming the class alone left every other assertion here green.
+    assert 'class="cand-starred-export" data-scope="t-abc12345"' in html
+
+
+def test_campaign_mode_offers_no_starred_export():
+    """Scoped, deliberately. Only the target export route reads `refs`; the
+    job and campaign export routes are unchanged by this phase, so rendering
+    the control there would post to an endpoint that ignores it and hand back
+    the full file under a filename claiming otherwise."""
+    rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb", "_source_job_id": "j1"}]
+    html = _render(candidates=rows, columns=["ipTM"], job_id="",
+                   tool_slug="bindcraft", campaign_id="c-1")
+    labels = [c[2] for c in _bar(html)]
+    assert "Starred only (CSV)" not in labels, labels
+    assert "cand-starred-export" not in html

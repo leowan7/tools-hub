@@ -34,10 +34,24 @@ lab_projects_bp = Blueprint("lab_projects", __name__)
 # in the launch cutover; the compute product now owns /campaigns/*).
 # ------------------------------------------------------------------
 
+# Hard ceiling on one submitted shortlist. Well above any real scoping request
+# (the results table itself renders at most a few hundred rows), and it exists
+# for the failure mode rather than the feature: each accepted ref that names an
+# unseen job costs one Supabase round trip in the loops below, so an unbounded
+# array is a request-amplification lever. Applied at parse time so BOTH the
+# campaign and the target branch inherit it.
+_MAX_CANDIDATE_REFS = 500
+
+
 def _parse_candidate_refs(raw: str) -> list[dict]:
-    """Parse the campaign-wide shortlist payload — a JSON array of
+    """Parse the pooled shortlist payload — a JSON array of
     ``{"job_id": str, "index": int}`` — into a sanitized list. Malformed
-    entries are dropped; a non-array or unparseable body yields ``[]``."""
+    entries are dropped; a non-array or unparseable body yields ``[]``.
+
+    Truncated at :data:`_MAX_CANDIDATE_REFS`, not rejected: a shortlist that
+    long is not a real submission, and refusing outright would turn a bounded
+    read into a silent no-op the user cannot tell from a network failure.
+    """
     import json  # noqa: PLC0415
     try:
         parsed = json.loads(raw or "[]")
@@ -56,6 +70,8 @@ def _parse_candidate_refs(raw: str) -> list[dict]:
             continue
         if jid and idx >= 0:
             out.append({"job_id": jid, "index": idx})
+        if len(out) >= _MAX_CANDIDATE_REFS:
+            break
     return out
 
 
@@ -150,6 +166,155 @@ def _submit_campaign_shortlist(
     )
 
 
+def _submit_target_shortlist(
+    ctx, source_target_id, candidate_refs, target_name, target_context,
+    assay_type, budget_band, affinity_goal_kd_nm, timeline_weeks,
+):
+    """Create a lab campaign from a shortlist spanning many TOOLS run against
+    one design target, then stage each shortlisted PDB.
+
+    Same shape as :func:`_submit_campaign_shortlist`, with the parentage test
+    widened by exactly one clause, because a target's designs reach it by two
+    routes: compute-campaign sub-jobs (``job.campaign_id`` in the target's
+    campaign set) and target-tagged standalone jobs (``job.target_id``). Both
+    are stamped by migration 0039 and both feed
+    ``shared.target_results.aggregate_target_candidates``, so a shortlist that
+    accepted only one of them would refuse rows the user can see and star.
+
+    THE OWNERSHIP BOUNDARY IS THE PER-REF RE-FETCH, not the gate above it.
+    ``get_job(jid, user_id=ctx.user_id)`` is what makes a ref naming another
+    tenant's job return None; the parentage test that follows is what stops the
+    caller's OWN job from a different target being staged into this
+    submission's folder. Neither check subsumes the other and neither may be
+    dropped: the first is tenancy, the second is provenance.
+    """
+    from collections import defaultdict  # noqa: PLC0415
+    from shared.campaigns import create_campaign_from_target_refs  # noqa: PLC0415
+    from shared.email import send_campaign_submitted_emails  # noqa: PLC0415
+    from shared.targets import campaign_ids_for_target, get_target  # noqa: PLC0415
+
+    detail = url_for("targets.target_detail", target_id=source_target_id)
+    if not target_name or not candidate_refs:
+        return redirect(detail)
+    if get_target(source_target_id, user_id=ctx.user_id) is None:
+        return redirect(url_for("targets.targets_list"))
+
+    # Read ONCE, before the loop. Owner-scoped and paged; membership is all
+    # this needs, so its documented arbitrary order does not matter. Fetching
+    # it per ref would issue one paged read per shortlisted design.
+    target_campaign_ids = set(
+        campaign_ids_for_target(source_target_id, user_id=ctx.user_id)
+    )
+
+    jobs_by_id: dict = {}
+    # Rejected ids are remembered too. Without this, a body naming the same
+    # foreign job 500 times issues 500 identical Supabase round trips, because
+    # a miss never writes to ``jobs_by_id`` and so is never a cache hit. The
+    # campaign branch above still has that shape; see the register addendum.
+    rejected: set = set()
+    refs_by_job = defaultdict(list)
+    clean_refs: list[dict] = []
+    for ref in candidate_refs:
+        jid = ref["job_id"]
+        idx = ref["index"]
+        if jid in rejected:
+            continue
+        job = jobs_by_id.get(jid)
+        if job is None:
+            job = get_job(jid, user_id=ctx.user_id)
+            # Must be the caller's own job AND attached to THIS target, by
+            # either route. `job.campaign_id in <set>` is checked only when the
+            # job carries one: a standalone job's campaign_id is None, and None
+            # is not in the set, but spelling that out keeps the two routes
+            # legible as two routes.
+            owned_by_target = job is not None and (
+                job.target_id == source_target_id
+                or (
+                    job.campaign_id is not None
+                    and job.campaign_id in target_campaign_ids
+                )
+            )
+            if not owned_by_target:
+                rejected.add(jid)
+                continue
+            jobs_by_id[jid] = job
+        refs_by_job[jid].append(idx)
+        clean_refs.append({"job_id": jid, "index": idx})
+
+    if not clean_refs:
+        return redirect(detail)
+
+    try:
+        lab_campaign = create_campaign_from_target_refs(
+            user_id=ctx.user_id,
+            source_target_id=source_target_id,
+            candidate_refs=clean_refs,
+            target_name=target_name,
+            target_context=target_context,
+            assay_type=assay_type,
+            budget_band=budget_band,
+            affinity_goal_kd_nm=affinity_goal_kd_nm,
+            timeline_weeks=timeline_weeks,
+        )
+    except ValueError:
+        return redirect(detail)
+    if lab_campaign is None:
+        return redirect(detail)
+
+    for jid, idxs in refs_by_job.items():
+        job = jobs_by_id[jid]
+        try:
+            stage_campaign_candidates(
+                campaign_id=lab_campaign.id,
+                candidates=candidate_records(job.result),
+                indices=idxs,
+                user_id=ctx.user_id,
+                job_id=jid,
+                # THE TOOL SLUG IS LOAD-BEARING IN THIS PREFIX, unlike the
+                # campaign branch's bare job8. A target pools many tools and
+                # they all name their first design `design_1.pdb`, so two jobs
+                # whose ids happen to share a leading 8 hex digits would write
+                # one object and the lab would silently receive one structure
+                # for two shortlisted designs. Cheap insurance, and it also
+                # makes the bucket readable: `bindcraft-01c3b3a6/`.
+                prefix=f"{job.tool}-{jid[:8]}/",
+            )
+        except StorageError:
+            logger.warning(
+                "stage_campaign_candidates (target) failed for %s/%s",
+                lab_campaign.id, jid,
+            )
+
+    try:
+        send_campaign_submitted_emails(
+            campaign=lab_campaign, user_email=session.get("user_email", ""),
+            source_tools=_source_tool_counts(jobs_by_id, refs_by_job),
+        )
+    except Exception:
+        logger.warning("campaign submit emails failed", exc_info=True)
+
+    return redirect(
+        url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
+        + "?submitted=1"
+    )
+
+
+def _source_tool_counts(jobs_by_id: dict, refs_by_job: dict) -> dict:
+    """``{tool_slug: design_count}`` over the ACCEPTED refs.
+
+    Counted from ``refs_by_job`` rather than from ``jobs_by_id``, because the
+    question the email answers is "how many designs came from each tool", not
+    "how many jobs contributed". One bindcraft job contributing four starred
+    designs is ``{"bindcraft": 4}``.
+    """
+    counts: dict = {}
+    for jid, idxs in refs_by_job.items():
+        job = jobs_by_id.get(jid)
+        slug = str(getattr(job, "tool", "") or "unknown")
+        counts[slug] = counts.get(slug, 0) + len(idxs)
+    return counts
+
+
 @lab_projects_bp.route("/lab-projects/submit", methods=["POST"])
 @login_required
 def campaigns_submit():
@@ -177,10 +342,30 @@ def campaigns_submit():
     except ValueError:
         timeline_weeks = None
 
-    # Campaign-wide shortlist (spans many sub-jobs) takes precedence over the
-    # legacy single-job form when its fields are present.
-    source_campaign_id = request.form.get("source_campaign_id", "").strip()
+    # Three shortlist shapes, most specific first. The target branch is tried
+    # BEFORE the campaign one: the candidate_table macro emits exactly one
+    # parent field per render, but ordering it this way means a body carrying
+    # both cannot use the narrower parentage test to smuggle in a job the
+    # target branch would have rejected. The legacy single-job form is last.
+    source_target_id = request.form.get("source_target_id", "").strip()
     candidate_refs = _parse_candidate_refs(request.form.get("candidate_refs", ""))
+    # Gated on the parent ALONE, not on `and candidate_refs`, unlike the
+    # campaign arm below. Phase 5.2 removed the `disabled` attribute from the
+    # send button, so a user with nothing starred can now open the modal and
+    # submit it. With `and candidate_refs` that body falls through both ref
+    # branches to the legacy single-job one, which finds no source_job_id and
+    # redirects to /jobs -- a user who clicked "Send shortlist" on a target page
+    # would land on an unrelated list. The target branch's own guard already
+    # returns them to the target. The campaign arm keeps its shape because its
+    # button is unchanged and its empty case is not newly reachable.
+    if source_target_id:
+        return _submit_target_shortlist(
+            ctx, source_target_id, candidate_refs, target_name,
+            target_context, assay_type, budget_band, affinity_goal_kd_nm,
+            timeline_weeks,
+        )
+
+    source_campaign_id = request.form.get("source_campaign_id", "").strip()
     if source_campaign_id and candidate_refs:
         return _submit_campaign_shortlist(
             ctx, source_campaign_id, candidate_refs, target_name,

@@ -2795,3 +2795,141 @@ schema change lands, enumerate the surfaces that display the same entity.
   shown (live: row 2, under an unbadged pxdesign row 1). That is correct as
   specified and is pinned by a test, but it reads oddly once groups are visible.
   Decide then whether grouped mode should badge each group's own best instead.
+
+
+## Addendum v - Phase 5 (the target-wide lab handoff, plus A82)
+
+Phase 5.3 closes the gap Phase 3 left open: `/targets/<id>` is the page whose
+entire purpose is picking winners, and it had no action for the pick. The
+shortlist bar was hidden there deliberately (the modal branched on
+`campaign_id` and otherwise fell back to `source_job_id`, both empty in target
+mode), so the target branch had to exist before the bar could ship. Migration
+`0040_lab_campaign_target_source.sql` adds `lab_campaigns.source_target_id`
+plus the widened `submission_source` and shape CHECKs, mirroring 0037.
+
+**A82 is fixed in the same change** and its open question is decided below.
+**A81 is NOT fixed** and is deliberately deferred; see the closing note.
+
+### Decisions taken
+
+**The Top badge stays on the canonical winner in grouped mode.** A82 asked
+whether, once group headers are visible, `?sort=tool` should badge each
+group's own best instead of the target's. It should not. The badge's tooltip
+is a claim about the TARGET ("Top-ranked design across every tool run against
+this target"), and a control whose meaning changes with the sort mode is worse
+than one that lands where it lands. The oddity A82 observed was really the
+absence of the group header: with the header present, the badge reads as "and
+this one is the overall best" rather than as a mis-placed row-1 marker. So in
+grouped mode the badge can still sit below an unbadged row, and that is now
+pinned twice: where it lands, by the pre-existing
+`test_the_top_badge_marks_the_ranked_best_not_the_first_row_shown` (whose
+fixture puts the winner outside the first group), and how many there are, by
+`test_grouped_mode_badges_one_row_in_the_whole_table_not_one_per_group`.
+
+**The `#` column restarts inside each group rather than being suppressed.**
+Within a block the number is the row's position among that tool's shown
+designs, which is a claim the page does make. A blank column would have been
+the safer non-claim but reads as a rendering fault.
+
+**"Export starred only" is CSV, and target mode only.** The target export
+aggregates with `limit=None` for CSV and FASTA, so filtering it by ref is
+exact. The ZIP caps at 300 in canonical order, so a starred design below that
+cap would be missing from the archive with nothing in the file to say so;
+rather than invent a second cap rule for a starred ZIP, the control is CSV
+only. It is target-mode only because only `blueprints/targets.py` reads
+`refs`; wiring the job and campaign export routes would widen the diff across
+two already-shipped surfaces for a control whose reframing need is the target
+page's. Both limits are pinned (`test_only_csv_accepts_a_post`,
+`test_campaign_mode_offers_no_starred_export`).
+
+**A POST to the target CSV export always means "only these".** A body with no
+`refs`, an unparseable one, or one naming nothing exports ZERO rows, not
+everything. Falling back to the full export would make a malformed POST
+indistinguishable from a GET and hand back every design under a filename
+saying `_starred`.
+
+**No CRO panel was added to the target page.** 5.2 collapses two off-platform
+panels into one; adding a third on the new surface would re-create exactly the
+redundancy being removed, and the target page already carries the structured
+in-product handoff the plan prefers.
+
+### New findings
+
+- **A84 (NEW, FIXED here). The admin fulfilment page has never shown which
+  designs a campaign-sourced shortlist named.**
+  `templates/admin/campaign_detail.html` rendered
+  `campaign.candidate_indices | join(...)` for every non-API row and a "Source
+  job" link gated on `source_job_id`. A `submission_source='campaign'` row --
+  live since migration 0037 -- has BOTH of those columns NULL by its own shape
+  CHECK, so every campaign-sourced handoff has appeared to ops as a scoping
+  request with an empty candidate list and a source of "-". This is a
+  pre-existing defect in shipped code, not one introduced by Phase 5; it was
+  found while verifying that the target branch would render identically, which
+  it would have, identically wrongly.
+  **Fixed:** `blueprints/admin.py::_ref_shortlist_view` resolves the distinct
+  source jobs (deduped, capped at 60 lookups) and the template renders "N
+  designs from M jobs" plus the per-tool breakdown, for BOTH 'campaign' and
+  'target' rows. 'web' rows keep the index list, which is correct for them.
+  *Next:* none; covered by `tests/test_admin_shortlist_fulfilment.py`.
+
+- **A85 (NEW, not fixed). Admin source links 404 for the staff account that
+  clicks them.** `/jobs/<id>`, `/campaigns/<id>` and `/targets/<id>` are all
+  owner-scoped to the submitter (`get_job(..., user_id=ctx.user_id)` and
+  siblings), with no staff bypass, so the "Source" link on the fulfilment page
+  opens a 404 for `leo@ranomics.com`. This was already true of the "Source job"
+  link that predates Phase 5; the new target and run links inherit it rather
+  than introduce it. The id itself is still the useful part of the row.
+  *Next:* either add a staff-scoped read path for these three routes, or render
+  the id as text and drop the anchor. Do not "fix" it by removing the owner
+  scope from the routes.
+
+- **A86 (NEW, not fixed, test hygiene). `PUBLIC_BASE_URL` leaks from the repo
+  root `.env` into the whole test session.** `app.py` calls `load_dotenv()` at
+  import, so whichever test imports the app first sets `PUBLIC_BASE_URL` for
+  every later test in the process. Two email assertions written against the
+  module default passed solo and failed in the full suite. The
+  `isolate_supabase` fixture blanks only the four Supabase vars, so this class
+  of leak is unguarded. Worked around by pinning the var in the affected tests,
+  which is what `tests/test_email_real.py` already does.
+  *Next:* widen `isolate_supabase` (or add a sibling fixture) to neutralise the
+  other `.env` keys that change assertable output, `PUBLIC_BASE_URL` first.
+
+- **A87 (NEW, not fixed). The CAMPAIGN shortlist branch still re-queries a
+  rejected job id once per ref.** `_submit_campaign_shortlist` writes to
+  `jobs_by_id` only on success, so a miss is never cached and a body naming the
+  same foreign job N times issues N identical Supabase round trips. The target
+  branch added a `rejected` set; the campaign branch was left alone to keep the
+  diff scoped to the new path. The parse-time cap
+  (`_MAX_CANDIDATE_REFS = 500`, added to the shared parser so both branches
+  inherit it) now bounds the amplification at 500 rather than unbounded.
+  *Next:* backport the four-line negative cache to
+  `_submit_campaign_shortlist`.
+
+### Divergences from the master plan, resolved in favour of the code
+
+- The plan states admin fulfilment "already renders from `candidate_refs` for
+  campaign rows". It does not, and never did. See A84.
+- The plan's 0.5 item lists the email candidate-count fix as outstanding. It
+  had already shipped (`shared/email.py` reads
+  `len(candidate_indices) or len(candidate_refs or [])`, and its comment
+  already anticipated the 'target' source). Only the target-aware source URL
+  and the per-tool line were added here.
+- The plan's line numbers for `candidate_table.html` (`:218-224`, `:238`,
+  `:393-396`, `:400-406`) are all stale after Phase 3. Everything was located
+  by symbol.
+- The plan says "no JS change needed" for 5.3. True for 5.3 itself, and the
+  modal is wired with none. `static/js/candidate_table.js` did change, but for
+  5.2: the disabled-button state became an inline hint, and the starred-export
+  form needs its `refs` filled at submit time.
+
+### A81 deferred, deliberately
+
+**A81 (campaigns list does not group a multi-tool launch) is NOT fixed.** It is
+a different surface from everything else in this phase -- the campaigns list,
+not the results table -- and it needs a UI decision of its own (one card per
+launch group with per-tool rows nested inside, group status as a rollup and
+budget as a sum), which is a bigger design change than any single item above.
+This phase's diff is already ~1250 lines across 16 files plus 3 new ones, and
+Phase 5.3 was the blocking gap. A81 stays filed exactly as written, unchanged
+and still accurate: `launch_group_id` is still read in exactly one place
+(`blueprints/targets.py`, the "you just launched N runs" banner).

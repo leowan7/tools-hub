@@ -465,9 +465,13 @@
      single-tool page has no toggle, but the route still honours a pasted
      ?sort=, and an export that silently ignored it would reintroduce the
      mismatch by a different door. #}
+  {# ``agg.per_tool`` feeds the group headers the macro draws under
+     ?sort=tool. Passed unconditionally: the macro reads it only in that mode
+     and gating it here would make the caller decide something the macro
+     already decides. #}
   {{ candidate_table(
        agg.candidates, agg.columns, '', (agg.tools[0] if agg.tools|length == 1 else ''),
-       '', '', target.id, agg.multi_tool, sort_mode, agg.split_tools) }}
+       '', '', target.id, agg.multi_tool, sort_mode, agg.split_tools, agg.per_tool) }}
 </div>
 {% elif runs %}
 <div class="section" style="margin-top: 2rem;">

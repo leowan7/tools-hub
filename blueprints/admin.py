@@ -81,6 +81,7 @@ def admin_campaign_detail(campaign_id: str):
         STATUSES,
         API_STATUSES,
     )
+    from shared.jobs import get_job  # noqa: PLC0415
     email = session.get("user_email", "")
     if not email:
         return redirect(url_for("auth.login", next=request.path))
@@ -121,9 +122,74 @@ def admin_campaign_detail(campaign_id: str):
         "admin/campaign_detail.html",
         campaign=campaign,
         statuses=statuses,
+        shortlist=_ref_shortlist_view(campaign, get_job),
         flash_msg=flash_msg or None,
         flash_kind=flash_kind,
     )
+
+
+# Ceiling on the job lookups one fulfilment page will issue. A shortlist spans
+# a handful of jobs even at hundreds of designs, because refs are deduped by
+# job id before the loop; this only binds on a pathological row.
+_ADMIN_REF_JOB_LOOKUPS = 60
+
+
+def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
+    """Fulfilment view of a ref-based shortlist, or ``None``.
+
+    Returns ``None`` for the shapes that keep their shortlist in
+    ``candidate_indices`` ('web') or in ``sequences`` ('api'); the template
+    renders those exactly as before.
+
+    Why this exists at all: the fulfilment page rendered
+    ``candidate_indices | join(', ')`` for every non-API row, so a 'campaign'
+    row -- live since migration 0037 -- has been showing an EMPTY candidate
+    list and a "Source job —" with nothing to click, because both of those
+    columns are NULL by that shape's own CHECK constraint. Ops could see that a
+    scoping request existed and not which designs it named. Filed as A84.
+
+    ``tools`` is the per-tool design breakdown, counted over refs (not over
+    jobs) so it matches the line in the staff notify email. Resolved by
+    re-reading each distinct source job, UNSCOPED because this is a staff view
+    of another user's submission -- the ownership decision was made when the
+    row was created, and re-applying the submitter's scope here is not
+    available to an admin session anyway.
+    """
+    refs = list(getattr(campaign, "candidate_refs", None) or [])
+    if not refs:
+        return None
+
+    by_job: dict = {}
+    for ref in refs:
+        jid = str((ref or {}).get("job_id") or "")
+        if jid:
+            by_job.setdefault(jid, []).append(ref.get("index"))
+
+    looked_up = list(by_job)[:_ADMIN_REF_JOB_LOOKUPS]
+    skipped = set(by_job) - set(looked_up)
+
+    tools: dict = {}
+    unresolved = sum(len(by_job[jid]) for jid in skipped)
+    for jid in looked_up:
+        job = get_job(jid)
+        if job is None:
+            unresolved += len(by_job[jid])
+            continue
+        slug = str(getattr(job, "tool", "") or "unknown")
+        tools[slug] = tools.get(slug, 0) + len(by_job[jid])
+    return {
+        "count": len(refs),
+        "jobs": len(by_job),
+        # Descending by count then slug, matching _source_tools_line in
+        # shared/email.py so the page and the email cannot order differently.
+        "tools": sorted(tools.items(), key=lambda kv: (-kv[1], kv[0])),
+        # Designs whose source job could not be read: deleted, or past the
+        # lookup ceiling. Stated rather than folded into "unknown", because a
+        # tool breakdown that quietly omits rows is worse than one that says so
+        # -- its numbers would not add up to the design count printed above it.
+        "unresolved": unresolved,
+        "by_job": by_job,
+    }
 
 @admin_bp.route("/admin/lab-projects/<campaign_id>/status", methods=["POST"])
 def admin_campaign_update_status(campaign_id: str):

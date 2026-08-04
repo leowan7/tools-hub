@@ -58,7 +58,8 @@
       <dd style="margin:0;">{{ campaign.assay_type | replace('_', ' ') | title }}</dd>
 
       <dt style="color:var(--text-secondary);">Candidates</dt>
-      <dd style="margin:0;">{{ (campaign.candidate_refs if campaign.submission_source == 'campaign' else campaign.candidate_indices) | length }} shortlisted</dd>
+      {# 'campaign' AND 'target' both keep the shortlist in candidate_refs. #}
+      <dd style="margin:0;">{{ (campaign.candidate_refs if campaign.submission_source in ('campaign', 'target') else campaign.candidate_indices) | length }} shortlisted</dd>
 
       <dt style="color:var(--text-secondary);">Budget band</dt>
       <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
@@ -73,7 +74,14 @@
         <dd style="margin:0;">{{ campaign.timeline_weeks }} weeks</dd>
       {% endif %}
 
-      {% if campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
+      {% if campaign.submission_source == 'target' and campaign.source_target_id %}
+      <dt style="color:var(--text-secondary);">Source target</dt>
+      <dd style="margin:0;">
+        <a href="{{ url_for('targets.target_detail', target_id=campaign.source_target_id) }}" style="color:var(--accent);">
+          {{ campaign.source_target_id[:8] }}
+        </a>
+      </dd>
+      {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
       <dt style="color:var(--text-secondary);">Source campaign</dt>
       <dd style="margin:0;">
         <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" style="color:var(--accent);">
@@ -101,7 +109,9 @@
 
 <div style="display:flex;gap:.65rem;flex-wrap:wrap;">
   <a href="/lab-projects" class="btn-secondary">All lab projects</a>
-  {% if campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
+  {% if campaign.submission_source == 'target' and campaign.source_target_id %}
+  <a href="{{ url_for('targets.target_detail', target_id=campaign.source_target_id) }}" class="btn-secondary">View source target</a>
+  {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
   <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" class="btn-secondary">View source campaign</a>
   {% elif campaign.source_job_id %}
   <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">View source job</a>

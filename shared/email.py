@@ -405,8 +405,58 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class})."
 
 
-def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
+def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: ANN001
+    """``(label, url)`` of the results page this shortlist was picked on.
+
+    Branches on ``submission_source``, not on whichever id happens to be set.
+    The ``lab_campaigns_submission_source_shape`` CHECK requires each source to
+    carry ITS OWN parent (a 'target' row must have source_target_id, a
+    'campaign' row source_campaign_id, a 'web' row source_job_id) but it does
+    NOT forbid the others being non-null, so "whichever id is set" is not a
+    well-defined rule at the database level even though the writers in this
+    codebase only ever populate one.
+
+    Returns None for an 'api' row, which has no upstream page in this product.
+    Every attribute is read through ``getattr``: this function is reached from
+    a best-effort email path that must not raise on a partially built row.
+    """
+    source = str(getattr(campaign, "submission_source", "") or "web")
+    if source == "target":
+        tid = getattr(campaign, "source_target_id", None)
+        return ("Target", f"{base_url}/targets/{tid}") if tid else None
+    if source == "campaign":
+        cid = getattr(campaign, "source_campaign_id", None)
+        return ("Run", f"{base_url}/campaigns/{cid}") if cid else None
+    if source == "web":
+        jid = getattr(campaign, "source_job_id", None)
+        return ("Source job", f"{base_url}/jobs/{jid}") if jid else None
+    return None
+
+
+def _source_tools_line(source_tools) -> str:  # noqa: ANN001
+    """``"rfdiffusion (4), pxdesign (3)"`` from ``{slug: design_count}``.
+
+    Ordered by count descending, then slug, so the same shortlist always
+    renders the same string. Empty when there is nothing to say, which the
+    callers below test rather than printing a bare label.
+    """
+    if not source_tools:
+        return ""
+    items = [(str(k), int(v)) for k, v in dict(source_tools).items() if v]
+    items.sort(key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{slug} ({n})" for slug, n in items)
+
+
+def send_campaign_submitted_emails(
+    *, campaign, user_email: str, source_tools=None,  # noqa: ANN001
+) -> None:
     """Send user confirmation + internal staff notification on campaign submit.
+
+    ``source_tools`` is an optional ``{tool_slug: design_count}`` map over the
+    ACCEPTED shortlist. Supplied by the target branch, where the shortlist
+    spans tools and the spread is the whole point; omitted by the campaign and
+    single-job branches, which have exactly one tool by construction
+    (``compute_campaigns.tool`` is NOT NULL) and would only print it back.
 
     Best-effort: failures are logged but not raised to the caller.
     """
@@ -417,6 +467,25 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
     api_key   = os.environ.get("RESEND_API_KEY", "").strip()
 
     campaign_url = f"{base_url}/lab-projects/{campaign.id}"
+    source_link = _handoff_source_link(base_url, campaign)
+    tools_line = _source_tools_line(source_tools)
+
+    # Built here rather than inline in the staff table below. An f-string
+    # nested inside another f-string's replacement field only parses on Python
+    # 3.12+ (PEP 701), and this repo's deployed interpreter is chosen by a
+    # nixpkgs pin rather than by runtime.txt, so the version this file runs on
+    # is not something the file can assert.
+    _td = 'style="color:#666;padding:4px 12px 4px 0;"'
+    tools_row = (
+        f"<tr><td {_td}>Designs from</td><td>{tools_line}</td></tr>"
+        if tools_line else ""
+    )
+    source_row = ""
+    if source_link:
+        source_row = (
+            f"<tr><td {_td}>{source_link[0]}</td>"
+            f'<td><a href="{source_link[1]}">{source_link[1]}</a></td></tr>'
+        )
 
     # Shortlist size. A 'web' row carries candidate_indices; a 'campaign' or
     # 'target' row leaves that empty and keeps the shortlist in candidate_refs
@@ -474,8 +543,10 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
             <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
             <td>{n_candidates}</td></tr>
+        {tools_row}
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
             <td>{campaign.budget_band.title()}</td></tr>
+        {source_row}
       </table>
       <p style="margin:24px 0;">
         <a href="{admin_url}"
@@ -493,8 +564,10 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
         f"From: {user_email}\n"
         f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
         f"Candidates: {n_candidates}\n"
-        f"Budget: {campaign.budget_band.title()}\n\n"
-        f"Review in admin: {admin_url}\n"
+        + (f"Designs from: {tools_line}\n" if tools_line else "")
+        + f"Budget: {campaign.budget_band.title()}\n"
+        + (f"{source_link[0]}: {source_link[1]}\n" if source_link else "")
+        + f"\nReview in admin: {admin_url}\n"
     )
 
     if not api_key:
