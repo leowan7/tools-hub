@@ -2774,3 +2774,24 @@ during a diagnosis: exactly two campaigns exist, not four.
 needs it.** `launch_group_id` shipped in Phase 1's migration and Phase 2 filled
 it in, and the list view that most needed it was never taught to read it. When a
 schema change lands, enumerate the surfaces that display the same entity.
+
+- **A82 (NEW, filed for Phase 5, not fixed). "Grouped by tool" groups the ORDER
+  but renders no groups.** `apply_sort_mode`'s SORT_TOOL branch
+  (`shared/ranking.py`) only reorders the row list; the macro then renders one
+  flat `<tbody>` with no group header, no separator and no per-tool subtotal, so
+  the boundary between tools is invisible. The `#` column makes it worse: it is
+  `loop.index`, so it counts straight through the boundary (pxdesign is 1,
+  rfdiffusion continues 2, 3, 4...), which actively argues the rows are one
+  continuous ranking. Observed live on target `164eb28e`: the only signal that
+  the mode changed at all is that the single pxdesign row moved to the top.
+  **Fix shape:** when `sort_mode == 'tool'`, emit a group header row per tool
+  carrying the slug and that tool's counts from `agg.per_tool` (total, shown,
+  cohort_n), and restart or suppress the `#` column within each group so it
+  stops implying a cross-tool ordering the page explicitly refuses to make.
+  Percentile mode is unaffected and keeps the global index.
+  **Open question for the same change, NOT a defect today:** the `Top` badge
+  marks `_rank_position == 1`, the canonical best across the whole target, so in
+  grouped mode it lands on whichever row that is rather than on the first row
+  shown (live: row 2, under an unbadged pxdesign row 1). That is correct as
+  specified and is pinned by a test, but it reads oddly once groups are visible.
+  Decide then whether grouped mode should badge each group's own best instead.
