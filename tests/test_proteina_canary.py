@@ -2530,6 +2530,12 @@ def _fake_rp(home):
     fake.build_design_cmd = lambda **kwargs: (
         fake.design_cmd_kwargs.append(dict(kwargs)) or ["designed"])
     fake._rf3_enabled = lambda: False
+    # REAL, not stubbed. The canary must launch its design under the same
+    # allocator policy production uses — JAX otherwise preallocates 61,440 MB
+    # and every VRAM number the shard reports is that constant rather than
+    # demand. Lifting the real function is what makes "the canary measures what
+    # production runs" checkable instead of assumed.
+    fake.design_subprocess_env = rp.design_subprocess_env
     return fake
 
 
@@ -2557,6 +2563,22 @@ def _shard_namespace(tmp_path, design_files=(), rc=0):
         ran.append(list(cmd))
         return types.SimpleNamespace(returncode=rc)
 
+    # The design is launched with Popen now, not subprocess.run: the VRAM
+    # poller needs the child's pid to attribute memory to the design rather
+    # than to the whole device. The fake records the SAME ``ran`` list, and
+    # records the env it was handed so a test can assert the allocator flags
+    # actually reach the child.
+    popen_env = []
+
+    def _popen(cmd, **kwargs):
+        ran.append(list(cmd))
+        popen_env.append(kwargs.get("env") or {})
+        return types.SimpleNamespace(
+            pid=4321,
+            wait=lambda timeout=None: rc,
+            kill=lambda: None,
+        )
+
     namespace = load_canary_functions(
         # ``_collect_run_logs`` / ``_collect_tree`` / ``_mtime`` are lifted, not
         # stubbed: they are the container-side halves of the new diagnostics and
@@ -2568,16 +2590,21 @@ def _shard_namespace(tmp_path, design_files=(), rc=0):
          "_collect_tree", "_mtime"},
         _load_rp=lambda: fake,
         _prune_registry=lambda module: [],
-        _poll_vram=lambda stop, out: out.update(peak_vram_mb=0),
+        _poll_vram=lambda stop, out, pid=None: out.update(
+            peak_vram_mb=0, peak_proc_vram_mb=0,
+            vram_poll_interval_s=1, vram_prealloc_disabled=True),
+        _device_used_mb=lambda: 0,
         _read_hydra_assertion=lambda *a, **k: {"ok": True},
         # rmtree would delete the design files placed above; nothing else in
         # the lifted body needs it.
         shutil=types.SimpleNamespace(rmtree=lambda *a, **k: None),
         subprocess=types.SimpleNamespace(
-            run=_run, TimeoutExpired=subprocess.TimeoutExpired),
+            run=_run, Popen=_popen,
+            TimeoutExpired=subprocess.TimeoutExpired),
     )
     namespace["_fake_rp"] = fake
     namespace["_design_commands"] = ran
+    namespace["_design_env"] = popen_env
     return namespace
 
 
@@ -2696,6 +2723,68 @@ class TestHarnessBehaviour:
             False, ["A99999"])
         assert "cross-reference" in out["error"] and "A99999" in out["error"]
         assert namespace["_design_commands"] == []
+
+    def test_the_design_runs_under_productions_allocator_policy(self, tmp_path):
+        """A canary that measures a different allocator measures nothing.
+
+        The two paid shards recorded ~67.5 GB peak, of which 61,440 MB was
+        JAX's default preallocation (0.75 x 80 GB, claimed on the first JAX op
+        regardless of target size). That is why they agreed to within 24 MB
+        while the chain count doubled, and why no size cap could be derived
+        from them. run_pipeline now disables preallocation, and the canary must
+        launch its design through the SAME helper — not a copy, and not the
+        bare environment, or the next measurement is spoiled the same way.
+        """
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        envs = namespace["_design_env"]
+        assert envs, "the design was never launched through Popen"
+        assert envs[-1].get("XLA_PYTHON_CLIENT_PREALLOCATE") == "false", (
+            "the canary launched its design without production's allocator "
+            "flags, so its VRAM figure is a preallocation constant again")
+
+    def test_the_shard_reports_which_allocator_it_measured_under(self, tmp_path):
+        """Readings from before and after the allocator fix are not comparable,
+        so a shard has to say which it is. Without this flag the next operator
+        cannot tell a 67 GB preallocation reading from a 67 GB real one."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out["vram_prealloc_disabled"] is True
+        # Device-wide, process-only and the pre-run baseline are all reported:
+        # the single device figure is what was misread as demand.
+        assert "peak_proc_vram_mb" in out
+        assert "baseline_vram_mb" in out
+
+    def test_the_real_poller_is_the_one_that_sets_the_provenance_keys(self):
+        """The test above runs against a STUBBED _poll_vram, so on its own it
+        only proves run_shard copies keys through — deleting the real poller's
+        provenance fields would not fail it. This executes the real function
+        (stop already set, so it takes one sample and returns) and pins that it
+        is the poller, not the stub, that reports the interval and the
+        allocator state, plus the per-process figure the device reading has to
+        be checked against."""
+        import threading as _threading
+        namespace = load_canary_functions(
+            {"_poll_vram"},
+            _device_used_mb=lambda: 1234,
+            _proc_used_mb=lambda pid: 567,
+        )
+        stop = _threading.Event()
+        stop.set()
+        out: dict = {}
+        namespace["_poll_vram"](stop, out, 999)
+        assert out["vram_prealloc_disabled"] is True
+        assert out["vram_poll_interval_s"] == 1, (
+            "the poll interval is part of the reading: the existing "
+            "measurements were sampled at 5 s and are lower bounds")
+        assert out["peak_vram_mb"] == 1234
+        assert out["peak_proc_vram_mb"] == 567
 
     def test_a_resolvable_shard_scores_its_designs(self, tmp_path):
         """The refusals must not be blanket ones: the same path with a good

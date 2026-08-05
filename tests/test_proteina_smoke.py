@@ -46,6 +46,8 @@ import subprocess
 import sys
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -2130,3 +2132,113 @@ class TestValidateSmokeIsTargetable:
             "_validate_smoke's docstring no longer states the limit of what a "
             "green run proves (that it tests the DEPLOYED image, not a fresh "
             "build of Dockerfile.modal)")
+
+
+class TestJaxDoesNotPreallocateTheCard:
+    """The allocator flags are load-bearing for MEASUREMENT, not just for VRAM.
+
+    proteinfoundation.generate imports colabdesign -> JAX, and JAX's default is
+    XLA_PYTHON_CLIENT_PREALLOCATE=true at MEM_FRACTION=0.75: the first JAX op
+    reserves 0.75 x 81,920 = 61,440 MB on an A100-80GB whatever the target
+    size, and holds it. That default silently invalidated both paid canary
+    measurements — 67,546 MB at 129 aa and 67,570 MB at 130 aa are ~91% that
+    constant, which is why they agreed to 24 MB while the chain count doubled.
+
+    So these are not performance tests. They protect the only route by which
+    this tool can ever learn its own size limits. tools/af2 and tools/colabfold
+    have set the same flags all along; proteina set none and passed no env= at
+    all.
+    """
+
+    def test_the_allocator_env_disables_preallocation(self):
+        env = rp.design_subprocess_env()
+        assert env["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+        assert env["XLA_PYTHON_CLIENT_ALLOCATOR"] == "platform"
+        assert env["TF_FORCE_GPU_ALLOW_GROWTH"] == "true"
+
+    def test_unified_memory_stays_off_so_an_oversized_run_dies_cheaply(self):
+        """Deliberate divergence from af2/colabfold. Host-memory spill turns an
+        OOM (seconds, cents) into thrashing that bills to _MAX_SESSION_S
+        (~$12.58/shard). For the tool whose open risk is uncapped spend on
+        oversized targets, failing fast is worth more than finishing slowly."""
+        assert "TF_FORCE_UNIFIED_MEMORY" not in rp._ALLOCATOR_ENV
+
+    def test_an_operator_override_still_wins(self):
+        """setdefault, not assignment — so a per-run override is possible
+        without editing the file."""
+        with patch.dict(os.environ, {"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}):
+            assert (rp.design_subprocess_env()
+                    ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true")
+
+    def test_run_streaming_actually_passes_the_env_to_the_child(self):
+        """The flags existing in a dict is worth nothing if the subprocess does
+        not receive them. run_streaming passed NO env= before this."""
+        seen = {}
+
+        def _fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(rp.subprocess, "run", _fake_run):
+            rp.run_streaming(["echo", "hi"], Path("."))
+        env = seen.get("env") or {}
+        assert env.get("XLA_PYTHON_CLIENT_PREALLOCATE") == "false", (
+            "run_streaming launched the child without the allocator flags")
+
+
+class TestRuntimeCopyMatchesMeasurement:
+    """meta.py's runtime copy is what a user plans and budgets against.
+
+    It shipped claiming "30 to 120" minutes per shard for all three design
+    variants. The one paid canary shard that has ever been timed returned 8
+    designs in 359 s (6.0 min) at a 130-residue target — the published band
+    started 5x above the measurement and ran 20x above it. Worse, it was
+    load-bearing beyond the copy: shared/pdb_preflight_rules.py anchored its
+    runtime estimator to "the middle of that band", so an invented number in a
+    docs constant had propagated into the preflight panel as if calibrated.
+    """
+
+    def test_protein_binder_runtime_reflects_the_359_second_shard(self):
+        from tools.proteina import meta
+        entry = meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"]
+        assert "30 to 120" not in entry, (
+            "protein_binder still quotes the placeholder band; the measured "
+            "shard was 359 s (6.0 min) at a 130-residue target")
+        assert "6" in entry
+
+    def test_untimed_variants_are_labelled_untimed(self):
+        """ligand_binder and motif_ame have never been run on a GPU here. Their
+        copy must say so rather than borrow protein_binder's measurement — the
+        reward stacks differ (RF3 vs AF2) and nothing licenses the transfer."""
+        from tools.proteina import meta
+        for preset in ("ligand_binder", "motif_ame"):
+            entry = str(meta.PRESET_RUNTIME[preset]["typical_minutes"]).lower()
+            assert "not yet measured" in entry, (
+                f"{preset} quotes a runtime nobody has measured")
+
+    def test_about_panel_table_agrees_with_preset_runtime(self):
+        """Two copies of the same claim drift, and the drifting one is the one
+        the user reads. The about panel and the preset map both render runtime,
+        so neither may still carry the retired band."""
+        from tools.proteina import meta
+        rows = {r["preset"]: r["typical"] for r in meta.about["runtime_table"]}
+        assert set(rows) == set(meta.PRESET_RUNTIME)
+        for preset, typical in rows.items():
+            assert "30 to 120" not in typical, (
+                f"about.runtime_table[{preset}] still quotes the placeholder")
+        assert "measured" in rows["protein_binder"]
+
+    def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
+        """The specific coupling that turned a docs placeholder into a number
+        the preflight panel presented as calibrated."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+        base = TOOL_RULES["proteina"].size.runtime_base_min
+        assert base != 75.0, (
+            "runtime_base_min is still the midpoint of meta.py's retired "
+            "30-120 min band")
+        # base x (130/120)^1.3 x (8/8) must reproduce the measured 6.0 min.
+        env = TOOL_RULES["proteina"].size
+        est = base * (130.0 / 120.0) ** env.runtime_alpha
+        assert 5.0 <= est <= 7.5, (
+            f"the estimator puts the measured 8-design shard at {est:.1f} min, "
+            f"not the 6.0 min it actually took")

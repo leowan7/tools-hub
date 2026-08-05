@@ -265,6 +265,25 @@ def _parse_target_input(
     return segments, _format_contig(segments), chain_ids, None
 
 
+def parse_target_segments(raw: str) -> list:
+    """Public wrapper over :func:`_parse_target_input`'s segment list.
+
+    Exists so the preflight size gate can size the CONTIG'S SELECTION rather
+    than the whole uploaded file without keeping a second copy of the contig
+    grammar. ``shared/pdb_intake.preflight_target_segments`` imports this
+    lazily; a duplicated parser there would drift from this one, and the drift
+    would land in whichever copy is not the money gate.
+
+    Returns ``[]`` on an unparseable or empty contig — the caller treats that
+    as "no selection declared" and sizes the whole named chain(s), which
+    over-counts rather than under-counts. Never raises: a contig this rejects
+    is separately refused by ``validate()`` with a real message, and preflight
+    must not 500 ahead of it.
+    """
+    segments, _contig, _chains, err = _parse_target_input(raw)
+    return [] if err else list(segments)
+
+
 def _format_contig(segments: list[tuple[str, int, int]]) -> str:
     """Render segments back to upstream's contig string. Whole-chain segments
     render as the bare chain id; run_pipeline expands them once it can see the

@@ -299,6 +299,16 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         segment_err = target.segment_error(validated.get("_target_segments") or [])
         if segment_err:
             return None, f"{label}: {segment_err}"
+        # Size cap, per tool. This route funds one campaign PER SELECTED TOOL,
+        # so an oversized target here multiplies across the whole selection --
+        # and nothing on this path called the size envelope before. Refusing
+        # inside the spec loop means the message names the tool that is too
+        # small for this target rather than failing the launch anonymously.
+        size_err = target.size_error(
+            tool, run_chain, validated.get("_target_segments") or [],
+        )
+        if size_err:
+            return None, f"{label}: {size_err}"
 
         specs.append(
             ToolLaunchSpec(
