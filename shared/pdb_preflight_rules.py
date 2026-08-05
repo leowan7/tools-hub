@@ -244,12 +244,50 @@ _PXDESIGN = ToolRules(
 )
 
 
+_PROTEINA = ToolRules(
+    slug="proteina",
+    gpu="A100-80GB",                 # matches tools/proteina/modal_app.py:_GPU
+    multi_chain_supported=True,      # a 3-chain target is a validated upstream example
+    hotspots_required=False,         # hotspot-directed, but an open search is valid
+    min_target_aa=30,
+    size=SizeEnvelope(
+        # PROVISIONAL, and this entry is a COST GATE before it is a UI panel.
+        # Until bring-your-own targets landed, proteina was reachable only with
+        # curated ~115 aa targets, so it was absent from TOOL_RULES entirely and
+        # got NO size check (pdb_preflight.py early-returns for tools outside
+        # BINDER_DESIGN_TOOLS). With uploads, an oversized target runs to the
+        # _MAX_SESSION_S = 7200 wall, is killed, and bills the full per-shard
+        # ceiling (~$12.58) for zero designs — across 4 concurrent shards, and
+        # the $15/shard hold covers all of it, so nothing else stops it.
+        #
+        # These numbers are the AF2-80GB regime (same as pxdesign, which shares
+        # the reward stack's memory profile). The hotspot canary's phase 1
+        # measures real peak VRAM and wall-clock on a large multi-chain target;
+        # RE-SET hard_cap_target_aa from that measurement before the flag flips.
+        hard_cap_target_aa=600,
+        soft_warn_target_aa=360,
+        hard_cap_combined_aa=950,
+        # One shard = one 8-design container, quoted at 30-120 min in
+        # tools/proteina/meta.py — anchor at the middle of that band.
+        runtime_base_min=75.0,
+        runtime_alpha=1.3,           # flow-matching generator + AF2/RF3 refold
+        runtime_baseline_designs=8,  # _SHARD_DESIGNS
+    ),
+    gap=GapThresholds(
+        warn_length=20,
+        needs_fix_length=50,
+        needs_fix_hotspot_distance=10,
+    ),
+)
+
+
 TOOL_RULES: dict[str, ToolRules] = {
     _RFANTIBODY.slug: _RFANTIBODY,
     _RFDIFFUSION.slug: _RFDIFFUSION,
     _BINDCRAFT.slug: _BINDCRAFT,
     _BOLTZGEN.slug: _BOLTZGEN,
     _PXDESIGN.slug: _PXDESIGN,
+    _PROTEINA.slug: _PROTEINA,
 }
 
 

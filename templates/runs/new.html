@@ -75,8 +75,21 @@
         <div class="runs-field" id="proteina-task-field" style="display:none;">
           <label for="task_name">Target task</label>
           <input type="text" id="task_name" name="task_name" maxlength="64" value="{{ pre_fill.get('task_name','') }}" placeholder="e.g. 02_PDL1" disabled>
-          <div class="hint">A curated benchmark task, or leave blank and upload your own target below.</div>
+          <div class="hint">A curated benchmark task, which carries its own target, chain range and hotspots. Leave blank and upload your own target instead &mdash; the two are mutually exclusive.</div>
         </div>
+        <!-- Proteina custom-target fields. Shown only when a structure is
+             attached or bound: they are written into the target record that
+             `complexa target add` registers, and a curated task supplies its
+             own, so posting them together is refused server-side. -->
+        <div class="runs-field" id="proteina-region-field" style="display:none;">
+          <label for="target_input">Target region</label>
+          <input type="text" id="target_input" name="target_input" maxlength="64" value="{{ pre_fill.get('target_input','') }}" placeholder="e.g. A1-150" disabled>
+          <div class="hint">Which chains and residues to design against. One chain (<code>A1-150</code>) or several (<code>A12-157,B12-157,C12-157</code>). Blank uses every residue of the target chain.</div>
+        </div>
+        {# Binder length is NOT duplicated here: the shared #binderlen-row below
+           already posts binder_length_min / binder_length_max, which is exactly
+           what the proteina adapter reads. refreshTool() unhides that row for
+           proteina and swaps the binder-tool defaults for upstream's 60-120. #}
         <!-- IgGM antibody-design fields. Disabled off-iggm so they never post to
              another tool (disabled controls are not submitted). affinity_maturation
              is intentionally absent — it is single-run only (rejected on the
@@ -140,7 +153,7 @@
         <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
-          <div class="hint">Comma-separated target-chain residues the binder should contact.</div>
+          <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
         </div>
         <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
@@ -203,6 +216,9 @@
   var pdbInput = document.getElementById('target_pdb');
   var sdfInput = document.getElementById('target_sdf');
   var chainInput = document.getElementById('target_chain');
+  var regionInput = document.getElementById('target_input');
+  var lenMin = document.getElementById('binder_length_min');
+  var lenMax = document.getElementById('binder_length_max');
   var iggmPreset = document.getElementById('iggm_preset');
   var fasta = document.getElementById('fasta');
   var epitope = document.getElementById('epitope');
@@ -243,15 +259,31 @@
 
   function show(id, on) { document.getElementById(id).style.display = on ? '' : 'none'; }
 
+  // Does THIS run design against a structure the caller supplied? Mirrors the
+  // server's own derivation of `_has_custom_target` (a bound target, or an
+  // attached file) so the form shows exactly the fields the adapter will
+  // accept. Getting this wrong is only a display bug: the server decides.
+  function hasCustomTarget() {
+    if (boundTarget) return true;
+    return !!(pdbInput && pdbInput.files && pdbInput.files.length > 0);
+  }
+
   function refreshTool() {
     var isProteina = tool.value === 'proteina';
     var isIggm = tool.value === 'iggm';
     // Proteina-only fields. Keep the inputs disabled off-proteina so they never
     // submit a bogus preset/task to the other tools.
     show('proteina-preset-field', isProteina);
-    show('proteina-task-field', isProteina);
     preset.disabled = !isProteina;
-    taskName.disabled = !isProteina;
+    // Curated task vs bring-your-own are mutually exclusive, and the adapter
+    // rejects the combination. Show only the one this run is actually on, so
+    // the exclusion is visible rather than an error after the fact.
+    var custom = isProteina && hasCustomTarget();
+    show('proteina-task-field', isProteina && !custom);
+    taskName.disabled = !(isProteina && !custom);
+    if (custom) { taskName.value = ''; }
+    show('proteina-region-field', custom);
+    regionInput.disabled = !custom;
     // IgGM-only fields (design mode + antibody FASTA + required epitope),
     // likewise disabled off-iggm so they never post to another tool. Two selects
     // share name="preset" (proteina's + iggm's); only the enabled one submits.
@@ -261,11 +293,22 @@
     iggmPreset.disabled = !isIggm;
     fasta.disabled = !isIggm;
     epitope.disabled = !isIggm;
-    // BoltzGen-only + generic binder fields — hidden for proteina AND iggm
-    // (neither uses hotspots or a binder-length range), unchanged elsewhere.
     protoField.style.display = (tool.value === 'boltzgen') ? '' : 'none';
-    show('hotspot-field', !isProteina && !isIggm);
-    show('binderlen-row', !isProteina && !isIggm);
+    // Hotspots and binder length are real proteina knobs on the custom-target
+    // path — they are written into the registered target record. A curated task
+    // carries its own, so they stay hidden there. IgGM uses neither.
+    show('hotspot-field', !isIggm && (!isProteina || custom));
+    show('binderlen-row', !isIggm && (!isProteina || custom));
+    if (custom) {
+      // The generic defaults are the binder tools' narrow window; upstream
+      // proteina samples 60-120. Swap them rather than silently designing a
+      // much narrower length range than the model's own default.
+      if (lenMin.value === '55') { lenMin.value = '60'; }
+      if (lenMax.value === '65') { lenMax.value = '120'; }
+    }
+    document.getElementById('hotspot-hint').textContent = isProteina
+      ? 'Optional. Residues the binder should contact. Plain numbers use the target chain; prefix the chain for a multi-chain region (A113 C73). Every one is checked against your structure before any GPU runs.'
+      : 'Comma-separated target-chain residues the binder should contact.';
     refreshTarget();
   }
 
@@ -293,11 +336,12 @@
     pdbInput.disabled = isLigand;
     sdfInput.disabled = !isLigand;
     chainInput.disabled = isLigand;
-    // A PDB is mandatory for the live tools; optional for proteina (a curated
-    // task carries its own target).
+    // A PDB is mandatory for the live tools. For proteina it is genuinely
+    // optional — a curated benchmark task carries its own target — so the
+    // label says which path an empty field puts you on.
     pdbInput.required = !isProteina;
     document.getElementById('target-pdb-label').textContent = isProteina
-      ? 'Target structure (.pdb / .cif) — optional for curated tasks'
+      ? 'Target structure (.pdb / .cif) — leave empty to use a curated task'
       : 'Target structure (.pdb / .cif)';
   }
 
@@ -384,7 +428,12 @@
     t = setTimeout(fetchEstimate, 250);
   }
   tool.addEventListener('change', function () { refreshTool(); debounced(); });
-  preset.addEventListener('change', refreshTarget);
+  // Attaching or clearing a file flips proteina between the curated-task and
+  // bring-your-own paths, which is what decides who owns the chain range,
+  // hotspots and binder length — so it re-runs the whole field refresh, not
+  // just the target half.
+  pdbInput.addEventListener('change', refreshTool);
+  preset.addEventListener('change', refreshTool);
   count.addEventListener('input', debounced);
   confirm.addEventListener('change', syncSubmit);
   refreshTool();

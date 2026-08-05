@@ -13,15 +13,16 @@ next outage pages us instead.
 | External uptime monitor (UptimeRobot) on `/health` + `/` | 1 | Done — 2 monitors live (`/health` Up, `/` active), 5-min, email leo@ | None (keyword upgrade needs a paid plan) |
 | Railway native deploy-failure email | 1 | Verified — Deployment Failed/Crashed/OOM → Email & In-App to leo@ranomics.com | None |
 | `/readyz` deep readiness endpoint (catches the failure mode the two monitors above miss) | 1b | Implemented (uncommitted); UptimeRobot monitor pre-created + paused | Resume that monitor after deploy |
-| Synthetic monitor (smoke script on a schedule) | 2 | Script live (`a502308`); workflow created (uncommitted) | Add `RK_LIVE_KEY` repo secret |
+| Synthetic monitor (smoke script on a schedule) | 2 | Live — script (`10f4688`) + workflow (`b539ea7`) on `main`, `RK_LIVE_KEY` secret set, 6h cron green | Confirm Actions failure email reaches leo@ |
 | Sentry error tracking | 2 | Deferred by decision | Revisit later |
 | Outbound-timeout audit | 3 | Done; Storage patch applied (uncommitted) | Review the Storage patch diff |
 | Operator alert on new Platform API submission | Bonus | Shipped in working tree (uncommitted) | Review the diff |
 
 Update (2026-06-10): the UptimeRobot monitors are created and Railway's deploy
-alerts are verified (see those sections). The one remaining external action is
-adding the `RK_LIVE_KEY` GitHub repository secret for the synthetic smoke;
-entering that key is Leo's action (steps below).
+alerts are verified (see those sections). The `RK_LIVE_KEY` repository secret was
+added the same day and the synthetic smoke has been running green on its 6h cron
+since; the one remaining external action is confirming that GitHub Actions
+failure notifications reach leo@ranomics.com (steps below).
 
 ## The incident, both failure modes
 
@@ -78,8 +79,8 @@ Each layer catches what the layer above misses.
 2. **`/readyz` deep readiness check.** Catches Mode B: DB or Supabase-client
    failures while `/health` stays green. One cheap bounded Supabase read.
 3. **Synthetic monitor** running the end-to-end smoke (submit, idempotent
-   replay, read-back) against the real Platform API. Catches deeper breakage:
-   auth, idempotency, persistence, response-shape regressions.
+   replay, read-back, withdraw) against the real Platform API. Catches deeper
+   breakage: auth, idempotency, persistence, response-shape regressions.
 4. **Railway native notifications.** Catches deploy failures, crashes, and OOM
    kills at the platform level, before or independent of HTTP symptoms.
 5. **Error tracking (Sentry).** Catches unhandled exceptions and slow requests
@@ -219,25 +220,64 @@ also fails the keyword check, so it alerts two ways.
 ## Tier 2: Synthetic monitor (end-to-end smoke)
 
 Script: `scripts/smoke_platform_api.py`. It exercises the live submit, idempotent
-replay, and read-back loop against `https://tools.ranomics.com/api/v1/*` using
-`RK_LIVE_KEY`. Exit code 0 on all-pass, 1 on any failure. This is the deepest
+replay, read-back, and withdraw loop against `https://tools.ranomics.com/api/v1/*`
+using `RK_LIVE_KEY`. Exit code 0 on all-pass, 1 on any failure. This is the deepest
 check: it catches Mode B plus auth, idempotency, persistence, and response-shape
 regressions that a simple URL ping cannot.
 
-### Two prerequisites and one caveat
+### Two prerequisites and how cleanup works
 
-1. **The script is committed and pushed** (`a502308` on `main`), and the
-   GitHub Actions workflow now exists at
-   `.github/workflows/synthetic-smoke.yml` (uncommitted; it rides the next
-   commit). The scheduled cron only starts firing once that workflow file is on
-   the default branch, so it activates on the next push to `main`.
+1. **The script and the workflow are both committed on `main`** — the script at
+   `scripts/smoke_platform_api.py` and the GitHub Actions workflow at
+   `.github/workflows/synthetic-smoke.yml` (`b539ea7`). The scheduled cron is
+   live and fires every 6 hours.
+
+   Read the script only at its current `main` version. It was added in
+   `a502308`, whose docstring states the *opposite* of the cleanup behaviour
+   below ("does NOT clean up after itself"); withdraw arrived in `00fc623`; the
+   failed-create-assertion case described in item 3 was only closed in
+   `10f4688`; and the transport-error case in that same item — a dropped
+   connection killing the run before it could report the row — only in
+   `24df5e9`. Any older checkout leaks rows the current text says it does not.
 2. **It needs `RK_LIVE_KEY`**, a member-role Platform API key minted at
    https://tools.ranomics.com/account/api-keys, stored as a secret in whatever
    runs it.
-3. **Caveat: each run leaves one `lab_campaigns` row** at status
-   WaitingForConfirmation with no cleanup. Run it on a slow cadence (for example
-   every 6 to 12 hours, not every minute) and bulk-clean the rows periodically,
-   or extend the script to delete its own row via a direct Supabase call.
+3. **Cleanup is automatic: the smoke withdraws the row it creates.** Its final
+   step is `DELETE /experiments/{id}`, which runs whenever the create response
+   carried an `experiment_id` — including when create's own response-shape
+   assertions failed, or the replay or read-back ones did — and then asserts the
+   follow-up read 404s. So a run leaves no `public.lab_campaigns` row behind
+   whether it passes or fails, and there is nothing to bulk-delete on a cadence.
+
+   Once the server has answered 201, two cases still leak a row in CI, and both
+   fail the job:
+
+   - withdraw itself fails: the run log prints the `experiment_id` and the
+     `DELETE` SQL to drop the row by hand. A connection that drops any time
+     *after* the create response lands here too, rather than killing the run:
+     `_http()` turns every transport error into a `status=0` sentinel —
+     including the `RemoteDisconnected` / `IncompleteRead` /
+     `ConnectionResetError` family urllib does **not** wrap into `URLError` —
+     so the smoke still reaches its summary and still names the row.
+   - the 201 body carries no usable `experiment_id` at all (not a JSON object,
+     or no `experiment_id` field): there is no id to withdraw or to print, so
+     the row has to be found via
+     https://tools.ranomics.com/admin/lab-projects.
+
+   One further path leaves a row without either bullet applying, because the
+   script never learns the row exists: a create that times out or 5xxes after
+   the insert. The runbook covers it — see "Synthetic smoke FAILED". (A second
+   such path — a run dying before it could print a summary at all — was closed
+   in `24df5e9`, which is also what put the transport family in the first
+   bullet above.)
+
+   (The script has a second, service-role cleanup path for its optional quote
+   round-trip; it stays dormant in CI because that job passes only
+   `RK_LIVE_KEY`. Locally, if `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` are
+   in the environment, the quote step runs and *replaces* withdraw — cleanup
+   then goes through the service client, which is best-effort and does **not**
+   fail the run. On a local run, read the cleanup line directly above
+   `OVERALL:` even when it says `PASS`.)
 
 ### Option A (recommended): GitHub Actions scheduled workflow
 
@@ -266,8 +306,10 @@ jobs:
           RK_LIVE_KEY: ${{ secrets.RK_LIVE_KEY }}
 ```
 
-Add the repo secret `RK_LIVE_KEY`, and confirm GitHub Actions failure
-notifications go to leo@ranomics.com (GitHub account notification settings).
+The repo secret `RK_LIVE_KEY` is set (2026-06-10) and the workflow's guard step
+hard-fails the job if it ever goes missing. Remaining: confirm GitHub Actions
+failure notifications go to leo@ranomics.com (GitHub account notification
+settings).
 
 ### Option B: Railway cron service
 
@@ -462,10 +504,33 @@ the site looks up.
 ### Synthetic smoke FAILED
 
 Read which step failed in the output (targets, cost-estimate, create, replay,
-read-back). A create failure with `/health` green is Mode B. A replay or
-read-back failure points at idempotency or persistence. Reproduce locally with
-`RK_LIVE_KEY=... python scripts/smoke_platform_api.py` and clean up the leftover
-`lab_campaigns` row noted in the script output.
+read-back, withdraw). A create failure with `/health` green is Mode B. A replay
+or read-back failure points at idempotency or persistence. Several steps failing
+at once, each carrying a `network error:` note and a status of `0`, is a
+transport failure (edge, DNS, TLS, or a reset connection) rather than an
+API-logic bug. Reproduce locally with
+`RK_LIVE_KEY=... python scripts/smoke_platform_api.py`.
+
+A failing run normally still cleans up after itself — withdraw runs whenever the
+create response carried an `experiment_id` — so there is usually no row to sweep.
+Only sweep when the summary says so:
+
+- `experiment_id created but NOT cleaned up: <id>` — withdraw did not pass. The
+  summary prints the `DELETE FROM lab_campaigns WHERE id = '<id>';` to run.
+- `(no experiment_id captured; submit step did not return one)` — if create
+  returned 201 but no usable id, a row exists with no id to print; find it via
+  https://tools.ranomics.com/admin/lab-projects. A non-201 create usually means
+  no row was made — but the insert lands before the app reports success, so a
+  timeout (shown as `got 0`) or a `500 submission_failed` can still leave one.
+  Check the admin list in those two cases.
+- **No `RESULTS` block at all** (a Python traceback instead). This is now a bug
+  in the smoke itself, not an expected outcome. Since `24df5e9` `_http` traps
+  the whole transport family — failures out of `getresponse()`/`read()`, outside
+  urllib's `URLError` wrapping, plus bodies that do not decode as UTF-8 — and
+  returns a `status=0` sentinel, so the run always reaches `_summarise()`
+  (regression tests in `tests/test_smoke_platform_api_network.py`). If you see a
+  traceback rather than `OVERALL:`, assume a row leaked, sweep for a recent
+  `smoke-test-…` row in the admin list, and fix the escape.
 
 ### Railway emailed a deploy failure / crash / OOM
 
@@ -488,6 +553,8 @@ server. Review at https://tools.ranomics.com/admin/campaigns and follow up.
 - Readiness (DB-touching, once added): https://tools.ranomics.com/readyz
 - Platform API base: https://tools.ranomics.com/api/v1
 - Admin campaigns: https://tools.ranomics.com/admin/campaigns
+- Admin lab projects (where the smoke's `lab_campaigns` rows show up):
+  https://tools.ranomics.com/admin/lab-projects
 - API key minting: https://tools.ranomics.com/account/api-keys
 - UptimeRobot: https://uptimerobot.com (account to be created by Leo)
 - Railway project tools-hub: `607bc08f-6954-41d5-b3e8-543c8a8e73f4`

@@ -96,15 +96,22 @@ about: dict = {
         "global cross-shard top-K and post-hoc diversity clustering."
     ),
     "when_to_use": [
+        "You want to aim a de novo binder at a specific epitope, including a "
+        "recessed or occluded one, using hotspot residues.",
+        "Your target is multi-chain and the site you care about spans more than "
+        "one chain.",
         "You want de novo binders against a small-molecule target, not just a protein.",
         "You want an inference-time search filtered by an AF2 / RF3 / force-field reward, not raw generation.",
         "You want to scale the search across many GPUs with the prepaid wallet as the only ceiling.",
         "You want diverse high-reward designs (global top-K + diversity clustering) rather than near-duplicates.",
     ],
     "prerequisites": [
-        "A target: a curated benchmark task, or your own target "
-        "(<code>.pdb</code> for protein / motif, <code>.sdf</code> for ligand).",
-        "For a protein target, the chain ID.",
+        "A target: your own structure (<code>.pdb</code>/<code>.cif</code>) for "
+        "the protein-binder variant, or a curated benchmark task for any variant.",
+        "For your own target, the chain ID &mdash; or a chain/residue range such "
+        "as <code>A1-150</code>, or <code>A12-157,B12-157,C12-157</code> for a "
+        "multi-chain target.",
+        "Optionally, hotspot residues to aim the binder at a specific epitope.",
         "A funded wallet that covers at least the first wave of shards.",
     ],
     "inputs": [
@@ -119,11 +126,39 @@ about: dict = {
             ),
         },
         {
-            "name": "Target task",
+            "name": "Target",
             "explanation": (
-                "A curated benchmark task (target baked in) or your own "
-                "uploaded target. Protein and motif targets are PDB; ligand "
-                "targets are SDF."
+                "Your own structure, or a curated benchmark task whose target "
+                "is baked in &mdash; the two are mutually exclusive. Uploading "
+                "your own is available on the protein-binder variant; the "
+                "ligand and motif variants run curated tasks (their tasks "
+                "resolve from separate upstream registries)."
+            ),
+        },
+        {
+            "name": "Target region",
+            "explanation": (
+                "Which chains and residues to design against, e.g. "
+                "<code>A1-150</code>, or <code>A12-157,B12-157,C12-157</code> "
+                "for a multi-chain target. Blank uses the whole target chain."
+            ),
+        },
+        {
+            "name": "Hotspot residues",
+            "explanation": (
+                "Optional. Residues the binder should contact, in original PDB "
+                "numbering &mdash; plain numbers use the target chain, or "
+                "prefix the chain (<code>A113 C73</code>) for a multi-chain "
+                "region. Every hotspot is checked against your structure "
+                "before any GPU runs, so a residue that is not there is "
+                "refused rather than quietly ignored."
+            ),
+        },
+        {
+            "name": "Binder length",
+            "explanation": (
+                "The range each design's length is drawn from. Defaults to "
+                "60-120 residues."
             ),
         },
         {

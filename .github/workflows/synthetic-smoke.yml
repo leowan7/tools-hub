@@ -18,10 +18,35 @@ name: Synthetic smoke (Platform API)
 #     https://tools.ranomics.com/account/api-keys
 #     (Settings > Secrets and variables > Actions > New repository secret).
 #
-# Caveat: each run creates one public.lab_campaigns row at
-# WaitingForConfirmation (no auto-cleanup). The run log prints the
-# experiment_id + cleanup SQL. The 6h cadence keeps rows from piling up;
-# bulk-delete them periodically in Supabase.
+# Cleanup: the smoke withdraws the row it creates. Its final step is
+# DELETE /experiments/{id}, which runs whenever the create response carried
+# an experiment_id -- including when create's own response-shape assertions
+# failed, or the replay or read-back ones did -- and then asserts the
+# follow-up read 404s. So a run leaves no public.lab_campaigns row behind
+# whether it passes or fails, and there is nothing to bulk-delete on a
+# cadence.
+#
+# Once the server has answered 201, two cases still leak a row, and both
+# fail the job:
+#   - withdraw itself fails: the run log prints the experiment_id and the
+#     DELETE SQL to drop the row by hand. A connection that drops any time
+#     AFTER the create response lands here too, rather than killing the run:
+#     _http() turns every transport error into a status=0 sentinel --
+#     including the RemoteDisconnected / IncompleteRead /
+#     ConnectionResetError family urllib does NOT wrap into URLError -- so
+#     the smoke still reaches its summary and still names the row.
+#   - the 201 body carries no usable experiment_id at all (not a JSON
+#     object, or no experiment_id field): there is no id to withdraw or to
+#     print, so the row has to be found via
+#     https://tools.ranomics.com/admin/lab-projects.
+#
+# One further path leaves a row without either bullet applying, because the
+# script never learns the row exists: a create that times out or 5xxes after
+# the insert. See the "Synthetic smoke FAILED" runbook in ALERTING.md, which
+# is the fuller version of this comment.
+#
+# (The script has a second, service-role cleanup path for its optional quote
+# round-trip; it stays dormant here because this job passes only RK_LIVE_KEY.)
 
 on:
   schedule:

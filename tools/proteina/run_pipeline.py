@@ -17,8 +17,19 @@ Contract (identical to boltz2 / iggm; set by ``tools/proteina/modal_app.py``):
     PROTEINA_RF3  on (default) | off — the RF3 reward kill-switch (Dockerfile ENV)
 
 job_spec (from ``tools/proteina/__init__.py`` build_payload):
-    preset, config_name, task_name, target_chain, rf3_required,
-    nsamples, replicas, nsteps, parameters
+    preset, config_name, task_name, target_source, target_chain, target_input,
+    hotspot_residues, hotspot_spec, binder_length, rf3_required, nsamples,
+    replicas, nsteps, parameters
+
+TARGET SOURCE. A shard designs against EITHER a curated ``task_name`` baked
+into the repo configs OR a caller-uploaded PDB, never both, and which one is
+declared explicitly as ``target_source`` rather than inferred from whether a
+URL happens to be present. A custom target is staged, verified against the
+real structure, and registered with ``complexa target add`` (which appends to
+configs/targets/targets_dict.yaml, the dict binder_generate.yaml composes into
+``target_dict_cfg``); ``task_name`` is then the registered key, so the design
+invocation is byte-identical to a curated run. Bring-your-own is protein_binder
+only — see ``_CUSTOM_TARGET_PRESETS``.
 
 Output (``/tmp/smoke_results.json`` == the persisted ``job.result``): both a
 flat ``designs`` list and a ``candidates`` list whose nested ``scores`` dict is
@@ -50,10 +61,20 @@ against the pinned checkout 2026-07-16):
 BUILD-TIME-VERIFY (only a P2 seed / P4-P5 canary can pin these — the output
 layer, not the launch recipe):
   * the reward/results CSV path + exact column names (mapped tolerantly below);
-  * the per-design PDB glob under ./inference/;
+  * the per-design PDB glob under ./inference/, and whether those PDBs are
+    binder-only or binder+target complexes (the hotspot canary's phase 1
+    answers this — it decides how hotspot occupancy can be measured);
   * whether the AF2 binder reward tolerates the absent dssp / sc binaries (the
-    public image ships without them; DSSP_EXEC/SC_EXEC are left unset);
-  * the custom-target (bring-your-own PDB/SDF) registration mechanism.
+    public image ships without them; DSSP_EXEC/SC_EXEC are left unset).
+
+HOTSPOTS ARE SILENTLY DROPPED UPSTREAM. load_target_from_pdb builds a
+zero-initialised mask and sets ``mask[idx] = True`` where
+``f"{atom.chain_id}{atom.res_id}"`` is in the requested list. A token that
+matches nothing — a typo, a wrong chain letter, a residue absent from the file
+— is ignored without warning, and the search then runs UNCONSTRAINED while
+emitting output identical in shape to a correct run. That is why every hotspot
+is re-checked here against the uploaded structure before the model loads
+(``prepare_custom_target``), rather than trusted to fail loudly downstream.
 """
 
 from __future__ import annotations
@@ -70,7 +91,7 @@ import sys
 import tarfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -107,6 +128,13 @@ _ALL_CONFIGS = (
 
 # RF3 kill-switch. Off-values mirror the tools-hub CSRF_PROTECT=0 pattern.
 _RF3_OFF = {"off", "false", "0", "no"}
+
+# Variants that can design against a caller-supplied target. `complexa target
+# add` writes configs/targets/targets_dict.yaml, which ONLY the binder pipeline
+# composes into target_dict_cfg; ligand_binder and motif_ame index separate
+# registries (ligand_targets_dict / design_tasks/ame_dict_v2 -> motif_target_
+# dict_cfg). Kept in lockstep with _CUSTOM_TARGET_PRESETS in __init__.py.
+_CUSTOM_TARGET_PRESETS = {"protein_binder"}
 
 # Results columns the viewer renders (proteina_results.html). Column names are
 # VERIFIED against the P-2 (protein: af2folding_*) and P-3 (ligand: rf3folding_*)
@@ -291,6 +319,220 @@ def sdf_to_pdb(sdf_path: Path, dest: Path) -> Path:
 
 
 # ===========================================================================
+# Custom-target structure parsing + verification (pre-GPU)
+#
+# This container is STANDALONE: modal_app.py copies exactly this one file, so
+# nothing under shared/ is importable and there is no Biopython. Everything
+# below is stdlib and pure, which is also what makes it unit-testable offline.
+# The shape follows tools/iggm/run_pipeline.py's antigen_chain_info.
+#
+# Why any of this exists: upstream's load_target_from_pdb matches hotspots with
+#
+#     if f"{atom.chain_id}{atom.res_id}" in target_hotspots: mask[idx] = True
+#
+# against a zero-initialised mask. A token that matches nothing is SILENTLY
+# dropped — no warning, no error — and the search then runs unconstrained while
+# producing output identical in shape to a correct run. Re-deriving that exact
+# match here, before the GPU is touched, is the only way a typo'd chain or a
+# residue that isn't in the file becomes a refusal instead of a wrong answer
+# the user pays for.
+# ===========================================================================
+
+# Modified residues biotite/atomworks treat as protein when building the CA
+# structure upstream. An ATOM-only parser would report a legitimate hotspot on
+# one of these as missing and refuse a valid run; false-refusal is the safe
+# direction in general but it is avoidable here, so avoid it.
+_MODRES_EQUIV = frozenset({
+    "MSE", "CME", "CSO", "SEP", "TPO", "PTR", "KCX", "HYP", "LLP",
+    "CSD", "OCS", "MLY", "M3L", "CAS", "CSS", "CSX", "PCA", "SAC",
+})
+
+
+def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
+    """Parse (chain, resseq, icode) for every CA residue, first model only.
+
+    Returns ``(residues, n_unparsable)``. Deliberately mirrors what upstream's
+    CA structure contains:
+
+    * ``ATOM`` CA records, plus ``HETATM`` CA records for the modified residues
+      in ``_MODRES_EQUIV`` (biotite treats those as protein).
+    * first model only — parsing stops at the first ``ENDMDL``, matching
+      shared/pdb_inspect.py's single-model rule for NMR ensembles.
+    * altloc duplicates collapsed on ``(chain, resseq, icode)``.
+
+    ``n_unparsable`` counts CA lines whose residue-sequence columns would not
+    convert to an int. Columns 22:26 overflow at residue numbers >= 10000, and
+    a silently-skipped residue there could make a legitimate hotspot look
+    missing — so the count is surfaced in the failure message rather than
+    swallowed.
+    """
+    residues: list[tuple[str, int, str]] = []
+    seen: set[tuple[str, int, str]] = set()
+    n_unparsable = 0
+    with open(pdb_path, "r", errors="replace") as fh:
+        for line in fh:
+            record = line[:6]
+            if record.startswith("ENDMDL"):
+                break
+            if record not in ("ATOM  ", "HETATM"):
+                continue
+            if line[12:16].strip() != "CA":
+                continue
+            resname = line[17:20].strip().upper()
+            if record == "HETATM" and resname not in _MODRES_EQUIV:
+                continue
+            chain = line[21:22].strip()
+            try:
+                resseq = int(line[22:26])
+            except ValueError:
+                n_unparsable += 1
+                continue
+            icode = line[26:27].strip()
+            key = (chain, resseq, icode)
+            if key in seen:
+                continue
+            seen.add(key)
+            residues.append(key)
+    return residues, n_unparsable
+
+
+def parse_target_input(spec: str) -> list[tuple[str, Optional[int], Optional[int]]]:
+    """Parse a contig such as ``A1-150`` or ``A12-157,B12-157,C12-157``.
+
+    A bare chain id yields ``(chain, None, None)`` meaning "the whole chain".
+    The adapter already validated the syntax; this re-parses in-container
+    because the container must never trust a value it did not check itself.
+    Raises ValueError on anything unparsable.
+    """
+    out: list[tuple[str, Optional[int], Optional[int]]] = []
+    for token in (t.strip() for t in (spec or "").replace(";", ",").split(",")):
+        if not token:
+            continue
+        if len(token) == 1 and token.isalpha():
+            out.append((token, None, None))
+            continue
+        chain, rest = token[0], token[1:]
+        if not chain.isalpha() or "-" not in rest[1:]:
+            raise ValueError(f"unparsable target_input segment {token!r}")
+        # rsplit so a negative lower bound (e.g. "A-5-20") still splits right.
+        lo_text, hi_text = rest.rsplit("-", 1)
+        try:
+            lo, hi = int(lo_text), int(hi_text)
+        except ValueError:
+            raise ValueError(f"unparsable target_input segment {token!r}") from None
+        out.append((chain, lo, hi))
+    return out
+
+
+def derive_segments(
+    residues: list[tuple[str, int, str]], chain_ids: list[str]
+) -> list[tuple[str, int, int]]:
+    """Full observed residue span per requested chain.
+
+    Used when the caller gave a target chain but no explicit contig. Upstream's
+    ``target_input`` defaults to ``"A1-100"`` when omitted, which would silently
+    truncate a 250-residue target to its first 100 residues, so the contig is
+    ALWAYS written explicitly — this is what it is computed from.
+    """
+    out: list[tuple[str, int, int]] = []
+    for chain in chain_ids:
+        nums = [r[1] for r in residues if r[0] == chain]
+        if not nums:
+            continue
+        out.append((chain, min(nums), max(nums)))
+    return out
+
+
+def select_residues(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> list[tuple[str, int]]:
+    """Residues selected by the contig, as (chain, resseq) in file order."""
+    out: list[tuple[str, int]] = []
+    for chain, lo, hi in segments:
+        for c, resseq, _icode in residues:
+            if c != chain:
+                continue
+            if lo is not None and not (lo <= resseq <= hi):
+                continue
+            out.append((c, resseq))
+    return out
+
+
+def hotspot_keys(selected: list[tuple[str, int]]) -> set[str]:
+    """The exact key set upstream matches against: chain id + author number,
+    concatenated, no separator, case preserved."""
+    return {f"{chain}{resseq}" for chain, resseq in selected}
+
+
+def missing_hotspots(
+    selected: list[tuple[str, int]], spec: list[str]
+) -> list[str]:
+    """Hotspot tokens that match NO selected residue.
+
+    Case-sensitive and literal, exactly like upstream — a lowercase chain
+    ``a45`` against an ``A45`` residue is a miss there and must be a miss here,
+    or we would wave through the run that upstream then silently unconstrains.
+    """
+    available = hotspot_keys(selected)
+    return [token for token in spec if token not in available]
+
+
+def format_contig(segments: list[tuple[str, int, int]]) -> str:
+    return ",".join(f"{chain}{lo}-{hi}" for chain, lo, hi in segments)
+
+
+def unrenderable_segments(
+    segments: list[tuple[str, int, int]]
+) -> list[tuple[str, int, int]]:
+    """Segments whose contig text upstream's parser cannot read back.
+
+    Verified against atomworks ``AtomSelectionStack.from_contig``
+    (``src/atomworks/io/utils/selection.py``)::
+
+        CONTIG_REGEX = re.compile(r"([A-Za-z]+)(\\d+)-(\\d+)")
+        match = CONTIG_REGEX.match(selection)
+        if not match:
+            raise ValueError(f"Invalid contig string: {selection}")
+
+    ``(\\d+)`` carries no sign, so a negative author residue number — routine
+    on constructs that keep an expression tag, e.g. CA residues -5..240 —
+    renders as ``A-5-240`` and raises. Nothing before the GPU catches it:
+    the selection is non-empty, the registry write succeeds and the read-back
+    matches, so the shard boots, loads checkpoints and only then dies inside
+    ``complexa design``. Refusing here converts a full-price crash into a free
+    message. ``0`` is fine (``A0-240`` matches), so the bound is ``< 0``.
+    """
+    return [(c, lo, hi) for c, lo, hi in segments if lo < 0 or hi < 0]
+
+
+def chain_span_summary(residues: list[tuple[str, int, str]]) -> str:
+    """`A1-115, B3-97` — for failure messages, so a user whose hotspot missed
+    can see what the file actually contains without re-uploading it."""
+    spans: list[str] = []
+    for chain in sorted({r[0] for r in residues}):
+        nums = [r[1] for r in residues if r[0] == chain]
+        spans.append(f"{chain}{min(nums)}-{max(nums)}")
+    return ", ".join(spans)
+
+
+def ambiguous_insertion_codes(residues: list[tuple[str, int, str]]) -> list[str]:
+    """Keys where an insertion code makes `chain+resnum` non-unique.
+
+    Upstream's match key carries no insertion code (biotite keeps ``ins_code``
+    in a separate field), so ``A100`` and ``A100A`` collapse to the same token
+    and a hotspot on one also lands on the other. Warned about, never fatal:
+    the constraint still lands in the right neighbourhood, and refusing would
+    block legitimate antibody-numbered targets outright.
+    """
+    counts: dict[str, int] = {}
+    for chain, resseq, _icode in residues:
+        key = f"{chain}{resseq}"
+        counts[key] = counts.get(key, 0) + 1
+    return sorted(k for k, n in counts.items() if n > 1)
+
+
+# ===========================================================================
 # Seed derivation (cross-shard independence)
 # ===========================================================================
 
@@ -312,6 +554,150 @@ def shard_seed(job_id: str) -> int:
 
 def _rf3_enabled() -> bool:
     return os.environ.get("PROTEINA_RF3", "on").strip().lower() not in _RF3_OFF
+
+
+# ===========================================================================
+# Custom-target registration (`complexa target add`)
+#
+# VERIFIED against Proteina-Complexa @ dev 916eaaed:
+#   * pyproject [project.scripts] exposes `complexa-target`, and `target` is
+#     also a nested subcommand of `complexa` with add/list/show.
+#   * `add` writes configs/targets/targets_dict.yaml. binder_generate.yaml
+#     composes it (`defaults: - /targets/targets_dict@_here_`) into
+#     target_dict_cfg, and ++generation.task_name indexes that dict — which is
+#     what makes a registered key selectable exactly like a curated one.
+#   * a record is {source, target_filename, target_path, target_input,
+#     hotspot_residues, binder_length, pdb_id}; hotspot_residues is a list of
+#     chain-prefixed strings and binder_length a [lo, hi] int pair.
+#   * `target` is NOT in _INIT_EXEMPT_COMMANDS, so it needs COMPLEXA_INIT —
+#     the Dockerfile sets COMPLEXA_INIT=docker.
+# ===========================================================================
+
+# Marks records this wrapper wrote. Load-bearing: it is how a key collision
+# with a curated benchmark target is detected at runtime rather than by hand-
+# auditing the shipped YAML on every upstream bump.
+_HUB_SOURCE = "tools_hub_upload"
+_TARGETS_DICT = f"{PROTEINA_HOME}/configs/targets/targets_dict.yaml"
+# Staged outside ./inference: that tree is wiped at shard start and archived at
+# shard end, and the registry holds an absolute path to this file for the whole
+# `complexa design` run.
+_HUB_TARGET_DIR = f"{PROTEINA_HOME}/hub_targets"
+
+
+def custom_target_key(job_id: str, pdb_sha256: str, record: dict) -> str:
+    """Deterministic registry key for an uploaded target.
+
+    Distinct job ids give distinct keys, so two shards sharing a warm container
+    never overwrite each other's record; an identical re-registration gives an
+    identical key, so a retry is idempotent under --force. The ``hub_`` prefix
+    plus 16 hex chars satisfies the adapter's _TASK_RE, and a collision with a
+    curated key is checked against the YAML at registration time rather than
+    assumed away.
+    """
+    blob = json.dumps({"job": job_id, "sha": pdb_sha256, **record}, sort_keys=True, default=str)
+    return "hub_" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def build_target_add_cmd(
+    *,
+    key: str,
+    pdb_path: str,
+    filename_stem: str,
+    contig: str,
+    hotspot_spec: list[str],
+    binder_length: list[int],
+    dict_path: str = _TARGETS_DICT,
+) -> list[str]:
+    """Assemble the `complexa target add` invocation.
+
+    Three details are load-bearing and each has a test:
+
+    ``--dict`` is passed EXPLICITLY. Upstream's get_default_dict_path() walks up
+    from the cwd and silently falls back to a legacy configs/generation/ path;
+    naming the file removes a whole class of wrote-the-wrong-registry failure.
+
+    ``--hotspot-residues`` and ``--binder-length`` are argparse ``nargs="+"``,
+    so their values must be SEPARATE argv elements. Joining them into one
+    string is the single most likely silent bug in this path: argparse would
+    take "A45 A67" as one token, it would match no residue, and upstream would
+    drop it to an all-zero mask without complaint.
+
+    ``--force`` is mandatory. Without it an existing key prompts
+    ``input("Overwrite? (y/N): ")``, which EOFErrors on a container's closed
+    stdin and returns False — a registration that did not happen, reported as
+    if the user had declined it.
+    """
+    cmd = [
+        COMPLEXA_BIN, "target", "add", key,
+        "--dict", str(dict_path),
+        "--source", _HUB_SOURCE,
+        "--target-filename", filename_stem,
+        "--target-path", str(pdb_path),
+        # NEVER omitted: upstream defaults target_input to "A1-100", which would
+        # silently crop a larger target to its first 100 residues.
+        "--target-input", contig,
+        "--binder-length", str(binder_length[0]), str(binder_length[1]),
+        "--force",
+    ]
+    if hotspot_spec:
+        cmd.append("--hotspot-residues")
+        cmd.extend(hotspot_spec)
+    return cmd
+
+
+def read_targets_dict(path: str) -> dict:
+    """Load the targets registry, returning the TARGET RECORDS.
+
+    The file nests every record one level down, under a top-level
+    ``target_dict_cfg:`` key (verified against the pinned commit: the file opens
+    with ``target_dict_cfg:`` and each target sits at 2-space indent beneath it).
+    Upstream's own ``target_manager`` compensates with ``data.get(
+    "target_dict_cfg", data)`` before indexing by target name, and so must we —
+    reading the outer mapping makes every ``registry[key]`` lookup miss, which
+    turns a SUCCESSFUL registration into "target was not written to the
+    registry" and fails every custom-target shard.
+
+    Falls back to the raw mapping when the wrapper is absent, matching upstream
+    and keeping the legacy ``configs/generation/`` layout readable.
+
+    PyYAML rides in with OmegaConf in the image but is not a tools-hub
+    dependency, so the import is lazy and local — this module must stay
+    importable in the offline test suite.
+    """
+    import yaml  # noqa: PLC0415
+
+    with open(path, "r", errors="replace") as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        return {}
+    inner = data.get("target_dict_cfg")
+    return inner if isinstance(inner, dict) else data
+
+
+def registration_mismatch(record: Any, expected: dict) -> Optional[str]:
+    """Compare a written record against what we asked for; None means it took.
+
+    Pure (no YAML, no filesystem) so it unit-tests offline. This is the check
+    that makes the CLI's exit code irrelevant: add_target_cli can return False
+    without failing the process, so the artifact is the only trustworthy
+    evidence that the registration actually landed.
+    """
+    if not isinstance(record, dict):
+        return "target was not written to the registry"
+    for field in ("source", "target_path", "target_input"):
+        want = expected[field]
+        got = record.get(field)
+        if str(got) != str(want):
+            return f"{field} is {got!r} in the registry, expected {want!r}"
+    got_hot = [str(h) for h in (record.get("hotspot_residues") or [])]
+    want_hot = [str(h) for h in expected["hotspot_residues"]]
+    if got_hot != want_hot:
+        return f"hotspot_residues are {got_hot} in the registry, expected {want_hot}"
+    got_len = [int(v) for v in (record.get("binder_length") or [])]
+    want_len = [int(v) for v in expected["binder_length"]]
+    if got_len != want_len:
+        return f"binder_length is {got_len} in the registry, expected {want_len}"
+    return None
 
 
 def build_design_cmd(
@@ -375,6 +761,223 @@ def build_design_cmd(
     # in the signature for the call-site contract + the main() hard-block.
     _ = rf3_on
     return cmd
+
+
+def prepare_custom_target(
+    *,
+    input_url: str,
+    job_id: str,
+    target_chain: str,
+    target_input: str,
+    hotspot_spec: list[str],
+    binder_length: list[int],
+    run_dir: Path,
+) -> str:
+    """Stage, verify and register a bring-your-own target. Returns its key.
+
+    Every failure path here is a ``_fail`` BEFORE the model is loaded, which is
+    the point: the checks that matter (does this hotspot exist, does this chain
+    range select anything) are exactly the ones upstream performs silently and
+    wrongly, so they have to be settled while the answer is still free.
+    """
+    target_dir = Path(_HUB_TARGET_DIR)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 1. stage ---------------------------------------------------------
+    incoming = target_dir / "incoming.pdb"
+    download_target(input_url, incoming)
+    pdb_sha = hashlib.sha256(incoming.read_bytes()).hexdigest()
+
+    # --- 2. parse ---------------------------------------------------------
+    residues, n_unparsable = pdb_ca_residues(incoming)
+    if not residues:
+        _fail(
+            "input", "pdb_parse",
+            "no protein residues (CA atoms) could be read from the uploaded "
+            f"target{f'; {n_unparsable} residue lines were unparsable' if n_unparsable else ''}.",
+        )
+    spans = chain_span_summary(residues)
+
+    # --- 3. resolve the contig -------------------------------------------
+    requested_chains = target_chain.split()
+    if target_input:
+        try:
+            raw_segments = parse_target_input(target_input)
+        except ValueError as exc:
+            _fail("input", "target_input", str(exc))
+        segments = []
+        for chain, lo, hi in raw_segments:
+            if lo is None:
+                nums = [r[1] for r in residues if r[0] == chain]
+                if not nums:
+                    _fail(
+                        "input", "target_input",
+                        f"chain {chain} is not present in the uploaded target. "
+                        f"It contains: {spans}.",
+                    )
+                segments.append((chain, min(nums), max(nums)))
+            else:
+                segments.append((chain, lo, hi))
+    else:
+        segments = derive_segments(residues, requested_chains)
+        if not segments:
+            _fail(
+                "input", "target_chain",
+                f"chain {target_chain!r} is not present in the uploaded target. "
+                f"It contains: {spans}.",
+            )
+
+    # --- 3b. the contig must survive a round-trip through upstream --------
+    # See unrenderable_segments(): a negative author residue number renders as
+    # "A-5-240", which atomworks' CONTIG_REGEX cannot match. Every other guard
+    # in this function passes on such a target, so without this the refusal
+    # happens on a billed A100 instead of here.
+    bad = unrenderable_segments(segments)
+    if bad:
+        hints = []
+        for chain, lo, hi in bad:
+            nonneg = [r[1] for r in residues if r[0] == chain and r[1] >= 0]
+            hints.append(
+                f"{chain}{min(nonneg)}-{max(nonneg)}" if nonneg else
+                f"(chain {chain} has no residue numbered 0 or above)"
+            )
+        _fail(
+            "input", "target_input_negative",
+            "the target chain range "
+            f"{format_contig(bad)} uses negative residue numbers, which the "
+            "design engine's contig format cannot express — it accepts digits "
+            "only. Structures carrying an expression tag are usually numbered "
+            "this way. Set an explicit target chain range that starts at 0 or "
+            f"above, e.g. {','.join(hints)}. The target contains: {spans}.",
+        )
+
+    # --- 4. every segment must select something ---------------------------
+    # Upstream hands the contig to atomworks' AtomSelectionStack.from_contig,
+    # whose behaviour on an unresolvable chain is unverified. We never depend
+    # on it: the selection is computed here and an empty one is a refusal.
+    for chain, lo, hi in segments:
+        picked = select_residues(residues, [(chain, lo, hi)])
+        if not picked:
+            _fail(
+                "input", "target_input",
+                f"chain {chain} residues {lo}-{hi} select 0 residues in the "
+                f"uploaded target. It contains: {spans}.",
+            )
+
+    selected = select_residues(residues, segments)
+    logger.info(
+        "custom target: selected %d of %d residues (%s); chains present: %s",
+        len(selected), len(residues), format_contig(segments), spans,
+    )
+    if len(selected) < 20:
+        _fail(
+            "input", "target_input",
+            f"the selected target region has only {len(selected)} residues, "
+            "which is too small to design a binder against. Widen the chain "
+            f"range. The target contains: {spans}.",
+        )
+
+    ambiguous = ambiguous_insertion_codes(residues)
+    if ambiguous:
+        logger.warning(
+            "custom target: %d residue id(s) are ambiguous because of insertion "
+            "codes (%s). Upstream matches hotspots on chain+number only, so a "
+            "hotspot on one of these also constrains its insertion-coded twin.",
+            len(ambiguous), ", ".join(ambiguous[:10]),
+        )
+
+    # --- 5. THE guard: every hotspot must exist ---------------------------
+    missing = missing_hotspots(selected, hotspot_spec)
+    if missing:
+        _fail(
+            "input", "hotspot_missing",
+            f"hotspot residue(s) {', '.join(missing)} are not in the selected "
+            f"region of the uploaded target ({format_contig(segments)}). The "
+            f"target contains: {spans}. Hotspots are chain-prefixed and "
+            "case-sensitive, in original PDB numbering (e.g. A45)."
+            + (f" {n_unparsable} residue lines were unparsable." if n_unparsable else ""),
+        )
+    if hotspot_spec:
+        logger.info(
+            "custom target: all %d hotspot(s) matched: %s",
+            len(hotspot_spec), " ".join(hotspot_spec),
+        )
+
+    # --- 6. name it, then refuse to shadow a curated target ---------------
+    contig = format_contig(segments)
+    record = {
+        "source": _HUB_SOURCE,
+        "target_input": contig,
+        "hotspot_residues": list(hotspot_spec),
+        "binder_length": [int(binder_length[0]), int(binder_length[1])],
+    }
+    key = custom_target_key(job_id, pdb_sha, record)
+    staged = target_dir / f"{key}.pdb"
+    incoming.replace(staged)
+    record["target_path"] = str(staged)
+
+    try:
+        existing = read_targets_dict(_TARGETS_DICT)
+    except Exception as exc:
+        _fail("input", "target_registry", f"could not read the targets registry: {exc}")
+    prior = existing.get(key)
+    if isinstance(prior, dict) and str(prior.get("source")) != _HUB_SOURCE:
+        _fail(
+            "input", "target_key_collision",
+            f"registry key {key} already exists and was not written by this "
+            "service. Refusing rather than overwriting a benchmark target.",
+        )
+
+    # Keep the exact bytes that were designed against with the run's archive.
+    # The basename target.pdb is on find_pdb_for's exclusion list, so it can
+    # never be mistaken for a design.
+    try:
+        hub_input = run_dir / "_hub_input"
+        hub_input.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staged, hub_input / "target.pdb")
+    except OSError as exc:
+        logger.warning("could not copy the staged target into the run dir: %s", exc)
+
+    # --- 7. register ------------------------------------------------------
+    cmd = build_target_add_cmd(
+        key=key,
+        pdb_path=str(staged),
+        filename_stem=staged.stem,
+        contig=contig,
+        hotspot_spec=hotspot_spec,
+        binder_length=record["binder_length"],
+    )
+    try:
+        rc = run_streaming(cmd, Path(PROTEINA_HOME))
+    except FileNotFoundError:
+        _fail("input", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
+
+    # --- 8. verify the ARTIFACT, not the exit code ------------------------
+    # add_target_cli returns False (not a nonzero exit) when its overwrite
+    # prompt hits a closed stdin, so a clean rc proves nothing on its own.
+    try:
+        written = read_targets_dict(_TARGETS_DICT)
+    except Exception as exc:
+        _fail("input", "target_registration", f"could not re-read the targets registry: {exc}")
+    problem = registration_mismatch(written.get(key), record)
+    if problem or rc != 0:
+        _fail(
+            "input", "target_registration",
+            f"registering the uploaded target failed (`complexa target add` "
+            f"exited {rc}): {problem or 'the record was written but the command failed'}.",
+        )
+
+    n_hub = sum(
+        1 for v in written.values()
+        if isinstance(v, dict) and str(v.get("source")) == _HUB_SOURCE
+    )
+    if n_hub > 200:
+        logger.warning(
+            "targets registry holds %d uploaded targets in this container; "
+            "Hydra composes the whole file on every run", n_hub,
+        )
+    logger.info("custom target registered as %s (%s)", key, contig)
+    return key
 
 
 def run_streaming(cmd: list[str], cwd: Path) -> int:
@@ -617,6 +1220,13 @@ def main() -> None:
     nsamples = int(job_spec.get("nsamples") or 4)
     replicas = int(job_spec.get("replicas") or 2)
     nsteps = job_spec.get("nsteps")
+    # Custom-target fields. Defaults reproduce the curated behaviour exactly, so
+    # a campaign created before these existed keeps draining unchanged.
+    target_source = str(job_spec.get("target_source") or "curated")
+    target_chain = str(job_spec.get("target_chain") or "")
+    target_input = str(job_spec.get("target_input") or "")
+    hotspot_spec = [str(h) for h in (job_spec.get("hotspot_spec") or [])]
+    binder_length = [int(v) for v in (job_spec.get("binder_length") or [60, 120])]
 
     webhook_url = os.environ.get("WEBHOOK_URL", "")
     job_id = os.environ.get("JOB_ID", "")
@@ -626,8 +1236,11 @@ def main() -> None:
 
     rf3_on = _rf3_enabled()
     logger.info(
-        "proteina shard: preset=%s config=%s task=%s rf3_required=%s rf3_on=%s",
-        preset, config_name, task_name, rf3_required, rf3_on,
+        "proteina shard: preset=%s config=%s task=%s target_source=%s "
+        "chain=%s contig=%s hotspots=%s rf3_required=%s rf3_on=%s",
+        preset, config_name, task_name or "-", target_source,
+        target_chain or "-", target_input or "-",
+        " ".join(hotspot_spec) or "-", rf3_required, rf3_on,
     )
 
     # --- validate tier: free CPU dry-run, no wallet, no GPU compute ----------
@@ -656,22 +1269,54 @@ def main() -> None:
     # tracks the actual Hydra overrides, not a hardcoded 8.
     designs_total = nsamples * replicas
 
-    # --- custom target (bring-your-own) HARD-BLOCK (pre-GPU) -----------------
-    # The route stages an uploaded PDB/SDF, but the upstream custom-target
-    # registration (`complexa target` add) is NOT yet wired into the shard CLI:
-    # build_design_cmd selects the target only via ++generation.task_name, which
-    # resolves a REPO-BUNDLED benchmark target. So a bring-your-own run would be
-    # SILENTLY designed against the curated default task (billed GPU, wrong
-    # science). Refuse before any GPU spend until a canary wires + verifies the
-    # registration. Curated benchmark tasks are the launch path; download_target
-    # / sdf_to_pdb stay below as the scaffolding for that fast-follow.
-    if input_url:
+    # --- target-source invariant (pre-GPU) -----------------------------------
+    # EXACTLY ONE target source per shard, declared explicitly rather than
+    # inferred. The declaration is made once, by the route, at campaign
+    # creation — the only place that knew whether a structure actually exists —
+    # and rides campaign.params into every chunk. This block re-checks it here
+    # because the container must be able to refuse on its own: it is the last
+    # gate before money turns into GPU.
+    #
+    # The `elif input_url` branch is the original bring-your-own hard block,
+    # narrowed rather than deleted. Its safety intent is unchanged and is the
+    # whole reason it existed: a staged structure arriving on a run that did NOT
+    # declare a custom target must never fall through to ++generation.task_name,
+    # which resolves a REPO-BUNDLED benchmark target — that would design against
+    # the wrong structure on billed GPU and look completely successful.
+    if target_source == "custom":
+        if not input_url:
+            _fail(
+                "input", "target_missing",
+                "this run declared a custom target but no target structure was "
+                "staged for it. Refusing rather than falling back to a benchmark "
+                "target.",
+            )
+        if task_name:
+            _fail(
+                "input", "target_conflict",
+                "this run declared a custom target but also carries the curated "
+                f"benchmark task {task_name!r}. Refusing rather than designing "
+                "against the wrong structure.",
+            )
+        if preset not in _CUSTOM_TARGET_PRESETS:
+            _fail(
+                "input", "custom_target_variant",
+                f"bring-your-own targets are not available for the {preset} "
+                "variant: upstream resolves its task from a separate registry "
+                "that `complexa target add` does not write. Pick a curated task.",
+            )
+    elif input_url:
         _fail(
-            "input",
-            "custom_target",
-            "Bring-your-own targets are not enabled yet for Proteina-Complexa. "
-            "Pick a curated benchmark task instead — the custom PDB/SDF target "
-            "path lands after the initial canary verifies the registration.",
+            "input", "target_conflict",
+            "a target structure was staged for this run but it was not declared "
+            "as a custom-target run, so the search would silently use a curated "
+            "benchmark target instead. Refusing before any GPU spend.",
+        )
+    elif not task_name:
+        _fail(
+            "input", "target_missing",
+            "no curated benchmark task and no custom target — nothing to design "
+            "against.",
         )
 
     send_heartbeat(webhook_url, job_id, stage="loading_model", designs_total=designs_total)
@@ -690,6 +1335,7 @@ def main() -> None:
     # input per container at a time (no concurrent inputs on this function), so
     # wiping ./inference at shard start is safe and isolates every shard.
     shutil.rmtree(run_dir, ignore_errors=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # Everything from here to the end of the shard runs under a try/finally so the
     # complete output tree is archived on EVERY exit path: success, zero
@@ -698,7 +1344,27 @@ def main() -> None:
     # warm container the preflight _fail()s can leave the PREVIOUS shard's
     # ./inference standing, and archiving that would file another shard's tree
     # under this job id. Everything inside was written by this shard alone.
+    #
+    # Custom-target staging sits INSIDE the try for the same reason: it copies
+    # the exact input bytes into run_dir/_hub_input, and a run that dies on a
+    # missing hotspot is precisely the one whose input you want to inspect
+    # afterwards without re-paying for the A100.
     try:
+        if target_source == "custom":
+            send_heartbeat(
+                webhook_url, job_id, stage="preparing_target",
+                designs_total=designs_total,
+            )
+            task_name = prepare_custom_target(
+                input_url=input_url,
+                job_id=job_id,
+                target_chain=target_chain,
+                target_input=target_input,
+                hotspot_spec=hotspot_spec,
+                binder_length=binder_length,
+                run_dir=run_dir,
+            )
+
         seed = shard_seed(job_id)
         run_name = f"shard_{(job_id or 'x')[:12]}"
         cmd = build_design_cmd(

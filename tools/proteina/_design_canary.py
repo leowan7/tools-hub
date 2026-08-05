@@ -31,7 +31,118 @@ import threading
 import time
 from pathlib import Path
 
-import modal
+# ---------------------------------------------------------------------------
+# The console, made incapable of killing the run
+# ---------------------------------------------------------------------------
+#
+# BEFORE ``import modal``, AND BEFORE ANY OTHER STATEMENT THAT COULD PRINT.
+# Container output reaches this process through modal's log pump, and the
+# proteina container prints "  <check mark> ...", "  <round pushpin> ..." and
+# box-drawing characters — this file additionally pipes the whole of `complexa
+# design`'s stdout/stderr through it. On a Windows cp1252 console that write
+# raises ``UnicodeEncodeError: 'charmap' codec can't encode character '✓'``
+# and kills the LOCAL entrypoint, while the A100 carries on billing to
+# completion or to _MAX_SESSION_S = 7200 s. That is what killed
+# ``_hotspot_canary --phase 0`` on 2026-08-04; here it would throw away a real
+# design shard AND the measurement it was bought for.
+#
+# ``_harden_stream`` mutates the stream's error handler IN PLACE and returns
+# the SAME object, which is the point: modal's log pump, rich's renderer and
+# the interpreter's own traceback printer each captured ``sys.stdout`` when they
+# started, so REPLACING ``sys.stdout`` would leave every one of them writing to
+# the strict original. Returning the same object also matters INSIDE the
+# container, where ``run_design_canary`` hands ``sys.stdout`` straight to
+# ``subprocess.run`` and needs a real file descriptor (the ``_SafeStream``
+# fallback delegates ``fileno`` for the same reason). NOT
+# ``PYTHONIOENCODING=utf-8``: that works, and an operator forgets it exactly
+# once.
+#
+# DUPLICATED FROM ``_canary_scoring.py`` RATHER THAN IMPORTED, deliberately.
+# It is a sibling file and ``_hotspot_canary`` loads it by path, but doing that
+# here would make this harness depend on another harness's private module at
+# module-import time, before ``modal`` is even imported; and importing it as
+# ``tools.proteina._canary_scoring`` drags the web-tier adapter in through
+# ``tools/proteina/__init__.py``. ~50 stateless stdlib lines is the cheaper
+# cost. Canonical copy and its tests: ``_canary_scoring.py`` and
+# ``tests/test_proteina_canary.py``.
+
+# ``backslashreplace`` rather than ``replace``: the operator needs to be able to
+# tell WHICH character could not be rendered.
+CONSOLE_ERRORS = "backslashreplace"
+
+
+def _safe_text(value, encoding=None, errors=CONSOLE_ERRORS):
+    """``value`` rendered so that encoding it to ``encoding`` cannot raise.
+
+    Lossless when the console can carry the text; ``None``/unknown encodings
+    degrade to ASCII, which every console can take.
+    """
+    text = value if isinstance(value, str) else str(value)
+    for candidate in (encoding, "ascii"):
+        if not candidate:
+            continue
+        try:
+            return text.encode(candidate, errors).decode(candidate, "replace")
+        except (LookupError, UnicodeError, TypeError, ValueError):
+            continue
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+class _SafeStream:
+    """Delegating proxy whose ``write`` cannot raise ``UnicodeEncodeError``.
+
+    The FALLBACK only. Everything except ``write`` is delegated, so ``fileno``,
+    ``encoding``, ``isatty`` and ``buffer`` keep working — ``run_design_canary``
+    passes ``sys.stdout`` to ``subprocess.run``, which needs a real fd.
+    """
+
+    def __init__(self, stream, errors=CONSOLE_ERRORS):
+        object.__setattr__(self, "_stream", stream)
+        object.__setattr__(self, "_errors", errors)
+
+    def write(self, text):
+        stream = object.__getattribute__(self, "_stream")
+        try:
+            return stream.write(text)
+        except UnicodeEncodeError:
+            return stream.write(_safe_text(
+                text, getattr(stream, "encoding", None),
+                object.__getattribute__(self, "_errors")))
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_stream"), name)
+
+
+def _harden_stream(stream, errors=CONSOLE_ERRORS):
+    """The stream to use in place of ``stream``, unable to raise on an
+    unencodable character.
+
+    Returns the SAME object whenever it could be reconfigured. ``None`` for
+    ``None``, and the original for a stream with no encoding to fail at
+    (``io.StringIO``, pytest's capture) — wrapping something that cannot raise
+    only adds a layer between the caller and a real file descriptor.
+    """
+    if stream is None:
+        return None
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(errors=errors)
+            return stream
+        except (ValueError, OSError, TypeError, AttributeError, LookupError):
+            pass
+    if not getattr(stream, "encoding", None):
+        return stream
+    if isinstance(stream, _SafeStream):
+        return stream
+    return _SafeStream(stream, errors)
+
+
+sys.stdout = _harden_stream(sys.stdout)
+sys.stderr = _harden_stream(sys.stderr)
+
+
+import modal  # noqa: E402 — imported only after the console cannot kill us
 
 _TOOL = "proteina"
 _DOCKERFILE = f"tools/{_TOOL}/Dockerfile.modal"

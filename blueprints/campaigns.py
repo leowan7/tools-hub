@@ -329,6 +329,19 @@ def compute_campaign_create():
     # validation with "Pick a preset." before this line existed. Safe for the
     # others: `preset` was already validated against this adapter at step 0.
     form_for_validate["preset"] = preset
+    # Declare whether a structure actually exists for this run, so the adapter
+    # never has to infer it. Assigned OVER the form dict, after construction, so
+    # a crafted `_has_custom_target` post cannot forge a custom run with nothing
+    # staged behind it. `target` is resolved above; the file is checked by
+    # filename because an empty part still arrives as a FileStorage.
+    _uploaded_now = (
+        request.files.get("target_sdf") if preset == "ligand_binder"
+        else request.files.get("target_pdb")
+    )
+    form_for_validate["_has_custom_target"] = (
+        "1" if (target is not None or (_uploaded_now is not None and _uploaded_now.filename))
+        else ""
+    )
     validated, verr = adapter.validate(form_for_validate, request.files)
     if validated is None:
         return _err(verr or "Invalid parameters.")
@@ -393,6 +406,11 @@ def compute_campaign_create():
         )
         if hotspot_err:
             return _err(hotspot_err)
+        # Chain/residue ranges, for adapters that declare them (proteina's
+        # target_input today). Same persisted-summary check, no download.
+        segment_err = target.segment_error(validated.get("_target_segments") or [])
+        if segment_err:
+            return _err(segment_err)
     elif uploaded is None or not uploaded.filename:
         if not is_proteina:
             return _err("Upload a target PDB file.")
@@ -450,6 +468,19 @@ def compute_campaign_create():
             )
         except StorageError as exc:
             return _err(f"Upload failed: {exc}")
+
+    # Layer 2 of the target-source invariant: a run that declared a custom
+    # target must have one staged. Checked HERE, before create_campaign and
+    # before any wallet movement, because the alternative is the failure this
+    # whole path exists to remove — campaign created, hold placed, shards
+    # dispatched, every one of them refused in-container for a structure that
+    # was never staged.
+    if validated.get("target_source") == "custom" and not staged_path:
+        return _err(
+            "This run is set up to design against your own target, but no "
+            "structure was staged for it. Attach a target file or pick a "
+            "curated benchmark task."
+        )
 
     campaign = cc.create_campaign(
         user_id=ctx.user_id, tool=tool, params=validated,

@@ -636,3 +636,96 @@ def test_hotspot_error_flags_residues_outside_the_chain_range():
     assert t.hotspot_error("A", [12, 200]) is None
     err = t.hotspot_error("A", [12, 9001])
     assert err and "9001" in err and "1-210" in err
+
+
+# ---------------------------------------------------------------------------
+# Multi-chain hotspot validation (A18) — the two paths must agree
+# ---------------------------------------------------------------------------
+
+
+def _multi_chain_pdb(chains=("A", "B", "C"), lo=12, hi=159):
+    """A full-backbone multi-chain structure.
+
+    N/CA/C/O per residue, not CA-only: the normalizer runs with
+    drop_zero_backbone=True, so a CA-only residue is discarded as having no
+    backbone and the whole chain then reads as empty.
+    """
+    lines, n = [], 1
+    for ch in chains:
+        for r in range(lo, hi + 1):
+            base = r * 3.8
+            for atom, elem, dx in (
+                ("N", "N", 0.0), ("CA", "C", 1.2), ("C", "C", 2.4), ("O", "O", 3.0),
+            ):
+                lines.append(
+                    "ATOM  %5d  %-3s ALA %s%4d    %8.3f%8.3f%8.3f  1.00  0.00           %s"
+                    % (n, atom, ch, r, base + dx, 0.0, 0.0, elem)
+                )
+                n += 1
+    return ("\n".join(lines) + "\n").encode()
+
+
+def test_validate_hotspots_accepts_a_multi_chain_target():
+    """A18. validate_hotspots passed the whole string to report.chain(), got
+    None for "A B C", and reported EVERY hotspot out of range — so a valid
+    multi-chain hotspot set was refused on the atomic submit and reuse-token
+    paths while sailing through the campaign and target-launch routes, which
+    use DesignTarget.hotspot_error. The two paths must agree."""
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_multi_chain_pdb())
+    in_range, out_of_range = validate_hotspots(report, "A B C", [113, 73])
+    assert out_of_range == []
+    assert sorted(in_range) == [73, 113]
+
+
+def test_validate_hotspots_still_flags_a_genuinely_absent_residue():
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_multi_chain_pdb())
+    in_range, out_of_range = validate_hotspots(report, "A B C", [113, 9001])
+    assert in_range == [113] and out_of_range == [9001]
+
+
+def test_validate_hotspots_single_chain_behaviour_is_unchanged():
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_multi_chain_pdb())
+    assert validate_hotspots(report, "A", [113, 73]) == ([113, 73], [])
+    assert validate_hotspots(report, "A", [5]) == ([], [5])
+
+
+def test_normalizer_keeps_every_named_chain_of_a_multi_chain_target():
+    """normalize_for_pipeline compared chain_id against the whole string, so a
+    multi-token target_chain dropped every chain and then raised. proteina's
+    preflight would have refused every multi-chain target."""
+    import tempfile, os
+    from shared.pipeline_normalize import normalize_for_proteina
+
+    fd, path = tempfile.mkstemp(suffix=".pdb")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(_multi_chain_pdb())
+        report = normalize_for_proteina(path, None, target_chain="A B C")
+        assert set(report.chains_kept) == {"A", "B", "C"}
+        # Numbering must survive: proteina matches hotspots on the ORIGINAL
+        # author numbers, silently, so renumbering would void every hotspot.
+        assert not report.renumber_map
+    finally:
+        os.unlink(path)
+
+
+def test_normalizer_still_rejects_a_chain_that_is_absent():
+    import tempfile, os
+    import pytest as _pytest
+    from shared.pipeline_normalize import normalize_for_proteina
+
+    fd, path = tempfile.mkstemp(suffix=".pdb")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(_multi_chain_pdb(chains=("A", "B")))
+        with _pytest.raises(ValueError) as exc:
+            normalize_for_proteina(path, None, target_chain="A B Z")
+        assert "Z" in str(exc.value)
+    finally:
+        os.unlink(path)

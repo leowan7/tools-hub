@@ -17,3 +17,20 @@
 # 3.13 venv holding exactly requirements.txt + pytest (1277 passed, 15
 # skipped, matching the local baseline).
 pytest>=9.0,<10.0
+
+# PyYAML is a TEST dependency only, which is why it is here and not in
+# requirements.txt: the web tier never imports it. The only production reader
+# is tools/proteina/run_pipeline.py, and that runs inside the Modal image,
+# where PyYAML arrives with OmegaConf (see Dockerfile.modal).
+#
+# It is declared because leaving it undeclared silently deleted test coverage.
+# tests/test_proteina_smoke.py guarded ten tests with
+# pytest.importorskip("yaml") -- the regression tests for the targets_dict.yaml
+# nesting bug, the worst defect found in the proteina work. Nothing in
+# requirements.txt depends on PyYAML (checked: modal, supabase, stripe, flask,
+# apscheduler, prometheus-client all declare no yaml requirement), so it was
+# absent from the project venv and from CI, and all ten reported as SKIPPED
+# rather than failing. They were part of the "15 skipped" baseline above.
+# The importorskip guards are gone with this entry: if PyYAML is missing the
+# tests must now ERROR, because a silent skip is how they disappeared.
+PyYAML>=6.0,<7.0
