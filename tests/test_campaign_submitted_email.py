@@ -293,12 +293,68 @@ def test_a_truncated_count_is_reported_separately_from_a_rejection(sent):
     user_html = _flat(user_mail["html"])
     assert "120 further starred designs were over the per-request limit" \
         in user_html
-    assert "send a second request" in user_html
     # It is NOT a rejection, so the rejection wording must not appear.
     assert "could not be matched" not in user_html
     assert "120 starred refs past the per-request cap" in _flat(staff_mail["html"])
     assert "Over the limit: 120 starred ref(s) past the per-request cap" \
         in staff_mail["text"]
+
+
+def test_the_truncated_count_is_hedged_for_the_customer_and_exact_for_ops(sent):
+    """ROUND 21, THE UNIT MISMATCH. `truncated` counts REFS: the tail past
+    `_MAX_CANDIDATE_REFS` is never parsed into (job, index) pairs, so a repeat
+    hiding in it cannot be subtracted and the figure is an UPPER BOUND on the
+    designs actually missing.
+
+    The customer's sentence counts designs, so it must say "up to"; the staff
+    row already counts refs and must keep saying so. Both bodies previously said
+    "starred designs" for the same number, so the two parties were handed
+    different-unit answers under one noun.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    user_mail, staff_mail = sent
+    assert "Up to 120 further starred designs" in _flat(user_mail["html"])
+    assert "Up to 120 further starred designs" in user_mail["text"]
+    # Ops keeps the exact unit, on both the table row and the text body.
+    staff_html = _flat(staff_mail["html"])
+    assert "120 starred refs past the per-request cap" in staff_html
+    assert "Up to" not in staff_html
+    assert "starred designs" not in staff_html
+
+
+def test_the_truncation_note_gives_no_advice_that_duplicates_the_order(sent):
+    """MEDIUM-4. This note used to say "Star them again on the target page and
+    send a second request".
+
+    Following it created a SECOND paid lab project covering the SAME designs:
+    `static/js/candidate_table.js` never clears the shortlist and the modal
+    serialises it in stored order, so the second POST carries the identical
+    first `_MAX_CANDIDATE_REFS` refs -- and the designs over the limit are still
+    over it. The route is now `@idempotent()`, but its TTL is 60 seconds, which
+    makes it a double-click guard rather than a remedy, so nothing here may
+    promise that a resend is harmless either.
+
+    Asserted as an absence plus a replacement, not as an absence alone: a note
+    reduced to silence would pass half of this while leaving a user who lost 120
+    designs with no idea what happens next.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    for mail in sent:
+        body = _flat(mail["html"]) + " " + mail["text"]
+        assert "send a second request" not in body
+        assert "Star them again" not in body
+        assert "star them again" not in body
+    user_html = _flat(sent[0]["html"])
+    assert "would repeat this request rather than add them" in user_html
+    assert "will follow up about the rest" in user_html
 
 
 def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
@@ -322,12 +378,26 @@ def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
 
 
 def test_a_single_truncated_design_reads_as_singular(sent):
-    """Exactly 501 starred designs is one over, and reads as one."""
+    """Exactly 501 well-formed refs is one over the cap, and reads as one.
+
+    THE FIXTURE IS THE 501st REF, not a bare `truncated=1`. `truncated` is
+    `requested - len(accepted)` and `accepted` saturates at
+    `_MAX_CANDIDATE_REFS`, so `truncated=1` can only ever occur ALONGSIDE a
+    persisted shortlist at the cap. The earlier version of this test passed one
+    ref with `truncated=1` -- a combination the route cannot produce -- so its
+    docstring described a state its fixture had not built, and the singular
+    grammar was being checked against an impossible campaign row.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+    refs = [{"job_id": "j1", "index": i} for i in range(_MAX_CANDIDATE_REFS)]
     em.send_campaign_submitted_emails(
-        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        campaign=_campaign(refs=refs),
         user_email="scientist@example.com",
         truncated=1,
     )
     user_html = _flat(sent[0]["html"])
-    assert "1 further starred design was over the per-request limit" in user_html
-    assert "Star it again" in user_html
+    assert "Up to 1 further starred design was over the per-request limit" \
+        in user_html
+    assert "rather than add it" in user_html
+    # Singular on the staff row too, which counts the same thing in refs.
+    assert "1 starred ref past the per-request cap" in _flat(sent[1]["html"])

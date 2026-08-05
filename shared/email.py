@@ -460,17 +460,32 @@ def send_campaign_submitted_emails(
     (``compute_campaigns.tool`` is NOT NULL) and would only print it back.
 
     ``dropped`` is how many DISTINCT designs the caller REJECTED before
-    creating this campaign; ``truncated`` is how many refs its per-request cap
+    creating this campaign; ``truncated`` is how many REFS its per-request cap
     discarded before it looked at them at all. Both messages otherwise report
     the accepted count with nothing to compare it against, so a user who
     starred ten designs reads "7 candidates" as the number they chose, and ops
     reads it as the whole order (register item A-7). Zero for both is the
     overwhelmingly common case and prints nothing.
 
-    THEY ARE TWO ARGUMENTS BECAUSE THEY HAVE OPPOSITE REMEDIES. A rejected
-    design will be rejected identically on a retry; a truncated one only needs
-    a second, smaller request. Summing them into one number would force one
-    sentence to be wrong about half of what it counts.
+    THEY ARE TWO ARGUMENTS BECAUSE THEY COUNT DIFFERENT THINGS IN DIFFERENT
+    UNITS. ``dropped`` is designs, deduped and decided one at a time by the
+    write path; ``truncated`` is refs, because the tail past the cap is never
+    parsed into pairs. Summing them would force one sentence to be wrong about
+    half of what it counts, and would put a design count and a ref count under
+    one noun.
+
+    Earlier rounds justified the split as "opposite remedies" and gave the
+    truncated half a retry instruction. That was wrong twice over: the
+    shortlist is never cleared, so a second send carries the identical refs, and
+    the route is ``@idempotent()`` besides. Neither number now carries advice
+    the user cannot act on.
+
+    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. The caller refuses the
+    whole submission rather than reporting a shortfall it could not decide (a
+    read that never completed, a campaign id set that came back short), so
+    every design counted here was refused by a check that ran to completion.
+    That is what makes "rejected", rather than "we could not confirm", an
+    honest word for it.
 
     WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
     sentence below asserts that any PDB was written:
@@ -542,11 +557,27 @@ def send_campaign_submitted_emails(
     if truncated:
         _tplural = "s" if truncated != 1 else ""
         _twas = "were" if truncated != 1 else "was"
+        # "UP TO", because this number counts REFS and the sentence counts
+        # DESIGNS. The tail past the cap is never parsed into (job, index)
+        # pairs, so a repeat hiding in it cannot be subtracted and the figure is
+        # an upper bound on the designs actually missing. The staff row below
+        # keeps the exact unit ("refs"), which is why the two read differently.
+        #
+        # NO RETRY ADVICE. This used to say "star them again on the target page
+        # and send a second request", and following it created a DUPLICATE PAID
+        # ORDER: nothing in this product clears a shortlist, the modal
+        # serialises it in stored order, so the second POST carries the
+        # identical first 500 refs and the designs over the limit are still over
+        # it. The route is now `@idempotent()`, which collapses that replay for
+        # 60 seconds -- a double-click guard, not a remedy, and far too short to
+        # be one. The only followable path is the one below: the staff copy
+        # carries the shortfall, so ops can pick the rest up.
         _sentences.append(
-            f"{truncated} further starred design{_tplural} {_twas} over the "
-            f"per-request limit and {_twas} not read. Star "
-            f"{'them' if truncated != 1 else 'it'} again on the target page "
-            f"and send a second request."
+            f"Up to {truncated} further starred design{_tplural} {_twas} over "
+            f"the per-request limit and {_twas} not read. Sending the same "
+            f"selection again would repeat this request rather than add "
+            f"{'them' if truncated != 1 else 'it'}, so the Ranomics team has "
+            f"the shortfall on their copy and will follow up about the rest."
         )
         truncated_row = (
             f"<tr><td {_td}>Over the limit</td><td>{truncated} "

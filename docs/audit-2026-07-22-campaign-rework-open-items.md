@@ -2911,22 +2911,38 @@ in-product handoff the plan prefers.
   `blueprints/lab_projects.py` and was left alone to keep Phase 5's diff scoped
   to the new path. It now trails it in four ways, all of them on a route that
   hands work to a wet lab:
-  1. **Four silent `redirect(detail)` exits with no reason.** The
+  1. **FIVE silent exits with no reason, not four** (corrected in round 21;
+     the count below was wrong when this item was written). The
      `not target_name or not candidate_refs` guard, the `not clean_refs`
      guard, the `except ValueError` arm and the `lab_campaign is None` arm all
      return the user to the compute-campaign page with nothing changed and no
-     message, which is the A-8 defect verbatim. Round 19's comment beside the
-     target branch's own version claimed this pair "is filed rather than fixed
-     here"; nothing filed it — the register ended at A87, which is a different
-     defect. This item is that filing, and the comment now names it.
+     message, which is the A-8 defect verbatim. The fifth is worse than those
+     four and was omitted entirely: `if cc.get_campaign(...) is None:` redirects
+     to `jobs.jobs_list`, so a user whose campaign read fails — a transient
+     Supabase fault, not only a missing campaign — is silently dropped onto an
+     UNRELATED list rather than back onto the page they submitted from, with no
+     message there either. The target branch's equivalent
+     (`get_target(...) is None`) has the same shape and the same defect.
+     Round 19's comment beside the target branch's own version claimed this
+     pair "is filed rather than fixed here"; nothing filed it — the register
+     ended at A87, which is a different defect. This item is that filing, and
+     the comment now names it.
   2. **No truncation disclosure.** It inherits `_MAX_CANDIDATE_REFS = 500`
      from the shared parser and never tells anyone what the bound removed, so
      a 620-design shortlist is announced as 500 with the other 120 unmentioned
      — the A-2 defect, on the paid path rather than the free export. The
      target branch now takes `requested_refs` from
      `_parse_candidate_refs_counted` and reports `truncated` separately from
-     `dropped`; that helper is already shared and the campaign branch simply
-     does not call it.
+     `dropped`.
+
+     **Corrected in round 21: the sentence that used to end this paragraph —
+     "that helper is already shared and the campaign branch simply does not
+     call it" — was FALSE.** `campaigns_submit` calls
+     `_parse_candidate_refs_counted` ONCE, above the branch dispatch, so all
+     three branches go through it; the campaign arm receives the count and
+     discards it by never passing `requested_refs` on to
+     `_submit_campaign_shortlist`. The fix is therefore a parameter on that
+     function and a `truncated=` on its email call, not a change of parser.
   3. **No dedupe and no index validation at the write path.** A repeated
      `(job_id, index)` is persisted twice and tells ops to order the same
      structure twice; an index past the end of its job's results is persisted,
@@ -2939,7 +2955,35 @@ in-product handoff the plan prefers.
      load defect rather than a correctness one.
   *Next:* lift the target branch's loop into a shared helper rather than
   copying it a second time; the two branches now differ only in their
-  parentage test, which is the one thing that must stay distinct.
+  parentage test, which is the one thing that must stay distinct. Round 21
+  widened the gap further: the campaign branch still reads jobs through
+  `get_job`, so it cannot tell a job that is absent from one it failed to read,
+  and it has no refusal gate at all.
+
+- **A89 (NEW, round 21, not fixed). A shortlist over `_MAX_CANDIDATE_REFS`
+  has no remedy the user can carry out, so nothing may offer one.** The
+  truncation copy on the confirmation page and in the customer email used to
+  say "star them again on the target page and submit a second request".
+  Following that created a SECOND paid lab project covering the SAME designs,
+  because three things have to be true for it to work and none of them is:
+  1. `static/js/candidate_table.js` never clears the shortlist after a submit,
+     so the stars are all still set.
+  2. The modal serialises the shortlist in stored order, so the second POST
+     carries the identical first 500 refs and cuts in exactly the same place.
+  3. `templates/campaigns/detail.html` renders only a COUNT, with no per-design
+     list, so the user cannot see which 500 went and cannot narrow the
+     selection by hand.
+  Round 21 removed the advice and now says what a resend would actually do,
+  and added `@idempotent()` to `/lab-projects/submit` — which collapses the
+  replay for its 60-second TTL and is a double-click guard, NOT a remedy, and
+  must never be described as one. Ops receives the shortfall on the staff email
+  ("Over the limit: N starred ref(s) past the per-request cap"), which is what
+  the new copy points at.
+  *Next:* the followable version needs (a) the submit handler clearing the
+  scope's `sessionStorage` shortlist on a successful redirect, or (b) the
+  confirmation page listing the refs that were ordered. Either makes a second
+  request deliver the remainder; neither is in `blueprints/lab_projects.py`,
+  which is why this is filed rather than fixed.
 
 ### Divergences from the master plan, resolved in favour of the code
 

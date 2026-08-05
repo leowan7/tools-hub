@@ -28,6 +28,7 @@ that fails when it stops being true.
 from __future__ import annotations
 
 import pathlib
+import re
 from html.parser import HTMLParser
 
 import pytest
@@ -205,12 +206,28 @@ def test_the_blast_radius_this_file_claims_is_real():
     the table inside itself. Sever that single import and the action bar this
     whole file is about stops rendering on all 14 pages while every count in
     the first half stays exactly as it is.
+
+    ROUND 21, two corrections to the second hop.
+
+    ``importers`` matched ``f"import {symbol}"`` as a RAW SUBSTRING, so
+    ``import candidate_table_v2`` satisfied a search for ``candidate_table``:
+    the exact superstring class that ``tests/test_candidate_table_js_contract``
+    was rewritten to retire, reappearing here. Swapping the macro out under
+    both real importers would have left this green. ``\\b`` closes it.
+
+    And the count was asserted as two memberships under a docstring claiming
+    three, so a fourth importer -- or a lost one -- was invisible. It is an
+    exact set now. The third member is candidate_table.html's OWN header
+    comment showing how to import it, which is worth naming rather than
+    filtering away: a comment answering a code search is the whole reason
+    this round exists.
     """
     def importers(symbol):
+        pattern = re.compile(rf"import\s+{re.escape(symbol)}\b")
         return sorted(
             p.relative_to(_TEMPLATES).as_posix()
             for p in _TEMPLATES.rglob("*.html")
-            if f"import {symbol}" in p.read_text(encoding="utf-8")
+            if pattern.search(p.read_text(encoding="utf-8"))
         )
 
     consumers = importers("results_panel")
@@ -218,6 +235,8 @@ def test_the_blast_radius_this_file_claims_is_real():
     assert "runs/detail.html" in consumers, consumers
     assert sum(1 for c in consumers if c.startswith("tools/")) >= 13, consumers
 
-    tables = importers("candidate_table")
-    assert "components/results_shell.html" in tables, tables
-    assert "targets/detail.html" in tables, tables
+    assert importers("candidate_table") == [
+        "components/candidate_table.html",   # its own usage example
+        "components/results_shell.html",     # -> the 14 shared-panel pages
+        "targets/detail.html",
+    ], importers("candidate_table")

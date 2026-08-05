@@ -407,7 +407,7 @@
         {% if multi_tool %}
         {# NO data-col on any of these three.
 
-           static/js/candidate_table.js:180 binds its click-to-sort handler to
+           static/js/candidate_table.js binds its click-to-sort handler to
            `th[data-col]` (not to .sortable-col, which is only the hover CSS),
            and sortTable reorders rows numerically on td[data-val]. Leave the
            attribute on and a user can click Score and sort ipTM 0.91 against

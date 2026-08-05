@@ -38,14 +38,38 @@ not string-compared, it is extracted from the JS and driven through the
 production parser, and the empty-selection case is asserted on a live response
 in tests/test_target_export.py.
 
+ROUND 21. The JS half had the template half's OTHER disease. The file's own
+header comment names the three globals it exposes, so `window.getShortlist`,
+`window.openCampaignModal` and `window.closeCampaignModal` each matched TWICE
+-- once in code, once in prose -- where every other token matched code only.
+`open` was saved incidentally by the ref-site anchor below; `close` was saved
+by nothing, and renaming its definition to `window.dismissCampaignModal`
+passed the entire suite while the macro's three dismiss controls (the times,
+Cancel, and the overlay onclick) all threw ReferenceError: the modal became
+undismissable and `document.body.style.overflow = 'hidden'` stuck. So the JS
+is COMMENT-STRIPPED before anything is searched in it, which retires the class
+instead of the instance -- the same move the template half made by switching
+to parsed elements.
+
 Adding a hook to the macro does not require adding it here. Adding one the JS
 *reads* does. Deliberately NOT listed, because nothing reads them across THIS
-boundary: `data-campaign-id` (emitted by the macro, and the JS header comment
-says it "drives the modal payload", but no `dataset.campaignId` read exists);
-`window.getShortlist` (exposed, called by nothing in templates/); the
-`.starred` class (set by the JS, styled by the macro, never emitted by it); and
-`window.initMolViewer` / `initMolViewerFromUrl`, which are a JS-to-JS contract
-with mol_viewer.js rather than a hook in this macro's DOM.
+boundary: `data-campaign-id` (emitted by the macro; the JS header comment used
+to claim it "drives the modal payload", which was never true and has been
+corrected -- no `dataset.campaignId` read exists anywhere);
+`window.getShortlist` (exposed, called by nothing in templates/ or static/);
+and the `.starred` class (set by the JS, styled by the macro, never emitted by
+it).
+
+`window.initMolViewer` / `initMolViewerFromUrl` USED to be excluded here as "a
+JS-to-JS contract with mol_viewer.js rather than a hook in this macro's DOM".
+That reasoning was wrong: the macro is what LOADS mol_viewer.js, in the pair of
+`<script>` tags that closes it, and a `<script src>` is an element of the
+macro's own DOM like any other. Deleting the tag survived the whole suite
+while "View 3D" became a
+silent no-op expanding to a blank 420px panel on all 15 pages this macro
+reaches. (job_detail.html carries its own tag, which is part of why the hole
+was invisible.) Pinned now by
+test_the_macro_loads_both_scripts_its_dom_is_useless_without.
 """
 
 import pathlib
@@ -60,8 +84,64 @@ from shared import metric_glossary, ranking, score_legends
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_JS = (_ROOT / "static" / "js" / "candidate_table.js").read_text(encoding="utf-8")
+_JS_SOURCE = (_ROOT / "static" / "js" / "candidate_table.js").read_text(
+    encoding="utf-8")
 _TEMPLATES = _ROOT / "templates"
+
+
+def _lex(src: str) -> tuple[str, list[int]]:
+    """``(src with every comment removed, offsets of the / left in CODE)``.
+
+    Not a JavaScript parser. It tracks the two comment forms and the three
+    string quotes with backslash escapes, which is everything
+    candidate_table.js contains. The one construct that would defeat it is a
+    REGEX LITERAL, whose body can hold a quote or a `/*`.
+
+    Hence the second return value. Once comments are gone, every remaining
+    slash in code position is a division or the opening of a regex, so an
+    empty list is a decidable proof that there was no regex literal here to be
+    mislexed. It over-approximates -- a division trips it too -- and that is
+    the safe direction for a guard on an assumption.
+    """
+    out: list[str] = []
+    slashes: list[int] = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in "'\"`":
+            out.append(c)
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    out.append(src[i:i + 2])
+                    i += 2
+                    continue
+                out.append(src[i])
+                i += 1
+                if src[i - 1] == c:
+                    break
+            continue
+        if c == "/" and src[i + 1:i + 2] == "/":
+            nl = src.find("\n", i)
+            i = n if nl == -1 else nl
+            out.append(" ")
+            continue
+        if c == "/" and src[i + 1:i + 2] == "*":
+            end = src.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            out.append(" ")
+            continue
+        if c == "/":
+            slashes.append(i)
+        out.append(c)
+        i += 1
+    return "".join(out), slashes
+
+
+# EVERY search below runs against the comment-stripped source, never the file
+# as read. See the ROUND 21 paragraph: the header comment answered for two of
+# the three globals it advertises, and one of those had no other backstop.
+_JS = _lex(_JS_SOURCE)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -80,19 +160,24 @@ def _env() -> Environment:
     return env
 
 
-def _rows():
+def _rows(tools=("bindcraft", "bindcraft")):
     """Two candidates, chosen so both PDB branches render.
 
     The macro emits `data-pdb-url` for a row carrying `pdb_key` and
     `data-pdb64` for the legacy inline-base64 row that has none, and the JS
     reads both. One row can only ever exercise one of them.
+
+    ``tools`` is what makes the grouped mode grouped: the macro gates its group
+    headers on more than one DISTINCT ``_source_tool`` among the rows, so the
+    default -- one tool twice -- is the ungrouped shape however ``sort_mode``
+    is set.
     """
     return [
         {"scores": {"ipTM": 0.91}, "pdb_key": "designs/d1.pdb",
-         "_source_tool": "bindcraft", "_source_job_id": "job-1",
+         "_source_tool": tools[0], "_source_job_id": "job-1",
          "_source_index": 0, "_rank_position": 1},
         {"scores": {"ipTM": 0.88}, "pdb_content_b64": "QVRPTQ==",
-         "_source_tool": "bindcraft", "_source_job_id": "job-1",
+         "_source_tool": tools[1], "_source_job_id": "job-1",
          "_source_index": 1},
     ]
 
@@ -136,13 +221,39 @@ def _elements(html: str) -> list:
     return p.elements
 
 
-# The three shapes this shared macro renders, named for the pages they ARE.
+# The shapes this shared macro renders, each named for a real caller and given
+# that caller's arguments. `job` and `campaign` come from
+# templates/components/results_shell.html:48; `target` and `target_grouped` are
+# both templates/targets/detail.html:525, which passes `agg.multi_tool`,
+# `sort_mode`, `agg.split_tools` and `agg.per_tool` -- so it renders the first
+# shape when the target holds ONE tool and the second when it holds more.
+#
+# ROUND 20 had three entries under the label "the three shapes this shared
+# macro renders, named for the pages they ARE", while `target` passed only
+# `target_id`: `multi_tool` was therefore False, and the mode named for the
+# target page was the shape that page takes only at one tool. The multi-tool
+# branch -- Tool/Score/Pctile head, group header rows, a different colspan --
+# was never parsed by this file at all, and three rows below asserted hooks in
+# `target` mode that the real multi-tool page does not emit.
 _MODES = {
     "job": {},
     "campaign": {"campaign_id": "c-1"},
-    "target": {"target_id": "t-1"},
+    "target": {"target_id": "t-1", "sort_mode": "percentile"},
+    "target_grouped": {
+        "target_id": "t-1", "multi_tool": True, "sort_mode": "tool",
+        "candidates": _rows(("bindcraft", "boltzgen")),
+        "split_tools": (),
+        "per_tool": {"bindcraft": {"total": 1, "shown": 1, "cohort_n": 1},
+                     "boltzgen": {"total": 1, "shown": 1, "cohort_n": 1}},
+    },
 }
-_ALL = ("job", "campaign", "target")
+_ALL = ("job", "campaign", "target", "target_grouped")
+
+# The modes that render the CALLER'S metric columns, and so the only ones with
+# anything for the column sort to bind to. Multi-tool mode replaces those
+# columns with Tool/Score/Pctile and deliberately omits `data-col` from all
+# three; see test_the_multi_tool_target_page_emits_no_column_sort_hook.
+_COLUMNAR = ("job", "campaign", "target")
 
 _DOM = {name: _elements(_render(**kw)) for name, kw in _MODES.items()}
 
@@ -182,11 +293,11 @@ def _el(*, tag=None, cls=None, attr=None, name=None, id_prefix=None, calls=None)
 
 # (token as the JS EXECUTES it, what the macro must EMIT, modes, DOM check).
 #
-# The JS side is a REGEX and deliberately the executable form -- `dataset.refIdx`,
-# not the `data-ref-idx` its header comment also mentions. A comment match keeps
-# a broken rename green, which is the failure mode this file exists to catch,
-# and `\b` is what stops `dataset.job` matching the `dataset.jobId` two lines
-# above it.
+# The JS side is a REGEX over the COMMENT-STRIPPED source, and deliberately the
+# executable form -- `dataset.refIdx`, not the `data-ref-idx` its header comment
+# also mentions. Two guards rather than one because they fail differently:
+# stripping means prose can no longer answer for code at all, and `\b` is what
+# stops `dataset.job` matching the `dataset.jobId` two lines above it.
 _HOOKS = [
     (r"'\.cand-starred-export'", "form.cand-starred-export", ("target",),
      _el(tag="form", cls="cand-starred-export")),
@@ -229,11 +340,11 @@ _HOOKS = [
     (r"dataset\.pdb64\b", "data-pdb64 on the legacy inline 3D button", _ALL,
      _el(cls="view3d-btn", attr="data-pdb64")),
 
-    (r"'th\[data-col\]'", "data-col on a sortable header", _ALL,
+    (r"'th\[data-col\]'", "data-col on a sortable header", _COLUMNAR,
      _el(tag="th", attr="data-col")),
-    (r"'\[data-col=\"'", "data-col on the value cells sortTable reads", _ALL,
-     _el(tag="td", attr="data-col")),
-    (r"dataset\.val\b", "data-val on those same cells", _ALL,
+    (r"'\[data-col=\"'", "data-col on the value cells sortTable reads",
+     _COLUMNAR, _el(tag="td", attr="data-col")),
+    (r"dataset\.val\b", "data-val on those same cells", _COLUMNAR,
      _el(tag="td", attr="data-val")),
     # Read with classList.contains, not as a selector, so the token carries no
     # leading dot. These two are how sortTable tells a data row from the viewer
@@ -307,6 +418,56 @@ def test_the_table_id_the_wrapper_advertises_is_a_table_that_exists(mode):
     assert tables[0][0] == "table", tables[0]
 
 
+@pytest.mark.parametrize("mode", _ALL)
+def test_the_macro_loads_both_scripts_its_dom_is_useless_without(mode):
+    """The macro's two `<script src>` tags, which are DOM like anything else.
+
+    `mol_viewer.js` was excluded from the table above as "a JS-to-JS contract
+    with mol_viewer.js rather than a hook in this macro's DOM". It is not:
+    this macro is what loads it, and deleting that one tag survived the whole
+    suite while every "View 3D" button expanded to a blank 420px panel --
+    `window.initMolViewerFromUrl` is simply undefined, and the JS guards on it
+    (`&& window.initMolViewerFromUrl`), so nothing throws and no console error
+    appears either.
+
+    Both tags, because losing the second is strictly worse: the star toggle,
+    the column sort, the 3D expander and the lab-submit modal all stop at once
+    and every hook row above stays green, since they assert what the macro
+    EMITS and the macro would emit all of it.
+    """
+    assert re.search(r"window\.initMolViewer\b", _JS)
+    assert re.search(r"window\.initMolViewerFromUrl\b", _JS)
+
+    srcs = [a.get("src") or "" for tag, a in _DOM[mode] if tag == "script"]
+    for filename in ("js/mol_viewer.js", "js/candidate_table.js"):
+        assert any(s.endswith(filename) for s in srcs), (filename, srcs)
+
+
+def test_the_multi_tool_target_page_emits_no_column_sort_hook():
+    """The pair for the three `_COLUMNAR`-only rows, and the reason they are
+    restricted rather than simply asserted everywhere.
+
+    The multi-tool head prints Tool / Score / Pctile and leaves `data-col` off
+    all three ON PURPOSE: the JS binds click-to-sort to `th[data-col]` and
+    reorders rows numerically on `td[data-val]`, so leaving the attribute on
+    would let a user sort ipTM 0.91 against reward 12.40 against ipAE 3.70 in
+    the browser -- the exact cross-scale comparison this table exists to
+    prevent. Narrowing three rows to `_COLUMNAR` without this would be
+    indistinguishable from exempting a mode that had lost its hooks by
+    accident.
+    """
+    dom = _DOM["target_grouped"]
+    assert _el(tag="th", attr="data-col")(dom) == []
+    assert _el(tag="td", attr="data-col")(dom) == []
+    assert _el(tag="td", attr="data-val")(dom) == []
+
+    # ...and the mode is not vacuously empty. A fixture that rendered no rows,
+    # or rendered the ungrouped shape under a grouped name, would satisfy every
+    # assertion above -- which is the defect that put this mode here.
+    assert len(_el(tag="tr", cls="cand-row")(dom)) == 2, "no data rows"
+    assert _el(tag="tr", cls="cand-group-row")(dom), "not actually grouped"
+
+
 def test_a_superstring_attribute_cannot_answer_for_the_hook_it_contains():
     """The mechanism, asserted directly rather than trusted.
 
@@ -321,6 +482,85 @@ def test_a_superstring_attribute_cannot_answer_for_the_hook_it_contains():
         "the action bar itself now carries data-job, so this file can no "
         "longer distinguish the two")
     assert _el(cls="star-btn", attr="data-job")(_DOM["target"])
+
+
+def test_the_comment_stripper_removes_comments_and_only_comments():
+    """The mechanism the whole JS half now rests on, on a crafted input.
+
+    A stripper that silently no-opped would report a green for every token it
+    was supposed to disqualify, which is worse than not having one. The
+    apostrophe case is not decoration: candidate_table.js says "the
+    candidate's index" in a line comment, and anything that looked for quotes
+    before it looked for comments would open a string there and swallow the
+    next 60 lines of code.
+    """
+    src = "\n".join([
+        "var a = 1; // the candidate's own index",
+        "/* block",
+        "   spanning lines */",
+        "var url = 'http://x/y';",
+        'var star = "/* not a comment */";',
+        "var t = `a // b`;",
+        "var esc = 'it\\'s fine'; // trailing",
+        "var last = 2;",
+    ])
+    out, slashes = _lex(src)
+
+    assert "candidate's own index" not in out
+    assert "spanning lines" not in out
+    assert "trailing" not in out
+    # Code on the same line as a comment survives, and so does the line after
+    # a comment -- a stripper that ate to the wrong terminator would pass every
+    # assertion above and delete the file.
+    assert "var a = 1;" in out
+    assert "var last = 2;" in out
+    # Slashes and comment openers inside string literals are content.
+    assert "'http://x/y'" in out
+    assert '"/* not a comment */"' in out
+    assert "`a // b`" in out
+    assert "it\\'s fine" in out
+    assert slashes == [], slashes
+
+    # The pair for that last one: the detector is not vacuous.
+    assert len(_lex("var half = n / 2;")[1]) == 1
+
+
+def test_no_comment_in_candidate_table_js_can_answer_for_a_hook():
+    """ROUND 21, the instance behind the mechanism.
+
+    The file's header comment advertises the three globals it exposes, so a
+    plain search found each of them whether or not the definition still
+    existed. `window.closeCampaignModal` had no other backstop: renaming its
+    definition passed the entire suite while the modal's three dismiss
+    controls threw ReferenceError.
+
+    Counting is the assertion, not membership. One occurrence means the
+    definition and nothing else; two means the comment is back in scope and
+    every token this file searches for is soft again.
+    """
+    assert "Exposes:" in _JS_SOURCE, (
+        "fixture assumption: candidate_table.js still carries the header "
+        "comment that made this necessary")
+    assert "Exposes:" not in _JS, "the stripper did not strip"
+
+    for name in ("getShortlist", "openCampaignModal", "closeCampaignModal"):
+        raw = _JS_SOURCE.count("window." + name)
+        assert raw == 2, (name, raw)          # once in prose, once in code
+        assert _JS.count("window." + name) == 1, name
+
+
+def test_candidate_table_js_holds_no_regex_literal_the_stripper_could_mislex():
+    """The stripper's one documented blind spot, held closed.
+
+    A regex literal can carry a quote or a `/*` in its body, and this lexer
+    would take either at face value. It cannot recognise one -- telling `/` as
+    division from `/` as a regex needs the parse this file does not do -- so
+    it reports every slash it leaves in code position instead, and the file is
+    required to have none. Today every slash in candidate_table.js is inside
+    a string literal (`'<li>'`, `'</li>'`).
+    """
+    slashes = _lex(_JS_SOURCE)[1]
+    assert slashes == [], [_JS_SOURCE[max(0, p - 40):p + 40] for p in slashes]
 
 
 def test_the_starred_export_form_registers_a_submit_handler():
@@ -352,9 +592,13 @@ _REF_LITERAL = re.compile(
 # while the starred export posted the raw {j,i} shape and `_parse_candidate_refs`
 # dropped every ref of it -- a header-only CSV at HTTP 200, again.
 #
-# The anchor for the modal is the ASSIGNMENT, not the bare name: the name also
-# appears in the file's own header comment, and splitting on that would bound
-# the search to a block 200 lines above the code.
+# The anchor for the modal is the ASSIGNMENT rather than the bare name. That
+# used to be load-bearing on its own -- the bare name also appears in the
+# file's own header comment, and splitting on that would have bounded the
+# search to a block 200 lines above the code. Round 21's comment-stripping now
+# disqualifies the prose copy outright; the assignment stays because it is
+# still the more precise anchor, and because it is what happened to keep
+# `window.openCampaignModal` pinned while its sibling had nothing at all.
 _REF_SITES = [
     ("the starred-export submit handler", "'.cand-starred-export'", 700),
     ("the lab-submit modal", "window.openCampaignModal = function", 700),

@@ -22,7 +22,8 @@ from flask import (
 
 from shared.auth import login_required
 from shared.credits import load_user_context
-from shared.jobs import candidate_records, get_job
+from shared.idempotency import idempotent
+from shared.jobs import candidate_count, candidate_records, get_job, read_job
 from shared.storage import StorageError, stage_campaign_candidates
 
 logger = logging.getLogger(__name__)
@@ -240,11 +241,23 @@ def _submit_target_shortlist(
     accepted only one of them would refuse rows the user can see and star.
 
     THE OWNERSHIP BOUNDARY IS THE PER-REF RE-FETCH, not the gate above it.
-    ``get_job(jid, user_id=ctx.user_id)`` is what makes a ref naming another
-    tenant's job return None; the parentage test that follows is what stops the
-    caller's OWN job from a different target being staged into this
+    ``read_job(jid, user_id=ctx.user_id)`` is what makes a ref naming another
+    tenant's job come back ``absent``; the parentage test that follows is what
+    stops the caller's OWN job from a different target being staged into this
     submission's folder. Neither check subsumes the other and neither may be
     dropped: the first is tenancy, the second is provenance.
+
+    WHY ``read_job`` AND NOT ``get_job``. Every refusal on this route feeds two
+    decisions -- whether to submit at all, and what the user is then told -- and
+    both of those are answers to "why", not to "how many". ``get_job`` returns
+    ``None`` for a job that is not there, for one that is not yours, and for a
+    read that never completed, so a caller holding that ``None`` has to GUESS
+    which, and the two available guesses are each catastrophic in the other's
+    case: treat a real rejection as transient and the user is told to retry a
+    selection that can never work, treat a transient fault as a verdict and a
+    two-second database hiccup tells a paying customer their designs are
+    permanently unmatched. ``read_job`` reports the cause, so nothing below has
+    to guess and no sentence downstream has to hedge.
     """
     from collections import defaultdict  # noqa: PLC0415
     from shared.campaigns import create_campaign_from_target_refs  # noqa: PLC0415
@@ -252,13 +265,34 @@ def _submit_target_shortlist(
     from shared.targets import campaign_ids_for_target, get_target  # noqa: PLC0415
 
     detail = url_for("targets.target_detail", target_id=source_target_id)
+
+    # Refs the parse-time cap discarded before any check ran. Counted in REFS,
+    # not designs: the tail past the bound was never parsed into pairs, so a
+    # duplicate hiding in it cannot be subtracted. Every sentence that renders
+    # this number AS DESIGNS therefore says "up to" (the customer email, the
+    # confirmation banner, the target page); the staff email prints it under
+    # "refs" instead and needs no hedge, which is the whole reason the two read
+    # differently. Over-stating is the harmless direction, the same trade
+    # `_starred_refs` makes for its own flag.
+    #
+    # COMPUTED HERE, ABOVE THE GUARDS, so it can ride EVERY exit rather than
+    # only the successful one. It used to be derived after the loop, which put
+    # it out of reach of the three failure exits -- so a 620-star shortlist that
+    # was refused had 120 designs nobody ever mentioned, on precisely the paths
+    # where the user is already being told something went wrong.
+    truncated = max(0, requested_refs - len(candidate_refs))
+    # Appended to the failure redirects below. `none` cannot carry it: the
+    # parser counts a ref as requested only when it also emits one (up to the
+    # cap), so an empty accepted list means an empty requested count.
+    trunc_qs = f"&truncated={truncated}" if truncated else ""
+
     # Two causes, two answers. `candidate_refs` empty is the observable of
     # every client-side way the star selection can fail to reach us (register
     # item B-3), and telling that user "name your target" would be a lie.
     if not candidate_refs:
         return redirect(detail + "?handoff=none")
     if not target_name:
-        return redirect(detail + "?handoff=noname")
+        return redirect(detail + "?handoff=noname" + trunc_qs)
     if get_target(source_target_id, user_id=ctx.user_id) is None:
         return redirect(url_for("targets.targets_list"))
 
@@ -273,14 +307,18 @@ def _submit_target_shortlist(
     target_campaign_ids = set(campaign_id_list)
 
     jobs_by_id: dict = {}
-    # ``{job_id: len(candidate_records(job.result))}``, filled from the job
-    # already in hand so the index check below costs no extra read.
+    # ``{job_id: candidate_count(job.result)}``, filled from the job already in
+    # hand so the index check below costs no extra read. The value is None when
+    # the result shape does not state a length -- see the check itself.
     n_records: dict = {}
-    # Rejected ids are remembered too. Without this, a body naming the same
-    # foreign job 500 times issues 500 identical Supabase round trips, because
-    # a miss never writes to ``jobs_by_id`` and so is never a cache hit. The
-    # campaign branch above still has that shape; filed as A88.
+    # Ids already refused PERMANENTLY, and ids we simply could not read. Two
+    # sets rather than one because they are two verdicts, and only the second
+    # implicates the database. Both short-circuit the re-read: without that, a
+    # body naming the same job 500 times issues 500 identical Supabase round
+    # trips, since a miss never writes to ``jobs_by_id`` and so is never a cache
+    # hit. The campaign branch above still has that shape; filed as A88.
     rejected: set = set()
+    unreadable: set = set()
     # ``(job_id, index)`` pairs already decided, so a repeat is collapsed
     # rather than counted twice. See the dedupe note in the loop.
     seen: set = set()
@@ -291,11 +329,25 @@ def _submit_target_shortlist(
     # refusal, and folding all three into one number is what made the previous
     # count unable to say anything true about any of them.
     dropped = 0
-    # Set when a rejection was decided BY THE CAMPAIGN ARM -- the job exists,
-    # is the caller's own, carries a campaign_id, and that id was not in the
-    # set. Those are exactly the rejections a short id read could have got
-    # wrong; see the refusal below.
-    campaign_arm_rejected = False
+    # THE ONE FLAG THAT DECIDES WHETHER THIS SUBMISSION MAY PROCEED, and the
+    # whole reason the reads above report causes instead of emptiness: set when
+    # at least one ref was refused for a reason WE COULD NOT ACTUALLY DECIDE.
+    # Exactly two things set it, and they are independent faults that a degraded
+    # Supabase produces together:
+    #
+    #   1. ``read_job`` came back ``unavailable`` -- no service client, or the
+    #      query raised. The job may be perfectly valid; we never looked.
+    #   2. The campaign arm refused a job whose only possible provenance was the
+    #      campaign id set, and that set came back short.
+    #
+    # Round 20 tracked only (2), and (2) requires the job to have been READ.
+    # So under CORRELATED failure -- one degraded Supabase truncating the id
+    # read AND timing out the job read in the same request -- a rejection caused
+    # by the timed-out read set nothing at all, and wherever that was the only
+    # rejection the guard was skipped and a half-size paid wet-lab order
+    # shipped. Anything added to this loop that can refuse a ref for a reason
+    # the database caused must set this.
+    unresolved = False
     for ref in candidate_refs:
         jid = ref["job_id"]
         idx = ref["index"]
@@ -314,12 +366,24 @@ def _submit_target_shortlist(
         if (jid, idx) in seen:
             continue
         seen.add((jid, idx))
-        if jid in rejected:
+        if jid in rejected or jid in unreadable:
             dropped += 1
             continue
         job = jobs_by_id.get(jid)
         if job is None:
-            job = get_job(jid, user_id=ctx.user_id)
+            read = read_job(jid, user_id=ctx.user_id)
+            if read.unavailable:
+                # NOT a rejection. We never learned anything about this job, so
+                # the checks below have nothing to apply and the submission as a
+                # whole is no longer decidable; see `unresolved`.
+                unreadable.add(jid)
+                dropped += 1
+                unresolved = True
+                continue
+            # `absent` from here on: the read completed. `job is None` now means
+            # the row is genuinely not there or is not this caller's, which is
+            # a permanent verdict rather than a shrug.
+            job = read.job
             # Must be the caller's own job AND attached to THIS target, by
             # either route. `job.campaign_id in <set>` is checked only when the
             # job carries one: a standalone job's campaign_id is None, and None
@@ -335,60 +399,73 @@ def _submit_target_shortlist(
             if not owned_by_target:
                 rejected.add(jid)
                 dropped += 1
-                if job is not None and job.campaign_id is not None:
-                    campaign_arm_rejected = True
+                # A rejection the campaign id set could have decided the other
+                # way, under a set we know is a prefix of the real one. The job
+                # exists, is the caller's own, and its only possible provenance
+                # here is membership of that set.
+                if (
+                    job is not None
+                    and job.campaign_id is not None
+                    and not campaign_ids_complete
+                ):
+                    unresolved = True
                 continue
             jobs_by_id[jid] = job
-            n_records[jid] = len(candidate_records(job.result))
+            n_records[jid] = candidate_count(job.result)
         # The index has to exist in the source job's results. Unvalidated, an
         # out-of-range ref is persisted, counted on the staff email, counted on
         # the customer's page -- and then silently skipped by
         # `stage_campaign_candidates`, so the lab receives fewer PDBs than
-        # every number anyone can see. Same rule as the read side in
-        # blueprints/admin.py: applied only when the record count is POSITIVE,
-        # because `candidate_records` returns [] both for a job with no results
-        # and for a result shape it cannot read, so zero means "length
-        # unknown" and refusing every design of such a job would be a louder
-        # wrong answer than saying nothing about it.
-        n = n_records.get(jid, 0)
-        if n and idx >= n:
+        # every number anyone can see.
+        #
+        # `candidate_count` and not `len(candidate_records(...))`, for the same
+        # reason this function reads jobs through `read_job`: the list form
+        # answers `[]` both for a job that delivered zero designs and for a
+        # result shape this app cannot read, so a length taken from it cannot
+        # tell "no designs" from "length unknown". It reports None for the
+        # second, and only the second is a reason to wave a ref through -- a
+        # `{"candidates": []}` job HAS a known length, it is zero, and every
+        # index into it is out of range. Under the old `if n and ...` spelling
+        # those refs were all accepted, recorded on the row, counted to ops and
+        # to the customer, and then staged zero PDBs.
+        n = n_records.get(jid)
+        if n is not None and idx >= n:
             dropped += 1
             continue
         refs_by_job[jid].append(idx)
         clean_refs.append({"job_id": jid, "index": idx})
 
-    # Refs the parse-time cap discarded before any check ran. Counted in REFS,
-    # not designs: the tail past the bound was never parsed into pairs, so a
-    # duplicate hiding in it cannot be subtracted. Over-stating here is the
-    # harmless direction, the same trade `_starred_refs` makes for its own
-    # truncation flag.
-    truncated = max(0, requested_refs - len(candidate_refs))
-
-    # A REJECTION UNDER AN INCOMPLETE READ IS NOT A VERDICT. `owned_by_target`
-    # consults `target_campaign_ids`, so when that set is a prefix of the real
-    # one, a legitimate campaign-sourced design is indistinguishable from a ref
-    # belonging to some other target. This route stages a PAID order, so
-    # proceeding would hand the wet lab a shortlist quietly missing designs the
-    # user selected and paid to compute.
+    # A REJECTION WE COULD NOT DECIDE IS NOT A VERDICT. This route stages a PAID
+    # order, so proceeding on a shortlist whose refusals we cannot stand behind
+    # would hand the wet lab a list quietly missing designs the user selected
+    # and paid to compute. Refusing is recoverable in one click: the stars live
+    # in sessionStorage and survive the redirect.
     #
-    # Gated on `campaign_arm_rejected`, NOT on `dropped`. `dropped` also counts
-    # refs naming a job that does not exist, one belonging to another tenant,
-    # one whose target is a different protein, and an index past the end of its
-    # job -- none of which the campaign id set could have decided differently,
-    # so refusing on those blames the read for a verdict it did not make and
-    # sends the user away from a submission that was correct.
-    if campaign_arm_rejected and not campaign_ids_complete:
-        return redirect(detail + "?handoff=unverified")
+    # Gated on `unresolved`, NOT on `dropped`. `dropped` also counts refs naming
+    # a job that provably is not there or is not the caller's, a job whose own
+    # target is a different protein, and an index past the end of its job --
+    # every one of them decided by a read that COMPLETED, so refusing on those
+    # would blame the database for a verdict it made correctly and send the user
+    # away from a submission that was right.
+    #
+    # This gate is also what lets every sentence downstream stop hedging. Past
+    # it, no surviving rejection has a transient cause, so "starring them again
+    # will be refused the same way" -- on the confirmation page, on the target
+    # page and in both emails -- is true rather than a guess that is wrong every
+    # time the database blinks.
+    if unresolved:
+        return redirect(detail + "?handoff=unverified" + trunc_qs)
 
     # NOT `none`. The request DID carry designs; every one of them failed the
-    # tenancy or provenance or index check. The two cases share nothing but
-    # their outcome: `none` is recoverable by retrying (the stars are still in
-    # sessionStorage and the likely cause is that they did not reach us),
+    # tenancy or provenance or index check, and (having passed the gate above)
+    # failed it for a reason we can stand behind. The two cases share nothing
+    # but their outcome: `none` is recoverable by retrying (the stars are still
+    # in sessionStorage and the likely cause is that they did not reach us),
     # `rejected` is not, because the same refs will be refused the same way.
     # Round 19 collapsed both onto `none` and so told this user to keep
     # pressing a button that can never work.
     if not clean_refs:
-        return redirect(detail + "?handoff=rejected")
+        return redirect(detail + "?handoff=rejected" + trunc_qs)
 
     try:
         lab_campaign = create_campaign_from_target_refs(
@@ -418,9 +495,9 @@ def _submit_target_shortlist(
     # it was filed and it was not: the register ended at A87, a different
     # defect.)
     except ValueError:
-        return redirect(detail + "?handoff=failed")
+        return redirect(detail + "?handoff=failed" + trunc_qs)
     if lab_campaign is None:
-        return redirect(detail + "?handoff=failed")
+        return redirect(detail + "?handoff=failed" + trunc_qs)
 
     for jid, idxs in refs_by_job.items():
         job = jobs_by_id[jid]
@@ -459,10 +536,15 @@ def _submit_target_shortlist(
     # Both counts ride the query string so the confirmation page can state what
     # was NOT sent. Without them the page reports the accepted count with
     # nothing to compare it against, and a user who starred ten designs reads
-    # "7" as the number they chose (register item A-7). They stay SEPARATE
-    # because their remedies are opposite: a rejected design will be rejected
-    # again, while a truncated one only needs a second, smaller request.
-    # Each omitted when zero, so the common case keeps exactly today's URL.
+    # "7" as the number they chose (register item A-7).
+    #
+    # They stay SEPARATE because they are different facts, not because they have
+    # different remedies -- rounds 19 and 20 said the second thing and it was
+    # never true. A `dropped` design was read and refused; a `truncated` one was
+    # never read. Neither has a remedy the user can carry out: nothing in this
+    # product clears a shortlist, so "send a second request" re-posts the same
+    # refs again (see the note on the truncation copy in shared/email.py).
+    # Each is omitted when zero, so the common case keeps exactly today's URL.
     return redirect(
         url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
         + "?submitted=1"
@@ -489,7 +571,36 @@ def _source_tool_counts(jobs_by_id: dict, refs_by_job: dict) -> dict:
 
 @lab_projects_bp.route("/lab-projects/submit", methods=["POST"])
 @login_required
+@idempotent()
 def campaigns_submit():
+    """Create a lab project from a shortlist. Three parent shapes, one route.
+
+    ``@idempotent()`` is NOT applied blanket-wide, so this is a judgment about
+    this route rather than a house style being completed: 10 of the app's 28
+    POST routes carry it, this one included, while `wallet.wallet_checkout`,
+    `targets.target_archive` and the admin status writes do without. The other
+    nine are the run and target lifecycle (`campaigns.compute_campaign_create`,
+    `campaigns.compute_campaign_refold`, `jobs.job_refold`, `jobs.job_cancel`,
+    `targets.target_create`, `targets.target_launch_submit`, `tools.tool_submit`)
+    plus the two synchronous compute tools (`tools.developability_score`,
+    `tools.library_planner_plan`). What they share is that a replay costs real
+    money or real work; this one creates a lab project and stages PDBs into a
+    folder Ranomics staff open, which puts it in the same class. The key is
+    (user, path, exact body), so two genuinely different scoping requests are
+    unaffected and only a REPLAY of the identical body is collapsed.
+
+    It is here because the shortlist copy used to tell a user whose selection
+    overflowed the cap to "submit a second request", and the shortlist is never
+    cleared -- so following that advice re-posted byte-identical refs and opened
+    a SECOND lab_campaigns row for designs already ordered, which ops would have
+    had to reconcile by hand. That copy is now gone, and this stops the same
+    thing happening to anyone who simply double-clicks a slow submit.
+
+    WHAT IT DOES NOT DO, stated because the withdrawn copy depended on it: the
+    TTL is 60 seconds, so this is a double-submit guard and NOT a promise that
+    the same shortlist can never be ordered twice. No sentence anywhere may
+    claim that.
+    """
     import json  # noqa: PLC0415
     from shared.campaigns import create_campaign  # noqa: PLC0415
     from shared.email import send_campaign_submitted_emails  # noqa: PLC0415

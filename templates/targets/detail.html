@@ -117,7 +117,13 @@
    `unverified` is the one that is NOT a malfunction to hide: the submit
    deliberately refused rather than ship a shortlist quietly missing designs,
    and saying so is the only thing that makes the refusal legible as a
-   decision rather than a bug.
+   decision rather than a bug. It fires for either of two database faults --
+   a job read that never completed, or a campaign id list known to be a prefix
+   of the real one -- and it is what entitles the `rejected` banner below to say
+   "will be refused the same way" without hedging. Every rejection that reaches
+   that banner was decided by a check that RAN; the ones we could not decide
+   land here instead. Say nothing in `rejected` that this gate does not
+   guarantee, and change neither without the other.
 
    NO MESSAGE HERE SAYS "nothing was charged". /lab-projects/submit has no
    wallet or Stripe code on any path -- it inserts a lab_campaigns row and
@@ -125,7 +131,25 @@
    this is a scoping request". A reassurance that no money moved implies money
    could have moved, which contradicts the modal three panels up and is at best
    noise on a page where the only charge already happened, back when the runs
-   were dispatched. #}
+   were dispatched.
+
+   THE SECOND PARAGRAPH IS A DIFFERENT FACT, NOT A SOFTENER. `?truncated=` says
+   how many starred refs the request's size cap discarded BEFORE any of the five
+   checks ran, and it is orthogonal to all five: a shortlist can be unnamed, or
+   unverifiable, or wholly rejected, AND ALSO be over the limit. The submit
+   computed that number on every exit and spent three of the four throwing it
+   away, so on exactly the paths where the user is already being told something
+   went wrong, up to 120 designs they starred went unmentioned. Reading it from
+   the query string here rather than through the route keeps the change inside
+   this template; it is display-only, on a page the reader already owns, and the
+   `|int` filter yields 0 for anything that is not a number, so a crafted value
+   misinforms nobody but its author -- the same reasoning
+   `blueprints/lab_projects.py` states for its own clamp of the pair.
+
+   "Up to", because the number counts REFS. The tail past the cap is never
+   parsed into (job, index) pairs, so a repeat hiding in it cannot be
+   subtracted and this is an upper bound on the designs actually missing. #}
+{% set truncated_count = request.args.get('truncated', 0) | int %}
 {% if handoff %}
 <div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
   <div class="panel-body">
@@ -152,6 +176,17 @@
       Your stars are still here. Try again, and contact us if it keeps failing.
       {% endif %}
     </p>
+    {% if truncated_count > 0 %}
+    <p style="margin: 0.6rem 0 0; color: #e8846b;">
+      Separately, and whatever you do next: up to {{ truncated_count }} of your
+      starred design{{ '' if truncated_count == 1 else 's' }}
+      {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit
+      and {{ 'was' if truncated_count == 1 else 'were' }} not read at all.
+      A selection this size cannot be sent in one request, and sending it again
+      would cut it in the same place. Contact us and we will take the whole
+      list.
+    </p>
+    {% endif %}
   </div>
 </div>
 {% endif %}

@@ -8,11 +8,19 @@ is that boundary, from both sides: each rejection test is paired with an
 acceptance test that the same over-broad or over-narrow gate would fail.
 
 Everything below the route is patched at ITS OWN module, matching how
-``blueprints/lab_projects.py`` imports it: ``get_job`` and
+``blueprints/lab_projects.py`` imports it: ``read_job`` and
 ``stage_campaign_candidates`` are module-level imports on the blueprint, while
 ``get_target``, ``campaign_ids_for_target``, ``create_campaign_from_target_refs``
 and ``send_campaign_submitted_emails`` are function-local and therefore resolve
 against their own modules at call time.
+
+THE TARGET BRANCH READS JOBS THROUGH ``read_job``, NOT ``get_job``, and the
+difference is the subject of half this file. ``get_job`` answers ``None`` for a
+job that is absent, one that is another tenant's, and a read that never
+completed; this route has to behave differently in the last case, so it uses the
+form that reports which happened. ``_submit`` below therefore fakes ``read_job``
+and can be told to make a specific id UNREADABLE, which is the only way to
+construct the fault the refusal gate exists for.
 """
 
 from __future__ import annotations
@@ -23,6 +31,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+
+from shared.jobs import JOB_READ_ABSENT, JOB_READ_OK, JOB_READ_UNAVAILABLE, JobRead
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -64,7 +74,7 @@ def _job(jid, tool, *, target_id=None, campaign_id=None, n=3, owner="u-1"):
     reason the staging prefix carries the tool slug, so the fixture reproduces
     it rather than making the names unique.
 
-    ``owner`` exists so the fake ``get_job`` can enforce the owner scope the
+    ``owner`` exists so the fake ``read_job`` can enforce the owner scope the
     real one enforces. A fake that ignores ``user_id`` would let the tenancy
     test pass against a route that had stopped passing it.
     """
@@ -99,11 +109,21 @@ _CREATE_OK = object()
 
 def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
             campaign_ids_complete=True, create_result=_CREATE_OK,
-            target_owner="u-1", campaign_owner="u-1"):
+            target_owner="u-1", campaign_owner="u-1", unreadable=()):
     """Drive POST /lab-projects/submit and return (response, harness).
 
-    ``jobs`` maps job id -> job (or None for "not the caller's"), which is
-    exactly what an owner-scoped ``get_job`` returns.
+    ``jobs`` maps job id -> job. An id that is absent from the mapping is a job
+    that is not there or is not the caller's, which an owner-scoped read reports
+    as ``JOB_READ_ABSENT``.
+
+    ``unreadable`` is the set of ids whose LOOKUP FAILS -- no service client, or
+    the query raised -- reported as ``JOB_READ_UNAVAILABLE``. It is a separate
+    parameter and not "absent with a flag" because that is the whole
+    distinction: an absent job is a verdict about the job, an unreadable one is
+    a statement about the database and says nothing about the job at all. An id
+    may appear in ``jobs`` AND in ``unreadable`` at once, which is the realistic
+    shape of a transient fault: the row is perfectly valid and we did not manage
+    to read it.
 
     ``campaign_ids_complete`` is the second half of what
     ``campaign_ids_for_target`` returns: False means the id read was cut short
@@ -120,19 +140,30 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
     """
     h = _Harness()
 
-    def fake_get_job(jid, *, user_id=None):
-        # Models shared.jobs.get_job: `user_id` is applied as a QUERY filter,
-        # so a job that exists but belongs to someone else comes back as None,
-        # indistinguishable from absent. Enforcing it here is what makes the
-        # tenancy test able to fail: a fake that returned the row regardless
-        # would stay green against a route that dropped the scope.
+    def fake_read_job(jid, *, user_id=None):
+        # Models shared.jobs.read_job, including the two things about it that
+        # matter here.
+        #
+        # 1. `user_id` is applied as a QUERY FILTER, so another tenant's job
+        #    comes back as zero rows -- which is ABSENT, not a special
+        #    "forbidden" outcome. The real function cannot tell those apart
+        #    either, and must not: distinguishing them means reading a row the
+        #    owner scope exists to withhold. A fake that returned the row
+        #    regardless would stay green against a route that dropped the scope.
+        # 2. An unreadable id reports UNAVAILABLE even when the job is present
+        #    in `jobs`, because a read that did not complete learned nothing
+        #    about the row. A fake that quietly returned the row instead would
+        #    make the refusal gate below untestable in the one direction it
+        #    exists for.
         h.job_lookups.append(jid)
+        if jid in unreadable:
+            return JobRead(None, JOB_READ_UNAVAILABLE)
         job = jobs.get(jid)
         if job is None:
-            return None
+            return JobRead(None, JOB_READ_ABSENT)
         if user_id is not None and job.user_id != user_id:
-            return None
-        return job
+            return JobRead(None, JOB_READ_ABSENT)
+        return JobRead(job, JOB_READ_OK)
 
     def fake_create(**kw):
         h.created.append(kw)
@@ -180,7 +211,7 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
 
     _login(client)
     with patch("blueprints.lab_projects.load_user_context", return_value=_ctx()), \
-            patch("blueprints.lab_projects.get_job", side_effect=fake_get_job), \
+            patch("blueprints.lab_projects.read_job", side_effect=fake_read_job), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   side_effect=fake_stage), \
             patch("shared.targets.get_target", side_effect=fake_get_target), \
@@ -227,7 +258,7 @@ def test_a_target_tagged_standalone_job_is_accepted(client):
 # ---------------------------------------------------------------------------
 
 def test_a_ref_naming_a_job_that_does_not_exist_creates_nothing(client):
-    resp, h = _submit(client, {})          # get_job returns None for every id
+    resp, h = _submit(client, {})   # read_job reports ABSENT for every id
     assert resp.status_code == 302
     assert h.created == []
     assert h.staged == []
@@ -238,8 +269,8 @@ def test_a_ref_naming_another_users_job_creates_nothing(client):
 
     The job EXISTS, is attached to this very target's campaign, and would sail
     through the parentage test below. The only thing standing between it and
-    the lab is that ``get_job`` is called with the caller's user_id, so the
-    owner filter makes it come back as None. Drop that keyword and this is a
+    the lab is that ``read_job`` is called with the caller's user_id, so the
+    owner filter makes it come back ABSENT. Drop that keyword and this is a
     cross-tenant read of another lab's designs, staged into a folder Ranomics
     staff will open.
     """
@@ -321,7 +352,7 @@ def test_only_the_accepted_refs_reach_the_insert(client):
     jobs = {
         "j-bc": _job("j-bc", "bindcraft", campaign_id=_CID),
         "j-far": _job("j-far", "boltzgen", target_id=_OTHER_TID),
-        # "j-theirs" is absent: an owner-scoped get_job answers None.
+        # "j-theirs" is absent: an owner-scoped read matches no row.
     }
     refs = [
         {"job_id": "j-bc", "index": 0},
@@ -836,11 +867,30 @@ def test_the_confirmation_page_states_how_many_designs_were_refused(client):
 
 
 def test_the_confirmation_page_states_how_many_designs_were_over_the_limit(client):
-    """The second banner, with the OPPOSITE remedy: these were never read, so
-    a second smaller request does deliver them."""
+    """The second banner. "Up to", because the number counts REFS: the tail past
+    the cap is never parsed into (job, index) pairs, so a repeat hiding in it
+    cannot be subtracted and this is an upper bound on the designs missing."""
     html = _lab_project_page(client, "?submitted=1&truncated=120")
-    assert "120 further starred designs were over the per-request limit" in html
-    assert "submit a second request" in html
+    assert "Up to 120 further starred designs were over the per-request limit" \
+        in html
+
+
+def test_the_over_the_limit_banner_gives_no_advice_that_duplicates_the_order(client):
+    """MEDIUM-4, as behaviour rather than as wording.
+
+    The banner used to say "Star them again on the target page and submit a
+    second request". Following it produced a SECOND lab project covering the
+    SAME designs: `static/js/candidate_table.js` never clears the shortlist, the
+    modal serialises it in stored order, so the second POST carries the
+    identical first `_MAX_CANDIDATE_REFS` refs -- and the ones over the limit are
+    still over it. Advice that cannot be followed and creates a duplicate paid
+    order when attempted is worse than no advice, so the page now says what a
+    resend would actually do.
+    """
+    html = _lab_project_page(client, "?submitted=1&truncated=120")
+    assert "submit a second request" not in html
+    assert "Star them again" not in html
+    assert "would repeat this request rather than add them" in html
 
 
 def test_a_clean_confirmation_page_carries_neither_banner(client):
@@ -851,3 +901,460 @@ def test_a_clean_confirmation_page_carries_neither_banner(client):
     assert "not included" not in html
     assert "over the per-request limit" not in html
     assert "Scoping request submitted." in html
+# ---------------------------------------------------------------------------
+# ROUND 21: WHY a ref was refused, and what that entitles anyone to say
+#
+# Three causes reach this route as one another's twin unless the boundary keeps
+# them apart: the job is not there, the job is not yours, and we could not read
+# it. Rounds 19 and 20 each picked one guess for the whole bucket and each was
+# right about half of it. These tests construct the third cause -- which no
+# earlier fixture could express, because `get_job` had no way to report it --
+# and pin the two decisions it drives: whether the submission proceeds, and
+# whether the copy downstream is allowed to be categorical.
+# ---------------------------------------------------------------------------
+
+def test_a_job_read_that_never_completed_refuses_rather_than_narrowing(client):
+    """THE CASE ROUND 20 GOT WRONG, in its simplest form.
+
+    `j-slow` is a perfectly valid design of this very target; the read of it
+    just did not complete. Round 20 saw only `None`, took it for a verdict, and
+    shipped a one-design order for a two-design shortlist while telling the user
+    their second design could never be matched.
+
+    The campaign id set is COMPLETE here and `j-slow` carries no campaign_id at
+    all, so round 20's `campaign_arm_rejected` flag was not even eligible to
+    fire. The refusal has to come from the job read itself or not at all.
+    """
+    jobs = {
+        "j-ok": _job("j-ok", "bindcraft", target_id=_TID),
+        "j-slow": _job("j-slow", "pxdesign", target_id=_TID),
+    }
+    refs = [{"job_id": "j-ok", "index": 0}, {"job_id": "j-slow", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
+                      unreadable={"j-slow"})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.created == [], "a shortlist we could not verify must not reach the lab"
+    assert h.staged == []
+
+
+def test_a_correlated_supabase_fault_cannot_ship_a_half_size_order(client):
+    """THE REGRESSION ROUND 20 INTRODUCED, reproduced exactly.
+
+    One degraded Supabase produces both faults in the same request:
+    `campaign_ids_for_target` returns a short list with complete=False, AND the
+    per-ref read times out. Round 20 armed its refusal only when the rejection
+    was decided by the campaign arm -- which requires the job to have been READ
+    -- so a timed-out read set nothing, the guard was skipped, and a half-size
+    paid wet-lab order shipped. Round 19's broader gate caught this; narrowing
+    it to fix a misattribution re-opened A-7.
+    """
+    jobs = {
+        "j-ok": _job("j-ok", "bindcraft", target_id=_TID),
+        "j-cmp": _job("j-cmp", "pxdesign", campaign_id=_CID),
+    }
+    refs = [{"job_id": "j-ok", "index": 0}, {"job_id": "j-cmp", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
+                      unreadable={"j-cmp"}, campaign_ids=(),
+                      campaign_ids_complete=False)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.created == [], "the correlated-failure order must not ship"
+
+
+def test_a_read_we_could_not_complete_never_reaches_the_rejection_wording(client):
+    """WHAT THE GATE ABOVE BUYS THE COPY, which is the point of the change.
+
+    The confirmation page, the target page and both emails tell the user that a
+    dropped design "will be refused the same way" and to contact us if that
+    looks wrong. That sentence is false for a transient fault -- a retry would
+    have delivered everything -- so it is only sayable if no transient cause can
+    produce a `dropped` count or a `rejected` banner. This asserts that property
+    directly rather than trusting the wording to hedge.
+    """
+    jobs = {
+        "j-ok": _job("j-ok", "bindcraft", target_id=_TID),
+        "j-slow": _job("j-slow", "pxdesign", target_id=_TID),
+    }
+    refs = [{"job_id": "j-ok", "index": 0}, {"job_id": "j-slow", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
+                      unreadable={"j-slow"})
+    location = resp.headers["Location"]
+    assert "dropped=" not in location, location
+    assert "handoff=rejected" not in location, location
+    assert h.emails == [], "no email may report a shortfall we could not decide"
+
+
+def test_an_unreadable_job_is_read_once_however_many_refs_name_it(client):
+    """The negative cache covers the transient outcome too. Under a fault the
+    retry pressure is at its worst, so re-reading a timing-out id once per
+    starred design is precisely when it costs most."""
+    jobs = {"j-slow": _job("j-slow", "bindcraft", target_id=_TID, n=40)}
+    refs = [{"job_id": "j-slow", "index": i} for i in range(40)]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)},
+                      unreadable={"j-slow"})
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.job_lookups == ["j-slow"], h.job_lookups
+
+
+def test_every_ref_naming_one_rejected_job_counts_as_its_own_drop(client):
+    """The negative cache must not swallow the COUNT along with the read.
+
+    Ten starred designs from one job that turns out to belong to another target
+    are ten designs the user does not get. Dropping the `dropped += 1` on the
+    cache-hit path reports 1, and no other test in this file posts two refs
+    naming the same rejected job, so that mutation survived the whole suite.
+    """
+    jobs = {
+        "j-far": _job("j-far", "boltzgen", target_id=_OTHER_TID, n=10),
+        "j-ok": _job("j-ok", "bindcraft", target_id=_TID),
+    }
+    refs = [{"job_id": "j-far", "index": i} for i in range(10)]
+    refs.append({"job_id": "j-ok", "index": 0})
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert resp.status_code == 302
+    assert h.emails[0]["dropped"] == 10, h.emails[0]["dropped"]
+    assert resp.headers["Location"].endswith("?submitted=1&dropped=10")
+    # The read itself still happens once -- the count and the round trip are
+    # separate properties and this pins both.
+    assert h.job_lookups == ["j-far", "j-ok"], h.job_lookups
+
+
+def test_a_ref_into_a_job_that_delivered_zero_designs_is_refused(client):
+    """A `{"candidates": []}` job has a KNOWN length of zero, not an unknown one.
+
+    `candidate_records` answers `[]` for both, so the old `if n and idx >= n`
+    spelling disabled the range check for both -- and for a genuinely empty job
+    that meant every ref was accepted, recorded on the row, counted to ops and
+    to the customer, and then staged zero PDBs. `candidate_count` reports 0 here
+    and None for a shape it cannot read, so only the second waves refs through;
+    `test_a_job_whose_record_count_is_unknown_keeps_all_its_refs` is that pair.
+    """
+    job = _job("j-empty", "bindcraft", target_id=_TID, n=0)
+    assert job.result == {"candidates": []}, "fixture: a KNOWN zero, not a gap"
+    refs = [{"job_id": "j-empty", "index": 0}]
+    resp, h = _submit(client, {"j-empty": job},
+                      form={"candidate_refs": json.dumps(refs)})
+    assert resp.status_code == 302
+    assert h.created == [], "there is no design here to order"
+    assert h.staged == []
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=rejected")
+
+
+# ---------------------------------------------------------------------------
+# ROUND 21: the cap's overflow survives the exits that are not the happy one
+# ---------------------------------------------------------------------------
+
+def _over_cap_refs(jid, over=120):
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+    return json.dumps([
+        {"job_id": jid, "index": i}
+        for i in range(_MAX_CANDIDATE_REFS + over)
+    ])
+
+
+def test_a_wholly_rejected_shortlist_still_reports_what_the_cap_discarded(client):
+    """`truncated` was computed after the loop and then thrown away on three of
+    the four exits, so on exactly the paths where the user is already being told
+    something went wrong, 120 designs they starred went unmentioned."""
+    jobs = {"j-far": _job("j-far", "boltzgen", target_id=_OTHER_TID, n=700)}
+    resp, h = _submit(client, jobs,
+                      form={"candidate_refs": _over_cap_refs("j-far")})
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(
+        f"/targets/{_TID}?handoff=rejected&truncated=120"
+    )
+    assert h.created == []
+
+
+def test_an_unverifiable_shortlist_still_reports_what_the_cap_discarded(client):
+    """The same on the refusal exit, where it matters most: the user is about to
+    retry, and a retry cuts the selection in the same place."""
+    jobs = {"j-slow": _job("j-slow", "bindcraft", target_id=_TID, n=700)}
+    resp, h = _submit(client, jobs,
+                      form={"candidate_refs": _over_cap_refs("j-slow")},
+                      unreadable={"j-slow"})
+    assert resp.headers["Location"].endswith(
+        f"/targets/{_TID}?handoff=unverified&truncated=120"
+    )
+
+
+def test_a_failed_creation_still_reports_what_the_cap_discarded(client):
+    """And on the A-8 exit."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", target_id=_TID, n=700)}
+    resp, h = _submit(client, jobs,
+                      form={"candidate_refs": _over_cap_refs("j-bc")},
+                      create_result=None)
+    assert resp.headers["Location"].endswith(
+        f"/targets/{_TID}?handoff=failed&truncated=120"
+    )
+
+
+def test_a_refused_shortlist_inside_the_cap_carries_no_truncation(client):
+    """The pair for all three. Appending the parameter unconditionally would
+    satisfy them while telling every ordinary refusal that designs were cut."""
+    jobs = {"j-far": _job("j-far", "boltzgen", target_id=_OTHER_TID)}
+    refs = [{"job_id": "j-far", "index": 0}]
+    resp, h = _submit(client, jobs, form={"candidate_refs": json.dumps(refs)})
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=rejected")
+
+
+# ---------------------------------------------------------------------------
+# ROUND 21: the route is behind the idempotency gate
+#
+# Every other mutating POST in this app is (`tools.tool_submit`,
+# `targets.target_create`, `targets.target_launch_submit`, the campaign
+# fund/launch pair); this intake was the last one that was not, so a
+# double-clicked submit opened two lab projects for one shortlist.
+# ---------------------------------------------------------------------------
+
+_REPLAY_ROW = {
+    "response_status": 302,
+    "response_body": "",
+    "content_type": "text/html; charset=utf-8",
+    "location": "/lab-projects/lab-earlier?submitted=1",
+}
+
+
+def _submit_with_claim(client, state, row):
+    """POST a target shortlist with `_claim_key` forced to one outcome.
+
+    `shared.idempotency.load_user_context` is patched as well as the
+    blueprint's: the decorator resolves that name in ITS OWN module, and under
+    the blanked Supabase env the real one returns None, which makes the
+    decorator a pass-through and would leave this test unable to fail.
+    """
+    created: list = []
+
+    def fake_create(**kw):
+        created.append(kw)
+        return SimpleNamespace(id="lab-new")
+
+    body = {
+        "source_target_id": _TID,
+        "candidate_refs": json.dumps([{"job_id": "j-bc", "index": 0}]),
+        "target_name": "HER2",
+        "assay_type": "yeast_display",
+        "budget_band": "pilot",
+    }
+    job = _job("j-bc", "bindcraft", target_id=_TID)
+    _login(client)
+    with patch("shared.idempotency.load_user_context", return_value=_ctx()), \
+            patch("shared.idempotency._claim_key", return_value=(state, row)), \
+            patch("blueprints.lab_projects.load_user_context",
+                  return_value=_ctx()), \
+            patch("blueprints.lab_projects.read_job",
+                  return_value=JobRead(job, JOB_READ_OK)), \
+            patch("blueprints.lab_projects.stage_campaign_candidates",
+                  return_value=[]), \
+            patch("shared.targets.get_target", return_value=object()), \
+            patch("shared.targets.campaign_ids_for_target",
+                  return_value=([_CID], True)), \
+            patch("shared.campaigns.create_campaign_from_target_refs",
+                  side_effect=fake_create), \
+            patch("shared.email.send_campaign_submitted_emails"):
+        resp = client.post("/lab-projects/submit", data=body)
+    return resp, created
+
+
+def test_a_replayed_submit_does_not_open_a_second_lab_project(client):
+    """The duplicate this route could previously produce. A cached claim for the
+    identical (user, path, body) replays the first response and the handler must
+    not run again -- otherwise a double-click is two paid orders for one
+    shortlist, which ops reconciles by hand."""
+    resp, created = _submit_with_claim(client, "replay", _REPLAY_ROW)
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == "/lab-projects/lab-earlier?submitted=1"
+    assert resp.headers.get("Idempotent-Replay") == "true"
+    assert created == [], "the handler ran for a replayed key"
+
+
+def test_a_first_time_submit_is_not_blocked_by_the_gate(client):
+    """The pair. A test that only ever asserts the replay is satisfied by a
+    route that refuses every submission, so this drives the same fixture with
+    the claim GRANTED and asserts the lab project is created."""
+    resp, created = _submit_with_claim(client, "open", None)
+    assert resp.status_code == 302
+    assert len(created) == 1, "the handler must run when the key is free"
+    assert created[0]["source_target_id"] == _TID
+    assert resp.headers.get("Idempotent-Replay") is None
+# ---------------------------------------------------------------------------
+# ROUND 21: the boundary itself
+#
+# Everything above fakes `read_job`, so everything above would stay green if the
+# real one collapsed its three outcomes back into two. These drive the real
+# function against a fake PostgREST client.
+# ---------------------------------------------------------------------------
+
+class _FakeQuery:
+    """The subset of the PostgREST builder chain `read_job` uses.
+
+    IT DELIBERATELY HAS NO `single()`. That is not an omission: `.single()`
+    RAISES on zero rows, which is exactly why `read_job` must not use it -- under
+    `.single()` a missing job and a read that never completed arrive as the same
+    exception and the distinction the function exists for is destroyed before its
+    own `except` runs. A `read_job` rewritten to call `.single()` would hit
+    AttributeError here, be swallowed by that `except`, and report UNAVAILABLE
+    for a row that is plainly present, reddening the OK cases below.
+
+    `eq()` is modelled as a real filter rather than recorded and ignored, so a
+    `read_job` that stopped passing `user_id` returns another tenant's row and
+    the tenancy case below fails.
+    """
+
+    def __init__(self, rows, *, raises=False, calls=None):
+        self._rows = rows
+        self._raises = raises
+        self._filters: dict = {}
+        self._limit = None
+        self.calls = calls if calls is not None else []
+
+    def select(self, *_a, **_kw):
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        self.calls.append((col, val))
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
+    def execute(self):
+        if self._raises:
+            raise RuntimeError("read timeout")
+        matched = [
+            r for r in self._rows
+            if all(r.get(k) == v for k, v in self._filters.items())
+        ]
+        if self._limit is not None:
+            matched = matched[:self._limit]
+        return SimpleNamespace(data=matched)
+
+
+class _FakeClient:
+    def __init__(self, rows, *, raises=False):
+        self.calls: list = []
+        self._rows = rows
+        self._raises = raises
+
+    def table(self, _name):
+        return _FakeQuery(self._rows, raises=self._raises, calls=self.calls)
+
+
+def _row(jid="j-1", owner="u-1"):
+    """A tool_jobs row with every column `ToolJob.from_row` requires."""
+    return {
+        "id": jid, "user_id": owner, "tool": "bindcraft", "preset": "pilot",
+        "status": "succeeded", "inputs": {}, "result": {"candidates": [{}]},
+        "error": None, "modal_function_call_id": None, "job_token": "tok",
+        "gpu_seconds_used": 10, "created_at": None, "started_at": None,
+        "completed_at": None,
+    }
+
+
+def _read(rows, *, raises=False, client=True, **kw):
+    from shared import jobs as jobs_mod
+    fake = _FakeClient(rows, raises=raises) if client else None
+    with patch("shared.jobs.get_service_client", return_value=fake):
+        return jobs_mod.read_job("j-1", **kw), fake
+
+
+def test_read_job_reports_ok_for_a_row_that_is_there():
+    read, _ = _read([_row()], user_id="u-1")
+    assert read.outcome == JOB_READ_OK
+    assert read.job is not None and read.job.id == "j-1"
+    assert read.unavailable is False
+
+
+def test_read_job_reports_absent_for_a_completed_read_that_matched_nothing():
+    """A read that RAN and returned no rows is a verdict, and the whole reason
+    the query is `.limit(1)` rather than `.single()` is that this case has to be
+    observable as an empty list instead of an exception."""
+    read, _ = _read([], user_id="u-1")
+    assert read.outcome == JOB_READ_ABSENT
+    assert read.job is None
+    assert read.unavailable is False
+
+
+def test_read_job_reports_absent_for_another_tenants_row():
+    """The owner scope is a QUERY FILTER, so a foreign row is simply not
+    returned. Same outcome as missing, and deliberately so: telling the two
+    apart would mean reading the row the scope exists to withhold."""
+    read, fake = _read([_row(owner="u-2")], user_id="u-1")
+    assert read.outcome == JOB_READ_ABSENT
+    assert ("user_id", "u-1") in fake.calls, fake.calls
+
+
+def test_read_job_reports_unavailable_when_the_query_raises():
+    """THE OUTCOME `get_job` CANNOT EXPRESS. The row may be perfectly valid; we
+    never found out. Reporting ABSENT here is what let a two-second database
+    hiccup tell a paying customer their designs were permanently unmatched."""
+    read, _ = _read([_row()], raises=True, user_id="u-1")
+    assert read.outcome == JOB_READ_UNAVAILABLE
+    assert read.job is None
+    assert read.unavailable is True
+
+
+def test_read_job_reports_unavailable_when_there_is_no_service_client():
+    """The second transient source, and the one with no exception to catch: an
+    unconfigured or failed client is still "we could not look"."""
+    read, _ = _read([_row()], client=False, user_id="u-1")
+    assert read.outcome == JOB_READ_UNAVAILABLE
+    assert read.unavailable is True
+
+
+def test_read_job_without_a_user_id_applies_no_owner_filter():
+    """The unscoped form still exists, because the shortlist route is not the
+    only conceivable caller. Pinned so the scope cannot become accidentally
+    mandatory and silently change a caller that never passed one."""
+    read, fake = _read([_row(owner="u-2")])
+    assert read.outcome == JOB_READ_OK
+    assert [c for c in fake.calls if c[0] == "user_id"] == [], fake.calls
+
+
+def test_get_job_is_unchanged_and_still_collapses_the_two():
+    """`read_job` is ADDITIVE. `get_job` is called from most blueprints and from
+    the terminal/settle path, so it keeps its signature, its `.single()` chain
+    and its two-valued answer; this asserts the pair still exists rather than
+    one having been rewritten into the other.
+    """
+    from shared import jobs as jobs_mod
+    import inspect
+    assert jobs_mod.get_job is not jobs_mod.read_job
+    sig = inspect.signature(jobs_mod.get_job)
+    assert list(sig.parameters) == ["job_id", "user_id"]
+    assert "single" in inspect.getsource(jobs_mod.get_job), (
+        "get_job's .single() chain is what several test fakes model"
+    )
+
+
+# --- candidate_count: the same conflation, in the other sentinel -------------
+
+def test_candidate_count_separates_a_known_zero_from_an_unknown_length():
+    """`candidate_records` answers `[]` for both, which is what made the range
+    check in the shortlist route unable to refuse a ref into a job that
+    delivered nothing."""
+    from shared.jobs import candidate_count, candidate_records
+    empty = {"candidates": []}
+    unreadable = {"something_else": [1, 2, 3]}
+    assert candidate_records(empty) == candidate_records(unreadable) == []
+    assert candidate_count(empty) == 0
+    assert candidate_count(unreadable) is None
+
+
+def test_candidate_count_reads_the_same_array_candidate_records_does():
+    """Same keys, same order, same normalisation. If the two ever disagreed
+    about WHICH array they describe, an index validated against one would be
+    staged out of the other."""
+    from shared.jobs import candidate_count, candidate_records
+    for result in (
+        {"candidates": [{"a": 1}, {"a": 2}]},
+        {"designs": [{"a": 1}]},
+        {"candidates": [{"a": 1}], "designs": [{"b": 2}, {"b": 3}]},
+        {"output": {"candidates": [{"a": 1}, {"a": 2}, {"a": 3}]}},
+    ):
+        assert candidate_count(result) == len(candidate_records(result)), result
+    assert candidate_count(None) is None
+    assert candidate_count("not a dict") is None

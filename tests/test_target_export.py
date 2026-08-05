@@ -499,13 +499,28 @@ def test_a_selection_of_exactly_the_ceiling_is_not_called_a_prefix(client):
 # filename. The first of them is the B-3 disclosure this route exists for.
 # ---------------------------------------------------------------------------
 
-def _over_ceiling_post(client, resolvable, ref_job="job-bc"):
-    """POST `_MAX_CANDIDATE_REFS + 100` refs, of which `resolvable` exist."""
+def _over_ceiling_post(client, present, ref_job="job-bc"):
+    """POST ``_MAX_CANDIDATE_REFS + 100`` refs at a target that HOLDS
+    ``present`` designs, all of them under ``job-bc``.
+
+    ``ref_job`` is the job the posted refs name, and it is the only thing that
+    decides how many of them resolve: ``job-bc`` and every ref under the
+    ceiling finds its design, anything else and none of them do WHILE THE ROWS
+    ARE STILL THERE to be filtered out.
+
+    ROUND 21. The parameter used to be a ``resolvable`` count that also sized
+    the candidate list, so the one caller asking for the stale-ref case passed
+    0 and got a target with no designs at all. That is not the scenario in its
+    name: with nothing to filter, the starred filter is inert, and both
+    commenting the filter out of ``target_export`` and pointing the refs back
+    at ``job-bc`` left that test green. Splitting the two numbers is what makes
+    the miss a miss rather than an absence.
+    """
     from blueprints.lab_projects import _MAX_CANDIDATE_REFS
 
     over = _MAX_CANDIDATE_REFS + 100
     refs = [{"job_id": ref_job, "index": i} for i in range(over)]
-    cands = [_cand("bindcraft", "job-bc", i) for i in range(resolvable)]
+    cands = [_cand("bindcraft", "job-bc", i) for i in range(present)]
     return _starred_post(client, refs, cands), _MAX_CANDIDATE_REFS, over
 
 
@@ -513,9 +528,15 @@ def test_a_truncated_selection_that_resolves_nothing_still_says_empty(client):
     """Every ref stale -- a retention purge after the tab was left open, or any
     of the JS failures B-3 exists to make visible. Under the if/elif chain this
     came back as `_starred_first500`, indistinguishable from a selection that
-    resolved perfectly."""
+    resolved perfectly.
+
+    The target HOLDS 50 designs here and the refs name a job it has none
+    under, so the empty file is the filter's doing. Round 20 built this with an
+    empty target instead, where an empty file is the only possible answer and
+    the route could have had no filter at all.
+    """
     _login(client)
-    resp, kept, over = _over_ceiling_post(client, 0, ref_job="job-gone")
+    resp, kept, over = _over_ceiling_post(client, 50, ref_job="job-gone")
     assert _csv_rows(resp.get_data(as_text=True)) == []
     assert _filename(resp) == (
         f"target_{_TID[:8]}_starred_first{kept}of{over}_empty_scores.csv")

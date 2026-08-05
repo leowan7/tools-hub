@@ -936,11 +936,27 @@ def test_two_tools_under_sort_tool_do_draw_group_headers(client):
     assert body.count(_GROUP_ROW) == 2, body.count(_GROUP_ROW)
 
 
-def test_an_unknown_pasted_sort_mode_does_not_reach_the_template(client):
+def test_an_unknown_pasted_sort_mode_falls_back_to_the_default_mode(client):
     """The route validates ``?sort`` against ``SORT_MODES`` before it goes
     anywhere, and the aggregate reflects back what it was given. A stale link
     from an older version of this page renders in the default mode rather than
-    grouping on a mode nothing implements."""
+    grouping on a mode nothing implements.
+
+    ROUND 21. This asserted ONLY ``_GROUP_ROW not in body``, which is true of
+    any mode that is not exactly ``'tool'`` -- including ``'nonsense'`` itself.
+    Deleting both validation lines from ``target_detail`` therefore survived
+    the whole suite under the name of the test that exists to pin them. The
+    assertions below are ones only the fallback can produce:
+
+      * The "Best first" toggle is ACTIVE. The template marks it ``btn-primary``
+        on ``sort_mode == 'percentile'`` and ``btn-secondary`` otherwise, so an
+        unvalidated mode reaches a page where neither order is shown as the one
+        in effect.
+      * ``nonsense`` appears in no URL on the page. The macro builds the three
+        export links as ``?sort=`` ~ the mode it was handed, so without the
+        fallback the page hands the user download links carrying a mode the
+        export route would itself have to reject.
+    """
     rows = [dict(_one_design()[0], _source_tool=tool, _source_index=i)
             for i, tool in enumerate(("bindcraft", "boltzgen"))]
     body = _detail(client, query="?sort=nonsense",
@@ -951,6 +967,11 @@ def test_an_unknown_pasted_sort_mode_does_not_reach_the_template(client):
                              "boltzgen": {"total": 1, "shown": 1,
                                           "cohort_n": 1, "unranked": 0}})
     assert _GROUP_ROW not in body
+    assert "sort=nonsense" not in body
+
+    label = body.index(">Best first<")
+    anchor = body[body.rindex("<a ", 0, label):label]
+    assert 'class="btn-primary"' in anchor, anchor
 
 
 def test_a_split_cohort_row_names_its_preset(client):

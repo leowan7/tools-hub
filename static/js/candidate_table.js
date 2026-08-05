@@ -8,15 +8,27 @@
  * one jobId across every row. The wrapper carries:
  *   data-scope        - the sessionStorage key + element-id suffix (campaign id
  *                       in campaign mode, else the job id)
- *   data-campaign-id  - present only in campaign mode (drives the modal payload)
+ *   data-campaign-id  - emitted by the macro in campaign mode. NOT read here,
+ *                       by this file or any other: it does not drive the modal
+ *                       payload, as this comment used to claim. openCampaignModal
+ *                       fills whichever of candidate_refs / candidate_indices
+ *                       the modal it found actually carries, and that is the
+ *                       only thing that selects the shape.
  * Each star button carries data-job (the candidate's SOURCE job) and
  * data-ref-idx (its index WITHIN that job); data-idx stays the row index used
  * for the 3D viewer rows.
  *
  * Exposes:
- *   window.getShortlist(scope)     → [{j,i}]
+ *   window.getShortlist(scope)     → [{j,i}]  DEAD. No caller anywhere in
+ *                                   templates/ or static/. Kept as the read
+ *                                   side of the sessionStorage format for
+ *                                   console use; delete it and nothing breaks.
  *   window.openCampaignModal(scope)
  *   window.closeCampaignModal(scope)
+ *     Both called ONLY from inline onclick in components/candidate_table.html
+ *     -- the shortlist button, and the modal's ×, Cancel and overlay. Renaming
+ *     either is a silent break in this repo: nothing here calls them, and
+ *     tests/test_candidate_table_js_contract.py is the only thing that looks.
  */
 (function () {
   'use strict';

@@ -71,6 +71,23 @@ _MAX_RESIDUES = 256
 # says so when a section hits it rather than truncating in silence.
 _LIST_LIMIT = 100
 
+# Why the lab handoff sent the user back to the target page. `target_detail`
+# whitelists these and hands the survivor to the template, which has one branch
+# per reason.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER TESTS CAN IMPORT IT. It used to be a
+# literal tuple inside the view, while tests/test_target_handoff_banners.py
+# carried a hand-written dict of the same keys under a comment claiming "a
+# reason added to that whitelist without a banner of its own shows up here as a
+# missing key rather than as silence". Nothing derived one from the other, so
+# that was false: adding a sixth reason rendered the `failed` arm's copy --
+# "your request could not be submitted" -- for a completely different cause,
+# with the whole suite green. Verified by mutation twice (QC round 21 finding
+# A-HIGH-3; re-confirmed after round 22 because the fix had been dropped from
+# the brief). The test now asserts set equality against this tuple, so the two
+# cannot drift apart again.
+HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
+
 
 # ---------------------------------------------------------------------------
 # Multi-tool launch (Phase 2)
@@ -542,7 +559,7 @@ def target_detail(target_id):
     # were all rejected was told the request "arrived with no designs in it"
     # and advised to retry, which can never work. Two QC reviewers found this
     # independently (round 20, A-H1 / B-F1).
-    if handoff not in ("none", "noname", "rejected", "unverified", "failed"):
+    if handoff not in HANDOFF_REASONS:
         handoff = ""
     return render_template(
         "targets/detail.html",
@@ -575,10 +592,16 @@ def _starred_refs():
     filename that says ``_starred``.
 
     The refs are parsed with the same function the TARGET lab-handoff POST
-    uses (``blueprints/lab_projects.py:521``), so the two consumers of one star
+    uses -- ``_parse_candidate_refs_counted``, called from
+    ``lab_projects.campaigns_submit`` -- so the two consumers of one star
     selection cannot disagree about the payload shape or about how much of it
     the ceiling removed. It is imported rather than duplicated: a second
     ten-line parser is exactly the kind of thing that drifts.
+
+    NAMED rather than cited by line. This said ``lab_projects.py:521``, which
+    landed in an unrelated ``try`` block; the call was six lines further down,
+    and moved again -- by an unrelated edit above it -- while that was being
+    corrected. A symbol survives an edit above it and a line number does not.
 
     IT ALSO INHERITS THAT PARSER'S 500-REF CEILING, which it does not announce
     (register item A-2). ``requested > kept`` is how the caller finds out,
@@ -680,11 +703,15 @@ def _target_export(target_id: str, fmt: str):
     #
     # Exact for csv/fasta UP TO 500 POSTED REFS. Those aggregate with
     # limit=None, so nothing is lost on the aggregate side, but the selection
-    # itself arrives through `_parse_candidate_refs_counted`, which stops at
-    # `_MAX_CANDIDATE_REFS` and would return a prefix without saying so. This
-    # comment claimed "exact" unqualified (register item A-2); the
-    # `requested > kept` marker below is what makes the bound visible instead
-    # of theoretical.
+    # itself arrives through `_parse_candidate_refs_counted`, which CAPS the
+    # list it returns at `_MAX_CANDIDATE_REFS`. It does not stop THERE, and
+    # this comment said it did: the loop walks the whole payload and returns
+    # `requested` beside the capped list, which is the only reason the
+    # overflow is countable and the marker below derivable at all. Describing
+    # the parser as stopping is describing the version whose prefix was
+    # silent. This comment also claimed "exact" unqualified (register item
+    # A-2); the `requested > kept` marker below is what makes the bound
+    # visible instead of theoretical.
     #
     # It is NOT offered for the ZIP, which caps at 300 in canonical order: a
     # starred design below that cap would be missing from the archive with
