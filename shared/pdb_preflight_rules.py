@@ -88,10 +88,50 @@ class SizeEnvelope:
 
 @dataclass(frozen=True)
 class ToolRules:
-    """All preflight rules for a single binder design tool."""
+    """All preflight rules for a single binder design tool.
+
+    On the two multi-chain flags
+    ----------------------------
+    They answer different questions and BOTH must be True before preflight
+    lets a multi-chain target through (see
+    ``pdb_preflight.preflight_for_tool``):
+
+    ``multi_chain_supported``
+        Can the MODEL do it? Upstream/published capability. RFdiffusion,
+        BindCraft, BoltzGen, PXDesign and Proteina all genuinely design
+        against multi-chain targets; rfantibody does not (it builds a VHH
+        against one chain).
+
+    ``multi_chain_container_ready``
+        Can the IMAGE WE ACTUALLY RUN do it? This is the one that bills.
+        Today it is True for proteina alone, because proteina is the only
+        tool whose container lives in THIS repo
+        (``tools/proteina/run_pipeline.py``) and was rewritten and proven on
+        a live A100. Every other tool is dispatched to an image built from
+        the sibling repo ``llm-proteinDesigner``, whose
+        ``backend/pdb_utils/pipeline_normalize.py`` still matches the target
+        chain by exact string equality (:301) and raises when the whole
+        ``target_chain`` string is not a chain id (:383). Verified by
+        importing that module and executing it against a clean two-chain
+        PDB: ``chain="A"`` normalizes, ``chain="A B"`` raises ValueError,
+        for rfdiffusion / boltzgen / pxdesign / rfantibody alike. BindCraft
+        ships as a separate prebuilt image (``kendrew-bindcraft:v7``) that
+        cannot be inspected from here, so it is UNVERIFIED rather than
+        known-good and is gated on the same conservative footing.
+
+    Keeping them separate matters. Collapsing the truth into
+    ``multi_chain_supported=False`` for rfdiffusion et al. would encode a
+    claim that is simply false about the model, and the next person to read
+    it would be right to "fix" it back to True — silently re-opening a paid
+    failure. The split records the aspiration AND the reality, and names the
+    thing that has to change: port the multi-chain normalizer to
+    llm-proteinDesigner, rebuild those images, then flip
+    ``multi_chain_container_ready``. Nothing else here needs to move.
+    """
     slug: str
     gpu: str                       # human-readable, surfaced in the panel
-    multi_chain_supported: bool    # False for rfantibody (upstream limit)
+    multi_chain_supported: bool    # can the MODEL do it (upstream capability)
+    multi_chain_container_ready: bool  # can OUR IMAGE do it (what bills)
     hotspots_required: bool        # True for rfantibody / rfdiffusion / bindcraft
     min_target_aa: int             # below this the model has nothing to design
     size: SizeEnvelope
@@ -131,7 +171,8 @@ class ToolRules:
 _RFANTIBODY = ToolRules(
     slug="rfantibody",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfantibody_app.py:_GPU
-    multi_chain_supported=False,
+    multi_chain_supported=False,     # VHH against one chain — an upstream limit
+    multi_chain_container_ready=False,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -151,7 +192,8 @@ _RFANTIBODY = ToolRules(
 _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfdiffusion_app.py:_GPU
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Watson 2023 designs against multi-chain targets
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -177,7 +219,14 @@ _RFDIFFUSION = ToolRules(
 _BINDCRAFT = ToolRules(
     slug="bindcraft",
     gpu="A100-80GB",
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Pacesa 2024 takes multi-chain target settings
+    # UNVERIFIED, not known-good: bindcraft runs from a separate prebuilt
+    # image (config.runpod_image_bindcraft = kendrew-bindcraft:v7) rather
+    # than llm-pd's normalizer, so its chain handling could not be executed
+    # from here the way the other four were. Gated on the conservative
+    # footing — this restores exactly the pre-change outcome and costs a
+    # user only a message, where guessing wrong costs a funded A100 run.
+    multi_chain_container_ready=False,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -198,7 +247,8 @@ _BINDCRAFT = ToolRules(
 _BOLTZGEN = ToolRules(
     slug="boltzgen",
     gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Boltz-class models cofold multi-chain
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=False,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -220,6 +270,7 @@ _PXDESIGN = ToolRules(
     slug="pxdesign",
     gpu="A100-80GB",                 # matches tools/pxdesign/__init__.py docstring
     multi_chain_supported=True,
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=True,          # pxdesign requires >=1 hotspot
     min_target_aa=30,
     size=SizeEnvelope(
@@ -248,6 +299,12 @@ _PROTEINA = ToolRules(
     slug="proteina",
     gpu="A100-80GB",                 # matches tools/proteina/modal_app.py:_GPU
     multi_chain_supported=True,      # a 3-chain target is a validated upstream example
+    # The ONLY True in this column. proteina is the one tool whose container
+    # lives in this repo (tools/proteina/run_pipeline.py) and it was rewritten
+    # for multi-chain and proven end-to-end on a live A100 — custom PDB +
+    # multi-chain contig + cross-chain hotspots reaching the model. The other
+    # five dispatch to images that still carry the single-chain normalizer.
+    multi_chain_container_ready=True,
     hotspots_required=False,         # hotspot-directed, but an open search is valid
     min_target_aa=30,
     size=SizeEnvelope(
