@@ -234,10 +234,35 @@ regressions that a simple URL ping cannot.
 2. **It needs `RK_LIVE_KEY`**, a member-role Platform API key minted at
    https://tools.ranomics.com/account/api-keys, stored as a secret in whatever
    runs it.
-3. **Caveat: each run leaves one `lab_campaigns` row** at status
-   WaitingForConfirmation with no cleanup. Run it on a slow cadence (for example
-   every 6 to 12 hours, not every minute) and bulk-clean the rows periodically,
-   or extend the script to delete its own row via a direct Supabase call.
+3. **Caveat: the smoke cleans up after itself, with two exceptions.** Its final
+   step is `DELETE /experiments/{id}`, which runs whenever the create response
+   carried an experiment_id — including when create's own response-shape
+   assertions failed, or the replay or read-back ones did — and then asserts the
+   follow-up read 404s. A run therefore leaves no `lab_campaigns` row behind
+   whether it passes or fails, and there is nothing to bulk-clean on a cadence.
+   Three cases still leak a row, and all three fail the job. Only the first
+   names the row in the log:
+   - **Withdraw itself fails:** the run log prints the experiment_id and the
+     `DELETE FROM lab_campaigns WHERE id = '...';` SQL to drop the row by hand.
+     A connection that dies any time **after** the create response lands here
+     too, rather than killing the run: `_http()` converts every transport error
+     into a `status=0` sentinel — including the `RemoteDisconnected` /
+     `IncompleteRead` / `ConnectionResetError` family that urllib does **not**
+     wrap into `URLError` — so the smoke still reaches its summary and still
+     names the row, instead of dying with a traceback that would leak it
+     unreported.
+   - **The 201 body carries no usable experiment_id** (not a JSON object, or no
+     `experiment_id` field): the row exists, but no id ever reached the client,
+     so there is nothing to withdraw and nothing to print.
+   - **The create call itself dies in transit:** the server may already have
+     committed the row, but no response came back, so again no id exists. The
+     log shows `(no experiment_id captured; submit step did not return one)`.
+
+   In the last two the row has to be found by hand, around the run's timestamp,
+   at https://tools.ranomics.com/admin/lab-projects.
+
+   (The script has a second, service-role cleanup path for its optional quote
+   round-trip; it stays dormant in CI, which passes only `RK_LIVE_KEY`.)
 
 ### Option A (recommended): GitHub Actions scheduled workflow
 
@@ -462,10 +487,26 @@ the site looks up.
 ### Synthetic smoke FAILED
 
 Read which step failed in the output (targets, cost-estimate, create, replay,
-read-back). A create failure with `/health` green is Mode B. A replay or
-read-back failure points at idempotency or persistence. Reproduce locally with
-`RK_LIVE_KEY=... python scripts/smoke_platform_api.py` and clean up the leftover
-`lab_campaigns` row noted in the script output.
+read-back, withdraw). A create failure with `/health` green is Mode B. A replay
+or read-back failure points at idempotency or persistence. Several steps failing
+at once, each noting `network error:` and a status of `0`, is a transport
+failure (edge, DNS, TLS, or a reset connection), not an API-logic bug.
+Reproduce locally with `RK_LIVE_KEY=... python scripts/smoke_platform_api.py`.
+
+Then check the cleanup line at the bottom of the summary:
+
+- **"created and withdrawn; no leftover row"** — nothing to do.
+- **"created but NOT cleaned up"** — the summary names the experiment_id and
+  prints the `DELETE FROM lab_campaigns ...` SQL; run it.
+- **"no experiment_id captured"** — a row may exist that the run never learned
+  the id of (see caveat 3 above). Check
+  https://tools.ranomics.com/admin/lab-projects around the run's timestamp.
+- **No RESULTS block at all** — the smoke crashed before its summary, which is a
+  bug in the smoke itself: it is supposed to convert every transport error into
+  a `status=0` sentinel, and to decode bodies leniently, so the run always
+  reaches `_summarise()` (regression tests in
+  `tests/test_smoke_platform_api_network.py`). A row may have leaked
+  unreported; find it at https://tools.ranomics.com/admin/lab-projects.
 
 ### Railway emailed a deploy failure / crash / OOM
 

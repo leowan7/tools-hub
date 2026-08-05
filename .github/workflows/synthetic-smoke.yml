@@ -26,13 +26,25 @@ name: Synthetic smoke (Platform API)
 # whether it passes or fails, and there is nothing to bulk-delete on a
 # cadence.
 #
-# Two cases still leak a row, and both fail the job:
+# Three cases still leak a row, and all three fail the job. Only the first
+# names the row in the log:
 #   - withdraw itself fails: the run log prints the experiment_id and the
-#     DELETE SQL to drop the row by hand.
-#   - the 201 body carries no usable experiment_id at all (not a JSON
-#     object, or no experiment_id field): there is no id to withdraw or to
-#     print, so the row has to be found via
-#     https://tools.ranomics.com/admin/lab-projects.
+#     DELETE SQL to drop the row by hand. A connection that dies any time
+#     AFTER the create response lands here too, rather than killing the run:
+#     _http() converts every transport error into a status=0 sentinel --
+#     including the RemoteDisconnected / IncompleteRead /
+#     ConnectionResetError family that urllib does NOT wrap into URLError --
+#     so the smoke still reaches its summary and still names the row,
+#     instead of dying with a traceback that would leak it unreported.
+#   - the 201 body carries no usable experiment_id (not a JSON object, or no
+#     experiment_id field): the row exists, but no id ever reached the
+#     client, so there is nothing to withdraw and nothing to print.
+#   - the create call itself dies in transit: the server may already have
+#     committed the row, but no response came back, so again no id exists.
+#     The log shows "(no experiment_id captured; submit step did not return
+#     one)".
+# In the last two the row has to be found by hand, around the run's
+# timestamp, at https://tools.ranomics.com/admin/lab-projects.
 #
 # (The script has a second, service-role cleanup path for its optional quote
 # round-trip; it stays dormant here because this job passes only RK_LIVE_KEY.)

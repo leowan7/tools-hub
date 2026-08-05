@@ -19,6 +19,7 @@ Exit code: 0 on all-pass, 1 on any failure (suitable for CI).
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import sys
@@ -89,7 +90,13 @@ def _http(
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-            raw = resp.read().decode("utf-8")
+            # errors="replace", not strict: a body that is not valid UTF-8 is
+            # not valid JSON either, so it fails the step's shape assertion
+            # anyway -- but as a FAIL carrying the mangled text, not as a
+            # UnicodeDecodeError (a ValueError, so outside the transport
+            # handler below) that would kill main() before _summarise() and
+            # leak the row unreported.
+            raw = resp.read().decode("utf-8", errors="replace")
             parsed: Any
             try:
                 parsed = json.loads(raw) if raw else {}
@@ -100,8 +107,20 @@ def _http(
                 headers={k.lower(): v for k, v in resp.headers.items()},
                 body=parsed,
             )
+    # HTTPError first: it subclasses URLError (and so OSError), so the broad
+    # transport handler below would otherwise swallow it and collapse every
+    # clean 4xx/5xx into the status=0 sentinel.
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8") if exc.fp is not None else ""
+        try:
+            # Same two hazards as the success path above, and for the same
+            # reason: an error body is MORE likely to be malformed, since a
+            # struggling edge is exactly what returns a 502/503 -- often
+            # gzipped or truncated, and it can drop mid-read. Neither may kill
+            # the run: the real status code is what the step needs, and
+            # main() must still reach _summarise() to report any leftover row.
+            raw = exc.read().decode("utf-8", errors="replace") if exc.fp is not None else ""
+        except (OSError, http.client.HTTPException):
+            raw = ""
         try:
             parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
@@ -111,12 +130,22 @@ def _http(
             headers={k.lower(): v for k, v in exc.headers.items()},
             body=parsed,
         )
-    except (urllib.error.URLError, TimeoutError) as exc:
-        # Connection refused / DNS / TLS / read timeout. Return a sentinel
-        # non-2xx so the calling step fails gracefully and main() still
-        # reaches the summary (and reports any leftover row) instead of dying
-        # with an unhandled traceback that would leak the row unreported.
-        return HttpResponse(status=0, headers={}, body=f"network error: {exc}")
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        # Connection refused / DNS / TLS / read timeout, plus the transport
+        # failures urllib does NOT wrap into URLError: do_open() only wraps
+        # errors from h.request(...), so anything out of h.getresponse() -- or
+        # out of resp.read() above, which is inside the `with` but outside any
+        # handler -- arrives raw. RemoteDisconnected, IncompleteRead and
+        # ConnectionResetError are none of them URLError or TimeoutError, hence
+        # the OSError/HTTPException pair (see
+        # tests/test_smoke_platform_api_network.py).
+        #
+        # Return a sentinel non-2xx so the calling step fails gracefully and
+        # main() still reaches the summary (and reports any leftover row)
+        # instead of dying with an unhandled traceback that would leak the row
+        # unreported. Deliberately not `except Exception`: a real bug in this
+        # script must still surface as a traceback, not as a fake network error.
+        return HttpResponse(status=0, headers={}, body=f"network error: {exc!r}")
 
 
 # ---------------------------------------------------------------------------
