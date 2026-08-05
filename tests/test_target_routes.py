@@ -556,21 +556,42 @@ def _flat(body):
     return " ".join(body.split())
 
 
-def _detail(client, drafts=(), **agg_over):
+def _detail(client, drafts=(), query="", **agg_over):
     """Render the detail page and return its text with whitespace collapsed.
 
     Every keyword goes through to ``_agg``, so passing nothing gives the empty
     state and passing ``runs=`` / ``tools=`` / ``partial=`` gives the others.
+
+    ``query`` is appended to the URL, and the aggregate is patched with a
+    SIDE EFFECT rather than a fixed return value so that ``?sort=`` is not
+    inert. The route reads ``?sort`` off the query string, validates it and
+    passes it to ``aggregate_target_candidates``; the template then reads the
+    mode back off the ENVELOPE (``sort_mode=agg["sort_mode"]``), so a patch
+    returning a frozen envelope swallows the query string entirely and the
+    grouped-mode tests below were really being driven by their own
+    ``sort_mode=`` kwarg -- deleting ``{query}`` from the URL left them green.
+    Reflecting the kwarg back is what makes the round trip load-bearing.
+
+    A caller that passes ``sort_mode=`` explicitly still wins, because those
+    tests are about what the TEMPLATE does with a mode rather than about how it
+    got there.
     """
     _login(client)
     t = _target()
+
+    def _aggregate(_target_id, **kwargs):
+        env = _agg(**agg_over)
+        if "sort_mode" not in agg_over:
+            env["sort_mode"] = kwargs.get("sort_mode") or env["sort_mode"]
+        return env
+
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.get_target", return_value=t), \
             patch("blueprints.targets.aggregate_target_candidates",
-                  return_value=_agg(**agg_over)), \
+                  side_effect=_aggregate), \
             patch("shared.compute_campaigns.list_campaigns_for_target",
                   return_value=list(drafts)):
-        resp = client.get(f"/targets/{t.id}")
+        resp = client.get(f"/targets/{t.id}{query}")
     assert resp.status_code == 200
     return _flat(resp.get_data(as_text=True))
 
@@ -867,6 +888,92 @@ def test_several_tools_still_get_the_cross_tool_copy_and_the_toggle(client):
     assert "Grouped by tool" in body
 
 
+# The class appears in the macro's <style> block as `.cand-group-row td`, so an
+# assertion on the bare slug is true of every render. Only the attribute is
+# unique to an actual header row.
+_GROUP_ROW = 'class="cand-group-row"'
+
+
+def test_a_pasted_sort_tool_url_draws_no_group_header_on_a_one_tool_target(client):
+    """ROUND 19 (B-1), the route half. The toggle is correctly hidden at one
+    tool by the test above, but ``target_detail`` reads ``?sort`` straight off
+    the query string, so a pasted or bookmarked URL still reaches grouped
+    mode. The macro gated its group headers on ``multi_tool``, which is True
+    here because two presets are two cohorts, so this drew a lone header over
+    rows ``apply_sort_mode`` had returned in percentile order.
+
+    ROUND 20. No ``sort_mode=`` kwarg here on purpose: the mode has to arrive
+    through ``?sort``, be validated by the route and come back out of the
+    aggregate, because reaching grouped mode from a pasted URL is the entire
+    claim. Passing it directly, as this test used to, exercised the template
+    and left the route's half untested.
+    """
+    rows = [dict(_one_design()[0], _source_tool="proteina",
+                 _source_preset=preset, _source_index=i)
+            for i, preset in enumerate(("protein_binder", "ligand_binder"))]
+    body = _detail(client, query="?sort=tool", tools=["proteina"],
+                   multi_tool=True, split_tools=["proteina"],
+                   candidates=rows, total=2, shown=2,
+                   per_tool={"proteina": {"total": 2, "shown": 2,
+                                          "cohort_n": 2, "unranked": 0}})
+    assert _GROUP_ROW not in body
+
+
+def test_two_tools_under_sort_tool_do_draw_group_headers(client):
+    """The pair, and the half that makes ``?sort=tool`` load-bearing: drop the
+    query string and this one goes red, because grouped mode is then never
+    reached at all. Never drawing a header satisfies the test above, and would
+    silently delete A82."""
+    rows = [dict(_one_design()[0], _source_tool=tool, _source_index=i)
+            for i, tool in enumerate(("bindcraft", "boltzgen"))]
+    body = _detail(client, query="?sort=tool",
+                   tools=["bindcraft", "boltzgen"], multi_tool=True,
+                   candidates=rows, total=2, shown=2,
+                   per_tool={"bindcraft": {"total": 1, "shown": 1,
+                                           "cohort_n": 1, "unranked": 0},
+                             "boltzgen": {"total": 1, "shown": 1,
+                                          "cohort_n": 1, "unranked": 0}})
+    assert body.count(_GROUP_ROW) == 2, body.count(_GROUP_ROW)
+
+
+def test_an_unknown_pasted_sort_mode_falls_back_to_the_default_mode(client):
+    """The route validates ``?sort`` against ``SORT_MODES`` before it goes
+    anywhere, and the aggregate reflects back what it was given. A stale link
+    from an older version of this page renders in the default mode rather than
+    grouping on a mode nothing implements.
+
+    ROUND 21. This asserted ONLY ``_GROUP_ROW not in body``, which is true of
+    any mode that is not exactly ``'tool'`` -- including ``'nonsense'`` itself.
+    Deleting both validation lines from ``target_detail`` therefore survived
+    the whole suite under the name of the test that exists to pin them. The
+    assertions below are ones only the fallback can produce:
+
+      * The "Best first" toggle is ACTIVE. The template marks it ``btn-primary``
+        on ``sort_mode == 'percentile'`` and ``btn-secondary`` otherwise, so an
+        unvalidated mode reaches a page where neither order is shown as the one
+        in effect.
+      * ``nonsense`` appears in no URL on the page. The macro builds the three
+        export links as ``?sort=`` ~ the mode it was handed, so without the
+        fallback the page hands the user download links carrying a mode the
+        export route would itself have to reject.
+    """
+    rows = [dict(_one_design()[0], _source_tool=tool, _source_index=i)
+            for i, tool in enumerate(("bindcraft", "boltzgen"))]
+    body = _detail(client, query="?sort=nonsense",
+                   tools=["bindcraft", "boltzgen"], multi_tool=True,
+                   candidates=rows, total=2, shown=2,
+                   per_tool={"bindcraft": {"total": 1, "shown": 1,
+                                           "cohort_n": 1, "unranked": 0},
+                             "boltzgen": {"total": 1, "shown": 1,
+                                          "cohort_n": 1, "unranked": 0}})
+    assert _GROUP_ROW not in body
+    assert "sort=nonsense" not in body
+
+    label = body.index(">Best first<")
+    anchor = body[body.rindex("<a ", 0, label):label]
+    assert 'class="btn-primary"' in anchor, anchor
+
+
 def test_a_split_cohort_row_names_its_preset(client):
     """The Tool column prints a slug, and for a tool that ran at two presets the
     slug does not identify the population the row was ranked against."""
@@ -1113,3 +1220,71 @@ def test_an_uncapped_table_makes_no_claim_about_export_numbering(client):
     body = _detail(client, tools=["bindcraft"], candidates=_one_design(),
                    total=1, shown=1, capped=False)
     assert "rank the whole set rather than this page's top" not in body
+
+
+# ---------------------------------------------------------------------------
+# shared/targets.py::campaign_ids_for_target -- the PAGE-BOUND exit
+#
+# THIS TEST IS IN THE WRONG FILE, deliberately. Its siblings live in
+# tests/test_targets.py, which a concurrent change owns this round, so adding
+# it there would have corrupted that work. Move it back beside
+# test_campaign_ids_for_target_pages_past_the_row_clamp at the first chance.
+#
+# That clamp test seeds 2400 rows -- five pages of 500 -- so it leaves the loop
+# through the SHORT-PAGE exit and asserts complete=True. Nothing exercised the
+# other exit: flipping the `return ids, False` after `_MAX_PAGES` to True was
+# green across the whole suite. It is the exit that matters more. A transient
+# read failure also reports False and a retry clears it, but a target with more
+# than _PAGE_SIZE * _MAX_PAGES runs can NEVER be read completely, so the lab
+# handoff upstream refuses the shortlist on every attempt with nothing the user
+# can do about it. Reporting True there would instead admit a membership test
+# built on a prefix, and silently narrow a wet-lab order.
+# ---------------------------------------------------------------------------
+
+class _AlwaysFullPage:
+    """A Supabase client whose every ranged read returns a full page, forever.
+
+    Deliberately NOT a second copy of the PostgREST fake in
+    tests/test_targets.py. The only behaviour under test is "the loop ran out
+    of pages"; a duplicated fake is exactly the kind of thing that drifts from
+    the original and then models a backend neither of them has.
+    """
+
+    def __init__(self):
+        self.reads = 0
+        self._rows: list = []
+
+    # The whole query chain collapses onto self.
+    def table(self, _name):
+        return self
+
+    def select(self, *_a, **_kw):
+        return self
+
+    def eq(self, *_a, **_kw):
+        return self
+
+    def order(self, *_a, **_kw):
+        return self
+
+    def range(self, start, end):
+        self.reads += 1
+        self._rows = [{"id": f"c-{i:06d}"} for i in range(start, end + 1)]
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=self._rows)
+
+
+def test_campaign_ids_for_target_reports_the_page_bound_as_incomplete():
+    from shared import targets as st
+
+    client = _AlwaysFullPage()
+    with patch("shared.targets.get_service_client", return_value=client):
+        ids, complete = st.campaign_ids_for_target("t-1", user_id="u-1")
+
+    assert client.reads == st._MAX_PAGES, client.reads
+    assert len(ids) == st._PAGE_SIZE * st._MAX_PAGES
+    assert complete is False, (
+        "the page bound was hit, so these ids are a PREFIX of the real set; "
+        "True here admits a membership test that can only answer 'not yours'")

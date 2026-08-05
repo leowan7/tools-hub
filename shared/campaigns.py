@@ -74,7 +74,11 @@ PRICE_REQUIRED_STATUSES = frozenset(
 )
 
 RESULTS_STATUSES = ("none", "partial", "all")
-SUBMISSION_SOURCES = ("web", "api")
+# Every value the lab_campaigns_submission_source_enum CHECK accepts, in the
+# order the migrations added them: 0037 added 'campaign', 0040 added 'target'.
+# Nothing reads this constant today; it is kept in step with the CHECK so it
+# cannot become a second, wrong statement of the same enum.
+SUBMISSION_SOURCES = ("web", "api", "campaign", "target")
 
 
 @dataclass(frozen=True)
@@ -127,6 +131,12 @@ class Campaign:
     # compute campaign: candidate_refs = [{"job_id","index"}, ...].
     source_campaign_id: Optional[str] = None
     candidate_refs: Optional[list[dict[str, Any]]] = None
+    # Target-wide shortlist (migration 0040). Set on 'target' rows, where the
+    # shortlist spans many sub-jobs of MANY tools run against one design
+    # target. Reuses ``candidate_refs`` unchanged: 0037 keyed those refs on
+    # (job_id, index) rather than on any campaign-relative position, so they
+    # already address a design pooled from any number of parents.
+    source_target_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Campaign":
@@ -173,6 +183,10 @@ class Campaign:
                 if row.get("source_campaign_id") is not None else None
             ),
             candidate_refs=row.get("candidate_refs"),
+            source_target_id=(
+                str(row["source_target_id"])
+                if row.get("source_target_id") is not None else None
+            ),
         )
 
 
@@ -276,6 +290,71 @@ def create_campaign_from_refs(
     except Exception:
         logger.error(
             "Failed to insert campaign-wide lab_campaigns row.", exc_info=True,
+        )
+        return None
+
+
+def create_campaign_from_target_refs(
+    *,
+    user_id: str,
+    source_target_id: str,
+    candidate_refs: list[dict],
+    target_name: str,
+    target_context: str,
+    assay_type: str,
+    budget_band: str,
+    affinity_goal_kd_nm: Optional[float] = None,
+    timeline_weeks: Optional[int] = None,
+) -> Optional[Campaign]:
+    """Insert a lab campaign whose shortlist spans MANY TOOLS run against one
+    design target (``submission_source = 'target'``, migration 0040).
+
+    The 'campaign' shape of :func:`create_campaign_from_refs`, one level up.
+    ``candidate_refs`` is the same ``[{"job_id": str, "index": int}, ...]``
+    payload and needs no widening, because those refs were never
+    campaign-relative: they name a ``tool_jobs`` row and an index within it, so
+    a ref from a bindcraft sub-job and one from a standalone pxdesign job are
+    the same kind of thing. ``source_job_id`` and ``source_campaign_id`` are
+    both left NULL and ``candidate_indices`` stays empty; the widened CHECK
+    accepts the row because ``candidate_refs`` is non-empty.
+
+    The caller MUST have already verified, per ref, that the job belongs to
+    ``user_id`` AND belongs to this target. This function performs no ownership
+    or parentage check of its own -- it runs on the service-role client, which
+    bypasses RLS.
+    """
+    if assay_type not in ASSAY_TYPES:
+        raise ValueError(f"invalid assay_type: {assay_type!r}")
+    if budget_band not in BUDGET_BANDS:
+        raise ValueError(f"invalid budget_band: {budget_band!r}")
+    if not candidate_refs:
+        raise ValueError("candidate_refs must be non-empty")
+
+    client = get_service_client()
+    if client is None:
+        logger.error("Cannot create campaign: service client unavailable.")
+        return None
+    row = {
+        "user_id": user_id,
+        "submission_source": "target",
+        "source_target_id": source_target_id,
+        "candidate_refs": list(candidate_refs),
+        "target_name": target_name,
+        "target_context": target_context or "",
+        "assay_type": assay_type,
+        "budget_band": budget_band,
+        "affinity_goal_kd_nm": affinity_goal_kd_nm,
+        "timeline_weeks": timeline_weeks,
+    }
+    try:
+        response = client.table(_TABLE).insert(row).execute()
+        rows = list(getattr(response, "data", None) or [])
+        if not rows:
+            return None
+        return Campaign.from_row(rows[0])
+    except Exception:
+        logger.error(
+            "Failed to insert target-wide lab_campaigns row.", exc_info=True,
         )
         return None
 

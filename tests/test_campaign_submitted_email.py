@@ -16,6 +16,11 @@ import pytest
 
 from shared import email as em
 
+# Register item B-12: the only file in this slice that lacked it. Nothing here
+# reaches Supabase today, but `shared.email` is one import away from code that
+# does, and the fixture is what makes that stay true.
+pytestmark = pytest.mark.usefixtures("isolate_supabase")
+
 
 def _flat(text: str) -> str:
     """Collapse whitespace: the HTML template wraps mid-sentence, so the
@@ -100,3 +105,299 @@ def test_no_key_sends_nothing(monkeypatch):
         user_email="scientist@example.com",
     )
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Target-sourced handoffs (Phase 5.3, migration 0040)
+# ---------------------------------------------------------------------------
+
+_TID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _target_campaign(refs):
+    """A 'target' lab_campaigns row: shortlist in candidate_refs, parent is a
+    design target rather than a compute campaign or a single job."""
+    c = _campaign(refs=refs)
+    c.submission_source = "target"
+    c.source_target_id = _TID
+    c.source_campaign_id = None
+    c.source_job_id = None
+    return c
+
+
+def test_a_target_shortlist_counts_candidate_refs_too(sent):
+    """The count fix generalises: a 'target' row leaves candidate_indices empty
+    for the same reason a 'campaign' row does."""
+    em.send_campaign_submitted_emails(
+        campaign=_target_campaign([
+            {"job_id": "j1", "index": 0},
+            {"job_id": "j2", "index": 0},
+        ]),
+        user_email="scientist@example.com",
+        source_tools={"bindcraft": 1, "pxdesign": 1},
+    )
+    user_mail, staff_mail = sent
+    assert "2 candidates)" in _flat(user_mail["html"])
+    assert "Candidates: 2" in staff_mail["text"]
+
+
+def test_the_staff_notify_names_the_tools_the_designs_came_from(sent):
+    """The cross-tool spread at a glance. Ordered by count descending then
+    slug, so the same shortlist always renders the same string."""
+    em.send_campaign_submitted_emails(
+        campaign=_target_campaign([{"job_id": "j1", "index": i} for i in range(7)]),
+        user_email="scientist@example.com",
+        source_tools={"pxdesign": 3, "rfdiffusion": 4},
+    )
+    staff_mail = sent[1]
+    assert "Designs from: rfdiffusion (4), pxdesign (3)" in staff_mail["text"]
+    assert "rfdiffusion (4), pxdesign (3)" in _flat(staff_mail["html"])
+
+
+def test_the_staff_notify_links_back_to_the_target(sent, monkeypatch):
+    """Target-aware detail URL. Before this the staff email carried only the
+    admin link, so the one page showing WHICH designs were picked, and what
+    else the target holds, was not reachable from the notification at all.
+
+    PUBLIC_BASE_URL is pinned rather than assumed: ``app.py`` calls
+    ``load_dotenv()`` at import, so whichever test imported the app first
+    leaks the repo-root .env's value into this process and the base differs
+    between a solo run and a full-suite run. Same guard test_email_real.py
+    already uses.
+    """
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tools.ranomics.com")
+    em.send_campaign_submitted_emails(
+        campaign=_target_campaign([{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+        source_tools={"bindcraft": 1},
+    )
+    staff_mail = sent[1]
+    assert f"Target: https://tools.ranomics.com/targets/{_TID}" in staff_mail["text"]
+    assert f"/targets/{_TID}" in staff_mail["html"]
+
+
+def test_a_campaign_row_links_back_to_its_run_not_a_target(sent, monkeypatch):
+    """The sibling arm. _handoff_source_link branches on submission_source, so
+    each shape has to be checked; a single 'whichever id is set' rule would
+    have printed a target link for a campaign row once 0040 landed."""
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://tools.ranomics.com")
+    c = _campaign(refs=[{"job_id": "j1", "index": 0}])
+    c.submission_source = "campaign"
+    c.source_campaign_id = "cccccccc-1111-2222-3333-444444444444"
+    c.source_job_id = None
+    em.send_campaign_submitted_emails(campaign=c, user_email="s@example.com")
+    staff_mail = sent[1]
+    assert "Run: https://tools.ranomics.com/campaigns/cccccccc" in staff_mail["text"]
+    assert "/targets/" not in staff_mail["text"]
+
+
+def test_without_source_tools_no_designs_from_line_is_printed(sent):
+    """Omitted, not printed empty. The campaign and single-job branches do not
+    pass it, because they have exactly one tool by construction."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+    )
+    assert "Designs from" not in sent[1]["text"]
+    assert "Designs from" not in sent[1]["html"]
+
+
+# ---------------------------------------------------------------------------
+# ROUND 19 (register item A-7): the accepted count is not the requested one
+# ---------------------------------------------------------------------------
+
+def test_a_dropped_count_is_reported_to_both_parties(sent):
+    """A user who starred ten designs and had three rejected reads "7
+    candidates" as the number they chose, and ops reads it as the whole order.
+    Neither message previously carried anything to compare it against.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)]),
+        user_email="scientist@example.com",
+        dropped=3,
+    )
+    user_mail, staff_mail = sent
+    user_html = _flat(user_mail["html"])
+    assert "7 candidates)" in user_html
+    assert "3 starred designs could not be matched to a design on this target" \
+        in user_html
+    assert "This request covers 7 designs." in user_html
+    assert "3 starred design" in _flat(user_mail["text"])
+    # Ops reads the staff mail, so the shortfall has to reach it too.
+    assert "3 starred designs rejected" in _flat(staff_mail["html"])
+    assert "Not included: 3 starred design(s) rejected" in staff_mail["text"]
+
+
+def test_the_plain_text_body_carries_the_count_its_shortfall_note_compares_to(sent):
+    """ROUND 20. The note names a request size and the text body never stated
+    one: it read "Only the 7 above were sent" in a message with no 7 anywhere
+    above it, because the count lived only in the HTML lead. The sentence was
+    also a claim about STAGING, which nothing in this module observes -- so it
+    now reports what the ROW covers, and the text body states that figure.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)]),
+        user_email="scientist@example.com",
+        dropped=3,
+    )
+    user_text = sent[0]["text"]
+    assert "(7 candidates)" in user_text
+    assert "This request covers 7 designs." in user_text
+    # The claim that was never verified, in either body.
+    assert "were sent" not in user_text
+    assert "were sent" not in _flat(sent[0]["html"])
+
+
+def test_no_dropped_count_means_no_shortfall_wording_anywhere(sent):
+    """The pair. Rendering the note unconditionally would satisfy the test
+    above while telling every clean submission something went missing."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+    )
+    for mail in sent:
+        assert "could not be matched" not in _flat(mail["html"])
+        assert "Not included" not in _flat(mail["html"])
+        assert "Not included" not in mail["text"]
+        assert "over the per-request limit" not in _flat(mail["html"])
+        assert "Over the limit" not in mail["text"]
+
+
+def test_a_single_dropped_design_reads_as_singular(sent):
+    """`1 starred designs were not included` is the kind of thing that makes a
+    paid-intake message look automated and untrustworthy."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": 0}]),
+        user_email="scientist@example.com",
+        dropped=1,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "1 starred design could not be matched" in user_html
+    assert "was left out" in user_html
+    assert "This request covers 1 design." in user_html
+
+
+def test_a_truncated_count_is_reported_separately_from_a_rejection(sent):
+    """ROUND 20. `_MAX_CANDIDATE_REFS` cuts the shortlist at parse time, so
+    those designs were never judged against the target at all. Folding them
+    into `dropped` would assert a verdict nobody reached, and would give them
+    the rejection's remedy -- when the one that works is a second, smaller
+    request.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    user_mail, staff_mail = sent
+    user_html = _flat(user_mail["html"])
+    assert "120 further starred designs were over the per-request limit" \
+        in user_html
+    # It is NOT a rejection, so the rejection wording must not appear.
+    assert "could not be matched" not in user_html
+    assert "120 starred refs past the per-request cap" in _flat(staff_mail["html"])
+    assert "Over the limit: 120 starred ref(s) past the per-request cap" \
+        in staff_mail["text"]
+
+
+def test_the_truncated_count_is_hedged_for_the_customer_and_exact_for_ops(sent):
+    """ROUND 21, THE UNIT MISMATCH. `truncated` counts REFS: the tail past
+    `_MAX_CANDIDATE_REFS` is never parsed into (job, index) pairs, so a repeat
+    hiding in it cannot be subtracted and the figure is an UPPER BOUND on the
+    designs actually missing.
+
+    The customer's sentence counts designs, so it must say "up to"; the staff
+    row already counts refs and must keep saying so. Both bodies previously said
+    "starred designs" for the same number, so the two parties were handed
+    different-unit answers under one noun.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    user_mail, staff_mail = sent
+    assert "Up to 120 further starred designs" in _flat(user_mail["html"])
+    assert "Up to 120 further starred designs" in user_mail["text"]
+    # Ops keeps the exact unit, on both the table row and the text body.
+    staff_html = _flat(staff_mail["html"])
+    assert "120 starred refs past the per-request cap" in staff_html
+    assert "Up to" not in staff_html
+    assert "starred designs" not in staff_html
+
+
+def test_the_truncation_note_gives_no_advice_that_duplicates_the_order(sent):
+    """MEDIUM-4. This note used to say "Star them again on the target page and
+    send a second request".
+
+    Following it created a SECOND paid lab project covering the SAME designs:
+    `static/js/candidate_table.js` never clears the shortlist and the modal
+    serialises it in stored order, so the second POST carries the identical
+    first `_MAX_CANDIDATE_REFS` refs -- and the designs over the limit are still
+    over it. The route is now `@idempotent()`, but its TTL is 60 seconds, which
+    makes it a double-click guard rather than a remedy, so nothing here may
+    promise that a resend is harmless either.
+
+    Asserted as an absence plus a replacement, not as an absence alone: a note
+    reduced to silence would pass half of this while leaving a user who lost 120
+    designs with no idea what happens next.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
+        user_email="scientist@example.com",
+        truncated=120,
+    )
+    for mail in sent:
+        body = _flat(mail["html"]) + " " + mail["text"]
+        assert "send a second request" not in body
+        assert "Star them again" not in body
+        assert "star them again" not in body
+    user_html = _flat(sent[0]["html"])
+    assert "would repeat this request rather than add them" in user_html
+    assert "will follow up about the rest" in user_html
+
+
+def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
+    """They can co-occur: a 620-star shortlist is truncated to 500 AND can have
+    refs among those 500 that fail the provenance check. One merged number
+    would have to be wrong about one of the two."""
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(498)]),
+        user_email="scientist@example.com",
+        dropped=2,
+        truncated=120,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "2 starred designs could not be matched" in user_html
+    assert "120 further starred designs were over the per-request limit" \
+        in user_html
+    assert "This request covers 498 designs." in user_html
+    staff_text = sent[1]["text"]
+    assert "Not included: 2 starred design(s) rejected" in staff_text
+    assert "Over the limit: 120 starred ref(s)" in staff_text
+
+
+def test_a_single_truncated_design_reads_as_singular(sent):
+    """Exactly 501 well-formed refs is one over the cap, and reads as one.
+
+    THE FIXTURE IS THE 501st REF, not a bare `truncated=1`. `truncated` is
+    `requested - len(accepted)` and `accepted` saturates at
+    `_MAX_CANDIDATE_REFS`, so `truncated=1` can only ever occur ALONGSIDE a
+    persisted shortlist at the cap. The earlier version of this test passed one
+    ref with `truncated=1` -- a combination the route cannot produce -- so its
+    docstring described a state its fixture had not built, and the singular
+    grammar was being checked against an impossible campaign row.
+    """
+    from blueprints.lab_projects import _MAX_CANDIDATE_REFS
+    refs = [{"job_id": "j1", "index": i} for i in range(_MAX_CANDIDATE_REFS)]
+    em.send_campaign_submitted_emails(
+        campaign=_campaign(refs=refs),
+        user_email="scientist@example.com",
+        truncated=1,
+    )
+    user_html = _flat(sent[0]["html"])
+    assert "Up to 1 further starred design was over the per-request limit" \
+        in user_html
+    assert "rather than add it" in user_html
+    # Singular on the staff row too, which counts the same thing in refs.
+    assert "1 starred ref past the per-request cap" in _flat(sent[1]["html"])

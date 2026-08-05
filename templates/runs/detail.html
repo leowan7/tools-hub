@@ -33,8 +33,6 @@
   .rd-actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap; }
   .rd-btn { padding: 0.5rem 1rem; border-radius: 6px; font-size: 0.83rem; font-weight: 600; text-decoration: none; cursor: pointer; border: 1px solid var(--border, rgba(255,255,255,0.16)); background: none; color: var(--text-primary, #fafafa); }
   .rd-btn.danger { color: #e8846b; border-color: rgba(232,132,107,0.5); }
-  .rd-upsell { margin-top: 2rem; border: 1px solid var(--border, rgba(255,255,255,0.10)); border-left: 3px solid var(--accent-text, #2B9E7E); border-radius: 6px; padding: 1rem 1.15rem; font-size: 0.85rem; color: var(--text-secondary, #b8c0c8); }
-  .rd-upsell a { color: var(--accent-text, #2B9E7E); }
 </style>
 {% endblock %}
 
@@ -120,11 +118,16 @@
     <a class="rd-btn" href="{{ url_for('campaigns.compute_campaigns_list') }}">All campaigns</a>
   </div>
 
-  <div class="rd-upsell">
-    Compute campaigns generate and score candidates. When you have your top hits,
-    <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener">validate them in the lab</a>
-    with the Ranomics wet-lab pipeline.
-  </div>
+  {# The second off-platform CRO panel used to sit here. Whenever this page has
+     designs it renders results_panel (line 91), whose own panel says the same
+     thing higher up: two panels, one message, both linking out to
+     ranomics.com and both bypassing the in-product shortlist. Collapsed into
+     the one that sits directly below the results table, where the decision is
+     actually made (Phase 5.2). Its two .rd-upsell rules went with it.
+
+     The one behaviour change: on a campaign with no designs yet this block was
+     the ONLY lab mention, and now there is none. That is the right answer --
+     there is nothing to validate until something has been produced. #}
 </div>
 
 <script>

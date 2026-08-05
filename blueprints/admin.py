@@ -81,6 +81,7 @@ def admin_campaign_detail(campaign_id: str):
         STATUSES,
         API_STATUSES,
     )
+    from shared.jobs import get_job  # noqa: PLC0415
     email = session.get("user_email", "")
     if not email:
         return redirect(url_for("auth.login", next=request.path))
@@ -121,9 +122,140 @@ def admin_campaign_detail(campaign_id: str):
         "admin/campaign_detail.html",
         campaign=campaign,
         statuses=statuses,
+        shortlist=_ref_shortlist_view(campaign, get_job),
         flash_msg=flash_msg or None,
         flash_kind=flash_kind,
     )
+
+
+# Ceiling on the job lookups one fulfilment page will issue. A shortlist spans
+# a handful of jobs even at hundreds of designs, because refs are deduped by
+# job id before the loop; this only binds on a pathological row.
+_ADMIN_REF_JOB_LOOKUPS = 60
+
+
+def _ref_shortlist_view(campaign, get_job):  # noqa: ANN001
+    """Fulfilment view of a ref-based shortlist, or ``None``.
+
+    Returns ``None`` for the shapes that keep their shortlist in
+    ``candidate_indices`` ('web') or in ``sequences`` ('api'); the template
+    renders those exactly as before.
+
+    Why this exists at all: the fulfilment page rendered
+    ``candidate_indices | join(', ')`` for every non-API row, so a 'campaign'
+    row -- live since migration 0037 -- has been showing an EMPTY candidate
+    list and a "Source job —" with nothing to click, because both of those
+    columns are NULL by that shape's own CHECK constraint. Ops could see that a
+    scoping request existed and not which designs it named. Filed as A84.
+
+    ``tools`` is the per-tool design breakdown, counted over refs (not over
+    jobs) so it matches the line in the staff notify email. Resolved by
+    re-reading each distinct source job, UNSCOPED because this is a staff view
+    of another user's submission -- the ownership decision was made when the
+    row was created, and re-applying the submitter's scope here is not
+    available to an admin session anyway.
+
+    ``count`` is the number of DISTINCT designs the shortlist names, NOT the
+    length of the stored list. ``candidate_refs`` is JSON off a database row,
+    so it can hold repeats and entries this page cannot resolve to a design,
+    and ops fulfils a paid order against the number printed here. Every counted
+    design lands in exactly one of ``tools``, ``unresolved`` and
+    ``out_of_range``, so those three sum to ``count``; ``duplicates`` and
+    ``malformed`` account for the rest of ``raw``. All of those are rendered --
+    a number on this page that ops cannot reconcile against the numbers beneath
+    it is the failure this shape exists to avoid (register items A-4 / A-6).
+    ``by_job`` is the resolved job-id -> indices map and is not rendered.
+    """
+    from collections.abc import Mapping  # noqa: PLC0415
+    from shared.jobs import candidate_records  # noqa: PLC0415
+
+    refs = list(getattr(campaign, "candidate_refs", None) or [])
+    if not refs:
+        return None
+
+    # One pass over the stored list, applying the same (job_id, index) contract
+    # blueprints.lab_projects._parse_candidate_refs writes: a mapping, a
+    # non-empty job_id, an index that coerces to a non-negative int. Anything
+    # else is counted as malformed instead of being handed to ``.get`` -- a
+    # bare string in this column used to raise AttributeError and 500 the whole
+    # fulfilment page (register item A-5).
+    by_job: dict = {}
+    seen: set = set()
+    malformed = 0
+    duplicates = 0
+    for ref in refs:
+        jid = ""
+        idx = -1
+        if isinstance(ref, Mapping):
+            jid = str(ref.get("job_id") or "").strip()
+            try:
+                idx = int(ref.get("index"))
+            except (TypeError, ValueError):
+                idx = -1
+        if not jid or idx < 0:
+            malformed += 1
+            continue
+        if (jid, idx) in seen:
+            # The same physical design named twice. Counting it twice would
+            # tell ops to order it twice (register item A-6).
+            duplicates += 1
+            continue
+        seen.add((jid, idx))
+        by_job.setdefault(jid, []).append(idx)
+
+    looked_up = list(by_job)[:_ADMIN_REF_JOB_LOOKUPS]
+    skipped = set(by_job) - set(looked_up)
+
+    tools: dict = {}
+    out_of_range = 0
+    unresolved = sum(len(by_job[jid]) for jid in skipped)
+    for jid in looked_up:
+        job = get_job(jid)
+        if job is None:
+            unresolved += len(by_job[jid])
+            continue
+        slug = str(getattr(job, "tool", "") or "unknown")
+        # The job is read anyway for its tool slug, so its record count is
+        # already in hand -- no extra read to check an index against it. Only
+        # applied when that count is POSITIVE: candidate_records returns [] both
+        # for a job with no results and for a result shape it cannot read, so
+        # zero means "length unknown", and flagging every design of such a job
+        # would be a louder wrong answer than saying nothing about it.
+        n_records = len(candidate_records(getattr(job, "result", None)))
+        indices = by_job[jid]
+        resolved = (
+            [i for i in indices if i < n_records] if n_records else list(indices)
+        )
+        out_of_range += len(indices) - len(resolved)
+        # Guarded so a job whose every index is past the end never prints as
+        # "slug (0)"; _source_tools_line drops zero-count tools the same way.
+        if resolved:
+            tools[slug] = tools.get(slug, 0) + len(resolved)
+    return {
+        # Summed over by_job rather than over the buckets below, so that a
+        # bucket dropped in a later edit shows up as a page whose numbers do
+        # not add up -- which tests/test_admin_shortlist_fulfilment.py asserts
+        # against the RENDERED page.
+        "count": sum(len(v) for v in by_job.values()),
+        "jobs": len(by_job),
+        # Descending by count then slug, matching _source_tools_line in
+        # shared/email.py so the page and the email cannot order differently.
+        "tools": sorted(tools.items(), key=lambda kv: (-kv[1], kv[0])),
+        # Designs whose source job could not be read: deleted, or past the
+        # lookup ceiling. Stated rather than folded into "unknown", because a
+        # tool breakdown that quietly omits rows is worse than one that says so
+        # -- its numbers would not add up to the design count printed above it.
+        "unresolved": unresolved,
+        # Designs whose source job WAS read but whose index is past the end of
+        # its results. Kept out of ``tools`` so a per-tool number never counts
+        # a design that is not there to pull.
+        "out_of_range": out_of_range,
+        # The stored list as submitted, and the two ways it exceeds ``count``.
+        "raw": len(refs),
+        "duplicates": duplicates,
+        "malformed": malformed,
+        "by_job": by_job,
+    }
 
 @admin_bp.route("/admin/lab-projects/<campaign_id>/status", methods=["POST"])
 def admin_campaign_update_status(campaign_id: str):

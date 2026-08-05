@@ -113,6 +113,33 @@ def candidate_records(result: Optional[dict]) -> list:
     return []
 
 
+def candidate_count(result: Optional[dict]) -> Optional[int]:
+    """How many per-candidate records a result carries, or ``None`` when the
+    shape does not say.
+
+    THE COMPANION TO :func:`candidate_records`, AND THE REASON IT CANNOT ANSWER
+    THIS. ``candidate_records`` returns ``[]`` for two unrelated facts: a job
+    that really delivered zero designs (``{"candidates": []}``), and a result
+    whose shape this module cannot read at all (``{"something_else": [...]}``,
+    a NULL result, a non-dict). A caller that range-checks an index against
+    ``len(candidate_records(...))`` therefore has to choose which of the two to
+    be wrong about, because ``0`` means both.
+
+    Here they are different values: ``0`` is a read count and ``None`` is "not
+    stated". Same keys in the same order as ``candidate_records``, over the same
+    normalized result, so the two can never disagree about which array they are
+    describing.
+    """
+    result = _normalize_result_shape(result)
+    if not isinstance(result, dict):
+        return None
+    for key in ("candidates", "designs"):
+        recs = result.get(key)
+        if isinstance(recs, list):
+            return len(recs)
+    return None
+
+
 def _candidate_filter_status(cand: object) -> object:
     """Resolved ``filter_status`` for a candidate, checking ``scores`` then
     the candidate root. Returns None when neither carries it."""
@@ -548,6 +575,79 @@ def get_job(job_id: str, *, user_id: Optional[str] = None) -> Optional[ToolJob]:
     if not data:
         return None
     return ToolJob.from_row(data)
+
+
+# Outcomes of :func:`read_job`. Three, because ``get_job``'s ``None`` is two
+# unrelated facts wearing one hat, and callers that must act on the difference
+# have no way to recover it.
+JOB_READ_OK = "ok"
+# The read SUCCEEDED and matched no row: the job does not exist, or it exists
+# and is not this caller's. One value, because they are one fact to a caller —
+# a permanent verdict — and because telling them apart would require reading a
+# row the owner scope exists to withhold.
+JOB_READ_ABSENT = "absent"
+# We did not manage to look. No service client, or the query raised. Says
+# NOTHING about whether the job exists.
+JOB_READ_UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True)
+class JobRead:
+    """A job lookup, plus WHY it came back the way it did.
+
+    Deliberately no ``__bool__`` and no truthiness of any kind: collapsing this
+    back to one bit is the thing it exists to prevent.
+    """
+
+    job: Optional[ToolJob]
+    outcome: str
+
+    @property
+    def unavailable(self) -> bool:
+        """True iff the lookup did not complete. NOT "the job is missing"."""
+        return self.outcome == JOB_READ_UNAVAILABLE
+
+
+def read_job(job_id: str, *, user_id: Optional[str] = None) -> JobRead:
+    """Fetch a job and report which of the three outcomes occurred.
+
+    Same query and same owner-scope semantics as :func:`get_job`; the whole
+    difference is that a failure to read is distinguishable from a row that is
+    not there. Use this wherever the two lead to different behaviour — a paid
+    intake refusing versus a permanent rejection, a retry versus a verdict.
+    ``get_job`` remains the right call everywhere the only question is "do I
+    have the job", which is most of this app.
+
+    WHY THIS DOES NOT USE ``.single()``, AND WHY THAT IS THE ENTIRE POINT.
+    ``.single()`` RAISES on zero rows, so under it "no such job" and "PostgREST
+    timed out" arrive as the same exception and the distinction this function
+    exists to make is gone before the ``except`` runs. Reading with
+    ``.limit(1)`` makes a completed-but-empty read observable as an empty list,
+    so the boundary between "we asked and the answer was no" and "we never got
+    an answer" is drawn by whether the call returned at all — not by inspecting
+    an error code, which would have to track every transport and PostgREST
+    version this deploys against.
+
+    ``get_job`` is deliberately NOT reimplemented on top of this. It is called
+    from most blueprints and from the terminal/settle path, its ``.single()``
+    chain is what several test fakes model, and a shared implementation would
+    buy nothing but the risk of changing all of that at once.
+    """
+    client = get_service_client()
+    if client is None:
+        return JobRead(None, JOB_READ_UNAVAILABLE)
+    try:
+        query = client.table(_TABLE).select("*").eq("id", job_id)
+        if user_id is not None:
+            query = query.eq("user_id", user_id)
+        response = query.limit(1).execute()
+    except Exception:
+        logger.warning("read_job: lookup failed for %s", job_id, exc_info=True)
+        return JobRead(None, JOB_READ_UNAVAILABLE)
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return JobRead(None, JOB_READ_ABSENT)
+    return JobRead(ToolJob.from_row(rows[0]), JOB_READ_OK)
 
 
 def set_modal_call(job_id: str, function_call_id: str) -> bool:

@@ -18,6 +18,54 @@
   </div>
 {% endif %}
 
+{# Separate from the banner above, and rendered on its own condition. Folding
+   it in would make a partial submission look like a clean one with a footnote,
+   and it has to survive a reload of this URL for the same reason the counts
+   travel in the query string at all: this is the only place the user is told
+   what did NOT reach the lab.
+
+   TWO COUNTS, TWO SENTENCES, DIFFERENT UNITS. `dropped_count` counts DESIGNS
+   that were read and refused; `truncated_count` counts REFS the request's size
+   cap discarded before reading them, so it is an upper bound on the designs
+   actually missing and its sentence says "up to". One noun over both numbers
+   would be wrong about one of them.
+
+   NEITHER SENTENCE GIVES A RETRY INSTRUCTION, and the truncation one used to.
+   "Star them again on the target page and submit a second request" is not
+   followable: nothing in this product clears a shortlist, the modal serialises
+   it in stored order, so a second submit carries the identical first 500 refs.
+   The route is `@idempotent()`, which collapses that replay for 60 seconds --
+   a double-click guard, not a remedy. Ops sees the shortfall on the staff
+   email, so the honest instruction is that they will follow up.
+
+   THE `dropped` SENTENCE IS ALLOWED TO BE CATEGORICAL. `_submit_target_
+   shortlist` refuses the entire submission (?handoff=unverified) when any
+   rejection had a cause it could not decide -- a job read that never completed,
+   or a campaign id set known to be short -- so this page is only ever reached
+   with rejections that a completed check made. Before that gate existed, "will
+   be refused the same way" was false every time the database blinked. #}
+{% if dropped_count or truncated_count %}
+  <div style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.85rem 1rem;margin-bottom:1.25rem;">
+    {% if dropped_count %}
+    <p style="margin:0;">
+      <strong style="color:#d69e2e;">{{ dropped_count }} starred design{{ '' if dropped_count == 1 else 's' }} {{ 'was' if dropped_count == 1 else 'were' }} not included.</strong>
+      <span style="color:var(--text-secondary);">
+        {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to a design on the source target, so this request does not cover {{ 'it' if dropped_count == 1 else 'them' }}.
+        Starring {{ 'it' if dropped_count == 1 else 'them' }} again will be refused the same way — if that looks wrong, contact us and we will trace where {{ 'it went' if dropped_count == 1 else 'they went' }}.
+      </span>
+    </p>
+    {% endif %}
+    {% if truncated_count %}
+    <p style="margin:{{ '.6rem 0 0' if dropped_count else '0' }};">
+      <strong style="color:#d69e2e;">Up to {{ truncated_count }} further starred design{{ '' if truncated_count == 1 else 's' }} {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit.</strong>
+      <span style="color:var(--text-secondary);">
+        {{ 'It was' if truncated_count == 1 else 'They were' }} not read at all. Sending the same selection again would repeat this request rather than add {{ 'it' if truncated_count == 1 else 'them' }} — the Ranomics team has the shortfall and will follow up about the rest.
+      </span>
+    </p>
+    {% endif %}
+  </div>
+{% endif %}
+
 <div class="panel" style="margin-bottom:1rem;">
   <div class="panel-header">
     <span class="panel-title">Status</span>
@@ -58,7 +106,8 @@
       <dd style="margin:0;">{{ campaign.assay_type | replace('_', ' ') | title }}</dd>
 
       <dt style="color:var(--text-secondary);">Candidates</dt>
-      <dd style="margin:0;">{{ (campaign.candidate_refs if campaign.submission_source == 'campaign' else campaign.candidate_indices) | length }} shortlisted</dd>
+      {# 'campaign' AND 'target' both keep the shortlist in candidate_refs. #}
+      <dd style="margin:0;">{{ (campaign.candidate_refs if campaign.submission_source in ('campaign', 'target') else campaign.candidate_indices) | length }} shortlisted</dd>
 
       <dt style="color:var(--text-secondary);">Budget band</dt>
       <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
@@ -73,7 +122,14 @@
         <dd style="margin:0;">{{ campaign.timeline_weeks }} weeks</dd>
       {% endif %}
 
-      {% if campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
+      {% if campaign.submission_source == 'target' and campaign.source_target_id %}
+      <dt style="color:var(--text-secondary);">Source target</dt>
+      <dd style="margin:0;">
+        <a href="{{ url_for('targets.target_detail', target_id=campaign.source_target_id) }}" style="color:var(--accent);">
+          {{ campaign.source_target_id[:8] }}
+        </a>
+      </dd>
+      {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
       <dt style="color:var(--text-secondary);">Source campaign</dt>
       <dd style="margin:0;">
         <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" style="color:var(--accent);">
@@ -101,7 +157,9 @@
 
 <div style="display:flex;gap:.65rem;flex-wrap:wrap;">
   <a href="/lab-projects" class="btn-secondary">All lab projects</a>
-  {% if campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
+  {% if campaign.submission_source == 'target' and campaign.source_target_id %}
+  <a href="{{ url_for('targets.target_detail', target_id=campaign.source_target_id) }}" class="btn-secondary">View source target</a>
+  {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
   <a href="{{ url_for('campaigns.compute_campaign_detail', campaign_id=campaign.source_campaign_id) }}" class="btn-secondary">View source campaign</a>
   {% elif campaign.source_job_id %}
   <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">View source job</a>

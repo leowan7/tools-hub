@@ -405,8 +405,95 @@ def _cost_breakdown_line(job, *, tone: str) -> str:  # noqa: ANN001
     return f"{', '.join(bits)} ({int(gpu_seconds)} GPU-sec on {gpu_class})."
 
 
-def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
+def _handoff_source_link(base_url: str, campaign) -> Optional[tuple]:  # noqa: ANN001
+    """``(label, url)`` of the results page this shortlist was picked on.
+
+    Branches on ``submission_source``, not on whichever id happens to be set.
+    The ``lab_campaigns_submission_source_shape`` CHECK requires each source to
+    carry ITS OWN parent (a 'target' row must have source_target_id, a
+    'campaign' row source_campaign_id, a 'web' row source_job_id) but it does
+    NOT forbid the others being non-null, so "whichever id is set" is not a
+    well-defined rule at the database level even though the writers in this
+    codebase only ever populate one.
+
+    Returns None for an 'api' row, which has no upstream page in this product.
+    Every attribute is read through ``getattr``: this function is reached from
+    a best-effort email path that must not raise on a partially built row.
+    """
+    source = str(getattr(campaign, "submission_source", "") or "web")
+    if source == "target":
+        tid = getattr(campaign, "source_target_id", None)
+        return ("Target", f"{base_url}/targets/{tid}") if tid else None
+    if source == "campaign":
+        cid = getattr(campaign, "source_campaign_id", None)
+        return ("Run", f"{base_url}/campaigns/{cid}") if cid else None
+    if source == "web":
+        jid = getattr(campaign, "source_job_id", None)
+        return ("Source job", f"{base_url}/jobs/{jid}") if jid else None
+    return None
+
+
+def _source_tools_line(source_tools) -> str:  # noqa: ANN001
+    """``"rfdiffusion (4), pxdesign (3)"`` from ``{slug: design_count}``.
+
+    Ordered by count descending, then slug, so the same shortlist always
+    renders the same string. Empty when there is nothing to say, which the
+    callers below test rather than printing a bare label.
+    """
+    if not source_tools:
+        return ""
+    items = [(str(k), int(v)) for k, v in dict(source_tools).items() if v]
+    items.sort(key=lambda kv: (-kv[1], kv[0]))
+    return ", ".join(f"{slug} ({n})" for slug, n in items)
+
+
+def send_campaign_submitted_emails(
+    *, campaign, user_email: str, source_tools=None, dropped: int = 0,  # noqa: ANN001
+    truncated: int = 0,
+) -> None:
     """Send user confirmation + internal staff notification on campaign submit.
+
+    ``source_tools`` is an optional ``{tool_slug: design_count}`` map over the
+    ACCEPTED shortlist. Supplied by the target branch, where the shortlist
+    spans tools and the spread is the whole point; omitted by the campaign and
+    single-job branches, which have exactly one tool by construction
+    (``compute_campaigns.tool`` is NOT NULL) and would only print it back.
+
+    ``dropped`` is how many DISTINCT designs the caller REJECTED before
+    creating this campaign; ``truncated`` is how many REFS its per-request cap
+    discarded before it looked at them at all. Both messages otherwise report
+    the accepted count with nothing to compare it against, so a user who
+    starred ten designs reads "7 candidates" as the number they chose, and ops
+    reads it as the whole order (register item A-7). Zero for both is the
+    overwhelmingly common case and prints nothing.
+
+    THEY ARE TWO ARGUMENTS BECAUSE THEY COUNT DIFFERENT THINGS IN DIFFERENT
+    UNITS. ``dropped`` is designs, deduped and decided one at a time by the
+    write path; ``truncated`` is refs, because the tail past the cap is never
+    parsed into pairs. Summing them would force one sentence to be wrong about
+    half of what it counts, and would put a design count and a ref count under
+    one noun.
+
+    Earlier rounds justified the split as "opposite remedies" and gave the
+    truncated half a retry instruction. That was wrong twice over: the
+    shortlist is never cleared, so a second send carries the identical refs, and
+    the route is ``@idempotent()`` besides. Neither number now carries advice
+    the user cannot act on.
+
+    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. The caller refuses the
+    whole submission rather than reporting a shortfall it could not decide (a
+    read that never completed, a campaign id set that came back short), so
+    every design counted here was refused by a check that ran to completion.
+    That is what makes "rejected", rather than "we could not confirm", an
+    honest word for it.
+
+    WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
+    sentence below asserts that any PDB was written:
+    ``stage_campaign_candidates`` silently skips a candidate that resolves to
+    no bytes, and the caller swallows ``StorageError`` per source job. The
+    verified fact is what the ROW names -- ``candidate_refs``, deduped and
+    index-checked at the write path -- so the copy says the request "covers" N
+    designs rather than that N "were sent".
 
     Best-effort: failures are logged but not raised to the caller.
     """
@@ -417,6 +504,25 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
     api_key   = os.environ.get("RESEND_API_KEY", "").strip()
 
     campaign_url = f"{base_url}/lab-projects/{campaign.id}"
+    source_link = _handoff_source_link(base_url, campaign)
+    tools_line = _source_tools_line(source_tools)
+
+    # Built here rather than inline in the staff table below. An f-string
+    # nested inside another f-string's replacement field only parses on Python
+    # 3.12+ (PEP 701), and this repo's deployed interpreter is chosen by a
+    # nixpkgs pin rather than by runtime.txt, so the version this file runs on
+    # is not something the file can assert.
+    _td = 'style="color:#666;padding:4px 12px 4px 0;"'
+    tools_row = (
+        f"<tr><td {_td}>Designs from</td><td>{tools_line}</td></tr>"
+        if tools_line else ""
+    )
+    source_row = ""
+    if source_link:
+        source_row = (
+            f"<tr><td {_td}>{source_link[0]}</td>"
+            f'<td><a href="{source_link[1]}">{source_link[1]}</a></td></tr>'
+        )
 
     # Shortlist size. A 'web' row carries candidate_indices; a 'campaign' or
     # 'target' row leaves that empty and keeps the shortlist in candidate_refs
@@ -427,6 +533,63 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
         campaign.candidate_refs or []
     )
 
+    # Built out here, not inline, for the PEP 701 reason given above: an
+    # f-string nested in another f-string's replacement field does not parse on
+    # every interpreter this can deploy onto.
+    _sentences: list = []
+    dropped_row = ""
+    truncated_row = ""
+    if dropped:
+        _plural = "s" if dropped != 1 else ""
+        # "matched to a DESIGN on this target", not "matched to this target":
+        # the write path rejects on four grounds, and one of them is an index
+        # past the end of an otherwise-legitimate run of this very target.
+        _sentences.append(
+            f"{dropped} starred design{_plural} could not be matched to a "
+            f"design on this target and {'were' if dropped != 1 else 'was'} "
+            f"left out. This request covers "
+            f"{n_candidates} design{'s' if n_candidates != 1 else ''}."
+        )
+        dropped_row = (
+            f"<tr><td {_td}>Not included</td><td>{dropped} "
+            f"starred design{_plural} rejected</td></tr>"
+        )
+    if truncated:
+        _tplural = "s" if truncated != 1 else ""
+        _twas = "were" if truncated != 1 else "was"
+        # "UP TO", because this number counts REFS and the sentence counts
+        # DESIGNS. The tail past the cap is never parsed into (job, index)
+        # pairs, so a repeat hiding in it cannot be subtracted and the figure is
+        # an upper bound on the designs actually missing. The staff row below
+        # keeps the exact unit ("refs"), which is why the two read differently.
+        #
+        # NO RETRY ADVICE. This used to say "star them again on the target page
+        # and send a second request", and following it created a DUPLICATE PAID
+        # ORDER: nothing in this product clears a shortlist, the modal
+        # serialises it in stored order, so the second POST carries the
+        # identical first 500 refs and the designs over the limit are still over
+        # it. The route is now `@idempotent()`, which collapses that replay for
+        # 60 seconds -- a double-click guard, not a remedy, and far too short to
+        # be one. The only followable path is the one below: the staff copy
+        # carries the shortfall, so ops can pick the rest up.
+        _sentences.append(
+            f"Up to {truncated} further starred design{_tplural} {_twas} over "
+            f"the per-request limit and {_twas} not read. Sending the same "
+            f"selection again would repeat this request rather than add "
+            f"{'them' if truncated != 1 else 'it'}, so the Ranomics team has "
+            f"the shortfall on their copy and will follow up about the rest."
+        )
+        truncated_row = (
+            f"<tr><td {_td}>Over the limit</td><td>{truncated} "
+            f"starred ref{_tplural} past the per-request cap</td></tr>"
+        )
+    dropped_note_html = "".join(
+        '<p style="color:#8a5a00;background:#fff6e5;border-radius:6px;'
+        f'padding:10px 12px;">{s}</p>'
+        for s in _sentences
+    )
+    dropped_note_text = ("\n" + "\n".join(_sentences) + "\n") if _sentences else ""
+
     # User confirmation
     user_subject = f"Scoping request received — {campaign.target_name}"
     user_html = f"""
@@ -436,6 +599,7 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
       <p>We've received your yeast display scoping request for
          <strong>{campaign.target_name}</strong> ({n_candidates}
          candidate{'s' if n_candidates != 1 else ''}).</p>
+      {dropped_note_html}
       <p>The Ranomics team will review feasibility against current lab capacity
          and follow up within <strong>2 business days</strong>.</p>
       <p style="margin:24px 0;">
@@ -451,8 +615,15 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
       </p>
     </div>
     """.strip()
+    # The count is in the FIRST LINE, not only in the HTML lead. The shortfall
+    # note below it names a figure and compares it against the request size, so
+    # a text body that never states the request size left that comparison
+    # pointing at nothing (the note previously read "Only the 7 above were
+    # sent" in a body with no 7 anywhere above it).
     user_text = (
-        f"Scoping request received for {campaign.target_name}.\n\n"
+        f"Scoping request received for {campaign.target_name} "
+        f"({n_candidates} candidate{'s' if n_candidates != 1 else ''}).\n"
+        f"{dropped_note_text}\n"
         "The Ranomics team will review and follow up within 2 business days.\n\n"
         f"View campaign: {campaign_url}\n\n"
         "Ranomics Tools — tools.ranomics.com"
@@ -474,8 +645,12 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
             <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
             <td>{n_candidates}</td></tr>
+        {dropped_row}
+        {truncated_row}
+        {tools_row}
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Budget</td>
             <td>{campaign.budget_band.title()}</td></tr>
+        {source_row}
       </table>
       <p style="margin:24px 0;">
         <a href="{admin_url}"
@@ -493,8 +668,14 @@ def send_campaign_submitted_emails(*, campaign, user_email: str) -> None:
         f"From: {user_email}\n"
         f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
         f"Candidates: {n_candidates}\n"
-        f"Budget: {campaign.budget_band.title()}\n\n"
-        f"Review in admin: {admin_url}\n"
+        + (f"Not included: {dropped} starred design(s) rejected\n"
+           if dropped else "")
+        + (f"Over the limit: {truncated} starred ref(s) past the "
+           f"per-request cap\n" if truncated else "")
+        + (f"Designs from: {tools_line}\n" if tools_line else "")
+        + f"Budget: {campaign.budget_band.title()}\n"
+        + (f"{source_link[0]}: {source_link[1]}\n" if source_link else "")
+        + f"\nReview in admin: {admin_url}\n"
     )
 
     if not api_key:
