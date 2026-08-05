@@ -40,9 +40,120 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tarfile
 
-import modal
+# ---------------------------------------------------------------------------
+# The console, made incapable of killing the run
+# ---------------------------------------------------------------------------
+#
+# BEFORE ``import modal``, AND BEFORE ANY OTHER STATEMENT THAT COULD PRINT.
+# Container output reaches this process through modal's log pump: here that is
+# wget's progress bars (box-drawing characters), huggingface_hub's tqdm bars
+# and whatever filenames the three HF repos happen to contain. On a Windows
+# cp1252 console such a write raises ``UnicodeEncodeError: 'charmap' codec
+# can't encode character '✓'`` (or U+2588, or U+2501) and kills the LOCAL
+# entrypoint, while the container carries on for up to its 3-hour timeout. The
+# same class of raise killed ``_hotspot_canary --phase 0`` on 2026-08-04. The
+# seed job is not GPU-priced, but a local death here loses the INVENTORY —
+# the only readout saying which weights actually landed on the Volumes — and
+# an unnoticed half-seeded Volume is paid for later, by a design run.
+#
+# ``_harden_stream`` mutates the stream's error handler IN PLACE and returns
+# the SAME object, which is the point: modal's log pump, rich's renderer and
+# the interpreter's own traceback printer each captured ``sys.stdout`` when they
+# started, so REPLACING ``sys.stdout`` would leave every one of them writing to
+# the strict original. Wrapping is only the fallback for a stream with no usable
+# ``reconfigure``. NOT ``PYTHONIOENCODING=utf-8``: that works, and an operator
+# forgets it exactly once.
+#
+# DUPLICATED FROM ``_canary_scoring.py`` RATHER THAN IMPORTED, deliberately.
+# That module is reachable (it is a sibling file) but it is canary-lifetime
+# code — ``_hotspot_canary.py`` and ``_design_canary.py`` both say "delete
+# before flag-on" — while this seeder is a permanent operational script that
+# must still run the day the canaries are gone. Importing it as
+# ``tools.proteina._canary_scoring`` is worse still: that drags the web-tier
+# adapter in through ``tools/proteina/__init__.py``. ~50 stateless stdlib lines
+# is the cheaper cost. Canonical copy and its tests: ``_canary_scoring.py`` and
+# ``tests/test_proteina_canary.py``.
+
+# ``backslashreplace`` rather than ``replace``: the operator needs to be able to
+# tell WHICH character could not be rendered.
+CONSOLE_ERRORS = "backslashreplace"
+
+
+def _safe_text(value, encoding=None, errors=CONSOLE_ERRORS):
+    """``value`` rendered so that encoding it to ``encoding`` cannot raise.
+
+    Lossless when the console can carry the text; ``None``/unknown encodings
+    degrade to ASCII, which every console can take.
+    """
+    text = value if isinstance(value, str) else str(value)
+    for candidate in (encoding, "ascii"):
+        if not candidate:
+            continue
+        try:
+            return text.encode(candidate, errors).decode(candidate, "replace")
+        except (LookupError, UnicodeError, TypeError, ValueError):
+            continue
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+class _SafeStream:
+    """Delegating proxy whose ``write`` cannot raise ``UnicodeEncodeError``.
+
+    The FALLBACK only. Everything except ``write`` is delegated, so ``fileno``,
+    ``encoding``, ``isatty`` and ``buffer`` keep working for anything that hands
+    the stream to a subprocess.
+    """
+
+    def __init__(self, stream, errors=CONSOLE_ERRORS):
+        object.__setattr__(self, "_stream", stream)
+        object.__setattr__(self, "_errors", errors)
+
+    def write(self, text):
+        stream = object.__getattribute__(self, "_stream")
+        try:
+            return stream.write(text)
+        except UnicodeEncodeError:
+            return stream.write(_safe_text(
+                text, getattr(stream, "encoding", None),
+                object.__getattribute__(self, "_errors")))
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_stream"), name)
+
+
+def _harden_stream(stream, errors=CONSOLE_ERRORS):
+    """The stream to use in place of ``stream``, unable to raise on an
+    unencodable character.
+
+    Returns the SAME object whenever it could be reconfigured. ``None`` for
+    ``None``, and the original for a stream with no encoding to fail at
+    (``io.StringIO``, pytest's capture) — wrapping something that cannot raise
+    only adds a layer between the caller and a real file descriptor.
+    """
+    if stream is None:
+        return None
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        try:
+            reconfigure(errors=errors)
+            return stream
+        except (ValueError, OSError, TypeError, AttributeError, LookupError):
+            pass
+    if not getattr(stream, "encoding", None):
+        return stream
+    if isinstance(stream, _SafeStream):
+        return stream
+    return _SafeStream(stream, errors)
+
+
+sys.stdout = _harden_stream(sys.stdout)
+sys.stderr = _harden_stream(sys.stderr)
+
+
+import modal  # noqa: E402 — imported only after the console cannot kill us
 
 _WEIGHTS_MOUNT = "/vol/weights"
 _REWARDS_MOUNT = "/vol/rewards"
