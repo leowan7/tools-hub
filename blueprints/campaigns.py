@@ -47,14 +47,40 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # here renders the `{% else %}` arm's copy -- "your request could not be
 # submitted" -- for an unrelated cause with the whole suite green.
 #
-# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, DIFFERENT COPY.
-# Two of the five describe a cause that differs by arm: where this route's
+# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, and three of the
+# five sentences (`none`, `noname`, `failed`) are word for word the target
+# page's. `rejected` is the one whose CAUSE differs by arm: where this route's
 # `rejected` tests parentage it asks "child of this run" rather than "on this
-# target" -- though parentage is not its only ground, since a ref naming an
-# index past the end of a job that IS a child lands there too. And its
-# `unverified` can only mean a sub-job read that did not complete, because
-# _submit_campaign_shortlist makes no second read to come back short. The two
-# templates are therefore not one partial.
+# target" -- though parentage is not its only ground, since a ref naming an index
+# past the end of a job that IS a child lands there too.
+#
+# THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
+# sentences into templates/components/lab_handoff_banner.html, which takes the
+# arm's noun -- each page keeps its own wrapper, its own whitelist and its own
+# suite. Two inline copies were how one of these sentences went stale unnoticed,
+# and the partial has THREE importers rather than two: templates/unavailable.html
+# renders them as well. That third page is reached only from the TARGET arm's
+# detail route, never from this one (see `compute_campaign_detail` below and
+# register item A94), so the run-noun rendering of it does not occur in
+# production -- the macro nonetheless takes the noun, because a partial whose
+# correctness depends on which caller reaches it is the duplication again.
+#
+# `unverified` USED TO differ too, and no longer does beyond the noun. It named
+# the sub-job read here and the paged run-list read on the target page. HERE
+# that was the whole set of causes this arm then had, which was one. THERE IT
+# WAS NOT: that arm has always ALSO set `unresolved` on a `read_job` that came
+# back unavailable, so its sentence named one of two causes and was already
+# false for the other before A90 touched anything -- the correction is written
+# up in this commit's register entry.
+#
+# Register item A90 then gave each arm one more cause: the PARENT read at the
+# top of the SUBMIT gate (`cc.read_campaign` here, `read_target` there, both in
+# blueprints/lab_projects.py) now reports "unreadable" separately from "absent"
+# and refuses to this same reason. That is the submit gate and not this detail
+# route, which still reads through the two-outcome `get_campaign`. Neither
+# sentence names a read any more, and the copy for both pages now lives in
+# templates/components/lab_handoff_banner.html; see the comment above the banner
+# in templates/runs/detail.html.
 LAB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 
 
@@ -574,6 +600,37 @@ def compute_campaign_detail(campaign_id):
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    # STILL THE TWO-OUTCOME `get_campaign`, and A90 deliberately left it that
+    # way after building the three-outcome read this arm's submit gate uses.
+    # This route's None arm is not the defect A90 is about: an unreadable run
+    # falls through to the cutover fallback and then to the runs list, HTTP 200,
+    # exactly as it did before the item -- benign, if uninformative. The target
+    # arm's None arm rendered 404, which is a false verdict about the row, and
+    # that is the one that had to change (`blueprints/targets.py::target_detail`).
+    #
+    # MIRRORING THE TARGET ARM'S 503 HERE WAS TRIED AND REVERTED; the residual
+    # that leaves is register item A94, and the cost that decided it is COUNTED
+    # rather than felt. A REDIRECT NEVER RENDERS A TEMPLATE, so it never runs
+    # `app.py::inject_workspace_context`. Under a total read outage this request
+    # as written issues three Supabase reads and then redirects -- `get_tier`
+    # inside the `load_user_context` above, `cc.get_campaign`, and the wet-lab
+    # `get_campaign` below. A rendered 503 instead issues five: that same
+    # `get_tier`, the campaign read, and then the context processor's own
+    # `load_user_context` -> `get_tier`, `active_workspaces_count`, and the
+    # navbar wallet chip. (Its fifth read, the onboarding ribbon, is guarded on
+    # a wallet balance the failed chip read leaves None, so it does not fire.)
+    # Every one of those five FAILS OPEN, which is why the page renders at all
+    # -- but in the hang-shaped outage this exit exists for, failing open still
+    # costs the full client read timeout each, serially, against
+    # `gunicorn.conf.py`'s `timeout = 120` and its default `workers = 2`. The
+    # user gets the gateway's 502 in place of our 503, and two such requests
+    # occupy both workers. The target arm pays none of this: its ABSENT answer
+    # already rendered `404.html`, so its 503 swapped one render for another.
+    #
+    # A94 also records what is therefore NOT delivered on this arm: a
+    # `?handoff=unverified` redirect from the submit gate arrives here, and if
+    # the fault outlived the redirect the user gets the runs list rather than
+    # the banner. The two arms are asymmetric, and deliberately.
     campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
     if campaign is None:
         # Launch-cutover fallback: /campaigns/<id> used to be the wet-lab

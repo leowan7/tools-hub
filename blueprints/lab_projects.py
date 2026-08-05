@@ -191,13 +191,49 @@ def _submit_campaign_shortlist(
         return redirect(detail + "?handoff=none")
     if not target_name:
         return redirect(detail + "?handoff=noname" + trunc_qs)
-    # Unreasoned on purpose, and identical to the target arm's `get_target`
-    # gate: this exit LEAVES the page that renders the banners, so there is
-    # nowhere to put one. `cc.get_campaign` also returns None for an unreadable
-    # row (shared/compute_campaigns.py:909-918), so a transient fault still
-    # bounces silently here; that needs a three-outcome campaign read and is
-    # filed, not fixed in this diff.
-    if cc.get_campaign(source_campaign_id, user_id=ctx.user_id) is None:
+    # THE PARENT GATE, and two outcomes rather than one (register item A90).
+    # `cc.get_campaign` answered None for a run that is not there, one that is
+    # not the caller's, and a read that never completed, so a two-second Supabase
+    # fault bounced the user to an unrelated list with no message at all -- on
+    # the one action that hands work to a wet lab. `read_campaign` reports which.
+    #
+    # UNAVAILABLE keeps the user on THIS run's page, which is the page that
+    # renders the banners, and says the submission was refused rather than
+    # ignored. It rides `trunc_qs` for the reason every other failure exit here
+    # does: a 620-star shortlist refused at this gate still lost 120 refs to the
+    # cap, and this is a path where the user is already being told something went
+    # wrong.
+    #
+    # THE BANNER IS NOT GUARANTEED TO ARRIVE ON THIS ARM, and that is register
+    # item A94 rather than an oversight here. `compute_campaign_detail` reads
+    # through the two-outcome `get_campaign`, so a fault that outlives the
+    # redirect lands the user on the runs list instead of on this reason. The
+    # target arm's detail route does render it, because ITS absent answer was a
+    # 404 and it already paid for a template render. A94 has the round-trip
+    # count that decided the difference.
+    parent = cc.read_campaign(source_campaign_id, user_id=ctx.user_id)
+    if parent.unavailable:
+        return redirect(detail + "?handoff=unverified" + trunc_qs)
+    # ABSENT, and the original silent redirect is the right answer to it: the run
+    # really is gone or was never this caller's, so `detail` is not a page we can
+    # send them to and there is nothing to say beyond returning them to their
+    # runs.
+    #
+    # THE SAME THREE-WAY SHAPE AS THE TARGET ARM'S GATE BELOW, AND NOT THE SAME
+    # BEHAVIOUR ON EVERY INPUT. This comment used to claim they were identical.
+    # They diverge on one class of row: `read_campaign` turns the row into a
+    # dataclass through `_campaign_or_none` and reports UNAVAILABLE for one it
+    # cannot parse, so an unparseable row redirects politely; `read_target` calls
+    # `DesignTarget.from_row` OUTSIDE its `try`, exactly where its own module's
+    # `get_target` does, so an unparseable row RAISES out of the gate below and
+    # 500s the submit. Each read matches its own module's `get_*` sibling, which
+    # is the reason neither was changed to match the other, and each docstring
+    # says so -- but the pair is not symmetric and `read_target`'s three-outcome
+    # contract is therefore not total. REGISTER ITEM A97, not fixed here:
+    # closing it means giving shared/targets.py a `_campaign_or_none` equivalent,
+    # which changes what `get_target` and the target detail page do with such a
+    # row as well.
+    if parent.campaign is None:
         return redirect(url_for("jobs.jobs_list"))
 
     jobs_by_id: dict = {}
@@ -220,8 +256,11 @@ def _submit_campaign_shortlist(
     # Distinct DESIGNS the checks below refused. Not derived by subtraction from
     # the ref count: a repeat and a truncation are neither of them a refusal.
     dropped = 0
-    # THE ONE FLAG THAT DECIDES WHETHER THIS SUBMISSION MAY PROCEED: set when a
-    # ref was refused for a reason WE COULD NOT ACTUALLY DECIDE.
+    # THE ONE FLAG THAT DECIDES WHETHER THE REFS PERMIT THIS SUBMISSION TO
+    # PROCEED: set when a ref was refused for a reason WE COULD NOT ACTUALLY
+    # DECIDE. Scoped to the refs because the parent gate above refuses on the
+    # same grounds and to the same `?handoff=unverified`, without passing through
+    # here -- it runs before any ref is read and has nothing to loop over.
     #
     # EXACTLY ONE SETTER HERE, where the target arm has two, and the second one
     # must not be copied. That arm also refuses when its campaign-id set came
@@ -428,7 +467,7 @@ def _submit_target_shortlist(
     from collections import defaultdict  # noqa: PLC0415
     from shared.campaigns import create_campaign_from_target_refs  # noqa: PLC0415
     from shared.email import send_campaign_submitted_emails  # noqa: PLC0415
-    from shared.targets import campaign_ids_for_target, get_target  # noqa: PLC0415
+    from shared.targets import campaign_ids_for_target, read_target  # noqa: PLC0415
 
     detail = url_for("targets.target_detail", target_id=source_target_id)
 
@@ -459,7 +498,17 @@ def _submit_target_shortlist(
         return redirect(detail + "?handoff=none")
     if not target_name:
         return redirect(detail + "?handoff=noname" + trunc_qs)
-    if get_target(source_target_id, user_id=ctx.user_id) is None:
+    # THE PARENT GATE, and two outcomes rather than one (register item A90); see
+    # the pair in `_submit_campaign_shortlist` for the full reasoning, and for
+    # the one input class on which the two gates do NOT behave alike.
+    # UNAVAILABLE keeps the user on THIS target's page with a reason and carries
+    # `trunc_qs` like every other failure exit here; ABSENT keeps the original
+    # silent return to the targets list, because that row really is gone or was
+    # never this caller's, so `detail` is not a page we can send them to.
+    parent = read_target(source_target_id, user_id=ctx.user_id)
+    if parent.unavailable:
+        return redirect(detail + "?handoff=unverified" + trunc_qs)
+    if parent.target is None:
         return redirect(url_for("targets.targets_list"))
 
     # Read ONCE, before the loop. Owner-scoped and paged; membership is all
@@ -495,11 +544,14 @@ def _submit_target_shortlist(
     # refusal, and folding all three into one number is what made the previous
     # count unable to say anything true about any of them.
     dropped = 0
-    # THE ONE FLAG THAT DECIDES WHETHER THIS SUBMISSION MAY PROCEED, and the
-    # whole reason the reads above report causes instead of emptiness: set when
-    # at least one ref was refused for a reason WE COULD NOT ACTUALLY DECIDE.
-    # Exactly two things set it, and they are independent faults that a degraded
-    # Supabase produces together:
+    # THE ONE FLAG THAT DECIDES WHETHER THE REFS PERMIT THIS SUBMISSION TO
+    # PROCEED, and the whole reason the reads above report causes instead of
+    # emptiness: set when at least one ref was refused for a reason WE COULD NOT
+    # ACTUALLY DECIDE. Scoped to the refs because the parent gate above refuses
+    # on the same grounds and to the same `?handoff=unverified`, without passing
+    # through here -- it runs before any ref is read and has nothing to loop
+    # over. Exactly two things set it, and they are independent faults that a
+    # degraded Supabase produces together:
     #
     #   1. ``read_job`` came back ``unavailable`` -- no service client, or the
     #      query raised. The job may be perfectly valid; we never looked.

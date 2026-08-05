@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "components/status_badge.html" import status_badge %}
+{% from "components/lab_handoff_banner.html" import handoff_sentence, truncation_sentence %}
 {% block title %}{{ target.display_name }} — Ranomics Tools{% endblock %}
 {% block robots %}noindex,follow{% endblock %}
 
@@ -117,21 +118,45 @@
    `unverified` is the one that is NOT a malfunction to hide: the submit
    deliberately refused rather than ship a shortlist quietly missing designs,
    and saying so is the only thing that makes the refusal legible as a
-   decision rather than a bug. It fires for either of two database faults --
-   a job read that never completed, or a campaign id list known to be a prefix
-   of the real one -- and it is what entitles the `rejected` banner below to say
-   "will be refused the same way" without hedging. Every rejection that reaches
-   that banner was decided by a check that RAN; the ones we could not decide
-   land here instead. Say nothing in `rejected` that this gate does not
-   guarantee, and change neither without the other.
+   decision rather than a bug. THREE causes on this arm. TWO of them are a read
+   that did not complete: the PARENT target read at the gate (`read_target`,
+   blueprints/lab_projects.py) and any one of the SUB-JOB reads inside the loop.
+   Register item A90 added the first; until it, an unreadable parent bounced the
+   user to /targets with no banner at all.
 
-   NO MESSAGE HERE SAYS "nothing was charged". /lab-projects/submit has no
-   wallet or Stripe code on any path -- it inserts a lab_campaigns row and
-   stages PDBs -- and the modal that opens this flow says "No commitment --
-   this is a scoping request". A reassurance that no money moved implies money
-   could have moved, which contradicts the modal three panels up and is at best
-   noise on a page where the only charge already happened, back when the runs
-   were dispatched.
+   THE THIRD IS NOT ALWAYS A FAILED READ, and this comment used to claim all
+   three were. `campaign_ids_for_target` reports its id list incomplete on TWO
+   paths (shared/targets.py): a page read that raised, which is a failed read,
+   and its own page bound, where every page read completed and the loop simply
+   stopped. The second needs more than 10,000 compute campaigns on one target,
+   so nothing has ever reached it -- but "every one of them is a read that did
+   not complete" is false of it. What is true of all three, and what the
+   rendered sentence therefore says, is that a LOOKUP did not complete: on the
+   page-bound path the individual reads finished and the enumeration did not.
+
+   THE SENTENCE THEREFORE NAMES NO PARTICULAR READ. It used to name one of the
+   three -- the run list -- which made it false for the other two. (It was
+   already false for the sub-job read BEFORE A90 added the third; that is what a
+   sentence written against one cause and then inherited by another looks like.)
+   Naming all three would be a list the reader cannot act on differently, and
+   what they can act on is the same whichever one fired: the stars survive, try
+   again, tell us if it repeats.
+
+   `unverified` is still what entitles the `rejected` banner below to say "will
+   be refused the same way" without hedging. Every rejection that reaches that banner was
+   decided by a check that RAN; the ones we could not decide land here instead.
+   Say nothing in `rejected` that this gate does not guarantee, and change
+   neither without the other.
+
+   THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, because
+   templates/unavailable.html renders the same five sentences: A90's refusal
+   redirects here, and if the fault is still live when the browser follows the
+   redirect, the parent read at the top of this route fails too and the user
+   gets that page instead. This template keeps its own wrapper, its own
+   `{% if handoff %}` and its own `?truncated=` read; only the words are shared.
+   That is also where the reasoning for saying nothing about charges now lives:
+   /lab-projects/submit has no wallet or Stripe code on any path, and the modal
+   that opens this flow says "No commitment -- this is a scoping request".
 
    THE SECOND PARAGRAPH IS A DIFFERENT FACT, NOT A SOFTENER. `?truncated=` says
    how many starred refs the request's size cap discarded BEFORE any of the five
@@ -144,48 +169,14 @@
    this template; it is display-only, on a page the reader already owns, and the
    `|int` filter yields 0 for anything that is not a number, so a crafted value
    misinforms nobody but its author -- the same reasoning
-   `blueprints/lab_projects.py` states for its own clamp of the pair.
-
-   "Up to", because the number counts REFS. The tail past the cap is never
-   parsed into (job, index) pairs, so a repeat hiding in it cannot be
-   subtracted and this is an upper bound on the designs actually missing. #}
+   `blueprints/lab_projects.py` states for its own clamp of the pair. #}
 {% set truncated_count = request.args.get('truncated', 0) | int %}
 {% if handoff %}
 <div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
   <div class="panel-body">
-    <p style="margin: 0; color: #e8846b;">
-      {% if handoff == 'none' %}
-      Nothing was sent to the lab, because the request arrived with no designs in it.
-      Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
-      {% elif handoff == 'rejected' %}
-      Nothing was sent to the lab. The request did carry designs, but none of them
-      could be matched to a design on this target, so there was nothing to send.
-      Sending the same selection again will be refused the same way. Star designs
-      from the table on this page, or contact us and we will trace where they went.
-      {% elif handoff == 'noname' %}
-      Nothing was sent to the lab. The request needs a name for the target so the
-      Ranomics team knows what they are quoting. Reopen the form and add one.
-      {% elif handoff == 'unverified' %}
-      Nothing was sent to the lab. We could not read the full list of runs on this
-      target, so some of the designs you starred could not be confirmed as belonging
-      to it, and sending a shortlist that might be quietly missing designs is worse
-      than sending none. Your stars are still here, so try again. If it happens every
-      time, it is not a passing fault and we should look at it — contact us.
-      {% else %}
-      Your request could not be submitted and nothing was sent to the lab.
-      Your stars are still here. Try again, and contact us if it keeps failing.
-      {% endif %}
-    </p>
+    <p style="margin: 0; color: #e8846b;">{{ handoff_sentence(handoff, 'target') }}</p>
     {% if truncated_count > 0 %}
-    <p style="margin: 0.6rem 0 0; color: #e8846b;">
-      Separately, and whatever you do next: up to {{ truncated_count }} of your
-      starred design{{ '' if truncated_count == 1 else 's' }}
-      {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit
-      and {{ 'was' if truncated_count == 1 else 'were' }} not read at all.
-      A selection this size cannot be sent in one request, and sending it again
-      would cut it in the same place. Contact us and we will take the whole
-      list.
-    </p>
+    <p style="margin: 0.6rem 0 0; color: #e8846b;">{{ truncation_sentence(truncated_count) }}</p>
     {% endif %}
   </div>
 </div>

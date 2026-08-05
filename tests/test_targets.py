@@ -26,7 +26,11 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from shared.storage import StorageError
 from shared.targets import (
+    TARGET_READ_ABSENT,
+    TARGET_READ_OK,
+    TARGET_READ_UNAVAILABLE,
     DesignTarget,
+    TargetRead,
     _target_storage_key,
     archive_target,
     campaign_ids_for_target,
@@ -34,6 +38,7 @@ from shared.targets import (
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    read_target,
     unarchive_target,
 )
 
@@ -339,6 +344,247 @@ def test_campaign_ids_for_target_reports_a_failed_read_as_incomplete(fake):
     ]
     with patch.object(fake, "table", side_effect=_boom):
         assert campaign_ids_for_target("t-1", user_id="u-1") == ([], False)
+
+
+# ---------------------------------------------------------------------------
+# read_target: the three-outcome read (register item A90)
+#
+# `get_target` answers None for a target that is not there, one that is not the
+# caller's, and a read that never completed. The lab-handoff gate in
+# blueprints/lab_projects.py has to act differently on the last of those -- it
+# refuses the submission and says so, instead of bouncing the user to an
+# unrelated list in silence -- so the difference has to survive the read.
+# ---------------------------------------------------------------------------
+
+
+def _boom_table(*_a, **_kw):
+    raise RuntimeError("PostgREST is down")
+
+
+def test_read_target_reports_ok_for_a_row_that_is_there(fake):
+    row = _seed_target(fake, id="t-live")
+    read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_OK
+    assert read.target is not None and read.target.id == row["id"]
+    assert read.unavailable is False
+
+
+def test_read_target_reports_absent_when_the_read_matched_no_row(fake):
+    """A read that COMPLETED and found nothing. The whole point of `.limit(1)`:
+    under `.single()` the fake raises (as PostgREST does) and this is
+    indistinguishable from the fault in the next test, which is the defect A90
+    filed."""
+    read = read_target("t-nope", user_id="u-1")
+    assert read.outcome == TARGET_READ_ABSENT
+    assert read.target is None
+    assert read.unavailable is False, (
+        "an absent target is a verdict about the target, not about the database"
+    )
+
+
+def test_read_target_reports_unavailable_when_the_query_raises(fake):
+    _seed_target(fake, id="t-live")
+    with patch.object(fake, "table", side_effect=_boom_table):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.target is None
+    assert read.unavailable is True
+
+
+def test_read_target_reports_unavailable_with_no_service_client():
+    """No client is not "no target". `get_target` cannot say so."""
+    with patch("shared.targets.get_service_client", return_value=None):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.unavailable is True
+
+
+def test_absent_and_unavailable_are_distinct_target_outcomes(fake):
+    """THE PIN. Both of these hand back ``target is None``, so anything that
+    collapses the pair -- reverting to `.single()`, or a caller that reads only
+    the target -- makes a two-second database fault indistinguishable from a
+    permanent verdict on the one action that hands work to a wet lab.
+
+    Written as one test over both outcomes rather than two, because the claim is
+    about the DIFFERENCE and a pair of separate assertions can each keep passing
+    while the difference disappears.
+    """
+    absent = read_target("t-nope", user_id="u-1")
+    with patch.object(fake, "table", side_effect=_boom_table):
+        unreadable = read_target("t-nope", user_id="u-1")
+    assert absent.target is None and unreadable.target is None
+    assert absent.outcome != unreadable.outcome
+    assert absent.unavailable is False
+    assert unreadable.unavailable is True
+
+
+def test_read_target_applies_the_owner_scope(fake):
+    """``user_id`` is a QUERY FILTER, so another tenant's target matches no row
+    and comes back ABSENT -- not OK, and not a distinct "forbidden" outcome,
+    which would mean reading a row the scope exists to withhold. This read is the
+    same tenancy boundary `get_target` documents: copy_input/download_input do no
+    ownership check of their own.
+
+    Dropping ``.eq("user_id", ...)`` from `read_target` reds this: the fake
+    really filters, so the row would come back and the outcome would be OK.
+    """
+    _seed_target(fake, id="t-mine", user_id="u-1")
+    theirs = read_target("t-mine", user_id="u-2")
+    assert theirs.outcome == TARGET_READ_ABSENT
+    assert theirs.target is None
+    # And the unscoped read still works, so the test above failed on the scope
+    # rather than on the id.
+    assert read_target("t-mine").outcome == TARGET_READ_OK
+
+
+class _RaisingAtExecute:
+    """Builds like any other query and fails at ``execute()``.
+
+    The raising fake above patches ``client.table`` and so fails BEFORE any
+    query is built. Both faults are inside `read_target`'s ``try`` and both must
+    report UNAVAILABLE, but only the first was exercised: a ``try`` narrowed to
+    the ``client.table(...)`` line alone would have left every test here green
+    while an ``execute()`` raise escaped as a 500 out of the lab-handoff gate
+    and out of the target detail page.
+    """
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: self
+
+    def execute(self):
+        raise RuntimeError("PostgREST timed out")
+
+
+def test_read_target_reports_unavailable_when_execute_raises(fake):
+    _seed_target(fake, id="t-live")
+    with patch.object(fake, "table", return_value=_RaisingAtExecute()):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.target is None
+    assert read.unavailable is True
+
+
+# ---------------------------------------------------------------------------
+# TargetRead's two guards, and the invariant underneath them
+#
+# The class docstring claimed "no `__bool__` and no truthiness of any kind"
+# while having neither guard: every instance was unconditionally truthy, and
+# `frozen=True` GENERATED an `__eq__`, so `read == TARGET_READ_OK` answered
+# False in silence on a read that had succeeded. The precedent for both is
+# `tools/proteina/_canary_scoring.py::Verdict`, which paid for the same two
+# holes in the same order; `tests/test_proteina_canary.py` pins them there.
+# ---------------------------------------------------------------------------
+
+
+def test_a_target_read_refuses_to_be_used_as_a_boolean(fake):
+    """Asserted on the OK read FIRST, because that is where the default
+    behaviour was most dangerous: `if read:` was True there and True on an
+    unreadable one, so the natural spelling of "did this work" could not fail.
+    """
+    _seed_target(fake, id="t-live")
+    for read in (
+        read_target("t-live", user_id="u-1"),
+        read_target("t-nope", user_id="u-1"),                  # absent
+        TargetRead(None, TARGET_READ_UNAVAILABLE),
+    ):
+        with pytest.raises(TypeError):
+            bool(read)
+        with pytest.raises(TypeError):
+            if read:            # noqa: SIM103 - the spelling under test
+                pass
+        with pytest.raises(TypeError):
+            not read
+
+
+def test_a_target_read_refuses_to_be_compared_with_an_outcome_string(fake):
+    """`__bool__` raising leaves a hole exactly its own size unless `__eq__`
+    closes it too: the frozen dataclass's generated `__eq__` returned False
+    SILENTLY for `read == TARGET_READ_OK` on a read that had succeeded, which
+    reads as a clean negative rather than as a mistake.
+
+    Every route into `__eq__` is covered, because closing only the direct one
+    leaves three spellings of the same error working.
+    """
+    _seed_target(fake, id="t-live")
+    read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_OK
+    with pytest.raises(TypeError):
+        read == TARGET_READ_OK
+    with pytest.raises(TypeError):
+        TARGET_READ_OK == read              # the reflected comparison
+    with pytest.raises(TypeError):
+        read != TARGET_READ_ABSENT          # `!=` routes through `__eq__`
+    with pytest.raises(TypeError):
+        read in (TARGET_READ_OK, TARGET_READ_ABSENT)      # and so does `in`
+    # And the cross-family mixup, which is the half a comparison guard CAN
+    # catch: all three read families spell OK as the string "ok", so this raises
+    # for being a string at all rather than for being the wrong one.
+    from shared.jobs import JOB_READ_OK
+    with pytest.raises(TypeError):
+        read == JOB_READ_OK
+
+
+def test_two_target_reads_still_compare_as_values(fake):
+    """Refusing the string comparison must not cost ordinary equality, and it
+    must not cost hashability either: declaring `__eq__` sets `__hash__` to
+    None, which would make a frozen value type unusable in a set.
+
+    THE SECOND READ IS BUILT FROM A SECOND, INDEPENDENTLY CONSTRUCTED TARGET,
+    and that is the whole content of the test rather than a detail of it.
+    `__eq__` compares `(self.target, self.outcome) == (other.target,
+    other.outcome)`, and tuple `==` short-circuits on IDENTITY per element --
+    so two reads sharing one DesignTarget compare equal whether the payload
+    comparison works or not, and this test passed unchanged against an `__eq__`
+    rewritten to `self.target is other.target`. Two `read_target` calls against
+    the same seeded row give two distinct objects with equal fields, which is
+    the property
+    `tests/test_proteina_canary.py::test_two_verdicts_still_compare_as_values`
+    gets from building its second Verdict with its own `{"k": 1}`.
+    """
+    _seed_target(fake, id="t-live")
+    _seed_target(fake, id="t-other")
+    target = read_target("t-live", user_id="u-1").target
+    twin = read_target("t-live", user_id="u-1").target
+    assert twin is not target, "two reads must build two objects"
+    assert twin == target, "and they must be equal to each other by value"
+    a = TargetRead(target, TARGET_READ_OK)
+    assert a == TargetRead(twin, TARGET_READ_OK)
+    assert a != TargetRead(None, TARGET_READ_ABSENT)
+    assert TargetRead(None, TARGET_READ_ABSENT) != TargetRead(
+        None, TARGET_READ_UNAVAILABLE)
+    # A DIFFERENT target, so equality is not merely "same outcome".
+    assert a != TargetRead(
+        read_target("t-other", user_id="u-1").target, TARGET_READ_OK)
+    assert len({a, TargetRead(twin, TARGET_READ_OK)}) == 1
+    # Not equal to some other type, and not raising either: only strings raise.
+    assert a != 17
+
+
+def test_a_target_read_that_is_ok_must_carry_a_target():
+    """The invariant nothing enforced. `TargetRead(None, TARGET_READ_OK)`
+    constructed fine, and every caller that checks `.outcome` and then reads
+    `.target` would have been handed a None it has no branch for."""
+    with pytest.raises(ValueError):
+        TargetRead(None, TARGET_READ_OK)
+
+
+def test_a_target_read_that_is_not_ok_must_carry_no_target(fake):
+    """The other direction, which matters just as much: a payload on an
+    UNAVAILABLE read is a target we are simultaneously claiming not to have
+    obtained."""
+    _seed_target(fake, id="t-live")
+    target = read_target("t-live", user_id="u-1").target
+    for outcome in (TARGET_READ_ABSENT, TARGET_READ_UNAVAILABLE):
+        with pytest.raises(ValueError):
+            TargetRead(target, outcome)
+
+
+def test_a_target_read_refuses_an_outcome_that_is_not_one_of_the_three():
+    """A typo'd outcome is a branch that silently never fires -- `.unavailable`
+    answers False and every `== TARGET_READ_*` test answers False, so the read
+    reports as OK-shaped without being OK."""
+    with pytest.raises(ValueError):
+        TargetRead(None, "unavailble")
 
 
 # ---------------------------------------------------------------------------

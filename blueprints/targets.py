@@ -6,11 +6,14 @@ one target in a single gated action. The single-tool create form
 (``/campaigns/new?target_id=``) still exists and still works; it skips staging
 and inherits the target's already-staged path.
 
-Ownership: every route resolves its target through
-``shared.targets.get_target(..., user_id=ctx.user_id)`` BEFORE touching a
-storage path. ``copy_input`` / ``download_input`` take ``user_id`` as a path
-component and perform no authorization of their own, so that owner-scoped
-fetch is the entire tenancy boundary.
+Ownership: every route resolves its target owner-scoped -- through
+``shared.targets.get_target(..., user_id=ctx.user_id)``, or, on
+:func:`target_detail`, through ``read_target(..., user_id=ctx.user_id)``, which
+issues the same owner-scoped query and additionally reports WHY it came back
+empty (register item A90) -- BEFORE touching a storage path. ``copy_input`` /
+``download_input`` take ``user_id`` as a path component and perform no
+authorization of their own, so that owner-scoped fetch is the entire tenancy
+boundary.
 
 Money: the launch route passes ONE summed start gate for the whole selection
 (``shared.target_launch``). It never loops ``campaign_preauth``, which is a
@@ -51,6 +54,7 @@ from shared.targets import (
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    read_target,
     target_defaults_for_form,
     touch_target,
     unarchive_target,
@@ -495,13 +499,75 @@ def target_create():
     return redirect(url_for("targets.target_detail", target_id=target.id))
 
 
+def _target_unavailable(handoff: str):
+    """The 503 page for a target read that DID NOT COMPLETE.
+
+    Not 404: "not found" is a claim about the row, and a read that never
+    answered is in no position to make it. Not 200 either -- the page carries
+    none of the target's content.
+
+    ``handoff`` is passed through because A90's own unavailable exit produces a
+    request that carries one: ``_submit_target_shortlist`` refuses an unreadable
+    parent by redirecting to this same URL with ``?handoff=unverified``, so
+    dropping the query string here would drop the refusal reason on the request
+    this route's own gate issued. No claim is made about how often that request
+    is the one that lands here. See the comment in :func:`target_detail`.
+    """
+    return render_template(
+        "unavailable.html",
+        parent="target",
+        handoff=handoff,
+        back_url=url_for("targets.targets_list"),
+        back_label="My targets",
+    ), 503
+
+
 @targets_bp.route("/targets/<target_id>", methods=["GET"])
 @login_required
 def target_detail(target_id):
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
-    target = get_target(target_id, user_id=ctx.user_id)
+
+    # Why the lab handoff sent the user back here. Every one of these was a
+    # bare `redirect(detail)` with no banner and nothing changed, which on the
+    # one action that hands work to the wet lab reads as a dead button
+    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
+    # renders nothing at all rather than an empty alert.
+    #
+    # READ BEFORE THE TARGET, not after it, because the unavailable arm below
+    # renders this banner too. A90's own refusal exit redirects here with
+    # `?handoff=unverified` when the parent read at the submit gate did not
+    # complete, and the browser follows that redirect within milliseconds --
+    # nothing says the fault has passed by then. So a request that arrives here
+    # and cannot read the target may be carrying a reason the user has not been
+    # told yet, and the reason is in the query string.
+    handoff = (request.args.get("handoff") or "").strip()
+    # `rejected` is distinct from `none` and the distinction is the whole
+    # point: `none` means the request carried no designs, `rejected` means it
+    # carried designs and none of them could be attributed to this target.
+    # Round 19 collapsed both onto `none`, so a user whose five starred designs
+    # were all rejected was told the request "arrived with no designs in it"
+    # and advised to retry, which can never work. Two QC reviewers found this
+    # independently (round 20, A-H1 / B-F1).
+    if handoff not in HANDOFF_REASONS:
+        handoff = ""
+
+    # THREE OUTCOMES AND NOT TWO (register item A90). `get_target` answers None
+    # for a target that is not there, one that is not this caller's, and a read
+    # that never completed, and this route rendered 404 for all three -- so a
+    # Supabase blink told a user that a target they were looking at a second ago
+    # does not exist. A90's own gate made that a one-click path: it refuses an
+    # unreadable parent by redirecting HERE.
+    #
+    # The 404 is still right for the first two and is kept for them, whole: a
+    # completed read that matched no row is a permanent verdict, and it stays
+    # one value because telling "no such target" from "not yours" would mean
+    # reading a row the owner scope exists to withhold.
+    read = read_target(target_id, user_id=ctx.user_id)
+    if read.unavailable:
+        return _target_unavailable(handoff)
+    target = read.target
     if target is None:
         return render_template("404.html"), 404
 
@@ -526,8 +592,15 @@ def target_detail(target_id):
         target.id, user_id=ctx.user_id, sort_mode=sort_mode,
     )
     if not agg["ok"]:
-        # get_target already resolved above, so this is a read failure rather
-        # than a tenancy one; render 404 for the same reason the aggregate does.
+        # 404 AND NOT THE 503 PAGE ABOVE, and the difference is not arbitrary.
+        # `ok` False is produced at exactly one place in shared/target_results.py
+        # (`_not_found`), and only after a read that COMPLETED reported no owned
+        # row; the module's answer for "we could not look" is `_unreadable`,
+        # which sets `ok` True and `partial` True precisely so this branch
+        # cannot 404 an owner whose database blinked. So reaching here means the
+        # target resolved for `read_target` a few lines up and then did not
+        # resolve for the aggregate's own ownership read -- a row that went away
+        # between two reads, which is absence, which is what 404 means.
         return render_template("404.html"), 404
     runs = agg["campaigns"]
 
@@ -565,21 +638,6 @@ def target_detail(target_id):
     except ValueError:
         stalled_count = 0
 
-    # Why the lab handoff sent the user back here. Every one of these was a
-    # bare `redirect(detail)` with no banner and nothing changed, which on the
-    # one action that hands work to the wet lab reads as a dead button
-    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
-    # renders nothing at all rather than an empty alert.
-    handoff = (request.args.get("handoff") or "").strip()
-    # `rejected` is distinct from `none` and the distinction is the whole
-    # point: `none` means the request carried no designs, `rejected` means it
-    # carried designs and none of them could be attributed to this target.
-    # Round 19 collapsed both onto `none`, so a user whose five starred designs
-    # were all rejected was told the request "arrived with no designs in it"
-    # and advised to retry, which can never work. Two QC reviewers found this
-    # independently (round 20, A-H1 / B-F1).
-    if handoff not in HANDOFF_REASONS:
-        handoff = ""
     return render_template(
         "targets/detail.html",
         target=target,

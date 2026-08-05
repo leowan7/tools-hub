@@ -25,7 +25,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from shared.credits import get_service_client
 from shared.storage import StorageError, upload_input
@@ -426,6 +426,185 @@ def get_target(
     if not data:
         return None
     return DesignTarget.from_row(data)
+
+
+# Outcomes of :func:`read_target`. Three, for the reason ``shared/jobs.py`` gives
+# beside its ``JOB_READ_*`` constants: ``get_target``'s ``None`` is two unrelated
+# facts wearing one hat, and a caller that must act on the difference has no way
+# to recover it.
+TARGET_READ_OK = "ok"
+# The read SUCCEEDED and matched no row: the target does not exist, or it exists
+# and is not this caller's. One value, because they are one fact to a caller -- a
+# permanent verdict -- and because telling them apart would require reading a row
+# the owner scope exists to withhold.
+TARGET_READ_ABSENT = "absent"
+# We did not manage to look. No service client, or the query raised. Says NOTHING
+# about whether the target exists.
+TARGET_READ_UNAVAILABLE = "unavailable"
+
+# Every value ``TargetRead.outcome`` may hold, so a typo reaches a raise at
+# construction rather than a branch that silently never fires.
+TARGET_READ_OUTCOMES = (
+    TARGET_READ_OK, TARGET_READ_ABSENT, TARGET_READ_UNAVAILABLE,
+)
+
+
+@dataclass(frozen=True, eq=False)
+class TargetRead:
+    """A target lookup, plus WHY it came back the way it did.
+
+    The shape of ``shared.jobs.JobRead``, deliberately, INCLUDING the two
+    guards below -- both classes carry them and so does
+    ``shared.compute_campaigns``'s ``CampaignRead``, because a three-outcome
+    value that any one of them can be collapsed on is the same defect three
+    times.
+
+    NO TRUTHINESS OF ANY KIND, and that is enforced rather than asserted. This
+    docstring used to claim "no ``__bool__``", which was true and was not the
+    property it needed: the default ``__bool__`` made every instance
+    unconditionally truthy, so ``if read:`` ran on an UNAVAILABLE read exactly
+    as it ran on an OK one, and collapsing this back to one bit is the thing the
+    class exists to prevent. ``__bool__`` now raises. Branch on ``.outcome`` or
+    on ``.unavailable``.
+
+    AND NO EQUALITY WITH AN OUTCOME STRING, for the reason
+    ``tools/proteina/_canary_scoring.py::Verdict`` already paid for and wrote
+    down: ``frozen=True`` GENERATES an ``__eq__``, so ``read == TARGET_READ_OK``
+    returned False SILENTLY on a read that had succeeded -- a hole exactly the
+    size of the one ``__bool__`` closes, and one that reads as a clean negative
+    rather than as a mistake. ``eq=False`` above turns the generated one off;
+    the one below raises on a string and still compares two reads as values.
+
+    WHAT NEITHER GUARD CAN CATCH, stated because the obvious claim is stronger
+    than the truth, and on two axes rather than one.
+    (1) ``TARGET_READ_OK``, ``CAMPAIGN_READ_OK`` and ``JOB_READ_OK`` are all the
+    string ``"ok"``, so ``TargetRead(t, JOB_READ_OK)`` is indistinguishable from
+    the right constant at every check available here. The ``__eq__`` guard does
+    catch the cross-family COMPARISON, which is the half that can be caught.
+    (2) ``__hash__`` below hashes ``(payload id, outcome)`` and NOT the class,
+    so ``hash(TargetRead(None, TARGET_READ_ABSENT))`` equals the JobRead and
+    CampaignRead ones. Deliberate: equal hashes are not an equality claim,
+    ``__eq__`` returns ``NotImplemented`` for a foreign class and Python falls
+    back to identity, so a set holding two families keeps both members.
+    ``tests/test_jobs.py::test_reads_of_different_families_collide_in_hash_only``
+    pins both halves.
+    """
+
+    target: Optional[DesignTarget]
+    outcome: str
+
+    def __post_init__(self) -> None:
+        # OK CARRIES A TARGET AND NOTHING ELSE DOES, checkable rather than
+        # conventional. :func:`read_target` cannot violate it, but nothing
+        # stopped a second constructor: ``TargetRead(None, TARGET_READ_OK)``
+        # built fine and would have handed every caller that reads ``.target``
+        # after checking ``.outcome`` a None it has no branch for.
+        if self.outcome not in TARGET_READ_OUTCOMES:
+            raise ValueError(f"unknown target read outcome {self.outcome!r}")
+        if self.outcome == TARGET_READ_OK and self.target is None:
+            raise ValueError("TargetRead is OK but carries no target")
+        if self.outcome != TARGET_READ_OK and self.target is not None:
+            raise ValueError(
+                f"TargetRead is {self.outcome} and must carry no target"
+            )
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "TargetRead has three outcomes and is not a boolean -- compare "
+            ".outcome against TARGET_READ_OK / _ABSENT / _UNAVAILABLE, or read "
+            ".unavailable"
+        )
+
+    def __eq__(self, other: Any) -> Any:
+        if isinstance(other, str):
+            raise TypeError(
+                "TargetRead is not its outcome string -- write "
+                "`read.outcome == TARGET_READ_OK`, not `read == ...`"
+            )
+        if not isinstance(other, TargetRead):
+            return NotImplemented
+        return (self.target, self.outcome) == (other.target, other.outcome)
+
+    def __hash__(self) -> int:
+        # Defining ``__eq__`` sets ``__hash__ = None``, which would make every
+        # TargetRead unhashable on a frozen value type. The target itself is
+        # deliberately NOT hashed: ``DesignTarget`` is a plain ``@dataclass``,
+        # so its own ``__hash__`` is None and hashing it raises. Its id is what
+        # identifies it, and equal reads necessarily agree on that and on the
+        # outcome.
+        #
+        # KEPT RATHER THAN LEFT None: nothing in production puts a read in a set
+        # or uses one as a dict key, so this exists for uniformity with the
+        # other two read classes rather than for a call site. See
+        # ``shared.jobs.JobRead.__hash__``, where the same choice is a change to
+        # an existing class rather than a new one.
+        return hash((getattr(self.target, "id", None), self.outcome))
+
+    @property
+    def unavailable(self) -> bool:
+        """True iff the lookup did not complete. NOT "the target is missing".
+
+        Accurate here as written, and NOT interchangeable with
+        ``CampaignRead.unavailable``'s wording: this module has no
+        ``_campaign_or_none`` equivalent, so :func:`read_target` reports
+        UNAVAILABLE on exactly two grounds and both of them are a lookup that
+        did not complete -- no service client, or the query raised.
+        """
+        return self.outcome == TARGET_READ_UNAVAILABLE
+
+
+def read_target(target_id: str, *, user_id: Optional[str] = None) -> TargetRead:
+    """Fetch a target and report which of the three outcomes occurred.
+
+    Same query and same owner-scope semantics as :func:`get_target` -- including
+    its rule that every caller which will resolve this target to a storage path
+    MUST pass ``user_id``, since ``copy_input``/``download_input`` do no
+    ownership check of their own. The whole difference is that a failure to read
+    is distinguishable from a row that is not there. Use this wherever the two
+    lead to different behaviour -- the lab handoff gate in
+    ``blueprints/lab_projects.py`` returns the user to their targets in silence
+    on one and refuses the submission with a reason on the other. ``get_target``
+    remains the right call everywhere the only question is "do I have the
+    target", which is most of this app.
+
+    WHY THIS DOES NOT USE ``.single()``, AND WHY THAT IS THE ENTIRE POINT. The
+    reasoning is ``shared.jobs.read_job``'s and is not restated here in different
+    words, because a re-worded copy is how two functions that must behave
+    identically drift: ``.single()`` RAISES on zero rows, so under it "no such
+    target" and "PostgREST timed out" arrive as the same exception and the
+    distinction this function exists to make is gone before the ``except`` runs.
+    ``.limit(1)`` makes a completed-but-empty read observable as an empty list,
+    so the boundary is drawn by whether the call returned at all rather than by
+    inspecting an error code.
+
+    ``get_target`` is deliberately NOT reimplemented on top of this, following
+    the precedent ``read_job`` set beside ``get_job``: it is called from several
+    blueprints, its ``.single()`` chain is what test fakes model, and a shared
+    implementation would buy nothing but the risk of changing all of that at
+    once.
+
+    ``DesignTarget.from_row`` is called OUTSIDE the ``try``, exactly where
+    ``get_target`` calls it and exactly where ``read_job`` calls its own. A row
+    this app cannot parse therefore raises out of both functions alike; this
+    module has no ``_campaign_or_none`` equivalent and adding one is a separate
+    change. That leaves this function's three-outcome contract non-total where
+    ``read_campaign``'s is total -- register item A97.
+    """
+    client = get_service_client()
+    if client is None:
+        return TargetRead(None, TARGET_READ_UNAVAILABLE)
+    try:
+        query = client.table(_TABLE).select("*").eq("id", target_id)
+        if user_id is not None:
+            query = query.eq("user_id", user_id)
+        response = query.limit(1).execute()
+    except Exception:
+        logger.warning("read_target: lookup failed for %s", target_id, exc_info=True)
+        return TargetRead(None, TARGET_READ_UNAVAILABLE)
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return TargetRead(None, TARGET_READ_ABSENT)
+    return TargetRead(DesignTarget.from_row(rows[0]), TARGET_READ_OK)
 
 
 def list_targets_for_user(
