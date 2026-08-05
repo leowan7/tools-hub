@@ -234,9 +234,11 @@ regressions that a simple URL ping cannot.
 
    Read the script only at its current `main` version. It was added in
    `a502308`, whose docstring states the *opposite* of the cleanup behaviour
-   below ("does NOT clean up after itself"); withdraw arrived in `00fc623`; and
-   the failed-create-assertion case described in item 3 was only closed in
-   `10f4688`. Any older checkout leaks rows the current text says it does not.
+   below ("does NOT clean up after itself"); withdraw arrived in `00fc623`; the
+   failed-create-assertion case described in item 3 was only closed in
+   `10f4688`; and the transport-error case in that same item — a dropped
+   connection killing the run before it could report the row — only in
+   `24df5e9`. Any older checkout leaks rows the current text says it does not.
 2. **It needs `RK_LIVE_KEY`**, a member-role Platform API key minted at
    https://tools.ranomics.com/account/api-keys, stored as a secret in whatever
    runs it.
@@ -251,16 +253,23 @@ regressions that a simple URL ping cannot.
    fail the job:
 
    - withdraw itself fails: the run log prints the `experiment_id` and the
-     `DELETE` SQL to drop the row by hand.
+     `DELETE` SQL to drop the row by hand. A connection that drops any time
+     *after* the create response lands here too, rather than killing the run:
+     `_http()` turns every transport error into a `status=0` sentinel —
+     including the `RemoteDisconnected` / `IncompleteRead` /
+     `ConnectionResetError` family urllib does **not** wrap into `URLError` —
+     so the smoke still reaches its summary and still names the row.
    - the 201 body carries no usable `experiment_id` at all (not a JSON object,
      or no `experiment_id` field): there is no id to withdraw or to print, so
      the row has to be found via
      https://tools.ranomics.com/admin/lab-projects.
 
-   Two further paths leave a row without either bullet applying, because the
+   One further path leaves a row without either bullet applying, because the
    script never learns the row exists: a create that times out or 5xxes after
-   the insert, and a run that dies before printing a summary. The runbook covers
-   both — see "Synthetic smoke FAILED".
+   the insert. The runbook covers it — see "Synthetic smoke FAILED". (A second
+   such path — a run dying before it could print a summary at all — was closed
+   in `24df5e9`, which is also what put the transport family in the first
+   bullet above.)
 
    (The script has a second, service-role cleanup path for its optional quote
    round-trip; it stays dormant in CI because that job passes only
@@ -496,7 +505,10 @@ the site looks up.
 
 Read which step failed in the output (targets, cost-estimate, create, replay,
 read-back, withdraw). A create failure with `/health` green is Mode B. A replay
-or read-back failure points at idempotency or persistence. Reproduce locally with
+or read-back failure points at idempotency or persistence. Several steps failing
+at once, each carrying a `network error:` note and a status of `0`, is a
+transport failure (edge, DNS, TLS, or a reset connection) rather than an
+API-logic bug. Reproduce locally with
 `RK_LIVE_KEY=... python scripts/smoke_platform_api.py`.
 
 A failing run normally still cleans up after itself — withdraw runs whenever the
@@ -511,12 +523,14 @@ Only sweep when the summary says so:
   no row was made — but the insert lands before the app reports success, so a
   timeout (shown as `got 0`) or a `500 submission_failed` can still leave one.
   Check the admin list in those two cases.
-- **No `RESULTS` block at all** (a Python traceback instead). `_http` only traps
-  `URLError`/`TimeoutError`, so a connection reset while *reading* the response
-  (`getresponse()`/`read()`, outside urllib's `URLError` wrapping) escapes it,
-  kills the script before withdraw, and prints no summary. If you see a
-  traceback rather than `OVERALL:`, assume a row leaked and sweep for a recent
-  `smoke-test-…` row in the admin list.
+- **No `RESULTS` block at all** (a Python traceback instead). This is now a bug
+  in the smoke itself, not an expected outcome. Since `24df5e9` `_http` traps
+  the whole transport family — failures out of `getresponse()`/`read()`, outside
+  urllib's `URLError` wrapping, plus bodies that do not decode as UTF-8 — and
+  returns a `status=0` sentinel, so the run always reaches `_summarise()`
+  (regression tests in `tests/test_smoke_platform_api_network.py`). If you see a
+  traceback rather than `OVERALL:`, assume a row leaked, sweep for a recent
+  `smoke-test-…` row in the admin list, and fix the escape.
 
 ### Railway emailed a deploy failure / crash / OOM
 
