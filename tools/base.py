@@ -34,6 +34,96 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 
+# ---------------------------------------------------------------------------
+# Multi-chain target helpers
+# ---------------------------------------------------------------------------
+# The binder generators (bindcraft, pxdesign, rfdiffusion) take a target that
+# may be an oligomer — an IgG1 Fc homodimer binder grips both protomers, and
+# designing against one chain aims at half the epitope. The pipeline-side
+# contract in llm-proteinDesigner is:
+#
+#     target_chain:     "A,B"              comma string; "A" behaves as before
+#     hotspot_residues: ["A296", "B264"]   chain-prefixed; bare ints still
+#                                          accepted and attributed to the
+#                                          FIRST target chain
+#
+# These helpers keep the three adapters from each growing their own parser.
+
+
+def parse_target_chains(raw: str) -> list:
+    """Split a target-chain field into an ordered, de-duplicated list.
+
+    ``"A"`` -> ``["A"]``; ``"A,B"`` -> ``["A", "B"]``. Order is preserved
+    because it drives contig and FASTA concatenation downstream.
+    """
+    ordered: list = []
+    for tok in str(raw or "").split(","):
+        tok = tok.strip()
+        if tok and tok not in ordered:
+            ordered.append(tok)
+    return ordered
+
+
+def parse_hotspot_residues(
+    raw: str, target_chains: list
+) -> tuple[Optional[list], Optional[str]]:
+    """Parse the hotspot field into the pipeline's ``hotspot_residues`` shape.
+
+    Accepts bare integers (``54,56,115``) and chain-prefixed tokens
+    (``A296,B264``), mixed freely. Returns ``(residues, None)`` or
+    ``(None, error_message)`` to match the adapters' validate() convention.
+
+    Output shape is chosen to keep existing single-chain jobs byte-identical:
+    a single target chain with only bare integers still emits plain ints, the
+    exact payload submitted before multi-chain existed. Anything else emits
+    normalized chain-prefixed strings, which is what the pipelines need to
+    tell apart residue 264 on protomer A from residue 264 on protomer B.
+
+    A token naming a chain that is not a target is an error rather than a
+    silent drop — a hotspot that quietly disappears yields an untargeted
+    design that still completes and still scores.
+    """
+    if not target_chains:
+        return None, "Target chain is required."
+
+    tokens = [tok.strip() for tok in str(raw or "").split(",") if tok.strip()]
+    if not tokens:
+        return None, "At least one hotspot residue is required."
+
+    example = f"{target_chains[0]}296"
+    parsed: list = []
+    all_bare = True
+    for token in tokens:
+        try:
+            parsed.append((target_chains[0], int(token)))
+            continue
+        except ValueError:
+            pass
+        all_bare = False
+        for chain in sorted(target_chains, key=len, reverse=True):
+            if token.startswith(chain):
+                remainder = token[len(chain):].strip()
+                try:
+                    parsed.append((chain, int(remainder)))
+                except ValueError:
+                    return None, (
+                        f"Hotspot {token!r} must be a chain letter followed by "
+                        f"an integer residue number (e.g. {example})."
+                    )
+                break
+        else:
+            return None, (
+                f"Hotspot {token!r} does not name one of your target chains "
+                f"({', '.join(target_chains)}). Use a bare integer residue "
+                f"number (e.g. 296, read as chain {target_chains[0]}) or "
+                f"prefix it with the chain (e.g. {example})."
+            )
+
+    if len(target_chains) == 1 and all_bare:
+        return [res for _, res in parsed], None
+    return [f"{chain}{res}" for chain, res in parsed], None
+
+
 @dataclass(frozen=True)
 class Preset:
     """One selectable preset on a tool form."""
