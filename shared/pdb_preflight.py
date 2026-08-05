@@ -437,6 +437,87 @@ def preflight_for_tool(
     af_suggestion = _maybe_alphafold(pdb_bytes, target_chain)
     target_chain = (target_chain or "").strip()
 
+    # ---- multi-chain: model capability AND container capability -------------
+    # A multi-chain target is allowed only when BOTH flags say yes. They are
+    # different claims and conflating them is what produced this gate:
+    #
+    #   multi_chain_supported        — can the MODEL do it (upstream truth)
+    #   multi_chain_container_ready  — can OUR IMAGE do it (what actually bills)
+    #
+    # Before the multi-chain work, a refusal came for free from a bug rather
+    # than from any flag — multi_chain_supported had no reader anywhere in its
+    # history. Every consumer here and in pipeline_normalize compared the whole
+    # target_chain string against a one-letter chain id, so "A B" matched no
+    # chain, the normalizer dropped them all and raised, and the verdict came
+    # back NEEDS_FIX ("Target chain 'A B' isn't in this PDB") — wrong prose,
+    # right outcome. That covered the 5 tools registered at the time; proteina
+    # was not in BINDER_DESIGN_TOOLS at all and fell through to a no-op READY.
+    #
+    # Teaching THIS repo's consumers to split on whitespace was correct, but it
+    # was only ever half the job: the containers that run the job are built
+    # from the sibling repo llm-proteinDesigner, whose
+    # backend/pdb_utils/pipeline_normalize.py still does exact-match on the
+    # chain (:301) and raises (:383). Verified by executing that module against
+    # a clean two-chain PDB — "A" normalizes, "A B" raises ValueError — for
+    # rfdiffusion, boltzgen, pxdesign and rfantibody (bindcraft ships from a
+    # separate prebuilt image and is gated as unverified). So without this gate
+    # a multi-chain target does not get refused, it gets a campaign created, a
+    # wallet hold placed, a shard dispatched, and a container that dies. Of the
+    # 5 tools this blocks, 4 declare multi_chain_supported=True — the models
+    # can do it, our images cannot. Only proteina, whose container lives in
+    # this repo and was proven on a live A100, is genuinely ready.
+    #
+    # This is a STOPGAP. The real fix is to port the multi-chain normalizer to
+    # llm-proteinDesigner and rebuild those images; then flip
+    # multi_chain_container_ready and this gate opens on its own.
+    chain_ids = _chain_tokens(target_chain)
+    multi_chain_ok = (
+        rules.multi_chain_supported and rules.multi_chain_container_ready
+    )
+    if len(chain_ids) > 1 and not multi_chain_ok:
+        # Say which of the two is missing, because the answer changes what the
+        # user should do. An IMAGE limit is temporary ("not yet"); a MODEL
+        # limit is permanent. Telling an rfantibody user their "GPU image"
+        # is the blocker invites them to wait for a capability that is never
+        # coming — rfantibody builds a VHH against one chain by construction.
+        if rules.multi_chain_supported:
+            reason = (
+                f"{rules.slug.title()} can't run a multi-chain target yet — "
+                f"{len(chain_ids)} chains were named "
+                f"({', '.join(chain_ids)}), and its GPU image still handles "
+                f"one target chain at a time."
+            )
+        else:
+            reason = (
+                f"{rules.slug.title()} designs against a single target chain, "
+                f"but {len(chain_ids)} were named "
+                f"({', '.join(chain_ids)})."
+            )
+        fix = f"Enter one chain — {' or '.join(chain_ids)} — and re-run."
+        # Only point at proteina when this deployment actually exposes it.
+        # It is flag-gated (compute_campaigns.FLAG_GATED_CAMPAIGN_TOOLS), and
+        # recommending a tool the user cannot see is worse than saying
+        # nothing. tool_enabled is fail-closed, so any doubt drops the line.
+        try:
+            from shared.feature_flags import tool_enabled  # noqa: PLC0415
+            if tool_slug != "proteina" and tool_enabled("proteina"):
+                fix += (
+                    " To design against several chains at once, use Proteina, "
+                    "which takes multi-chain targets today."
+                )
+        except Exception:  # noqa: BLE001 - advisory copy only, never fatal
+            logger.debug("proteina flag lookup failed", exc_info=True)
+        return PreflightVerdict(
+            kind=VerdictKind.NEEDS_FIX,
+            tool_slug=tool_slug,
+            target_chain=target_chain,
+            cleanup=CleanupSummary(),
+            hotspot_status={"surviving": [], "dropped": list(hotspots)},
+            reason=reason,
+            suggested_fix=fix,
+            alphafold=af_suggestion,
+        )
+
     # Write to a tmp file so pipeline_normalize.normalize_for_*'s
     # BiopythonParser can stream it. Cleanup is best-effort; on Windows
     # we tolerate a tmp leak in the rare case the parser kept the fd.
@@ -658,12 +739,17 @@ def _chain_tokens(target_chain: str) -> list[str]:
 
     ``target_chain`` may name SEVERAL chains, whitespace-separated ("A B C") —
     ``shared/pdb_inspect.validate_target_chain`` has always accepted that form
-    and four tools declare ``multi_chain_supported=True``. Every consumer in
-    this module used to compare the whole string against a single-letter chain
-    id, so a multi-token value matched nothing: ``residues_kept_per_chain.get()``
-    returned 0 and preflight hard-failed with "chain A B C has only 0 protein
-    residues" on a perfectly good target. Same defect class as the one already
-    fixed in ``pdb_inspect.validate_hotspots`` and ``pipeline_normalize``.
+    and 5 of the 6 registered tools declare ``multi_chain_supported=True``
+    (every one but rfantibody). Every consumer in this module used to compare
+    the whole string against a single-letter chain id, so a multi-token value
+    matched nothing: ``residues_kept_per_chain.get()`` returned 0 and preflight
+    hard-failed with "chain A B C has only 0 protein residues" on a perfectly
+    good target. Same defect class as the one already fixed in
+    ``pdb_inspect.validate_hotspots`` and ``pipeline_normalize``.
+
+    Note that splitting alone does NOT make a multi-chain run reachable: the
+    gate in ``preflight_for_tool`` additionally requires
+    ``multi_chain_container_ready``, which only proteina has today.
 
     Splitting is behaviour-preserving for a single id (``["A"]``); it changes
     outcomes only for inputs that previously always failed.

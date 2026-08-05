@@ -799,12 +799,15 @@ def test_boltz2_single_chain_still_ready():
 #
 # `target_chain` may name several chains, whitespace-separated ("A B C"):
 # shared/pdb_inspect.validate_target_chain has always accepted that form and
-# five of the six tools declare multi_chain_supported=True. Every consumer in
-# pdb_preflight compared the whole string against a one-letter chain id, so a
-# multi-token value matched nothing — residues_kept_per_chain.get("A B C")
-# returned 0 and a perfectly good target was rejected with "has only 0 protein
-# residue(s)". Same defect class as the one fixed in validate_hotspots (A18)
-# and pipeline_normalize.
+# 5 of the 6 registered tools declare multi_chain_supported=True (all but
+# rfantibody). Every consumer in pdb_preflight compared the whole string
+# against a one-letter chain id, so a multi-token value matched nothing —
+# residues_kept_per_chain.get("A B C") returned 0 and a perfectly good target
+# was rejected with "has only 0 protein residue(s)". Same defect class as the
+# one fixed in validate_hotspots (A18) and pipeline_normalize.
+#
+# These cases all use proteina, the one tool that is multi_chain_container_ready
+# and therefore the only one that reaches this code with several chains.
 # ---------------------------------------------------------------------------
 
 def _multi_chain_pdb(spec: dict, *, header: str = "SYNTHETIC") -> bytes:
@@ -890,3 +893,275 @@ def test_single_chain_gap_message_is_unchanged():
     assert "Chain A has a 30-residue internal gap" in (
         v.gap_analysis.warn_message or ""
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-chain is gated on MODEL capability AND CONTAINER capability
+#
+# Before the multi-chain work, a multi-chain target was refused for all six
+# tools — not by any rule, but by a bug: every consumer in pdb_preflight /
+# pipeline_normalize compared the whole `target_chain` string against a
+# one-letter chain id, so "A B" matched no chain, normalize_for_pipeline
+# dropped them all and raised, and preflight reported NEEDS_FIX ("Target chain
+# 'A B' isn't in this PDB. Found chain(s): A, B." — wrong prose, right
+# outcome). multi_chain_supported had no reader at all.
+#
+# Teaching THIS repo's consumers to split on whitespace was correct but only
+# half the job. The images that run the job are built from the sibling repo
+# llm-proteinDesigner, whose backend/pdb_utils/pipeline_normalize.py still
+# exact-matches the chain and raises on "A B" — verified by executing it
+# against a clean two-chain PDB for rfdiffusion / boltzgen / pxdesign /
+# rfantibody. bindcraft ships from a separate prebuilt image that could not be
+# inspected, so it is gated as unverified. So the fix did not grant a
+# capability to the 4 tools that declare multi_chain_supported=True and are
+# gated here; it removed a free refusal and replaced it with a funded run that
+# dies in the container. 5 tools are blocked in total — those 4 plus
+# rfantibody, whose model cannot do it either.
+#
+# Only proteina is genuinely ready: its container lives in this repo and was
+# proven on a live A100. Hence two flags, and a gate that needs both.
+# ---------------------------------------------------------------------------
+
+# Tools whose container is NOT multi-chain ready today. Deliberately spelled
+# out rather than derived from TOOL_RULES: if someone flips a flag, these
+# tests must FAIL and make them justify it, not silently follow along.
+_SINGLE_CHAIN_TOOLS = ["rfantibody", "rfdiffusion", "bindcraft",
+                       "boltzgen", "pxdesign"]
+_MULTI_CHAIN_TOOLS = ["proteina"]
+
+
+def _two_chain_target() -> bytes:
+    """Two full, healthy 120-residue chains. Big enough to clear every tool's
+    min_target_aa and small enough to clear every hard cap, so the only thing
+    a verdict can be reacting to is the chain COUNT."""
+    return _multi_chain_pdb({
+        "A": list(range(1, 121)),
+        "B": list(range(1, 121)),
+    })
+
+
+@pytest.mark.parametrize("slug", _SINGLE_CHAIN_TOOLS)
+def test_single_chain_tools_refuse_a_multi_chain_target(slug):
+    """The regression guard, for every tool whose container can't do it."""
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A B", hotspots=[40, 60],
+    )
+    assert v.kind is VerdictKind.NEEDS_FIX, (slug, v.kind, v.reason)
+    assert not v.ok
+    # The refusal must name the real problem so the user can act on it. The
+    # pre-existing accidental refusal said the chain "isn't in this PDB",
+    # which is false and unactionable when both chains plainly are.
+    assert "A" in (v.suggested_fix or "") and "B" in (v.suggested_fix or "")
+    assert "isn't in this PDB" not in (v.reason or "")
+
+
+@pytest.mark.parametrize("slug", _SINGLE_CHAIN_TOOLS)
+def test_single_chain_tools_still_accept_one_chain(slug):
+    """The gate keys on chain COUNT, not on the flags alone. Every gated tool's
+    normal single-chain case is untouched — that is the whole product."""
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A", hotspots=[40, 60],
+    )
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK), (
+        slug, v.kind, v.reason
+    )
+
+
+@pytest.mark.parametrize("slug", _SINGLE_CHAIN_TOOLS)
+def test_repeated_chain_id_is_one_chain(slug):
+    """"A A" names one chain, not two. De-duping happens before the count so a
+    doubled token is not mistaken for a multi-chain target."""
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A A", hotspots=[40, 60],
+    )
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK), (
+        slug, v.kind, v.reason
+    )
+
+
+@pytest.mark.parametrize("slug", _MULTI_CHAIN_TOOLS)
+def test_container_ready_tools_are_not_gated(slug):
+    """proteina genuinely handles multi-chain and must stay open. A gate that
+    blocks it would break the feature that just shipped."""
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A B", hotspots=[40, 60],
+    )
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK), (
+        slug, v.kind, v.reason
+    )
+
+
+def test_proteina_still_takes_a_three_chain_target():
+    """The shipped capability is a 3-chain target, not merely 2 — pin the case
+    the live A100 run actually proved."""
+    data = _multi_chain_pdb({
+        "A": list(range(1, 41)),
+        "B": list(range(1, 41)),
+        "C": list(range(1, 41)),
+    })
+    v = preflight_for_tool(
+        "proteina", data, target_chain="A B C", hotspots=[],
+    )
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK), (
+        v.kind, v.reason
+    )
+
+
+def test_the_gate_is_driven_by_the_rules_not_by_a_slug_list():
+    """Pin the wiring, not the outcome: the set of tools that refuse a
+    two-chain target is exactly the set whose rules fail the conjunction. A
+    future tool inherits the gate without anyone editing pdb_preflight."""
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    data = _two_chain_target()
+    refused = {
+        slug for slug in BINDER_DESIGN_TOOLS
+        if not preflight_for_tool(
+            slug, data, target_chain="A B", hotspots=[40, 60],
+        ).ok
+    }
+    not_allowed_by_rules = {
+        slug for slug, r in TOOL_RULES.items()
+        if not (r.multi_chain_supported and r.multi_chain_container_ready)
+    }
+    assert refused == not_allowed_by_rules
+    assert refused == set(_SINGLE_CHAIN_TOOLS)
+
+
+def test_container_readiness_never_outruns_model_support():
+    """The invariant between the two flags: you cannot ship an image that does
+    something the model cannot do. Guards against a future edit that flips
+    container_ready on a tool whose model genuinely can't take multi-chain,
+    which would open the gate on the strength of the wrong fact."""
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    for slug, r in TOOL_RULES.items():
+        if r.multi_chain_container_ready:
+            assert r.multi_chain_supported, (
+                f"{slug}: container_ready=True but supported=False"
+            )
+
+
+def test_the_gate_fails_closed_when_the_invariant_is_violated(monkeypatch):
+    """WHY the gate reads BOTH flags rather than container_ready alone.
+
+    Given the invariant above, `supported and container_ready` is equivalent to
+    `container_ready` for every rule set that satisfies it — which is why the
+    `supported` operand can look redundant and be deleted with a green suite.
+    Its job is the case where the invariant does NOT hold: a rules edit that
+    turns an image on for a model that cannot do the work. Then the conjunction
+    still refuses, and dropping the operand would let it through.
+
+    This is the test that makes the read load-bearing. Delete
+    `rules.multi_chain_supported and` from the gate and this goes red."""
+    from dataclasses import replace
+
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    # proteina is the one tool with container_ready=True. Violate the invariant
+    # on it: the image claims multi-chain, the model says it cannot.
+    broken = replace(TOOL_RULES["proteina"], multi_chain_supported=False)
+    monkeypatch.setitem(TOOL_RULES, "proteina", broken)
+
+    v = preflight_for_tool(
+        "proteina", _two_chain_target(), target_chain="A B", hotspots=[],
+    )
+    assert not v.ok, (
+        "gate allowed a multi-chain run for a tool whose model does not "
+        "support it — the `multi_chain_supported` operand is not being read"
+    )
+    # And it must refuse for the MODEL reason, not the image one.
+    assert "image" not in (v.reason or "").lower(), v.reason
+
+
+def test_only_proteina_is_container_ready_today():
+    """A tripwire on the stopgap: today exactly one tool is container-ready."""
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    ready = {s for s, r in TOOL_RULES.items() if r.multi_chain_container_ready}
+    assert ready == {"proteina"}, (
+        f"container-ready set changed to {sorted(ready)}. If llm-proteinDesigner's "
+        f"multi-chain normalizer has been ported and these images rebuilt, that "
+        f"is the intended outcome: update this test and the stopgap note in "
+        f"shared/pdb_preflight.py. If not, a flag was flipped without the "
+        f"container being able to honour it — revert it, because the gate is "
+        f"the only thing stopping a funded run that dies in the container."
+    )
+
+
+@pytest.mark.parametrize("slug", _SINGLE_CHAIN_TOOLS)
+def test_the_refusal_distinguishes_a_model_limit_from_an_image_limit(slug):
+    """An IMAGE limit is temporary, a MODEL limit is permanent, and the user
+    acts differently on each. rfantibody must never be described as blocked by
+    its "GPU image" — that reads as "coming soon" for a capability that is
+    never coming, and someone waits for it.
+
+    Asserted as presence AND absence per branch, because a single shared
+    phrase ("one target chain") appears in both templates and a containment
+    check alone passes even when both branches emit the same text."""
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A B", hotspots=[40, 60],
+    )
+    reason = (v.reason or "").lower()
+    assert not v.ok
+    if TOOL_RULES[slug].multi_chain_supported:
+        # Image-limited: say so, and say "yet".
+        assert "image" in reason, (slug, v.reason)
+        assert "yet" in reason, (slug, v.reason)
+    else:
+        # Model-limited: must NOT borrow the temporary-sounding language.
+        assert "image" not in reason, (
+            f"{slug} is model-limited but its refusal blames the GPU image, "
+            f"which promises a capability that will never arrive: {v.reason!r}"
+        )
+        assert "yet" not in reason, (
+            f"{slug} is model-limited but its refusal says 'yet': {v.reason!r}"
+        )
+
+
+def test_proteina_is_only_recommended_when_it_is_actually_available(monkeypatch):
+    """proteina is flag-gated (FLAG_GATED_CAMPAIGN_TOOLS). Recommending a tool
+    the user cannot see is worse than saying nothing, so the suggestion is
+    conditional on the flag — which is fail-closed."""
+    data = _two_chain_target()
+
+    monkeypatch.setenv("FLAG_TOOL_PROTEINA", "on")
+    on = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+    )
+    assert "Proteina" in (on.suggested_fix or "")
+
+    monkeypatch.setenv("FLAG_TOOL_PROTEINA", "off")
+    off = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+    )
+    assert "Proteina" not in (off.suggested_fix or "")
+    # The actionable half must survive either way.
+    assert "Enter one chain" in (off.suggested_fix or "")
+
+    monkeypatch.delenv("FLAG_TOOL_PROTEINA", raising=False)
+    missing = preflight_for_tool(
+        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+    )
+    assert "Proteina" not in (missing.suggested_fix or "")
+
+
+@pytest.mark.parametrize("slug", _SINGLE_CHAIN_TOOLS)
+def test_multi_chain_is_refused_at_submit(slug):
+    """End-to-end through the gate that actually protects the wallet.
+
+    blueprints/tools.py::tool_submit blocks on `not verdict.ok` and releases
+    the wallet hold. Assert on the same property the route reads, against the
+    same entry point it calls, so this cannot pass on a verdict shape the
+    route would ignore."""
+    from shared.pdb_preflight import PREFLIGHT_TOOLS
+
+    assert slug in PREFLIGHT_TOOLS   # the route only gates members
+    v = preflight_for_tool(
+        slug, _two_chain_target(), target_chain="A B", hotspots=[40, 60],
+        binder_max_aa=120, num_designs=4,
+    )
+    assert not v.ok
+    assert v.reason  # the route surfaces reason (+ suggested_fix) to the user
