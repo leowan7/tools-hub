@@ -8,15 +8,27 @@
  * one jobId across every row. The wrapper carries:
  *   data-scope        - the sessionStorage key + element-id suffix (campaign id
  *                       in campaign mode, else the job id)
- *   data-campaign-id  - present only in campaign mode (drives the modal payload)
+ *   data-campaign-id  - emitted by the macro in campaign mode. NOT read here,
+ *                       by this file or any other: it does not drive the modal
+ *                       payload, as this comment used to claim. openCampaignModal
+ *                       fills whichever of candidate_refs / candidate_indices
+ *                       the modal it found actually carries, and that is the
+ *                       only thing that selects the shape.
  * Each star button carries data-job (the candidate's SOURCE job) and
  * data-ref-idx (its index WITHIN that job); data-idx stays the row index used
  * for the 3D viewer rows.
  *
  * Exposes:
- *   window.getShortlist(scope)     → [{j,i}]
+ *   window.getShortlist(scope)     → [{j,i}]  DEAD. No caller anywhere in
+ *                                   templates/ or static/. Kept as the read
+ *                                   side of the sessionStorage format for
+ *                                   console use; delete it and nothing breaks.
  *   window.openCampaignModal(scope)
  *   window.closeCampaignModal(scope)
+ *     Both called ONLY from inline onclick in components/candidate_table.html
+ *     -- the shortlist button, and the modal's ×, Cancel and overlay. Renaming
+ *     either is a silent break in this repo: nothing here calls them, and
+ *     tests/test_candidate_table_js_contract.py is the only thing that looks.
  */
 (function () {
   'use strict';
@@ -57,13 +69,14 @@
   function updateShortlistUI(scope) {
     var sl      = loadShortlist(scope);
     var countEl = document.getElementById('shortlist-count-' + scope);
-    var sendBtn = document.getElementById('send-to-lab-btn-' + scope);
+    var hintEl  = document.getElementById('shortlist-hint-' + scope);
+    var empty   = sl.length === 0;
     if (countEl) countEl.textContent = sl.length;
-    if (sendBtn) {
-      var disabled = sl.length === 0;
-      sendBtn.disabled = disabled;
-      sendBtn.title    = disabled ? 'Star at least one candidate first' : '';
-    }
+    // The zero-star state is an inline hint, not a disabled button. A
+    // `disabled` control carrying only a `title` reads as broken software:
+    // there is nothing to hover on a touch device and nothing to click on any
+    // device. The button stays live and the hint says what to do.
+    if (hintEl) hintEl.style.display = empty ? '' : 'none';
   }
 
   function restoreStarState(table, scope) {
@@ -176,6 +189,22 @@
       }
     });
 
+    // "Starred only (CSV)". The selection lives in sessionStorage, so the
+    // hidden `refs` field is filled at submit time rather than at render time;
+    // a value stamped into the HTML would be whatever was starred on the
+    // PREVIOUS page load. Same {job_id, index} shape the lab-submit modal
+    // posts, so the server has one ref format to parse.
+    document.querySelectorAll('.cand-starred-export').forEach(function (form) {
+      if (form.dataset.scope !== scope) return;
+      form.addEventListener('submit', function () {
+        var input = form.querySelector('[name="refs"]');
+        if (!input) return;
+        input.value = JSON.stringify(loadShortlist(scope).map(function (r) {
+          return { job_id: r.j, index: r.i };
+        }));
+      });
+    });
+
     // Column sort
     table.querySelectorAll('th[data-col]').forEach(function (th) {
       th.style.cursor = 'pointer';
@@ -217,11 +246,21 @@
 
     var list = modal.querySelector('.shortlist-review');
     if (list) {
-      list.innerHTML = sl.map(function (r) {
-        var label = 'Candidate ' + (r.i + 1);
-        if (refsInput && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
-        return '<li>' + label + '</li>';
-      }).join('');
+      if (sl.length === 0) {
+        // The button is no longer `disabled` (Phase 5.2), so the modal is
+        // reachable with nothing starred. An empty <ul> under a
+        // "Shortlisted candidates:" heading reads as a rendering fault; say
+        // what happened instead.
+        list.innerHTML =
+          '<li>Nothing starred yet. Close this and star the designs you '
+          + 'want to send.</li>';
+      } else {
+        list.innerHTML = sl.map(function (r) {
+          var label = 'Candidate ' + (r.i + 1);
+          if (refsInput && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
+          return '<li>' + label + '</li>';
+        }).join('');
+      }
     }
 
     modal.style.display = 'flex';

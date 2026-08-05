@@ -137,23 +137,36 @@
   </div>
 </div>
 
-{# "Take it further" CRO CTA — surfaces the wet-lab handoff path on
-   every result page so a user with promising designs has one click to
-   the matching service program on ranomics.com. Renders only when
-   candidates exist (no point hand-holding empty results). #}
+{# THE off-platform wet-lab panel. Singular, deliberately.
+
+   There were two, and on /campaigns/<id> both rendered: this one and the
+   `.rd-upsell` block in runs/detail.html, which said the same thing further
+   down the same page and also linked out to ranomics.com. The second is gone;
+   this is the one that survives, because it sits directly below the results
+   table (where the decision is actually made) rather than under the money
+   panel and the cancel button.
+
+   Reworded and re-weighted per Phase 5.2. It used to open with "Take it
+   further" and carry a `btn-primary`, which made it the loudest control on a
+   page whose primary outcome is the download; a results page had two of its
+   three most prominent buttons pointing at sales. Both links are secondary
+   now, and the copy names this as one option rather than as the next step.
+   The in-product "Send shortlist to Ranomics lab" bar above is the structured
+   route and stays the one that carries a shortlist. #}
 {% if candidates %}
-  <div class="panel" style="margin-top: 1rem; background: var(--accent-glow); border-color: var(--accent-dim);">
+  <div class="panel" style="margin-top: 1rem;">
     <div class="panel-body" style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem;">
       <div style="flex: 1 1 320px;">
-        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Take it further</strong>
+        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Validating in the lab is optional</strong>
         <span style="color: var(--text-secondary); font-size: 0.9rem;">
-          Designs worth validating? Hand them to the same team that built
-          this pipeline. Yeast display, mammalian display, BLI, DMS &mdash;
-          one data loop, no email handoff.
+          The designs above are yours to download and take anywhere. If you do
+          want them made and measured, Ranomics runs yeast display, mammalian
+          display, BLI and DMS on the same data loop &mdash; either through the
+          shortlist button above, or by reading up first.
         </span>
       </div>
       <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-        <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-primary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Binder Pilot &rarr;</a>
+        <a href="https://www.ranomics.com/binder-pilot" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">Binder Pilot</a>
         <a href="https://www.ranomics.com/ai-binder-sprint" target="_blank" rel="noopener noreferrer" class="btn-secondary" style="padding: 0.45rem 0.9rem; font-size: 0.85rem;">AI Binder Sprint</a>
       </div>
     </div>

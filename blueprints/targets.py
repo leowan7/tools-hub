@@ -40,6 +40,11 @@ from shared.credits import load_user_context
 from shared.idempotency import idempotent
 from shared.pdb_intake import resolve_target_upload
 from shared.storage import StorageError
+from shared.target_results import (
+    SORT_MODES,
+    SORT_PERCENTILE,
+    aggregate_target_candidates,
+)
 from shared.targets import (
     archive_target,
     create_target,
@@ -65,6 +70,23 @@ _MAX_RESIDUES = 256
 # also the point past which a target is reachable only by URL; the template
 # says so when a section hits it rather than truncating in silence.
 _LIST_LIMIT = 100
+
+# Why the lab handoff sent the user back to the target page. `target_detail`
+# whitelists these and hands the survivor to the template, which has one branch
+# per reason.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER TESTS CAN IMPORT IT. It used to be a
+# literal tuple inside the view, while tests/test_target_handoff_banners.py
+# carried a hand-written dict of the same keys under a comment claiming "a
+# reason added to that whitelist without a banner of its own shows up here as a
+# missing key rather than as silence". Nothing derived one from the other, so
+# that was false: adding a sixth reason rendered the `failed` arm's copy --
+# "your request could not be submitted" -- for a completely different cause,
+# with the whole suite green. Verified by mutation twice (QC round 21 finding
+# A-HIGH-3; re-confirmed after round 22 because the fix had been dropped from
+# the brief). The test now asserts set equality against this tuple, so the two
+# cannot drift apart again.
+HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 
 
 # ---------------------------------------------------------------------------
@@ -484,24 +506,43 @@ def target_detail(target_id):
         return render_template("404.html"), 404
 
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    # Phase 1 shows this target's COMPUTE-CAMPAIGN runs. Standalone jobs that
-    # carry target_id with campaign_id NULL (the `target:` reuse token, and
-    # Phase 4's yardstick refolds) are not shown: reading both tables is
-    # Phase 3's fan-in. Currently invisible rather than wrong, because no
-    # template mints a `target:` token yet. The combined ranked table over all
-    # of them is also Phase 3; until then each run links to its own results
-    # page.
+
+    # Phase 3's fan-in. ONE call, which reads both tables (this target's
+    # compute-campaign runs and its target-tagged standalone jobs) and returns
+    # the runs alongside the pooled ranked designs, so this route does NOT also
+    # call list_campaigns_for_target: `agg["campaigns"]` is that list.
     #
-    # One server-side read filtered on target_id. This previously fetched the
-    # target's run ids and then intersected them with the user's 200 most
-    # recent campaigns, which is capped over their ENTIRE campaign history: a
-    # target whose runs all fell outside that window rendered the empty state,
-    # telling the user nothing had ever been run against a target they had paid
-    # to run against.
-    # Drafts are excluded (see list_campaigns_for_target): a stranded draft was
-    # never funded, dispatched or billed, so it is not a run, and there is no
-    # action the page could offer on it.
-    runs = cc.list_campaigns_for_target(target.id, user_id=ctx.user_id)
+    # Drafts stay excluded (see list_campaigns_for_target): a stranded draft was
+    # never funded, dispatched or billed, so it is not a run. The empty state
+    # below counts them separately rather than implying nothing was attempted.
+    #
+    # Unknown ?sort= falls back rather than 400ing: it arrives from a query
+    # string, and a link a user pasted from an older version of this page should
+    # render, not error.
+    sort_mode = request.args.get("sort") or SORT_PERCENTILE
+    if sort_mode not in SORT_MODES:
+        sort_mode = SORT_PERCENTILE
+    agg = aggregate_target_candidates(
+        target.id, user_id=ctx.user_id, sort_mode=sort_mode,
+    )
+    if not agg["ok"]:
+        # get_target already resolved above, so this is a read failure rather
+        # than a tenancy one; render 404 for the same reason the aggregate does.
+        return render_template("404.html"), 404
+    runs = agg["campaigns"]
+
+    # A target whose every launch stranded at `draft` has no runs AND no
+    # designs, so the empty state would otherwise read "nothing has been run"
+    # to someone who tried and was not charged. Counting drafts costs a second
+    # query, so it is issued ONLY on the empty path, where there is by
+    # definition nothing else to pay for it.
+    draft_count = 0
+    if not runs:
+        draft_count = len(
+            [c for c in cc.list_campaigns_for_target(
+                target.id, user_id=ctx.user_id, include_drafts=True,
+            ) if c.status == "draft"]
+        )
 
     # "You just launched N runs" after a redirect from the launch screen. This
     # app has no flash(), so the result rides the query string. Counted from
@@ -523,13 +564,319 @@ def target_detail(target_id):
         stalled_count = max(0, int(request.args.get("stalled") or 0))
     except ValueError:
         stalled_count = 0
+
+    # Why the lab handoff sent the user back here. Every one of these was a
+    # bare `redirect(detail)` with no banner and nothing changed, which on the
+    # one action that hands work to the wet lab reads as a dead button
+    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
+    # renders nothing at all rather than an empty alert.
+    handoff = (request.args.get("handoff") or "").strip()
+    # `rejected` is distinct from `none` and the distinction is the whole
+    # point: `none` means the request carried no designs, `rejected` means it
+    # carried designs and none of them could be attributed to this target.
+    # Round 19 collapsed both onto `none`, so a user whose five starred designs
+    # were all rejected was told the request "arrived with no designs in it"
+    # and advised to retry, which can never work. Two QC reviewers found this
+    # independently (round 20, A-H1 / B-F1).
+    if handoff not in HANDOFF_REASONS:
+        handoff = ""
     return render_template(
         "targets/detail.html",
         target=target,
         runs=runs,
         launched_count=len(launched_runs),
         stalled_count=stalled_count,
+        agg=agg,
+        draft_count=draft_count,
+        sort_mode=agg["sort_mode"],
+        handoff=handoff,
     )
+
+
+# The ZIP pulls every PDB's bytes into the web process, so it stays capped
+# while CSV and FASTA do not. Mirrors _CAMPAIGN_ZIP_EXPORT_LIMIT
+# (blueprints/campaigns.py:659); a target pools MORE tools than a campaign, so
+# if anything the bound matters more here.
+_TARGET_ZIP_EXPORT_LIMIT = 300
+
+
+def _starred_refs():
+    """``(filter_set, kept, requested)`` for a POSTed export, or
+    ``(None, 0, 0)`` on a GET.
+
+    A POST to an export route ALWAYS means "only these designs". A body with
+    no ``refs`` field, an unparseable one, or one naming nothing yields an
+    EMPTY set, not None: falling back to "everything" would make a malformed
+    POST indistinguishable from a GET and hand the user the full file under a
+    filename that says ``_starred``.
+
+    The refs are parsed with the same function the TARGET lab-handoff POST
+    uses -- ``_parse_candidate_refs_counted``, called from
+    ``lab_projects.campaigns_submit`` -- so the two consumers of one star
+    selection cannot disagree about the payload shape or about how much of it
+    the ceiling removed. It is imported rather than duplicated: a second
+    ten-line parser is exactly the kind of thing that drifts.
+
+    NAMED rather than cited by line. This said ``lab_projects.py:521``, which
+    landed in an unrelated ``try`` block; the call was six lines further down,
+    and moved again -- by an unrelated edit above it -- while that was being
+    corrected. A symbol survives an edit above it and a line number does not.
+
+    IT ALSO INHERITS THAT PARSER'S 500-REF CEILING, which it does not announce
+    (register item A-2). ``requested > kept`` is how the caller finds out,
+    because losing refs to the bound means the file is a prefix of what the
+    user asked for and the export otherwise described itself as exact.
+
+    ``kept`` is how many refs the parser returned and ``requested`` how many
+    well-formed refs the payload actually carried, both straight from
+    ``_parse_candidate_refs_counted``. The earlier version derived the flag
+    from ``len(parsed) >= _MAX_CANDIDATE_REFS`` and had to defend the
+    over-detection that comes with it -- a selection of EXACTLY 500 is whole
+    and was reported as a prefix. There is nothing to defend: ``len(refs)``
+    saturates at the cap, which is the whole reason the counted form exists,
+    and its own docstring says a caller needing to know what the bound removed
+    should call it rather than re-derive it. This one does.
+
+    NEITHER NUMBER IS A ROW COUNT and neither is the size of the returned set.
+    Refs may repeat, so the distinct filter set can be far smaller than
+    ``kept``; the row shortfall is the caller's to compute against the set it
+    actually filtered with.
+    """
+    from blueprints.lab_projects import (  # noqa: PLC0415
+        _parse_candidate_refs_counted,
+    )
+
+    if request.method != "POST":
+        return None, 0, 0
+    parsed, requested = _parse_candidate_refs_counted(request.form.get("refs", ""))
+    refs = {(str(r["job_id"]), int(r["index"])) for r in parsed}
+    return refs, len(parsed), requested
+
+
+def _row_ref(cand: dict) -> tuple:
+    """A pooled row's identity as the star buttons emit it.
+
+    ``candidate_table.html`` stamps ``data-job`` from ``_source_job_id`` and
+    ``data-ref-idx`` from ``_source_index``, and ``shared.target_results``
+    stamps both on every pooled row, so this is the same pair on both sides
+    with no fallback needed. A row missing either simply matches nothing.
+    """
+    idx = cand.get("_source_index")
+    return (str(cand.get("_source_job_id") or ""), idx if idx is not None else -1)
+
+
+def _target_export(target_id: str, fmt: str):
+    """Pooled CSV / FASTA / ZIP across every run against one target.
+
+    Mirrors :func:`blueprints.campaigns._campaign_export`, with three deliberate
+    differences.
+
+    THE OWNERSHIP SENTINEL IS ``ok``, not an empty field. The campaign version
+    gates on ``agg.get("tool") is None``, which works there because a campaign
+    always has exactly one tool. A target has a LIST, and an owned target with
+    no succeeded designs yet has an empty one, so reusing that idiom would 404 a
+    paying user's freshly launched work. ``ok`` is False only for missing or
+    foreign; owned-and-empty exports an empty file.
+
+    ``?sort=`` is forwarded so the file matches the screen. That is safe because
+    the sort mode changes the ORDER of rows and never the SET: the cap is
+    applied in canonical order before the display sort, so "top 300" is the same
+    300 designs either way and only their order in the CSV differs.
+
+    A PARTIAL READ IS MARKED IN THE FILENAME. A target has many reads behind it
+    and any one of them can fail, which yields a short file rather than an error;
+    see the note beside ``incomplete`` below. The campaign export has no
+    equivalent because it has no equivalent flag.
+
+    The ``rank`` column is NOT the on-screen row number when the page is capped:
+    the page ranks with :data:`DEFAULT_LIMIT` and these files rank the whole set,
+    so a floor-reserved row sits at a different ordinal in each. The rows carry
+    ``source_job`` and ``pdb_key``, which identify a design across both; see
+    :func:`shared.exports.export_key`.
+    """
+    from flask import Response  # noqa: PLC0415
+    from shared.exports import (  # noqa: PLC0415
+        candidates_to_csv, candidates_to_fasta, candidates_to_zip,
+    )
+    from shared.storage import download_output  # noqa: PLC0415
+
+    ctx = load_user_context()
+    if ctx is None:
+        return redirect(url_for("auth.login"))
+
+    sort_mode = request.args.get("sort") or SORT_PERCENTILE
+    if sort_mode not in SORT_MODES:
+        sort_mode = SORT_PERCENTILE
+    export_limit = _TARGET_ZIP_EXPORT_LIMIT if fmt == "zip" else None
+    agg = aggregate_target_candidates(
+        target_id, user_id=ctx.user_id, limit=export_limit, sort_mode=sort_mode,
+    )
+    if not agg["ok"]:
+        return render_template("404.html"), 404
+    candidates = agg.get("candidates", [])
+    stem = "target_" + str(target_id)[:8]
+
+    # Starred-only filter. Applied AFTER the aggregate, on rows the user has
+    # already been shown, so it can only ever narrow what this same route
+    # would otherwise serve -- it is not a second way to address data.
+    #
+    # Exact for csv/fasta UP TO 500 POSTED REFS. Those aggregate with
+    # limit=None, so nothing is lost on the aggregate side, but the selection
+    # itself arrives through `_parse_candidate_refs_counted`, which CAPS the
+    # list it returns at `_MAX_CANDIDATE_REFS`. It does not stop THERE, and
+    # this comment said it did: the loop walks the whole payload and returns
+    # `requested` beside the capped list, which is the only reason the
+    # overflow is countable and the marker below derivable at all. Describing
+    # the parser as stopping is describing the version whose prefix was
+    # silent. This comment also claimed "exact" unqualified (register item
+    # A-2); the `requested > kept` marker below is what makes the bound
+    # visible instead of theoretical.
+    #
+    # It is NOT offered for the ZIP, which caps at 300 in canonical order: a
+    # starred design below that cap would be missing from the archive with
+    # nothing to say so. The macro renders the control for CSV only.
+    starred, kept, requested = _starred_refs()
+    if starred is not None:
+        applied = len(starred)
+        candidates = [c for c in candidates if _row_ref(c) in starred]
+        stem += "_starred"
+        # THE SELECTION IS ASSEMBLED IN THE BROWSER, so every way that can go
+        # wrong arrives here as the same thing: a POST whose refs name nothing
+        # this target has. static/js/candidate_table.js fills the hidden `refs`
+        # field at submit time from sessionStorage, and there is no JS harness
+        # in this repo, so renaming `.cand-starred-export`, dropping the submit
+        # listener, or emitting a different key shape all survive the suite and
+        # all land exactly here (register item B-3). Undisclosed, each one
+        # ships a header-only CSV at HTTP 200 under a filename saying
+        # `_starred`, which reads as "you starred nothing" rather than "the
+        # page failed to tell us what you starred".
+        #
+        # In the filename for the reason `incomplete` and `capped` already are,
+        # stated below: the artifact leaves this process and is opened later,
+        # out of this page's context, so nothing on the page travels with it.
+        # `NofM` mirrors the ZIP's own `_pdbs_top{n}of{total}` rather than
+        # inventing a second vocabulary for the same idea.
+        #
+        # THE TWO MARKERS COMPOSE, and they answer different questions. The
+        # first is about the SELECTION -- how much of what the browser posted
+        # was applied at all -- and the second about the ROWS that selection
+        # resolved to. An `if/elif` chain collapsed three outcomes onto one
+        # filename: 600 stale refs (0 rows), 600 refs of which 50 resolved, and
+        # 500 refs that all resolved every produced `_starred_first500`, so the
+        # `_empty` disclosure this route exists for was deleted at exactly the
+        # ref count where a user is most likely to be carrying stale
+        # sessionStorage. "The NofM comparison can only understate the loss"
+        # was the argument for ordering them; it is not an argument for
+        # dropping the other one entirely.
+        #
+        # `first{kept}of{requested}` counts REFS, not designs. An earlier
+        # version wrote `first{len(starred)}`, the DEDUPED filter-set size,
+        # while the truncation happened at `_MAX_CANDIDATE_REFS` RAW entries:
+        # a 500-entry payload naming 3 distinct designs was named
+        # `_starred_first3` over a file holding all 3 of them, where 3 was
+        # neither the bound nor the row count. `applied` -- the distinct set
+        # actually filtered with -- is the only honest denominator for the row
+        # comparison, and it is a different number from both.
+        if requested > kept:
+            stem += f"_first{kept}of{requested}"
+        if not candidates:
+            stem += "_empty"
+        elif len(candidates) < applied:
+            stem += f"_{len(candidates)}of{applied}"
+
+    # A FAILED READ YIELDS A SHORT FILE, NOT AN EMPTY TARGET, and without this
+    # the two are byte-indistinguishable. The aggregate sets `partial` precisely
+    # so "we could not look" can be told apart from "you have nothing", and
+    # target_detail discloses it; this route was written with the flag in hand
+    # and dropped it, so a target whose reads failed downloaded as a complete
+    # 200 and the FASTA positively asserted there were no sequences.
+    #
+    # Disclosed in the FILENAME, for the same reason `capped` already is below:
+    # the artifact leaves this process and is opened later, out of the page's
+    # context, so a banner on the page cannot travel with it. Not disclosed as a
+    # leading CSV comment row, which would change a shape every existing
+    # consumer parses (`candidates_to_csv` is shared with the campaign export).
+    partial = bool(agg.get("partial"))
+    incomplete = "_incomplete" if partial else ""
+
+    if fmt == "csv":
+        return Response(
+            candidates_to_csv(candidates),
+            mimetype="text/csv",
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}_scores{incomplete}.csv",
+            },
+        )
+    if fmt == "fasta":
+        body = candidates_to_fasta(candidates)
+        if not body:
+            # "No sequences found" is a claim about the target. Under `partial`
+            # it is a claim about a read that did not happen.
+            body = (
+                "# Part of this target could not be read, so no sequences could"
+                " be listed. Reload the target page and try again.\n"
+                if partial
+                else "# No sequences found in this target's output.\n"
+            )
+        return Response(
+            body,
+            mimetype="text/plain",
+            headers={
+                "Content-Disposition":
+                    f"attachment; filename={stem}{incomplete}.fasta",
+            },
+        )
+
+    def _fetch(src_job_id: str, filename: str):
+        try:
+            return download_output(
+                user_id=ctx.user_id, job_id=src_job_id, filename=filename,
+            )
+        except StorageError:
+            logger.warning(
+                "target export_zip: storage miss for %s/%s",
+                src_job_id, filename, exc_info=True,
+            )
+            return None
+
+    # namespace=True prefixes each entry <tool>/<job8>/ here rather than
+    # chunk###/, because every campaign starts at chunk 0 and a bindcraft and a
+    # boltzgen chunk000/designs/design_1.pdb would be one arcname. The switch is
+    # driven by _source_tool, which only the target aggregate stamps, so the
+    # campaign ZIP is unchanged (shared/exports.py::candidates_to_zip).
+    data = candidates_to_zip(candidates, _fetch, namespace=True)
+    if agg.get("capped"):
+        total = agg.get("total", len(candidates))
+        zip_name = f"{stem}_pdbs_top{len(candidates)}of{total}{incomplete}.zip"
+    else:
+        zip_name = f"{stem}_pdbs{incomplete}.zip"
+    return Response(
+        data,
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={zip_name}"},
+    )
+
+
+# POST is the starred-only variant, and only CSV carries it. See _starred_refs
+# for why a POST never falls back to the full export, and the note in
+# _target_export for why the ZIP is not offered this way.
+@targets_bp.route("/targets/<target_id>/export.csv", methods=["GET", "POST"])
+@login_required
+def target_export_csv(target_id):
+    return _target_export(target_id, "csv")
+
+
+@targets_bp.route("/targets/<target_id>/export.fasta", methods=["GET"])
+@login_required
+def target_export_fasta(target_id):
+    return _target_export(target_id, "fasta")
+
+
+@targets_bp.route("/targets/<target_id>/export.zip", methods=["GET"])
+@login_required
+def target_export_zip(target_id):
+    return _target_export(target_id, "zip")
 
 
 @targets_bp.route("/targets/<target_id>/launch", methods=["GET"])

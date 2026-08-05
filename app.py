@@ -135,6 +135,7 @@ from shared.storage import (
 from shared import category_glyphs as _category_glyphs
 from shared import compute_campaigns as _compute_campaigns
 from shared import metric_glossary as _metric_glossary
+from shared import ranking as _ranking
 from shared import resample as _resample
 from shared import score_legends as _score_legends
 from tools import base as tool_base
@@ -368,6 +369,39 @@ def create_app() -> Flask:
     # as good?" tooltips. Returns a {column_key: legend} dict.
     flask_app.jinja_env.globals["score_legends_for"] = (
         _score_legends.score_legends_for
+    )
+
+    # Multi-tool table support, both used by the candidate_table macro in
+    # ``multi_tool`` mode only.
+    #
+    # ``format_metric_value`` renders the Score cell. That cell prints a
+    # DIFFERENT metric per row (bindcraft's ipTM beside rfantibody's ipAE), so
+    # the macro's own column-name if/elif chain cannot reach it: that chain is
+    # keyed on a column that is the same down the whole column. Routing through
+    # shared.metric_glossary keeps precision one decision per metric rather
+    # than one per surface.
+    #
+    # ``score_legend_for`` resolves a legend for ONE (tool, column) pair rather
+    # than for a whole tool. In multi-tool mode the header cannot carry a
+    # legend, because "what counts as good" differs per row: bindcraft passes
+    # ipTM at 0.75 while rfdiffusion passes at 0.65, so a header legend would
+    # state one tool's bar over another tool's number.
+    #
+    # ``ordinal`` suffixes the Pctile cell. That cell hardcoded "th", which is
+    # wrong for every x1, x2 and x3 outside the teens, so 27 of the 100
+    # reachable percentiles rendered incorrectly and "93th" sat beside "97th".
+    flask_app.jinja_env.globals["format_metric_value"] = (
+        _metric_glossary.format_value
+    )
+    flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    flask_app.jinja_env.globals["ordinal"] = _ranking.ordinal
+    # Exposed so the target page can tell a PAUSED run from a still-running one
+    # without a second copy of the status set in markup. It must stay
+    # CAMPAIGN_TERMINAL_STATUSES and never CAMPAIGN_STATUSES: the two disagree
+    # on draft, funded, running and completing, so the latter would report an
+    # actively running campaign as finished (register item A38).
+    flask_app.jinja_env.globals["CAMPAIGN_TERMINAL_STATUSES"] = (
+        _compute_campaigns.CAMPAIGN_TERMINAL_STATUSES
     )
 
     # Map workflow-stage category labels to SVG glyph slugs. The

@@ -63,15 +63,69 @@
               <dd style="margin:0;font-family:'Geist Mono',monospace;font-size:.78rem;word-break:break-all;">{{ campaign.webhook_url }}</dd>
             {% endif %}
           {% else %}
-            <dt style="color:var(--text-secondary);">Source job</dt>
+            {# THREE non-API shapes, not one. 'web' keeps its shortlist in
+               candidate_indices and points at one job; 'campaign' (0037) and
+               'target' (0040) both leave those NULL by their own CHECK
+               constraint and keep the shortlist in candidate_refs. Rendering
+               candidate_indices for all three showed ops an empty candidate
+               list on every campaign-sourced handoff since 0037 (A84). #}
+            {# The link names the parent; it does NOT currently open for a
+               staff account, because /targets, /campaigns and /jobs are all
+               owner-scoped to the submitter and 404 for anyone else. That was
+               already true of the "Source job" link this replaces. Filed as
+               A85; the id is the useful part either way. #}
+            <dt style="color:var(--text-secondary);">Source</dt>
             <dd style="margin:0;">
-              {% if campaign.source_job_id %}
-                <a href="/jobs/{{ campaign.source_job_id }}" style="color:var(--accent);">{{ campaign.source_job_id[:8] }}</a>
+              {% if campaign.submission_source == 'target' and campaign.source_target_id %}
+                <a href="/targets/{{ campaign.source_target_id }}" style="color:var(--accent);">target {{ campaign.source_target_id[:8] }}</a>
+              {% elif campaign.submission_source == 'campaign' and campaign.source_campaign_id %}
+                <a href="/campaigns/{{ campaign.source_campaign_id }}" style="color:var(--accent);">run {{ campaign.source_campaign_id[:8] }}</a>
+              {% elif campaign.source_job_id %}
+                <a href="/jobs/{{ campaign.source_job_id }}" style="color:var(--accent);">job {{ campaign.source_job_id[:8] }}</a>
               {% else %}—{% endif %}
             </dd>
 
             <dt style="color:var(--text-secondary);">Candidates</dt>
+            {% if shortlist %}
+            <dd style="margin:0;">
+              {{ shortlist.count }} design{{ '' if shortlist.count == 1 else 's' }}
+              from {{ shortlist.jobs }} job{{ '' if shortlist.jobs == 1 else 's' }}
+              {% if shortlist.tools %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:var(--text-secondary);">
+                {% for slug, n in shortlist.tools %}{{ slug }} ({{ n }}){{ ', ' if not loop.last }}{% endfor %}
+              </div>
+              {% endif %}
+              {# The count above is DISTINCT designs, so everything that makes it
+                 differ from the submitted list has to be stated here or ops is
+                 reconciling a paid order against a number nothing explains. The
+                 three amber lines partition it: unresolved + out_of_range +
+                 the per-tool numbers equal the count, and duplicates +
+                 malformed are the rest of the raw list (A-4 / A-6). #}
+              {% if shortlist.unresolved %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
+                {{ shortlist.unresolved }} design{{ '' if shortlist.unresolved == 1 else 's' }}
+                could not be attributed to a tool (source job unreadable).
+              </div>
+              {% endif %}
+              {% if shortlist.out_of_range %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
+                {{ shortlist.out_of_range }} design{{ '' if shortlist.out_of_range == 1 else 's' }}
+                point{{ 's' if shortlist.out_of_range == 1 else '' }} past the end of the source job's results.
+              </div>
+              {% endif %}
+              {% if shortlist.duplicates or shortlist.malformed %}
+              <div style="margin-top:.2rem;font-size:.82rem;color:#fbbf24;">
+                Submitted list held {{ shortlist.raw }} entr{{ 'y' if shortlist.raw == 1 else 'ies' }};
+                {%- if shortlist.duplicates %} {{ shortlist.duplicates }} duplicate{{ '' if shortlist.duplicates == 1 else 's' }}{% endif %}
+                {%- if shortlist.duplicates and shortlist.malformed %} and{% endif %}
+                {%- if shortlist.malformed %} {{ shortlist.malformed }} unreadable{% endif %}
+                not counted above.
+              </div>
+              {% endif %}
+            </dd>
+            {% else %}
             <dd style="margin:0;">{{ campaign.candidate_indices | join(', ') }} (indices, 0-based)</dd>
+            {% endif %}
 
             {% if campaign.affinity_goal_kd_nm is not none %}
               <dt style="color:var(--text-secondary);">KD goal</dt>

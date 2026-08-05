@@ -603,8 +603,24 @@ def touch_target(target_id: str) -> None:
     _update_target(target_id, {"last_used_at": _now_iso()})
 
 
-def campaign_ids_for_target(target_id: str, *, user_id: Optional[str] = None) -> list:
-    """The target's COMPUTE-CAMPAIGN ids, in arbitrary order.
+def campaign_ids_for_target(
+    target_id: str, *, user_id: Optional[str] = None,
+) -> tuple[list, bool]:
+    """The target's COMPUTE-CAMPAIGN ids, and whether that list is COMPLETE.
+
+    Returns ``(ids, complete)``. ``complete`` is False when a page read raised
+    or the page bound was hit, i.e. whenever the ids below are a prefix of the
+    real set rather than the whole of it.
+
+    THE FLAG IS THE POINT OF THE TUPLE. The one caller uses this for a
+    membership test that decides whether a paid design is admitted to a wet-lab
+    shortlist, and a short list rejects designs that are genuinely the user's.
+    Returning the partial list bare -- which this did, from inside its own
+    ``except`` -- makes a transient database fault indistinguishable from
+    "that design does not belong to this target", and the difference is a
+    silently narrowed order (register item A-7). A caller that cannot tell the
+    two apart cannot make the safe choice, so the flag is not optional
+    information.
 
     NOT chronological. Pages are ordered by ``id`` so page boundaries are
     stable, and ``compute_campaigns.id`` is ``gen_random_uuid()`` (0034), which
@@ -628,7 +644,8 @@ def campaign_ids_for_target(target_id: str, *, user_id: Optional[str] = None) ->
     """
     client = get_service_client()
     if client is None:
-        return []
+        # No client is "we could not look", not "this target has no runs".
+        return [], False
     ids: list = []
     start = 0
     for _ in range(_MAX_PAGES):
@@ -647,17 +664,19 @@ def campaign_ids_for_target(target_id: str, *, user_id: Optional[str] = None) ->
             logger.error(
                 "campaign_ids_for_target failed for %s", target_id, exc_info=True
             )
-            return ids
+            return ids, False
         batch = list(getattr(response, "data", None) or [])
         ids += [str(r["id"]) for r in batch if r.get("id")]
         if len(batch) < _PAGE_SIZE:
-            return ids
+            # A short page is the end of the data, so this is the ONLY exit
+            # that saw the whole set.
+            return ids, True
         start += _PAGE_SIZE
     logger.error(
         "campaign_ids_for_target: page bound hit for target %s; "
         "the run list may be incomplete", target_id,
     )
-    return ids
+    return ids, False
 
 
 def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
