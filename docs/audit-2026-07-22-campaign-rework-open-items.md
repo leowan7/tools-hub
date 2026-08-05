@@ -3054,7 +3054,7 @@ in-product handoff the plan prefers.
   fix is to route it through the counted parser on a refs payload rather than
   to bolt a second parser onto `candidate_indices`.
 
-- **A92 (NEW, filed with A88, not fixed). The admin campaigns LIST prints "0"
+- **A92 (NEW, filed with A88, FIXED). The admin campaigns LIST prints "0"
   in the Cands column for every ref-based row.**
   `templates/admin/campaigns_list.html` renders
   `c.candidate_indices | length`, and a 'campaign' or 'target' row leaves that
@@ -3065,8 +3065,24 @@ in-product handoff the plan prefers.
   *Next:* the same `len(candidate_indices) or len(candidate_refs or [])`
   reconciliation `shared/email.py` already uses, or a call into
   `_ref_shortlist_view`'s `count`.
+  **Fixed:** the cell now reads `candidate_refs` for `'campaign'` and
+  `'target'` and `candidate_indices` otherwise, the same rule
+  `templates/campaigns/dashboard.html:34` already carries. Four corrections to
+  the filing above, established by reading the code rather than trusting it:
+  (a) the route did NOT need changing -- `list_all_campaigns` is
+  `select("*")`, so `candidate_refs` was already on the object; (b) the first
+  enum arm is `'web'`, not `'job'`; (c) the shape CHECK does not empty
+  `candidate_indices` and says nothing about it -- the ref writers simply never
+  set the key and the column defaults to empty (0011:27), so nothing stops a
+  future writer populating both; (d) `'api'` was NOT broken, because
+  `create_api_campaign` does set `candidate_indices`, so "every ref-based row"
+  overstated it and a fix applied to all ref rows would have broken a working
+  arm. The `_ref_shortlist_view` option was rejected on cost: up to 60 uncached
+  `get_job` reads per campaign against a 200-row list is ~12,000 full-row reads
+  to render one page. Pinned by `tests/test_admin_campaigns_list.py`;
+  mutation-verified (reverting the cell reds it).
 
-- **A93 (NEW, filed with A88, not fixed). The customer confirmation email
+- **A93 (NEW, filed with A88, FIXED). The customer confirmation email
   hardcodes "yeast display" for every assay.**
   `shared/email.py` writes "your yeast display scoping request" in the user
   half while the staff half prints the real `assay_type`, and the modal in
@@ -3076,6 +3092,33 @@ in-product handoff the plan prefers.
   copy tests of its own.
   *Next:* render the row's assay in the customer copy, with a label map so an
   enum value never reaches a customer verbatim.
+  **Fixed:** `_ASSAY_CUSTOMER_LABELS` maps the three values the 0011 CHECK
+  permits to customer wording, verified against that CHECK, against
+  `shared.campaigns.ASSAY_TYPES` and against the modal's radio values -- all
+  three agree. Anything outside the map degrades to "your scoping request"
+  rather than a raw enum or the word None; that branch is unreachable from any
+  row the database currently holds (`assay_type` is NOT NULL and CHECKed), so
+  it is cover for a future widening, not for today's data. The plain-text
+  customer body never named an assay, so its change is an ADDITION for
+  agreement between the two formats, not a correction. The subject line never
+  claimed an assay and is untouched.
+  **Wider than filed, three ways.** (1) The staff `Assay` cell was
+  `campaign.assay_type.replace(...)` inline, and an `AttributeError` there
+  fires ABOVE this function's only try block (which wraps just the HTTP post),
+  so a row with no usable `assay_type` would have escaped into the callers'
+  except blocks and lost the CUSTOMER confirmation as well as the staff
+  notification. Now read through `getattr`, printing an em dash. Only
+  `assay_type` is guarded: the sibling `budget_band.title()` calls are still
+  unguarded, so this function is NOT None-safe. (2) Four other customer-facing
+  surfaces asserted the same thing and are corrected:
+  `templates/components/candidate_table.html` (the modal subtitle, above a
+  radio group offering three), `templates/tools/comparison.html` (three
+  places) and `templates/campaigns_new_stub.html`. (3) A pre-existing comment
+  in `candidate_table.html` claiming "The microcopy in this modal is UNCHANGED
+  and deliberately so" became false when that subtitle was edited, and is
+  corrected rather than left behind. Pinned by 194 new lines in
+  `tests/test_campaign_submitted_email.py`; three mutations verified (HTML
+  body, plain-text lead, staff cell -- each reverts red).
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

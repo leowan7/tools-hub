@@ -687,10 +687,11 @@
    ``source_target_id`` branch below removes the reason for the guard: every
    mode now names a real parent.
 
-   The microcopy in this modal is UNCHANGED and deliberately so. "No commitment
-   — this is a scoping request" was always correctly framed; what was wrong was
-   the surrounding hierarchy, which is what Phase 5.2 changed in the action bar
-   above. #}
+   Phase 5.2 changed no microcopy here. "No commitment — this is a scoping
+   request" was always correctly framed; what was wrong was the surrounding
+   hierarchy, which is what that phase changed in the action bar above. The
+   subtitle below WAS edited afterwards, under A93: it said "scopes a yeast
+   display campaign" above a radio group that offers three assays. #}
 <div id="campaign-modal-{{ scope }}"
      class="modal-overlay"
      style="display:none;"
@@ -701,8 +702,14 @@
       <button class="modal-close" onclick="closeCampaignModal('{{ scope }}')">&times;</button>
     </div>
     <p class="subtitle" style="margin:.25rem 0 1.1rem;font-size:.875rem;">
+      {# No assay named: no lab_campaigns row exists yet for it to be true of.
+         The radio group below does start on yeast display (its first input
+         carries `checked`, and campaigns_submit in blueprints/lab_projects.py
+         falls back to the same value when the field is absent), but the user
+         can switch to either of the other two before posting, so naming one
+         here would be a claim this sentence cannot keep. #}
       Ranomics reviews your candidates, runs feasibility against current lab capacity,
-      and scopes a yeast display campaign. No commitment — this is a scoping request.
+      and scopes a wet-lab campaign. No commitment — this is a scoping request.
     </p>
 
     <form action="/lab-projects/submit" method="POST">

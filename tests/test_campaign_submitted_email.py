@@ -458,3 +458,197 @@ def test_a_campaign_arm_shortfall_names_no_target(sent):
     sentence = _shortfall_sentence(sent[0])
     assert "on this target" not in sentence
     assert "source target" not in sentence
+
+
+# ---------------------------------------------------------------------------
+# The assay named in customer copy (A93)
+# ---------------------------------------------------------------------------
+#
+# The customer HTML hardcoded "yeast display", so a mammalian_display or dms
+# submission was confirmed back with an assay the customer never picked. The
+# _campaign fixture above pins assay_type="yeast_display", so every other test
+# in this file renders a yeast row: a label map returning "yeast display" for
+# all three values would pass all of them. The parametrised presence checks
+# below close that gap -- each asserts the label its own row records rather
+# than whatever the map returns, so collapsing the map to a single label fails
+# their mammalian_display and dms cases in both bodies. The absence assertions
+# in test_customer_copy_names_no_assay_but_the_row_s_own cover what presence
+# cannot see: a body naming the row's assay AND a second one alongside it.
+
+_ALL_CUSTOMER_LABELS = ("yeast display", "mammalian display",
+                        "deep mutational scanning")
+# The staff table's transform, which must never appear in customer copy: it is
+# title case and renders 'dms' as "Dms".
+_STAFF_FORMS = ("Yeast Display", "Mammalian Display", "Dms")
+
+
+_MISSING = object()
+
+
+def _with_assay(assay):
+    """A submitted campaign carrying `assay`. ``_MISSING`` deletes the
+    attribute entirely, which is a different failure from None."""
+    c = _campaign(refs=[{"job_id": "j1", "index": 0}, {"job_id": "j1", "index": 1}])
+    if assay is _MISSING:
+        del c.assay_type
+    else:
+        c.assay_type = assay
+    return c
+
+
+def _customer(sent):
+    """The customer confirmation's two bodies. It is sent first."""
+    return _flat(sent[0]["html"]), _flat(sent[0]["text"])
+
+
+@pytest.mark.parametrize("assay,label", [
+    ("yeast_display", "yeast display"),
+    ("mammalian_display", "mammalian display"),
+    ("dms", "deep mutational scanning"),
+])
+def test_customer_html_names_the_assay_the_row_records(sent, assay, label):
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    html, _ = _customer(sent)
+    assert f"your {label} scoping request for" in html
+
+
+@pytest.mark.parametrize("assay,label", [
+    ("yeast_display", "Yeast display"),
+    ("mammalian_display", "Mammalian display"),
+    ("dms", "Deep mutational scanning"),
+])
+def test_customer_plain_text_names_the_assay_the_row_records(sent, assay, label):
+    """The text half never claimed an assay before this change; it now leads
+    with the same one the HTML does, capitalised because it is sentence
+    initial."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    _, text = _customer(sent)
+    assert text.startswith(f"{label} scoping request received for HER2")
+
+
+@pytest.mark.parametrize("assay,label", [
+    ("yeast_display", "yeast display"),
+    ("mammalian_display", "mammalian display"),
+    ("dms", "deep mutational scanning"),
+])
+def test_customer_copy_names_no_assay_but_the_row_s_own(sent, assay, label):
+    """No assay other than the row's own appears in either customer body.
+
+    The parametrised presence checks above already fail a map that returns one
+    label for everything: forcing that map fails their mammalian_display and
+    dms cases. This adds the case they cannot see -- copy that names the row's
+    own assay AND a second one elsewhere in the same body.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    html, text = _customer(sent)
+    for other in _ALL_CUSTOMER_LABELS:
+        if other == label:
+            continue
+        assert other not in html.lower(), other
+        assert other not in text.lower(), other
+
+
+@pytest.mark.parametrize("assay", ["yeast_display", "mammalian_display", "dms"])
+def test_customer_copy_never_uses_the_staff_title_case_forms(sent, assay):
+    """The HTML embeds the label mid-sentence after "your" and the text body
+    opens a sentence with it, so the staff table's .title() transform -- which
+    also renders 'dms' as "Dms" -- is the wrong vocabulary for either."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    html, text = _customer(sent)
+    for form in _STAFF_FORMS:
+        assert form not in html, form
+        assert form not in text, form
+
+
+@pytest.mark.parametrize("assay", ["yeast_display", "mammalian_display", "dms"])
+def test_customer_copy_never_shows_the_raw_enum(sent, assay):
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    html, text = _customer(sent)
+    assert assay not in html, assay
+    assert assay not in text, assay
+
+
+@pytest.mark.parametrize("missing", [None, "", "  ", _MISSING])
+def test_customer_copy_drops_the_adjective_when_the_assay_is_unknown(sent, missing):
+    """No assay to name, so the sentence names none rather than guessing one.
+
+    A row in this state is not reachable through any writer in this repo --
+    assay_type is NOT NULL and CHECKed, and all four writers validate first --
+    so this pins the behaviour of the fallback, not of any stored row.
+    """
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(missing), user_email="scientist@example.com",
+    )
+    html, text = _customer(sent)
+    assert "your scoping request for" in html
+    assert text.startswith("Scoping request received for HER2")
+    for label in _ALL_CUSTOMER_LABELS:
+        assert label not in html.lower(), label
+        assert label not in text.lower(), label
+    assert "None" not in html
+    assert "None" not in text
+
+
+@pytest.mark.parametrize("unknown", ["phage_display", "bli"])
+def test_an_assay_outside_the_map_is_dropped_rather_than_printed(sent, unknown):
+    """Cover for a future widening of the assay_type CHECK: an enum this
+    module has no customer copy for must not reach the customer as an enum."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(unknown), user_email="scientist@example.com",
+    )
+    html, text = _customer(sent)
+    assert "your scoping request for" in html
+    assert unknown not in html
+    assert unknown not in text
+
+
+def test_the_customer_subject_names_no_assay(sent):
+    """Left alone deliberately. It never named an assay, so there was nothing
+    to correct; this pins that so a later edit cannot reintroduce a hardcoded
+    one on the one line no body test reads."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay("dms"), user_email="scientist@example.com",
+    )
+    subject = sent[0]["subject"]
+    assert subject == "Scoping request received — HER2"
+    for label in _ALL_CUSTOMER_LABELS:
+        assert label not in subject.lower()
+
+
+@pytest.mark.parametrize("assay,staff_label", [
+    ("yeast_display", "Yeast Display"),
+    ("mammalian_display", "Mammalian Display"),
+    ("dms", "Dms"),
+])
+def test_the_staff_notify_keeps_its_own_title_case_assay(sent, assay, staff_label):
+    """Staff copy was never wrong and is not being restyled: it reads the row
+    and prints the title-cased form in both of its bodies."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(assay), user_email="scientist@example.com",
+    )
+    staff = sent[1]
+    assert f"<td>{staff_label}</td>" in _flat(staff["html"])
+    assert f"Assay: {staff_label}\n" in staff["text"]
+
+
+@pytest.mark.parametrize("missing", [None, _MISSING])
+def test_a_missing_assay_still_sends_both_emails(sent, missing):
+    """The staff half read campaign.assay_type.replace(...) directly, above the
+    only try block in the sender, so a row without that attribute raised into
+    the callers' except blocks and lost BOTH messages. Guarding only the
+    customer half would have left the unknown-assay wording unreachable."""
+    em.send_campaign_submitted_emails(
+        campaign=_with_assay(missing), user_email="scientist@example.com",
+    )
+    assert len(sent) == 2
+    assert "Assay: —\n" in sent[1]["text"]
