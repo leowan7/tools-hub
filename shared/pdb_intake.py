@@ -148,6 +148,14 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "gpu": verdict.size_envelope.gpu,
             "warn_message": verdict.size_envelope.warn_message,
             "hard_fail_message": verdict.size_envelope.hard_fail_message,
+            # WHAT THE GATE ACTUALLY COUNTED. Without these the AJAX panel had
+            # no way to tell a whole-chain count from a contig selection, so it
+            # printed ``residues_kept_on_target_chain`` — the file's number —
+            # next to a verdict reached on a different one. The server-rendered
+            # twin (templates/components/preflight_panel.html) has always shown
+            # residue_count and the cap; this is what lets the two agree.
+            "size_basis": verdict.size_envelope.size_basis,
+            "selection_label": verdict.size_envelope.selection_label,
         }
     return {
         "kind": verdict.kind.value,

@@ -101,11 +101,44 @@
         </div>
         <div class="preflight-body">`;
       if (v.source_label) {
+        // THE NUMBER ON SCREEN MUST BE THE NUMBER THE GATE JUDGED. This line
+        // used to print residues_kept_on_target_chain unconditionally — the
+        // whole named chains, i.e. the FILE. Once the contig started reaching
+        // the server that became a live contradiction: an 830 aa upload
+        // narrowed to A236-300,B236-300 is admitted on 130 residues against a
+        // 140 cap, and the panel said "Ready to run — 400 residues" directly
+        // after having refused the same upload for being over that cap.
+        // Nothing on screen reconciled the two. When the envelope reports it
+        // sized a SELECTION, name the selection and print its count.
+        const env = v.size_envelope;
+        const sized = env && env.size_basis === "selection" && env.selection_label;
         html += `<div class="preflight-meta">
           Target: <code>${escapeHtml(v.source_label)}</code>,
-          chain ${escapeHtml(v.target_chain || "")}
-          — ${v.residues_kept_on_target_chain} residues
+          ${sized
+            ? `region <code>${escapeHtml(env.selection_label)}</code>
+               — ${env.residue_count} residues`
+            : `chain ${escapeHtml(v.target_chain || "")}
+               — ${v.residues_kept_on_target_chain} residues`}
         </div>`;
+      }
+      // The envelope itself, mirroring the server-rendered twin in
+      // templates/components/preflight_panel.html so the two panels cannot
+      // describe the same verdict differently. The cap belongs on screen next
+      // to the count: a bare residue number is not interpretable, and this is
+      // the branch where the user is deciding whether to spend money.
+      if (v.size_envelope) {
+        html += `<div class="preflight-meta${
+          v.size_envelope.over_soft_warn ? " preflight-meta--warn" : ""
+        }">
+          Size envelope: ${v.size_envelope.residue_count} aa target
+          (cap ${v.size_envelope.hard_cap_target_aa} aa on
+          <code>${escapeHtml(v.size_envelope.gpu || "")}</code>).
+        </div>`;
+        if (v.size_envelope.warn_message) {
+          html += `<p class="preflight-warn">${
+            escapeHtml(v.size_envelope.warn_message)
+          }</p>`;
+        }
       }
       if (v.hotspots && v.hotspots.surviving && v.hotspots.surviving.length) {
         html += `<div class="preflight-meta">

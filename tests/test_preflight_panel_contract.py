@@ -44,6 +44,7 @@ from __future__ import annotations
 import io
 import pathlib
 import re
+from html.parser import HTMLParser
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -65,14 +66,24 @@ _JS, _SLASHES = _lex(_JS_SOURCE)
 # ---------------------------------------------------------------------------
 
 # `const contigInput = form.querySelector('input[name="target_input"]');`
-# -> {"contigInput": "target_input"}. Anchored on `const` + `form.querySelector`
-# so a mention in prose cannot answer for a binding (the comment stripping
-# already removed prose, and this is the belt to that's braces).
+# -> {"contigInput": ("input", "target_input")}. Anchored on `const` +
+# `form.querySelector` so a mention in prose cannot answer for a binding (the
+# comment stripping already removed prose, and this is the belt to that's
+# braces).
+#
+# THE TAG IS CAPTURED, NOT ASSUMED. An earlier version of this file recorded
+# only the name and the rendered-form test then asserted `name="target_input"`
+# appeared ANYWHERE in the body. Changing the proteina form's
+# `<input name="target_input">` to a `<textarea name="target_input">` therefore
+# left the entire suite green while `querySelector('input[name=...]')` returned
+# null and the panel died exactly the way F1 died — in the one test written to
+# close that hole. A CSS type selector is a claim about the element, so both
+# halves of it travel together from here on.
 _FIELD_OF = dict(
-    (var, field)
-    for var, field in re.findall(
+    (var, (tag, field))
+    for var, tag, field in re.findall(
         r"const\s+([A-Za-z][A-Za-z0-9]*)\s*=\s*"
-        r"form\.querySelector\(\s*'input\[name=\"([a-z_]+)\"\]'\s*\)",
+        r"form\.querySelector\(\s*'([a-z]+)\[name=\"([a-z_]+)\"\]'\s*\)",
         _JS,
     )
 )
@@ -104,6 +115,34 @@ def _rerun_watchlist() -> list:
     return [t.strip() for t in m.group(1).split(",") if t.strip()]
 
 
+def _ready_branch() -> str:
+    """The `ready` arm of renderVerdict, comment-stripped and sliced out.
+
+    Sliced rather than searched whole-file so that a reference living in some
+    other arm cannot answer for this one. The ready arm is the only place the
+    contradiction below was reachable: the needs_fix arm has always printed
+    ``v.reason``, which is ``hard_fail_message`` and already embeds the count
+    the gate used.
+    """
+    start = _JS.index('if (v.kind === "ready"')
+    end = _JS.index('} else if (v.kind === "needs_fix")', start)
+    return _JS[start:end]
+
+
+def _guard_before(branch: str, marker: str) -> str:
+    """The condition of the nearest enclosing `if (...)` above ``marker``.
+
+    Reads the guard rather than assuming one. A token search over a branch
+    proves the code was WRITTEN, never that it RUNS — `if (false) {` leaves
+    every token in place — and that is the one dead-branch mutation a
+    source-level test can still decide.
+    """
+    i = branch.index(marker)
+    j = branch.rindex("if (", 0, i)
+    k = branch.index(")", j)
+    return branch[j + len("if ("):k].strip()
+
+
 def test_the_comment_stripping_removed_the_prose_that_would_fake_a_pass():
     """Precondition, and NOT the one test_candidate_table_js_contract makes.
 
@@ -115,23 +154,33 @@ def test_the_comment_stripping_removed_the_prose_that_would_fake_a_pass():
     Prove the property this file actually depends on instead. The failure mode
     that matters is stripping too LITTLE — a token left sitting in a comment
     answering for code. (Stripping too much fails in the safe direction: the
-    token disappears and the tests below go red.) The fix ships comments that
-    say `target_input` and `input[name="target_input"]` in prose, so the raw
-    file would satisfy the searches below whether or not the code was ever
-    wired. Asserting that the stripped source holds strictly fewer of them
-    than the raw source decides exactly that, on this file's real content.
+    token disappears and the tests below go red.)
+
+    PROVED ON A FIXTURE, NOT ON THE PRODUCTION COMMENTS. This test used to
+    assert that the stripped source held strictly fewer `target_input` mentions
+    than the raw source, plus the literal presence of one comment sentence.
+    Both went red on a pure comment reword with no behaviour change whatsoever,
+    which is a false alarm on a precondition — and a precondition that cries
+    wolf is one someone eventually deletes. The guarantee needed here is a
+    property of `_lex`, not of any particular comment: if it provably removes
+    `//` and `/* */` comments containing the token, then no comment in
+    preflight.js can satisfy the searches below. That is decidable on a fixture
+    and is coupled to nothing.
     """
-    raw_hits = _JS_SOURCE.count("target_input")
-    code_hits = _JS.count("target_input")
-    assert raw_hits > code_hits, (
-        "comment stripping removed no `target_input` mention, so either _lex "
-        "silently stopped stripping or the explanatory comments are gone. "
-        "Either way the searches below can now be satisfied by prose."
+    fixture = (
+        '// contigInput reads target_input from the form\n'
+        '/* fd.append("target_input", x) — prose, not code */\n'
+        'const real = "target_input";\n'
     )
-    assert code_hits > 0, "target_input survives only in comments"
-    # A phrase that exists ONLY in a comment. If it is still here, the stripper
-    # is not running over the region the tokens live in.
-    assert "THE PANEL AND THE SUBMIT GATE MUST SIZE" not in _JS
+    stripped, _ = _lex(fixture)
+    assert stripped.count("target_input") == 1, (
+        f"_lex left {stripped.count('target_input')} of 3 mentions standing; "
+        f"comments can now answer for code in every search below"
+    )
+    assert 'const real = "target_input";' in stripped
+    # And the real file still has the token in CODE, or the searches below are
+    # passing on nothing.
+    assert _JS.count("target_input") > 0
 
 
 def test_the_panel_posts_the_contig():
@@ -153,7 +202,7 @@ def test_the_key_posted_is_the_field_read_from_the_form():
         f"{var} is appended as target_input but is not bound to any "
         f"form.querySelector('input[name=...]')"
     )
-    assert _FIELD_OF[var] == "target_input"
+    assert _FIELD_OF[var] == ("input", "target_input")
 
 
 def test_the_posted_key_is_the_key_the_server_parses():
@@ -166,7 +215,7 @@ def test_the_posted_key_is_the_key_the_server_parses():
     from shared.pdb_intake import preflight_target_segments
 
     key = next(k for k, v in _APPENDED_FROM.items()
-               if _FIELD_OF.get(v) == "target_input")
+               if (_FIELD_OF.get(v) or ("", ""))[1] == "target_input")
     segments = preflight_target_segments({key: "A236-300,B236-300"})
     assert segments == [("A", 236, 300), ("B", 236, 300)], (
         f"the server does not parse a contig out of the {key!r} key the "
@@ -213,12 +262,19 @@ def test_both_request_builders_send_the_same_target_fields():
 # ---------------------------------------------------------------------------
 
 
-# Every panel form this file GETs. `tool_enabled` is fail-closed on a missing
-# env var, so without these the "no other form carries the field" test would
-# read 404 for every tool and pass by never rendering anything.
+# EVERY form that mounts #preflight-panel, which is every consumer of
+# preflight.js -- all eight, verified against the templates that load the
+# script. An earlier version of this tuple listed six, so the "other requests
+# are unchanged" guard below was 5 of 7 rather than 7 of 7; boltz2 and iggm
+# were never rendered by it. Neither carries a contig, so nothing was broken,
+# but the claim was wider than the coverage.
+#
+# `tool_enabled` is fail-closed on a missing env var, so without these flags
+# the negative test would read 404 for every tool and pass by never rendering
+# anything -- which is why each row asserts its 200 and its panel first.
 _PANEL_TOOLS = (
     "proteina", "rfdiffusion", "bindcraft", "boltzgen", "rfantibody",
-    "pxdesign",
+    "pxdesign", "boltz2", "iggm",
 )
 
 
@@ -262,32 +318,78 @@ def _squash(body: str) -> str:
     return " ".join(body.split())
 
 
+class _Elements(HTMLParser):
+    """Every rendered element as ``(tag, attrs)``.
+
+    Same device test_candidate_table_js_contract.py settled on in its round 20:
+    an attribute NAME compared against a parsed attribute dict cannot be
+    satisfied by a longer attribute that merely starts with it, and html.parser
+    puts <style>/<script> into CDATA mode so nothing inside them is ever
+    reported as an element. Here it buys the property a substring search cannot
+    give at all — WHICH ELEMENT the attribute sits on.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.elements: list = []
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+
+def _elements(body: str) -> list:
+    p = _Elements()
+    p.feed(body)
+    return p.elements
+
+
 def test_the_proteina_form_renders_the_field_the_js_queries(client):
     """The RENDERED artifact, not the template source. A field that only
     exists in a Jinja branch the page never takes is a field the browser never
-    sees, and `querySelector` would return null with no error anywhere."""
+    sees, and `querySelector` would return null with no error anywhere.
+
+    THE ELEMENT TYPE IS PART OF THE CONTRACT, and this test used to skip it.
+    It asserted the NAME appeared somewhere in the body, so swapping the
+    proteina form's `<input name="target_input">` for a
+    `<textarea name="target_input">` kept the whole suite green while
+    `querySelector('input[name=...]')` returned null and the panel went back to
+    sizing the whole upload — the exact failure this file was written to close,
+    passing through the file written to close it. Both halves of the selector
+    now come out of the JS and are checked against parsed elements.
+    """
     _login(client)
     resp = _get_form(client, "proteina")
     assert resp.status_code == 200
-    body = _squash(resp.get_data(as_text=True))
-    field = _FIELD_OF[_APPENDED_FROM["target_input"]]
-    assert f'name="{field}"' in body, (
-        f"preflight.js queries input[name=\"{field}\"] and the proteina form "
-        f"does not render it"
+    body = resp.get_data(as_text=True)
+    tag, field = _FIELD_OF[_APPENDED_FROM["target_input"]]
+    matches = [
+        (t, a) for t, a in _elements(body)
+        if t == tag and a.get("name") == field
+    ]
+    assert matches, (
+        f"preflight.js queries {tag}[name=\"{field}\"]; the rendered proteina "
+        f"form has no <{tag}> with that name. Present on other elements: "
+        + repr(sorted({t for t, a in _elements(body)
+                       if a.get("name") == field}))
     )
     # And the panel is on this page at all — the script bails without it.
-    assert 'id="preflight-panel"' in body
+    assert 'id="preflight-panel"' in _squash(body)
 
 
 def test_no_other_panel_form_carries_the_contig_field(client):
-    """BLAST RADIUS. preflight.js is shared by eight tool forms. The contig is
-    proteina's alone, so `querySelector` returns null everywhere else and a
-    null appends nothing — their requests stay byte-identical. If another form
-    ever grows a `target_input`, that tool starts sending a contig to a size
-    envelope that will parse it with PROTEINA's parser, and this test is the
-    thing that makes someone think about it first."""
+    """BLAST RADIUS, over all seven other panel forms rather than a subset.
+
+    preflight.js is shared by eight tool forms. The contig is proteina's alone,
+    so `querySelector` returns null everywhere else and a null appends nothing
+    — their requests stay byte-identical. If another form ever grows a
+    `target_input`, that tool starts sending a contig to a size envelope that
+    would parse it with PROTEINA's parser, and this test is the thing that
+    makes someone think about it first."""
     _login(client)
-    field = _FIELD_OF[_APPENDED_FROM["target_input"]]
+    # The NAME only, deliberately: for the negative half a substring search is
+    # the stronger assertion, because a contig field would be a problem on any
+    # element, not only on the one the JS currently queries.
+    field = _FIELD_OF[_APPENDED_FROM["target_input"]][1]
     for slug in (s for s in _PANEL_TOOLS if s != "proteina"):
         resp = _get_form(client, slug)
         # A 404 here would make the assertion below vacuous, so the render is
@@ -372,7 +474,7 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
     does not send.
     """
     _login(client)
-    key = _FIELD_OF[_APPENDED_FROM["target_input"]]
+    key = _FIELD_OF[_APPENDED_FROM["target_input"]][1]
     body = _post_preflight(client, **{key: _CONTIG}).get_json()
     assert body["ok"] is True, body.get("reason")
     # 130, not 400: the number the panel reports is the SELECTION's. Asserted
@@ -381,3 +483,102 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
     # ::_verdict_to_json), and the count is the discriminator anyway — nothing
     # but the contig can move it from 400 to 130.
     assert body["size_envelope"]["residue_count"] == 130
+
+
+# ---------------------------------------------------------------------------
+# The panel must not print a number the gate did not judge
+# ---------------------------------------------------------------------------
+#
+# Wiring the contig made a latent JSON divergence REACHABLE. The payload has
+# always carried two different residue counts — ``residues_kept_on_target
+# _chain`` (the whole named chains, i.e. the file) and
+# ``size_envelope.residue_count`` (what the envelope actually judged) — and at
+# 352de0a they were also 400 and 130 for this upload. No user could see it:
+# without the contig in the request the verdict was needs_fix at 400 and the
+# ready arm never rendered.
+#
+# With the contig posted, the sequence a real user walks is: upload -> refusal
+# naming 400 against the 140 cap -> type the contig -> "Ready to run — 400
+# residues." Nothing on screen reconciled those, and the ready arm rendered
+# neither the cap nor the envelope. Not a money bug — the gate was right
+# throughout — but it is collateral of this commit's own headline feature and
+# it undermines the single job the panel has.
+# ---------------------------------------------------------------------------
+
+def test_the_verdict_says_which_number_the_gate_counted(client):
+    """The discriminator has to be IN the payload before the panel can use it.
+
+    ``size_basis`` and ``selection_label`` were computed by the envelope and
+    dropped on the floor by ``_verdict_to_json``, so the browser had no way to
+    tell a whole-chain count from a contig selection.
+    """
+    _login(client)
+    key = _FIELD_OF[_APPENDED_FROM["target_input"]][1]
+    body = _post_preflight(client, **{key: _CONTIG}).get_json()
+    env = body["size_envelope"]
+    assert env["size_basis"] == "selection"
+    assert env["selection_label"] == _CONTIG
+    # The two numbers the payload carries, and the fact that they DIFFER —
+    # which is the precondition that makes rendering the wrong one visible.
+    assert env["residue_count"] == 130
+    assert body["residues_kept_on_target_chain"] == 400
+
+
+def test_a_whole_chain_run_still_reports_the_chain_basis(client):
+    """The other side of the discriminator. Without this, the assertion above
+    is satisfied by hardcoding "selection"."""
+    _login(client)
+    body = _post_preflight(client).get_json()
+    assert body["size_envelope"]["size_basis"] == "chains"
+    assert body["size_envelope"]["selection_label"] is None
+
+
+def test_the_ready_panel_renders_the_gates_number_and_the_cap():
+    """THE FIX, on the arm where the contradiction was reachable.
+
+    The ready arm must consume the discriminator and print the envelope's own
+    count, not the file's. It must also print the cap: a bare residue count is
+    not interpretable, and this is the screen on which the user decides whether
+    to spend money.
+    """
+    branch = _ready_branch()
+    assert "size_basis" in branch, (
+        "the ready panel does not look at size_basis, so it cannot tell a "
+        "contig selection from a whole-chain count and will print the file's "
+        "number for a run sized on the selection"
+    )
+    assert "size_envelope.residue_count" in branch or "env.residue_count" in branch, (
+        "the ready panel never renders the count the gate actually judged"
+    )
+    assert "hard_cap_target_aa" in branch, (
+        "the ready panel prints a residue count with no cap beside it"
+    )
+    # A substring search cannot tell a live block from a dead one: rewriting
+    # the guard to `if (false)` leaves every token above exactly where it was.
+    # So the GUARD is read too, and it has to be the truthiness of the payload
+    # field rather than a constant. This closes the one dead-branch mutation
+    # reachable without a JS runtime; the others QC found (a condition false
+    # only for proteina, the append moved after the POST) genuinely need one,
+    # and are named as open in the commit message rather than papered over.
+    guard = _guard_before(branch, "Size envelope:")
+    assert guard == "v.size_envelope", (
+        f"the size-envelope block is guarded on {guard!r}, not on the payload "
+        f"field being present; a constant guard renders nothing while every "
+        f"token this test looks for stays in the source"
+    )
+
+
+def test_the_two_panels_agree_on_what_they_show():
+    """The AJAX panel and its server-rendered twin describe the same verdict.
+
+    templates/components/preflight_panel.html has always rendered
+    ``size_envelope.residue_count`` next to ``hard_cap_target_aa``; the AJAX
+    panel rendered neither. Whichever one a user happens to hit, the number on
+    screen has to be the number the gate used.
+    """
+    twin = (_ROOT / "templates" / "components" / "preflight_panel.html").read_text(
+        encoding="utf-8")
+    for token in ("size_envelope.residue_count", "size_envelope.hard_cap_target_aa"):
+        assert token in twin, f"the server-rendered twin no longer shows {token}"
+    branch = _ready_branch()
+    assert "residue_count" in branch and "hard_cap_target_aa" in branch
