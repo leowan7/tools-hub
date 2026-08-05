@@ -656,20 +656,27 @@ def preflight_for_tool(
 def _chain_tokens(target_chain: str) -> list[str]:
     """The chain ids named by ``target_chain``, in order, de-duplicated.
 
-    ``target_chain`` may name SEVERAL chains, whitespace-separated ("A B C") —
-    ``shared/pdb_inspect.validate_target_chain`` has always accepted that form
-    and four tools declare ``multi_chain_supported=True``. Every consumer in
-    this module used to compare the whole string against a single-letter chain
-    id, so a multi-token value matched nothing: ``residues_kept_per_chain.get()``
+    ``target_chain`` may name SEVERAL chains, separated by whitespace
+    ("A B C") or commas ("A,B,C"). Every consumer in this module used to
+    compare the whole string against a single-letter chain id, so a
+    multi-token value matched nothing: ``residues_kept_per_chain.get()``
     returned 0 and preflight hard-failed with "chain A B C has only 0 protein
     residues" on a perfectly good target. Same defect class as the one already
     fixed in ``pdb_inspect.validate_hotspots`` and ``pipeline_normalize``.
+
+    The comma form is not hypothetical: the tool adapters canonicalise
+    ``target_chain`` to ``"A,B"`` in ``validate()``, and ``blueprints/tools.py``
+    feeds that POST-validate value straight into ``preflight_for_tool``. Parsing
+    only whitespace here therefore rejected EVERY multi-chain submission with
+    "Target chain 'A,B' isn't in this PDB. Found chain(s): A, B." — and
+    ``blueprints/tools.py`` blocks submit on ``not verdict.ok``, so the message
+    was not merely cosmetic. Both separators parse, everywhere.
 
     Splitting is behaviour-preserving for a single id (``["A"]``); it changes
     outcomes only for inputs that previously always failed.
     """
     out: list[str] = []
-    for tok in (target_chain or "").split():
+    for tok in (target_chain or "").replace(",", " ").split():
         if tok not in out:
             out.append(tok)
     return out

@@ -187,7 +187,7 @@ class DesignTarget:
                     "chains cannot be checked. Re-upload it."
                 )
             return None
-        for cid in target_chain.split():
+        for cid in target_chain.replace(",", " ").split():
             chain = self._chain(cid)
             if chain is None:
                 return (
@@ -219,7 +219,7 @@ class DesignTarget:
         A18), not a contract worth mirroring — but it does mean the two paths
         disagree on multi-chain targets until it is fixed.
         """
-        cids = [c for c in (target_chain or "").split() if c]
+        cids = [c for c in (target_chain or "").replace(",", " ").split() if c]
         ranges = []
         for cid in cids:
             chain = self._chain(cid)
@@ -706,7 +706,7 @@ def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
     # default: the field is editable and the run persists what was submitted.
     if target.target_chain and target.chains:
         segments = []
-        for cid in target.target_chain.split():
+        for cid in target.target_chain.replace(",", " ").split():
             chain = target._chain(cid)
             if chain and chain.get("min_resnum") is not None:
                 segments.append(f"{cid}{chain['min_resnum']}-{chain['max_resnum']}")

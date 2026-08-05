@@ -218,3 +218,86 @@ def test_build_payload_forwards_the_multichain_shape(name, mod):
     payload = mod.build_payload(inputs, "https://example.invalid/target.pdb")
     assert payload["target_chain"] == "A,B"
     assert payload["hotspot_residues"] == ["A296", "B264"]
+
+
+# ---------------------------------------------------------------------------
+# The seam: what validate() EMITS must be what the shared layer can PARSE
+# ---------------------------------------------------------------------------
+#
+# Canonicalising to "A,B" was correct at the adapter boundary and broke
+# everything downstream of it, because eight parsers in shared/ split on
+# whitespace only. blueprints/tools.py:1204 feeds the POST-validate value
+# into preflight_for_tool, and blueprints/tools.py:1223 blocks submit on
+# `not verdict.ok` — so every multi-chain submission was refused with
+# "Target chain 'A,B' isn't in this PDB. Found chain(s): A, B."
+#
+# The tests above did not catch it because each one checks a single side of
+# the seam: the adapter emits "A,B" (true), and the shared parsers accept
+# "A B" (also true). Nothing asserted that the emitted form is an accepted
+# form. These do.
+
+from shared.pdb_inspect import (            # noqa: E402
+    inspect_pdb_bytes, validate_target_chain,
+)
+from shared.pdb_preflight import _chain_tokens, preflight_for_tool  # noqa: E402
+from tests.test_pdb_preflight import _atom_line                     # noqa: E402
+
+
+def _two_chain_pdb(n_res: int = 40) -> bytes:
+    """Two chains of ``n_res`` ALA each — above every tool's 30-residue floor."""
+    lines = ["HEADER    SYNTHETIC TWO CHAIN\n"]
+    serial = 0
+    for ci, cid in enumerate(("A", "B")):
+        for i in range(n_res):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=i + 1, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+@pytest.mark.parametrize("typed", ["A,B", "A B", "A, B"])
+def test_chain_tokens_accepts_whatever_validate_emits(typed):
+    _, mod = ADAPTERS[0]
+    inputs, err = mod.validate(_form("bindcraft", typed, "A5,B5"), {})
+    assert err is None, err
+    emitted = inputs["target_chain"]
+    assert _chain_tokens(emitted) == ["A", "B"], (
+        f"validate() emits {emitted!r} but the shared tokenizer reads it as "
+        f"{_chain_tokens(emitted)!r} — the seam is broken"
+    )
+
+
+@pytest.mark.parametrize("typed", ["A,B", "A B"])
+def test_validate_target_chain_accepts_whatever_validate_emits(typed):
+    _, mod = ADAPTERS[0]
+    inputs, _ = mod.validate(_form("bindcraft", typed, "A5,B5"), {})
+    report = inspect_pdb_bytes(_two_chain_pdb())
+    assert validate_target_chain(report, inputs["target_chain"]) is None
+
+
+@pytest.mark.parametrize("name,mod", ADAPTERS)
+@pytest.mark.parametrize("typed", ["A,B", "A B"])
+def test_preflight_accepts_the_canonical_form_end_to_end(name, mod, typed):
+    """The exact path blueprints/tools.py takes: form -> validate() ->
+    preflight_for_tool(inputs["target_chain"]). Both chains must survive."""
+    inputs, err = mod.validate(_form(name, typed, "A5,B5"), {})
+    assert err is None, err
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=[], binder_max_aa=65, num_designs=2,
+    )
+    assert "isn't in this PDB" not in (verdict.reason or ""), verdict.reason
+    # 80 residues across both chains, not 40 from one and not 0 from a
+    # whole-string lookup that matched nothing.
+    assert verdict.cleanup.residues_kept_on_target_chain == 80, (
+        f"{name}: kept {verdict.cleanup.residues_kept_on_target_chain} "
+        f"residues for {inputs['target_chain']!r}; expected both chains"
+    )
+    assert verdict.cleanup.chains_dropped == []
