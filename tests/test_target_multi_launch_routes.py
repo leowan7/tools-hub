@@ -1110,6 +1110,81 @@ def test_a_contig_smaller_than_the_upload_is_sized_on_the_contig(client):
     assert rec.kwargs_for("proteina")["params"]["target_input"] == "A1-100"
 
 
+def test_a_target_that_fits_but_whose_complex_does_not_is_refused(client):
+    """THE OTHER HALF OF THE ENVELOPE, and it was dead on every money route.
+
+    `hard_cap_combined_aa` fires on (target_aa + binder_max_aa), and no caller
+    ever passed `binder_max_aa` — not this route, not either /campaigns branch
+    — even though the validated binder length was in scope at all three. So a
+    130 aa target with a 300 aa max binder is 430 against proteina's 260
+    budget: `/tools/proteina/submit` refused it and this route funded four
+    shards for it.
+
+    The target half is deliberately INSIDE the cap here (130 < 140), so a gate
+    that only ever reads the target size cannot pass this test.
+    """
+    _login(client)
+    t = _proteina_target()             # 130 aa — fits on its own
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__binder_length_min="60",
+            proteina__binder_length_max="300",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "combined budget" in body and "260" in body
+
+
+def test_a_binder_inside_the_combined_budget_still_launches(client):
+    """Guards the fix from over-firing: 130 + 120 = 250 is under 260, and this
+    is the shape the two paid canary shards actually ran."""
+    _login(client)
+    t = _proteina_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__binder_length_min="60",
+            proteina__binder_length_max="120",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    assert rec.kwargs_for("proteina")["params"]["binder_length"] == [60, 120]
+
+
+def test_the_combined_cap_reads_rfdiffusions_dict_shaped_binder_length(client):
+    """THE SHAPE TRAP. Every adapter names and shapes its binder length
+    differently — proteina emits a [min, max] LIST, rfdiffusion a {min, max}
+    DICT, pxdesign a bare int, boltzgen/bindcraft a separate
+    `binder_length_max` key. A reader that assumes proteina's shape returns
+    None for rfdiffusion, and None means "no combined cap" rather than an
+    error, so the gate would silently do nothing for it.
+
+    500 aa target + 150 aa binder = 650 against rfdiffusion's 600 budget, with
+    the target itself at exactly its 500 cap and therefore NOT over it.
+    """
+    _login(client)
+    t = _target(chain_summary={
+        "total_standard_residues": 500,
+        "chains": [{
+            "chain_id": "A", "standard_residue_count": 500,
+            "hetatm_resnames": [], "water_count": 0,
+            "min_resnum": 1, "max_resnum": 500,
+        }],
+    })
+    resp, rec = _launch(client, t, form=_form(
+        tools=["rfdiffusion"], rfdiffusion__designs="12",
+        rfdiffusion__binder_length_min="100",
+        rfdiffusion__binder_length_max="150",
+    ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "combined budget" in body and "600" in body
+
+
 def test_proteina_motif_variant_is_refused_against_a_stored_target(client):
     """AME tasks resolve from configs/design_tasks/ame_dict_v2.yaml, a registry
     `complexa target add` cannot write, so the motif variant can only scaffold a

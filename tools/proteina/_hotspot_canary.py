@@ -285,7 +285,46 @@ def _proc_used_mb(pid: int) -> int:
     return 0
 
 
-def _poll_vram(stop: threading.Event, out: dict, pid: int | None = None) -> None:
+# One poll iteration is two nvidia-smi calls, each capped at 10 s, and the
+# poller always completes an iteration after the stop flag is set. Anything at
+# or below 20 can cut the final sample off.
+_VRAM_JOIN_TIMEOUT_S = 25
+
+
+def _prealloc_disabled(env: dict | None) -> bool | None:
+    """Was JAX preallocation OFF in the env the CHILD actually received?
+
+    DERIVED, NEVER ASSERTED. This field exists for exactly one purpose: to make
+    it impossible to silently compare a reading taken before the allocator fix
+    with one taken after it. A hardcoded ``True`` cannot do that job — it
+    reports the intent of the code rather than the condition of the run.
+
+    The hole is real, not theoretical. ``design_subprocess_env`` builds its env
+    with ``setdefault`` so an operator can override any flag per run, which is
+    a deliberate feature. An operator who exports
+    ``XLA_PYTHON_CLIENT_PREALLOCATE=true`` therefore gets a child that DOES
+    preallocate — 61,440 MB of an A100-80GB on the first JAX op — while the
+    shard's JSON still says ``vram_prealloc_disabled: true``. That is the exact
+    mislabelling that made the previous two measurements unusable, reproduced
+    with a stamp of authenticity on it.
+
+    Returns None when the variable is absent from the env entirely, because
+    "absent" means JAX's own default applies and that default is preallocation
+    ON — but it is a default rather than a declaration, and a reader deciding
+    whether two numbers are comparable should see the difference.
+    """
+    if not env:
+        return None
+    raw = env.get("XLA_PYTHON_CLIENT_PREALLOCATE")
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in ("false", "0", "no", "off")
+
+
+def _poll_vram(
+    stop: threading.Event, out: dict, pid: int | None = None,
+    child_env: dict | None = None,
+) -> None:
     """Peak VRAM during the design, device-wide AND for the design process.
 
     WHY THIS IS NOT JUST THE DEVICE READING. The device figure is what the two
@@ -331,7 +370,12 @@ def _poll_vram(stop: threading.Event, out: dict, pid: int | None = None) -> None
     out["peak_vram_mb"] = peak
     out["peak_proc_vram_mb"] = peak_proc if pid is not None else None
     out["vram_poll_interval_s"] = 1
-    out["vram_prealloc_disabled"] = True
+    # From the env handed to the child, not from this file's intentions.
+    out["vram_prealloc_disabled"] = _prealloc_disabled(child_env)
+    # Set LAST, and only on the normal exit. The join below has a timeout; if
+    # it expires this key is absent and the caller can tell "the poller was cut
+    # off mid-sample" from "the poller ran and measured nothing".
+    out["vram_poll_complete"] = True
 
 
 def _stage_dir(rp) -> Path:
@@ -781,12 +825,14 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
     # VRAM to the design rather than to the whole device. env= carries the
     # allocator flags from run_pipeline — WITHOUT them JAX preallocates 61,440
     # MB and every number this function reports is that constant.
+    child_env = rp.design_subprocess_env()
     proc = subprocess.Popen(
         cmd, cwd=str(work_dir), stdout=sys.stdout, stderr=sys.stderr,
-        env=rp.design_subprocess_env(),
+        env=child_env,
     )
     poller = threading.Thread(
-        target=_poll_vram, args=(stop, vram, proc.pid), daemon=True,
+        target=_poll_vram, args=(stop, vram, proc.pid),
+        kwargs={"child_env": child_env}, daemon=True,
     )
     poller.start()
     try:
@@ -802,7 +848,22 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         rc = 124
     runtime_s = int(time.time() - t0)
     stop.set()
-    poller.join(timeout=10)
+    # THE JOIN MUST OUTLAST THE FINAL SAMPLE. The poller samples first and
+    # tests the stop flag second, so after `stop.set()` it still has a full
+    # iteration to finish: two nvidia-smi calls at `timeout=10` each. A 10 s
+    # join could therefore expire mid-sample, leave `vram` empty, and report
+    # all four VRAM keys as None — which reads as "never measured" on a shard
+    # that measured fine. 25 s clears both calls with margin, and this is
+    # bounded wall-clock on a shard that already ran for minutes.
+    poller.join(timeout=_VRAM_JOIN_TIMEOUT_S)
+    if not vram.get("vram_poll_complete"):
+        # Say so rather than emitting a silent row of Nones. Only reachable if
+        # the join above still expired, i.e. nvidia-smi is wedged.
+        _emit(
+            f"[canary/{label}] WARNING: VRAM poller did not finish within "
+            f"{_VRAM_JOIN_TIMEOUT_S}s; its readings are incomplete.",
+            flush=True,
+        )
 
     out: dict = {
         "label": label, "key": key, "contig": contig,
@@ -829,7 +890,16 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         "peak_proc_vram_mb": vram.get("peak_proc_vram_mb"),
         "baseline_vram_mb": baseline_mb,
         "vram_poll_interval_s": vram.get("vram_poll_interval_s"),
+        # DERIVED from the env the child got (see _prealloc_disabled), not
+        # asserted. True means the allocator fix was in force for THIS run;
+        # False means an operator override put preallocation back on and the
+        # peak is ~61 GB of reservation; None means the flag was not set at all
+        # and JAX's own default (ON) applied. All three are different rows.
         "vram_prealloc_disabled": vram.get("vram_prealloc_disabled"),
+        # False/absent means the poller was cut off and the four numbers above
+        # are incomplete rather than measured. Without it a timed-out join is
+        # indistinguishable from a shard that used no VRAM.
+        "vram_poll_complete": bool(vram.get("vram_poll_complete")),
         # The chains scored as target (the contig's) and every chain the input
         # file carried. They differ exactly when --contig names a subset, and
         # printing both is what makes that visible instead of inferable.

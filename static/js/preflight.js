@@ -7,8 +7,9 @@
 //   - click events on .preflight-af-btn → POST { alphafold_accession } to the
 //     same endpoint, render the verdict, and stash the reuse token on a
 //     hidden input so the actual submit fetches the same AF model.
-//   - change events on input[name="target_chain"] and
-//     input[name="hotspot_residues"] → re-run preflight if a file is attached.
+//   - change events on input[name="target_chain"],
+//     input[name="hotspot_residues"] and input[name="target_input"] → re-run
+//     preflight if a file is attached.
 //
 // Tool slug is read from the panel's data-tool attribute. The Run button
 // must carry id="tool-submit-btn".
@@ -38,6 +39,17 @@
     form.querySelector('input[type="file"][name="target_pdb"]');
   const chainInput = form.querySelector('input[name="target_chain"]');
   const hotspotInput = form.querySelector('input[name="hotspot_residues"]');
+  // The contig ("A236-300,B236-300"). THE PANEL AND THE SUBMIT GATE MUST SIZE
+  // THE SAME RUN. `preflight_target_segments` (shared/pdb_intake.py) reads this
+  // exact form key and hands the parsed segments to the size envelope, which
+  // then counts the SELECTION instead of the whole upload. Without this field
+  // in the request the server saw no contig, sized the file, and greyed out the
+  // Run button for a selection that was well inside the cap — whole 3S7G is
+  // 830 aa, `A236-300,B236-300` is 130, and only the second one is the run.
+  // Only proteina ships the field today. `querySelector` returns null on every
+  // other tool's form, and a null appends nothing, so their requests are
+  // unchanged byte for byte.
+  const contigInput = form.querySelector('input[name="target_input"]');
   // boltz2 carries a binder_sequences textarea; we forward the longest
   // binder to the preflight endpoint so the live total-complex size check
   // matches the submit-side gate (which sees the validated sequences).
@@ -213,6 +225,18 @@
     return max > 0 ? max : null;
   }
 
+  function appendTargetFields(fd) {
+    // ONE body for both entry points. The upload path and the AlphaFold path
+    // used to append the target fields with two copies of the same three
+    // lines, which is how a field can end up on one and not the other — and a
+    // panel that sizes a different run than submit does is worse than no panel,
+    // because it refuses runs the server would accept.
+    if (chainInput) fd.append("target_chain", chainInput.value || "");
+    if (hotspotInput)
+      fd.append("hotspot_residues", hotspotInput.value || "");
+    if (contigInput) fd.append("target_input", contigInput.value || "");
+  }
+
   function appendBinderFields(fd) {
     // boltz2: forward the longest binder as binder_length_max, the field
     // _parse_preflight_size_params reads directly. The raw textarea string
@@ -263,9 +287,7 @@
     }
     const fd = new FormData();
     fd.append("target_pdb", fileInput.files[0]);
-    if (chainInput) fd.append("target_chain", chainInput.value || "");
-    if (hotspotInput)
-      fd.append("hotspot_residues", hotspotInput.value || "");
+    appendTargetFields(fd);
     appendBinderFields(fd);
     postPreflight(fd);
   }
@@ -273,9 +295,7 @@
   function runPreflightFromAlphaFold(accession, reuseToken) {
     const fd = new FormData();
     fd.append("alphafold_accession", accession);
-    if (chainInput) fd.append("target_chain", chainInput.value || "");
-    if (hotspotInput)
-      fd.append("hotspot_residues", hotspotInput.value || "");
+    appendTargetFields(fd);
     appendBinderFields(fd);
     return postPreflight(fd).then((v) => {
       // If the AF model passes preflight, stash the reuse token so the
@@ -309,9 +329,13 @@
   if (fileInput) {
     fileInput.addEventListener("change", runPreflightFromUpload);
   }
-  // Re-run when chain / hotspots / binder sequences change AND a file is
-  // attached.
-  for (const inp of [chainInput, hotspotInput, binderSeqInput]) {
+  // Re-run when chain / hotspots / contig / binder sequences change AND a file
+  // is attached. The contig belongs here for a reason of its own: it is
+  // normally typed AFTER the file is picked, so the first verdict is always the
+  // whole-upload one. Without a re-run the user reads a refusal for a run they
+  // have since narrowed, and the Run button stays greyed out at the value it
+  // was disabled on.
+  for (const inp of [chainInput, hotspotInput, contigInput, binderSeqInput]) {
     if (!inp) continue;
     let t = 0;
     inp.addEventListener("input", () => {

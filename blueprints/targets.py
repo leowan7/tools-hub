@@ -38,7 +38,7 @@ from flask import (
 from shared.auth import login_required
 from shared.credits import load_user_context
 from shared.idempotency import idempotent
-from shared.pdb_intake import resolve_target_upload
+from shared.pdb_intake import _parse_preflight_size_params, resolve_target_upload
 from shared.storage import StorageError
 from shared.target_results import (
     SORT_MODES,
@@ -304,8 +304,18 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         # and nothing on this path called the size envelope before. Refusing
         # inside the spec loop means the message names the tool that is too
         # small for this target rather than failing the launch anonymously.
+        # binder_max_aa is what arms the COMBINED cap (target + binder against
+        # hard_cap_combined_aa). Omitting it left that half of the envelope
+        # dead on every money route: a 140 aa target with a 300 aa max binder
+        # is 440 against proteina's 260 budget, refused by
+        # /tools/proteina/submit and admitted here. Read through
+        # _parse_preflight_size_params rather than off a key, because the
+        # validated shape differs per tool -- {min,max} dict, [min,max] list,
+        # bare int, or a separate binder_length_max -- and that helper is
+        # already the single reader of all four at the preflight seam.
         size_err = target.size_error(
             tool, run_chain, validated.get("_target_segments") or [],
+            binder_max_aa=_parse_preflight_size_params(validated)[0],
         )
         if size_err:
             return None, f"{label}: {size_err}"

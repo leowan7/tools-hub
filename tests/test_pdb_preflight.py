@@ -931,12 +931,28 @@ _MULTI_CHAIN_TOOLS = ["proteina"]
 
 
 def _two_chain_target() -> bytes:
-    """Two full, healthy 120-residue chains. Big enough to clear every tool's
-    min_target_aa and small enough to clear every hard cap, so the only thing
-    a verdict can be reacting to is the chain COUNT."""
+    """Two full, healthy 60-residue chains. Big enough to clear every tool's
+    min_target_aa (30) and small enough to clear every hard cap, so the only
+    thing a verdict can be reacting to is the chain COUNT.
+
+    THE SIZE IS LOAD-BEARING AND IT SHRANK. These chains were 120 residues each
+    when the multi-chain gate landed, which was inside every cap AT THE TIME:
+    proteina still carried the placeholder hard_cap_target_aa=600. The size-cap
+    commit sets that cap to 140 from the only configuration ever run on a GPU,
+    and 240 is over it — so `test_container_ready_tools_are_not_gated[proteina]`
+    and `test_the_gate_is_driven_by_the_rules_not_by_a_slug_list` both went red
+    the moment the two commits met, with proteina refused for SIZE inside tests
+    whose entire subject is CHAIN COUNT. Neither commit is wrong and neither is
+    red on its own; the fixture was simply sized against a cap that no longer
+    exists. 120 total restores the property the docstring always claimed, with
+    headroom under both the 140 cap and the 130 soft warn.
+
+    Keep the total under proteina's hard cap. If it ever creeps over again these
+    tests will report a multi-chain regression that is not there.
+    """
     return _multi_chain_pdb({
-        "A": list(range(1, 121)),
-        "B": list(range(1, 121)),
+        "A": list(range(1, 61)),
+        "B": list(range(1, 61)),
     })
 
 

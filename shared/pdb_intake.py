@@ -211,7 +211,21 @@ def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
         # cap never evaluated — it fired only on the AJAX panel, where the raw
         # form supplies binder_length_max as a string. The hard gate was the
         # one that did not have it.
-        if isinstance(raw_len, (list, tuple)) and raw_len:
+        #
+        # THE FOURTH SHAPE, and the one that kept the campaign routes blind.
+        # rfdiffusion's validator emits ``binder_length`` as a {min, max} DICT
+        # (tools/rfdiffusion/__init__.py::_parse_binder_length). Neither the
+        # list branch nor the scalar branch reads a dict, so rfdiffusion
+        # returned None here — and once the money routes started calling this
+        # helper, None is silently "no combined cap" rather than a failure. The
+        # four live shapes are now: dict {min,max} (rfdiffusion), [min,max]
+        # list (proteina), scalar int (pxdesign), and a separate
+        # ``binder_length_max`` key handled above (boltzgen, bindcraft).
+        # rfantibody has no binder length at all — CDR lengths instead — and
+        # correctly yields None.
+        if isinstance(raw_len, dict):
+            binder_max = _maybe_int(raw_len.get("max"))
+        elif isinstance(raw_len, (list, tuple)) and raw_len:
             binder_max = _maybe_int(raw_len[-1])
         else:
             binder_max = _maybe_int(raw_len)

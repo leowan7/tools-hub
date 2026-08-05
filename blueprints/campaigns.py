@@ -29,7 +29,7 @@ from flask import (
 from shared.auth import login_required
 from shared.credits import get_service_client, load_user_context
 from shared.idempotency import idempotent
-from shared.pdb_intake import resolve_target_upload
+from shared.pdb_intake import _parse_preflight_size_params, resolve_target_upload
 from shared.storage import StorageError, upload_input
 from tools import base as tool_base
 
@@ -415,8 +415,16 @@ def compute_campaign_create():
         # costs an error message rather than a wave of shards that bill to the
         # session wall for zero designs. Size only — see DesignTarget.size_error
         # for why the full preflight does not belong on this route.
+        # binder_max_aa arms the COMBINED cap (target + binder). Without it
+        # only the target half of the envelope ran here, so a 140 aa target
+        # with a 300 aa max binder — 440 against proteina's 260 budget — was
+        # refused by /tools/proteina/submit and funded by this route. Read via
+        # _parse_preflight_size_params because the validated binder shape is
+        # per-tool ({min,max} dict, [min,max] list, bare int, or a separate
+        # binder_length_max key) and that helper already reads all four.
         size_err = target.size_error(
             tool, run_chain, validated.get("_target_segments") or [],
+            binder_max_aa=_parse_preflight_size_params(validated)[0],
         )
         if size_err:
             return _err(size_err)
@@ -462,6 +470,10 @@ def compute_campaign_create():
         if upload_aa is not None:
             size_err = size_only_refusal(
                 tool, upload_aa,
+                # Same combined-cap arming as the target-bound branch above.
+                # This branch and that one take different kwargs, so a fix
+                # applied to one of them leaves the other blind.
+                binder_max_aa=_parse_preflight_size_params(validated)[0],
                 selection_label=_segments_label(upload_segments),
             )
             if size_err:

@@ -991,10 +991,19 @@ def prepare_custom_target(
 # That default did more damage than wasted VRAM: it invalidated the only two
 # size measurements this tool has. Both canary shards reported ~67.5 GB peak
 # from a device-wide nvidia-smi poll, of which 61,440 MB was this reservation.
-# The real working set was ~6.1 GB, and the two runs agreed to within 24 MB
-# because a CONSTANT dominated the reading — not because the workload was flat
-# in target size. Any envelope derived from those numbers is arithmetic on an
-# allocator policy. See shared/pdb_preflight_rules.py::_PROTEINA.
+# Subtract it and ~6.1 GB is left over — but that residual is NOT "the real
+# working set", and calling it that would be the same species of invented
+# confidence this whole block exists to remove. With preallocation on, JAX
+# serves its own allocations FROM the 61,440 MB pool, so they never appear in a
+# device-wide reading at all. The ~6.1 GB is only the NON-JAX half (the torch
+# generator plus the CUDA context); the JAX/AF2 half is invisible and could be
+# anywhere from close to nothing up to the full 61,440 MB. Which makes the
+# conclusion stronger, not weaker: the two runs agreed to within 24 MB because
+# a CONSTANT dominated the reading, not because the workload is flat in target
+# size, and the part that would actually scale with the target is precisely the
+# part the reading could not see. Any envelope derived from those numbers is
+# arithmetic on an allocator policy. See shared/pdb_preflight_rules.py
+# ::_PROTEINA, which states this the same way.
 #
 # af2 and colabfold already set exactly these — tools/af2/run_pipeline.py:584
 # and tools/colabfold/run_pipeline.py:301, "keeps preflight from preallocating

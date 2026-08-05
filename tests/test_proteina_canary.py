@@ -2384,13 +2384,22 @@ _CANARY_CONSTS = frozenset({
     # BOTH the Hydra override and ``n_designs_expected``, and a test that
     # rebinds them in the namespace is how "the two cannot drift" is checked.
     "_NSAMPLES", "_REPLICAS",
+    # How long ``run_shard`` waits for the VRAM poller to finish its last
+    # sample. Lifted rather than stubbed because the number is the fix: a join
+    # shorter than one poll iteration throws the final reading away.
+    "_VRAM_JOIN_TIMEOUT_S",
 })
 
 # Lifted whether or not a caller asks for it: EVERY function in the harness
 # prints through ``_emit`` (the print that cannot raise), so leaving it out
 # turns each one of those prints into a NameError inside the lifted body and
 # every caller would have to remember to name it.
-_CANARY_ALWAYS_LIFT = frozenset({"_emit"})
+#
+# ``_prealloc_disabled`` joins it for the same reason from the other side: it
+# is what ``_poll_vram`` derives its provenance flag from, and a caller lifting
+# the poller always means the real derivation. Stubbing it would put back
+# exactly the hardcoded answer this pair exists to prevent.
+_CANARY_ALWAYS_LIFT = frozenset({"_emit", "_prealloc_disabled"})
 
 
 def load_canary_functions(names, **injected):
@@ -2590,9 +2599,17 @@ def _shard_namespace(tmp_path, design_files=(), rc=0):
          "_collect_tree", "_mtime"},
         _load_rp=lambda: fake,
         _prune_registry=lambda module: [],
-        _poll_vram=lambda stop, out, pid=None: out.update(
+        # ``child_env`` is part of the real signature now: the provenance flag
+        # is DERIVED from the env the design child was handed rather than
+        # asserted, so the poller has to be told what that env was. The stub
+        # accepts and ignores it — what it stands in for is the nvidia-smi
+        # polling, not the derivation, which
+        # test_the_real_poller_is_the_one_that_sets_the_provenance_keys covers
+        # on the real function.
+        _poll_vram=lambda stop, out, pid=None, child_env=None: out.update(
             peak_vram_mb=0, peak_proc_vram_mb=0,
-            vram_poll_interval_s=1, vram_prealloc_disabled=True),
+            vram_poll_interval_s=1, vram_prealloc_disabled=True,
+            vram_poll_complete=True),
         _device_used_mb=lambda: 0,
         _read_hydra_assertion=lambda *a, **k: {"ok": True},
         # rmtree would delete the design files placed above; nothing else in
@@ -2768,7 +2785,20 @@ class TestHarnessBehaviour:
         (stop already set, so it takes one sample and returns) and pins that it
         is the poller, not the stub, that reports the interval and the
         allocator state, plus the per-process figure the device reading has to
-        be checked against."""
+        be checked against.
+
+        THE ENV IS NOW PASSED, and that is the point rather than a detail. This
+        test used to call the poller with no env at all and assert the flag was
+        True — which passed only because the flag WAS an unconditional literal.
+        The assertion was therefore a restatement of the defect: it would have
+        gone on passing for an operator who exported
+        XLA_PYTHON_CLIENT_PREALLOCATE=true and got a child that preallocated
+        61,440 MB under a shard reporting `disabled=True`. Handing it
+        production's real env keeps `is True` while making it mean something —
+        that the derivation reads this env as preallocation-off — and
+        ``test_an_operator_override_is_reported_as_preallocating`` covers the
+        other side.
+        """
         import threading as _threading
         namespace = load_canary_functions(
             {"_poll_vram"},
@@ -2778,13 +2808,35 @@ class TestHarnessBehaviour:
         stop = _threading.Event()
         stop.set()
         out: dict = {}
-        namespace["_poll_vram"](stop, out, 999)
+        namespace["_poll_vram"](stop, out, 999,
+                                child_env=rp.design_subprocess_env())
         assert out["vram_prealloc_disabled"] is True
         assert out["vram_poll_interval_s"] == 1, (
             "the poll interval is part of the reading: the existing "
             "measurements were sampled at 5 s and are lower bounds")
         assert out["peak_vram_mb"] == 1234
         assert out["peak_proc_vram_mb"] == 567
+
+    def test_the_poller_reports_an_overridden_allocator_honestly(self):
+        """The companion the assertion above needs to mean anything. Same real
+        function, same call, an env where the operator put preallocation back
+        on — the flag has to follow the CHILD, not this file's intentions."""
+        import threading as _threading
+        namespace = load_canary_functions(
+            {"_poll_vram"},
+            _device_used_mb=lambda: 1234,
+            _proc_used_mb=lambda pid: 567,
+        )
+        stop = _threading.Event()
+        stop.set()
+        out: dict = {}
+        env = dict(rp.design_subprocess_env())
+        env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+        namespace["_poll_vram"](stop, out, 999, child_env=env)
+        assert out["vram_prealloc_disabled"] is False, (
+            "a shard whose child preallocated still claims the allocator fix "
+            "was in force; that is the mislabelling this field exists to stop"
+        )
 
     def test_a_resolvable_shard_scores_its_designs(self, tmp_path):
         """The refusals must not be blanket ones: the same path with a good
@@ -6360,3 +6412,275 @@ class TestTheNullMarginIsNotMadeOfCroppedHotspots:
         line = " ".join(cs.verdict_diagnostics(cs.null_verdict(pos, null)))
         assert "positive hotspots present in the null designs (median) 1" in line
         assert "margin if every cropped hotspot was touched 0" in line
+
+
+# ===========================================================================
+# VRAM INSTRUMENTATION PROVENANCE
+# ===========================================================================
+#
+# The only two VRAM numbers this tool has (67,546 MB and 67,570 MB) turned out
+# to be ~91% a JAX preallocation constant, because the design subprocess
+# inherited JAX's default PREALLOCATE=true and reserved 0.75 x 81,920 =
+# 61,440 MB on its first op whatever the target size. run_pipeline now builds an
+# allocator env for its children. The canaries are what TAKE the measurements,
+# so three properties of theirs decide whether the next reading means anything:
+#
+#   * the child actually gets that env (else the reading is the constant again);
+#   * the poller takes a sample even when the design outlives it by a hair
+#     (else a fast or early-dying shard reports peak 0, which reads as "used no
+#     VRAM" rather than "was never measured");
+#   * the run says which allocator policy produced it, DERIVED from the env
+#     handed to the child rather than asserted, so a pre-fix and a post-fix
+#     reading can never be silently compared.
+#
+# _design_canary.py had none of the three. It is a live paid A100 harness whose
+# own docstring says its VRAM feeds the 40-vs-80GB decision, and run today it
+# would have reproduced the same discredited ~67.5 GB constant.
+#
+# Neither canary is importable (both build a modal.App at module scope), so the
+# structural half is AST over the source and the behavioural half EXECUTES the
+# real function bodies in a bare namespace -- the code under test, not a copy.
+# ===========================================================================
+
+_DESIGN_CANARY_PATH = _SCORING_PATH.parent / "_design_canary.py"
+_BOTH_CANARIES = [_CANARY_PATH, _DESIGN_CANARY_PATH]
+
+
+def _canary_func(path, name, also=(), **injected):
+    """The named function, compiled standalone from the file's real source.
+
+    Neither canary can be imported (``modal.App`` at module scope), and a
+    hand-copied duplicate of the body would be a test of the copy. Pulling the
+    ``FunctionDef`` out of the parsed module and exec'ing it gives the
+    production bytecode with none of the module-level imports.
+
+    ``also`` names sibling functions to lift alongside it — the ones the target
+    genuinely calls and whose real behaviour is part of what is under test
+    (``_prealloc_disabled`` is always one). ``injected`` replaces names AFTER
+    exec, which is how the nvidia-smi readers become constants without
+    touching the body being tested. Same shape as ``load_canary_functions``,
+    scoped to work on either canary file rather than only the hotspot one.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    wanted = {name, "_prealloc_disabled", *also}
+    body = [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    found = {n.name for n in body}
+    assert name in found, f"{name} not found in {path.name}"
+    ns: dict = {"subprocess": subprocess, "threading": threading}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(path), "exec"), ns)
+    ns.update(injected)
+    return ns[name]
+
+
+def _poll_iteration_budget(path):
+    """Worst-case seconds ONE poll iteration can take, from the source.
+
+    The nvidia-smi calls do not all live in ``_poll_vram``: the hotspot canary
+    factors them into ``_device_used_mb`` / ``_proc_used_mb``, the design
+    canary inlines one. Summing the timeouts of every nvidia-smi call reachable
+    from the poller covers both layouts, so the join-headroom assertion is
+    about the real cost rather than about where the code happens to sit.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    poller = funcs["_poll_vram"]
+    reachable = [poller] + [
+        funcs[c.func.id] for c in ast.walk(poller)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        and c.func.id in funcs
+    ]
+    total = 0
+    for fn in reachable:
+        for call in ast.walk(fn):
+            if isinstance(call, ast.Call) and "nvidia-smi" in ast.unparse(call):
+                for kw in call.keywords:
+                    if kw.arg == "timeout" and isinstance(kw.value, ast.Constant):
+                        total += kw.value.value
+    return total
+
+
+def _func_node(path, name):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found in {path.name}")
+
+
+class TestPreallocProvenanceIsDerived:
+    """``vram_prealloc_disabled`` must report the RUN, not the intent."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_operator_override_is_reported_as_preallocating(self, path):
+        """THE HOLE. ``design_subprocess_env`` uses ``setdefault`` so an
+        operator can override any flag per run -- deliberately. Exporting
+        XLA_PYTHON_CLIENT_PREALLOCATE=true therefore produces a child that DOES
+        preallocate, and a hardcoded ``True`` would stamp that run as if the
+        allocator fix had been in force. That is the original mislabelling with
+        a certificate of authenticity on it."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}) is False
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "1"}) is False
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_fixed_env_is_reported_as_not_preallocating(self, path):
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}) is True
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "FALSE"}) is True
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_absent_flag_is_neither_true_nor_false(self, path):
+        """None, not False. Absent means JAX's own default (preallocation ON)
+        applies, which has the same effect as False but is a DEFAULT rather
+        than a declaration -- and a reader deciding whether two readings are
+        comparable should be able to see which it was."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({}) is None
+        assert fn(None) is None
+        assert fn({"SOMETHING_ELSE": "x"}) is None
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_real_production_env_reads_as_disabled(self, path):
+        """Driven through the ACTUAL env production builds, so a change to
+        ``_ALLOCATOR_ENV`` that silently stops disabling preallocation fails
+        here rather than on a paid shard."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn(rp.design_subprocess_env()) is True
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_flag_is_never_a_literal(self, path):
+        """The structural half. ``out["vram_prealloc_disabled"] = True`` is
+        what shipped, and no value-level test can catch its return."""
+        node = _func_node(path, "_poll_vram")
+        for assign in [n for n in ast.walk(node) if isinstance(n, ast.Assign)]:
+            for tgt in assign.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.slice, ast.Constant)
+                        and tgt.slice.value == "vram_prealloc_disabled"):
+                    assert not isinstance(assign.value, ast.Constant), (
+                        f"{path.name} assigns a literal to "
+                        f"vram_prealloc_disabled; it must be derived from the "
+                        f"env the child received"
+                    )
+
+
+class TestThePollerAlwaysTakesASample:
+    """`while not stop.is_set()` takes ZERO samples when the design finishes
+    before the thread is first scheduled, and then reports peak 0 -- which reads
+    as "used no VRAM" on exactly the shard whose memory you most want to see.
+    Both canaries must sample first and test the flag second."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_loop_does_not_gate_the_first_sample_on_the_stop_flag(self, path):
+        node = _func_node(path, "_poll_vram")
+        for loop in [n for n in ast.walk(node) if isinstance(n, ast.While)]:
+            assert not (
+                isinstance(loop.test, ast.UnaryOp)
+                and isinstance(loop.test.op, ast.Not)
+            ), (
+                f"{path.name}::_poll_vram still loops on `while not ...`, so a "
+                f"design that outruns the poller reports peak 0 rather than "
+                f"'never measured'"
+            )
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_already_stopped_poller_still_records_a_reading(self, path):
+        """The behavioural half, on the real body. The stop flag is ALREADY set
+        before the poller starts -- the worst case -- and it must still produce
+        a measurement rather than silence."""
+        fn = _canary_func(
+            path, "_poll_vram", also=("_device_used_mb", "_proc_used_mb"),
+            _device_used_mb=lambda: 4321, _proc_used_mb=lambda pid: 21,
+        )
+        out: dict = {}
+        stop = threading.Event()
+        stop.set()
+        fn(stop, out)
+        assert "peak_vram_mb" in out, (
+            f"{path.name}::_poll_vram took no sample at all when the design "
+            f"had already finished"
+        )
+        assert out.get("vram_poll_complete") is True
+
+
+class TestBothCanariesRunTheChildUnderProductionsAllocator:
+    """A canary that measures a different allocator than production measures
+    nothing production can act on -- which is precisely how the two existing
+    readings became unusable. ``_design_canary`` was still on the old path."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_design_child_is_launched_with_an_env(self, path):
+        src = path.read_text(encoding="utf-8")
+        assert "rp.design_subprocess_env()" in src, (
+            f"{path.name} does not build the production allocator env; its "
+            f"child will inherit JAX's PREALLOCATE=true default and every "
+            f"VRAM number it reports will be the 61,440 MB reservation"
+        )
+        tree = ast.parse(src)
+        spawns = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in ("run", "Popen")
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "subprocess"
+            # nvidia-smi calls are instrumentation, not the design; identified
+            # by their literal argv rather than excluded by position.
+            and "nvidia-smi" not in ast.unparse(n)
+        ]
+        assert spawns, f"no design subprocess found in {path.name}"
+        for call in spawns:
+            kwargs = {kw.arg for kw in call.keywords}
+            assert "env" in kwargs, (
+                f"{path.name}:{call.lineno} spawns the design without env=, so "
+                f"it runs under JAX's default allocator: "
+                f"{ast.unparse(call)[:90]}"
+            )
+
+
+class TestTheJoinOutlastsTheFinalSample:
+    """``poller.join(timeout=10)`` could expire mid-sample -- after
+    ``stop.set()`` the poller still has a full iteration of nvidia-smi calls,
+    each capped at 10 s -- leaving every VRAM key None, which reads as "never
+    measured" on a shard that measured fine."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_join_timeout_clears_one_full_poll_iteration(self, path):
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        joins = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "join"
+            and any(kw.arg == "timeout" for kw in n.keywords)
+        ]
+        assert joins, f"no poller join with a timeout found in {path.name}"
+        needed = _poll_iteration_budget(path)
+        assert needed > 0, f"no nvidia-smi timeout found in {path.name}"
+        declared = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    if (isinstance(tgt, ast.Name)
+                            and tgt.id == "_VRAM_JOIN_TIMEOUT_S"
+                            and isinstance(node.value, ast.Constant)):
+                        declared = node.value.value
+        assert declared is not None, (
+            f"{path.name} has no named join timeout constant"
+        )
+        assert declared > needed, (
+            f"{path.name} joins the poller after {declared}s but one poll "
+            f"iteration can take {needed}s, so the final sample can be cut off "
+            f"and every VRAM key reported as None"
+        )
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_a_cut_off_poller_is_distinguishable_from_a_silent_one(self, path):
+        """The other half of the fix: even with headroom the join CAN expire,
+        so the timeout case must be tellable from a genuine no-sample. The
+        completion flag is written last and only on the normal exit."""
+        assert "vram_poll_complete" in path.read_text(encoding="utf-8"), (
+            f"{path.name} cannot distinguish 'the poller was cut off' from "
+            f"'the poller measured nothing'"
+        )

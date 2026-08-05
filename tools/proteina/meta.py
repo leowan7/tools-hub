@@ -28,10 +28,22 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # estimator to the middle of that invented band.
     #
     # ligand_binder and motif_ame have NEVER been timed. Their band is bounded,
-    # not measured: the floor is the one protein_binder measurement (same
-    # container, same reward stack) and the ceiling is the physical
-    # _MAX_SESSION_S = 7200 s (120 min) session wall in modal_app.py, past
-    # which the shard is killed. Re-set each from its own canary.
+    # not measured: the floor is the one protein_binder measurement and the
+    # ceiling is the physical _MAX_SESSION_S = 7200 s (120 min) session wall in
+    # modal_app.py, past which the shard is killed. Re-set each from its own
+    # canary.
+    #
+    # AND THE FLOOR IS WEAKER THAN IT LOOKS. This used to read "same container,
+    # same reward stack". The container is the same; the reward stack is NOT.
+    # protein_binder scores on AF2 alone, while RF3 is the SOLE reward for
+    # ligand_binder and is what motif_ame needs too — Dockerfile.modal:219-222
+    # says so outright ("Only ligand_binder (RF3 is its sole reward) and
+    # motif_ame need it; protein_binder scores on AF2 alone"), and
+    # ``reward_attributions`` below splits them the same way. So the floor is
+    # not evidence transferred from a comparable run; it is a lower bound
+    # borrowed from a DIFFERENT scoring path, and there is no reason to think
+    # RF3 scoring is as fast as AF2 scoring. Treat 6 as "cannot plausibly be
+    # quicker than the one thing we timed", not as a measurement.
     "protein_binder": {"typical_minutes": "~6"},
     "ligand_binder": {"typical_minutes": "6 to 120 (not yet measured)"},
     "motif_ame": {"typical_minutes": "6 to 120 (not yet measured)"},
