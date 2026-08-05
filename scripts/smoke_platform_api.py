@@ -190,6 +190,19 @@ def step_cost_estimate_custom() -> Step:
 
 
 def step_submit_create(idem_key: str) -> tuple[Step, dict[str, Any] | None]:
+    """Create the experiment and assert the shape of the 201 response.
+
+    Returns (step, body). The body comes back whenever it carries a usable
+    experiment_id -- including on the shape assertions below, which only
+    run once the server has answered 201 and a real public.lab_campaigns
+    row exists. Discarding it there would strand that row: main() would
+    have no id to withdraw and the summary would print no cleanup SQL, so
+    the row could only be found by hand in the admin UI. The step still
+    reports FAIL in those cases, and the run still exits 1.
+
+    None is returned only when there is genuinely no id to keep: a non-201
+    response, a non-dict body, or a body with no experiment_id.
+    """
     t0 = time.perf_counter()
     resp = _http(
         "POST",
@@ -217,7 +230,7 @@ def step_submit_create(idem_key: str) -> tuple[Step, dict[str, Any] | None]:
                 elapsed,
                 f"expected status WaitingForConfirmation, got {body.get('status')!r}",
             ),
-            None,
+            body,
         )
     status_log = body.get("status_log")
     if not isinstance(status_log, list) or len(status_log) < 2:
@@ -228,7 +241,7 @@ def step_submit_create(idem_key: str) -> tuple[Step, dict[str, Any] | None]:
                 elapsed,
                 f"expected status_log with >=2 entries, got {status_log!r}",
             ),
-            None,
+            body,
         )
     statuses_seen = [entry.get("status") for entry in status_log if isinstance(entry, dict)]
     if "Draft" not in statuses_seen or "WaitingForConfirmation" not in statuses_seen:
@@ -239,7 +252,7 @@ def step_submit_create(idem_key: str) -> tuple[Step, dict[str, Any] | None]:
                 elapsed,
                 f"status_log missing Draft+WaitingForConfirmation transitions: {statuses_seen!r}",
             ),
-            None,
+            body,
         )
     note = f"experiment_id={experiment_id} status_log={statuses_seen}"
     return Step("POST /experiments (create)", True, elapsed, note), body
@@ -441,8 +454,13 @@ def main() -> int:
     idem_key = f"smoke-{_stamp_slug()}-{uuid.uuid4().hex[:8]}"
     create_step, create_body = step_submit_create(idem_key)
     steps.append(create_step)
-    if create_step.passed and create_body is not None:
-        experiment_id = create_body["experiment_id"]
+    # Capture the id whenever the response carried one, not only when the
+    # create step passed: a shape assertion can fail after the 201, and the
+    # row exists either way. Without the id the withdraw step below cannot
+    # run and the row leaks unreported. create_step keeps its FAIL and still
+    # drives the non-zero exit -- this is cleanup, not a downgraded assertion.
+    if create_body is not None:
+        experiment_id = create_body.get("experiment_id")
 
     if experiment_id is not None:
         replay_step = step_submit_replay(idem_key, experiment_id)
