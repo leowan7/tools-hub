@@ -17,6 +17,9 @@
   .rd-bar-inner { height: 100%; width: 0; background: var(--accent-text, #2B9E7E); transition: width .4s; }
   .rd-progress-label { font-size: 0.85rem; color: var(--text-secondary, #b8c0c8); font-family: var(--font-mono, monospace); }
   .rd-paused { margin-top: 0.75rem; padding: 0.6rem 0.85rem; border-radius: 6px; font-size: 0.82rem; background: rgba(217,179,74,0.12); color: #d9b34a; }
+  .rd-handoff { margin-top: 1rem; padding: 0.7rem 0.9rem; border-radius: 6px; border: 1px solid rgba(232,132,107,0.5); color: #e8846b; font-size: 0.86rem; }
+  .rd-handoff p { margin: 0; }
+  .rd-handoff p + p { margin-top: 0.6rem; }
   .rd-designs { margin-top: 1.1rem; border: 1px solid var(--border, rgba(255,255,255,0.10)); border-left: 3px solid var(--accent-text, #2B9E7E); border-radius: 6px; padding: 0.85rem 1rem; font-size: 0.86rem; color: var(--text-secondary, #b8c0c8); }
   .rd-designs strong { color: var(--text-primary, #fafafa); font-weight: 600; }
   .rd-designs a { color: var(--accent-text, #2B9E7E); font-weight: 600; text-decoration: none; }
@@ -46,6 +49,84 @@
     </div>
     <span class="rd-badge {{ campaign.status }}" id="rd-status">{{ campaign.status.replace('_',' ') }}</span>
   </div>
+
+  {# Why the lab handoff sent the user back here. FIVE ways to fail, five
+     sentences, because "something went wrong" on a paid intake tells a user
+     nothing about whether to retry, re-star, or wait.
+
+     `none` and `rejected` must not be merged: `none` means the POST carried no
+     designs, which is a client fault and retrying is right; `rejected` means it
+     carried designs and not one of them survived the checks, which the SAME
+     refs will do again.
+
+     NOT only "none was a child of this run". Parentage is the usual ground but
+     not the only one: a ref naming an index past the end of a job that IS a
+     child of this run is refused here too (blueprints/lab_projects.py:282-285).
+     The rendered sentence below says "could not be matched to a design produced
+     by this run", which stays true of that case; this comment used to say the
+     narrower thing and did not.
+
+     `unverified` is not a malfunction to hide: the submit deliberately refused
+     rather than ship a shortlist quietly missing designs. On THIS arm it has
+     exactly one cause -- a sub-job read that never completed -- because the
+     parentage test compares `job.campaign_id` off the same row as the job and
+     makes no second read that could come back short. That is why this sentence
+     is not the target page's; do not copy that one here, it names a read this
+     route never performs.
+
+     It is also what entitles the `rejected` sentence to say "will be refused
+     the same way" without hedging: every rejection that reaches it was decided
+     by a check that RAN. Change neither without the other.
+
+     NO MESSAGE HERE SAYS "nothing was charged". /lab-projects/submit has no
+     wallet or Stripe code on any path, and the modal that opens this flow says
+     "No commitment". This page legitimately discusses money elsewhere; the
+     handoff paragraph must not.
+
+     THE SECOND PARAGRAPH IS A DIFFERENT FACT, not a softener: `?truncated=`
+     counts starred refs the request's size cap discarded BEFORE any of the five
+     checks ran, and it is orthogonal to all five. "Up to", because it counts
+     REFS -- the tail past the cap is never parsed into (job, index) pairs, so a
+     repeat hiding in it cannot be subtracted. #}
+  {% set truncated_count = request.args.get('truncated', 0) | int %}
+  {% if handoff %}
+  <div class="rd-handoff">
+    <p>
+      {% if handoff == 'none' %}
+      Nothing was sent to the lab, because the request arrived with no designs in it.
+      Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
+      {% elif handoff == 'rejected' %}
+      Nothing was sent to the lab. The request did carry designs, but none of them
+      could be matched to a design produced by this run, so there was nothing to send.
+      Sending the same selection again will be refused the same way. Star designs
+      from the table on this page, or contact us and we will trace where they went.
+      {% elif handoff == 'noname' %}
+      Nothing was sent to the lab. The request needs a name for the target so the
+      Ranomics team knows what they are quoting. Reopen the form and add one.
+      {% elif handoff == 'unverified' %}
+      Nothing was sent to the lab. We could not read every sub-job your starred designs
+      came from, so we could not confirm which of them belong to this run, and sending a
+      shortlist that might be quietly missing designs is worse than sending none. Your
+      stars are still here, so try again. If it happens every time, it is not a passing
+      fault and we should look at it — contact us.
+      {% else %}
+      Your request could not be submitted and nothing was sent to the lab.
+      Your stars are still here. Try again, and contact us if it keeps failing.
+      {% endif %}
+    </p>
+    {% if truncated_count > 0 %}
+    <p>
+      Separately, and whatever you do next: up to {{ truncated_count }} of your
+      starred design{{ '' if truncated_count == 1 else 's' }}
+      {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit
+      and {{ 'was' if truncated_count == 1 else 'were' }} not read at all.
+      A selection this size cannot be sent in one request, and sending it again
+      would cut it in the same place. Contact us and we will take the whole
+      list.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
 
   {% set terminal_subjobs = counts.succeeded + counts.failed + counts.timeout %}
   <div class="rd-bar-outer"><div class="rd-bar-inner" id="rd-bar"

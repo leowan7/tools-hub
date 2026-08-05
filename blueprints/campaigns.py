@@ -37,6 +37,26 @@ logger = logging.getLogger(__name__)
 
 campaigns_bp = Blueprint("campaigns", __name__)
 
+# Why the lab handoff sent the user back to this run's page.
+# `compute_campaign_detail` whitelists these and hands the survivor to the
+# template, which has one branch per reason.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER TESTS CAN IMPORT IT, for the reason
+# blueprints/targets.py records beside its own copy: a hand-written copy of
+# these keys in a test file does not couple to anything, so a sixth reason added
+# here renders the `{% else %}` arm's copy -- "your request could not be
+# submitted" -- for an unrelated cause with the whole suite green.
+#
+# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, DIFFERENT COPY.
+# Two of the five describe a cause that differs by arm: where this route's
+# `rejected` tests parentage it asks "child of this run" rather than "on this
+# target" -- though parentage is not its only ground, since a ref naming an
+# index past the end of a job that IS a child lands there too. And its
+# `unverified` can only mean a sub-job read that did not complete, because
+# _submit_campaign_shortlist makes no second read to come back short. The two
+# templates are therefore not one partial.
+LAB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
+
 
 # The campaign detail page polls the status endpoint every ~5s per open tab,
 # and the status endpoint reconciles in-flight children (poll Modal + settle +
@@ -536,6 +556,16 @@ def compute_campaign_detail(campaign_id):
             )
         return redirect(url_for("campaigns.compute_campaigns_list"))
     counts = cc.get_progress_counts(campaign_id)
+    # Why the lab handoff sent the user back here. Four of the five were a bare
+    # `redirect(detail)` with no banner and nothing changed, which on the one
+    # action that hands work to the wet lab reads as a dead button (register
+    # item A-8, filed as A88 for this arm); the fifth, `unverified`, had no exit
+    # at all -- the arm silently shipped a short paid order instead.
+    # Whitelisted so an unknown or crafted value renders nothing at all rather
+    # than an empty alert.
+    handoff = (request.args.get("handoff") or "").strip()
+    if handoff not in LAB_HANDOFF_REASONS:
+        handoff = ""
     # Fan every succeeded sub-job's designs into one ranked table (top 300).
     agg = cc.aggregate_campaign_candidates(
         campaign_id, user_id=ctx.user_id, limit=300,
@@ -552,6 +582,7 @@ def compute_campaign_detail(campaign_id):
         candidates_total=agg.get("total", 0),
         candidates_capped=agg.get("capped", False),
         was_running=not terminal,
+        handoff=handoff,
     )
 
 @campaigns_bp.route("/campaigns/<campaign_id>/status.json", methods=["GET"])

@@ -480,12 +480,15 @@ def send_campaign_submitted_emails(
     the route is ``@idempotent()`` besides. Neither number now carries advice
     the user cannot act on.
 
-    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. The caller refuses the
-    whole submission rather than reporting a shortfall it could not decide (a
-    read that never completed, a campaign id set that came back short), so
-    every design counted here was refused by a check that ran to completion.
-    That is what makes "rejected", rather than "we could not confirm", an
-    honest word for it.
+    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. BOTH ref callers refuse
+    the whole submission rather than reporting a shortfall they could not decide
+    (a job read that never completed; on the target arm also a campaign id set
+    that came back short), so every design counted here was refused by a check
+    that ran to completion. That is what makes "rejected", rather than "we could
+    not confirm", an honest word for it. This function does not enforce that --
+    it is a property of the callers -- so a THIRD caller passing ``dropped``
+    without such a gate makes the sentence below false. The legacy single-job
+    arm passes neither count and must not start.
 
     WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
     sentence below asserts that any PDB was written:
@@ -541,13 +544,20 @@ def send_campaign_submitted_emails(
     truncated_row = ""
     if dropped:
         _plural = "s" if dropped != 1 else ""
-        # "matched to a DESIGN on this target", not "matched to this target":
-        # the write path rejects on four grounds, and one of them is an index
-        # past the end of an otherwise-legitimate run of this very target.
+        # "matched to a DESIGN in the results", not "matched to the results":
+        # the write paths reject on four grounds, and one of them is an index
+        # past the end of an otherwise-legitimate run of this very parent.
+        #
+        # NAMES NO PARENT KIND. Both ref callers pass `dropped` -- the target arm
+        # against "a design on this target", the campaign arm against "a child of
+        # this compute campaign" -- and this function takes no parameter saying
+        # which. A branch on `campaign.submission_source` would need a field this
+        # module reads only through `getattr` (see _handoff_source_link), and its
+        # else-arm would go stale on the next source added.
         _sentences.append(
             f"{dropped} starred design{_plural} could not be matched to a "
-            f"design on this target and {'were' if dropped != 1 else 'was'} "
-            f"left out. This request covers "
+            f"design in the results this shortlist was built from and "
+            f"{'were' if dropped != 1 else 'was'} left out. This request covers "
             f"{n_candidates} design{'s' if n_candidates != 1 else ''}."
         )
         dropped_row = (

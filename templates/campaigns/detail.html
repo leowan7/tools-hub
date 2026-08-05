@@ -38,19 +38,29 @@
    a double-click guard, not a remedy. Ops sees the shortfall on the staff
    email, so the honest instruction is that they will follow up.
 
-   THE `dropped` SENTENCE IS ALLOWED TO BE CATEGORICAL. `_submit_target_
-   shortlist` refuses the entire submission (?handoff=unverified) when any
-   rejection had a cause it could not decide -- a job read that never completed,
-   or a campaign id set known to be short -- so this page is only ever reached
-   with rejections that a completed check made. Before that gate existed, "will
-   be refused the same way" was false every time the database blinked. #}
+   THE `dropped` SENTENCE IS ALLOWED TO BE CATEGORICAL. BOTH ref arms of
+   /lab-projects/submit refuse the entire submission (?handoff=unverified) when
+   any rejection had a cause they could not decide -- `_submit_target_shortlist`
+   for a job read that never completed or a campaign id set known to be short,
+   `_submit_campaign_shortlist` for a job read that never completed (it makes no
+   second read that could come back short) -- so this page is only ever reached
+   with rejections a completed check made. Before those gates existed, "will be
+   refused the same way" was false every time the database blinked.
+
+   THE SENTENCE NAMES NO PARENT, and that is not vagueness. One string serves a
+   target-sourced and a campaign-sourced row; branching it on
+   `campaign.submission_source` would grow an else-arm that goes stale the first
+   time a fifth source is added, which is the failure blueprints/targets.py
+   records paying for twice beside its own HANDOFF_REASONS. The two if/elif
+   blocks that branch on it below choose LINKS, where a missed branch renders
+   nothing; the only other use picks which of two stored lists to count. #}
 {% if dropped_count or truncated_count %}
   <div style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.85rem 1rem;margin-bottom:1.25rem;">
     {% if dropped_count %}
     <p style="margin:0;">
       <strong style="color:#d69e2e;">{{ dropped_count }} starred design{{ '' if dropped_count == 1 else 's' }} {{ 'was' if dropped_count == 1 else 'were' }} not included.</strong>
       <span style="color:var(--text-secondary);">
-        {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to a design on the source target, so this request does not cover {{ 'it' if dropped_count == 1 else 'them' }}.
+        {{ 'It' if dropped_count == 1 else 'They' }} could not be matched to a design in the results this shortlist was built from, so this request does not cover {{ 'it' if dropped_count == 1 else 'them' }}.
         Starring {{ 'it' if dropped_count == 1 else 'them' }} again will be refused the same way — if that looks wrong, contact us and we will trace where {{ 'it went' if dropped_count == 1 else 'they went' }}.
       </span>
     </p>
