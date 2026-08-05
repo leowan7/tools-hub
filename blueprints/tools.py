@@ -76,7 +76,8 @@ tools_bp = Blueprint("tools", __name__)
 # present in the template) than PREFLIGHT_TOOLS. The plain ``error`` string
 # fallback in tool_submit is the defensive net.
 _PREFLIGHT_PANEL_FORMS: frozenset = frozenset(
-    {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "boltz2"}
+    {"rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "boltz2",
+     "proteina"}
 )
 
 
@@ -554,10 +555,12 @@ def tool_form(tool: str):
     if ctx is None:
         return redirect(url_for("auth.login"))
 
-    # Campaign-only tools (proteina) have no single-job atomic form — every run
-    # is a fund-and-drain campaign — so send a logged-in visitor straight to the
+    # Campaign-only tools have no single-job atomic form — every run is a
+    # fund-and-drain campaign — so send a logged-in visitor straight to the
     # campaign create flow. The logged-out preview above stays indexable; this
-    # also avoids rendering a form_template these tools do not ship.
+    # also avoids rendering a form_template these tools do not ship. The set is
+    # currently empty (proteina left it when it gained a form template); the
+    # guard stays for the next tool that needs it.
     from shared import compute_campaigns as _cc  # noqa: PLC0415
     if tool in _cc.CAMPAIGN_ONLY_TOOLS:
         return redirect(url_for("campaigns.compute_campaign_new"))
@@ -855,10 +858,11 @@ def tool_submit(tool: str):
     if ctx is None:
         return redirect(url_for("auth.login"))
 
-    # Campaign-only tools (proteina) never run as a single atomic job — a
-    # crafted submit is redirected to the campaign create flow rather than
-    # spawning a doomed one-container run (and rendering a form these tools do
-    # not ship). Mirrors the tool_form guard.
+    # Campaign-only tools never run as a single atomic job — a crafted submit is
+    # redirected to the campaign create flow rather than spawning a doomed
+    # one-container run (and rendering a form these tools do not ship). Mirrors
+    # the tool_form guard. The set is currently empty (proteina left it when it
+    # gained a form template); the guard stays for the next tool that needs it.
     from shared import compute_campaigns as _cc  # noqa: PLC0415
     if tool in _cc.CAMPAIGN_ONLY_TOOLS:
         return redirect(url_for("campaigns.compute_campaign_new"))
@@ -881,7 +885,20 @@ def tool_submit(tool: str):
             "target_pdb_id": ws_target_form,
         }
 
-    inputs, error_msg = adapter.validate(request.form, request.files)
+    # Declare whether this run has a structure of its own, the same way both
+    # campaign routes do. Assigned OVER the form dict so it cannot be forged by
+    # posting the field directly. An adapter that ignores the key (every one but
+    # proteina) is unaffected.
+    _form_for_validate = dict(request.form.items())
+    _atomic_reuse = (request.form.get("reuse_pdb_token") or "").strip()
+    _atomic_upload = request.files.get("target_pdb") or request.files.get("target_sdf")
+    _form_for_validate["_has_custom_target"] = (
+        "1" if (
+            (_atomic_upload is not None and _atomic_upload.filename)
+            or _atomic_reuse
+        ) else ""
+    )
+    inputs, error_msg = adapter.validate(_form_for_validate, request.files)
     if inputs is None:
         return render_template(
             adapter.form_template,
@@ -963,6 +980,14 @@ def tool_submit(tool: str):
     # and preview do not. Falls back to the adapter-level flag for
     # tools that require a PDB on every paid run (e.g. BindCraft).
     needs_pdb = bool(getattr(preset, "requires_pdb", False)) or adapter.requires_pdb
+    # An adapter whose target is OPTIONAL (proteina: curated benchmark task OR
+    # your own structure) reports requires_pdb=False on every preset, so the
+    # gate below never fires for it — but a run that declared a custom target
+    # and has no file is exactly as doomed as a missing mandatory upload, and
+    # for the same reason: it would create a job row, dispatch a container, and
+    # be refused there. Fold it into the same pre-create_job gate.
+    if inputs.get("target_source") == "custom":
+        needs_pdb = True
     uploaded = request.files.get("target_pdb")
     reuse_token = (request.form.get("reuse_pdb_token") or "").strip()
 

@@ -41,6 +41,7 @@ from shared.pipeline_normalize import (
     PipelineNormalizationReport,
     normalize_for_bindcraft,
     normalize_for_boltzgen,
+    normalize_for_proteina,
     normalize_for_pxdesign,
     normalize_for_rfantibody,
     normalize_for_rfdiffusion,
@@ -174,12 +175,18 @@ class PreflightVerdict:
 # Dispatch
 # ---------------------------------------------------------------------------
 
+# MUST stay in lockstep with TOOL_RULES: BINDER_DESIGN_TOOLS is derived from
+# TOOL_RULES.keys(), and preflight_for_tool indexes this dict AFTER its
+# membership check but OUTSIDE the try — so a tool present there and missing
+# here raises KeyError out of a function documented never to raise, 500ing the
+# preflight endpoint and silently disabling the submit-time size gate.
 _PREVIEW_FN = {
     "rfantibody":   normalize_for_rfantibody,
     "rfdiffusion":  normalize_for_rfdiffusion,
     "bindcraft":    normalize_for_bindcraft,
     "boltzgen":     normalize_for_boltzgen,
     "pxdesign":     normalize_for_pxdesign,
+    "proteina":     normalize_for_proteina,
 }
 
 
@@ -472,7 +479,13 @@ def preflight_for_tool(
             pass
 
     cleanup = _summarize_cleanup(report)
-    kept = report.residues_kept_per_chain.get(target_chain, 0)
+    # Sum across every named chain — see _chain_tokens(). The size envelope
+    # below wants the whole target's residue count, which for a multi-chain
+    # target is the total, not any one chain's.
+    kept = sum(
+        report.residues_kept_per_chain.get(c, 0)
+        for c in _chain_tokens(target_chain)
+    )
 
     # ---- min residues (per-tool floor) -------------------------------------
     if kept < rules.min_target_aa:
@@ -640,13 +653,38 @@ def preflight_for_tool(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _chain_tokens(target_chain: str) -> list[str]:
+    """The chain ids named by ``target_chain``, in order, de-duplicated.
+
+    ``target_chain`` may name SEVERAL chains, whitespace-separated ("A B C") —
+    ``shared/pdb_inspect.validate_target_chain`` has always accepted that form
+    and four tools declare ``multi_chain_supported=True``. Every consumer in
+    this module used to compare the whole string against a single-letter chain
+    id, so a multi-token value matched nothing: ``residues_kept_per_chain.get()``
+    returned 0 and preflight hard-failed with "chain A B C has only 0 protein
+    residues" on a perfectly good target. Same defect class as the one already
+    fixed in ``pdb_inspect.validate_hotspots`` and ``pipeline_normalize``.
+
+    Splitting is behaviour-preserving for a single id (``["A"]``); it changes
+    outcomes only for inputs that previously always failed.
+    """
+    out: list[str] = []
+    for tok in (target_chain or "").split():
+        if tok not in out:
+            out.append(tok)
+    return out
+
+
 def _maybe_alphafold(pdb_bytes: bytes, target_chain: str) -> Optional[AlphaFoldSuggestion]:
     """Return an AlphaFold suggestion if we can map the target chain to a UniProt."""
     try:
         m = extract_uniprot_map(pdb_bytes)
     except Exception:  # noqa: BLE001 - defensive
         return None
-    rec = m.get(target_chain) if target_chain else None
+    # DBREF records are per-chain, so map the FIRST named chain; the fallback
+    # below still fires for the rest.
+    tokens = _chain_tokens(target_chain)
+    rec = m.get(tokens[0]) if tokens else None
     if not rec:
         # Fall back to the first mapped chain. The user-typed target_chain
         # may not match the DBREF chain if they typo'd, but we still want
@@ -691,18 +729,25 @@ def _summarize_cleanup(report: PipelineNormalizationReport) -> CleanupSummary:
     )
 
 
-def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
-    """Sorted list of resnums on ``target_chain`` with a complete N/CA/C/O
-    backbone and no all-zero coordinates.
+def _clean_resnums_by_chain(
+    pdb_bytes: bytes, target_chain: str
+) -> dict[str, list[int]]:
+    """``{chain_id: sorted resnums}`` for each chain named by ``target_chain``,
+    keeping only residues with a complete N/CA/C/O backbone and non-zero
+    coordinates.
 
-    Used by both ``_check_hotspots`` and ``_check_internal_gaps`` so the
-    notion of "surviving residue" stays consistent across checks. Integer
-    resnum only — insertion codes (icodes, e.g. antibody 100A/100B/100C)
+    Kept per-chain rather than merged because gap detection is only meaningful
+    within one chain: concatenating chain A's 1..115 with chain B's 1..115
+    would either hide a real gap or invent one at the seam.
+
+    Integer resnum only — insertion codes (icodes, e.g. antibody 100A/100B/100C)
     are folded into the same resnum, which is correct for gap detection
     (icodes are insertions WITHIN a resnum, not numbering gaps).
     """
+    wanted = _chain_tokens(target_chain)
     required = {"N", "CA", "C", "O"}
-    bb_present: dict = {}  # resnum -> set of backbone atoms seen
+    # chain -> resnum -> set of backbone atoms seen
+    bb_present: dict[str, dict[int, set]] = {c: {} for c in wanted}
     for raw in pdb_bytes.split(b"\n"):
         if not (raw.startswith(b"ATOM") or raw.startswith(b"HETATM")):
             continue
@@ -712,7 +757,8 @@ def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
             continue
         if len(line) < 54:
             continue
-        if (line[21] if len(line) > 21 else " ") != target_chain:
+        chain = line[21] if len(line) > 21 else " "
+        if chain not in bb_present:
             continue
         atom_name = line[12:16].strip()
         if atom_name not in required:
@@ -726,8 +772,27 @@ def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
             continue
         if all(abs(c) < 1e-6 for c in (x, y, z)):
             continue
-        bb_present.setdefault(resnum, set()).add(atom_name)
-    return sorted(r for r, atoms in bb_present.items() if required.issubset(atoms))
+        bb_present[chain].setdefault(resnum, set()).add(atom_name)
+    return {
+        chain: sorted(r for r, atoms in per_res.items() if required.issubset(atoms))
+        for chain, per_res in bb_present.items()
+    }
+
+
+def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
+    """Union of ``_clean_resnums_by_chain`` across every named chain.
+
+    Union is the right reduction for the two callers that use it: hotspots
+    arrive here as bare author numbers with no chain attached (the shared
+    launch field posts ``"42,88"``), so the only question they can answer is
+    "does this number survive cleanup on any target chain". Deliberately
+    coarser than the truth, and coarser than the chain-prefixed check
+    ``tools/proteina/run_pipeline.missing_hotspots`` runs in-container.
+    """
+    merged: set = set()
+    for nums in _clean_resnums_by_chain(pdb_bytes, target_chain).values():
+        merged.update(nums)
+    return sorted(merged)
 
 
 def _check_hotspots(
@@ -765,9 +830,7 @@ def _check_internal_gaps(
     routinely lack disordered N/C-terminal tails and that's not what we
     want to warn about. Only gaps BETWEEN two surviving resnums count.
     """
-    clean = _clean_resnums_on_chain(pdb_bytes, target_chain)
-    if len(clean) < 2:
-        return GapAnalysis()
+    by_chain = _clean_resnums_by_chain(pdb_bytes, target_chain)
 
     # Normalize hotspots to integers for distance math; non-integer entries
     # are silently skipped (handled elsewhere by hotspot validator).
@@ -778,24 +841,31 @@ def _check_internal_gaps(
         except (TypeError, ValueError):
             continue
 
-    gaps: list = []
-    for prev, curr in zip(clean, clean[1:]):
-        if curr <= prev + 1:
+    # Gaps are found per chain and tagged with the chain that owns them, so a
+    # multi-chain target names the offending chain rather than echoing the
+    # whole "A B C" field back at the user.
+    tagged: list[tuple[str, GapInfo]] = []
+    for chain, clean in by_chain.items():
+        if len(clean) < 2:
             continue
-        start = prev + 1
-        end = curr - 1
-        length = end - start + 1
-        if hs_ints:
-            dist = min(
-                min(abs(h - start), abs(h - end)) for h in hs_ints
-            )
-            nearest = float(dist)
-        else:
-            nearest = math.inf
-        gaps.append(GapInfo(start, end, length, nearest))
+        for prev, curr in zip(clean, clean[1:]):
+            if curr <= prev + 1:
+                continue
+            start = prev + 1
+            end = curr - 1
+            length = end - start + 1
+            if hs_ints:
+                dist = min(
+                    min(abs(h - start), abs(h - end)) for h in hs_ints
+                )
+                nearest = float(dist)
+            else:
+                nearest = math.inf
+            tagged.append((chain, GapInfo(start, end, length, nearest)))
 
-    if not gaps:
+    if not tagged:
         return GapAnalysis()
+    gaps: list = [g for _chain, g in tagged]
 
     longest = max(g.length for g in gaps)
 
@@ -805,7 +875,7 @@ def _check_internal_gaps(
     if rules.gap.needs_fix_on_any_gap:
         # rfdiffusion-style: any internal gap is a hard fail because the
         # contig builder asserts every residue in the declared range exists.
-        g0 = gaps[0]
+        chain0, g0 = tagged[0]
         if len(gaps) == 1:
             ranges = f"residues {g0.start}-{g0.end} unresolved"
         else:
@@ -815,7 +885,7 @@ def _check_internal_gaps(
                 f"(plus {extra} more internal gap{'s' if extra != 1 else ''})"
             )
         hard_msg = (
-            f"Chain {target_chain} has internal disorder ({ranges}). "
+            f"Chain {chain0} has internal disorder ({ranges}). "
             f"{rules.slug.title()}'s contig builder requires every residue "
             f"in the declared range to exist — it will fail with an assertion "
             f"error mid-run."
@@ -824,13 +894,13 @@ def _check_internal_gaps(
     elif rules.gap.needs_fix_length is not None and hs_ints:
         # Length + near-hotspot rule. Find any gap that triggers BOTH
         # conditions.
-        for g in gaps:
+        for chain, g in tagged:
             if (
                 g.length >= rules.gap.needs_fix_length
                 and g.nearest_hotspot_distance <= rules.gap.needs_fix_hotspot_distance
             ):
                 hard_msg = (
-                    f"Chain {target_chain} has a {g.length}-residue gap "
+                    f"Chain {chain} has a {g.length}-residue gap "
                     f"(residues {g.start}-{g.end} unresolved) "
                     f"{_dist_phrase(g.nearest_hotspot_distance)} a hotspot. "
                     f"{rules.slug.title()} is known to fail near gaps like "
@@ -846,7 +916,7 @@ def _check_internal_gaps(
         # Find the worst gap (longest). Mention only the longest in
         # the message to keep the panel readable; the full list is in
         # gap_analysis.gaps for callers that want it.
-        worst = max(gaps, key=lambda g: g.length)
+        worst_chain, worst = max(tagged, key=lambda t: t[1].length)
         nearest_phrase = ""
         if hs_ints and worst.nearest_hotspot_distance != math.inf:
             nearest_phrase = (
@@ -854,7 +924,7 @@ def _check_internal_gaps(
                 f"your nearest hotspot"
             )
         warn_msg = (
-            f"Chain {target_chain} has a {worst.length}-residue internal "
+            f"Chain {worst_chain} has a {worst.length}-residue internal "
             f"gap (residues {worst.start}-{worst.end} unresolved)"
             f"{nearest_phrase}. {rules.slug.title()} may run but design "
             f"quality drops near the seam."

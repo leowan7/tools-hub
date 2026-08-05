@@ -1,0 +1,323 @@
+{% extends "base.html" %}
+{% from "components/about_panel.html" import about_panel %}
+{% from "tools/_prefill.html" import pre_value, pdb_source_banner, prefill_script, workspace_hidden_inputs %}
+{% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
+{% from "components/field_group.html" import field_campaign %}
+{% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+{% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
+
+{% block title %}{{ adapter.label }} -- Ranomics Tools{% endblock %}
+
+{% block robots %}noindex,follow{% endblock %}
+
+{% block content %}
+  {# Proteina-Complexa form. Two-panel layout mirroring rfdiffusion: form left,
+     About panel right. Scoped styles (.proteina-) so the shared stylesheet is
+     untouched.
+
+     A run designs against EITHER a curated benchmark task (which carries its
+     own target, chain range, hotspots and binder length) OR a structure you
+     upload — never both, and the adapter refuses the combination. The JS below
+     shows only the half that applies, so the exclusion is visible rather than
+     an error after submitting. Bring-your-own is protein_binder only: the
+     ligand and motif variants resolve their task from separate upstream
+     registries that `complexa target add` cannot write. #}
+  <style>
+    .proteina-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);
+      gap: 1.5rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .proteina-layout { grid-template-columns: minmax(0, 1fr); }
+    }
+    .proteina-field {
+      width: 100%;
+      max-width: 520px;
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 0.55rem 0.75rem;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      margin-bottom: 0.35rem;
+    }
+    .proteina-help {
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      max-width: 58ch;
+      margin-bottom: 1.25rem;
+    }
+    .proteina-binder-length { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .proteina-binder-length input { max-width: 110px; }
+    .proteina-binder-length .sep { color: var(--text-tertiary); font-size: 0.85rem; }
+    /* Shared aesthetic with rfdiffusion / bindcraft / pxdesign / boltzgen. */
+    .hotspot-picker {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-elevated);
+      margin-bottom: 1.25rem;
+      overflow: hidden;
+    }
+    .hotspot-picker-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .hotspot-picker-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .hotspot-picker-clear {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      border-radius: var(--radius-sm);
+      padding: 0.2rem 0.55rem;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    .hotspot-viewer { display: none; width: 100%; height: 320px; }
+    .hotspot-viewer-empty,
+    .hotspot-viewer-error {
+      padding: 1.25rem 0.75rem;
+      color: var(--text-tertiary);
+      font-size: 0.85rem;
+      text-align: center;
+    }
+  </style>
+
+  <div class="hero">
+    <h1>{{ adapter.label }}</h1>
+    <p class="subtitle">{{ adapter.blurb }}</p>
+  </div>
+
+  {% if error %}
+    <div class="panel" style="background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.3);">
+      <div class="panel-body"><strong>Check your inputs:</strong> {{ error }}</div>
+    </div>
+  {% endif %}
+
+  <div class="proteina-layout">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Design inputs</span>
+      </div>
+      <div class="panel-body">
+        <form method="POST" action="{{ url_for('tools.tool_submit', tool=adapter.slug) }}" enctype="multipart/form-data" data-tool-slug="{{ adapter.slug }}">
+          {{ csrf_input() }}
+          {{ workspace_hidden_inputs(workspace_ctx) }}
+
+          <label for="preset" class="label" style="display:block; margin-bottom: 0.4rem;">Design variant</label>
+          <select name="preset" id="preset" class="proteina-field" style="max-width: 380px;">
+            {% for p in adapter.presets %}
+            <option value="{{ p.slug }}" {% if pre_fill.get('preset') == p.slug %}selected{% endif %}>{{ p.label }}</option>
+            {% endfor %}
+          </select>
+          <div class="proteina-help">
+            Which model variant to run. Only the protein binder can design
+            against a structure you upload; the ligand and motif variants run
+            curated benchmark tasks.
+          </div>
+
+          {{ pdb_source_banner(pdb_source) }}
+          <label for="target_pdb" class="label" style="display:block; margin-bottom: 0.4rem;">Target structure</label>
+          <input type="file" name="target_pdb" id="target_pdb" accept=".pdb,.cif,.mmcif"
+                 class="proteina-field">
+          <div class="proteina-help">
+            Upload the target as .pdb, .cif, or .mmcif. Leave empty to design
+            against a curated benchmark task instead.
+          </div>
+
+          <div id="curated-fields">
+            <label for="task_name" class="label" style="display:block; margin-bottom: 0.4rem;">Target task</label>
+            <input type="text" name="task_name" id="task_name" maxlength="64"
+                   placeholder="02_PDL1" {{ pre_value(pre_fill, "task_name", "") }}
+                   class="proteina-field" style="max-width: 320px;">
+            <div class="proteina-help">
+              A curated benchmark task. It carries its own target, chain range,
+              hotspots and binder length, so those fields do not apply. Blank
+              uses the variant's default task.
+            </div>
+          </div>
+
+          <div id="custom-fields" style="display:none;">
+            <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
+            <input type="text" name="target_chain" id="target_chain"
+                   {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
+                   class="proteina-field" style="max-width: 160px;">
+            <div class="proteina-help">
+              The chain to design against. For several chains, use the target
+              region field below instead.
+            </div>
+
+            <label for="target_input" class="label" style="display:block; margin-bottom: 0.4rem;">Target region</label>
+            <input type="text" name="target_input" id="target_input" maxlength="64"
+                   placeholder="A1-150" {{ pre_value(pre_fill, "target_input", "") }}
+                   class="proteina-field" style="max-width: 320px;">
+            <div class="proteina-help">
+              Which chains and residues to design against. One chain
+              (<code>A1-150</code>) or several
+              (<code>A12-157,B12-157,C12-157</code>) for a multi-chain target.
+              Blank uses every residue of the target chain above.
+            </div>
+
+            <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
+            <input type="text" name="hotspot_residues" id="hotspot_residues"
+                   placeholder="A45,A67,A89" {{ pre_value(pre_fill, "hotspot_residues", "") }}
+                   class="proteina-field" style="max-width: 320px;">
+            <div class="proteina-help">
+              Optional. Residues the binder should contact, in original PDB
+              numbering. Plain numbers use the target chain; prefix the chain
+              for a multi-chain region (<code>A113,C73</code>). Every one is
+              checked against your structure before any GPU runs, so a typo is
+              refused rather than silently ignored. Click residues in the viewer
+              to toggle them.
+            </div>
+
+            <div class="hotspot-picker" data-hotspot-picker>
+              <div class="hotspot-picker-header">
+                <span class="label">3D residue picker</span>
+                <div class="hotspot-picker-controls">
+                  <label>
+                    <input type="checkbox" id="hotspot-surface-toggle"> Surface
+                  </label>
+                  <button type="button" class="hotspot-picker-clear" id="hotspot-clear-btn">Clear</button>
+                </div>
+              </div>
+              <div id="hotspot-empty" class="hotspot-viewer-empty">
+                Upload a target structure above to enable click-to-pick. Typed
+                entry in the <code>Hotspot residues</code> field also works.
+              </div>
+              <div id="hotspot-viewer" class="hotspot-viewer" aria-label="Interactive 3D structure viewer"></div>
+            </div>
+
+            <label class="label" style="display:block; margin-bottom: 0.4rem;">Binder length (residues)</label>
+            <div class="proteina-binder-length">
+              <input type="number" name="binder_length_min" id="binder_length_min"
+                     min="20" max="300" placeholder="60"
+                     {{ pre_value(pre_fill, "binder_length_min", "") }}
+                     class="proteina-field">
+              <span class="sep">to</span>
+              <input type="number" name="binder_length_max" id="binder_length_max"
+                     min="20" max="300" placeholder="120"
+                     {{ pre_value(pre_fill, "binder_length_max", "") }}
+                     class="proteina-field">
+            </div>
+            <div class="proteina-help">
+              Each design's length is drawn uniformly from this range. Blank
+              uses 60 to 120, the model's own default.
+            </div>
+          </div>
+
+          <label for="num_designs" class="label" style="display:block; margin-bottom: 0.4rem;">Number of designs</label>
+          <input type="number" name="num_designs" id="num_designs" min="1" max="1000" value="8"
+                 {% if single_container_ceiling %}data-campaign-ceiling="{{ single_container_ceiling }}"{% endif %}
+                 class="proteina-field" style="max-width: 120px;">
+          <div class="proteina-help">
+            One search shard yields 8 designs on a single A100-80GB. Larger
+            requests fan out automatically as a wallet-bounded campaign of
+            independent shards, with a global top-K across all of them.
+          </div>
+          {% if single_container_ceiling %}
+          <div id="campaign-reroute-notice" class="campaign-reroute-notice" hidden
+               style="color: var(--accent-text, #2B9E7E); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.35rem;">
+            More than {{ single_container_ceiling }} designs fans out across GPUs as a wallet-bounded campaign. You pay only for compute delivered and unused funds are refunded, so the single-job estimate above does not apply. Use Start campaign below; upload a target file so it carries over.
+          </div>
+          {% endif %}
+
+          {{ field_campaign(prefilled=pre_fill) }}
+
+          {{ wallet_estimate_panel(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+          {{ wallet_topup_gate(tool_slug=adapter.slug, balance_usd=(wallet.get('balance_usd') if wallet else None)) }}
+
+          {{ preflight_styles() }}
+          {% if preflight_verdict %}
+            {{ preflight_panel(preflight_verdict, tool_slug=adapter.slug) }}
+          {% else %}
+            <div id="preflight-panel"
+                 class="preflight-panel"
+                 data-tool="{{ adapter.slug }}"
+                 data-kind=""
+                 data-ok="1"></div>
+          {% endif %}
+
+          <button type="submit" class="btn-primary" id="tool-submit-btn"
+                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+            Submit run
+          </button>
+          <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>
+            Start campaign
+          </button>
+        </form>
+      </div>
+    </div>
+
+    {{ about_panel(adapter, tool_about(adapter)) }}
+  </div>
+
+  {# NGL is vendored in /static/vendor/ to avoid a CDN dependency in
+     production. The picker degrades gracefully if NGL fails to load -- the
+     typed hotspot field keeps working either way. #}
+  <script src="{{ url_for('static', filename='vendor/ngl.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/hotspot_picker.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/preflight.js') }}" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      var fileInput = document.getElementById('target_pdb');
+      var presetSel = document.getElementById('preset');
+      var curated = document.getElementById('curated-fields');
+      var custom = document.getElementById('custom-fields');
+      var taskName = document.getElementById('task_name');
+
+      // Mirrors how the server derives `_has_custom_target`: a run is a
+      // bring-your-own run when a file is attached. Curated and custom inputs
+      // are mutually exclusive and the adapter refuses the combination, so
+      // only one set is ever shown or submitted. Disabled controls are not
+      // posted, which is what keeps a stale value out of the request.
+      function refresh() {
+        var hasFile = !!(fileInput && fileInput.files && fileInput.files.length > 0);
+        var isBinder = !presetSel || presetSel.value === 'protein_binder';
+        var isCustom = hasFile && isBinder;
+        curated.style.display = isCustom ? 'none' : '';
+        custom.style.display = isCustom ? '' : 'none';
+        taskName.disabled = isCustom;
+        if (isCustom) { taskName.value = ''; }
+        custom.querySelectorAll('input').forEach(function (el) {
+          if (el.type !== 'checkbox' && el.type !== 'button') {
+            el.disabled = !isCustom;
+          }
+        });
+      }
+
+      if (fileInput) fileInput.addEventListener('change', refresh);
+      if (presetSel) presetSel.addEventListener('change', refresh);
+      refresh();
+
+      if (typeof window.initHotspotPicker !== 'function') return;
+      window.initHotspotPicker({
+        pdbInputId: 'target_pdb',
+        hotspotInputId: 'hotspot_residues',
+        chainInputId: 'target_chain',
+        viewerId: 'hotspot-viewer',
+        emptyMessageId: 'hotspot-empty',
+        surfaceToggleId: 'hotspot-surface-toggle',
+        clearBtnId: 'hotspot-clear-btn',
+        // Proteina matches hotspots as chain+resnum ("A45") and supports
+        // multi-chain targets. Off for every other tool.
+        chainPrefixed: true,
+      });
+    });
+  </script>
+  {{ prefill_script(pre_fill) }}
+  {{ wallet_partials_script() }}
+  {{ campaign_reroute_script() }}
+{% endblock %}

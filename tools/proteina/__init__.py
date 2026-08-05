@@ -31,11 +31,25 @@ maps to a checked-in pipeline config + checkpoint pair. ``preset`` becomes
 - ``validate``       — the free CPU-only ``complexa validate`` pre-flight
   gate (the staging smoke; no GPU, no wallet).
 
-Target model: each variant runs a ``task_name`` (a repo-bundled benchmark
-task whose target is baked into the config) OR a caller-uploaded custom
-target (PDB for protein/motif, SDF for ligand), staged by the campaign
-route. The curated tasks are the canary/demo path; bring-your-own targets
-are the general path.
+Target model: a run designs against EITHER a curated ``task_name`` (a
+repo-bundled benchmark task whose target is baked into the config) OR a
+caller-uploaded PDB staged by the route — never both, and which one is in
+play is declared explicitly as ``target_source`` rather than inferred.
+
+Bring-your-own is a ``protein_binder`` capability only. Upstream's
+``complexa target add`` writes ``configs/targets/targets_dict.yaml``, which
+only the binder pipeline composes (``target_dict_cfg``); ``ligand_binder``
+and ``motif_ame`` resolve separate registries (``ligand_targets_dict`` and
+``configs/design_tasks/ame_dict_v2.yaml`` -> ``motif_target_dict_cfg``,
+whose records key on ``contig_atoms``, which the CLI cannot emit). Those two
+stay on curated tasks; see ``_CUSTOM_TARGET_PRESETS``.
+
+A custom target additionally accepts ``target_input`` (a chain/residue
+contig such as ``A1-150`` or ``A12-157,B12-157,C12-157`` for a multi-chain
+target), ``hotspot_residues`` (chain-prefixed ``A45 A67``, or bare numbers
+promoted onto the target chain so one shared launch field can drive proteina
+alongside the other tools), and ``binder_length``. All three are written
+into the registered record; a curated task carries its own and rejects them.
 
 RF3 dependency (product decision): ``ligand_binder`` and ``motif_ame`` score
 on RF3 only — AF2RewardModel has no ligand protocol, so there is no AF2
@@ -101,6 +115,18 @@ _RF3_REQUIRED = {"ligand_binder", "motif_ame"}
 # ligand variant's target is an SDF, which has no chain.
 _CHAIN_PRESETS = {"protein_binder", "motif_ame"}
 
+# Variants that can design against a CALLER-SUPPLIED target. Only the protein
+# binder: `complexa target add` writes configs/targets/targets_dict.yaml, which
+# is composed into `target_dict_cfg` by configs/pipeline/binder/binder_generate
+# .yaml (`defaults: - /targets/targets_dict@_here_`). The other two variants
+# resolve a DIFFERENT registry — ligand_binder against ligand_targets_dict and
+# motif_ame against configs/design_tasks/ame_dict_v2.yaml (-> motif_target_dict
+# _cfg, whose records key on `contig_atoms`, a motif atom spec the target CLI
+# has no flag to emit). Verified against 916eaaed. So bring-your-own is a
+# protein-binder capability upstream, not a wrapper limitation; the other two
+# keep their curated tasks and the container refuses a staged target for them.
+_CUSTOM_TARGET_PRESETS = {"protein_binder"}
+
 # ---------------------------------------------------------------------------
 # Fixed per-shard generation profile. Locked (not user-tunable) so every shard
 # yields exactly _SHARD_DESIGNS designs == the campaign chunk_size; the user's
@@ -120,8 +146,235 @@ _SHARD_DESIGNS = _SHARD_NSAMPLES * _SHARD_REPLICAS  # == _CHUNK_SIZE_OVERRIDE
 # preflight reject an unknown name before GPU spend.
 _TASK_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
+# ---------------------------------------------------------------------------
+# Custom-target grammar (bring-your-own PDB).
+#
+# Upstream's target record (configs/targets/targets_dict.yaml @916eaaed) is:
+#     target_input:      "A1-115"  or  "A12-157,B12-157,C12-157"  (multi-chain)
+#     hotspot_residues:  ["A37", "A39", "A49", "A98"]
+#     binder_length:     [64, 155]
+#
+# Both residue fields are ORIGINAL PDB AUTHOR NUMBERING, matching every other
+# tool in the hub.
+#
+# The hotspot format is the load-bearing one. load_target_from_pdb does:
+#     if f"{atom.chain_id}{atom.res_id}" in target_hotspots: mask[idx] = True
+# — a literal, case-sensitive string match with NO separator, and a token that
+# matches nothing is SILENTLY DROPPED to an all-zero mask. A run that quietly
+# ignored every hotspot is indistinguishable from one that honoured them, so
+# format validation here is only half the guard; run_pipeline re-checks every
+# token against the actual uploaded structure before any GPU is spent.
+#
+# Chain ids are restricted to a SINGLE character — deliberately narrower than
+# upstream's contig grammar. "A1-115" is otherwise ambiguous about where the
+# chain id ends, and the upstream parser (atomworks AtomSelectionStack.
+# from_contig) has an unverified failure mode on a chain it cannot resolve.
+# Narrow is the right call when the failure is silent.
+# ---------------------------------------------------------------------------
 
-def _describe(preset: str, task_name: str, target_chain: str) -> str:
+# Chain ids are matched as a single LETTER, not [A-Za-z0-9]. A digit chain id
+# would make the whole grammar ambiguous: with an optional alphanumeric prefix,
+# "42" parses as chain "4" residue 2 rather than bare residue 42 — and bare
+# residue numbers are exactly what the shared launch field posts for every
+# other tool (_SHARED_LAUNCH_FIELDS, blueprints/targets.py). Numeric chain ids
+# are legal in mmCIF but vanishingly rare in author-numbered PDBs, and they
+# fail here with a readable message rather than silently binding to the wrong
+# residue. That trade is the whole reason this regex is not [A-Za-z0-9].
+_SEGMENT_RE = re.compile(r"^([A-Za-z])(-?\d+)-(-?\d+)$")
+_WHOLE_CHAIN_RE = re.compile(r"^([A-Za-z])$")
+_HOTSPOT_RE = re.compile(r"^([A-Za-z])?(-?\d+)$")
+
+_MAX_SEGMENTS = 8        # a target with >8 chain ranges is a modelling mistake
+_MAX_HOTSPOTS = 64       # mirrors iggm's EPITOPE_MAX order of magnitude
+_MAX_CHAIN_FIELD = 32    # "A B C D ..." — bounds the space-joined chain string
+
+# Binder length envelope. Upstream's own curated records span [50, 155]; the
+# target-CLI default is [60, 120]. The generator samples the binder length
+# uniformly from this range per design (UniformInt on
+# generation.dataloader.dataset.nres), so it is a real design knob, not a cap.
+_BINDER_LEN_DEFAULT = (60, 120)
+_BINDER_LEN_MIN = 20
+_BINDER_LEN_MAX = 300
+
+
+def _parse_target_input(
+    raw: str,
+) -> tuple[list[tuple[str, int, int]], str, list[str], Optional[str]]:
+    """Parse a chain/residue-range contig into segments.
+
+    ``"A1-150"`` -> ``[("A", 1, 150)]``; ``"A12-157,B12-157"`` -> two segments.
+    A bare chain id (``"A"``) means "the whole chain" and is returned with a
+    ``(None, None)`` sentinel range for run_pipeline to resolve against the
+    real structure (it, not the web tier, has the residue numbering).
+
+    Returns ``(segments, canonical, chain_ids, error)``. An empty input is not
+    an error — it means "derive the full observed range in-container".
+    """
+    text = (raw or "").strip()
+    if not text:
+        return [], "", [], None
+
+    segments: list[tuple[str, int, int]] = []
+    chain_ids: list[str] = []
+    for token in (t.strip() for t in text.replace(";", ",").split(",")):
+        if not token:
+            continue
+        whole = _WHOLE_CHAIN_RE.match(token)
+        if whole:
+            chain, lo, hi = whole.group(1), None, None
+        else:
+            m = _SEGMENT_RE.match(token)
+            if not m:
+                return [], "", [], (
+                    f'Target chain range "{token}" is not valid. Use a chain '
+                    "letter with a residue range, like A1-150, or A1-150,B12-157 "
+                    "for several chains."
+                )
+            chain, lo, hi = m.group(1), int(m.group(2)), int(m.group(3))
+            if lo > hi:
+                return [], "", [], (
+                    f'Target chain range "{token}" runs backwards — write it '
+                    f"low to high, like {chain}{hi}-{lo}."
+                )
+            if lo < 0 or hi < 0:
+                # Upstream parses the contig with r"([A-Za-z]+)(\d+)-(\d+)" and
+                # raises ValueError on no match, so a negative bound would die
+                # on the GPU after the shard has booted. run_pipeline refuses
+                # again in-container (including for ranges it derives itself
+                # from a tagged structure); this catches the typed case for
+                # free, before a campaign exists.
+                return [], "", [], (
+                    f'Target chain range "{token}" uses negative residue '
+                    "numbers, which the design engine cannot express. Pick a "
+                    f"range starting at 0 or above, like {chain}1-{max(hi, 1)}."
+                )
+        if chain in chain_ids:
+            return [], "", [], (
+                f"Chain {chain} appears more than once in the target chain "
+                "range. Give each chain a single range."
+            )
+        chain_ids.append(chain)
+        segments.append((chain, lo, hi))
+
+    if not segments:
+        return [], "", [], None
+    if len(segments) > _MAX_SEGMENTS:
+        return [], "", [], (
+            f"Too many chain ranges (max {_MAX_SEGMENTS})."
+        )
+    return segments, _format_contig(segments), chain_ids, None
+
+
+def _format_contig(segments: list[tuple[str, int, int]]) -> str:
+    """Render segments back to upstream's contig string. Whole-chain segments
+    render as the bare chain id; run_pipeline expands them once it can see the
+    structure's real residue numbering."""
+    parts = []
+    for chain, lo, hi in segments:
+        parts.append(chain if lo is None else f"{chain}{lo}-{hi}")
+    return ",".join(parts)
+
+
+def _parse_hotspots(
+    raw: str, chain_ids: list[str], default_chain: str
+) -> tuple[list[str], list[int], Optional[str]]:
+    """Parse hotspot residues into BOTH representations the stack needs.
+
+    Accepts ``A45 A67 A89`` (upstream's chain-prefixed form) and plain
+    ``54,56,115`` (what the shared launch field posts for every other tool —
+    see ``_SHARED_LAUNCH_FIELDS`` in blueprints/targets.py). A bare number is
+    promoted onto ``default_chain``, which is what lets one launch screen drive
+    proteina alongside rfdiffusion/pxdesign without a second field.
+
+    Returns ``(spec, resnums, error)``:
+      * ``spec``    — ``["A45", "A67"]``, what upstream string-matches on.
+      * ``resnums`` — ``[45, 67]``, bare author numbers, so the routes' existing
+        ``DesignTarget.hotspot_error`` range check keeps working unchanged.
+
+    Empty input is not an error — proteina's hotspots are OPTIONAL (an
+    unconstrained search is a legitimate run), matching boltzgen rather than
+    rfdiffusion/bindcraft/pxdesign, which require them.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return [], [], None
+
+    allowed = list(chain_ids) or ([default_chain] if default_chain else [])
+    spec: list[str] = []
+    resnums: list[int] = []
+    seen: set[str] = set()
+    for token in (t.strip() for t in text.replace(";", ",").replace(",", " ").split()):
+        if not token:
+            continue
+        m = _HOTSPOT_RE.match(token)
+        if not m:
+            return [], [], (
+                f'Hotspot residue "{token}" is not valid. Use residue numbers, '
+                "optionally chain-prefixed, separated by spaces or commas "
+                "(e.g. A45 A67 A89)."
+            )
+        chain, number = m.group(1), int(m.group(2))
+        if chain is None:
+            if not default_chain:
+                return [], [], (
+                    f'Hotspot residue "{token}" needs a chain prefix (e.g. '
+                    f"A{number}) because this run has no single target chain."
+                )
+            chain = default_chain
+        elif allowed and chain not in allowed:
+            return [], [], (
+                f'Hotspot "{token}" names chain {chain}, which is not one of '
+                f"this run's target chains ({', '.join(allowed)})."
+            )
+        key = f"{chain}{number}"
+        if key in seen:
+            continue
+        seen.add(key)
+        spec.append(key)
+        resnums.append(number)
+
+    if len(spec) > _MAX_HOTSPOTS:
+        return [], [], f"Too many hotspot residues (max {_MAX_HOTSPOTS})."
+    return spec, resnums, None
+
+
+def _parse_binder_length(
+    raw_min: str, raw_max: str
+) -> tuple[tuple[int, int], Optional[str]]:
+    """Parse the binder length range written into the target record.
+
+    Upstream samples each design's length uniformly from this range, so an
+    unset value is not "no constraint" — it is the CLI's [60, 120] default.
+    Exposing it is what stops that default silently capping the design space.
+    """
+    lo_text = (raw_min or "").strip()
+    hi_text = (raw_max or "").strip()
+    if not lo_text and not hi_text:
+        return _BINDER_LEN_DEFAULT, None
+    try:
+        lo = int(lo_text) if lo_text else _BINDER_LEN_DEFAULT[0]
+        hi = int(hi_text) if hi_text else _BINDER_LEN_DEFAULT[1]
+    except ValueError:
+        return _BINDER_LEN_DEFAULT, "Binder length must be whole numbers."
+    if lo > hi:
+        return _BINDER_LEN_DEFAULT, (
+            "Binder length minimum must not exceed the maximum."
+        )
+    if lo < _BINDER_LEN_MIN or hi > _BINDER_LEN_MAX:
+        return _BINDER_LEN_DEFAULT, (
+            f"Binder length must be between {_BINDER_LEN_MIN} and "
+            f"{_BINDER_LEN_MAX} residues."
+        )
+    return (lo, hi), None
+
+
+def _describe(
+    preset: str,
+    task_name: str,
+    target_chain: str,
+    contig: str = "",
+    hotspot_spec: Optional[list[str]] = None,
+) -> str:
     if preset == "ligand_binder":
         return f"ligand binder vs {task_name or 'uploaded SDF'}"
     if preset == "motif_ame":
@@ -129,8 +382,20 @@ def _describe(preset: str, task_name: str, target_chain: str) -> str:
     if preset == "validate":
         return "free validate dry-run"
     where = task_name or "uploaded target"
-    chain = f" chain {target_chain}" if target_chain else ""
-    return f"protein binder vs {where}{chain}"
+    # The contig already names its chains, so printing target_chain too would
+    # say "chain A B" next to "A1-150,B12-157".
+    if contig:
+        scope = f" {contig}"
+    elif target_chain:
+        scope = f" chain {target_chain}"
+    else:
+        scope = ""
+    hot = f" @ {' '.join(hotspot_spec)}" if hotspot_spec else ""
+    return f"protein binder vs {where}{scope}{hot}"
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def validate(
@@ -140,36 +405,127 @@ def validate(
 
     ``num_designs`` (the campaign scale) is NOT validated here — the campaign
     route injects a placeholder count and the driver sets the real per-chunk
-    value. This validates the per-shard params only. The target file (PDB/SDF)
-    is optional and handled by the campaign route (curated task vs custom
-    upload); this only sanity-checks the task selector + target chain.
+    value. This validates the per-shard params only. The target FILE is staged
+    by the route, not read here; what this settles is which of the two target
+    sources the run declares, and that its parameters are coherent with that
+    choice.
+
+    ``_has_custom_target`` is injected by the route AFTER it has resolved
+    whether a structure actually exists (a bound target or an attached upload).
+    It is deliberately not a user-controllable field: both routes assign it
+    over the top of the form dict, so a crafted ``proteina___has_custom_target``
+    cannot forge a custom run that has no staged structure behind it. An absent
+    key means ``curated``, which is the safe default — the container refuses
+    independently if a URL shows up on a run that did not declare one.
     """
     preset = (form.get("preset") or "protein_binder").strip()
     if preset not in _PRESET_CONFIG:
         return None, "Pick a design variant."
 
-    task_name = (form.get("task_name") or "").strip() or _DEFAULT_TASK.get(preset, "")
-    if preset != "validate":
-        if not task_name:
-            return None, "Choose a target task or upload a custom target."
-        if not _TASK_RE.match(task_name):
-            return None, (
-                "Target task name may use letters, digits, underscore and "
-                "hyphen (max 64 characters)."
-            )
+    is_custom = _truthy(form.get("_has_custom_target"))
+    if is_custom and preset not in _CUSTOM_TARGET_PRESETS and preset != "validate":
+        return None, (
+            f"The {preset} variant cannot design against your own target — "
+            "upstream resolves it from a separate task registry. Pick the "
+            "protein binder variant, or choose a curated benchmark task."
+        )
+    target_source = "custom" if is_custom else "curated"
+
+    # A curated run falls back to the variant's default benchmark task. A CUSTOM
+    # run must NOT: this default-fill runs before the exclusivity check below,
+    # so leaving it unconditional would stamp 02_PDL1 onto every bring-your-own
+    # run whose task field is blank — which is the normal case — and design
+    # against PD-L1 instead of the user's structure. That is precisely the
+    # silent-wrong-target failure the custom-target path exists to avoid.
+    task_name = (form.get("task_name") or "").strip()
+    if not task_name and target_source == "curated":
+        task_name = _DEFAULT_TASK.get(preset, "")
+    if task_name and not _TASK_RE.match(task_name):
+        return None, (
+            "Target task name may use letters, digits, underscore and "
+            "hyphen (max 64 characters)."
+        )
+    if preset != "validate" and target_source == "curated" and not task_name:
+        return None, "Choose a target task or upload a custom target."
+    if target_source == "custom" and task_name:
+        return None, (
+            "A custom target and a curated benchmark task are mutually "
+            "exclusive. Clear the target task to design against your own "
+            "structure."
+        )
+
+    raw_contig = (form.get("target_input") or "").strip()
+    raw_hotspots = (form.get("hotspot_residues") or "").strip()
+    raw_len_min = form.get("binder_length_min") or ""
+    raw_len_max = form.get("binder_length_max") or ""
+
+    # These three only mean anything against a structure we registered. A
+    # curated task carries its own contig, hotspots and length range, and
+    # ++generation.task_name cannot override them — so accepting them here
+    # would silently discard what the user typed.
+    if target_source == "curated" and (raw_contig or raw_hotspots):
+        return None, (
+            "Chain ranges and hotspot residues apply to your own uploaded "
+            f"target. The curated benchmark task {task_name} carries its own."
+        )
+
+    segments, contig, contig_chains, err = _parse_target_input(raw_contig)
+    if err:
+        return None, err
 
     target_chain = ""
     if preset in _CHAIN_PRESETS:
-        target_chain = (form.get("target_chain") or "A").strip()
-        if not target_chain or len(target_chain) > 4:
-            return None, "Target chain ID is required (max 4 characters)."
+        if contig_chains:
+            # The contig names its own chains, so deriving target_chain from it
+            # keeps one source of truth and still feeds the routes' existing
+            # DesignTarget.chain_error range check.
+            target_chain = " ".join(contig_chains)
+        else:
+            target_chain = " ".join(
+                (form.get("target_chain") or "A").replace(",", " ").split()
+            )
+        if not target_chain:
+            return None, "Target chain is required."
+        if len(target_chain) > _MAX_CHAIN_FIELD:
+            return None, (
+                f"Target chain is too long (max {_MAX_CHAIN_FIELD} characters). "
+                "List chains separated by spaces, like A B C."
+            )
+        for chain in target_chain.split():
+            if len(chain) > 4:
+                return None, f"Chain id {chain!r} is too long (max 4 characters)."
+
+    default_chain = (contig_chains or target_chain.split() or [""])[0]
+    hotspot_spec, hotspot_residues, err = _parse_hotspots(
+        raw_hotspots, contig_chains, default_chain
+    )
+    if err:
+        return None, err
+
+    binder_length, err = _parse_binder_length(raw_len_min, raw_len_max)
+    if err:
+        return None, err
 
     return (
         {
             "preset": preset,
             "config_name": _PRESET_CONFIG[preset],
             "task_name": task_name,
+            "target_source": target_source,
             "target_chain": target_chain,
+            "target_input": contig,
+            # Kept out of the payload — the route range-checks these against the
+            # target's persisted chain_summary, the container against the real
+            # structure. Prefixed so sanitize_shared_params drops it from
+            # campaign.params rather than replaying a stale copy.
+            "_target_segments": segments,
+            # Two representations on purpose: `hotspot_residues` is bare author
+            # numbers so DesignTarget.hotspot_error keeps working unchanged for
+            # free at both routes, `hotspot_spec` is the chain-prefixed form
+            # upstream actually string-matches on.
+            "hotspot_residues": hotspot_residues,
+            "hotspot_spec": hotspot_spec,
+            "binder_length": list(binder_length),
             # RF3-only reward -> the container hard-blocks these when RF3 is off.
             "rf3_required": preset in _RF3_REQUIRED,
             # Locked generation profile (see _SHARD_*). run_pipeline reads these
@@ -179,7 +535,9 @@ def validate(
             "replicas": _SHARD_REPLICAS,
             "nsteps": _SHARD_NSTEPS,
             "designs_per_shard": _SHARD_DESIGNS,
-            "target": _describe(preset, task_name, target_chain),
+            "target": _describe(
+                preset, task_name, target_chain, contig, hotspot_spec
+            ),
             "parameters": {"n_designs_total": _SHARD_DESIGNS},
         },
         None,
@@ -193,12 +551,23 @@ def build_payload(inputs: dict, presigned_url: str) -> dict:
     (from ``campaign.target_storage_path``), not embedded here — matches boltz2
     / boltzgen / iggm. A curated-task run carries no target file; the container
     resolves the target from the repo config for ``task_name``.
+
+    The five custom-target keys are read with ``.get`` defaults on purpose: a
+    campaign created before they existed replays its stored ``params`` through
+    this function on every later wave, and a bare ``[]`` lookup would strand it
+    with a KeyError mid-drain. The defaults reproduce the old curated behaviour
+    exactly.
     """
     return {
         "preset": inputs["preset"],
         "config_name": inputs["config_name"],
         "task_name": inputs["task_name"],
+        "target_source": inputs.get("target_source", "curated"),
         "target_chain": inputs["target_chain"],
+        "target_input": inputs.get("target_input", ""),
+        "hotspot_residues": inputs.get("hotspot_residues", []),
+        "hotspot_spec": inputs.get("hotspot_spec", []),
+        "binder_length": inputs.get("binder_length", list(_BINDER_LEN_DEFAULT)),
         "rf3_required": inputs["rf3_required"],
         "nsamples": inputs["nsamples"],
         "replicas": inputs["replicas"],
