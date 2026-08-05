@@ -120,7 +120,10 @@ def validate(
     return (
         {
             "preset": preset,
-            "target_chain": target_chain,
+            # Canonical comma form regardless of what the user typed:
+            # both separators are accepted at this boundary, exactly one
+            # is emitted, so no container has to guess.
+            "target_chain": ",".join(target_chains),
             "hotspot_residues": hotspot_residues,
             "binder_length_min": binder_length_min,
             "binder_length_max": binder_length_max,

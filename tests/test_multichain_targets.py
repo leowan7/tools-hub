@@ -200,6 +200,18 @@ def test_whitespace_separated_chains_accepted(name, mod):
 
 
 @pytest.mark.parametrize("name,mod", ADAPTERS)
+@pytest.mark.parametrize("typed", ["A,B", "A B", "A, B", "A  B"])
+def test_target_chain_is_canonicalised_to_the_comma_form(name, mod, typed):
+    """Both separators are accepted at this boundary and exactly one is
+    emitted, so no container downstream has to guess which it will get."""
+    inputs, err = mod.validate(_form(name, typed, "A296"), {})
+    assert err is None, err
+    assert inputs["target_chain"] == "A,B"
+    payload = mod.build_payload(inputs, "https://example.invalid/t.pdb")
+    assert payload["target_chain"] == "A,B"
+
+
+@pytest.mark.parametrize("name,mod", ADAPTERS)
 def test_build_payload_forwards_the_multichain_shape(name, mod):
     inputs, err = mod.validate(_form(name, "A,B", "A296,B264"), {})
     assert err is None, err
