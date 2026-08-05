@@ -1746,29 +1746,181 @@ class Verdict:
                 "reason": self.reason, "metrics": dict(self.metrics)}
 
 
-def shard_failure(shard: Any) -> str | None:
-    """Why this shard cannot be interpreted at all, or None.
+# ---------------------------------------------------------------------------
+# Delivery: would PRODUCTION have shipped this shard?
+#
+# A SEPARATE AXIS FROM THE OUTCOME, and keeping them separate is the fix. The
+# outcome answers "may we turn the flag on", which is a question about geometry:
+# did the binders land on the patch. Delivery answers "would run_pipeline have
+# handed these designs to a paying customer", which is a question about the exit
+# code and the reward table. They are independent — a shard can measure
+# perfectly and still exit non-zero, and a clean shard can still miss the patch
+# — and this harness used to collapse them into one, always in the direction
+# that condemns.
+#
+# THE COST OF NOT SEPARATING THEM, measured. A run that produced 8 designs, 8
+# files, 8 reward rows and 8 complexes, then crashed in `evaluate`, was reported
+# FAILED. Production's rule (run_pipeline.py, immediately after `complexa
+# design` returns) is:
+#
+#     n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+#     if rc != 0:
+#         if n_scored == 0:
+#             _fail("search", "complexa", ...)
+#         logger.warning("... but %d/%d designs are fully scored — delivering")
+#
+# and the reward CSV it reads is written by the GENERATE stage (generate.py:524
+# writes rewards_{config}_{job}.csv with total_reward and the af2folding_*
+# components), not by evaluate. So that run WOULD HAVE SHIPPED 8 SCORED DESIGNS
+# while the canary printed FAILED. A measurement campaign was nearly cancelled
+# on that reading.
+#
+# THREE STATES, NAMED, because two cannot hold the middle one:
+#
+#   CLEAN     exit 0. Nothing to report.
+#   DEGRADED  non-zero exit, and designs came back fully scored. Production
+#             delivers. NOT a failure of the feature — and NOT nothing either:
+#             the non-zero exit is a real defect with its own diagnosis, so it
+#             is stamped onto every verdict it touches and printed in full.
+#   FAILED    errored, no exit code, a non-numeric one, a non-zero exit with
+#             nothing scored, or a non-zero exit where the shard did not say how
+#             many were scored. Production would have failed it too.
+#
+# "did not say" is FAILED on purpose. A payload with no scored-design count is
+# one we cannot prove delivered anything, and guessing the other way is how a
+# broken run gets blessed. It also means every hand-built payload in the offline
+# suite keeps its old verdict unless it opts in by reporting the count.
+# ---------------------------------------------------------------------------
 
-    A shard that errored or exited non-zero is a FAIL, not an INCONCLUSIVE: the
-    question phase 2 answers is "may we enable the flag", and a crashing shard
-    answers no. Only a shard that RAN CLEANLY but produced nothing measurable is
-    inconclusive.
+CLEAN = "clean"
+DEGRADED = "degraded"
+FAILED = "failed"
+DELIVERIES = (CLEAN, DEGRADED, FAILED)
+
+# What ``run_shard`` calls the count, computed there by production's OWN
+# ``run_pipeline.parse_designs`` so the canary cannot drift from the rule it is
+# supposed to be mirroring.
+SCORED_KEY = "n_scored_designs"
+
+
+def scored_design_count(shard: Any) -> int | None:
+    """Designs the shard reported as FULLY SCORED, or None if it did not say.
+
+    None is not zero. Zero is "we looked and the reward table scored nothing";
+    None is "this payload carries no such number", and the two lead to the same
+    verdict for opposite reasons — see the module note above.
     """
     if not isinstance(shard, dict):
-        return "no result was returned"
+        return None
+    raw = shard.get(SCORED_KEY)
+    if isinstance(raw, bool):
+        return None
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
+def shard_delivery(shard: Any) -> tuple[str, str]:
+    """``(state, detail)`` — would production have delivered this shard?
+
+    ``detail`` is "" for CLEAN and a full sentence otherwise. See the module
+    note above for why this is not the same question as the verdict.
+    """
+    if not isinstance(shard, dict):
+        return FAILED, "no result was returned"
     error = shard.get("error")
     if error:
-        return str(error)
+        return FAILED, str(error)
     rc = shard.get("exit_code")
     if rc is None:
-        return "the shard reported no exit code"
+        return FAILED, "the shard reported no exit code"
     try:
         rc_int = int(rc)
     except (TypeError, ValueError):
-        return f"the shard reported a non-numeric exit code {rc!r}"
-    if rc_int != 0:
-        return f"the design command exited {rc_int}"
-    return None
+        return FAILED, f"the shard reported a non-numeric exit code {rc!r}"
+    if rc_int == 0:
+        return CLEAN, ""
+    n_scored = scored_design_count(shard)
+    if n_scored is None:
+        return FAILED, (
+            f"the design command exited {rc_int} and the shard did not report "
+            "how many designs came back fully scored, so there is no evidence "
+            "production would have delivered anything"
+        )
+    if n_scored == 0:
+        return FAILED, (
+            f"the design command exited {rc_int} with no scored designs — "
+            "production fails a run on exactly this reading"
+        )
+    return DEGRADED, (
+        f"the design command exited {rc_int}, but {n_scored} design(s) came "
+        "back fully scored, which is the reading on which production DELIVERS "
+        "(run_pipeline only fails when a non-zero exit left nothing scored). "
+        "This is not a verdict on the feature. The non-zero exit is still a "
+        "real defect and needs its own diagnosis — read the stage-log tails."
+    )
+
+
+def shard_failure(shard: Any) -> str | None:
+    """Why this shard cannot be interpreted at all, or None.
+
+    A shard that errored or exited non-zero USED TO BE a FAIL unconditionally.
+    That was stricter than production and cost a real judgement: see the module
+    note above. It is now a FAIL exactly when production would also have failed
+    it, which is what ``shard_delivery`` decides. A shard that exited non-zero
+    and still delivered scored designs returns None here and is reported
+    separately, loudly, by ``shard_degradation``.
+
+    Only a shard that DELIVERED but produced nothing measurable is inconclusive;
+    that is still decided downstream, not here.
+    """
+    state, detail = shard_delivery(shard)
+    return detail if state == FAILED else None
+
+
+def shard_degradation(shard: Any) -> str | None:
+    """The DEGRADED sentence for this shard, or None.
+
+    The counterpart to ``shard_failure``: the two are mutually exclusive and
+    together cover every non-CLEAN shard, so nothing that used to be reported
+    can fall through the gap between them.
+    """
+    state, detail = shard_delivery(shard)
+    return detail if state == DEGRADED else None
+
+
+def annotate_delivery(verdict: Verdict, *shards: Any) -> Verdict:
+    """Stamp a verdict with the delivery state of the shards behind it.
+
+    Always sets ``metrics["delivery"]`` (the worst of the shards', so a pair is
+    described by its weakest member) and, for anything but CLEAN, the per-shard
+    sentences. A DEGRADED verdict additionally gets a ``[DELIVERED-DEGRADED]``
+    prefix on its reason, because the reason is the one line that always reaches
+    the console and "PASS" on its own would hide a crashed shard.
+
+    FAILED is not prefixed: its reason already opens with "the shard did not
+    complete: ...", which is the same information said once.
+    """
+    states: list[str] = []
+    details: list[str] = []
+    for shard in shards:
+        state, detail = shard_delivery(shard)
+        states.append(state)
+        if state == CLEAN:
+            continue
+        label = (shard.get("label") if isinstance(shard, dict) else None) or "shard"
+        details.append(f"{label}: {detail}")
+    worst = FAILED if FAILED in states else (DEGRADED if DEGRADED in states else CLEAN)
+    metrics = dict(verdict.metrics)
+    metrics["delivery"] = worst
+    if details:
+        metrics["delivery_detail"] = details
+    reason = verdict.reason
+    if worst == DEGRADED:
+        reason = f"[DELIVERED-DEGRADED] {reason} ({' | '.join(details)})"
+    return Verdict(verdict.name, verdict.outcome, reason, metrics)
 
 
 def design_identity(design: Any, index: int = 0) -> str:
@@ -2178,6 +2330,11 @@ def _base_metrics(shard: Any) -> dict:
     return {
         "label": shard.get("label"),
         "exit_code": shard.get("exit_code"),
+        # Beside the exit code, never behind it. The pair is the delivery
+        # question in two numbers: `exit_code 1 | scored 8` and `exit_code 1 |
+        # scored 0` are the same row to every other field in this dict and are
+        # a shipped campaign and a dead one respectively.
+        SCORED_KEY: scored_design_count(shard),
         # BOTH counts, always, and never collapsed into one. "requested 8,
         # produced 1" and "requested 8, produced 8" prescribe different next
         # moves, and only the pair distinguishes them.
@@ -2234,7 +2391,17 @@ def _unmeasurable_reason(shard: Any, tail: str = "") -> str:
 
 
 def positive_verdict(pos: Any, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Verdict:
-    """Did the binders land on the patch we asked for?"""
+    """Did the binders land on the patch we asked for?
+
+    Every return of the body is stamped with the shard's DELIVERY state — see
+    ``annotate_delivery``. Wrapping the whole body rather than each of its eight
+    returns is deliberate: a stamp that has to be remembered at a new return
+    point is a stamp that will be missing from it.
+    """
+    return annotate_delivery(_positive_verdict(pos, thresholds), pos)
+
+
+def _positive_verdict(pos: Any, thresholds: Thresholds) -> Verdict:
     name = "positive"
     failure = shard_failure(pos)
     if failure is not None:
@@ -2362,7 +2529,14 @@ def cross_reference_size(shard: Any) -> int | None:
 
 
 def negative_verdict(neg: Any, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Verdict:
-    """Same PDB, same seed, a patch >= 25 A away — the interface must MOVE."""
+    """Same PDB, same seed, a patch >= 25 A away — the interface must MOVE.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``.
+    """
+    return annotate_delivery(_negative_verdict(neg, thresholds), neg)
+
+
+def _negative_verdict(neg: Any, thresholds: Thresholds) -> Verdict:
     name = "negative"
     failure = shard_failure(neg)
     if failure is not None:
@@ -2518,7 +2692,15 @@ def null_verdict(pos: Any, null: Any,
     hotspot argument changed nothing: it was passed, upstream dropped it, and
     every other signal in the run — exit code, design count, reward CSV — looks
     identical to a run that honoured it.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``. BOTH shards are
+    stamped, and the worst of the two is what the verdict carries: a comparison
+    is only as sound as its weaker half.
     """
+    return annotate_delivery(_null_verdict(pos, null, thresholds), pos, null)
+
+
+def _null_verdict(pos: Any, null: Any, thresholds: Thresholds) -> Verdict:
     name = "null"
     for shard, which in ((pos, "positive"), (null, "null")):
         failure = shard_failure(shard)
@@ -2704,6 +2886,12 @@ def null_verdict(pos: Any, null: Any,
 # Either alone reads as "1 design", and they send the operator to different
 # files.
 _VERDICT_DIAGNOSTIC_FIELDS: tuple[tuple[str, str], ...] = (
+    # FIRST, because it says whether the numbers that follow describe a run
+    # production would have shipped. A DEGRADED verdict also carries the reason
+    # prefix, which reaches the console on a PASS as well; this line is the same
+    # fact in the diagnostics block, where a FAIL or an INCONCLUSIVE is read.
+    ("delivery", "delivery"),
+    ("n_scored_designs", "designs fully scored (production would deliver)"),
     ("n_designs_expected", "designs requested"),
     ("n_designs", "designs produced"),
     # Immediately after the design count, because their whole job is to be read
@@ -2769,6 +2957,35 @@ def verdict_diagnostics(verdict: Any) -> list[str]:
     if not parts:
         return []
     return [f"            {' | '.join(parts)}"]
+
+
+def delivery_note(shard: Any) -> list[str]:
+    """"This shard crashed AND delivered" — as console lines, or empty.
+
+    THE POINT OF THE WHOLE DELIVERY SPLIT, said where an operator will read it.
+    ``shard_failure`` no longer condemns a shard that exited non-zero with
+    designs scored, and the danger in that change is the opposite of the one it
+    fixes: a crash quietly becoming invisible because it no longer moves the
+    verdict. It has to move the CONSOLE instead.
+
+    Empty for a CLEAN shard, so a healthy run's console is unchanged, and empty
+    for a FAILED one, whose reason already says the same thing once.
+
+    A RENDERER, not a measurement — the state is decided by ``shard_delivery``
+    and formatted here so the offline suite can assert on the lines rather than
+    on the presence of a print.
+    """
+    detail = shard_degradation(shard)
+    if detail is None:
+        return []
+    label = (shard.get("label") if isinstance(shard, dict) else None) or "shard"
+    return [
+        f"\n[canary] DELIVERED-DEGRADED [{label}]: {detail}",
+        f"[canary]   reward-table rows {shard.get('n_reward_rows')}, "
+        f"fully scored {scored_design_count(shard)}, "
+        f"design files {design_files(shard)}. Production would have shipped "
+        "this run; the verdict below judges the MEASUREMENTS, not the exit code.",
+    ]
 
 
 def designs_yield_note(shard: Any,
@@ -2863,7 +3080,16 @@ def phase1_verdict(shard: Any) -> Verdict:
 
     Whether the per-design outputs are complexes is what phase 1 is there to
     DISCOVER, so finding none is a reportable observation, never a failure.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``. This is the phase
+    where it matters most: phase 1 costs $4, its whole job is to say whether the
+    ~$12 run is worth starting, and a shard that crashed late while delivering 8
+    scored designs was reported here as a flat FAIL.
     """
+    return annotate_delivery(_phase1_verdict(shard), shard)
+
+
+def _phase1_verdict(shard: Any) -> Verdict:
     name = "phase1"
     failure = shard_failure(shard)
     if failure is not None:

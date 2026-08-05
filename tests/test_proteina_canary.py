@@ -1911,6 +1911,19 @@ _MAIN_MAY_CALL_FROM_SCORING = frozenset({
     # the $4 gate in front of the $12 run, and "upstream kept 1 of the 8 we
     # ordered" is the fact that decides whether to start it.
     "designs_yield_note",
+    # WIDENED BY ONE MORE NAME, on the identical argument, and the criterion is
+    # the allowlist's own rather than a fresh one: it is a RENDERER over three
+    # integers and a string the container already reported (``exit_code``,
+    # ``n_scored_designs``, ``n_reward_rows``, ``label``). It opens nothing,
+    # globs nothing, takes no per-design geometry and computes no number that
+    # is not already in the payload, so it cannot manufacture local evidence.
+    # It earns its place because ``shard_failure`` no longer condemns a shard
+    # that exited non-zero and still delivered scored designs, and the danger in
+    # that change is the crash going quiet: if it no longer moves the verdict it
+    # has to move the console. Note this is the RENDERER only — ``shard_
+    # delivery``, which decides the state, stays off the list and is executed
+    # directly by this suite.
+    "delivery_note",
 })
 
 # Scoring primitives ``run_shard`` must never touch directly: going through
@@ -2399,7 +2412,15 @@ _CANARY_CONSTS = frozenset({
 # is what ``_poll_vram`` derives its provenance flag from, and a caller lifting
 # the poller always means the real derivation. Stubbing it would put back
 # exactly the hardcoded answer this pair exists to prevent.
-_CANARY_ALWAYS_LIFT = frozenset({"_emit", "_prealloc_disabled"})
+#
+# ``_scored_design_counts`` joins them from the same side. It is what turns
+# ``run_shard``'s directory into the two numbers the DELIVERY state is decided
+# from, and it is deliberately built on production's own ``parse_designs``;
+# stubbing it would put back a canary-local answer to "would production have
+# delivered this", which is the divergence the whole delivery split exists to
+# remove.
+_CANARY_ALWAYS_LIFT = frozenset({
+    "_emit", "_prealloc_disabled", "_scored_design_counts"})
 
 
 def load_canary_functions(names, **injected):
@@ -2520,6 +2541,12 @@ def _fake_rp(home):
             "pdb_ca_residues", "parse_target_input", "select_residues",
             "missing_hotspots", "format_contig", "derive_segments",
             "build_target_add_cmd", "hotspot_keys", "_HUB_SOURCE",
+            # REAL, and it has to be. It is the whole point of the DELIVERY
+            # split that the canary answers "would production have delivered
+            # this" with PRODUCTION'S OWN parser over the real reward CSV in the
+            # real inference tree. A stub here would put back a canary-local
+            # answer to that question, which is the divergence being removed.
+            "parse_designs",
         )
     })
     fake.PROTEINA_HOME = str(home)
@@ -6465,6 +6492,13 @@ def _canary_func(path, name, also=(), **injected):
     wanted = {name, "_prealloc_disabled", *also}
     body = [n for n in tree.body
             if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    for node in body:
+        # ``@app.function(...)`` / ``@app.local_entrypoint()`` are Modal
+        # plumbing, not behaviour, and ``app`` does not exist in this namespace
+        # by design — same rule as ``load_canary_functions``. Without this only
+        # the undecorated helpers could be lifted, which is exactly the set that
+        # excludes both entrypoints.
+        node.decorator_list = []
     found = {n.name for n in body}
     assert name in found, f"{name} not found in {path.name}"
     ns: dict = {"subprocess": subprocess, "threading": threading}
@@ -6684,3 +6718,327 @@ class TestTheJoinOutlastsTheFinalSample:
             f"{path.name} cannot distinguish 'the poller was cut off' from "
             f"'the poller measured nothing'"
         )
+
+
+# ===========================================================================
+# DELIVERY: the canary must not condemn a run production would have shipped
+# ===========================================================================
+#
+# THE MISJUDGEMENT, and it was a real one. A shard produced 8 designs, 8 files,
+# 8 reward rows and 8 complexes, then crashed in `evaluate`. The canary printed
+# FAILED. Production's rule, in run_pipeline immediately after `complexa design`
+# returns, is:
+#
+#     n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+#     if rc != 0:
+#         if n_scored == 0:
+#             _fail("search", "complexa", ...)
+#         logger.warning("... but %d/%d designs are fully scored - delivering")
+#
+# and the reward CSV it reads is written by the GENERATE stage, not by evaluate.
+# So that run would have SHIPPED 8 scored designs to a paying customer. A
+# measurement campaign was nearly cancelled on the canary's reading of it.
+#
+# THE VOCABULARY IS THREE-VALUED AND ORTHOGONAL TO THE OUTCOME. Delivery
+# (clean / degraded / failed) answers "would production have shipped this";
+# the outcome (PASS / FAIL / INCONCLUSIVE) answers "did the binders land on the
+# patch". They are independent, and folding one into the other is what produced
+# the wrong answer. A DEGRADED shard is stamped onto every verdict it touches
+# and printed in full, because the fix is to stop calling it FAILED, not to stop
+# reporting it.
+# ===========================================================================
+
+
+def _delivering_shard(**over):
+    """A shard that CRASHED and DELIVERED: the exact shape that was misjudged."""
+    shard = {
+        "label": "phase1", "exit_code": 1,
+        "n_designs_expected": 8, "n_scored_designs": 8, "n_reward_rows": 8,
+        "designs": [{"name": f"sample_{i}.pdb", "is_complex": True}
+                    for i in range(8)],
+        "n_complexes": 8,
+        "hydra": {"task_name_selected": True, "hotspots_match": True},
+    }
+    shard.update(over)
+    return shard
+
+
+class TestDeliveryIsNotTheExitCode:
+    """``shard_delivery`` executed directly - it is the decision, so it is not
+    on the local entrypoint's renderer allowlist and is covered here."""
+
+    def test_a_clean_shard_is_clean(self):
+        assert cs.shard_delivery({"exit_code": 0}) == (cs.CLEAN, "")
+        assert cs.shard_failure({"exit_code": 0}) is None
+        assert cs.shard_degradation({"exit_code": 0}) is None
+
+    def test_a_crash_that_delivered_is_not_a_failure(self):
+        """THE FIX. Production delivers on this reading; the canary said FAILED."""
+        shard = _delivering_shard()
+        state, detail = cs.shard_delivery(shard)
+        assert state == cs.DEGRADED
+        assert cs.shard_failure(shard) is None, (
+            "a shard production would have shipped must not read as a failure")
+        assert cs.shard_degradation(shard) == detail
+        assert "8 design(s) came back fully scored" in detail
+        assert "exited 1" in detail
+
+    def test_a_crash_with_nothing_scored_is_still_a_failure(self):
+        """The other side. Production _fail()s here, so the canary must too."""
+        shard = _delivering_shard(n_scored_designs=0)
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "no scored designs" in cs.shard_failure(shard)
+        assert cs.shard_degradation(shard) is None
+
+    def test_a_crash_that_did_not_report_a_count_is_a_failure(self):
+        """CONSERVATIVE ON PURPOSE. "we cannot tell" is not "it delivered":
+        guessing the other way blesses a broken run, and it keeps every
+        hand-built payload in this suite on its original verdict unless it opts
+        in by reporting the count."""
+        shard = _delivering_shard()
+        del shard["n_scored_designs"]
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "did not report" in cs.shard_failure(shard)
+
+    @pytest.mark.parametrize("value", [None, "eight", -1, True, [8]])
+    def test_an_unusable_count_is_not_a_delivery(self, value):
+        shard = _delivering_shard(n_scored_designs=value)
+        assert cs.scored_design_count(shard) is None
+        assert cs.shard_delivery(shard)[0] == cs.FAILED, value
+
+    def test_the_old_hard_failures_are_untouched(self):
+        """Nothing that used to be a FAIL for a reason other than the exit code
+        may have become one of the new soft states."""
+        for shard, fragment in (
+            (None, "no result was returned"),
+            ({"error": "boom", "exit_code": 0, "n_scored_designs": 8}, "boom"),
+            ({"n_scored_designs": 8}, "no exit code"),
+            ({"exit_code": "x", "n_scored_designs": 8}, "non-numeric"),
+        ):
+            assert cs.shard_delivery(shard)[0] == cs.FAILED, shard
+            assert fragment in cs.shard_failure(shard)
+
+    def test_it_agrees_with_production_on_every_combination(self):
+        """THE ALIGNMENT ASSERTION, stated as the rule rather than as examples.
+
+        Production fails a shard exactly when a non-zero exit left nothing
+        scored. Anything else it delivers. The canary must draw the same line.
+        """
+        for rc in (0, 1, 2, 124):
+            for n_scored in (0, 1, 8):
+                shard = _delivering_shard(exit_code=rc, n_scored_designs=n_scored)
+                production_fails = rc != 0 and n_scored == 0
+                canary_fails = cs.shard_failure(shard) is not None
+                assert canary_fails == production_fails, (
+                    f"rc={rc} scored={n_scored}: production "
+                    f"{'fails' if production_fails else 'delivers'} but the "
+                    f"canary {'fails' if canary_fails else 'delivers'}")
+
+    def test_production_still_writes_the_rule_this_is_aligned_to(self):
+        """If run_pipeline's delivery rule ever moves, the test above is
+        asserting agreement with something that no longer exists. Read the
+        source rather than trusting the comment."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        assert 'sum(1 for d in designs if d.get("total_reward") is not None)' in source
+        assert "if n_scored == 0:" in source
+        assert '_fail("search", "complexa"' in source
+
+
+class TestADegradedRunIsStillLoud:
+    """The danger in the fix is the opposite of the defect: a crash going quiet
+    because it no longer moves the verdict. It has to move the console."""
+
+    def test_the_verdict_says_so_in_the_one_line_that_always_prints(self):
+        verdict = cs.phase1_verdict(_delivering_shard())
+        assert verdict.outcome == cs.PASS, verdict.reason
+        assert verdict.reason.startswith("[DELIVERED-DEGRADED]")
+        assert "exited 1" in verdict.reason
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["n_scored_designs"] == 8
+
+    def test_a_clean_run_is_not_labelled(self):
+        """A healthy run's console must be byte-for-byte what it was."""
+        verdict = cs.phase1_verdict(_delivering_shard(exit_code=0))
+        assert verdict.outcome == cs.PASS
+        assert "DEGRADED" not in verdict.reason
+        assert verdict.metrics["delivery"] == cs.CLEAN
+        assert cs.delivery_note(_delivering_shard(exit_code=0)) == []
+
+    def test_the_console_note_names_the_numbers_behind_it(self):
+        lines = cs.delivery_note(_delivering_shard())
+        assert lines, "a crashed-but-delivering shard printed nothing"
+        text = " ".join(lines)
+        assert "DELIVERED-DEGRADED" in text and "phase1" in text
+        assert "reward-table rows 8" in text and "fully scored 8" in text
+        assert "Production would have shipped this run" in text
+
+    def test_a_failed_shard_is_not_given_the_degraded_note(self):
+        """The two states are mutually exclusive; a FAILED shard's reason
+        already says it once."""
+        assert cs.delivery_note(_delivering_shard(n_scored_designs=0)) == []
+
+    def test_every_phase_two_verdict_carries_the_stamp(self):
+        pos = _delivering_shard(label="positive")
+        neg = _delivering_shard(label="negative")
+        null = _delivering_shard(label="null")
+        for verdict in (cs.positive_verdict(pos), cs.negative_verdict(neg),
+                        cs.null_verdict(pos, null)):
+            assert verdict.metrics["delivery"] == cs.DEGRADED, verdict.name
+            assert verdict.reason.startswith("[DELIVERED-DEGRADED]"), verdict.name
+            assert verdict.metrics["delivery_detail"], verdict.name
+
+    def test_the_null_verdict_takes_the_worse_of_its_two_shards(self):
+        """A comparison is only as sound as its weaker half."""
+        clean = _delivering_shard(label="positive", exit_code=0)
+        degraded = _delivering_shard(label="null")
+        verdict = cs.null_verdict(clean, degraded)
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["delivery_detail"][0].startswith("null:")
+
+    def test_the_diagnostics_block_prints_the_delivery_state(self):
+        """For a FAIL or an INCONCLUSIVE, where the reason prefix is not the
+        only thing an operator reads."""
+        shard = _delivering_shard(hydra={"task_name_selected": False,
+                                         "task_name_values": ["other"]})
+        verdict = cs.phase1_verdict(shard)
+        assert verdict.outcome == cs.FAIL
+        line = " ".join(cs.verdict_diagnostics(verdict))
+        assert "delivery degraded" in line
+        assert "designs fully scored (production would deliver) 8" in line
+
+
+class TestTheShardReportsWhatProductionWouldDeliver:
+    """The count itself, through the REAL ``run_shard`` body over real files."""
+
+    @staticmethod
+    def _rewards(rows):
+        """A reward table in the shape ``run_pipeline.parse_designs`` reads:
+        one row per design with a ``total_reward``. ``None`` for a row's reward
+        writes an empty cell, which is what an unscored sample looks like."""
+        head = "sample,total_reward,af2folding_plddt"
+        body = [f"design_{i},{'' if r is None else r},0.9"
+                for i, r in enumerate(rows)]
+        return "\n".join([head, *body]) + "\n"
+
+    def _shard(self, tmp_path, rows, rc=0):
+        files = [(f"sample_{i}.pdb", CORRECT_DESIGN_PDB) for i in range(len(rows))]
+        files.append(("rewards_canary_0.csv", self._rewards(rows)))
+        namespace = _shard_namespace(tmp_path, design_files=files, rc=rc)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out.get("error") is None, out.get("error")
+        return out
+
+    def test_the_shard_counts_scored_designs_with_productions_parser(self, tmp_path):
+        out = self._shard(tmp_path, [0.5] * 8, rc=1)
+        assert out["n_reward_rows"] == 8
+        assert out["n_scored_designs"] == 8
+        assert cs.shard_delivery(out)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_as_delivered(self, tmp_path):
+        """``total_reward is not None`` is production's test, not ``nrows``."""
+        out = self._shard(tmp_path, [0.5, None, None, 0.7], rc=1)
+        assert out["n_reward_rows"] == 4
+        assert out["n_scored_designs"] == 2
+
+    def test_a_crash_with_a_wholly_unscored_table_still_fails(self, tmp_path):
+        out = self._shard(tmp_path, [None, None], rc=1)
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_no_reward_table_at_all_is_zero_not_unknown(self, tmp_path):
+        """``parse_designs`` returns [] when it finds no CSV, and zero scored
+        designs on a non-zero exit is precisely what production fails on."""
+        namespace = _shard_namespace(
+            tmp_path,
+            design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)], rc=1)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_a_broken_counter_never_kills_the_shard_it_describes(self, tmp_path):
+        """A diagnostic that can fail the run it is describing would be the same
+        defect wearing a different hat. It reports None, which reads as FAILED
+        - the conservative direction - and the shard still returns."""
+        namespace = load_canary_functions({"_scored_design_counts"})
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert namespace["_scored_design_counts"](_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}
+
+
+class TestTheDesignCanaryHasTheSameDivergence:
+    """``_design_canary.py`` carried the identical rule (``exit_code != 0 ->
+    SHARD FAILED``) in its local entrypoint. Same fix, same three states."""
+
+    @staticmethod
+    def _main(res, capsys):
+        main = _canary_func(
+            _DESIGN_CANARY_PATH, "main",
+            run_design_canary=_Remote(result=res),
+            json=json, sys=sys)
+        code = 0
+        try:
+            main()
+        except SystemExit as exc:
+            code = exc.code
+        return code, capsys.readouterr().out
+
+    @staticmethod
+    def _res(**over):
+        base = {"preset": "protein_binder", "task_name": "02_PDL1",
+                "exit_code": 0, "n_scored_designs": 8, "n_reward_rows": 8,
+                "csv_files": {}}
+        base.update(over)
+        return base
+
+    def test_a_clean_run_still_exits_zero(self, capsys):
+        code, out = self._main(self._res(), capsys)
+        assert code == 0
+        assert "FAILED" not in out and "DEGRADED" not in out
+
+    def test_a_crash_that_delivered_is_no_longer_called_failed(self, capsys):
+        code, out = self._main(self._res(exit_code=1), capsys)
+        assert code == 0, "production would have shipped these 8 designs"
+        assert "SHARD FAILED" not in out
+        assert "DELIVERED-DEGRADED" in out
+        assert "exited 1" in out and "8 of 8 reward rows" in out
+        assert "still a real defect" in out, (
+            "the crash must stay visible; the fix is to stop calling it FAILED")
+
+    def test_a_crash_with_nothing_scored_still_fails(self, capsys):
+        code, out = self._main(self._res(exit_code=1, n_scored_designs=0), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no scored designs" in out
+
+    def test_a_crash_with_no_count_still_fails(self, capsys):
+        res = self._res(exit_code=1)
+        del res["n_scored_designs"]
+        code, out = self._main(res, capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable scored count" in out
+
+    @pytest.mark.parametrize("rc", [None, "x"])
+    def test_an_unusable_exit_code_fails_rather_than_reading_as_delivered(
+            self, rc, capsys):
+        """``if rc == 0: return`` alone let a shard with no exit code fall
+        through to the DELIVERED-DEGRADED line and print "exited None"."""
+        code, out = self._main(self._res(exit_code=rc), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable exit code" in out
+        assert "DELIVERED-DEGRADED" not in out
+
+    def test_the_shard_reports_the_count_the_entrypoint_judges_on(self):
+        """The two halves live in different processes; if the container stops
+        emitting the key the entrypoint fails every run for want of it."""
+        source = _DESIGN_CANARY_PATH.read_text(encoding="utf-8")
+        assert '"n_scored_designs": n_scored' in source
+        assert "rp.parse_designs(inference)" in source, (
+            "the count must come from production's parser, not a copy of it")

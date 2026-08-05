@@ -717,6 +717,32 @@ def _collect_tree(work_dir: Path) -> list[str]:
         return [f"<the file listing could not be built: {type(exc).__name__}: {exc}>"]
 
 
+def _scored_design_counts(rp, inference) -> dict:
+    """``{n_scored_designs, n_reward_rows}`` from PRODUCTION's own parser.
+
+    ``run_pipeline.parse_designs`` is called rather than re-derived, because the
+    number this produces is compared against production's delivery rule and a
+    second implementation of that rule is a second thing to drift.
+
+    Never raises. A diagnostic that can kill the shard it is describing would
+    turn a delivering run into a lost one, which is the very failure mode this
+    key exists to stop reporting wrongly. On any error both counts are None,
+    which ``cs.shard_delivery`` reads as "did not say" and therefore FAILED —
+    the conservative direction: an unproven delivery is not a delivery.
+    """
+    try:
+        designs = rp.parse_designs(inference)
+        return {
+            "n_scored_designs": sum(
+                1 for d in designs if d.get("total_reward") is not None),
+            "n_reward_rows": len(designs),
+        }
+    except Exception as exc:  # noqa: BLE001 — never fail a shard over a count
+        _emit(f"[canary] could not count scored designs: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        return {"n_scored_designs": None, "n_reward_rows": None}
+
+
 @app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S,
               volumes={"/opt/proteina/ckpts": weights, "/opt/proteina/rewards": rewards})
 def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
@@ -880,6 +906,21 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         # built with, immediately above, so it cannot describe a different run.
         "n_designs_expected": _NSAMPLES * _REPLICAS,
         "exit_code": rc, "runtime_s": runtime_s,
+        # WOULD PRODUCTION HAVE DELIVERED THIS RUN? The exit code alone cannot
+        # say, and this harness used to answer with the exit code alone: a shard
+        # that produced 8 designs, 8 files, 8 reward rows and 8 complexes and
+        # then crashed in `evaluate` was reported FAILED, while run_pipeline
+        # would have shipped all 8 to a paying customer. That reading nearly
+        # cancelled a measurement campaign.
+        #
+        # Computed by PRODUCTION'S OWN parser on the same directory, not by a
+        # re-implementation here, so the canary cannot drift from the rule it
+        # exists to mirror: run_pipeline counts designs whose `total_reward` is
+        # not None and fails only when a non-zero exit left that count at zero.
+        # The reward CSV is written by the GENERATE stage, which is why a late
+        # evaluate/analyze crash can leave a fully scored table behind.
+        # ``cs.shard_delivery`` turns the pair into the verdict's DELIVERY state.
+        **_scored_design_counts(rp, inference),
         # Four keys, not one, because the single key this replaced was read as
         # "demand" when it was mostly a JAX reservation. peak_vram_mb is still
         # device-wide; baseline_vram_mb is what was resident before the design;
@@ -1305,6 +1346,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             # `harden_stream` exists for, on text this repo does not author.
             for line in cs.format_log_diagnostics(res):
                 _emit(line)
+            # BEFORE the verdict, for the same reason the log tails are: a shard
+            # that exited non-zero and still delivered scored designs no longer
+            # FAILS, and the operator must not have to infer that from a PASS.
+            for line in cs.delivery_note(res):
+                _emit(line)
             verdict = cs.phase1_verdict(res)
             _emit("\n--- verdict ---")
             _print_verdict(verdict)
@@ -1466,6 +1512,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
                   f"cross_recall_median={r.get('cross_hotspot_recall_median')}")
             if r.get("error"):
                 _emit(f"    ERROR: {r['error']}")
+            # A non-zero exit no longer condemns a shard that delivered scored
+            # designs, so it has to be loud somewhere else. Here, per shard,
+            # before the verdicts.
+            for line in cs.delivery_note(r):
+                _emit(line)
             if r.get("n_complexes") and not r.get("n_target_verified"):
                 _emit("    UNSCORABLE: the chains treated as target do not "
                       "carry the input target's residues — the design output "

@@ -314,9 +314,31 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
             except Exception:
                 pass
 
+    # WOULD PRODUCTION HAVE DELIVERED THIS RUN? Same divergence this file's
+    # sibling ``_hotspot_canary`` carried: the local entrypoint below judged the
+    # shard on ``exit_code`` alone, which is stricter than production and
+    # condemns runs production ships. ``run_pipeline`` counts designs whose
+    # ``total_reward`` is not None and fails ONLY when a non-zero exit left that
+    # count at zero — and the reward CSV is written by the GENERATE stage, so a
+    # late evaluate/analyze crash routinely leaves a fully scored table behind.
+    #
+    # Production's own parser, not a re-implementation, so the two cannot drift.
+    # Never fatal: a diagnostic that killed the shard it describes would be the
+    # same defect wearing a different hat. None means "we could not tell", which
+    # the entrypoint reads as a failure — an unproven delivery is not a delivery.
+    try:
+        _parsed = rp.parse_designs(inference)
+        n_scored = sum(1 for d in _parsed if d.get("total_reward") is not None)
+        n_reward_rows = len(_parsed)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[canary] could not count scored designs: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        n_scored, n_reward_rows = None, None
+
     result = {
         "preset": preset, "task_name": task_name,
         "exit_code": rc, "runtime_s": runtime_s,
+        "n_scored_designs": n_scored, "n_reward_rows": n_reward_rows,
         "peak_vram_mb": vram.get("peak_vram_mb"),
         # Provenance for the number above. Device-wide nvidia-smi cannot tell a
         # JAX reservation from demand, so a peak taken with preallocation ON is
@@ -346,6 +368,40 @@ def main(preset: str = "protein_binder",
         print(f"  {path}")
         print(f"    columns: {info.get('columns')}")
         print(f"    nrows:   {info.get('nrows')}")
-    if res.get("exit_code") != 0:
-        print("[canary] SHARD FAILED (nonzero exit)")
+    # THREE STATES, NOT TWO. ``exit_code != 0 -> FAILED`` was stricter than
+    # production and would condemn a run production ships: 8 designs, 8 reward
+    # rows, all scored, then a crash in evaluate. The same reading, in the
+    # sibling harness, nearly cancelled a measurement campaign.
+    #
+    # CLEAN (exit 0) / DEGRADED (non-zero, but designs came back scored, so
+    # production delivers) / FAILED (non-zero with nothing scored, or no count
+    # to judge by). DEGRADED exits 0 because production would have shipped it —
+    # and prints in full, because the non-zero exit is still a real defect that
+    # needs its own diagnosis, just not a verdict on the run's output.
+    #
+    # This is the same rule as ``_canary_scoring.shard_delivery``, written out
+    # rather than imported for the reason given at the top of this file: this
+    # harness deliberately depends on no other harness's private module.
+    rc = res.get("exit_code")
+    scored = res.get("n_scored_designs")
+    try:
+        rc_int = int(rc)
+    except (TypeError, ValueError):
+        # A shard that reported no usable exit code did not report a success
+        # either. `if rc == 0: return` alone would have fallen through to the
+        # DELIVERED-DEGRADED line and printed "exited None".
+        print(f"[canary] SHARD FAILED: no usable exit code ({rc!r}) — "
+              "the shard cannot be interpreted at all")
         sys.exit(1)
+    if rc_int == 0:
+        return
+    if not isinstance(scored, int) or isinstance(scored, bool) or scored <= 0:
+        print(f"[canary] SHARD FAILED: exited {rc_int} with "
+              f"{'no scored designs' if scored == 0 else f'no usable scored count ({scored!r})'}"
+              " — production fails a run on exactly this reading")
+        sys.exit(1)
+    print(f"[canary] SHARD DELIVERED-DEGRADED: exited {rc_int}, but {scored} of "
+          f"{res.get('n_reward_rows')} reward rows are fully scored. "
+          "run_pipeline only fails when a non-zero exit left nothing scored, "
+          "so production would have SHIPPED these designs. The non-zero exit "
+          "is still a real defect — read the stage-log tails above.")
