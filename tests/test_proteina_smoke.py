@@ -1383,6 +1383,31 @@ class TestStagedTargetIsCroppedToTheContig:
         assert len(staged) == 3
         assert self._upstream_counts(staged, "A12-13") == (3, 3)
 
+    def test_an_insertion_coded_residue_with_no_plain_sibling_survives(self, tmp_path):
+        """Why the keep key carries the insertion code at all.
+
+        The RANGE filter cannot need it: every icode variant of a residue number
+        is in range exactly when the bare number is. It is needed because the
+        keep key must be the PARSER's residue key. A13A here has no A13 beside
+        it, so a crop keyed on ``(chain, resseq)`` alone finds nothing to match
+        it against and drops a residue the contig selected — one CA short of
+        upstream's count, on a paid GPU. (A survived mutation put this test
+        here: keying on ``(chain, resseq, "")`` passed the twin test above.)
+        """
+        text = "\n".join(
+            [_atom(1, "CA", "ALA", "A", 12),
+             _atom(2, "CA", "LEU", "A", 13, icode="A"),
+             _atom(3, "CA", "GLY", "A", 14)]) + "\nEND\n"
+        _p, residues = self._parsed(tmp_path, text)
+        assert ("A", 13, "") not in residues and ("A", 13, "A") in residues
+        segments = rp.parse_target_input("A12-13")
+        keep = rp.selected_residue_keys(residues, segments)
+        assert keep == {("A", 12, ""), ("A", 13, "A")}
+        out = rp.crop_pdb_to_contig(text, keep)
+        staged, _ = rp.pdb_ca_residues(_write(tmp_path / "j.pdb", out))
+        assert self._upstream_counts(staged, "A12-13") == (2, 2)
+        assert "LEU" in out, "the insertion-coded residue must survive the crop"
+
     def test_cropping_is_idempotent(self, tmp_path):
         _p, residues = self._parsed(tmp_path)
         segments = rp.parse_target_input(self._CONTIG)
