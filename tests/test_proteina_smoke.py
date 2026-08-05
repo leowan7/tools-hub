@@ -146,6 +146,11 @@ def _make_3s7g_like():
     lines.append(_atom(serial, "C1", "GDP", "A", 300, record="HETATM"))
     lines.insert(0, "HEADER    IMMUNE SYSTEM")
     lines.insert(1, "SEQRES   1 A  208  ALA ALA ALA ALA ALA ALA ALA ALA")
+    # An ANISOU on a residue the crop KEEPS, so its removal is a decision about
+    # the record type rather than a side effect of the range filter.
+    lines.insert(
+        3, "ANISOU    2  CA  ALA A 236     1000   1000   1000      0      0"
+           "      0       C")
     lines.append("CONECT    1    2")
     lines.append("END")
     return "\n".join(lines) + "\n"
@@ -732,6 +737,50 @@ class TestStructureVerification:
         res, _ = rp.pdb_ca_residues(self._pdb(tmp_path))
         sel = rp.select_residues(res, rp.parse_target_input("A10-13,B5-6"))
         assert rp.missing_hotspots(sel, ["A12", "B5"]) == []
+
+    def test_a_resnum_at_or_above_10000_is_MISPARSED_not_counted_unparsable(
+            self, tmp_path):
+        """A DEFECT, CHARACTERISED - not endorsed, and not fixed here.
+
+        ``pdb_ca_residues``'s docstring used to claim that "columns 22:26
+        overflow at residue numbers >= 10000" and that the resulting residue is
+        counted in ``n_unparsable`` and skipped. Both halves are false, and the
+        docstring now says so; this test is what makes that correction checkable
+        rather than a second unverified claim in place of the first.
+
+        A residue numbered 10000 occupies columns 23-27, so ``line[22:26]``
+        reads "1000": an int, no ValueError, nothing counted, nothing skipped -
+        a SILENT MISPARSE onto a different residue number that no caller can
+        currently detect.
+
+        Left unfixed deliberately: a correct fix has to decide what a 5-column
+        resSeq means, and PDB has no legal answer (hybrid-36 and the mmCIF
+        convention disagree), which is a change to what counts as a residue
+        rather than a docstring correction. If someone later fixes it, this test
+        SHOULD fail - read the docstring before changing the expectation.
+        """
+        text = "\n".join(
+            _atom(i + 1, "CA", "ALA", "A", r)
+            for i, r in enumerate(range(9995, 10010))) + "\nEND\n"
+        path = tmp_path / "big.pdb"
+        path.write_text(text)
+        residues, n_unparsable = rp.pdb_ca_residues(path)
+        assert n_unparsable == 0, "the overflow does NOT raise, so nothing counts it"
+        assert [r[1] for r in residues] == [9995, 9996, 9997, 9998, 9999] + [1000] * 10
+        # Worse than one collision: the 5th digit lands in the INSERTION-CODE
+        # column, so 10000..10009 come back as ten residues all numbered 1000,
+        # told apart only by an "insertion code" of "0".."9".
+        assert [r[2] for r in residues[5:]] == list("0123456789")
+        # ...and the reason it does not break the crop: the keep key and the
+        # count are built from the same wrong number, so they agree with each
+        # other. That is containment, not correctness - upstream's assertion
+        # holds while every one of these residues has the wrong id.
+        segments = rp.parse_target_input("A1000-1000")
+        keep = rp.selected_residue_keys(residues, segments)
+        cropped = tmp_path / "c.pdb"
+        cropped.write_text(rp.crop_pdb_to_contig(text, keep))
+        staged, _ = rp.pdb_ca_residues(cropped)
+        assert len(staged) == len(rp.select_residues(residues, segments)) == 10
 
 
 class TestTargetAddCmd:
@@ -1330,8 +1379,17 @@ class TestStagedTargetIsCroppedToTheContig:
             "SEQRES declares the FULL chain sequence; any code deriving the "
             "target length from it would read the uncropped number back")
         assert "CONECT" not in text and "HEADER" not in text
+        # ANISOU on a KEPT residue, so this is a decision about the record type,
+        # not a side effect of the range filter. It goes because dropping it
+        # alongside a rejected ligand would mean matching it back to its parent
+        # atom, and a dangling ANISOU is worse than no ANISOU.
+        assert "ANISOU" in (tmp_path / "in.pdb").read_text(), "fixture check"
+        assert "ANISOU" not in text
         assert text.rstrip().endswith("END")
         assert text.count("\nTER   ") == 2, "one TER per surviving chain"
+        # ...and only the two record types the crop declares it carries.
+        assert {line[:6].strip() for line in text.splitlines()} == {
+            "ATOM", "TER", "END"}
 
     def test_a_modified_residue_inside_the_range_survives(self, tmp_path):
         """The other side of the HETATM rule. MSE is protein to biotite AND to

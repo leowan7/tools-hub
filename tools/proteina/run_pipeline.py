@@ -361,10 +361,31 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
     * altloc duplicates collapsed on ``(chain, resseq, icode)``.
 
     ``n_unparsable`` counts CA lines whose residue-sequence columns would not
-    convert to an int. Columns 22:26 overflow at residue numbers >= 10000, and
-    a silently-skipped residue there could make a legitimate hotspot look
-    missing — so the count is surfaced in the failure message rather than
-    swallowed.
+    convert to an int, so a residue this parser could not place is surfaced in
+    the failure message rather than swallowed.
+
+    THIS DOCSTRING USED TO CLAIM MORE THAN THE CODE DOES, and the correction is
+    the point rather than a tidy-up. It said "columns 22:26 overflow at residue
+    numbers >= 10000, and a silently-skipped residue there could make a
+    legitimate hotspot look missing". Measured, that is false in both halves. A
+    residue numbered 10000 occupies columns 23-27 in the file, so ``line[22:26]``
+    reads "1000" — an int, no ValueError, nothing counted and nothing skipped.
+    Residues 9995-10009 parse as ``[9995..9999, 1000 x 10]``, with
+    ``n_unparsable == 0``. So the >= 10000 case is a SILENT MISPARSE onto a
+    wrong residue number, which ``n_unparsable`` cannot report and which no
+    caller of this function can currently detect. The fifth digit lands in the
+    INSERTION-CODE column, so those ten residues are additionally told apart
+    only by an "insertion code" of "0".."9" — which is why they do not collapse
+    onto one key, and why they would all answer to the hotspot token ``A1000``.
+
+    Left as-is deliberately: the misparse predates this parser's current callers
+    and fixing it means deciding what a 5-column resSeq means (PDB has no legal
+    answer; the hybrid-36 and mmCIF conventions disagree), which is a change to
+    what counts as a residue rather than a docstring correction. The hazard is
+    real but bounded — the crop keys on the same misparsed number the count
+    keys on, so the two stay consistent with each other, and a hotspot on such a
+    residue would be refused pre-GPU rather than silently dropped. Anything
+    beyond that is unverified.
     """
     residues: list[tuple[str, int, str]] = []
     seen: set[tuple[str, int, str]] = set()
@@ -580,8 +601,14 @@ def crop_pdb_to_contig(
         try:
             resseq = int(raw[22:26])
         except ValueError:
-            # Same columns ``pdb_ca_residues`` counts as unparsable. A line we
-            # cannot place cannot be proven to be inside the contig, so it goes.
+            # The same columns, read the same way, as ``pdb_ca_residues``: a
+            # line this cannot place is a line that cannot be proven to be
+            # inside the contig, so it goes. Note what that does NOT cover — a
+            # resSeq >= 10000 overruns into column 27 and reads back as a
+            # DIFFERENT number rather than raising here. That misparse is
+            # unfixed (see pdb_ca_residues), and the reason it does not break
+            # the crop is that both sides make it identically: the keep key and
+            # the count are built from the same wrong number, so they agree.
             continue
         if (chain, resseq, raw[26:27].strip()) not in keep:
             continue

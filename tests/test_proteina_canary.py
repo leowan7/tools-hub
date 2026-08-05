@@ -3085,6 +3085,69 @@ class TestHarnessBehaviour:
                               hotspots="A1 A2", negative="A50 A51 A52 A53")
         assert excinfo.value.code == cs.EXIT_CODES[cs.FAIL]
 
+    # -- the delivery note is WIRED IN, not merely written ------------------
+    #
+    # ``cs.delivery_note`` had tests; ``main`` calling it had none, so deleting
+    # both call sites passed 561/561. That is not a silent hole - the verdict
+    # reason carries a ``[DELIVERED-DEGRADED]`` prefix through ``_print_verdict``
+    # independently - but a crash that no longer moves the verdict must move the
+    # console, and "must" is worth an assertion rather than an argument.
+
+    @staticmethod
+    def _degraded(label, **over):
+        """A shard that CRASHED and DELIVERED, in ``_shard``'s shape."""
+        out = _shard(label, exit_code=1, **over)
+        out["n_scored_designs"] = out["n_designs_expected"]
+        out["n_reward_rows"] = out["n_designs_expected"]
+        return out
+
+    def test_phase_one_prints_the_delivery_note_for_a_crashed_delivering_shard(
+            self, tmp_path, capsys):
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = self._degraded("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED" in out
+        assert "Production would have shipped this run" in out, (
+            "main() no longer prints cs.delivery_note for phase 1")
+        assert "fully scored 8" in out
+
+    def test_phase_one_prints_nothing_extra_for_a_clean_shard(self, tmp_path, capsys):
+        """The other half: a healthy run's console must be unchanged."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = _shard("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        assert "DEGRADED" not in capsys.readouterr().out
+
+    def test_phase_two_prints_the_delivery_note_per_shard(self, tmp_path, capsys):
+        """PER SHARD, and the loop is what makes it per shard: a phase-2 run
+        where only one control crashed-but-delivered is exactly the case the
+        label has to attribute."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        results = [
+            _shard("positive", n=8, recall=1.0, centroid=0.0, cross=1.0),
+            self._degraded("negative", n=8, recall=1.0, centroid=1.0, cross=0.0),
+            _shard("null", n=8, recall=None, centroid=1.0, cross=0.0),
+        ]
+        namespace = self._main_namespace(
+            shard=_Remote(handles=[_Handle(result=r) for r in results]))
+        namespace["main"](phase=2, target_pdb=str(target), hotspots="A1 A2",
+                          negative="A50 A51 A52 A53")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED [negative]" in out, (
+            "main() no longer prints cs.delivery_note for phase 2")
+        assert "DELIVERED-DEGRADED [positive]" not in out
+        assert "DELIVERED-DEGRADED [null]" not in out
+
 
 # ---------------------------------------------------------------------------
 # 14. THE IDENTITY GATE FAILING **OPEN**
@@ -7035,10 +7098,98 @@ class TestTheDesignCanaryHasTheSameDivergence:
         assert "SHARD FAILED" in out and "no usable exit code" in out
         assert "DELIVERED-DEGRADED" not in out
 
-    def test_the_shard_reports_the_count_the_entrypoint_judges_on(self):
-        """The two halves live in different processes; if the container stops
-        emitting the key the entrypoint fails every run for want of it."""
-        source = _DESIGN_CANARY_PATH.read_text(encoding="utf-8")
-        assert '"n_scored_designs": n_scored' in source
-        assert "rp.parse_designs(inference)" in source, (
-            "the count must come from production's parser, not a copy of it")
+    @staticmethod
+    def _rooted_path(root):
+        """``Path`` with the container's hardcoded ``/opt/proteina`` rebased.
+
+        ``run_design_canary`` writes that path as a literal, not a constant, so
+        there is nothing to inject except ``Path`` itself. Every other value
+        passes straight through to the real class.
+        """
+        def _P(value=""):
+            text = str(value)
+            return Path(root) if text == "/opt/proteina" else Path(text)
+        return _P
+
+    def _run_shard(self, tmp_path, rewards, rc=0):
+        """EXECUTE ``run_design_canary`` and return the dict it really builds.
+
+        THE POINT OF THIS HARNESS, and why the source-substring test it replaced
+        was not good enough: setting ``n_scored = None`` immediately after the
+        parse kept every substring that test asserted, passed, and made the
+        canary report no count on every run. Only running the function and
+        reading the payload can catch that.
+
+        The design command is stubbed, and the stub WRITES the reward CSV -
+        which is faithful, because the CSV is what the design command produces,
+        and because the body wipes ``inference/`` before it runs. ``rp`` is the
+        real ``run_pipeline`` loaded from the repo, so the count comes from
+        production's parser over a real file on disk.
+        """
+        inference = tmp_path / "inference"
+
+        def _run(cmd, **kwargs):
+            inference.mkdir(parents=True, exist_ok=True)
+            (inference / "rewards_canary_0.csv").write_text(rewards)
+            return types.SimpleNamespace(returncode=rc)
+
+        run_design_canary = _canary_func(
+            _DESIGN_CANARY_PATH, "run_design_canary",
+            also=("_scored_design_counts",),
+            _RUN_PIPELINE_REMOTE=str(Path(rp.__file__)),
+            _VRAM_JOIN_TIMEOUT_S=1,
+            Path=self._rooted_path(tmp_path),
+            sys=sys, time=time, glob=glob, json=json, threading=threading,
+            subprocess=types.SimpleNamespace(
+                run=_run, TimeoutExpired=subprocess.TimeoutExpired),
+            _poll_vram=lambda stop, out, child_env=None: out.update(
+                peak_vram_mb=0, vram_poll_interval_s=1,
+                vram_prealloc_disabled=True, vram_poll_complete=True),
+        )
+        return run_design_canary(
+            "protein_binder", "search_binder_local_pipeline", "02_PDL1", 4, 2)
+
+    def test_the_payload_really_carries_the_count_the_entrypoint_judges_on(
+            self, tmp_path):
+        """The two halves live in different processes. If the container stops
+        putting a real number in the payload, the entrypoint fails every run for
+        want of it - and no assertion over the SOURCE can tell."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5] * 8), rc=1)
+        assert result["n_reward_rows"] == 8
+        assert result["n_scored_designs"] == 8
+        assert cs.shard_delivery(result)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_in_the_payload(self, tmp_path):
+        """``total_reward is not None``, not ``nrows`` - production's test,
+        executed here rather than asserted about."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5, None, None, 0.7]), rc=1)
+        assert (result["n_reward_rows"], result["n_scored_designs"]) == (4, 2)
+
+    def test_the_payload_and_the_entrypoint_agree_end_to_end(self, tmp_path, capsys):
+        """The shard's real payload driven straight into the real entrypoint:
+        the two halves are only useful if they meet."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [None, None]), rc=1)
+        code, out = self._main(result, capsys)
+        assert code == 1, "a crash with a wholly unscored table must still fail"
+        assert "no scored designs" in out
+
+    def test_a_broken_counter_never_kills_the_design_shard_either(self, tmp_path):
+        """THE ASYMMETRY THIS CLOSES. The hotspot canary's twin is pinned;
+        this one was not, so turning its ``except`` into a ``raise`` survived
+        the whole suite - a diagnostic able to kill the paid shard it exists to
+        describe."""
+        counts = _canary_func(_DESIGN_CANARY_PATH, "_scored_design_counts")
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert counts(_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}
