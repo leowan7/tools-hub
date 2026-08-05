@@ -80,9 +80,35 @@ RUN wget -qO /tmp/mmseqs.tar.gz https://mmseqs.com/latest/mmseqs-linux-gpu.tar.g
 # Our runtime deps INSIDE the venv: requests (presigned upload/heartbeat) and
 # RDKit (in-container SDF -> chain-A HETATM+CONECT PDB conversion for the ligand
 # variant; RDKit is deliberately absent from the tools-hub web tier).
+#
+# THERE IS NO `uv` INSIDE THE VENV — do not "restore" one here. This step used
+# to read `RUN /opt/proteina/.venv/bin/uv pip install requests rdkit || <pip
+# fallback>`, and the first branch COULD NEVER SUCCEED: verified inside the real
+# image on 2026-08-04, `/opt/proteina/.venv/bin/uv` does not exist (the curl
+# installer at the top of this file puts uv at /root/.local/bin/uv, and
+# build_uv_env.sh creates the venv with it rather than into it). Every build has
+# been falling through to the `||` fallback, i.e. pip was doing all the work
+# while the file claimed uv was. The fallback is now the only branch, so a
+# failure here is a real failure instead of a silent second attempt.
+# ensurepip is what puts pip in the venv at all (a uv-created venv has none);
+# it stays first, and it is what makes the dm-haiku pin below possible. Its
+# `|| true` is the ONE legitimate one in this file: ensurepip exits non-zero
+# when pip is already present, which is not a failure. Do not copy the idiom
+# onto the two lines below — see their own notes.
 RUN /opt/proteina/.venv/bin/python -m ensurepip --upgrade || true
-RUN /opt/proteina/.venv/bin/uv pip install requests rdkit \
-    || /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
+#
+# THE INTERPRETER PREFIX ON THE NEXT LINE IS LOAD-BEARING, NOT VERBOSITY.
+# `RUN python -m pip install --no-cache-dir requests rdkit` would BUILD FINE —
+# the nvcr base image ships its own python and pip — and would install into the
+# base interpreter while leaving the venv without `requests`. run_pipeline.py
+# imports requests at MODULE scope (L97) and modal_app.py runs it as
+# ["python3", ...], which PATH resolves to the venv, so every tier including
+# free validate would then die at import inside a billing container: the exact
+# dm-haiku failure class, on a different package. The build-time import gate at
+# the bottom of this file now imports `requests` for this reason, and
+# tests/test_proteina_smoke.py pins that this line still exists, still names
+# both packages, and still targets /opt/proteina/.venv.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-cache-dir requests rdkit
 
 # Community inverse-folding weights for the EVALUATE designability metric. The
 # ligand variant's evaluate runs LigandMPNN (metrics/inverse_folding_models.py
@@ -97,9 +123,82 @@ RUN /opt/proteina/.venv/bin/uv pip install requests rdkit \
 # ligandmpnn_v_32_010_25.pt URL directly instead.
 RUN cd /opt/proteina && bash env/download_startup.sh --pmpnn --ligmpnn
 
+# PIN dm-haiku — DO NOT REMOVE (added 2026-08-04, after a fresh build of THIS
+# Dockerfile came out broken while the already-deployed image built from it on
+# 2026-07-16 kept working. That is what "not reproducible" looked like.)
+#
+# THIS COMMENT BELONGS TO THE `RUN` DIRECTLY BELOW IT. It used to sit ~24 lines
+# further up, above an unrelated download_startup.sh step, which made it read
+# like a stale block someone had forgotten to delete — and deleting it would
+# have taken the entire justification for the pin with it. Keep them adjacent.
+#
+# THE DRIFT. build_uv_env.sh step 7 runs `uv pip install colabdesign==1.1.1
+# alphafold-colabfold==2.3.7`, which pull dm-haiku transitively with NO version
+# bound. Upstream pins jax and jaxlib in that same step (0.4.29 and
+# 0.4.29+cuda12.cudnn91); dm-haiku is the one floater in the JAX set. It cannot
+# self-correct either: dm-haiku's PyPI metadata declares jax only as an
+# OPTIONAL extra (`jax>=0.11.0; extra == "jax"`), so it has no hard jax
+# dependency and the resolver had no information with which to keep the pair
+# compatible.
+#
+# THE MECHANISM. dm-haiku 0.0.17, released 2026-07-27 — eleven days AFTER the
+# last good image was built — hoisted `jax.core.take_current_trace` from a
+# function body in haiku/_src/dot.py (0.0.16, line ~167) up to MODULE SCOPE
+# (0.0.17, line 44). jax 0.4.29 has no such attribute — `hasattr(jax.core,
+# 'take_current_trace')` is False in the GOOD image too — so under 0.0.16 the
+# reference is never evaluated and under 0.0.17 it is evaluated at import.
+# `import haiku` then raises AttributeError; colabdesign imports haiku
+# (af/alphafold/model/utils.py:23) and proteinfoundation.generate imports
+# colabdesign, so EVERY design run dies at import, before any target, hotspot or
+# config is read: full A100 startup billed, zero designs.
+#
+# 0.0.16 IS A PROVEN SUFFICIENT FIX, NOT A HYPOTHESIS. A/B/A swap run inside the
+# deployed last-known-good image on 2026-08-04:
+#   A  as deployed, dm-haiku==0.0.16                  -> import generate OK
+#   B  pip install --no-deps dm-haiku==0.0.17         -> AttributeError, and the
+#      traceback is byte-identical to the canary's, ending at
+#      haiku/_src/dot.py:44 take_current_trace = jax.core.take_current_trace
+#   C  back to 0.0.16                                 -> import generate OK
+# 0.0.16 is therefore the version this stack is known-good against, established
+# by swapping only that one variable — not "the last release before the break".
+#
+# --no-deps IS LOAD-BEARING. Do not drop it to "be safe": 0.0.16's own
+# requirements (absl-py, jmp, numpy, tabulate) are ALREADY satisfied in this
+# venv, and a dependency-resolving install running AFTER the CUDA wheel steps
+# can replace jaxlib==0.4.29+cuda12.cudnn91 with a plain CPU-only jaxlib. That
+# would not fail the build — it would move AF2 silently onto CPU and turn every
+# design run into a 7200 s timeout at full GPU price. The idiom is also
+# upstream's own house style in this same script (`uv pip install flax==0.9.0
+# --no-deps`).
+#
+# WHY THE PIN LIVES DOWN HERE and not directly under build_uv_env.sh, which is
+# what it corrects. Two reasons, both practical:
+#   1. It needs `pip`, and a uv-created venv has none until the `ensurepip` step
+#      above runs. The obvious `uv pip install` form is not available either —
+#      `/opt/proteina/.venv/bin/uv` does not exist (see the note on that step).
+#   2. It must be the LAST step that can touch a Python package, so that nothing
+#      downstream can resolve it away again. That is the entire failure class
+#      being fixed here: a package moving underneath us without anyone asking.
+#      Everything below this line is ENV, mkdir and the import gate.
+#
+# NEVER APPEND `|| true` (or `|| echo ...`, or `; true`) TO THIS LINE. A build
+# that fails here has found the exact class of breakage the pin exists to stop;
+# masking the exit status leaves the pin spelled correctly while it no longer
+# pins anything, and every text assertion in tests/test_proteina_smoke.py would
+# still pass. Fix the fetch, do not silence it.
+RUN /opt/proteina/.venv/bin/python -m pip install --no-deps --no-cache-dir "dm-haiku==0.0.16"
+
 # Point the generator + reward stack at the runtime-mounted Volumes. modal_app
 # mounts proteina-weights -> /opt/proteina/ckpts and proteina-rewards ->
 # /opt/proteina/rewards; these ENV vars must stay in lockstep with those mounts.
+#
+# `PATH=/opt/proteina/.venv/bin:$PATH` IS THE INTERPRETER CONTRACT, not tidiness.
+# modal_app.py:242 spawns ["python3", "-u", "/opt/proteina/run_pipeline.py"] with
+# no path — this entry, FIRST, is the only thing that makes that `python3` the
+# venv's. Delete it or move it after $PATH and every paid job silently runs on
+# the base image's Python, where proteinfoundation, requests and the whole
+# reward stack are absent. The import gate at the bottom of this file re-checks
+# the resolution through bare `python3` so that regression fails the build.
 #
 # MODEL WEIGHTS (verified 2026-07-16 against download_startup.sh + the three
 # configs/search_*_local_pipeline.yaml on the pinned commit): the generator
@@ -166,3 +265,91 @@ ENV PROTEINA_HOME=/opt/proteina \
 # a Volume mount point. .cache is a plain writable dir (not a mount).
 RUN mkdir -p /opt/proteina/ckpts /opt/proteina/rewards /opt/proteina/.cache
 WORKDIR /opt/proteina
+
+# BUILD-TIME IMPORT GATE — the last layer, and the reason an image broken THE
+# WAY THE VALIDATE TIER WOULD NOTICE can no longer be built, let alone deployed.
+# DO NOT REMOVE OR REORDER.
+#
+# WHAT IT DOES AND DOES NOT PROVE. It mirrors the free `validate` tier, which is
+# deliberately variant-agnostic: it imports the generator and the reward filter
+# and stops. So a green gate means "the import surface the validate tier
+# exercises is intact", NOT "every design variant works". Breakage confined to
+# code only reached deeper in a paid run — RF3 / rc-foundry, tmol, the AF2
+# reward path, the ligand and AME variants — can still get through. Those are
+# what the P4/P5 canaries are for. Claiming more than this is how a gate becomes
+# a false reassurance.
+#
+# Pinning dm-haiku above fixes the drift that happened. This catches the next
+# one OF THE SAME SHAPE. The environment as a whole still floats: build_uv_env.sh
+# resolves the entire dependency tree at BUILD time and pins only a handful of
+# packages by version, so any of the rest can do on some future Tuesday exactly
+# what dm-haiku did on 2026-07-27 — and the symptom was an image that built
+# happily and then failed at import inside every GPU container.
+#
+# IT RUNS THE IMPORTS THE FREE VALIDATE TIER RUNS, PLUS run_pipeline's OWN
+# MODULE-SCOPE THIRD-PARTY IMPORTS. run_pipeline.py's run_validate (~L1164) does
+# importlib.import_module("proteinfoundation.generate") then
+# ("proteinfoundation.filter") and nothing else; this mirrors it module for
+# module. If run_validate's import list ever changes, change this one with it —
+# otherwise the gate stops standing in for the thing it gates.
+#   `requests` is added on top because run_pipeline.py imports it at MODULE
+#   scope (L97), i.e. before any tier branches: if it is missing from the venv,
+#   EVERY tier — free validate included — dies at interpreter start-up inside a
+#   billing container, which is the identical failure class to dm-haiku. It was
+#   previously ungated, so tidying `RUN <venv>/bin/python -m pip install requests
+#   rdkit` into a bare `python -m pip install ...` (base image's python, which
+#   has its own pip) built clean and passed this gate.
+#   `rdkit` is deliberately NOT imported here: run_pipeline imports it LAZILY,
+#   inside sdf_to_pdb(), behind an explicit try/except that _fail()s cleanly, and
+#   only on the bring-your-own-LIGAND path that main() still hard-blocks. Its
+#   presence is pinned at the text level instead (tests/test_proteina_smoke.py).
+#   If rdkit ever moves to module scope, add it here.
+#
+# MUST STAY AFTER THE ENV BLOCK ABOVE. The import needs PYTHONPATH=/opt/proteina/src
+# to find the package at all, and DATA_PATH for the eager `${oc.env:DATA_PATH}`
+# resolution documented there.
+#
+# IT CHECKS BOTH INTERPRETER SPELLINGS, AND THAT IS THE WHOLE POINT.
+#   1. `/opt/proteina/.venv/bin/python` — the absolute path proves the VENV
+#      ITSELF is sound, independently of any PATH lookup.
+#   2. bare `python3` — which is what PRODUCTION actually runs: modal_app.py
+#      spawns ["python3", "-u", "/opt/proteina/run_pipeline.py"] and relies on
+#      PATH=/opt/proteina/.venv/bin:$PATH in the ENV block above to resolve it.
+#      This half asserts sys.executable really is inside the venv before it
+#      imports anything, so dropping or reordering that PATH entry fails the
+#      BUILD instead of silently running every paid job on the base image's
+#      Python, where proteinfoundation is not installed at all.
+# An earlier version of this comment claimed the absolute path was the safer
+# choice BECAUSE bare `python` would also resolve. That was backwards: spelling
+# out the venv path makes the gate LESS representative of the runtime, because
+# it is the one spelling production never uses. Only checking both covers both
+# failures — a broken venv, and a PATH that no longer points at it.
+#
+# THE BARE-python3 HALF ASSERTS A PROPERTY THE WORKING IMAGE ALREADY HAS, so it
+# cannot fail a build that would otherwise have been good. Evidence, not
+# assumption: run_pipeline.run_validate imports proteinfoundation.generate
+# IN-PROCESS (L1165) — in the very interpreter modal_app.py spawned as bare
+# `python3` — and that free tier passes green against the deployed image. That
+# import needs colabdesign / jax / lightning, which exist ONLY in
+# /opt/proteina/.venv. So `python3` already resolves to /opt/proteina/.venv/bin
+# today (uv venv creates python, python3 and python3.12 side by side); this
+# check only refuses to let that stop being true.
+#
+# NO GPU AND NO VOLUMES REQUIRED — verified 2026-08-04 by running this identical
+# import in a CPU sandbox with both Volumes absent: it succeeds. On the way it
+# prints "Error while loading libcue_ops.so: libcuda.so.1: cannot open shared
+# object file", which is BENIGN — a CUDA op library declining to load with no
+# driver present — and is exactly why this gate keys on the EXIT CODE alone.
+# Never make it sensitive to stderr noise, and never add a GPU requirement:
+# either change turns a free build-time check into a paid one.
+#
+# NEVER APPEND `|| true`, `|| echo ...`, `; true`, OR REDIRECT THE OUTPUT AWAY.
+# A gate whose exit status is discarded is not a gate; it is a comment that
+# takes 40 seconds to run. And NOTHING MAY BE APPENDED BELOW IT: this is a
+# layer, not a postcondition, so any RUN placed after it is entirely ungated —
+# `pip install --upgrade jax jaxlib` down there would rebuild the exact outage
+# this file exists to prevent, with the gate sitting green above it.
+RUN cd /opt/proteina \
+    && /opt/proteina/.venv/bin/python -c "import importlib; importlib.import_module('proteinfoundation.generate'); importlib.import_module('proteinfoundation.filter'); importlib.import_module('requests'); print('import gate OK: /opt/proteina/.venv/bin/python')" \
+    && python3 -c "import sys; sys.executable.startswith('/opt/proteina/.venv/') or sys.exit('PATH regression: python3 resolves to ' + sys.executable + ', not the project venv; modal_app.py runs run_pipeline.py with bare python3')" \
+    && python3 -c "import importlib, sys; importlib.import_module('proteinfoundation.generate'); importlib.import_module('proteinfoundation.filter'); importlib.import_module('requests'); print('import gate OK: python3 on PATH is ' + sys.executable)"
