@@ -87,6 +87,15 @@ _RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 _RAW_VOLUME = f"ranomics-{_TOOL}-raw"
 _RAW_MOUNT = "/raw"
 
+# Custom-target staging. Both live in the image's WRITABLE layer, not on a
+# Volume, so they vanish on a cold start but persist across warm reuse — which
+# means a prior job's target PDB stays on disk and its record stays in the
+# registry Hydra composes on every run. Cleared at container start so each
+# shard sees only what it registered itself.
+_HUB_TARGET_DIR = "/opt/proteina/hub_targets"
+_TARGETS_DICT = "/opt/proteina/configs/targets/targets_dict.yaml"
+_HUB_SOURCE = "tools_hub_upload"
+
 
 def _build_run_env(payload: dict) -> dict[str, str]:
     """Translate a Modal payload into env vars for run_pipeline.py (identical
@@ -132,6 +141,52 @@ image = (
 )
 
 app = modal.App("ranomics-proteina-prod")
+
+
+def _clear_hub_targets() -> None:
+    """Drop the previous shard's staged target and registry entries.
+
+    Never raises: this is hygiene, and a warm container that could not be
+    cleaned must still be able to run. Leaving it dirty is not a correctness
+    problem — ``custom_target_key`` derives a distinct key per job and
+    ``registration_mismatch`` re-reads the record it just wrote — but the
+    registry is composed by Hydra on EVERY run, so unbounded growth is a slow
+    tax on every shard, and a stale PDB keeps a prior job's bytes readable to
+    the next tenant of this container.
+    """
+    try:
+        shutil.rmtree(_HUB_TARGET_DIR, ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001 — hygiene must not fail the run
+        print(f"[run_tool] could not clear {_HUB_TARGET_DIR}: {exc}", flush=True)
+    try:
+        if not os.path.isfile(_TARGETS_DICT):
+            return
+        import yaml  # noqa: PLC0415 — PyYAML rides in with OmegaConf, not a hub dep
+
+        with open(_TARGETS_DICT, "r", errors="replace") as fh:
+            data = yaml.safe_load(fh) or {}
+        if not isinstance(data, dict):
+            return
+        # Records live one level down, under a top-level `target_dict_cfg:` key.
+        # `records` is a REFERENCE into `data`, so popping from it mutates the
+        # outer structure — which is what gets dumped back. Dumping the inner
+        # mapping instead would strip the wrapper and break Hydra's composition
+        # of the curated targets too.
+        inner = data.get("target_dict_cfg")
+        records = inner if isinstance(inner, dict) else data
+        stale = [
+            k for k, v in records.items()
+            if isinstance(v, dict) and str(v.get("source")) == _HUB_SOURCE
+        ]
+        if not stale:
+            return
+        for k in stale:
+            records.pop(k, None)
+        with open(_TARGETS_DICT, "w") as fh:
+            yaml.safe_dump(data, fh, default_flow_style=False, sort_keys=False)
+        print(f"[run_tool] cleared {len(stale)} stale uploaded target(s) from the registry", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[run_tool] could not prune the targets registry: {exc}", flush=True)
 
 
 def _raw_archive_name(job_id: str) -> str:
@@ -197,6 +252,9 @@ def run_tool(payload: Any) -> dict:
         os.remove(_RAW_ARCHIVE_PATH)
     except OSError:
         pass
+    # Same reasoning for the custom-target staging dir and the registry entries
+    # a prior shard on this container wrote.
+    _clear_hub_targets()
     try:
         result = subprocess.run(
             cmd, env=env, stdout=sys.stdout, stderr=sys.stderr,

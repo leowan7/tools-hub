@@ -244,6 +244,47 @@ class DesignTarget:
             f"this target's chain(s): {spans}."
         )
 
+    def segment_error(self, segments) -> Optional[str]:  # noqa: ANN001
+        """Reject chain/residue-range segments that this target cannot satisfy.
+
+        Same persisted-summary rationale as :meth:`chain_error` and
+        :meth:`hotspot_error`. ``segments`` is a sequence of
+        ``(chain_id, lo, hi)``; ``lo``/``hi`` may be None meaning "the whole
+        chain", which only needs the chain to exist.
+
+        Deliberately generic rather than proteina-shaped: any adapter that
+        declares residue ranges gets the check by returning ``_target_segments``
+        from its validator. Returns None when there is nothing to check.
+
+        This is a cheap pre-money filter, NOT the authority — it compares
+        against a summary rather than the structure, so it cannot see internal
+        gaps. The container re-derives the selection from the real file and
+        refuses on an empty one; that is the check that decides correctness.
+        """
+        for segment in segments or []:
+            try:
+                cid, lo, hi = segment
+            except (TypeError, ValueError):
+                continue
+            chain = self._chain(cid)
+            if chain is None:
+                chain_ids = [c.get("chain_id") for c in self.chains]
+                return (
+                    f"Target chain '{cid}' is not in this target. "
+                    f"Found chain(s): {', '.join(c for c in chain_ids if c)}."
+                )
+            if lo is None or hi is None:
+                continue
+            cmin, cmax = chain.get("min_resnum"), chain.get("max_resnum")
+            if cmin is None or cmax is None:
+                continue
+            if hi < cmin or lo > cmax:
+                return (
+                    f"Chain range {cid}{lo}-{hi} does not overlap this "
+                    f"target's chain {cid} ({cmin}-{cmax})."
+                )
+        return None
+
     def to_dict(self) -> dict:
         """JSON-friendly view for templates and status endpoints."""
         return {
@@ -640,6 +681,18 @@ def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
         out["epitope"] = ",".join(str(r) for r in target.epitope_residues)
     if target.display_name:
         out["target_name"] = target.display_name
+    # proteina's chain/residue contig. Prefilled from the target's own chain
+    # spans so a multi-chain target arrives as "A12-157,B12-157" rather than
+    # making the user read the spans off the page and retype them. Still only a
+    # default: the field is editable and the run persists what was submitted.
+    if target.target_chain and target.chains:
+        segments = []
+        for cid in target.target_chain.split():
+            chain = target._chain(cid)
+            if chain and chain.get("min_resnum") is not None:
+                segments.append(f"{cid}{chain['min_resnum']}-{chain['max_resnum']}")
+        if segments:
+            out["proteina__target_input"] = ",".join(segments)
     return out
 
 
