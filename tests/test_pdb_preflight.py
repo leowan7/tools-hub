@@ -64,9 +64,49 @@ def test_binder_design_tools_locked():
     # pxdesign joined the binder-design gate (gap 1): it takes a target +
     # required hotspots and runs the same normalizer dry-run + structural
     # checks.
+    #
+    # proteina joined when bring-your-own targets landed. It was absent while
+    # only curated ~115 aa benchmark targets were reachable, which meant it got
+    # NO size check at all — harmless then, a real cost hole once users can
+    # upload their own: an oversized target runs to the 7200 s wall, is killed,
+    # and bills the full per-shard ceiling for zero designs across every shard
+    # in the wave. Its SizeEnvelope is the gate that stops that.
     assert BINDER_DESIGN_TOOLS == frozenset({
         "rfantibody", "rfdiffusion", "bindcraft", "boltzgen", "pxdesign",
+        "proteina",
     })
+
+
+def test_every_binder_design_tool_has_a_preview_fn():
+    """preflight_for_tool indexes _PREVIEW_FN AFTER its BINDER_DESIGN_TOOLS
+    membership check and OUTSIDE the try block, so a tool added to TOOL_RULES
+    without a normalizer raises KeyError out of a function documented never to
+    raise. That 500s the AJAX preflight route and makes the submit-time size
+    gate silently no-op — i.e. it disables the cost guard while looking fine.
+    proteina shipped in exactly that state."""
+    from shared.pdb_preflight import _PREVIEW_FN
+
+    assert set(_PREVIEW_FN) == BINDER_DESIGN_TOOLS
+
+
+def test_preflight_for_proteina_returns_a_verdict():
+    """Before the _PREVIEW_FN entry existed this raised KeyError('proteina')."""
+    from shared.pdb_preflight import preflight_for_tool
+
+    verdict = preflight_for_tool("proteina", CLEAN_FOUR_RES_PDB,
+                                 target_chain="A", hotspots=[])
+    assert verdict is not None
+    assert verdict.tool_slug == "proteina"
+
+
+def test_proteina_rules_allow_multi_chain_and_optional_hotspots():
+    """Proteina is hotspot-DIRECTED but not hotspot-REQUIRED (an open search is
+    a legitimate run), and a three-chain target is a validated upstream case."""
+    from shared.pdb_preflight_rules import TOOL_RULES
+    rules = TOOL_RULES["proteina"]
+    assert rules.multi_chain_supported is True
+    assert rules.hotspots_required is False
+    assert "proteina" not in HOTSPOTS_REQUIRED
 
 
 def test_preflight_tools_includes_boltz2():
@@ -752,3 +792,101 @@ def test_boltz2_single_chain_still_ready():
     data = _chain_pdb("A", list(range(1, 121)))
     v = preflight_for_tool("boltz2", data, target_chain="A", hotspots=[5, 60])
     assert v.kind is VerdictKind.READY
+
+
+# ---------------------------------------------------------------------------
+# Multi-chain targets
+#
+# `target_chain` may name several chains, whitespace-separated ("A B C"):
+# shared/pdb_inspect.validate_target_chain has always accepted that form and
+# five of the six tools declare multi_chain_supported=True. Every consumer in
+# pdb_preflight compared the whole string against a one-letter chain id, so a
+# multi-token value matched nothing — residues_kept_per_chain.get("A B C")
+# returned 0 and a perfectly good target was rejected with "has only 0 protein
+# residue(s)". Same defect class as the one fixed in validate_hotspots (A18)
+# and pipeline_normalize.
+# ---------------------------------------------------------------------------
+
+def _multi_chain_pdb(spec: dict, *, header: str = "SYNTHETIC") -> bytes:
+    """``{chain_id: [resnums]}`` -> one PDB with a full backbone per residue."""
+    body = b"".join(
+        _chain_pdb(chain, residues, header=header)
+        .replace(f"HEADER    {header}\n".encode(), b"")
+        .replace(b"END\n", b"")
+        for chain, residues in spec.items()
+    )
+    return f"HEADER    {header}\n".encode() + body + b"END\n"
+
+
+def test_chain_tokens_splits_and_dedups():
+    from shared.pdb_preflight import _chain_tokens
+    assert _chain_tokens("A") == ["A"]          # unchanged for the common case
+    assert _chain_tokens("A B C") == ["A", "B", "C"]
+    assert _chain_tokens("  A   B  ") == ["A", "B"]
+    assert _chain_tokens("A A B") == ["A", "B"]
+    assert _chain_tokens("") == []
+    assert _chain_tokens(None) == []
+
+
+def test_multi_chain_target_is_not_rejected_as_empty():
+    """The headline regression: three 40-residue chains is a 120-residue
+    target, not a 0-residue one."""
+    data = _multi_chain_pdb({
+        "A": list(range(1, 41)),
+        "B": list(range(1, 41)),
+        "C": list(range(1, 41)),
+    })
+    v = preflight_for_tool("proteina", data, target_chain="A B C", hotspots=[])
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK), (
+        v.kind, v.reason
+    )
+    assert "0 protein residue" not in (v.reason or "")
+
+
+def test_multi_chain_residue_count_is_the_sum_across_chains():
+    """min_target_aa is a property of the whole target. Three 15-residue chains
+    clear proteina's floor of 30; any one of them alone would not."""
+    data = _multi_chain_pdb({
+        "A": list(range(1, 16)),
+        "B": list(range(1, 16)),
+        "C": list(range(1, 16)),
+    })
+    assert preflight_for_tool(
+        "proteina", data, target_chain="A", hotspots=[],
+    ).kind is VerdictKind.NEEDS_FIX
+    v = preflight_for_tool("proteina", data, target_chain="A B C", hotspots=[])
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK)
+
+
+def test_gaps_are_found_per_chain_not_across_the_seam():
+    """Merging chains before gap detection invents a gap at the seam. Chain A
+    is 1-20 and chain B is 100-120; each is internally contiguous, but a merged
+    resnum list reads as one chain with a 79-residue hole."""
+    data = _multi_chain_pdb({
+        "A": list(range(1, 21)),
+        "B": list(range(100, 121)),
+    })
+    v = preflight_for_tool("proteina", data, target_chain="A B", hotspots=[])
+    assert v.gap_analysis.gaps == []
+    assert v.gap_analysis.warn_message is None
+    assert v.kind in (VerdictKind.READY, VerdictKind.READY_WITH_FALLBACK)
+
+
+def test_gap_message_names_the_offending_chain_not_the_whole_field():
+    """A user given "Chain A B has a 30-residue gap" cannot act on it."""
+    data = _multi_chain_pdb({
+        "A": list(range(1, 41)),
+        "B": list(range(1, 21)) + list(range(51, 71)),   # 30-residue hole
+    })
+    v = preflight_for_tool("proteina", data, target_chain="A B", hotspots=[])
+    assert v.gap_analysis.longest_gap == 30
+    assert "Chain B has" in (v.gap_analysis.warn_message or "")
+
+
+def test_single_chain_gap_message_is_unchanged():
+    """Guard for the other five tools: one chain in, identical text out."""
+    data = _chain_pdb("A", list(range(1, 21)) + list(range(51, 91)))
+    v = preflight_for_tool("proteina", data, target_chain="A", hotspots=[])
+    assert "Chain A has a 30-residue internal gap" in (
+        v.gap_analysis.warn_message or ""
+    )

@@ -60,8 +60,16 @@ SUPPORTED_TOOLS: tuple[str, ...] = (
     "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "rfantibody",
     # proteina: 1 shard = 1 fixed A100-80GB container running one seeded
     # `proteinfoundation.generate` job; num_designs scales the shard count.
-    # Ships behind FLAG_TOOL_PROTEINA (off); its 4 presets are the design
-    # variants, not the "pilot" tier the others carry.
+    # Gated by FLAG_TOOL_PROTEINA, which is **ON in live production** — verified
+    # 2026-08-04 by reading it, not by inference:
+    #   railway variables --kv | grep FLAG_        (project tools-hub / production / web)
+    # This comment previously read "(off)", which was wrong and load-bearing: it
+    # made proteina look dormant while it was in fact user-reachable, and that is
+    # what let the upload-then-refuse trap in
+    # docs/audit-2026-07-22-campaign-rework-open-items.md:35 read as non-urgent.
+    # Re-check the live value before reasoning about blast radius; do not trust
+    # this line. Its 4 presets are the design variants, not the "pilot" tier the
+    # others carry.
     "proteina",
     # iggm: 1 shard = 1 A100-40GB container running design.py --num_samples
     # <chunk> for one antibody-design variant, each shard entropy-seeded by
@@ -132,9 +140,17 @@ _LAUNCH_CONCURRENCY_OVERRIDE: Mapping[str, int] = {"proteina": 4}
 
 # Tools that ONLY run as a campaign — they have no viable single-job atomic tier
 # (every run is too heavy for one container), so /tools/<slug> routes to the
-# campaign create flow instead of an atomic form. The other campaign tools also
-# expose an atomic form for small single runs; proteina does not.
-CAMPAIGN_ONLY_TOOLS: frozenset[str] = frozenset({"proteina"})
+# campaign create flow instead of an atomic form.
+#
+# EMPTY as of the bring-your-own-target work. proteina used to be here purely
+# because it shipped no form template, not because a single shard is unviable:
+# one shard IS one self-contained container that yields _CHUNK_SIZE_OVERRIDE
+# (8) designs and holds ~$15 against a $60 per-job cap, which is a perfectly
+# ordinary atomic run. It now has templates/tools/proteina_form.html, so the
+# redirect in blueprints/tools.py has nothing left to protect. Kept as a
+# constant (not deleted) because the routes and tests reference it and a future
+# tool may genuinely need it.
+CAMPAIGN_ONLY_TOOLS: frozenset[str] = frozenset()
 
 # Campaign tools that ship behind a FLAG_TOOL_<NAME> gate: hidden from every
 # create/launch form and rejected on POST/estimate until the operator flips the

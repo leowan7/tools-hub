@@ -78,7 +78,7 @@
         </p>
         {% endif %}
         {{ field_text("hotspot_residues", "Hotspot residues",
-                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen. Tools that do not use hotspots ignore it.",
+                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen and Proteina. Plain numbers apply to the target chain above; for a multi-chain Proteina target, prefix the chain (A45, C73).",
                       placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
       </div>
     </div>
@@ -172,27 +172,58 @@
             {% endif %}
 
             {% if t == "proteina" %}
+            {# No design-variant picker and no target-task field here. Every run
+               on this screen designs against THIS target, and only the protein
+               binder variant can take a caller-supplied structure — the ligand
+               and motif variants resolve their task from separate upstream
+               registries that `complexa target add` does not write, so they can
+               only ever run against a bundled benchmark target. Offering them
+               would file designs under a target they were not designed against.
+               Both are refused server-side in _REFUSED_PRESETS; start them from
+               the campaign form. #}
+            {# The id is load-bearing, not decoration: the estimate JS resolves
+               a variant tool's preset with getElementById(tool + '__preset')
+               (see presetFor below). Without it the lookup returns null, the
+               estimate asks for preset=pilot, the endpoint rejects it as an
+               unknown preset for this tool, and the Launch button never enables
+               — for proteina and for every tool co-selected with it, since the
+               endpoint returns one verdict per request. #}
+            <input type="hidden" name="proteina__preset" id="proteina__preset"
+                   value="protein_binder">
             <div class="field-group">
-              <label for="proteina__preset" class="field-label">Design variant</label>
-              <select name="proteina__preset" id="proteina__preset"
-                      class="field-input" style="max-width: 320px;" disabled>
-                <option value="protein_binder"
-                  {% if pre_fill.get('proteina__preset') == 'protein_binder' %}selected{% endif %}>protein_binder</option>
-                <option value="motif_ame"
-                  {% if pre_fill.get('proteina__preset') == 'motif_ame' %}selected{% endif %}>motif_ame</option>
-              </select>
+              <label for="proteina__target_input" class="field-label">Target region</label>
+              <input type="text" name="proteina__target_input" id="proteina__target_input"
+                     class="field-input" style="max-width: 320px;" maxlength="64"
+                     disabled value="{{ pre_fill.get('proteina__target_input', '') }}"
+                     placeholder="e.g. A1-150">
               <div class="field-helper">
-                Proteina takes no hotspots and no binder length. The ligand
-                variant is not offered here: it needs a small-molecule SDF and
-                this target is a protein structure.
+                Which chains and residues to design against. One chain
+                (<code>A1-150</code>) or several
+                (<code>A12-157,B12-157,C12-157</code>). Leave blank to use every
+                residue of the target chain above.
               </div>
             </div>
             <div class="field-group">
-              <label for="proteina__task_name" class="field-label">Target task</label>
-              <input type="text" name="proteina__task_name" id="proteina__task_name"
-                     class="field-input" style="max-width: 320px;" maxlength="64"
-                     disabled value="{{ pre_fill.get('proteina__task_name', '') }}">
-              <div class="field-helper">Leave blank for the variant's default task.</div>
+              <label class="field-label">Binder length</label>
+              <div style="display: flex; gap: 0.5rem; align-items: center; max-width: 320px;">
+                <input type="number" name="proteina__binder_length_min"
+                       id="proteina__binder_length_min" class="field-input"
+                       min="20" max="300" step="1" disabled
+                       value="{{ pre_fill.get('proteina__binder_length_min', '') }}"
+                       placeholder="60">
+                <span style="color: var(--text-tertiary);">to</span>
+                <input type="number" name="proteina__binder_length_max"
+                       id="proteina__binder_length_max" class="field-input"
+                       min="20" max="300" step="1" disabled
+                       value="{{ pre_fill.get('proteina__binder_length_max', '') }}"
+                       placeholder="120">
+              </div>
+              <div class="field-helper">
+                Each design's length is drawn from this range. Blank uses 60-120.
+                Hotspots come from the shared field above &mdash; plain numbers
+                use the target chain, or prefix the chain for a multi-chain
+                region (<code>A113 C73</code>).
+              </div>
             </div>
             {% endif %}
 

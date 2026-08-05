@@ -27,9 +27,32 @@ jobs:
         run: |
           set -euo pipefail
           cd shared
-          # Verifies that pipeline_normalize.py and uniprot_lookup.py are
-          # byte-identical to the source of truth in llm-proteinDesigner
-          # (backend/pdb_utils/*). If either hash drifts, this job fails
-          # and the maintainer must update BOTH repos in lock-step, then
-          # refresh VENDORED_SHA256.lock here.
+          # Change tripwire on THIS repo's copy of two modules that originated
+          # in llm-proteinDesigner (backend/pdb_utils/*). It fails when either
+          # file changes without the lock being refreshed in the same commit.
+          #
+          # WHAT IT DOES NOT DO, corrected 2026-08-05. This comment used to
+          # claim the files are "byte-identical to the source of truth in
+          # llm-proteinDesigner". They are not, and had not been for some time
+          # before anyone read this line: the job only ever hashes files under
+          # ./shared and never fetches the sibling repo, so it CANNOT observe
+          # the other side. Measured at the time of the correction, this repo's
+          # pipeline_normalize.py carried two functions the sibling does not
+          # have at all (normalize_for_bindcraft, preview_for_tool) and differed
+          # by 80 further lines. A guard whose comment describes a check it does not
+          # perform is worse than no comment, because the red build then gets
+          # read as "the repos diverged" when it only ever means "this file
+          # changed".
+          #
+          # So: an INTENTIONAL change here is legitimate, and the correct
+          # response is to refresh VENDORED_SHA256.lock in the same commit
+          # (`cd shared && sha256sum pipeline_normalize.py uniprot_lookup.py`).
+          # Whether the sibling repo wants the same change is a real question,
+          # but it is a human one -- this job has no opinion on it and cannot
+          # acquire one.
+          #
+          # Hash on LF content. .gitattributes pins both files and this lock to
+          # `text eol=lf` precisely so a Windows checkout and Linux CI agree;
+          # without it a CRLF working copy produces a different hash and the
+          # guard fails for a reason that has nothing to do with content.
           sha256sum -c VENDORED_SHA256.lock

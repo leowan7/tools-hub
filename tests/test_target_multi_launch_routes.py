@@ -956,9 +956,17 @@ def test_the_typed_field_cases_all_differ_from_the_adapter_default(client):
         )
 
 
-def test_proteina_receives_the_task_name_the_user_typed(client):
-    """Separate from the shared parametrization because proteina is flag-gated
-    and picks its preset from the form (it is a design VARIANT, not a tier)."""
+def test_proteina_designs_against_this_target_not_a_benchmark_task(client):
+    """Every run launched from a target page designs against THAT structure.
+
+    This used to assert the opposite — that a curated `task_name` typed here was
+    passed through — which produced a campaign whose target_storage_path was the
+    user's structure while ++generation.task_name selected a repo-bundled
+    benchmark target. The container then refused it, after the campaign existed
+    and the hold was placed. Designs filed under target X must have been
+    designed against structure X, so the route now declares every launch a
+    custom-target run and the adapter refuses a curated task alongside it.
+    """
     _login(client)
     t = _target()
     base = dict(
@@ -966,15 +974,82 @@ def test_proteina_receives_the_task_name_the_user_typed(client):
         proteina__preset="protein_binder",
     )
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
-        resp, rec = _launch(
-            client, t,
-            form=_form(proteina__task_name="my_custom_task", **base),
-        )
+        resp, rec = _launch(client, t, form=_form(**base))
         assert resp.status_code == 302, _visible_text(resp)[-400:]
-        # Distinguishable from the default the adapter would have chosen.
-        _, plain = _launch(client, t, form=_form(**base))
-    assert rec.kwargs_for("proteina")["params"]["task_name"] == "my_custom_task"
-    assert plain.kwargs_for("proteina")["params"]["task_name"] != "my_custom_task"
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["target_source"] == "custom"
+    assert params["task_name"] == ""
+
+
+def test_proteina_receives_the_shared_hotspots_chain_prefixed(client):
+    """One shared hotspot field drives every tool on this screen, and it posts
+    bare ints ("42,88"). Proteina needs upstream's chain-prefixed form, so bare
+    numbers are promoted onto the run's target chain — that promotion is what
+    keeps proteina co-launchable with rfdiffusion/pxdesign from one field."""
+    _login(client)
+    t = _target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_spec"] == ["A42", "A88"]
+    # Bare ints too, so the routes' DesignTarget.hotspot_error range check
+    # keeps working unchanged.
+    assert params["hotspot_residues"] == [42, 88]
+
+
+def test_proteina_and_rfdiffusion_co_launch_from_one_hotspot_field(client):
+    """The regression that a chain-prefixed-only parser would have caused."""
+    _login(client)
+    t = _target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina", "rfdiffusion"],
+            proteina__designs="8", proteina__preset="protein_binder",
+            rfdiffusion__designs="12",
+            rfdiffusion__binder_length_min="55",
+            rfdiffusion__binder_length_max="65",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    assert rec.kwargs_for("proteina")["params"]["hotspot_spec"] == ["A42", "A88"]
+    assert rec.kwargs_for("rfdiffusion")["params"]["hotspot_residues"] == [42, 88]
+
+
+def test_proteina_target_region_reaches_the_container(client):
+    """target_chain used to be accepted by the adapter and never read by the
+    pipeline, so a multi-chain target was unreachable. The contig is now the
+    single source of truth for both."""
+    _login(client)
+    t = _target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__target_input="A1-150",
+            hotspot_residues="A42,A88",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["target_input"] == "A1-150"
+    assert params["target_chain"] == "A"
+
+
+def test_proteina_motif_variant_is_refused_against_a_stored_target(client):
+    """AME tasks resolve from configs/design_tasks/ame_dict_v2.yaml, a registry
+    `complexa target add` cannot write, so the motif variant can only scaffold a
+    bundled benchmark motif — never this target."""
+    _login(client)
+    t = _target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="motif_ame",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
 
 
 def test_iggm_receives_the_max_antigen_size_the_user_typed(client):

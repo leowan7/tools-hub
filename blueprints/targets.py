@@ -123,6 +123,15 @@ _REFUSED_PRESETS = {
         "the ligand variant needs a small-molecule SDF, and this target is a "
         "protein structure."
     ),
+    # Every run on this route designs against the STORED target, and upstream
+    # resolves an AME task from configs/design_tasks/ame_dict_v2.yaml (a
+    # separate registry that `complexa target add` cannot write), so the motif
+    # variant can only ever run against a bundled benchmark motif. Offering it
+    # here would file designs under a target they were not designed against.
+    ("proteina", "motif_ame"): (
+        "the motif/enzyme variant can only scaffold a curated benchmark motif, "
+        "not your own target. Start it from the campaign form instead."
+    ),
 }
 
 
@@ -255,6 +264,11 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         # The driver injects the real per-chunk count; the adapter only needs
         # an in-cap placeholder to get past its own bounds check.
         tool_form[plan.design_param_key] = "1"
+        # This route ALWAYS launches from a stored target (_launch_blocker has
+        # already guaranteed a storage_path), so every run here designs against
+        # a caller-supplied structure. Assigned after _tool_form so a crafted
+        # `<tool>___has_custom_target` cannot forge the declaration.
+        tool_form["_has_custom_target"] = "1"
         validated, verr = adapter.validate(tool_form, request.files)
         if validated is None:
             return None, f"{label}: {verr or 'invalid parameters.'}"
@@ -280,6 +294,11 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         )
         if hotspot_err:
             return None, f"{label}: {hotspot_err}"
+        # Chain/residue ranges, for adapters that declare them (proteina's
+        # target_input today). Same persisted-summary check, no download.
+        segment_err = target.segment_error(validated.get("_target_segments") or [])
+        if segment_err:
+            return None, f"{label}: {segment_err}"
 
         specs.append(
             ToolLaunchSpec(

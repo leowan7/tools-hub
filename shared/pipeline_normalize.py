@@ -304,9 +304,17 @@ def normalize_for_pipeline(
     renumber_map: dict = {}
     total_altloc_collapsed = 0
 
+    # ``target_chain`` may name SEVERAL chains, whitespace-separated ("A B C").
+    # shared/pdb_inspect.validate_target_chain has always accepted that form and
+    # four tools declare multi_chain_supported=True, but the comparison here was
+    # an exact string match, so a multi-token value matched no chain, dropped
+    # every one of them, and raised below. Splitting is behaviour-preserving for
+    # a single id (["A"]) and only affects inputs that previously raised.
+    wanted_chains = set((target_chain or "").split()) if target_chain else None
+
     for chain in target_model:
         chain_id = chain.get_id()
-        if target_chain is not None and chain_id != target_chain:
+        if wanted_chains is not None and chain_id not in wanted_chains:
             drop_chain_reasons[chain_id] = "non-target chain"
             continue
 
@@ -387,11 +395,15 @@ def normalize_for_pipeline(
         if dropped_count:
             dropped_per_chain[chain_id] = dropped_count
 
-    # Validation
-    if target_chain is not None and target_chain not in keep_chains:
+    # Validation. Every named chain must have survived — a multi-chain target
+    # missing one of its chains is not a partially-valid run, it is a different
+    # structure from the one the user described.
+    if wanted_chains is not None and not wanted_chains <= keep_chains:
+        missing = sorted(wanted_chains - keep_chains)
         raise ValueError(
-            f"Target chain {target_chain!r} is not present (or has no "
-            f"protein residues) in the input structure. Found chains: "
+            f"Target chain {(missing[0] if len(missing) == 1 else ' '.join(missing))!r} "
+            f"is not present (or has no protein residues) in the input "
+            f"structure. Found chains: "
             f"{sorted(c.get_id() for c in target_model)}"
         )
     if not keep_chains:
@@ -547,6 +559,29 @@ def normalize_for_rfdiffusion(
     RFdiffusion's frame builder consumes the PDB directly and refers to
     residues by original PDB numbering throughout (hotspots, ppi.hotspot_res
     in the Hydra config). Renumbering would silently invalidate those refs.
+    """
+    return normalize_for_pipeline(
+        input_path, output_path,
+        target_chain=target_chain,
+        keep_hetatm=False, keep_waters=False, keep_hydrogens=False,
+        drop_zero_backbone=True, convert_modres=True,
+        renumber_residues=False,
+    )
+
+
+def normalize_for_proteina(
+    input_path: str, output_path: Optional[str], *, target_chain: str
+) -> PipelineNormalizationReport:
+    """proteina preset: keep the named chain(s), preserve original numbering.
+
+    Numbering is load-bearing and must NOT be renumbered. Proteina-Complexa
+    matches hotspots as ``f"{chain_id}{res_id}"`` against the ORIGINAL author
+    numbering carried in the registered target record, and it does so silently —
+    a renumbered structure would make every hotspot miss, and upstream would
+    then run an unconstrained search that looks exactly like a successful one.
+    Same reasoning as rfdiffusion, with one difference: proteina takes
+    multi-chain targets (a three-chain example ships upstream), so several
+    whitespace-separated chain ids are expected here.
     """
     return normalize_for_pipeline(
         input_path, output_path,

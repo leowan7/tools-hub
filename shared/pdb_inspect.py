@@ -321,9 +321,25 @@ def validate_hotspots(
     Hotspots refer to original PDB author numbering, which is what
     Kendrew docker pipelines accept on the wire (the docker side
     rewrites them via the renumber_map after CIF prep).
+
+    ``target_chain`` may name SEVERAL chains, whitespace-separated (``"A B"``
+    for ProteinMPNN-style multi-chain design, ``"A B C"`` for a proteina trimer
+    target). A residue is in range if it falls inside ANY named chain.
+
+    This previously passed the whole string to ``report.chain()``, which does an
+    exact single-id lookup, got None for ``"A B"``, and reported EVERY hotspot
+    out of range — filed as A18. ``shared/targets.py::hotspot_error`` documents
+    that defect and deliberately implements the union instead, so the two paths
+    disagreed: a multi-chain target passed the campaign and target-launch routes
+    and was falsely refused on the atomic submit and reuse-token paths, which
+    call this helper directly.
     """
-    chain = report.chain(target_chain)
-    if chain is None or chain.min_resnum is None:
+    ranges = []
+    for cid in (target_chain or "").split() or [target_chain or ""]:
+        chain = report.chain(cid)
+        if chain is not None and chain.min_resnum is not None:
+            ranges.append((chain.min_resnum, chain.max_resnum))
+    if not ranges:
         return [], list(hotspots)
     in_range: list = []
     out_of_range: list = []
@@ -333,7 +349,7 @@ def validate_hotspots(
         except (TypeError, ValueError):
             out_of_range.append(h)
             continue
-        if chain.min_resnum <= n <= chain.max_resnum:
+        if any(lo <= n <= hi for lo, hi in ranges):
             in_range.append(n)
         else:
             out_of_range.append(n)
