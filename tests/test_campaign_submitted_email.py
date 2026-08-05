@@ -219,8 +219,8 @@ def test_a_dropped_count_is_reported_to_both_parties(sent):
     user_mail, staff_mail = sent
     user_html = _flat(user_mail["html"])
     assert "7 candidates)" in user_html
-    assert "3 starred designs could not be matched to a design on this target" \
-        in user_html
+    assert "3 starred designs could not be matched to a design in the results " \
+        "this shortlist was built from" in user_html
     assert "This request covers 7 designs." in user_html
     assert "3 starred design" in _flat(user_mail["text"])
     # Ops reads the staff mail, so the shortfall has to reach it too.
@@ -401,3 +401,60 @@ def test_a_single_truncated_design_reads_as_singular(sent):
     assert "rather than add it" in user_html
     # Singular on the staff row too, which counts the same thing in refs.
     assert "1 starred ref past the per-request cap" in _flat(sent[1]["html"])
+
+
+# ---------------------------------------------------------------------------
+# A88: the shortfall sentence serves every parent kind
+# ---------------------------------------------------------------------------
+
+_SHORTFALL = re.compile(r"3 starred designs could not be matched to [^.]+\.")
+
+
+def _shortfall_sentence(payload) -> str:
+    match = _SHORTFALL.search(_flat(payload["html"]))
+    assert match, _flat(payload["html"])
+    return match.group(0)
+
+
+def test_the_shortfall_sentence_is_the_same_for_every_parent_kind(sent):
+    """ONE STRING, EVERY PARENT. The sentence used to say the designs "could
+    not be matched to a design on this target", which is false for the campaign
+    arm: that arm has no target in scope and refuses a ref because it is not a
+    child of the named compute campaign.
+
+    Fixed by REWORDING rather than by branching on ``submission_source``, and
+    this test is why. The fixture in this file builds a campaign object with no
+    ``submission_source`` attribute at all, so a branch would silently take its
+    else-arm in every other test here and the suite would stay green while the
+    sentence went wrong -- and the branch would acquire a stale else-arm the
+    moment a fifth source is added besides. Three sources, byte-identical
+    output.
+    """
+    seen = []
+    for source in ("web", "campaign", "target"):
+        sent.clear()
+        campaign = _campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)])
+        campaign.submission_source = source
+        em.send_campaign_submitted_emails(
+            campaign=campaign, user_email="scientist@example.com", dropped=3,
+        )
+        seen.append(_shortfall_sentence(sent[0]))
+    assert len(set(seen)) == 1, seen
+    assert seen[0] == (
+        "3 starred designs could not be matched to a design in the results "
+        "this shortlist was built from and were left out."
+    )
+
+
+def test_a_campaign_arm_shortfall_names_no_target(sent):
+    """The pair, stated as the thing that was wrong. A campaign-sourced
+    handoff's refusals are decided against "child of this compute campaign";
+    naming a target in that message describes a check nobody ran."""
+    campaign = _campaign(refs=[{"job_id": "j1", "index": i} for i in range(7)])
+    campaign.submission_source = "campaign"
+    em.send_campaign_submitted_emails(
+        campaign=campaign, user_email="scientist@example.com", dropped=3,
+    )
+    sentence = _shortfall_sentence(sent[0])
+    assert "on this target" not in sentence
+    assert "source target" not in sentence
