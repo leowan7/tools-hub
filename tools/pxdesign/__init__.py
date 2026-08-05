@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from tools.base import Preset, ToolAdapter, register
+from tools.base import (
+    Preset,
+    ToolAdapter,
+    parse_hotspot_residues,
+    parse_target_chains,
+    register,
+)
 from tools.pxdesign import meta as _meta  # noqa: F401 — re-export for templates
 
 # Re-export so callers can do ``from tools.pxdesign import paper_citation``.
@@ -40,23 +46,25 @@ def validate(
         return None, "Pick a preset."
 
     # pilot tier — real user target + hotspots.
+    # target_chain may name one chain ("A") or several ("A,B"): PXDesign's
+    # target.chains is a per-chain map upstream and only the BINDER is
+    # single-chain. NOTE the 4-character cap below admits "A,B" but not
+    # "A,B,C" — three-chain targets are not reachable through this form.
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
     if len(target_chain) > 4:
         return None, "Target chain must be at most 4 characters."
 
-    raw_hotspots = (form.get("hotspot_residues") or "").strip()
-    if not raw_hotspots:
-        return None, "At least one hotspot residue is required."
-    try:
-        hotspot_residues = [
-            int(tok.strip()) for tok in raw_hotspots.split(",") if tok.strip()
-        ]
-    except ValueError:
-        return None, "Hotspot residues must be comma-separated integers (e.g. 54,56,115)."
-    if not hotspot_residues:
-        return None, "At least one hotspot residue is required."
+    target_chains = parse_target_chains(target_chain)
+    if not target_chains:
+        return None, "Target chain is required."
+
+    hotspot_residues, err = parse_hotspot_residues(
+        form.get("hotspot_residues") or "", target_chains
+    )
+    if err:
+        return None, err
 
     raw_length = (form.get("binder_length") or "80").strip()
     try:
