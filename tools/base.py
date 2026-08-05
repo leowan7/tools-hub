@@ -47,19 +47,29 @@ from typing import Any, Callable, Mapping, Optional
 #                                          accepted and attributed to the
 #                                          FIRST target chain
 #
+# This repo independently arrived at a WHITESPACE convention for the same
+# field ("A B C"), which predates the above and is wired through
+# shared/pdb_inspect, shared/pdb_preflight, shared/targets and the form copy.
+# Both are accepted everywhere; neither side has to migrate.
+#
 # These helpers keep the three adapters from each growing their own parser.
 
 
 def parse_target_chains(raw: str) -> list:
     """Split a target-chain field into an ordered, de-duplicated list.
 
-    ``"A"`` -> ``["A"]``; ``"A,B"`` -> ``["A", "B"]``. Order is preserved
-    because it drives contig and FASTA concatenation downstream.
+    ``"A"`` -> ``["A"]``; ``"A,B"`` and ``"A B"`` -> ``["A", "B"]``. Order is
+    preserved because it drives contig and FASTA concatenation downstream.
+
+    Splitting on only one separator puts this validator at odds with the
+    gates that run after it in the same request — ``validate_target_chain``,
+    ``validate_hotspots``, and the ``preflight_for_tool`` hard gate all split
+    on whitespace — so a comma-only parse is accepted here and then rejected
+    three more times before anything reaches Modal.
     """
     ordered: list = []
-    for tok in str(raw or "").split(","):
-        tok = tok.strip()
-        if tok and tok not in ordered:
+    for tok in str(raw or "").replace(",", " ").split():
+        if tok not in ordered:
             ordered.append(tok)
     return ordered
 
@@ -86,7 +96,7 @@ def parse_hotspot_residues(
     if not target_chains:
         return None, "Target chain is required."
 
-    tokens = [tok.strip() for tok in str(raw or "").split(",") if tok.strip()]
+    tokens = str(raw or "").replace(",", " ").split()
     if not tokens:
         return None, "At least one hotspot residue is required."
 

@@ -34,17 +34,21 @@ def validate(
 
     # BindCraft's pipeline has always passed target_chain straight through to
     # its "chains" setting, so "A,B" already worked end to end there — this
-    # form layer was the only thing rejecting chain-prefixed hotspots. NOTE
-    # the 4-character cap below admits "A,B" but not "A,B,C".
+    # form layer was the only thing rejecting chain-prefixed hotspots.
+    # Upstream BindCraft documents both: "chains -> which chains to target"
+    # and "target_hotspot_residues -> ... chain specific `A1-10,B1-20`".
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
-    if len(target_chain) > 4:
-        return None, "Target chain must be at most 4 characters."
 
     target_chains = parse_target_chains(target_chain)
     if not target_chains:
         return None, "Target chain is required."
+    # Per TOKEN, not per string: a whole-string cap of 4 admitted "A,B" but
+    # rejected "A,B,C", silently capping every target at two chains.
+    for cid in target_chains:
+        if len(cid) > 4:
+            return None, f"Chain id {cid!r} is too long (max 4 characters)."
 
     hotspot_residues, err = parse_hotspot_residues(
         form.get("hotspot_residues") or "", target_chains

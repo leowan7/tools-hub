@@ -171,13 +171,32 @@ def test_hotspot_on_untargeted_chain_rejected(name, mod):
 
 
 @pytest.mark.parametrize("name,mod", ADAPTERS)
-def test_three_chain_target_still_rejected_by_the_length_cap(name, mod):
-    """Known limitation, deliberately left in place: the 4-character cap on
-    target_chain admits "A,B" but not "A,B,C". Three-chain targets are only
-    reachable by invoking the Modal app directly."""
+def test_three_chain_target_accepted(name, mod):
+    """The 4-character cap used to be applied to the WHOLE field, so it
+    admitted "A,B" and rejected "A,B,C" — silently capping every target at
+    two chains for no reason but the separator's width. It is now per-token."""
     inputs, err = mod.validate(_form(name, "A,B,C", "A296"), {})
+    assert err is None, err
+    assert inputs["target_chain"] == "A,B,C"
+
+
+@pytest.mark.parametrize("name,mod", ADAPTERS)
+def test_overlong_chain_id_still_rejected_per_token(name, mod):
+    inputs, err = mod.validate(_form(name, "A,BCDEF", "A296"), {})
     assert inputs is None
-    assert "at most 4 characters" in err
+    assert "too long" in err
+
+
+@pytest.mark.parametrize("name,mod", ADAPTERS)
+def test_whitespace_separated_chains_accepted(name, mod):
+    """tools-hub's own convention, predating the comma contract:
+    shared/pdb_inspect.validate_target_chain splits on whitespace, five tools
+    declare multi_chain_supported=True, and the form copy says "List chains
+    separated by spaces". Parsing only commas here made the feature
+    unreachable — every gate after this one rejected the comma form."""
+    inputs, err = mod.validate(_form(name, "A B", "A296 B264"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == ["A296", "B264"]
 
 
 @pytest.mark.parametrize("name,mod", ADAPTERS)

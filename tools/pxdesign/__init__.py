@@ -46,19 +46,21 @@ def validate(
         return None, "Pick a preset."
 
     # pilot tier — real user target + hotspots.
-    # target_chain may name one chain ("A") or several ("A,B"): PXDesign's
-    # target.chains is a per-chain map upstream and only the BINDER is
-    # single-chain. NOTE the 4-character cap below admits "A,B" but not
-    # "A,B,C" — three-chain targets are not reachable through this form.
+    # target_chain may name one chain ("A") or several ("A,B" / "A B"):
+    # PXDesign's target.chains is a per-chain map upstream and only the
+    # BINDER is single-chain.
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
-    if len(target_chain) > 4:
-        return None, "Target chain must be at most 4 characters."
 
     target_chains = parse_target_chains(target_chain)
     if not target_chains:
         return None, "Target chain is required."
+    # Per TOKEN, not per string: a whole-string cap of 4 admitted "A,B" but
+    # rejected "A,B,C", silently capping every target at two chains.
+    for cid in target_chains:
+        if len(cid) > 4:
+            return None, f"Chain id {cid!r} is too long (max 4 characters)."
 
     hotspot_residues, err = parse_hotspot_residues(
         form.get("hotspot_residues") or "", target_chains
