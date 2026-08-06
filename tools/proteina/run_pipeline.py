@@ -840,17 +840,31 @@ def missing_endpoints(
       the contig ``B200-201`` genuinely selects it and the crop genuinely keeps
       it. Refusing an endpoint the selection then honours would make this
       function disagree with the code it is guarding.
-    * It matches upstream. The failure message is ``No atoms found for
-      selection: B/*/443`` — a wildcard in the middle field — so upstream is
-      not matching an insertion code either.
-    * It refuses in the safe direction. Antibody-numbered targets carry
-      insertion codes as a matter of routine; treating ``A100A`` as failing to
-      satisfy the endpoint ``100`` would block legitimate runs to prevent
-      nothing. ``ambiguous_insertion_codes`` already settles this trade-off the
-      same way and says so: warned about, never fatal.
+    * It matches how the structure libraries model a residue. biotite keeps the
+      insertion code in a field of its own, separate from the number — the fact
+      ``ambiguous_insertion_codes`` already records — so a numeric endpoint is a
+      question about the number field alone.
+
+      THIS BULLET IS THE WEAK ONE, AND IT IS THE EXPENSIVE DIRECTION. It is not
+      verified against ``AtomSelectionStack.from_contig``: atomworks is not
+      vendored here and its contig grammar is unread. Do not read the failure
+      message ``No atoms found for selection: B/*/443`` as agreement — that
+      wildcard sits in the MIDDLE field, and a three-field selection puts the
+      residue number, and any code with it, in the third. If upstream does
+      discriminate on the code, this rule is a false negative and the run dies
+      on a billed A100, whereas the strict rule would only have cost a free
+      refusal. Revisit here first if a paid shard ever dies on an
+      insertion-coded endpoint.
+    * Antibody-numbered targets carry insertion codes as a matter of routine, so
+      treating ``A100A`` as failing to satisfy the endpoint ``100`` would refuse
+      runs THIS FILE'S OWN SELECTION accepts (see the first bullet — that part is
+      executed, not inferred). ``ambiguous_insertion_codes`` settles the same
+      trade-off the same way: warned about, never fatal.
 
     Returned in segment order, ``lo`` before ``hi``, so a segment with two bad
-    endpoints contributes two entries and the message can name both.
+    endpoints contributes two entries and the message can name both. Deduped on
+    ``(chain, endpoint)``, so ``B443-443`` — both ends the same absent residue —
+    names it once rather than twice.
     """
     out: list[tuple[str, int]] = []
     for chain, lo, hi in segments:
@@ -1257,9 +1271,11 @@ def prepare_custom_target(
             "does not contain. The design engine resolves each end of the "
             "range against the structure and would have failed with "
             f'"No atoms found for selection: {absent[0][0]}/*/{absent[0][1]}" '
-            "after the GPU was already paid for. Set an explicit target chain "
-            f"range whose ends are real residues{advice}. "
-            f"The target contains: {spans}.",
+            "after the GPU work was already paid for. Set an explicit target "
+            f"chain range whose ends are real residues{advice}. "
+            f"The chains present run {spans} — a run is first-to-last and can "
+            "have gaps inside it, which is why the range suggested above is "
+            "built from residues that really exist rather than from those ends.",
         )
 
     selected = select_residues(residues, segments)

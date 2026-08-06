@@ -7575,23 +7575,42 @@ class TestTheEndpointGuardReachesTheCanaryToo:
             str(path), "", [("positive", ["A236"])]) == "A236-443,B236-442"
 
     def test_the_predicate_is_run_pipelines_and_not_a_restatement(self):
-        """THE PIN THAT MATTERS, and it is on DELEGATION, not on output — a
-        canary that computes the right answer in its own code still fails it.
-        That is the property that survives the next change to what counts as a
-        missing endpoint, which "the canary refuses B236-443" would not."""
+        """THE PIN THAT MATTERS, and it is on DATA FLOW, not merely on the call
+        existing — production's answer must be the argument the refusal decides
+        on. Pinning "``missing_endpoints`` appears somewhere in this function"
+        is NOT enough and was the first version of this test: QC demonstrated a
+        canary that calls it, discards the result, and refuses on a locally
+        computed list passing all 629 proteina tests. "Someone inlines the logic
+        but leaves the call behind" is the realistic drift shape, not "someone
+        deletes the call".
+
+        The sibling pin on ``unrenderable_segments`` still has the weaker form
+        and the same hole. Not widened here — it is a different guard and this
+        commit does not own it — but it should be, and it is the reason to read
+        this docstring before copying that one."""
         tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
         refusal = next(
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef)
             and n.name == "_refuse_unresolvable_hotspots")
-        called = {
-            node.func.attr for node in ast.walk(refusal)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        decisions = [
+            node for node in ast.walk(refusal)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "refuse_missing_endpoints"
+        ]
+        assert len(decisions) == 1, (
+            "exactly one endpoint refusal is expected; with two the assertion "
+            "below could be satisfied by whichever one is still wired up")
+        produced_inline = {
+            arg.func.attr for arg in decisions[0].args
+            if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
         }
-        assert "missing_endpoints" in called, (
-            "the canary must ASK run_pipeline whether a range end exists, not "
-            "decide for itself — a second implementation is the drift that has "
-            "now cost a paid shard once and been caught by audit twice")
+        assert "missing_endpoints" in produced_inline, (
+            "the canary must pass run_pipeline's OWN return value straight into "
+            "the refusal, not call it and decide on something else — a second "
+            "implementation is the drift that has now cost a paid shard once "
+            "and been caught by audit twice")
 
     def test_the_refusal_fires_before_the_hotspot_one(self, tmp_path):
         """Production checks endpoints (step 4b) before hotspots (step 5), and

@@ -1675,6 +1675,20 @@ class TestContigEndpointsMustBeRealResidues:
         gapped = [r for r in residues if not (301 <= r[1] <= 349 and r[0] == "A")]
         assert rp.missing_endpoints(gapped, [("A", 320, 443)]) == [("A", 320)]
 
+    def test_one_absent_residue_named_by_both_ends_is_reported_once(
+            self, tmp_path):
+        """``B443-443`` is lo AND hi, both absent. The docstring promises the
+        pair is deduped so the refusal names it once; without the dedup the
+        message reads "residue 443 on chain B, residue 443 on chain B". Pinned
+        because the docstring makes the claim — an unchecked promise about
+        output is the drift this file keeps finding."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("B", 443, 443)]) == [("B", 443)]
+        # Distinct absent endpoints are still both reported — dedup must not
+        # collapse them to the first.
+        assert rp.missing_endpoints(residues, [("B", 444, 445)]) == [
+            ("B", 444), ("B", 445)]
+
     def test_a_bare_chain_id_has_no_endpoints_to_check(self, tmp_path):
         """``(chain, None, None)`` is legal input and must not raise or refuse.
         Skipped inside the helper, so a caller that forgets to filter gets the
@@ -1789,7 +1803,10 @@ class TestContigEndpointsMustBeRealResidues:
         detail = data["error"]["detail"]
         assert "chain B" in detail and "443" in detail
         assert "A236-443, B236-442" in detail, "the real spans of the upload"
-        assert "B236-442" in detail, "the corrected contig, spelled out"
+        # ``e.g. `` prefix deliberately: the bare string "B236-442" is ALSO in
+        # the spans sentence, so asserting it alone passes with the suggestion
+        # stripped out entirely. The advice is the half an operator acts on.
+        assert "e.g. B236-442" in detail, "the corrected contig, spelled out"
         # It must not misattribute the fault to chain A, which is correct.
         assert "chain A" not in detail
         # And it should say where this would otherwise have been discovered.
