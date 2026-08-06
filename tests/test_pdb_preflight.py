@@ -931,12 +931,28 @@ _MULTI_CHAIN_TOOLS = ["proteina"]
 
 
 def _two_chain_target() -> bytes:
-    """Two full, healthy 120-residue chains. Big enough to clear every tool's
-    min_target_aa and small enough to clear every hard cap, so the only thing
-    a verdict can be reacting to is the chain COUNT."""
+    """Two full, healthy 60-residue chains. Big enough to clear every tool's
+    min_target_aa (30) and small enough to clear every hard cap, so the only
+    thing a verdict can be reacting to is the chain COUNT.
+
+    THE SIZE IS LOAD-BEARING AND IT SHRANK. These chains were 120 residues each
+    when the multi-chain gate landed, which was inside every cap AT THE TIME:
+    proteina still carried the placeholder hard_cap_target_aa=600. The size-cap
+    commit sets that cap to 140 from the only configuration ever run on a GPU,
+    and 240 is over it — so `test_container_ready_tools_are_not_gated[proteina]`
+    and `test_the_gate_is_driven_by_the_rules_not_by_a_slug_list` both went red
+    the moment the two commits met, with proteina refused for SIZE inside tests
+    whose entire subject is CHAIN COUNT. Neither commit is wrong and neither is
+    red on its own; the fixture was simply sized against a cap that no longer
+    exists. 120 total restores the property the docstring always claimed, with
+    headroom under both the 140 cap and the 130 soft warn.
+
+    Keep the total under proteina's hard cap. If it ever creeps over again these
+    tests will report a multi-chain regression that is not there.
+    """
     return _multi_chain_pdb({
-        "A": list(range(1, 121)),
-        "B": list(range(1, 121)),
+        "A": list(range(1, 61)),
+        "B": list(range(1, 61)),
     })
 
 
@@ -1165,3 +1181,378 @@ def test_multi_chain_is_refused_at_submit(slug):
     )
     assert not v.ok
     assert v.reason  # the route surfaces reason (+ suggested_fix) to the user
+
+
+# ---------------------------------------------------------------------------
+# proteina size envelope — THE COST GATE.
+#
+# Until bring-your-own targets landed, proteina was reachable only with curated
+# ~115 aa benchmark targets, so it sat outside BINDER_DESIGN_TOOLS and got no
+# size check at all. With uploads, an oversized target runs to
+# _MAX_SESSION_S = 7200, is killed, and bills the full per-shard ceiling
+# (~$12.58) for zero designs — across a 4-shard first wave
+# (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"] = 4), all of it inside the
+# ~$15/shard wallet hold. This envelope is the only thing that refuses that,
+# and it shipped with ZERO tests behind a placeholder cap of 600.
+#
+# The numbers pinned here come from the two paid A100-80GB canary shards
+# (1HEW 129 aa -> 67,546 MB; 3S7G window 130 aa / 2 chains -> 67,570 MB, 359 s)
+# on an 81,920 MB card, read at their WORST CASE — both points are the same
+# size, so they yield no slope. Full provenance, and the single experiment that
+# would let the cap be raised, are in shared/pdb_preflight_rules.py::_PROTEINA.
+# ---------------------------------------------------------------------------
+
+# The only target size ever run on a GPU. Every other number in this section is
+# either this one or a deliberately conservative bound around it.
+_PROTEINA_MEASURED_AA = 130
+
+# Real 3S7G (IgG1 Fc) author numbering — the motivating target.
+_FC_CHAINS = {"A": (236, 443), "B": (236, 442), "C": (237, 444), "D": (238, 444)}
+
+
+def _fc_pdb(*chains, last=None) -> bytes:
+    """A synthetic stand-in for 3S7G carrying its real per-chain residue spans.
+
+    ``last`` overrides a chain's final resnum, so a sub-domain selection (the
+    canaried window, say) can be built without inventing a numbering scheme.
+    """
+    spec = {}
+    for c in chains:
+        lo, hi = _FC_CHAINS[c]
+        if last and c in last:
+            hi = last[c]
+        spec[c] = list(range(lo, hi + 1))
+    return _multi_chain_pdb(spec)
+
+
+def _proteina_size(target_aa: int, **kw):
+    """Verdict for a single-chain proteina target of exactly ``target_aa``."""
+    data = _chain_pdb("A", list(range(1, target_aa + 1)))
+    return preflight_for_tool(
+        "proteina", data, target_chain="A", hotspots=[], **kw
+    )
+
+
+def test_proteina_size_envelope_constants_are_pinned():
+    """A money constant must not drift without someone re-reading its evidence.
+
+    It already did once: the cap shipped at 600 as a placeholder carrying a
+    comment saying to re-set it from canary measurement, and that never
+    happened. These values encode the worst-case reading of the two
+    measurements that exist. Do not relax them from a fit through 129 and
+    130 aa — run the discriminating experiment named in _PROTEINA's comment.
+    """
+    from shared.pdb_preflight_rules import TOOL_RULES
+    rules = TOOL_RULES["proteina"]
+    env = rules.size
+    assert env.hard_cap_target_aa == 140
+    assert env.soft_warn_target_aa == 130
+    assert env.hard_cap_combined_aa == 260
+    # Structural invariants, independent of the exact numbers.
+    assert env.soft_warn_target_aa < env.hard_cap_target_aa
+    assert rules.min_target_aa < env.hard_cap_target_aa
+    assert rules.gpu == "A100-80GB"
+
+
+def test_proteina_cap_still_admits_the_size_we_actually_measured():
+    """The guard against over-correcting. 130 aa across 2 chains is the one
+    target that has provably run (67,570 MB of 81,920, 359 s wall); a cap that
+    refused it would be refusing the only thing we know works."""
+    data = _fc_pdb("A", "B", last={"A": 300, "B": 300})   # 65 + 65 = 130 aa
+    v = preflight_for_tool("proteina", data, target_chain="A B", hotspots=[])
+    assert v.size_envelope.residue_count == _PROTEINA_MEASURED_AA
+    assert v.kind is not VerdictKind.NEEDS_FIX
+    assert not v.size_envelope.over_hard_cap
+    assert not v.size_envelope.over_soft_warn
+
+
+def test_proteina_hard_cap_boundary_is_exact():
+    """``over_hard`` is a strict > on the cap, so 140 runs and 141 does not.
+    Pins the off-by-one: a gate that fires one residue early or late is a
+    different gate than the one the evidence supports."""
+    at_cap = _proteina_size(140)
+    assert not at_cap.size_envelope.over_hard_cap
+    assert at_cap.kind is not VerdictKind.NEEDS_FIX
+
+    over = _proteina_size(141)
+    assert over.size_envelope.over_hard_cap
+    assert over.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_oversized_target_is_refused_with_an_actionable_reason():
+    """The refusal has to name the size, the cap and the GPU — a bare "too
+    big" leaves the user with no way to pick a selection that would run."""
+    v = _proteina_size(200)
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_hard_cap
+    assert "200" in v.reason
+    assert "140" in v.reason
+    assert "A100-80GB" in v.reason
+    assert v.suggested_fix
+
+
+def test_proteina_soft_warn_starts_above_the_measured_size():
+    """Between the measured 130 aa and the 140 cap a job is allowed but
+    flagged: that band is unmeasured territory, not a known-good size."""
+    v = _proteina_size(135)
+    assert v.kind is not VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_soft_warn
+    assert not v.size_envelope.over_hard_cap
+    assert "135" in (v.size_envelope.warn_message or "")
+
+
+def test_proteina_multi_chain_target_is_summed_not_taken_per_chain():
+    """An Fc is big BECAUSE it is several chains. If the cap looked at one
+    chain at a time, a 4 x 207 aa tetramer would read as 207 and sail through —
+    which is the whole exposure this envelope exists to close."""
+    under = _multi_chain_pdb({"A": list(range(1, 71)), "B": list(range(1, 71))})
+    v_under = preflight_for_tool(
+        "proteina", under, target_chain="A B", hotspots=[],
+    )
+    assert v_under.size_envelope.residue_count == 140
+    assert not v_under.size_envelope.over_hard_cap
+
+    over = _multi_chain_pdb({"A": list(range(1, 72)), "B": list(range(1, 72))})
+    v_over = preflight_for_tool(
+        "proteina", over, target_chain="A B", hotspots=[],
+    )
+    assert v_over.size_envelope.residue_count == 142
+    assert v_over.size_envelope.over_hard_cap
+    assert v_over.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_refuses_the_typical_fc_ch2_ch3_selection():
+    """3S7G chains A+B over their full CH2+CH3 span is 415 aa — 3.2x the only
+    size ever measured, and READY under the old placeholder cap of 600. This is
+    the submission the feature was built for, and it is refused ON PURPOSE
+    until a measurement at that size exists. If this test starts failing
+    because the cap was raised, the raise must cite a canary run, not an
+    argument."""
+    data = _fc_pdb("A", "B")
+    v = preflight_for_tool("proteina", data, target_chain="A B", hotspots=[])
+    assert v.size_envelope.residue_count == 415
+    assert v.size_envelope.over_hard_cap
+    assert v.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_refuses_the_whole_fc_file():
+    """All four 3S7G chains = 830 aa, 6.4x the measured size."""
+    data = _fc_pdb("A", "B", "C", "D")
+    v = preflight_for_tool("proteina", data, target_chain="A B C D", hotspots=[])
+    assert v.size_envelope.residue_count == 830
+    assert v.size_envelope.over_hard_cap
+    assert v.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_combined_budget_blocks_an_unmeasured_binder_length():
+    """The canaries ran binder_length [60, 120]. The form allows up to 300, and
+    a 300-aa binder against an at-cap target is a complex nobody has measured,
+    so the combined budget refuses it even though the TARGET is legal."""
+    v = _proteina_size(130, binder_max_aa=300)
+    assert not v.size_envelope.over_hard_cap
+    assert v.size_envelope.over_combined_cap
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.combined_aa == 430
+
+    # The binder range that WAS measured still passes at the measured target.
+    ok = _proteina_size(130, binder_max_aa=120)
+    assert not ok.size_envelope.over_combined_cap
+    assert ok.kind is not VerdictKind.NEEDS_FIX
+
+
+def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
+    """359 s (6.0 min) for 8 designs at 130 aa is the only wall-clock we have,
+    so the advisory estimate has to land on it. It used to be anchored to
+    meta.py's invented "30 to 120 min" band, which put the same shard at
+    ~83 min — an order of magnitude out, in the copy users plan against.
+
+    The band is +/-5% of the measurement and NOT tighter. A tighter one would
+    distinguish anchors the evidence cannot: 359 s is a single observation, so
+    pinning it to better than a few percent would be inventing precision — the
+    exact habit the size cap's comment exists to break. Mutants inside the
+    measurement's own uncertainty are deliberately left alive.
+    """
+    data = _fc_pdb("A", "B", last={"A": 300, "B": 300})   # the measured 130 aa
+    v = preflight_for_tool(
+        "proteina", data, target_chain="A B", hotspots=[], num_designs=8,
+    )
+    est = v.size_envelope.runtime_estimate_min
+    assert est is not None
+    # 359 s = 5.983 min. Both bounds are clear of the estimator's max(5.0, ...)
+    # floor, so this cannot be satisfied by the floor instead of the anchor.
+    assert 5.68 <= est <= 6.28, f"estimate {est} min is not the measured 6.0"
+
+
+def test_proteina_runtime_curve_bends_with_target_size():
+    """Pins ``runtime_alpha``. Doubling the target multiplies the estimate by
+    2^alpha, so a flat alpha=1.0 (or a steeper 1.5) is visible here and nowhere
+    else — every single-size assertion is blind to it."""
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    rules = TOOL_RULES["proteina"]
+    ratio = (
+        runtime_estimate_min(rules, 260, 8)
+        / runtime_estimate_min(rules, 130, 8)
+    )
+    # 2 ** 1.3 = 2.462; alpha=1.0 gives 2.0 and alpha=1.5 gives 2.83.
+    assert 2.35 <= ratio <= 2.60, f"alpha is not 1.3 (size ratio {ratio:.3f})"
+
+
+def test_proteina_runtime_scales_per_SHARD_not_per_hundred_designs():
+    """Pins ``runtime_baseline_designs=8``. proteina's shard IS 8 designs
+    (_SHARD_DESIGNS); the dataclass default is 100. Getting that wrong scales
+    every estimate by 12.5x, and at ordinary design counts the estimator's
+    5-minute floor hides it — so this asserts at a count far above the floor,
+    where the two cannot be confused."""
+    from shared.pdb_preflight_rules import TOOL_RULES, runtime_estimate_min
+    rules = TOOL_RULES["proteina"]
+    assert rules.size.runtime_baseline_designs == 8
+    est = runtime_estimate_min(rules, 130, 800)      # 100 shards
+    # 100 x the measured 6.0 min shard. With baseline 100 it would be ~48 min.
+    assert 550.0 <= est <= 650.0, f"800 designs estimated at {est} min"
+
+
+def test_proteina_over_cap_target_reports_only_the_cap_breach():
+    """The status flags are a precedence ladder, not independent booleans.
+
+    ``over_soft_warn`` and ``over_combined_cap`` are suppressed once the hard
+    cap fires, because the panel renders whichever is set and a user who is
+    told BOTH "this is above the comfort zone" and "this is over the limit"
+    gets a mixed verdict on a job that simply cannot run. Nothing else in the
+    suite exercised the suppression, so dropping either clause was invisible.
+    """
+    v = _proteina_size(200, binder_max_aa=300)       # over hard AND combined
+    assert v.kind is VerdictKind.NEEDS_FIX
+    assert v.size_envelope.over_hard_cap
+    assert not v.size_envelope.over_soft_warn, (
+        "a target over the hard cap must not also report a soft warning")
+    assert not v.size_envelope.over_combined_cap, (
+        "the hard cap outranks the combined budget in the message ladder")
+    # And the message the user sees is the cap one, not the combined one.
+    assert "combined" not in (v.reason or "").lower()
+
+
+def test_proteina_combined_budget_boundary_is_exact():
+    """Pins ``hard_cap_combined_aa`` BEHAVIOURALLY, so the literal pin in
+    ``test_proteina_size_envelope_constants_are_pinned`` is not the only thing
+    standing between this number and a silent edit. 140 + 120 = 260 is exactly
+    the budget and runs; one residue more does not."""
+    at_budget = _proteina_size(140, binder_max_aa=120)
+    assert at_budget.size_envelope.combined_aa == 260
+    assert not at_budget.size_envelope.over_combined_cap
+    assert at_budget.kind is not VerdictKind.NEEDS_FIX
+
+    over = _proteina_size(140, binder_max_aa=121)
+    assert over.size_envelope.combined_aa == 261
+    assert over.size_envelope.over_combined_cap
+    assert over.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_soft_warn_boundary_is_exact():
+    """Pins ``soft_warn_target_aa`` behaviourally for the same reason: 130 is
+    the size that has been run, so it must NOT warn, and 131 must."""
+    assert not _proteina_size(130).size_envelope.over_soft_warn
+    assert _proteina_size(131).size_envelope.over_soft_warn
+
+
+# ---------------------------------------------------------------------------
+# Sizing the SELECTION rather than the upload.
+#
+# prepare_custom_target stages the whole file and the contig selects what
+# reaches the model, so counting the upload refused runs that fit — including
+# the exact 130 aa configuration the paid canary validated, when it was reached
+# by uploading whole 3S7G and narrowing with a contig. Hand-trimming the PDB
+# was the only way through, which is work the contig exists to remove.
+# ---------------------------------------------------------------------------
+
+def test_proteina_sizes_the_contig_selection_not_the_uploaded_file():
+    """Whole 3S7G (830 aa) narrowed to the canaried 130 aa window runs."""
+    data = _fc_pdb("A", "B", "C", "D")               # 830 aa uploaded
+    v = preflight_for_tool(
+        "proteina", data, target_chain="A B", hotspots=[],
+        target_segments=[("A", 236, 300), ("B", 236, 300)],
+    )
+    assert v.size_envelope.residue_count == 130
+    assert v.size_envelope.size_basis == "selection"
+    assert not v.size_envelope.over_hard_cap
+    assert v.kind is not VerdictKind.NEEDS_FIX
+
+
+def test_proteina_selection_of_one_domain_from_a_big_upload_runs():
+    """A 61-residue window out of the same 830 aa file is a 61-residue run."""
+    data = _fc_pdb("A", "B", "C", "D")
+    v = preflight_for_tool(
+        "proteina", data, target_chain="A", hotspots=[],
+        target_segments=[("A", 300, 360)],
+    )
+    assert v.size_envelope.residue_count == 61
+    assert v.kind is not VerdictKind.NEEDS_FIX
+
+
+def test_proteina_oversized_selection_is_still_refused():
+    """Sizing the selection must not become a way to smuggle a big run
+    through: the selection itself is what the cap now applies to."""
+    data = _fc_pdb("A", "B", "C", "D")
+    v = preflight_for_tool(
+        "proteina", data, target_chain="A B", hotspots=[],
+        target_segments=[("A", 236, 443), ("B", 236, 442)],   # 415 aa
+    )
+    assert v.size_envelope.residue_count == 415
+    assert v.size_envelope.over_hard_cap
+    assert v.kind is VerdictKind.NEEDS_FIX
+    # The message names the region the user typed, not the file.
+    assert "A236-443,B236-442" in v.reason
+
+
+def test_proteina_no_contig_still_counts_the_whole_named_chains():
+    """No selection declared means the whole chain, which is what the
+    container derives — and it over-counts rather than under-counts, so the
+    absent case can never be the one that lets an oversized run through."""
+    data = _fc_pdb("A", "B", "C", "D")
+    for segments in (None, []):
+        v = preflight_for_tool(
+            "proteina", data, target_chain="A B", hotspots=[],
+            target_segments=segments,
+        )
+        assert v.size_envelope.residue_count == 415
+        assert v.size_envelope.size_basis == "chains"
+        assert v.kind is VerdictKind.NEEDS_FIX
+
+
+def test_proteina_refusal_copy_does_not_predict_an_oom_it_cannot_predict():
+    """S5. The cap is a precaution at an untested size, so the copy may not
+    assert the job "would likely run out of memory" — no run above 130 aa has
+    ever happened here. Tools whose caps come from published work keep the
+    stronger wording; this asserts the two really are different."""
+    proteina = _proteina_size(200)
+    assert "out of memory" not in (proteina.reason or "").lower()
+    assert "precaution" in (proteina.reason or "").lower()
+
+    # rfdiffusion's cap is literature-backed, so it keeps the OOM prediction.
+    big = _chain_pdb("A", list(range(1, 551)))
+    rfd = preflight_for_tool(
+        "rfdiffusion", big, target_chain="A", hotspots=[100],
+    )
+    assert "out of memory" in (rfd.reason or "").lower()
+
+
+def test_proteina_size_refusal_does_not_offer_an_absent_alphafold_model():
+    """The fix used to say "Try the AlphaFold model" next to alphafold=None,
+    pointing at a control the panel never rendered. Synthetic PDBs carry no
+    DBREF, so there is no suggestion to offer here."""
+    v = _proteina_size(200)
+    assert v.alphafold is None
+    assert "alphafold" not in (v.suggested_fix or "").lower()
+    assert "narrow" in (v.suggested_fix or "").lower()
+
+
+def test_size_refusal_pluralises_and_names_what_it_counted():
+    """"Target chain has 415 residues" was wrong twice for a 2-chain selection:
+    one chain implied, and the file counted rather than the run."""
+    v = preflight_for_tool(
+        "proteina", _fc_pdb("A", "B", "C", "D"), target_chain="A B",
+        hotspots=[], target_segments=[("A", 236, 443), ("B", 236, 442)],
+    )
+    assert "The region you selected" in v.reason
+    assert "415 residues" in v.reason
+    one = _proteina_size(1)          # min-residue floor fires, not the cap
+    assert one.kind is VerdictKind.NEEDS_FIX

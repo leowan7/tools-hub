@@ -142,6 +142,13 @@ class SizeEnvelopeStatus:
     over_combined_cap: bool = False
     runtime_estimate_min: Optional[float] = None
     runtime_basis: Optional[str] = None             # e.g. "100 designs"
+    # WHAT ``residue_count`` COUNTED. "selection" when a chain/residue contig
+    # narrowed it, "chains" when the whole named chain(s) were counted because
+    # no contig was declared. Surfaced because the two can differ by a factor
+    # of several, and a refusal the user cannot reconcile with what they typed
+    # is a refusal they will work around by hand-trimming their PDB.
+    size_basis: str = "chains"
+    selection_label: Optional[str] = None           # e.g. "A236-300,B236-300"
     # NOTE: runtime_hard_cap_min + over_runtime_cap were retired by the
     # tier-collapse PR. Wall-clock is no longer a preflight block; long
     # campaigns are a legitimate user choice. The estimate above stays
@@ -394,6 +401,7 @@ def preflight_for_tool(
     hotspots: list,
     binder_max_aa: Optional[int] = None,
     num_designs: Optional[int] = None,
+    target_segments: Optional[list] = None,
 ) -> PreflightVerdict:
     """Top-level entry. Returns a PreflightVerdict for the named binder tool.
 
@@ -408,6 +416,18 @@ def preflight_for_tool(
     ``num_designs`` is the requested design count; when provided, the
     panel surfaces a runtime estimate. Both default to None so existing
     callers keep working without payload-shape changes.
+
+    ``target_segments`` is the chain/residue contig the run will design
+    against, as ``[(chain, lo, hi), ...]`` with None bounds for a whole chain
+    (proteina's validator returns exactly this as ``_target_segments``). When
+    given, the SIZE ENVELOPE sizes the selection rather than the whole upload —
+    those differ whenever a user uploads a full structure and designs against
+    part of it, and sizing the upload refuses runs that would have fitted. None
+    means no contig was declared, which is the whole-chain default; the
+    envelope then counts the named chains, which over-counts rather than under-
+    counts and so can never let an oversized run through. Everything else here
+    (gaps, hotspots, min residues, cleanup) still reads the whole named chains,
+    because those checks are about the structure's integrity, not its size.
 
     On any unexpected error (parser blow-up, etc.) returns a NEEDS_FIX
     verdict with the underlying message — never raises.
@@ -590,8 +610,17 @@ def preflight_for_tool(
         )
 
     # ---- size envelope (hard cap + combined budget + runtime estimate) -----
+    # Sized on the CONTIG'S SELECTION when one was declared, not on the upload.
+    # ``kept`` above stays the whole-chain count: the min-residue floor asks
+    # "is this a real target at all", which is a question about the file.
+    selected_aa, selection_label = _selection_residue_count(
+        pdb_bytes, target_chain, target_segments or [],
+    )
     size_envelope = _check_size_envelope(
-        rules, kept, binder_max_aa=binder_max_aa, num_designs=num_designs,
+        rules, selected_aa if selected_aa is not None else kept,
+        binder_max_aa=binder_max_aa, num_designs=num_designs,
+        size_basis="selection" if selected_aa is not None else "chains",
+        selection_label=selection_label,
     )
     if size_envelope.over_hard_cap or size_envelope.over_combined_cap:
         return PreflightVerdict(
@@ -601,9 +630,26 @@ def preflight_for_tool(
             cleanup=cleanup,
             hotspot_status={"surviving": [], "dropped": list(hotspots)},
             reason=size_envelope.hard_fail_message,
+            # The fix now leads with narrowing the SELECTION, which is the
+            # action that actually resolves this and needs no new file — the
+            # gate sizes the contig, so typing a smaller range is enough. The
+            # AlphaFold half is only offered when there IS a suggestion
+            # attached; it used to be printed unconditionally next to
+            # ``alphafold=None``, pointing at a control the panel never
+            # rendered.
             suggested_fix=(
-                "Try the AlphaFold model trimmed to the epitope domain, "
-                "or split your target into a sub-domain that fits."
+                (
+                    f"Narrow the target region to the part you want to design "
+                    f"against — e.g. one domain rather than "
+                    f"{size_envelope.selection_label or 'the whole structure'}"
+                    f" — and keep it at or under "
+                    f"{size_envelope.hard_cap_target_aa} residues."
+                )
+                + (
+                    " You can also use the AlphaFold model below and trim that "
+                    "to the epitope domain."
+                    if af_suggestion else ""
+                )
             ),
             alphafold=af_suggestion,
             size_envelope=size_envelope,
@@ -881,6 +927,65 @@ def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
     return sorted(merged)
 
 
+def _selection_residue_count(
+    pdb_bytes: bytes, target_chain: str, segments: list,
+) -> tuple[Optional[int], Optional[str]]:
+    """Residues the contig actually SELECTS, and a label for them.
+
+    THE BUG THIS EXISTS TO FIX. The size gate used to count every residue on
+    the named chains, i.e. the whole uploaded file. But ``prepare_custom_target``
+    stages the file and the CONTIG selects what reaches the model, so the two
+    are different numbers whenever a user uploads a full structure and designs
+    against part of it — which is the normal case for anything larger than a
+    single domain. The gate therefore refused the exact configuration the paid
+    canary validated: whole 3S7G uploaded with contig ``A236-300,B236-300``
+    runs 130 residues, and was blocked for "415". The only way to get that run
+    past the gate was to hand-trim the PDB first, which is work the contig
+    exists to make unnecessary.
+
+    ``segments`` is a list of ``(chain_id, lo, hi)``; ``lo``/``hi`` are None for
+    a whole-chain segment. Returns ``(count, label)``, or ``(None, None)`` when
+    no usable selection was declared — the caller then counts the named chains,
+    which is the correct reading of "no contig" (the container derives the full
+    observed range) and is also the conservative one, since it can only count
+    MORE than the selection.
+
+    Residues are counted with the same backbone-completeness rule the
+    normalizer applies, so this is post-cleanup like the count it replaces.
+    """
+    if not segments:
+        return None, None
+
+    wanted_chains: list[str] = []
+    parsed: list[tuple[str, Optional[int], Optional[int]]] = []
+    for segment in segments:
+        try:
+            cid, lo, hi = segment
+        except (TypeError, ValueError):
+            # A malformed segment must not silently shrink the count — that
+            # would under-count and let an oversized run through. Give up on
+            # the selection entirely and let the caller count whole chains.
+            return None, None
+        cid = str(cid)
+        parsed.append((cid, lo, hi))
+        if cid not in wanted_chains:
+            wanted_chains.append(cid)
+
+    by_chain = _clean_resnums_by_chain(pdb_bytes, " ".join(wanted_chains))
+    total = 0
+    for cid, lo, hi in parsed:
+        resnums = by_chain.get(cid) or []
+        if lo is None or hi is None:
+            total += len(resnums)
+        else:
+            total += sum(1 for r in resnums if lo <= r <= hi)
+
+    label = ",".join(
+        cid if lo is None else f"{cid}{lo}-{hi}" for cid, lo, hi in parsed
+    )
+    return total, label
+
+
 def _check_hotspots(
     pdb_bytes: bytes, target_chain: str, hotspots: list,
 ) -> tuple[list, list]:
@@ -1043,10 +1148,21 @@ def _check_size_envelope(
     *,
     binder_max_aa: Optional[int],
     num_designs: Optional[int],
+    size_basis: str = "chains",
+    selection_label: Optional[str] = None,
 ) -> SizeEnvelopeStatus:
     """Evaluate the target residue count against the tool's size envelope."""
     env = rules.size
     combined = (target_aa + binder_max_aa) if binder_max_aa is not None else None
+    # "residue"/"residues", and a phrase naming what was counted. A two-chain
+    # selection reported as "Target chain has 415 residues" is wrong twice:
+    # there is more than one chain, and 415 was the file rather than the run.
+    noun = "residue" if target_aa == 1 else "residues"
+    counted = (
+        f"The region you selected ({selection_label}) has {target_aa} {noun}"
+        if size_basis == "selection" and selection_label
+        else f"The target chain(s) have {target_aa} {noun}"
+    )
 
     over_hard = target_aa > env.hard_cap_target_aa
     over_combined = (
@@ -1064,12 +1180,27 @@ def _check_size_envelope(
 
     warn_msg: Optional[str] = None
     hard_msg: Optional[str] = None
-    if over_hard:
+    if over_hard and env.cap_basis == "untested":
+        # THE COPY MAY NOT CLAIM MORE THAN THE NUMBER KNOWS. The other branch
+        # tells the user the job "would likely run out of memory", which is a
+        # fair reading of a cap set from published work plus a clean in-house
+        # run near it. proteina's cap has neither: the largest target ever run
+        # is 130 residues, so everything above the cap is UNTESTED, not
+        # known-to-fail. Asserting a predicted OOM there is the same invented
+        # confidence the cap's own comment warns against — and worse in user
+        # copy than in a comment, because the user cannot see the reasoning.
         hard_msg = (
-            f"Target chain has {target_aa} residues — {rules.slug.title()}'s "
-            f"GPU envelope tops out around {env.hard_cap_target_aa} on "
-            f"{rules.gpu}. The job would likely run out of memory partway "
-            f"through."
+            f"{counted}, above the {env.hard_cap_target_aa}-residue limit "
+            f"currently set for {rules.slug.title()} on {rules.gpu}. That "
+            f"limit is a precaution rather than a measured failure point: "
+            f"targets this large have not been run here yet, and a run that "
+            f"stalls is still billed for the GPU time it uses."
+        )
+    elif over_hard:
+        hard_msg = (
+            f"{counted} — {rules.slug.title()}'s GPU envelope tops out around "
+            f"{env.hard_cap_target_aa} on {rules.gpu}. The job would likely "
+            f"run out of memory partway through."
         )
     elif over_combined:
         hard_msg = (
@@ -1079,12 +1210,19 @@ def _check_size_envelope(
             f"{rules.slug.title()}. Either pick a smaller target or "
             f"shorten the max binder length."
         )
+    elif over_warn and env.cap_basis == "untested":
+        warn_msg = (
+            f"{counted}, above the {env.soft_warn_target_aa}-residue size "
+            f"{rules.slug.title()} has actually been run at here. It should "
+            f"still work, but this size has not been measured — watch the "
+            f"first shard before scaling the campaign up."
+        )
     elif over_warn:
         warn_msg = (
-            f"Target chain has {target_aa} residues — that's above the "
-            f"{env.soft_warn_target_aa}-aa comfort zone for "
-            f"{rules.slug.title()}. The job should still run, but expect "
-            f"longer wall-clock and a higher chance of out-of-memory."
+            f"{counted} — that's above the {env.soft_warn_target_aa}-aa "
+            f"comfort zone for {rules.slug.title()}. The job should still "
+            f"run, but expect longer wall-clock and a higher chance of "
+            f"out-of-memory."
         )
 
     return SizeEnvelopeStatus(
@@ -1102,7 +1240,54 @@ def _check_size_envelope(
         gpu=rules.gpu,
         warn_message=warn_msg,
         hard_fail_message=hard_msg,
+        size_basis=size_basis,
+        selection_label=selection_label,
     )
+
+
+def size_only_refusal(
+    tool_slug: str,
+    target_aa: int,
+    *,
+    binder_max_aa: Optional[int] = None,
+    selection_label: Optional[str] = None,
+) -> Optional[str]:
+    """Size verdict alone, as a user-facing string, or None when it fits.
+
+    FOR THE CAMPAIGN ROUTES. ``POST /campaigns`` and ``POST /targets/<id>/
+    launch`` are where the money actually goes — a proteina campaign is 4
+    concurrent shards at ~$12.58 each, and ``/tools/<slug>/submit`` (the only
+    caller of ``preflight_for_tool``) refuses anything above one shard, so the
+    full preflight has never guarded the expensive path.
+
+    Those routes cannot run the full preflight cheaply or safely: the
+    target-bound ones never download the structure, and turning the whole
+    gate on there would newly apply the min-residue floor, the gap rules and
+    the hotspot rules to campaigns that have always been allowed. This is the
+    size check ONLY, sharing the cap and the wording with the full evaluator so
+    the two can never disagree about what fits.
+
+    ``target_aa`` is the residue count of what will actually be designed
+    against. Callers working from a persisted chain summary should pass an
+    UPPER bound (see ``shared.targets.selection_residue_count``): over-counting
+    refuses a run that would have fitted, under-counting bills for one that
+    does not.
+    """
+    rules = TOOL_RULES.get(tool_slug)
+    if rules is None:
+        return None
+    status = _check_size_envelope(
+        rules, target_aa, binder_max_aa=binder_max_aa, num_designs=None,
+        size_basis="selection" if selection_label else "chains",
+        selection_label=selection_label,
+    )
+    if not (status.over_hard_cap or status.over_combined_cap):
+        return None
+    fix = (
+        f"Narrow the target region to at most "
+        f"{status.hard_cap_target_aa} residues, or pick a smaller target."
+    )
+    return f"{status.hard_fail_message} {fix}"
 
 
 def _nearest_clean_residues(

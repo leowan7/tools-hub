@@ -163,9 +163,42 @@ rewards = modal.Volume.from_name("proteina-rewards")
 app = modal.App("ranomics-proteina-canary")
 
 
-def _poll_vram(stop: threading.Event, out: dict) -> None:
+# One poll iteration is one nvidia-smi call capped at 10 s, and the poller
+# always finishes an iteration after the stop flag is set, so the join must
+# outlast it or the final sample is thrown away.
+_VRAM_JOIN_TIMEOUT_S = 15
+
+
+def _prealloc_disabled(env: dict | None) -> bool | None:
+    """Was JAX preallocation OFF in the env the CHILD actually received?
+
+    Derived, never asserted — see the twin in ``_hotspot_canary.py``.
+    ``design_subprocess_env`` uses ``setdefault``, so an operator override puts
+    preallocation back on while the code's intent is unchanged; a hardcoded
+    flag would label that run as if the fix had been in force.
+    """
+    if not env:
+        return None
+    raw = env.get("XLA_PYTHON_CLIENT_PREALLOCATE")
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in ("false", "0", "no", "off")
+
+
+def _poll_vram(
+    stop: threading.Event, out: dict, child_env: dict | None = None,
+) -> None:
+    """Peak device VRAM across the design.
+
+    SAMPLE FIRST, TEST THE STOP FLAG SECOND. `while not stop.is_set()` takes
+    ZERO samples when the design finishes before this thread is first
+    scheduled, and then reports peak 0 — which reads as "used no VRAM" rather
+    than "was never measured". A shard that dies early is precisely the one
+    whose memory you want to see. Same shape as ``_hotspot_canary._poll_vram``,
+    which this file lagged behind on.
+    """
     peak = 0
-    while not stop.is_set():
+    while True:
         try:
             r = subprocess.run(
                 ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
@@ -175,8 +208,13 @@ def _poll_vram(stop: threading.Event, out: dict) -> None:
                 peak = max(peak, int(line.strip()))
         except Exception:
             pass
+        if stop.is_set():
+            break
         stop.wait(5)
     out["peak_vram_mb"] = peak
+    out["vram_poll_interval_s"] = 5
+    out["vram_prealloc_disabled"] = _prealloc_disabled(child_env)
+    out["vram_poll_complete"] = True
 
 
 @app.function(
@@ -207,7 +245,19 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
 
     vram: dict = {}
     stop = threading.Event()
-    poller = threading.Thread(target=_poll_vram, args=(stop, vram), daemon=True)
+    # env=, and the SAME env the poller is told about. Without it the child
+    # inherits JAX's default PREALLOCATE=true, reserves 0.75 x 81,920 =
+    # 61,440 MB on its first JAX op regardless of target size, and every number
+    # this harness reports is that constant — which is exactly how the two
+    # existing ~67.5 GB readings came to be unusable. run_pipeline.run_streaming
+    # was fixed for production; this file, whose docstring says its VRAM feeds
+    # the 40-vs-80GB decision, was left on the old path and would have produced
+    # the same discredited number today.
+    child_env = rp.design_subprocess_env()
+    poller = threading.Thread(
+        target=_poll_vram, args=(stop, vram),
+        kwargs={"child_env": child_env}, daemon=True,
+    )
     poller.start()
 
     t0 = time.time()
@@ -215,13 +265,20 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
         rc = subprocess.run(
             cmd, cwd=str(work_dir), stdout=sys.stdout, stderr=sys.stderr,
             timeout=3600,  # bound a hang to ~1h (~$3.7) instead of the 2h Modal cap
+            env=child_env,
         ).returncode
     except subprocess.TimeoutExpired:
         rc = 124
         print("[canary] TIMEOUT: `complexa design` exceeded 3600s — killed", flush=True)
     runtime_s = int(time.time() - t0)
     stop.set()
-    poller.join(timeout=10)
+    poller.join(timeout=_VRAM_JOIN_TIMEOUT_S)
+    if not vram.get("vram_poll_complete"):
+        print(
+            f"[canary] WARNING: VRAM poller did not finish within "
+            f"{_VRAM_JOIN_TIMEOUT_S}s; peak_vram_mb is incomplete.",
+            flush=True,
+        )
 
     # Inspect the outputs (reward CSV columns + design count).
     csvs = {}
@@ -261,6 +318,12 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
         "preset": preset, "task_name": task_name,
         "exit_code": rc, "runtime_s": runtime_s,
         "peak_vram_mb": vram.get("peak_vram_mb"),
+        # Provenance for the number above. Device-wide nvidia-smi cannot tell a
+        # JAX reservation from demand, so a peak taken with preallocation ON is
+        # not comparable to one taken with it OFF. Derived from the child's env.
+        "vram_prealloc_disabled": vram.get("vram_prealloc_disabled"),
+        "vram_poll_interval_s": vram.get("vram_poll_interval_s"),
+        "vram_poll_complete": bool(vram.get("vram_poll_complete")),
         "designs_expected": nsamples * replicas,
         "n_pdbs": len(all_pdbs),
         "pdb_sample": [Path(p).name for p in all_pdbs[:5]],

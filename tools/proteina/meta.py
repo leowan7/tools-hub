@@ -11,12 +11,42 @@ from __future__ import annotations
 from typing import Optional
 
 PRESET_RUNTIME: dict[str, dict[str, object]] = {
-    # Per-shard wall-clock. BOOTSTRAP ranges pending the P4/P5 canaries; the
-    # campaign fans many shards out in parallel, so total time depends on the
-    # requested design count and the launch concurrency (4).
-    "protein_binder": {"typical_minutes": "30 to 120"},
-    "ligand_binder": {"typical_minutes": "30 to 120"},
-    "motif_ame": {"typical_minutes": "30 to 120"},
+    # Per-shard wall-clock. The campaign fans many shards out in parallel, so
+    # total campaign time depends on the requested design count and the launch
+    # concurrency (4), not on this number alone.
+    #
+    # protein_binder is MEASURED: a paid A100-80GB canary shard returned 8
+    # designs in 359 s (6.0 min) against a 130-residue, 2-chain target. That is
+    # the ONLY size ever timed, and the size cap in
+    # shared/pdb_preflight_rules.py (_PROTEINA, hard_cap_target_aa=140) keeps
+    # real targets within a few residues of it, so the band here covers Modal
+    # cold-start and GPU contention rather than a bigger target.
+    #
+    # The previous value for all three design variants was "30 to 120", a
+    # placeholder that was never re-set. It overstated the measured shard by
+    # 5-20x, and shared/pdb_preflight_rules.py had in turn anchored its runtime
+    # estimator to the middle of that invented band.
+    #
+    # ligand_binder and motif_ame have NEVER been timed. Their band is bounded,
+    # not measured: the floor is the one protein_binder measurement and the
+    # ceiling is the physical _MAX_SESSION_S = 7200 s (120 min) session wall in
+    # modal_app.py, past which the shard is killed. Re-set each from its own
+    # canary.
+    #
+    # AND THE FLOOR IS WEAKER THAN IT LOOKS. This used to read "same container,
+    # same reward stack". The container is the same; the reward stack is NOT.
+    # protein_binder scores on AF2 alone, while RF3 is the SOLE reward for
+    # ligand_binder and is what motif_ame needs too — Dockerfile.modal:219-222
+    # says so outright ("Only ligand_binder (RF3 is its sole reward) and
+    # motif_ame need it; protein_binder scores on AF2 alone"), and
+    # ``reward_attributions`` below splits them the same way. So the floor is
+    # not evidence transferred from a comparable run; it is a lower bound
+    # borrowed from a DIFFERENT scoring path, and there is no reason to think
+    # RF3 scoring is as fast as AF2 scoring. Treat 6 as "cannot plausibly be
+    # quicker than the one thing we timed", not as a measurement.
+    "protein_binder": {"typical_minutes": "~6"},
+    "ligand_binder": {"typical_minutes": "6 to 120 (not yet measured)"},
+    "motif_ame": {"typical_minutes": "6 to 120 (not yet measured)"},
     "validate": {"typical_minutes": "1 to 3"},
 }
 
@@ -170,10 +200,14 @@ about: dict = {
             ),
         },
     ],
+    # Kept in lockstep with PRESET_RUNTIME above — see the provenance note
+    # there for what is measured (protein_binder, one 130-residue target) and
+    # what is only bounded by the 7200 s session wall.
     "runtime_table": [
-        {"preset": "protein_binder", "typical": "30 to 120 min / shard"},
-        {"preset": "ligand_binder", "typical": "30 to 120 min / shard"},
-        {"preset": "motif_ame", "typical": "30 to 120 min / shard"},
+        {"preset": "protein_binder",
+         "typical": "~6 min / shard (measured at a 130-residue target)"},
+        {"preset": "ligand_binder", "typical": "not yet measured (under 120 min / shard)"},
+        {"preset": "motif_ame", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "validate", "typical": "1 to 3 min (free)"},
     ],
     "output_summary": (
