@@ -214,6 +214,17 @@ def archive_raw(work_dir: Path | str, tag: str) -> None:
     Best-effort: capture must never fail the run. Problems are logged,
     never raised.
     """
+    # Contract hardening, not a report of an observed failure. The handler at
+    # the bottom deletes ``dest``, but the try does not assign it until several
+    # statements in; reaching the handler before that point would raise
+    # UnboundLocalError, and UnboundLocalError is a NameError, which the inner
+    # ``except OSError`` does not catch -- so it would escape a function
+    # documented never to raise, out of a ``finally``, discarding whatever exit
+    # was already in flight. Binding it here is what makes the handler's
+    # ``dest is not None`` guard mean anything. Both call sites pass a live
+    # Path and cannot open that window; the point is that the contract should
+    # not depend on that staying true.
+    dest: str | None = None
     try:
         import tarfile  # noqa: PLC0415
 
@@ -248,7 +259,7 @@ def archive_raw(work_dir: Path | str, tag: str) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest):
+            if dest is not None and os.path.exists(dest):
                 os.remove(dest)
         except OSError:
             pass

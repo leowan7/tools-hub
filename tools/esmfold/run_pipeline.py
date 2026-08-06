@@ -192,9 +192,20 @@ def _archive_raw(work_dir: str) -> None:
     destroys the tree, so it also runs on ``_fail()``'s ``sys.exit`` and on an
     unhandled raise.
     """
-    import tarfile  # noqa: PLC0415
-
+    # ``dest`` is bound here because the handler at the bottom deletes it and
+    # the try does not assign it until after the isdir check. Reaching the
+    # handler before then would raise UnboundLocalError; that is a NameError,
+    # so the inner ``except OSError`` does not stop it, and it would leave a
+    # function whose entire contract is "never raises" — while running inside a
+    # ``finally``, where a raise overwrites the exit already in progress. Both
+    # call sites pass ``str()`` of a live tempdir Path and cannot trigger it;
+    # this keeps the contract true for callers that have not been audited.
+    dest: str | None = None
     try:
+        # The lazy import lives inside the guard, matching af2, so that even an
+        # ImportError on this path is logged rather than raised.
+        import tarfile  # noqa: PLC0415
+
         if not os.path.isdir(work_dir):
             logger.warning(
                 "raw capture: %s is not a directory - nothing to archive", work_dir
@@ -227,7 +238,7 @@ def _archive_raw(work_dir: str) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest):
+            if dest is not None and os.path.exists(dest):
                 os.remove(dest)
         except OSError:
             pass
