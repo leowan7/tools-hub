@@ -208,9 +208,9 @@ def _ordered_shortlist(campaign):  # noqa: ANN001
 
     THIS RETURN VALUE GATES A DESTRUCTIVE SIDE EFFECT, which is not visible
     from here. ``campaign_detail`` emits the un-star payload only when this
-    answers non-``None``, so narrowing the None-domain -- "return None when
+    answers non-``None``, so WIDENING the None-domain -- "return None when
     there is nothing worth showing" is the obvious such edit -- switches the
-    clearing off for the rows it newly covers. Every narrowing reachable today
+    clearing off for the rows it newly covers. Every widening reachable today
     is harmless because it also empties ``_covered_refs``; a future one need
     not be. Change the domain and re-read that route.
     """

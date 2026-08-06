@@ -131,9 +131,11 @@
    either way, and a number with nothing under it to reconcile against is the
    failure `blueprints/admin.py::_ref_shortlist_view` was built to avoid
    (register items A-4 / A-6). `_ordered_shortlist` answers None only for the
-   'api' shape and for a row whose shortlist column is absent or empty, and
-   never for a NON-EMPTY column whatever its entries look like, so this block
-   always has something to say when it renders. #}
+   'api' shape and for a row whose shortlist column is absent, empty, or not a
+   JSON array at all -- `_column` returns `[]` for a non-list, so a present but
+   scalar column falls through exactly as an absent one does -- and never for a
+   non-empty LIST column whatever its entries look like, so this block always
+   has something to say when it renders. #}
 {% if shortlist %}
 <div class="panel" style="margin-bottom:1rem;">
   <div class="panel-header">

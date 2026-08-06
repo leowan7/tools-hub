@@ -3077,7 +3077,9 @@ in-product handoff the plan prefers.
      re-starred one of the covered designs in between, which is A102 below --
      and there is no marker, no token and no `clearedKey` left to reason about. The remainder survives, so "send a
      second request" stops meaning "re-identify 120 designs by eye" and starts
-     meaning "click submit again". `history.replaceState` is no longer worth
+     meaning "click submit again" -- AS A MECHANISM. The shipped copy does not
+     say that yet: it still says "star it on the source page", which is filed
+     as A105 below. `history.replaceState` is no longer worth
      its complexity either: a repeat execution costs nothing EXCEPT in the one
      case below, and a marker cannot be made to outlive a permanent URL anyway.
 
@@ -3703,7 +3705,7 @@ in-product handoff the plan prefers.
   died with the tab, and left the permanent URL unguarded from day 3 onward
   (see A89). Un-starring a design already sent to the lab is also the
   defensible reading of the action. Pinned as a KNOWN outcome by
-  `test_a_re_starred_covered_design_is_dropped_again`, so it cannot change
+  `test_a_covered_design_still_starred_is_dropped_again`, so it cannot change
   silently.
   *Related decision:* the confirmation email's link carries `dropped` and
   `truncated` but deliberately NOT `submitted=1`, so opening that email days
@@ -3736,6 +3738,34 @@ in-product handoff the plan prefers.
   Reachable only under storage quota pressure. Fixing it properly means
   surfacing the failed write at click time, which is a results-page change
   rather than a confirmation-page one.
+
+- **A105 (NEW, filed with the A89 round-4 remediation, filed not fixed). The
+  truncation advice instructs the one action this feature made unnecessary, and
+  on the path where the clearing ran, following it literally un-stars the
+  remainder.** The copy says "To include anything that was over the limit, star
+  it on the source page and send a second request". After the post-submit
+  redirect the clearing HAS run, so the remainder is already starred and the
+  star control is a strict toggle (`static/js/candidate_table.js`, push when
+  absent / splice when present) -- clicking it removes the design the sentence
+  is trying to include. The register two paragraphs above this one already
+  states the correct outcome: a second request is "click submit again".
+
+  NOT A REGRESSION, and not fixed by simply saying so. The obvious replacement
+  -- "anything over the limit is still starred on the source page, send a
+  second request from there" -- asserts a STATE, and there are reachable states
+  where it is false: JavaScript off or blocked, the script failing to load, or
+  `sessionStorage` throwing all leave the covered refs still starred, and a
+  second request would then re-send the same 500 designs as a second PAID
+  request. That is the exact failure this whole item exists to close, and the
+  nesting of the advice under the list is the safety net for it. The current
+  string is wrong about a click; the replacement would be wrong about money.
+  A third phrasing that asserts no state and instructs no redundant click is
+  what this needs, and it is a product decision rather than a mechanical fix.
+
+  Reachable on both entry paths, and they differ: the post-submit redirect runs
+  the clearing, the confirmation email's link (no `submitted=1`) does not, and
+  in a fresh tab the store is empty and "star it" is right. One string serves
+  both, which is why the wording has to assert nothing about the store.
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

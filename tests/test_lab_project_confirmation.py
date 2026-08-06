@@ -548,8 +548,8 @@ def test_a_second_request_under_the_same_scope_names_only_its_own_refs(client):
 def test_the_js_filters_the_stored_list_and_holds_no_marker(client):
     """SOURCE, NOT EXECUTION, and named as that: this asserts what the file
     SAYS. The behaviour is driven for real in PART 4, which skips where `node`
-    is absent -- so this line is what still holds in CI, and it is deliberately
-    the shape of the code rather than its effect.
+    is absent -- so this line is what holds wherever node is missing, and it is
+    deliberately the shape of the code rather than its effect.
 
     Three absences and one presence, each of which was a live construct one
     round ago. `removeItem` at all: the whole-key wipe is what destroyed the
@@ -614,15 +614,24 @@ def test_the_bfcache_handler_repaints_and_does_not_rebind(client):
     repainting a page that has just painted. And the ABSENCE of `initTable`,
     which is the real hazard: re-initialising binds a second copy of every
     listener, so one star click toggles on and then straight back off and the
-    star reads as dead software. This handler is the one thing in the file that
-    runs on a page nobody submitted anything from.
+    star reads as dead software. This handler is the one thing THIS ITEM added
+    that runs on a page nobody submitted anything from; the `DOMContentLoaded`
+    boot and everything `initTable` binds have always done so.
     """
     src = _STRIPPED_JS
     assert src.count("window.addEventListener('pageshow'") == 1, src
-    tail = src[src.index("window.addEventListener('pageshow'"):]
-    assert "if (!e.persisted) return;" in tail
-    assert "initTable" not in tail
-    assert "restoreStarState(table, scope)" in tail
+    start = src.index("window.addEventListener('pageshow'")
+    # BOUNDED TO THE HANDLER, not run to EOF. Unbounded it reddened on a
+    # behaviour-preserving reorder of the file, and stayed GREEN when a
+    # reviewer moved the re-bind one indirection away into a helper defined
+    # above it. Bounding fixes the false positive. The false NEGATIVE is
+    # inherent to a token search, so what this pins is the absence of the NAME
+    # from the handler body; PART 4 is what covers the property itself.
+    end = src.index("\n  });", start)
+    body = src[start:end]
+    assert "if (!e.persisted) return;" in body
+    assert "initTable" not in body
+    assert "restoreStarState(table, scope)" in body
 
 
 def test_a_page_reached_without_the_submitted_flag_names_nothing(client):
@@ -1239,9 +1248,13 @@ def test_the_page_never_calls_this_an_order_or_a_purchase(client):
 # refs go, the rest stay, and a second run changes nothing.
 #
 # So this part drives the real file under `node` with a stubbed sessionStorage.
-# It SKIPS where node is absent, which includes CI (.github/workflows has no
-# node) -- the source-order assertions in PART 1 are what hold there, and each
-# of them says so in its own docstring. A skipping test is worth having anyway:
+# It SKIPS where node is absent. WHETHER THAT INCLUDES CI IS NOT ESTABLISHED:
+# .github/workflows installs no node, but a hosted runner image can still put
+# one on PATH, and this file asserted the inference as fact until round 3. The
+# cheap way to settle it is the skip count on a CI run of this branch -- 15 with
+# node present, 23 without, because 8 tests here carry `@_needs_node`. The
+# source-order assertions in PART 1 hold wherever node is missing, and each of
+# them says so in its own docstring. A skipping test is worth having anyway:
 # it is the only thing in this repo that can tell a working removal from a
 # no-op, and it runs wherever a developer has node on PATH.
 # ---------------------------------------------------------------------------
@@ -1392,7 +1405,7 @@ def test_a_star_added_after_the_submit_is_not_touched(tmp_path):
 
 
 @_needs_node
-def test_a_re_starred_covered_design_is_dropped_again(tmp_path):
+def test_a_covered_design_still_starred_is_dropped_again(tmp_path):
     """THE ONE CASE THAT IS NOT A NO-OP, asserted rather than left to be
     discovered. A customer who re-stars a design this request already covered
     and then returns to the confirmation URL loses that star again.

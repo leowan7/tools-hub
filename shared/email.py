@@ -667,7 +667,7 @@ def send_campaign_submitted_emails(
         # this request covers a fixed set, that the rest must be starred, and
         # that a second request sends them. What the page adds on top is the
         # designs THEMSELVES, listed. It is not the count: the `dropped`
-        # sentence below prints `n_candidates` in this same body whenever that
+        # sentence above prints `n_candidates` in this same body whenever that
         # branch fires, so the number is on both surfaces. The staff copy keeps
         # the exact ref count, so ops can still pick the rest up.
         #
