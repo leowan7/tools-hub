@@ -613,7 +613,14 @@ _PANEL_HOTSPOT_FORMS = {
     "rfantibody":  {"preset": "pilot", "num_designs": "2"},
     "boltz2":      {"preset": "standalone",
                     "binder_sequences": "M" * 40},
+    # proteina resolves its target chains from the CONTIG, not from
+    # target_chain (tools/proteina/__init__.py:494-505), and validates hotspot
+    # prefixes against that. Without target_input its chain set is empty and
+    # every prefixed hotspot is refused — which is the same asymmetry that
+    # made the panel block its own documented multi-chain flow, so the table
+    # carries the contig rather than papering over it.
     "proteina":    {"preset": "protein_binder", "_has_custom_target": "1",
+                    "target_input": "A1-80,B1-80",
                     "binder_length_min": "55", "binder_length_max": "65",
                     "num_designs": "2"},
 }
@@ -627,42 +634,6 @@ def test_every_preflight_tool_is_covered_by_the_shape_table():
     assert set(_PANEL_HOTSPOT_FORMS) == set(PREFLIGHT_TOOLS), (
         "PREFLIGHT_TOOLS and the panel shape table have drifted: "
         f"{set(PREFLIGHT_TOOLS) ^ set(_PANEL_HOTSPOT_FORMS)}"
-    )
-
-
-@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
-def test_the_panel_declaration_matches_what_the_adapter_actually_emits(slug):
-    """blueprints.tools._CHAIN_PREFIXED_HOTSPOT_TOOLS is a hand-written claim
-    about seven adapters. Drive each adapter's real validate() and hold the
-    declaration to it, so it cannot rot into a comment that is merely true on
-    the day it was written."""
-    import importlib
-
-    from blueprints.tools import _CHAIN_PREFIXED_HOTSPOT_TOOLS
-
-    mod = importlib.import_module(f"tools.{slug}")
-    form = dict(_PANEL_HOTSPOT_FORMS[slug])
-    declared = slug in _CHAIN_PREFIXED_HOTSPOT_TOOLS
-
-    form.update({"target_chain": "A B", "hotspot_residues": "A5,B7"})
-    inputs, err = mod.validate(form, {})
-
-    if not declared:
-        # A bare-hotspot adapter is entitled to refuse the prefixed form
-        # outright (rfantibody and boltz2 do). What it must NOT do is accept
-        # it and emit strings, which is what the declaration denies.
-        if err is None:
-            emitted = inputs.get("hotspot_residues") or []
-            assert not any(isinstance(h, str) for h in emitted), (
-                f"{slug} is not declared chain-prefixed but validate() emitted "
-                f"{emitted!r} — the panel will hand the gate a bare list"
-            )
-        return
-
-    assert err is None, f"{slug}: {err}"
-    emitted = inputs.get("hotspot_residues") or []
-    assert emitted == ["A5", "B7"], (
-        f"{slug} is declared chain-prefixed but validate() emitted {emitted!r}"
     )
 
 
@@ -684,25 +655,112 @@ def test_single_chain_bare_hotspots_stay_bare_for_every_tool(slug):
     )
 
 
-def test_the_panel_reports_the_error_submit_will_report(client):
-    """A field the gate hard-rejects must not render GREEN.
+def test_the_panel_does_not_block_proteinas_own_multichain_flow(client):
+    """THE REGRESSION THIS PINS. templates/tools/proteina_form.html tells the
+    user to leave target_chain at "A" and name several chains in the contig
+    field instead ("For several chains, use the target region field below"),
+    and gives "A113,C73" as the hotspot example.
 
-    "A5,Q" on a single-chain target is the smallest case: parse_hotspot_residues
-    refuses the whole field, and a panel that salvages the parseable half scores
-    a valid one-hotspot run, enables the Run button, and the submit then refuses
-    it. Wrong in the direction that costs the user the click.
+    A panel that reads its chain set from target_chain alone calls C73 a
+    hotspot on an untargeted chain, returns NEEDS_FIX, and
+    preflight.js:setSubmitEnabled(!!v.ok) disables the Run button — for a
+    submission the gate accepts. target_chain carries maxlength="4", so past
+    two chains there is not even a value the user could type to escape it.
     """
     _login(client)
-    body = _post_preflight(
-        client, target_chain="A", hotspot_residues="A5,Q",
-    ).get_json()
-
-    assert body["ok"] is False
-    assert body["kind"] == "needs_fix"
-    # The same sentence the adapter produces, not a paraphrase.
-    from tools import base as tool_base
-    _, submit_err = tool_base.parse_hotspot_residues("A5,Q", ["A"])
-    assert submit_err is not None
-    assert body["reason"] == submit_err, (
-        f"panel says {body['reason']!r}, submit says {submit_err!r}"
+    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+    resp = _post_preflight(
+        client,
+        target_chain="A",
+        target_input="A12-80,C12-80",
+        hotspot_residues="A113,C73",
+        target_pdb=(io.BytesIO(pdb), "ac.pdb"),
     )
+    body = resp.get_json()
+
+    # And the adapter itself accepts the very same field.
+    from tools import proteina as proteina_mod
+    inputs, err = proteina_mod.validate({
+        "preset": "protein_binder", "_has_custom_target": "1",
+        "target_chain": "A", "target_input": "A12-80,C12-80",
+        "hotspot_residues": "A113,C73",
+        "binder_length_min": "55", "binder_length_max": "65",
+        "num_designs": "2",
+    }, {})
+    assert err is None, err
+
+    assert body["ok"] is True, (
+        f"panel refused a submit the adapter accepts: {body.get('reason')!r}"
+    )
+
+
+def test_the_panel_is_never_stricter_than_the_gate(client):
+    """The invariant, stated as a property rather than a list of cases.
+
+    A green panel over a submit the gate refuses costs a click. A RED panel
+    over a submit the gate would have accepted costs the whole run: the button
+    is disabled client-side and the stated reason was guessed by a function
+    that does not run the adapter. So the panel may be wrong in one direction
+    only, and the hotspot parse must never be the thing that flips it.
+    """
+    _login(client)
+    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+
+    # Fields that are valid, half-typed, or malformed — the panel fires while
+    # the user is still editing, so all three reach it in practice.
+    for hotspots in ("A113,C73", "113", "A113", "A11", "A113,", "A113,Q",
+                     "", "113,73", "A113;C73", "xyz"):
+        body = _post_preflight(
+            client,
+            target_chain="A",
+            target_input="A12-80,C12-80",
+            hotspot_residues=hotspots,
+            target_pdb=(io.BytesIO(pdb), "ac.pdb"),
+        ).get_json()
+        if body["ok"]:
+            continue
+        # A refusal is allowed, but it must not be one this function invented
+        # about the hotspot FIELD. Size, gaps and chain checks are the gate's
+        # own reasons and re-run identically at submit.
+        reason = (body.get("reason") or "").lower()
+        assert "does not name one of your target chains" not in reason, (
+            f"hotspots={hotspots!r}: panel blocked Run on its own hotspot "
+            f"parse: {body.get('reason')!r}"
+        )
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
+def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
+    """The landscape the panel has to live with, pinned so it cannot shift
+    silently underneath it.
+
+    Three behaviours, not two, which is why a single "parse it like the
+    adapters do" rule kept failing:
+      - the four binder tools accept the prefixed form and EMIT it
+      - proteina accepts it but emits bare ints, carrying the prefixed form
+        separately under hotspot_spec
+      - rfantibody and boltz2 reject it outright
+    """
+    import importlib
+
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A B", "hotspot_residues": "A5,B7"})
+    inputs, err = mod.validate(form, {})
+
+    if slug in {"rfantibody", "boltz2"}:
+        assert err is not None, (
+            f"{slug} now accepts chain-prefixed hotspots; the panel assumes "
+            f"it does not"
+        )
+        return
+
+    assert err is None, f"{slug}: {err}"
+    emitted = inputs.get("hotspot_residues") or []
+    if slug == "proteina":
+        assert emitted == [5, 7], emitted
+        assert inputs.get("hotspot_spec") == ["A5", "B7"], (
+            "proteina moved the prefixed form off hotspot_spec"
+        )
+    else:
+        assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"

@@ -56,30 +56,7 @@ from shared.pdb_intake import (
     _verify_reuse_pdb_bytes,
     preflight_target_segments,
 )
-from shared.pdb_preflight import (
-    PREFLIGHT_TOOLS,
-    CleanupSummary,
-    PreflightVerdict,
-    VerdictKind,
-    preflight_for_tool,
-)
-
-# Adapters whose validate() puts CHAIN-PREFIXED tokens in
-# inputs["hotspot_residues"] — the exact value the submit gate reads at
-# _preflight_gate below. The panel must produce the SAME shape, or it scores a
-# different input than the gate it previews.
-#
-# This is a declaration rather than "everyone gets parse_hotspot_residues"
-# because proteina emits BOTH: bare ints under hotspot_residues and the
-# chain-prefixed form under a separate hotspot_spec key. rfantibody and boltz2
-# parse ints directly and are bare for the same reason.
-#
-# tests/test_preflight_panel_contract.py drives every PREFLIGHT_TOOL's real
-# validate() and asserts this set is exactly what they emit, so it cannot
-# drift into a lie the way the comment at blueprints/jobs.py:392 did.
-_CHAIN_PREFIXED_HOTSPOT_TOOLS = frozenset({
-    "bindcraft", "boltzgen", "pxdesign", "rfdiffusion",
-})
+from shared.pdb_preflight import PREFLIGHT_TOOLS, preflight_for_tool
 from shared.storage import (
     StorageError,
     copy_input,
@@ -772,52 +749,54 @@ def tool_preflight(tool: str):
 
     target_chain = (request.form.get("target_chain") or "A").strip()
     raw_hotspots = (request.form.get("hotspot_residues") or "").strip()
-    # Parse with the SAME helper the adapters' validate() uses, so the panel
-    # above the Run button and the hard gate behind it read the field
-    # identically. Splitting on int() here instead is what made the panel
-    # report a clean verdict for chain-prefixed hotspots that submit then
-    # evaluated for real — the panel was scoring a different input.
+    # THE PANEL PREVIEWS THE GATE. IT IS NOT THE GATE. Read the rule below
+    # before making it stricter — three attempts have now broken it.
+    #
+    # `static/js/preflight.js` does `setSubmitEnabled(!!v.ok)`, so a NEEDS_FIX
+    # here does not merely colour a box: it disables the Run button, and the
+    # only re-enable path is the network-error catch. The two failure
+    # directions are therefore not symmetric.
+    #
+    #   panel green, gate refuses -> the user clicks Run and gets the
+    #                                adapter's own message. Mildly annoying.
+    #   panel red,   gate accepts -> the user cannot submit AT ALL, and is
+    #                                told why by a sentence the panel guessed.
+    #
+    # So this parse is deliberately TOLERANT and never returns a verdict of
+    # its own. Trying to make it authoritative is what produced, in order: a
+    # panel that green-lit fields submit refused (int()-only, the original
+    # bug), then one that hard-blocked proteina's own documented multi-chain
+    # flow, then one that rendered READY for rfantibody hotspots its validate()
+    # rejects. Each fix moved the divergence rather than removing it, because
+    # the panel is re-implementing seven adapters' parsers from the outside.
+    # Closing it properly means the panel asking the adapter — a
+    # `hotspot_preview(form)` hook, or posting the whole form so validate()
+    # can run — and that is a change to every adapter, not to this function.
     hotspots: list = []
     if raw_hotspots:
-        _chains = tool_base.parse_target_chains(target_chain)
-        parsed, hs_err = tool_base.parse_hotspot_residues(
-            raw_hotspots, _chains,
-        )
-        if hs_err:
-            # Show what submit will say, rather than scoring the subset of
-            # the field that happens to parse. Salvaging the good tokens
-            # renders the panel GREEN for a field the gate then hard-rejects
-            # ("A5,Q" on a single-chain target is the smallest case), which
-            # is the panel/submit disagreement this whole change exists to
-            # remove — in the one direction that costs the user a click on a
-            # Run button that cannot work.
-            return (_verdict_to_json(PreflightVerdict(
-                kind=VerdictKind.NEEDS_FIX,
-                tool_slug=adapter.slug,
-                target_chain=target_chain,
-                cleanup=CleanupSummary(),
-                hotspot_status={"surviving": [], "dropped": []},
-                reason=hs_err,
-                suggested_fix=(
-                    "Use a bare residue number, or prefix it with one of the "
-                    "chains you named above (e.g. A296)."
-                ),
-            ), ""), 200)
-        hotspots = list(parsed or [])
-        if adapter.slug not in _CHAIN_PREFIXED_HOTSPOT_TOOLS:
-            # This adapter keeps inputs["hotspot_residues"] BARE, and that is
-            # the key the submit gate reads, so the panel has to hand the
-            # same bare numbers to preflight_for_tool. proteina is the live
-            # case: it carries the chain-prefixed form separately in
-            # hotspot_spec, so parsing its panel field as prefixed made the
-            # panel apply the per-chain rule its own gate does not.
-            hotspots = [
-                resnum
-                for resnum in (
-                    split_hotspot(h, _chains)[1] for h in hotspots
-                )
-                if resnum is not None
-            ]
+        # proteina overrides target_chain FROM THE CONTIG
+        # (tools/proteina/__init__.py:494-505), so its real chain set is not
+        # the target_chain field: the form's own multi-chain instructions say
+        # to leave that at "A" and type the chains into target_input. Reading
+        # only target_chain called "C73" a hotspot on an untargeted chain for
+        # the exact input the template gives as its example.
+        _chains = list(tool_base.parse_target_chains(target_chain))
+        for _seg in (preflight_target_segments(request.form) or []):
+            # Segments are (chain, lo, hi) tuples; see pdb_intake.
+            _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
+            if _seg_chain and _seg_chain not in _chains:
+                _chains.append(_seg_chain)
+        # Per token, keeping whatever form the user typed. An unparseable
+        # token is skipped rather than fatal — the adapter refuses it on
+        # submit, with wording this function has no business inventing.
+        for _tok in raw_hotspots.replace(";", ",").split(","):
+            _tok = _tok.strip()
+            if not _tok:
+                continue
+            _cid, _resnum = split_hotspot(_tok, _chains)
+            if _resnum is None:
+                continue
+            hotspots.append(_resnum if _cid is None else f"{_cid}{_resnum}")
 
     # Source the bytes: file upload OR AlphaFold fetch.
     af_accession = (request.form.get("alphafold_accession") or "").strip()

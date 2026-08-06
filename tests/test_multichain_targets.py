@@ -679,3 +679,40 @@ def test_suggestions_do_not_offer_the_same_residue_twice():
     assert len(resnums) == len(set(resnums)), (
         f"same residue offered twice under two labels: {nearest!r}"
     )
+
+
+def test_every_dropped_chain_gets_at_least_one_suggestion():
+    """One global top-N starves a protomer.
+
+    Two dropped hotspots on different chains, six slots: whichever chain has
+    the tighter neighbours takes all six, and the refusal says nothing about
+    the other one. The user re-picks chain A, resubmits, and is refused again
+    for the chain B hotspot nobody mentioned.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    # A is dense around 20 (every neighbour clean); B has exactly one clean
+    # residue near 505, so a global ranking fills every slot from A.
+    lines = ["HEADER    SYNTHETIC STARVE\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 41))),
+        ("B", [504] + list(range(520, 560))),
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", ["A20", "B505"], [])
+    chains = {str(r)[0] for r in nearest}
+    assert chains == {"A", "B"}, (
+        f"only chain(s) {chains} got suggestions: {nearest!r} — the other "
+        f"dropped hotspot is unaddressed"
+    )

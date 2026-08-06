@@ -1387,13 +1387,27 @@ def _nearest_clean_residues(
     # nothing here changes.
     attributed = {r for cid, r in candidates if cid is not None}
     ranked = sorted(candidates.items(), key=lambda kv: (kv[1][0], kv[0][1]))
-    out: list = []
+
+    # Group by the chain the suggestion belongs to, then take from each group
+    # in turn. One global top-N starves a protomer: with two dropped hotspots
+    # on different chains and a 6-slot budget, whichever chain has the tighter
+    # neighbours takes all six, and the user is told nothing at all about the
+    # other one — the message names "chain A" residues while their chain B
+    # hotspot sits there unaddressed.
+    by_group: dict = {}
     for (cid, resnum), (_dist, label) in ranked:
         if cid is None and resnum in attributed:
             continue
-        out.append(label)
-        if len(out) >= max_suggestions:
-            break
+        by_group.setdefault(cid, []).append(label)
+
+    out: list = []
+    groups = list(by_group.values())
+    for slot in range(max(len(g) for g in groups) if groups else 0):
+        for group in groups:
+            if slot < len(group):
+                out.append(group[slot])
+                if len(out) >= max_suggestions:
+                    return out
     return out
 
 
