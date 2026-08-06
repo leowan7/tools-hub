@@ -509,17 +509,35 @@ def test_campaign_mode_still_posts_a_source_campaign_id():
     assert "source_target_id" not in fields
 
 
-def test_single_job_mode_still_posts_a_source_job_id():
-    """The third arm. The legacy single-job form is the only one that posts
-    candidate_indices, and both ref-based branches must leave it alone."""
+def test_single_job_mode_posts_both_shortlist_fields():
+    """The third arm, and the one payload contract A91 changed.
+
+    This form used to be the only one carrying ``candidate_indices`` and the
+    only one carrying no ``candidate_refs``; the second half of that is what
+    this test asserted, and it is now false on purpose. The job branch posts
+    BOTH. ``candidate_indices`` stays because it is the only shape a page served
+    before the change carries, so a tab left open across the deploy still
+    submits a shortlist; ``candidate_refs`` is added because it is the shape the
+    other two arms take, it names a source job per entry rather than assuming
+    one, and ``campaigns_submit`` prefers it whenever it parses to anything.
+
+    ``candidate_indices`` is still the ONLY field this form has that the ref
+    forms do not, which is why the branch cannot simply be deleted yet.
+
+    Exactly one PARENT field per render is unchanged, and the two negative
+    assertions are what hold it: the dispatcher tries ``source_target_id`` and
+    then ``source_campaign_id`` first, so a job page carrying either would be
+    routed to a parentage test built for a different parent.
+    """
     rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb"}]
     html = _render(candidates=rows, columns=["ipTM"], job_id="job-1",
                    tool_slug="bindcraft")
     fields = _form_for(html, "/lab-projects/submit")
     assert fields.get("source_job_id") == "job-1"
     assert "candidate_indices" in fields
+    assert "candidate_refs" in fields
     assert "source_target_id" not in fields
-    assert "candidate_refs" not in fields
+    assert "source_campaign_id" not in fields
 
 
 def test_campaign_mode_still_emits_the_lab_submit_form():
