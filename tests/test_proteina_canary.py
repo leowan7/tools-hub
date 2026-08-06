@@ -7489,3 +7489,131 @@ class TestTheNegativeNumberingGuardReachesTheCanaryToo:
         }
         assert "unrenderable_segments" in called, (
             "the canary must ASK run_pipeline whether a contig is renderable")
+
+
+def _uneven_chains(hi_a=443, hi_b=442):
+    """The 3S7G shape at small scale: chain B one residue shorter than chain A.
+
+    A 236-443 and B 236-442 are the real spans of the Fc target whose contig
+    ``A236-443,B236-443`` burned an A100. Built from 236 so the numbers in the
+    refusal are the ones an operator would recognise.
+    """
+    lines, serial = [], 1
+    for chain, hi in (("A", hi_a), ("B", hi_b)):
+        seq = [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(hi - 236 + 1)]
+        lines += _trace(chain, seq, first_res=236, serial0=serial)
+        serial += len(seq)
+    return "\n".join(lines) + "\n"
+
+
+class TestTheEndpointGuardReachesTheCanaryToo:
+    """THE THIRD TIME PRODUCTION GREW A REFUSAL AND THE CANARY HAD TO FOLLOW.
+
+    The class is now well established: production adds a pre-GPU refusal, the
+    canary does not follow, and the canary can then spend $4-$12 on a target
+    production would have refused — or return PASS on one. It cost a paid shard
+    to find with the staging crop, an audit to find with the negative-numbering
+    guard, and another with the 20-residue floor.
+
+    This one is ``missing_endpoints``: a range end that names no residue.
+    ``A236-443,B236-443`` on the real Fc target died as ``ValueError('No atoms
+    found for selection: B/*/443')`` ~60 s into a billed A100, and every cheaper
+    check passed on the way there — the range still selects the 207 residues of
+    chain B that DO exist, so the count is right, the crop's self-check
+    balances, and nothing notices the end that is missing.
+    """
+
+    def test_the_real_failure_is_refused_before_any_shard_spawns(self, tmp_path):
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(path), "A236-443,B236-443", [("positive", ["A236"])])
+        message = str(excinfo.value)
+        assert "residue 443 on chain B" in message
+        assert "B/*/443" in message
+        assert "A236-443, B236-442" in message, "the spans, so the fix is visible"
+        assert "NO GPU TIME WAS USED" in message
+
+    def test_main_does_not_spawn_on_an_endpoint_that_does_not_exist(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        shard = _Remote()
+        namespace = load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=lambda: rp, run_shard=shard,
+            phase0=_Remote(result={}))
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(path),
+                              contig="A236-443,B236-443", hotspots="A236 A237")
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 on a contig upstream cannot resolve")
+
+    def test_the_corrected_contig_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, or the harness never runs."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "A236-443,B236-442",
+            [("positive", ["A236"])]) == "A236-443,B236-442"
+
+    def test_a_derived_contig_is_not_refused(self, tmp_path):
+        """No ``--contig``: the canary derives it from the structure, so both
+        ends exist by construction and nothing may refuse it."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "", [("positive", ["A236"])]) == "A236-443,B236-442"
+
+    def test_the_predicate_is_run_pipelines_and_not_a_restatement(self):
+        """THE PIN THAT MATTERS, and it is on DELEGATION, not on output — a
+        canary that computes the right answer in its own code still fails it.
+        That is the property that survives the next change to what counts as a
+        missing endpoint, which "the canary refuses B236-443" would not."""
+        tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+        refusal = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "missing_endpoints" in called, (
+            "the canary must ASK run_pipeline whether a range end exists, not "
+            "decide for itself — a second implementation is the drift that has "
+            "now cost a paid shard once and been caught by audit twice")
+
+    def test_the_refusal_fires_before_the_hotspot_one(self, tmp_path):
+        """Production checks endpoints (step 4b) before hotspots (step 5), and
+        the canary must agree: on a contig whose end does not exist, the
+        selection is not a trustworthy basis for a hotspot verdict."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                # BOTH wrong: a bad endpoint and a hotspot matching nothing.
+                str(path), "A236-443,B236-443", [("positive", ["A99999"])])
+        assert "residue 443 on chain B" in str(excinfo.value)
+
+    def test_the_shared_predicate_agrees_with_productions_own_answer(self, tmp_path):
+        """Same function, same file, same verdict — the property the delegation
+        pin exists to make unbreakable, asserted directly."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        residues, _ = rp.pdb_ca_residues(path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A236-443,B236-443")) == [("B", 443)]
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A236-443,B236-442")) == []

@@ -1219,6 +1219,16 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
         target_pdb, resolved,
         rp_local.unrenderable_segments(
             [s for s in segments if s[1] is not None]))
+    # Production's endpoint-existence guard, called rather than restated — the
+    # fourth pre-GPU refusal prod has grown and the third the canary had to be
+    # given afterwards. A range end that names no residue (3S7G's B236-**443**)
+    # passes every cheaper check here and dies inside `complexa design`. See
+    # cs.refuse_missing_endpoints. Unbounded segments are skipped by
+    # `missing_endpoints` itself, so no filtering at the call site.
+    cs.refuse_missing_endpoints(
+        target_pdb, resolved,
+        rp_local.missing_endpoints(residues, segments),
+        rp_local.chain_span_summary(residues))
     selected = rp_local.select_residues(residues, segments)
     cs.refuse_unresolvable_hotspots(
         target_pdb, resolved, len(selected),
