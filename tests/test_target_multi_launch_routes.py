@@ -23,7 +23,7 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from shared.compute_campaigns import PREAUTH_INSUFFICIENT, PREAUTH_OK
 from tests.money_display_guard import assert_template_prints_no_raw_money
-from shared.targets import DesignTarget
+from shared.targets import TARGET_READ_OK, DesignTarget, TargetRead
 
 
 @pytest.fixture
@@ -1847,7 +1847,8 @@ def test_the_banner_counts_only_the_runs_from_this_launch(client):
                         launch_group_id=str(uuid.uuid4())),
     ]
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(t, TARGET_READ_OK)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_detail_agg(runs)):
         body = client.get(
@@ -1939,8 +1940,12 @@ def _detail_agg(runs=(), **over):
 
 
 def _render_detail(client, target, query, runs):
+    # `target_detail` resolves its parent through the THREE-outcome `read_target`
+    # (register item A90), so this patches that and not `get_target`. The other
+    # /targets/* routes exercised in this file still use `get_target`.
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=target), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(target, TARGET_READ_OK)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_detail_agg(runs)):
         return client.get(f"/targets/{target.id}?{query}").get_data(as_text=True)
@@ -2059,7 +2064,8 @@ def _render_detail_through_the_query(client, target, query, rows):
     is still the real one against ``_CampaignClient``.
     """
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=target), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(target, TARGET_READ_OK)), \
             patch("shared.target_results.get_target", return_value=target), \
             patch("shared.target_results.get_service_client",
                   return_value=_CampaignClient(rows)), \

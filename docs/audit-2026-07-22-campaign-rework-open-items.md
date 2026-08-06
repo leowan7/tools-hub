@@ -2976,8 +2976,12 @@ in-product handoff the plan prefers.
   `tests/test_campaign_lab_handoff.py` and `tests/test_run_handoff_banners.py`;
   every assertion was mutation-verified.
 
-  Exit 5 (`cc.get_campaign(...) is None` -> `/jobs`) is deliberately UNCHANGED,
-  because that exit leaves the page that renders the banners; see A90.
+  Exit 5 (`cc.get_campaign(...) is None` -> `/jobs`) was left UNCHANGED BY A88,
+  because that exit leaves the page that renders the banners. A90 has since
+  changed it, which is what that entry is: the gate reads through
+  `cc.read_campaign`, an UNREADABLE parent stays on this run's page with
+  `?handoff=unverified`, and only an ABSENT one keeps the silent `/jobs`
+  redirect.
 
   **The *Next:* line below is DECLINED, and this is the reasoning.** The two
   arms differ on six axes, not one: the parentage predicate, the number of
@@ -3019,7 +3023,7 @@ in-product handoff the plan prefers.
   request deliver the remainder; neither is in `blueprints/lab_projects.py`,
   which is why this is filed rather than fixed.
 
-- **A90 (NEW, filed with A88, not fixed). The parent gate on BOTH ref arms
+- **A90 (NEW, filed with A88, FIXED). The parent gate on BOTH ref arms
   cannot tell a missing parent from an unreadable one.**
   `_submit_campaign_shortlist` refuses on `cc.get_campaign(...) is None` and
   `_submit_target_shortlist` on `get_target(...) is None`, and both of those
@@ -3034,6 +3038,181 @@ in-product handoff the plan prefers.
   (ok / absent / unavailable), then land the user back on their own page with
   `?handoff=unverified`. New shared API plus new fakes across the app, and it
   is symmetric across both arms, so it is one item and not two.
+  **Fixed:** `shared/compute_campaigns.py::read_campaign` and
+  `shared/targets.py::read_target`, each with its own three constants and a
+  frozen dataclass in `JobRead`'s shape, reading with `.limit(1)` for the reason
+  `shared/jobs.py::read_job` already writes down (`.single()` raises on zero
+  rows, so absent and timed-out arrive as one exception before any `except` can
+  look). `get_campaign` and `get_target` are UNTOUCHED and neither new function
+  is built on them, following the precedent `read_job` set beside `get_job`:
+  `get_campaign`'s docstring records that the launch route's fund loop calls it
+  after the commit point, where a raise would 500 a request that has already
+  spent money. Both gates in `blueprints/lab_projects.py` now branch --
+  UNAVAILABLE returns to the parent's own page with `?handoff=unverified` and
+  carries `trunc_qs` like every other failure exit on that route, ABSENT keeps
+  the original silent redirect, because that row is gone or was never this
+  caller's and there is no page to land on.
+  **THE TWO GUARDS, ON ALL THREE READ CLASSES.** `CampaignRead` and `TargetRead`
+  shipped carrying `JobRead`'s docstring claim -- "no `__bool__` and no
+  truthiness of any kind, because collapsing this back to one bit is the thing
+  it exists to prevent" -- and none of the three had either half. Every instance
+  was unconditionally truthy, so `if read:` ran the same on an UNAVAILABLE read
+  as on an OK one; and `frozen=True` GENERATES an `__eq__`, so
+  `read == CAMPAIGN_READ_OK` answered False in silence on a read that had
+  succeeded. That pair is the exact hole `tools/proteina/_canary_scoring.py::Verdict`
+  closed and wrote down ("the generated `__eq__` left a hole exactly the size of
+  the bug `__bool__` closes"), pinned by
+  `tests/test_proteina_canary.py::test_verdict_refuses_to_be_used_as_a_boolean`
+  and `::test_verdict_refuses_to_be_compared_with_an_outcome_string`. Symbols and
+  not line numbers, per the rule `blueprints/targets.py::_starred_refs` writes
+  down: this entry cited `tests/test_proteina_canary.py:822-843` and both ends
+  were already off by one when the round-2 reviewers checked them.
+  All three classes now carry `eq=False`, a raising `__bool__`, an `__eq__` that
+  raises on a string and still compares two reads as values, and an explicit
+  `__hash__` over `(payload id, outcome)`.
+  **`__hash__` IS A NEW CAPABILITY ON `JobRead`, NOT A PRESERVED ONE**, and the
+  comment beside it said otherwise until round 2 corrected it. Declaring `__eq__`
+  does set `__hash__` to None; but what it replaced was a GENERATED hash over all
+  fields, under which `hash(JobRead(None, JOB_READ_ABSENT))` worked and
+  `hash(JobRead(job, JOB_READ_OK))` RAISED, because `ToolJob` is frozen, has a
+  generated `__hash__`, and carries dict fields. The class went from
+  inconsistently hashable to always hashable. It is kept rather than set to None
+  because no production call site puts a read in a set or uses one as a dict key
+  either way, so the choice is only whether the three siblings behave alike.
+  `JobRead` was extended along with the two new ones and THE WHOLE SUITE STAYED
+  GREEN, which is how it was established rather than assumed that no live call
+  site branches on a `JobRead`'s truthiness -- the two in
+  `blueprints/lab_projects.py` read `.unavailable` and `.job`.
+  **The invariant, made checkable.** Each class validates in `__post_init__`
+  that its outcome is one of its own three and that the payload is present iff
+  the outcome is OK. `CampaignRead(None, CAMPAIGN_READ_OK)` used to construct
+  fine, and any caller that checks `.outcome` and then reads `.campaign` would
+  have been handed a None it has no branch for. What none of this can catch, on
+  TWO axes and not one. (i) `CAMPAIGN_READ_OK`, `TARGET_READ_OK` and
+  `JOB_READ_OK` are all the string `"ok"`, so a cross-family CONSTRUCTION passes
+  the membership test. The cross-family COMPARISON is caught, because it is a
+  string like any other -- and all three suites now assert it, `test_jobs.py`
+  having been the one that claimed it in the class docstring and omitted it from
+  the test. (ii) All three `__hash__`es hash `(payload id, outcome)` and drop the
+  class, so `hash(JobRead(None, "absent"))`, `hash(TargetRead(None, "absent"))`
+  and `hash(CampaignRead(None, "absent"))` are equal. Left as it is and now said
+  out loud in all three docstrings: equal hashes are not an equality claim, since
+  `__eq__` answers `NotImplemented` for a foreign class and Python falls back to
+  identity, so a set holding all three keeps three members.
+  `tests/test_jobs.py::test_reads_of_different_families_collide_in_hash_only`
+  pins both halves.
+  **Four corrections to the filing.** (a) "New fakes across the app" overstates
+  it: only `tests/test_compute_campaigns.py` and `tests/test_targets.py` model a
+  query at all, and `test_targets.py`'s already applied `.limit()`. The handoff
+  and route suites patch the functions by name, so those were patch-target
+  edits -- across five files once the TARGET detail route moved as well
+  (`test_campaign_lab_handoff.py`, `test_target_lab_handoff.py`,
+  `test_target_routes.py`, `test_target_handoff_banners.py`,
+  `test_target_multi_launch_routes.py`). Round 2's revert of the campaign detail
+  route put three more back on `get_campaign`, so no suite patches a `read_*`
+  name for a route that no longer uses one.
+  (b) "No new copy is needed" -- which the working scope asserted, not the entry
+  -- was wrong, and wrong in this register's signature way. The `unverified`
+  banner on each page named the specific read that could fail: the run page said
+  "we could not read every sub-job your starred designs came from", the target
+  page "we could not read the full list of runs on this target". Adding the
+  parent read as a further cause makes each of those false whenever the parent is
+  what failed, so both sentences are now cause-neutral ("one of the lookups this
+  submission depends on did not complete"). That replacement is true of every
+  ground but one, and round 2 found the comments around it claiming otherwise:
+  `read_campaign` reports UNAVAILABLE for a row `_campaign_or_none` cannot parse,
+  where the read COMPLETED and the PARSE failed. It takes a row no migration in
+  this repo can produce. The copy was not rewritten again for it -- every wording
+  that covers it is worse on the grounds users actually hit, and the advice the
+  sentence gives is right on that ground too -- but the three places that said
+  "both of them are a read that did not complete" (`templates/runs/detail.html`,
+  `tests/test_run_handoff_banners.py`'s module docstring, and its
+  `test_the_unverified_banner_names_no_particular_read`) now say what is true.
+  This is the same undercount, one level down, as the one (d) below records.
+  (c) THE TARGET PAGE'S SENTENCE WAS
+  ALREADY FALSE BEFORE THIS ITEM. That arm has always set `unresolved` on a
+  `read_job` that came back unavailable as well as on a short campaign-id list,
+  and the banner named only the second; the template's own comment listed both
+  causes while the copy it sat above described one. Nothing detected it because
+  `_DISTINGUISHING` in `tests/test_target_handoff_banners.py` pinned the string,
+  not its truth. Both banner suites now assert that the sentence names NO
+  particular read, in both directions -- and their docstrings say what those
+  absence assertions ARE, which is regression guards against restoring either
+  dead wording on either page, not the cross-page copy check they were first
+  described as. Both strings were deleted from both templates by this item.
+  (d) `CampaignRead.unavailable`'s docstring was a verbatim copy of
+  `JobRead`'s -- "True iff the lookup did not complete" -- and this class has a
+  path `JobRead` does not: a row that came back and that `_campaign_or_none`
+  could not parse reports UNAVAILABLE, and on that path the lookup DID complete.
+  `TargetRead`'s copy of the sentence is accurate as written, because that module
+  has no `_campaign_or_none` and reports UNAVAILABLE on exactly the two grounds
+  `read_job` does; its docstring now says so rather than leaving the reader to
+  assume the three are interchangeable. The test that proves the unparseable-row
+  path asserted `outcome` only and never `.unavailable`, so nothing pinned the
+  property either; it does now.
+  **What the modelled `.limit()` does and does not buy.** The `.limit()` no-op in
+  `tests/test_compute_campaigns.py`'s fake is now applied, because a fake more
+  permissive than PostgREST is a landmine. It does NOT make the absent case
+  testable, and the comment on it says so: the read is an `.eq("id", ...)`, which
+  matches at most one row, so the empty list comes from the filter. Verified by
+  mutation -- reverting that method to a no-op leaves EVERY test in the file
+  green. What catches a `.single()` regression is the fake's `single()` raising
+  on zero rows. That comment stated the direction of the PostgREST clamp
+  backwards ("clamps `.limit()` UP at max_rows", which reads as a floor);
+  max_rows is an upper bound and `.limit()` cannot lift it.
+  Mutation-verified throughout, each pattern asserted to match exactly once:
+  `.single()` on either new read reds the absent-vs-unavailable pin; reverting
+  either gate to `get_*` reds that arm's `?handoff=unverified` tests (a surgical
+  variant that keeps the read and deletes only the `if parent.unavailable` arm
+  reds exactly those four across the whole suite and nothing else); dropping the
+  owner filter from either read reds that read's tenancy test. Remediation round
+  1 added mutations for the detail-route work; round 2 dropped the campaign half
+  of that (see A94), so what survives is the TARGET route's status, banner and
+  branch; the shared macro's noun; the retry link's query string; the 503 page's
+  truncation paragraph; each of the three read classes' `__bool__`, `__eq__` and
+  three `__post_init__` checks; the three payload-equality tests; and each `try`
+  boundary.
+  **THE TARGET DETAIL ROUTE TOO, and the first version of this item created a
+  REGRESSION by not doing it.** The refusal redirects to the parent's own page.
+  `target_detail` read its own parent through the two-outcome `get_target` and
+  rendered `404.html` for None, so the user who clicked "Send shortlist" during a
+  Supabase fault got a 302, the browser followed it, and they landed on a page
+  telling them the target they had just been looking at does not exist. Before
+  this item the same user landed on `targets_list` with a benign 200.
+  `target_detail` now reads through `read_target` and branches three ways. OK is
+  unchanged. ABSENT is unchanged and is where the old behaviour belongs -- 404,
+  because a completed read that matched no row is a permanent verdict.
+  UNAVAILABLE renders `templates/unavailable.html` at **HTTP 503** -- not 404,
+  which is a claim about the row that a read which never answered cannot make,
+  and not 200, which would present a page carrying none of the target's content
+  as the target's page. That page RENDERS THE `?handoff=` BANNER, which is the
+  whole point of it: the reason rides the query string, and dropping it would
+  lose the refusal on exactly the request A90's own exit produces. Both banner
+  paragraphs render there, the reason and the size-cap count, and both are
+  pinned -- the second was not, and deleting it left the suite green.
+  **`compute_campaign_detail` WAS GIVEN THE SAME 503 AND HAD IT REVERTED.** It
+  was never the regression the target route was: it falls back to the runs list
+  with a 200 before and after. Round 2 removed the mirror; A94 is the residual
+  and carries the request-cost reasoning that decided it.
+  NO CLAIM IS MADE HERE ABOUT HOW OFTEN THE FAULT HAS PASSED by the time the
+  redirect is followed. An earlier draft of this entry said "the transient case,
+  which is the common one, now lands on the banner"; that was a guess, nothing
+  here measured it, and the mechanism cuts against it -- the browser follows a
+  302 within milliseconds, so the second request is issued while the fault that
+  failed the first may still be live. Two more guesses of the same shape were
+  removed from CODE in round 2, in `blueprints/targets.py::_target_unavailable`
+  and in `tests/test_target_routes.py::test_the_503_page_still_carries_the_handoff_reason`,
+  both of which said the request carrying a refusal reason was the one this page
+  was most likely to serve. What is stated instead is what the code does:
+  `_submit_target_shortlist` sends `?handoff=unverified` to this exact URL, so
+  dropping the query string would drop the reason on the route's own output.
+  The five banner sentences moved to `templates/components/lab_handoff_banner.html`
+  so the three templates that import them cannot drift into three variants; each
+  detail page keeps its own wrapper, whitelist and suite, and the partial takes
+  the arm's noun. `parent='run'` never reaches `unavailable.html` in production
+  after A94, and the macro still takes the noun on every call, because a partial
+  that is only correct for the caller that happens to reach it is the
+  duplication it replaced.
 
 - **A91 (NEW, filed with A88, not fixed). The LEGACY single-job shortlist arm
   has none of the refusal model, and cannot get the truncation half of it.**
@@ -3119,6 +3298,81 @@ in-product handoff the plan prefers.
   corrected rather than left behind. Pinned by 194 new lines in
   `tests/test_campaign_submitted_email.py`; three mutations verified (HTML
   body, plain-text lead, staff cell -- each reverts red).
+
+- **A94 (NEW, round 2 of A90, filed not fixed). The two shortlist arms answer an
+  unreadable parent differently, and the campaign arm cannot deliver its own
+  refusal reason.** `_submit_campaign_shortlist` refuses an unreadable run with
+  `?handoff=unverified` back to `/campaigns/<id>`, exactly as the target arm
+  does. `compute_campaign_detail` then reads that run through the two-outcome
+  `cc.get_campaign`, so if the fault outlived the redirect the user is forwarded
+  or listed rather than shown the banner. The target arm does show it.
+  A 503 mirror was BUILT AND REVERTED, and the reason is a request-cost
+  measurement rather than a preference. A redirect never renders a template and
+  therefore never runs `app.py::inject_workspace_context`. Under a total read
+  outage this route as written issues three Supabase reads and then redirects --
+  `get_tier` inside `load_user_context`, `cc.get_campaign`, and the wet-lab
+  `get_campaign`. A rendered 503 issues five: that `get_tier`, the campaign read,
+  and then the context processor's own `load_user_context` -> `get_tier`,
+  `active_workspaces_count` and the navbar wallet chip. (The processor's fifth
+  read, the onboarding ribbon, is guarded on a wallet balance the failed chip
+  read leaves None.) All five fail open, which is why the page renders at all --
+  verified by forcing a total outage, 0.04s -- but in the HANG-shaped outage the
+  exit exists for, failing open still costs the full client read timeout each,
+  serially, against `gunicorn.conf.py`'s `timeout = 120` and its default
+  `workers = 2`. The user gets the gateway's 502 in place of our 503, and two
+  such requests occupy both workers. The target arm pays none of this: its ABSENT
+  answer already rendered `404.html`, so its 503 swapped one render for another.
+  Mirroring it also silently dropped the launch-cutover wet-lab 301 forward for
+  any id whose compute read failed, and routed a PERMANENT condition (an
+  unparseable row, via `_campaign_or_none`) through a transient-flavoured "try
+  again in a moment" exit.
+  *Next:* the cheap version is a 503 that does NOT render the full chrome -- a
+  response built without the context processor, or a route-level cache of the
+  workspace context -- at which point the arms can be made symmetric without
+  paying five serial timeouts. Until then the asymmetry is deliberate and is
+  recorded beside `compute_campaign_detail`,
+  `templates/components/lab_handoff_banner.html` and
+  `templates/runs/detail.html`.
+
+- **A95 (NEW, round 2 of A90, filed not fixed). Three of the five handoff
+  sentences point at controls the 503 page is not rendering.** `none` says "try
+  the button again", `rejected` says "star designs from the table on this page",
+  `noname` says "reopen the form" -- and the button, the table and the form are
+  all on the parent's page, which is the page that did not load. They are the
+  right instructions and they become actionable on the reload the page asks for,
+  and none of those three gates involves the parent read, so reaching the page
+  under any of them takes a fault independent of whatever produced the reason.
+  Giving the copy a page-state variant would buy a fourth wording to keep true.
+  Recorded in `templates/unavailable.html`, which names this item.
+
+- **A96 (NEW, round 2 of A90, filed not fixed). The target fan-in still refuses
+  on a two-outcome read.** `shared/target_results.py::aggregate_target_candidates`
+  gates on `get_target(...) is None`, so an unreadable target reports an empty
+  result set there -- though not on the detail route's own path, because that
+  route's `read_target` fails first under the same fault. The aggregate's OWN
+  envelope already draws the distinction correctly (`_unreadable` sets `ok` True
+  and `partial` True; `_not_found` is the only `ok` False and is reached only
+  after a completed read), so `target_detail`'s `if not agg["ok"]: 404` is right
+  and was left alone; its comment, which said the opposite, was not.
+
+- **A97 (NEW, round 2 of A90, filed not fixed). `read_target`'s three-outcome
+  contract is not total, and the two arms are asymmetric because of it.** It
+  calls `DesignTarget.from_row` outside its `try`, matching `get_target` and
+  `read_job`, so an unparseable row RAISES rather than reporting UNAVAILABLE. The
+  campaign arm's `_campaign_or_none` makes `read_campaign` total on that input.
+  The claim of symmetry was corrected in `blueprints/lab_projects.py` rather than
+  the code changed, because each read matches its own module's `get_*` sibling
+  and closing the gap means giving `shared/targets.py` a `_campaign_or_none`
+  equivalent -- which changes what `get_target` and the detail page do with such
+  a row as well.
+
+- **A98 (NEW, round 2 of A90, filed not fixed). `get_service_client()` sits
+  outside the `try` in all three read functions**, as it does in
+  `shared/jobs.py::read_job`. Unreachable today because
+  `shared/credits.py::get_service_client` catches its own exceptions and answers
+  None, which every caller handles, but structural rather than guaranteed.
+  Moving it inside the `try` in two of the three siblings would create exactly
+  the asymmetry A97 is about.
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

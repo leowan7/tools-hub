@@ -1038,3 +1038,26 @@ def test_a_failed_drive_spawn_does_not_double_fund_the_campaign(
     assert len(rec.funded) == 1, (
         f"one consent funded {len(rec.funded)} campaigns"
     )
+
+
+# ---------------------------------------------------------------------------
+# /campaigns/<id> WHEN THE RUN READ DID NOT COMPLETE, and why nothing here
+# asserts a 503 (register items A90 and A94).
+#
+# This route reads through the two-outcome `cc.get_campaign`, so an unreadable
+# run is indistinguishable from an absent one and takes the launch-cutover
+# fallback: the wet-lab forward is consulted, says None under the same fault,
+# and the user lands on the runs list with HTTP 200 and no message. Benign, and
+# unchanged by A90 -- the two tests that pin it are
+# `test_wetlab_email_link_forwards_to_lab_projects` and
+# `test_compute_miss_that_is_not_wetlab_falls_back_to_list` in
+# tests/test_campaigns_cutover_redirects.py.
+#
+# The TARGET arm is not symmetric with this one and that is deliberate: its
+# absent answer is a rendered `404.html`, so a read that never completed was
+# telling the user their own target does not exist. Its 503 is pinned in
+# tests/test_target_routes.py. Mirroring it here was built and reverted for the
+# request-cost reason recorded beside `compute_campaign_detail`; A94 carries the
+# residual, which is that a `?handoff=unverified` refusal whose fault outlives
+# the redirect does not reach a banner on this arm.
+# ---------------------------------------------------------------------------

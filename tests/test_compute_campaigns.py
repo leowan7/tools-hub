@@ -19,7 +19,11 @@ import pytest
 import shared.compute_campaigns as cc
 from shared.compute_campaigns import (
     BOLTZGEN_DESIGNS_PER_JOB,
+    CAMPAIGN_READ_ABSENT,
+    CAMPAIGN_READ_OK,
+    CAMPAIGN_READ_UNAVAILABLE,
     MAX_SUBJOBS_PER_CAMPAIGN,
+    CampaignRead,
     ComputeCampaign,
     _chunk_size_for,
     create_campaign,
@@ -28,6 +32,7 @@ from shared.compute_campaigns import (
     list_campaigns_for_target,
     list_campaigns_for_user,
     plan_chunks,
+    read_campaign,
     sanitize_shared_params,
 )
 
@@ -301,6 +306,7 @@ class _Query:
         self._count = None
         self._head = False
         self._range = None
+        self._limit = None
         self._order = None
 
     def select(self, *_a, **_k):
@@ -373,10 +379,23 @@ class _Query:
         self._range = (start, end)
         return self
 
-    def limit(self, *_a, **_k):
-        # Deliberately a no-op beyond the clamp in execute(): PostgREST clamps
-        # .limit() to max_rows exactly as it clamps an unbounded select, which
-        # is why .range() is the only way past it.
+    def limit(self, n):
+        # RECORDED AND APPLIED in execute(). max_rows is an UPPER BOUND on what
+        # PostgREST returns and .limit() cannot lift it -- asking for more does
+        # not get you more, which is why .range() paging is the only way past it
+        # -- but a limit BELOW it is honoured, and this fake was a no-op that
+        # returned every matching row whatever was asked for. That made it MORE
+        # PERMISSIVE than the backend on an axis nothing here was checking.
+        #
+        # WHAT THIS DOES NOT BUY, stated because the obvious claim is false and
+        # was checked by mutation before this comment was written: it does not
+        # make `read_campaign`'s absent case testable. That read is an
+        # `.eq("id", ...)`, which matches at most one row, so `.limit(1)` removes
+        # nothing and the empty list comes from the FILTER. Reverting this method
+        # to a no-op leaves EVERY test in this file green. The `.single()`
+        # mutation is caught by the fake's `single()` raising on zero rows, which
+        # is what models the real distinction.
+        self._limit = n
         return self
 
     def single(self):
@@ -433,6 +452,8 @@ class _Query:
         if self._range is not None:
             start, end = self._range
             matched = matched[start:end + 1]
+        elif self._limit is not None:
+            matched = matched[:min(self._limit, _FAKE_MAX_ROWS)]
         # Applied last and unconditionally, as PostgREST does: a .range() wider
         # than max_rows still comes back clamped.
         return _Result(matched[:_FAKE_MAX_ROWS])
@@ -476,6 +497,296 @@ def test_create_and_get_campaign(fake_client):
     assert got is not None and got.id == camp.id
     # owner scope enforced.
     assert get_campaign(camp.id, user_id="someone-else") is None
+
+
+# ---------------------------------------------------------------------------
+# read_campaign: the three-outcome read (register item A90)
+#
+# `get_campaign` answers None for a campaign that is not there, one that is not
+# the caller's, and a read that never completed. The lab-handoff gate in
+# blueprints/lab_projects.py has to act differently on the last of those -- it
+# refuses the submission and says so, instead of bouncing the user to an
+# unrelated list in silence -- so the difference has to survive the read.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingQuery:
+    """Builds like any other query and fails at execute().
+
+    Models the fault the third outcome exists for: PostgREST reachable enough to
+    accept a query and not to answer it. Every builder method returns self via
+    ``__getattr__`` so the fake never has to track which ones the code under test
+    happens to call; ``execute`` is defined on the class, so it wins the lookup.
+    """
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: self
+
+    def execute(self):
+        raise RuntimeError("PostgREST timed out")
+
+
+class _RaisingClient:
+    def table(self, _name):
+        return _RaisingQuery()
+
+
+@pytest.fixture
+def raising_client(monkeypatch):
+    client = _RaisingClient()
+    monkeypatch.setattr(cc, "get_service_client", lambda: client)
+    return client
+
+
+def _a_campaign(fake_client, user_id="user-1"):
+    camp = create_campaign(
+        user_id=user_id, tool="rfdiffusion", params={"target_chain": "A"},
+        requested_designs=12,
+    )
+    assert camp is not None, "fixture assumption: the insert worked"
+    return camp
+
+
+def test_read_campaign_reports_ok_for_a_row_that_is_there(fake_client):
+    camp = _a_campaign(fake_client)
+    read = read_campaign(camp.id, user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_OK
+    assert read.campaign is not None and read.campaign.id == camp.id
+    assert read.unavailable is False
+
+
+def test_read_campaign_reports_absent_when_the_read_matched_no_row(fake_client):
+    """A read that COMPLETED and found nothing. The whole point of `.limit(1)`:
+    under `.single()` this raises and is indistinguishable from the timeout in
+    the next test, which is the defect A90 filed."""
+    read = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_ABSENT
+    assert read.campaign is None
+    assert read.unavailable is False, (
+        "an absent campaign is a verdict about the campaign, not about the "
+        "database"
+    )
+
+
+def test_read_campaign_reports_unavailable_when_the_query_raises(raising_client):
+    read = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_UNAVAILABLE
+    assert read.campaign is None
+    assert read.unavailable is True
+
+
+def test_read_campaign_reports_unavailable_with_no_service_client(monkeypatch):
+    """No client is not "no campaign". `get_campaign` cannot say so."""
+    monkeypatch.setattr(cc, "get_service_client", lambda: None)
+    read = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_UNAVAILABLE
+    assert read.unavailable is True
+
+
+def test_absent_and_unavailable_are_distinct_campaign_outcomes(
+    fake_client, monkeypatch,
+):
+    """THE PIN. Both of these hand back ``campaign is None``, so anything that
+    collapses the pair -- reverting to `.single()`, or a caller that reads only
+    the campaign -- makes a two-second database fault indistinguishable from a
+    permanent verdict on the one action that hands work to a wet lab.
+
+    Written as one test over both outcomes rather than two, because the claim is
+    about the DIFFERENCE and a pair of separate assertions can each keep passing
+    while the difference disappears.
+    """
+    absent = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    monkeypatch.setattr(cc, "get_service_client", lambda: _RaisingClient())
+    unreadable = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    assert absent.campaign is None and unreadable.campaign is None
+    assert absent.outcome != unreadable.outcome
+    assert absent.unavailable is False
+    assert unreadable.unavailable is True
+
+
+def test_read_campaign_applies_the_owner_scope(fake_client):
+    """``user_id`` is a QUERY FILTER, so another tenant's campaign matches no row
+    and comes back ABSENT -- not OK, and not a distinct "forbidden" outcome,
+    which would mean reading a row the scope exists to withhold.
+
+    Dropping ``.eq("user_id", ...)`` from `read_campaign` reds this: the fake
+    really filters, so the row would come back and the outcome would be OK.
+    """
+    camp = _a_campaign(fake_client, user_id="user-1")
+    theirs = read_campaign(camp.id, user_id="someone-else")
+    assert theirs.outcome == CAMPAIGN_READ_ABSENT
+    assert theirs.campaign is None
+    # And the unscoped read still works, so the test above failed on the scope
+    # rather than on the id.
+    assert read_campaign(camp.id).outcome == CAMPAIGN_READ_OK
+
+
+def test_read_campaign_reports_unavailable_for_a_row_it_cannot_parse(fake_client):
+    """The one departure from ``shared.jobs.read_job``'s body, asserted.
+
+    ``_campaign_or_none`` answers None for a row missing a column
+    ``ComputeCampaign.from_row`` subscripts. The row is PRESENT, so ABSENT is
+    false, and there is no campaign to hand back, so OK is false. Not reachable
+    from any row the migrations pin -- this is cover for a partial migration.
+    """
+    fake_client.store["compute_campaigns"] = [{"id": "c-bad", "user_id": "user-1"}]
+    read = read_campaign("c-bad", user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_UNAVAILABLE
+    assert read.campaign is None
+    # AND `.unavailable` on that same path, which is the property callers
+    # actually branch on and which nothing asserted here before. Its docstring
+    # used to say "the lookup did not complete", copied verbatim from
+    # `JobRead`'s; on THIS path the lookup completed and PostgREST handed back a
+    # row. The wording changed and this is what holds the behaviour to it.
+    assert read.unavailable is True
+
+
+class _RaisingTableClient:
+    """Fails at ``client.table(...)``, BEFORE any query is built.
+
+    The other raising fake in this file fails at ``execute()``. Both are inside
+    `read_campaign`'s ``try`` and both must report UNAVAILABLE, but only one of
+    them was exercised: a ``try`` narrowed to the ``execute()`` line alone would
+    have left every test here green while a `table()` raise escaped as a 500 out
+    of the lab-handoff gate.
+    """
+
+    def table(self, _name):
+        raise RuntimeError("client is wedged")
+
+
+def test_read_campaign_reports_unavailable_when_building_the_query_raises(
+    monkeypatch,
+):
+    monkeypatch.setattr(cc, "get_service_client", lambda: _RaisingTableClient())
+    read = read_campaign(str(uuid.uuid4()), user_id="user-1")
+    assert read.outcome == CAMPAIGN_READ_UNAVAILABLE
+    assert read.campaign is None
+    assert read.unavailable is True
+
+
+# ---------------------------------------------------------------------------
+# CampaignRead's two guards, and the invariant underneath them
+#
+# The class docstring claimed "no `__bool__` and no truthiness of any kind"
+# while having neither guard: every instance was unconditionally truthy, and
+# `frozen=True` GENERATED an `__eq__`, so `read == CAMPAIGN_READ_OK` answered
+# False in silence on a read that had succeeded. The precedent for both is
+# `tools/proteina/_canary_scoring.py::Verdict`, which paid for the same two
+# holes in the same order; `tests/test_proteina_canary.py` pins them there.
+# ---------------------------------------------------------------------------
+
+
+def _ok_read(fake_client):
+    return read_campaign(_a_campaign(fake_client).id, user_id="user-1")
+
+
+def test_a_campaign_read_refuses_to_be_used_as_a_boolean(fake_client, monkeypatch):
+    """Asserted on the OK read FIRST, because that is where the default
+    behaviour was most dangerous: `if read:` was True there and True on an
+    unreadable one, so the natural spelling of "did this work" could not fail.
+    """
+    for read in (
+        _ok_read(fake_client),
+        read_campaign(str(uuid.uuid4()), user_id="user-1"),       # absent
+        CampaignRead(None, CAMPAIGN_READ_UNAVAILABLE),
+    ):
+        with pytest.raises(TypeError):
+            bool(read)
+        with pytest.raises(TypeError):
+            if read:            # noqa: SIM103 - the spelling under test
+                pass
+        with pytest.raises(TypeError):
+            not read
+
+
+def test_a_campaign_read_refuses_to_be_compared_with_an_outcome_string(
+    fake_client,
+):
+    """`__bool__` raising leaves a hole exactly its own size unless `__eq__`
+    closes it too: the frozen dataclass's generated `__eq__` returned False
+    SILENTLY for `read == CAMPAIGN_READ_OK` on a read that had succeeded, which
+    reads as a clean negative rather than as a mistake.
+
+    Every route into `__eq__` is covered, because closing only the direct one
+    leaves three spellings of the same error working.
+    """
+    read = _ok_read(fake_client)
+    assert read.outcome == CAMPAIGN_READ_OK
+    with pytest.raises(TypeError):
+        read == CAMPAIGN_READ_OK
+    with pytest.raises(TypeError):
+        CAMPAIGN_READ_OK == read            # the reflected comparison
+    with pytest.raises(TypeError):
+        read != CAMPAIGN_READ_ABSENT        # `!=` routes through `__eq__`
+    with pytest.raises(TypeError):
+        read in (CAMPAIGN_READ_OK, CAMPAIGN_READ_ABSENT)   # and so does `in`
+    # And the cross-family mixup, which is the half of finding 4b a comparison
+    # guard CAN catch: all three families spell OK as the string "ok", so this
+    # raises for being a string at all rather than for being the wrong one.
+    from shared.targets import TARGET_READ_OK
+    with pytest.raises(TypeError):
+        read == TARGET_READ_OK
+
+
+def test_two_campaign_reads_still_compare_as_values(fake_client):
+    """Refusing the string comparison must not cost ordinary equality, and it
+    must not cost hashability either: declaring `__eq__` sets `__hash__` to
+    None, which would make a frozen value type unusable in a set.
+
+    THE SECOND READ IS BUILT FROM A SECOND, INDEPENDENTLY CONSTRUCTED CAMPAIGN,
+    and that is the whole content of the test rather than a detail of it.
+    `__eq__` compares `(self.campaign, self.outcome) == (other.campaign,
+    other.outcome)`, and tuple `==` short-circuits on IDENTITY per element --
+    so two reads sharing one ComputeCampaign compare equal whether the payload
+    comparison works or not, and this test passed unchanged against an `__eq__`
+    rewritten to `self.campaign is other.campaign`. Two `read_campaign` calls
+    against the same stored row give two distinct objects with equal fields,
+    which is the property
+    `tests/test_proteina_canary.py::test_two_verdicts_still_compare_as_values`
+    gets from building its second Verdict with its own `{"k": 1}`.
+    """
+    camp = _a_campaign(fake_client)
+    first = read_campaign(camp.id, user_id="user-1").campaign
+    twin = read_campaign(camp.id, user_id="user-1").campaign
+    assert twin is not first, "two reads must build two objects"
+    assert twin == first, "and they must be equal to each other by value"
+    a = CampaignRead(first, CAMPAIGN_READ_OK)
+    assert a == CampaignRead(twin, CAMPAIGN_READ_OK)
+    assert a != CampaignRead(None, CAMPAIGN_READ_ABSENT)
+    assert CampaignRead(None, CAMPAIGN_READ_ABSENT) != CampaignRead(
+        None, CAMPAIGN_READ_UNAVAILABLE)
+    # A DIFFERENT campaign, so equality is not merely "same outcome".
+    assert a != CampaignRead(_a_campaign(fake_client), CAMPAIGN_READ_OK)
+    assert len({a, CampaignRead(twin, CAMPAIGN_READ_OK)}) == 1
+    # Not equal to some other type, and not raising either: only strings raise.
+    assert a != 17
+
+
+def test_a_campaign_read_that_is_ok_must_carry_a_campaign(fake_client):
+    """The invariant nothing enforced. `CampaignRead(None, CAMPAIGN_READ_OK)`
+    constructed fine, and every caller that checks `.outcome` and then reads
+    `.campaign` would have been handed a None it has no branch for."""
+    with pytest.raises(ValueError):
+        CampaignRead(None, CAMPAIGN_READ_OK)
+
+
+def test_a_campaign_read_that_is_not_ok_must_carry_no_campaign(fake_client):
+    """The other direction, which matters just as much: a payload on an
+    UNAVAILABLE read is a campaign we are simultaneously claiming not to have
+    obtained."""
+    camp = _a_campaign(fake_client)
+    for outcome in (CAMPAIGN_READ_ABSENT, CAMPAIGN_READ_UNAVAILABLE):
+        with pytest.raises(ValueError):
+            CampaignRead(camp, outcome)
+
+
+def test_a_campaign_read_refuses_an_outcome_that_is_not_one_of_the_three():
+    """A typo'd outcome is a branch that silently never fires -- `.unavailable`
+    answers False and every `== CAMPAIGN_READ_*` test answers False, so the read
+    reports as OK-shaped without being OK."""
+    with pytest.raises(ValueError):
+        CampaignRead(None, "unavailble")
 
 
 def test_create_campaign_raises_on_unsupported(fake_client):

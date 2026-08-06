@@ -14,14 +14,22 @@ all; every sentence below lives in the template unconditionally. So the page is
 served through the real route, the response HTML is parsed, and the assertions
 read the VISIBLE TEXT.
 
-TWO OF THE FIVE SENTENCES DIFFER FROM THE TARGET PAGE'S, and that is the point
-of having a second file rather than one shared partial. This route's `rejected`
-means "not a child of this run", not "not on this target"; and its `unverified`
-has exactly one cause -- a sub-job read that never completed -- because
-``_submit_campaign_shortlist`` compares ``job.campaign_id`` off the same row as
-the job and makes no second, paged read that could come back short. The target
-page's `unverified` sentence names that second read, so copying it here would
-describe a lookup this route never performs.
+THE COPY IS NOW ONE PARTIAL AND THIS FILE IS STILL A SECOND FILE. A90 lifted
+the five sentences into templates/components/lab_handoff_banner.html, which
+takes the arm's noun -- so what this file and its target-page sibling verify is
+that THIS ROUTE, with its own whitelist and its own template, renders the run
+arm's wording and never the target arm's. The strings still differ: this route's
+`rejected` means "not a child of this run", not "not on this target", and
+`unverified` names this page's noun.
+
+`unverified` differed by more than the noun until register item A90, and the way
+it stopped is worth recording. It named the sub-job read, which was the only
+cause this arm then had; A90 added the parent run read at the submit gate, which
+now reports "unreadable" apart from "absent", and a sentence naming one cause is
+false whenever another one fires. Neither page's sentence names a read any more.
+``test_the_unverified_banner_names_no_particular_read`` below is what holds that,
+in both directions -- and its docstring, not this paragraph, is where the causes
+are enumerated, because "a second cause" is the count that goes stale.
 """
 
 from __future__ import annotations
@@ -46,7 +54,7 @@ _DISTINGUISHING = {
     "none":       "arrived with no designs in it",
     "noname":     "needs a name for the target",
     "rejected":   "none of them could be matched to a design produced by this run",
-    "unverified": "could not read every sub-job your starred designs came from",
+    "unverified": "could not confirm that the designs you starred belong to this run",
     "failed":     "Your request could not be submitted",
 }
 
@@ -168,7 +176,13 @@ def _agg():
 
 def _render_run_page(client, query="", *, paragraphs=False):
     """GET /campaigns/<id><query> and return its VISIBLE text, or -- with
-    ``paragraphs=True`` -- the text of each ``<p>`` on the page."""
+    ``paragraphs=True`` -- the text of each ``<p>`` on the page.
+
+    ``get_campaign`` and not ``read_campaign``: this route still resolves its
+    run through the two-outcome read (register items A90 and A94). Only the
+    SUBMIT gate in blueprints/lab_projects.py takes the three-outcome form, and
+    only the TARGET detail route renders templates/unavailable.html.
+    """
     with client.session_transaction() as sess:
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
@@ -239,20 +253,49 @@ def test_the_rejected_banner_does_not_tell_the_user_to_retry(client):
     assert "will be refused the same way" in rejected
 
 
-def test_the_unverified_banner_names_the_sub_job_read_not_a_list_of_runs(client):
-    """The one sentence that must NOT be copied from the target page.
+def test_the_unverified_banner_names_no_particular_read(client):
+    """MORE THAN ONE CAUSE REACHES THIS BANNER, so it may name none of them.
 
-    That page says "we could not read the full list of runs on this target",
-    which describes ``campaign_ids_for_target`` -- a second, paged read whose
-    completeness the target arm has to track. This arm makes no second read at
-    all: ``job.campaign_id`` arrives on the same row as the job, so the only
-    thing that can leave a ref undecided here is the sub-job read itself.
-    Copying the target sentence would tell the user about a lookup this route
-    never performs.
+    ``_submit_campaign_shortlist`` sends `unverified` from two exits: the PARENT
+    run read at its gate came back unavailable (``cc.read_campaign``, register
+    item A90), or any SUB-JOB read inside its loop did. A sentence naming one is
+    false whenever the other fired, which is the defect this assertion exists to
+    stop recurring -- the banner named the sub-job read for as long as that was
+    the only cause, and A90 made that wording false without touching the
+    template.
+
+    "TWO EXITS" IS NOT "TWO FAILED READS", and the difference is why nothing
+    here says "both of them are a read that did not complete".
+    ``cc.read_campaign`` reports UNAVAILABLE on THREE grounds
+    (``shared/compute_campaigns.py``): no service client, the query raised, and
+    a row that came back in a shape ``_campaign_or_none`` could not parse. On
+    the third the read COMPLETED -- PostgREST answered and handed back a row.
+    That ground needs a row no migration in this repo can produce, but an
+    assertion about it either holds or does not, and "a read that did not
+    complete" does not.
+
+    Asserted in both directions: the cause-neutral sentence the whitelist test
+    keys on is present, and the two phrasings that name a specific read are
+    absent.
+
+    WHAT THOSE TWO ABSENCE ASSERTIONS ARE, precisely, because the wrong answer
+    is easy and was written here first. They are NOT a cross-page check. Both
+    strings were deleted from BOTH templates by A90 -- this page's old sentence
+    ("could not read every sub-job your starred designs came from") and the
+    target page's old one ("the full list of runs on this target") -- so neither
+    exists anywhere now and neither can be reached from this route by any route.
+    They are regression guards against RESTORING either wording, on either page,
+    and that is all they are. This page's own sentence is the one asserted
+    present above.
+
+    A docstring in the one test whose subject is "a sentence written against one
+    cause and never re-read" must not itself be that, which is why this says
+    what the assertions do rather than what they were originally for.
     """
     text = _render_run_page(client, "?handoff=unverified")
     assert "the full list of runs on this target" not in text
-    assert "could not read every sub-job your starred designs came from" in text
+    assert "could not read every sub-job your starred designs came from" not in text
+    assert _DISTINGUISHING["unverified"] in text
 
 
 def test_no_banner_claims_a_charge_was_avoided(client):
@@ -261,12 +304,19 @@ def test_no_banner_claims_a_charge_was_avoided(client):
     money moved implies money could have moved, contradicting that modal; the
     compute these designs came from was charged when the run was dispatched.
 
-    Scoped to the handoff paragraph, found by its own sentence. This page's
-    paused-wallet hint and budget panel discuss money for good reason, and a
-    page-wide assertion would be testing those instead of this one.
+    Scoped to the banner's paragraphs, each found by its own sentence. This
+    page's paused-wallet hint and budget panel discuss money for good reason,
+    and a page-wide assertion would be testing those instead of this one.
+
+    BOTH OF THE BANNER'S PARAGRAPHS, not just the reason. The reason paragraph
+    is one of five and the size-cap paragraph rides any of them, so a `charge`
+    reassurance added to the second would have satisfied a loop that only ever
+    rendered the first -- which is what this test did until the claim in
+    templates/components/lab_handoff_banner.html was checked against it.
     """
     for reason, sentence in _DISTINGUISHING.items():
-        paras = _render_run_page(client, f"?handoff={reason}", paragraphs=True)
+        paras = _render_run_page(client, f"?handoff={reason}&truncated=7",
+                                 paragraphs=True)
         banner = [p for p in paras if sentence in p]
         assert len(banner) == 1, (
             f"?handoff={reason} did not render exactly one banner paragraph"
@@ -274,6 +324,15 @@ def test_no_banner_claims_a_charge_was_avoided(client):
         assert "charge" not in banner[0], (
             f"?handoff={reason} still reassures about a charge this route "
             f"cannot make: {banner[0]!r}"
+        )
+        capped = [p for p in paras if _OVER_LIMIT in p]
+        assert len(capped) == 1, (
+            f"?handoff={reason}&truncated=7 did not render exactly one "
+            f"size-cap paragraph"
+        )
+        assert "charge" not in capped[0], (
+            f"the size-cap paragraph reassures about a charge this route "
+            f"cannot make: {capped[0]!r}"
         )
 
 
