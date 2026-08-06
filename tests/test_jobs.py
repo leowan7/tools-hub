@@ -708,11 +708,17 @@ def test_a_job_read_refuses_to_be_compared_with_an_outcome_string():
         read != JOB_READ_ABSENT             # `!=` routes through `__eq__`
     with pytest.raises(TypeError):
         read in (JOB_READ_OK, JOB_READ_ABSENT)          # and so does `in`
-    # And the cross-family mixup, which is the half a comparison guard CAN
-    # catch -- the half it cannot is the CONSTRUCTION, since all three families
-    # spell OK as the string "ok". Both sibling suites carry this assertion and
-    # `JobRead`'s own docstring claims it; without it the claim was unpinned on
-    # the one class that makes it.
+    # The cross-family mixup. THIS LINE IS DOCUMENTATION, NOT COVERAGE, and it
+    # is written down here so nobody counts it as the latter: the guard tests
+    # `isinstance(other, str)` and all three families spell OK as the same
+    # interned `"ok"`, so no mutation can red this line without redding the
+    # `read == JOB_READ_OK` assertion above it. Redefining CAMPAIGN_READ_OK to
+    # another string leaves it green; narrowing the guard to
+    # `other in JOB_READ_OUTCOMES` leaves it green too. Kept because both
+    # sibling suites carry it and `JobRead`'s docstring claims it, so its
+    # absence read as the claim being untested on the one class that makes it --
+    # but the CONSTRUCTION half is what actually cannot be caught, and that is
+    # register item A95's neighbourhood, not this test's.
     from shared.compute_campaigns import CAMPAIGN_READ_OK
     with pytest.raises(TypeError):
         read == CAMPAIGN_READ_OK

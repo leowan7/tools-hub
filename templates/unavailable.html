@@ -19,9 +19,10 @@
    parameter. `compute_campaign_detail` keeps the two-outcome `get_campaign`:
    its None arm falls through the launch-cutover fallback to the runs list with
    a 200, which is uninformative and is not the false verdict the 404 was, and
-   answering it with a render instead of a redirect costs two extra Supabase
-   round trips plus the context processor's under exactly the outage this page
-   exists for (the count is beside `compute_campaign_detail`). Register item A94
+   answering it with a render instead of a redirect takes that request from
+   three Supabase round trips to five under exactly the outage this page exists
+   for. The two extra ARE the context processor's, which a redirect never runs;
+   this is 3 -> 5, not 2 + 3 (the count is beside `compute_campaign_detail`). Register item A94
    holds the residual: on that arm a `?handoff=unverified` refusal whose fault
    outlives the redirect reaches no banner. The noun stays parameterised because
    the shared macro is written for both arms and a partial that is only correct

@@ -360,6 +360,9 @@ def test_the_503_page_still_reports_what_the_size_cap_discarded(client):
             patch("blueprints.targets.read_target",
                   return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
         plain = client.get(f"/targets/{uuid.uuid4()}?handoff=unverified")
+    # The status assertion is what stops the negative half passing vacuously:
+    # without it a 500 on this request satisfies `not in` while proving nothing.
+    assert plain.status_code == 503
     assert "over the per-request limit" not in _flat(plain.get_data(as_text=True))
 
 

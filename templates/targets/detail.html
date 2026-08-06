@@ -125,12 +125,16 @@
    user to /targets with no banner at all.
 
    THE THIRD IS NOT ALWAYS A FAILED READ, and this comment used to claim all
-   three were. `campaign_ids_for_target` reports its id list incomplete on TWO
-   paths (shared/targets.py): a page read that raised, which is a failed read,
-   and its own page bound, where every page read completed and the loop simply
-   stopped. The second needs more than 10,000 compute campaigns on one target,
-   so nothing has ever reached it -- but "every one of them is a read that did
-   not complete" is false of it. What is true of all three, and what the
+   three were. `campaign_ids_for_target` reports its id list incomplete on
+   THREE paths (shared/targets.py): no service client, which returns before any
+   page is read; a page read that raised; and its own page bound, where every
+   page read completed and the loop simply stopped. The first two are failed
+   reads. The third is not. It needs `_PAGE_SIZE * _MAX_PAGES` compute campaigns
+   on one target -- 10,000 OR MORE, not more than 10,000, since exactly 10,000
+   fills all twenty pages and the short-page exit never fires. Nothing here
+   measures how often that is reached, and it does not matter to this comment:
+   "every one of them is a read that did not complete" is false of that path
+   whether or not anyone has taken it. What is true of all three, and what the
    rendered sentence therefore says, is that a LOOKUP did not complete: on the
    page-bound path the individual reads finished and the enumeration did not.
 

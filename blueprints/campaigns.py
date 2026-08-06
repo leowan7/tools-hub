@@ -49,10 +49,15 @@ campaigns_bp = Blueprint("campaigns", __name__)
 #
 # SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, and three of the
 # five sentences (`none`, `noname`, `failed`) are word for word the target
-# page's. `rejected` is the one whose CAUSE differs by arm: where this route's
-# `rejected` tests parentage it asks "child of this run" rather than "on this
-# target" -- though parentage is not its only ground, since a ref naming an index
-# past the end of a job that IS a child lands there too.
+# page's. TWO OF THE FIVE describe a cause that differs by arm, and reading it
+# as one is how the two arms get treated as interchangeable. `rejected` is the
+# first: where this route's `rejected` tests parentage it asks "child of this
+# run" rather than "on this target" -- though parentage is not its only ground,
+# since a ref naming an index past the end of a job that IS a child lands there
+# too. `unverified` is the second, and the paragraphs below say how: the two
+# arms reach it from different causes and `cc.read_campaign` has a ground
+# `read_target` does not (register item A97). The SENTENCE is now shared; the
+# CAUSE SETS are not, and nothing here licenses merging the two banner suites.
 #
 # THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
 # sentences into templates/components/lab_handoff_banner.html, which takes the
