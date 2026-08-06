@@ -2547,6 +2547,18 @@ def _fake_rp(home):
             # real inference tree. A stub here would put back a canary-local
             # answer to that question, which is the divergence being removed.
             "parse_designs",
+            # REAL for the same reason, and this one cost a paid A100 to learn.
+            # ``stage_cropped_target`` IS production's staging step - the crop
+            # plus the count self-check - and ``_stage`` is required to go
+            # through it rather than write the upload verbatim. A stub here
+            # would let the canary stage whatever it liked and the suite would
+            # still be green, which is precisely the state that reproduced
+            # upstream's assertion on real hardware.
+            "stage_cropped_target", "TargetCropError",
+            "crop_pdb_to_contig", "selected_residue_keys",
+            # Production's negative-numbering guard, which the canary had no
+            # equivalent of until the same audit found it.
+            "unrenderable_segments",
         )
     })
     fake.PROTEINA_HOME = str(home)
@@ -5455,7 +5467,22 @@ class TestStagingMatchesProduction:
         assert expected.is_file(), (
             f"the target was not staged at {expected}; production stages "
             "every uploaded target there and nowhere else")
-        assert expected.read_text() == INPUT_TARGET_PDB
+        # THIS ASSERTION USED TO READ ``== INPUT_TARGET_PDB``, AND IT ENCODED
+        # THE WRONG EXPECTATION. It said the canary stages the upload VERBATIM,
+        # which was true until production grew a crop and then became the bug:
+        # a paid phase-1 shard staged uncropped bytes and reproduced upstream's
+        # ``metric_utils.py:217`` assertion on real hardware. Replaced, not
+        # weakened - the staged bytes must now be what PRODUCTION'S staging step
+        # produces for the same input, which is a strictly stronger claim than
+        # equality with any literal this file could hold.
+        reference = tmp_path / "reference.pdb"
+        raw = tmp_path / "raw.pdb"
+        raw.write_text(INPUT_TARGET_PDB)
+        residues, _ = rp.pdb_ca_residues(raw)
+        rp.stage_cropped_target(
+            reference, INPUT_TARGET_PDB, residues,
+            rp.derive_segments(residues, sorted({r[0] for r in residues})))
+        assert expected.read_text() == reference.read_text()
         add = self._registered(fake.streamed[0])
         assert add["--target-path"] == str(expected)
         assert add["--target-filename"] == key, (
@@ -5480,7 +5507,7 @@ class TestStagingMatchesProduction:
         fake = _fake_rp(tmp_path / "proteina")
         namespace = load_canary_functions({"_stage", "_stage_dir"})
         key = cs.canary_task_key("positive", 1234)
-        staged = namespace["_stage"](fake, INPUT_TARGET_PDB, key)
+        staged, _raw, _contig = namespace["_stage"](fake, INPUT_TARGET_PDB, key)
         assert staged.parent == Path(fake._HUB_TARGET_DIR)
         assert staged.stem == key
         # run_pipeline's own expression, evaluated here: `target_dir /
@@ -7193,3 +7220,272 @@ class TestTheDesignCanaryHasTheSameDivergence:
 
         assert counts(_Boom(), tmp_path) == {
             "n_scored_designs": None, "n_reward_rows": None}
+
+
+# ===========================================================================
+# THE CANARY'S STAGED BYTES ARE PRODUCTION'S, NOT A LOOKALIKE
+# ===========================================================================
+#
+# WHAT THIS COST. ``prepare_custom_target`` grew a crop - the staged file is
+# reduced to the contig's residues so upstream's ``metric_utils.py:217`` count
+# assertion holds - and ``_stage`` went on doing ``p.write_text(pdb_text)``. Its
+# docstring said "Stage the target EXACTLY the way ``prepare_custom_target``
+# does" under a block-capital "THE CANARY MUST NOT EXERCISE A PATH PRODUCTION
+# NEVER RUNS". True when written; false the moment the crop landed. A paid A100
+# phase-1 shard then staged the uncropped file and reproduced the exact
+# assertion the crop prevents, on the same contig (A236-300,B236-300 on 3S7G).
+# Production was correct the whole time. The harness that exists to prove it
+# was not.
+#
+# WHY "DOES _stage PRODUCE CROPPED OUTPUT" IS THE WRONG TEST. It can be
+# satisfied by a second implementation inside the canary, which is the same
+# defect one commit later. What has to be pinned is that the bytes come from
+# PRODUCTION'S OWN function, so a future change to cropping cannot leave the
+# canary behind - the rule ``_stage_dir`` already states for the path
+# ("derived, not copied ... the canary follows it in the same commit or not at
+# all"), applied to the bytes.
+# ===========================================================================
+
+
+def _three_chain_upload(sub_range=False):
+    """A multi-chain upload with the shape that failed on hardware.
+
+    Chain A 236-300 and B 236-300 carry 65 residues each; chain C is the one a
+    two-chain contig does not name. When ``sub_range`` is set, A and B run to
+    350 instead, so a contig of A236-300,B236-300 selects a strict subset of
+    each named chain - the case upstream's count assertion rejects.
+    """
+    hi = 350 if sub_range else 300
+    lines = []
+    serial = 1
+    for chain in ("A", "B", "C"):
+        seq = [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(hi - 236 + 1)]
+        lines += _trace(chain, seq, first_res=236, serial0=serial)
+        serial += len(seq)
+    return "\n".join(lines) + "\n"
+
+
+class TestTheCanaryStagesThroughProduction:
+
+    _CONTIG = "A236-300,B236-300"
+
+    @staticmethod
+    def _upstream_counts(residues, contig):
+        """(left, right) of ``metric_utils.py:217`` for a file with ``residues``.
+
+        ``named`` discards the ranges exactly as ``binder_eval_utils`` does.
+        """
+        segments = rp.parse_target_input(contig)
+        named = {seg[0] for seg in segments}
+        return (sum(1 for r in residues if r[0] in named),
+                len(rp.select_residues(residues, segments)))
+
+    def test_the_staged_bytes_come_from_productions_own_function(self, tmp_path):
+        """THE TEST THAT WOULD HAVE CAUGHT IT, and it does not mention cropping.
+
+        ``stage_cropped_target`` is replaced with a sentinel. If ``_stage``
+        calls it, the staged file carries the sentinel; if ``_stage`` writes the
+        bytes itself - verbatim OR by re-implementing the crop correctly - it
+        does not. That is the property that survives the next change to
+        cropping, which "the output looks cropped" would not.
+        """
+        fake = _fake_rp(tmp_path / "proteina")
+        marks = []
+
+        def _sentinel(dest, pdb_text, residues, segments):
+            marks.append((Path(dest).name, len(residues), list(segments)))
+            dest.write_text("REMARK PRODUCTION STAGED THIS\nEND\n")
+            return 1, 1
+
+        fake.stage_cropped_target = _sentinel
+        namespace = load_canary_functions({"_stage", "_stage_dir"})
+        key = cs.canary_task_key("positive", 1234)
+        staged, _raw, _contig = namespace["_stage"](
+            fake, _three_chain_upload(sub_range=True), key, self._CONTIG)
+        assert staged.read_text() == "REMARK PRODUCTION STAGED THIS\nEND\n", (
+            "_stage wrote the staged file itself instead of going through "
+            "run_pipeline.stage_cropped_target; a canary that stages its own "
+            "bytes can drift from production again, which is what cost a paid "
+            "A100 shard")
+        assert len(marks) == 1, "production's staging step was not called"
+        name, n_residues, segments = marks[0]
+        assert name == f"{key}.pdb"
+        # ...and it was handed the RAW residues and the operator's contig, i.e.
+        # production's arguments, not something already narrowed.
+        assert n_residues == 345, "the raw upload's residues, all three chains"
+        assert segments == [("A", 236, 300), ("B", 236, 300)]
+
+    def test_a_sub_range_contig_stages_a_file_upstream_will_accept(self, tmp_path):
+        """THE PAID FAILURE, REPRODUCED OFFLINE, through the real ``run_shard``.
+
+        This is the assertion the A100 hit: CA atoms of the named chains in the
+        staged file against the residues the contig selects.
+        """
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236", "B300"],
+            self._CONTIG, 1234, [60, 120], False, ["A236", "B300"])
+        assert out.get("error") is None, out.get("error")
+        staged = Path(namespace["_fake_rp"]._HUB_TARGET_DIR) / f"{out['key']}.pdb"
+        residues, _ = rp.pdb_ca_residues(staged)
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert left == right == 130, (
+            f"the shard staged a file upstream's evaluate stage would reject "
+            f"({left} != {right}) - this is the run that failed on hardware")
+
+    def test_the_uncropped_upload_would_have_failed_that_assertion(self, tmp_path):
+        """The premise, so the test above cannot pass vacuously."""
+        raw = tmp_path / "raw.pdb"
+        raw.write_text(_three_chain_upload(sub_range=True))
+        residues, _ = rp.pdb_ca_residues(raw)
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert (left, right) == (230, 130) and left != right
+
+    def test_input_chains_still_names_every_chain_the_upload_carried(self, tmp_path):
+        """The crop removes chain C from the staged file, and ``input_chains``
+        is documented as "every chain the input file carried" - read off the
+        UPLOAD, not off the staged file, or the key silently becomes a copy of
+        ``target_chains`` and the two can never disagree again."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        assert out["input_chains"] == ["A", "B", "C"]
+        assert out["target_chains"] == ["A", "B"]
+
+    def test_a_crop_mismatch_becomes_a_refusal_record_not_a_process_exit(
+            self, tmp_path, monkeypatch):
+        """Production converts ``TargetCropError`` into ``_fail`` and exits.
+        The canary cannot: a ``sys.exit`` inside a billed container throws away
+        the diagnostic the run was bought for. Same error, different handling -
+        which is exactly why ``stage_cropped_target`` raises instead of
+        deciding."""
+        # Patched on ``run_pipeline`` itself, not on the fake: the self-check
+        # lives INSIDE production's ``stage_cropped_target``, which resolves the
+        # crop from its own module globals. That is the point - the canary
+        # inherits the check by calling the function, and cannot opt out of it.
+        monkeypatch.setattr(rp, "crop_pdb_to_contig", lambda text, keep: text)
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        assert "target staging" in (out.get("error") or "")
+        assert "230" in out["error"] and "130" in out["error"]
+        assert namespace["_design_commands"] == [], (
+            "the shard ran the design command on a file upstream would reject")
+
+    def test_phase_zero_stages_through_production_too(self, tmp_path):
+        """No contig: the crop resolves to the whole of every chain, so the
+        bytes are the input again - but by the same route, not around it."""
+        fake = _fake_rp(tmp_path / "proteina")
+        namespace = load_canary_functions(
+            {"phase0", "_stage", "_stage_dir"},
+            _load_rp=lambda: fake, _prune_registry=lambda module: [])
+        results = namespace["phase0"](INPUT_TARGET_PDB)
+        assert results["pass"] is True, results
+        staged = (Path(fake._HUB_TARGET_DIR)
+                  / f"{cs.canary_task_key('phase0', 0)}.pdb")
+        residues, _ = rp.pdb_ca_residues(staged)
+        assert self._upstream_counts(residues, "A1-30") == (30, 30)
+
+    def test_the_staged_file_is_the_one_that_gets_registered(self, tmp_path):
+        """The crop is pointless if the registration names a different file."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        add = namespace["_fake_rp"].streamed[0]
+        registered = Path(add[add.index("--target-path") + 1])
+        assert registered.name == f"{out['key']}.pdb"
+        residues, _ = rp.pdb_ca_residues(registered)
+        assert self._upstream_counts(residues, self._CONTIG) == (130, 130)
+        assert add[add.index("--target-input") + 1] == self._CONTIG, (
+            "omitting the contig makes upstream default to A1-100")
+
+    def test_no_incoming_file_is_left_behind(self, tmp_path):
+        """``incoming.pdb`` is not ``canary_``-prefixed, so ``_prune_staged``
+        would not collect it from a warm container."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        stage_dir = Path(namespace["_fake_rp"]._HUB_TARGET_DIR)
+        assert not (stage_dir / "incoming.pdb").exists()
+
+
+class TestTheNegativeNumberingGuardReachesTheCanaryToo:
+    """THE SECOND INSTANCE OF THE SAME CLASS, found auditing the first.
+
+    ``run_pipeline`` refuses a negative author residue number before the GPU
+    (``unrenderable_segments``): atomworks' ``CONTIG_REGEX`` carries no sign, so
+    a construct that keeps its expression tag derives ``A-5-240`` and raises
+    inside ``complexa design`` - after checkpoints are loaded. Every other
+    pre-GPU check passes on such a target. The canary had no equivalent, so
+    ``--target-pdb <tagged construct>`` would have spent ~$4 in phase 1 or ~$12
+    in phase 2 to learn what a regex knows for free.
+    """
+
+    @staticmethod
+    def _tagged(tmp_path):
+        """A construct numbered from -5, as an expression tag leaves it."""
+        path = tmp_path / "tagged.pdb"
+        path.write_text("\n".join(
+            _trace("A", _TARGET_SEQ, first_res=-5)) + "\n")
+        return path
+
+    def test_a_tagged_construct_is_refused_before_any_shard_spawns(self, tmp_path):
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._tagged(tmp_path)), "", [("positive", ["A1"])])
+        message = str(excinfo.value)
+        assert "A-5-24" in message and "NO GPU TIME WAS USED" in message
+        assert "CONTIG_REGEX" in message
+
+    def test_main_does_not_spawn_on_a_tagged_construct(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it."""
+        shard = _Remote()
+        namespace = load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=lambda: rp, run_shard=shard,
+            phase0=_Remote(result={}))
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(self._tagged(tmp_path)),
+                              hotspots="A1 A2")
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 on a contig upstream cannot parse")
+
+    def test_a_normally_numbered_target_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, or the harness never runs."""
+        path = tmp_path / "ok.pdb"
+        path.write_text(INPUT_TARGET_PDB)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "", [("positive", ["A1"])]) == "A1-30"
+
+    def test_the_predicate_is_run_pipelines_and_not_a_restatement(self, tmp_path):
+        """The whole point of this round: call production's function, do not
+        re-derive its answer. A canary with its own idea of "unrenderable" is
+        the drift this audit exists to remove."""
+        assert rp.unrenderable_segments([("A", -5, 240)]) == [("A", -5, 240)]
+        assert rp.unrenderable_segments([("A", 0, 240)]) == []
+        tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+        refusal = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "unrenderable_segments" in called, (
+            "the canary must ASK run_pipeline whether a contig is renderable")

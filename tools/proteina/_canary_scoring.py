@@ -1564,6 +1564,41 @@ def refuse_unresolvable_hotspots(target_pdb: Any, contig: Any, n_selected: int,
         "nothing. NO GPU TIME WAS USED.")
 
 
+def refuse_unrenderable_contig(target_pdb: Any, contig: Any,
+                               bad: Sequence[Any]) -> None:
+    """Refuse a contig upstream's own parser cannot read back.
+
+    THE SECOND GUARD PRODUCTION HAD AND THE CANARY DID NOT, found while
+    auditing the first. ``run_pipeline`` refuses a negative author residue
+    number pre-GPU (``unrenderable_segments``): atomworks'
+    ``CONTIG_REGEX = r"([A-Za-z]+)(\\d+)-(\\d+)"`` carries no sign, so a
+    construct that keeps its expression tag derives the contig ``A-5-240`` and
+    raises inside ``complexa design``. Nothing before that catches it — the
+    selection is non-empty, the registration succeeds and reads back — so the
+    shard boots, loads checkpoints and only then dies.
+
+    The canary had no equivalent, which means ``--target-pdb <tagged
+    construct>`` would spawn one A100 in phase 1 (~$4) or three in phase 2
+    (~$12) to discover what a regex knows for free. Same class as the staging
+    drift: production grew a pre-GPU refusal and the harness did not follow.
+
+    The predicate stays in ``run_pipeline`` (``unrenderable_segments``) and is
+    CALLED, never restated; this only turns its answer into the refusal.
+    """
+    if not bad:
+        return
+    shown = ",".join(
+        f"{seg[0]}{seg[1]}-{seg[2]}" if len(seg) >= 3 else str(seg)
+        for seg in bad)
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} for {target_pdb} uses negative residue "
+        f"numbers ({shown}), which upstream's CONTIG_REGEX cannot express — it "
+        "accepts digits only. Structures carrying an expression tag are usually "
+        "numbered this way. Pass --contig with a range starting at 0 or above. "
+        "Every other pre-GPU check passes on such a target, so without this the "
+        "shard would boot, load checkpoints and die. NO GPU TIME WAS USED.")
+
+
 def shard_spec_refusal(label: str, missing: Sequence[str],
                        missing_cross: Sequence[str]) -> dict | None:
     """The in-container twin of the two refusals above, as a shard result.
