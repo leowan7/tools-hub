@@ -267,7 +267,7 @@ def collect_structures(out_dir: Path) -> list[Path]:
 # ===========================================================================
 
 
-def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
+def archive_raw_outputs(work_dir: str, dest: str | None = None) -> None:
     """Tar the ENTIRE work tree to ``dest`` before teardown destroys it.
 
     A container must never decide which fields are worth keeping. The confidence
@@ -275,8 +275,33 @@ def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
     of this tar is the source of truth — the container keeps only a best-effort
     ranking scalar. Unconditional + best-effort by design: it runs on every exit
     path (a run that folded nothing is exactly the tree you need) and never raises.
+
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
+    at import: a ``dest: str = RAW_ARCHIVE_PATH`` default binds the constant's
+    value once at def time, so any later reassignment of the module constant is
+    silently ignored and the tar lands on the original path regardless. Only
+    None resolves — an explicit dest is used exactly as given.
     """
+    # Contract hardening rather than an observed failure: the callers all pass an
+    # absolute str, so dest_abs is bound long before the handler wants it. It is
+    # pre-bound so the never-raises contract holds of the code and not merely of
+    # today's call sites — an UnboundLocalError is a NameError, so the ``except
+    # OSError`` below would let it straight out of a function run from a finally.
+    dest_abs: str | None = None
     try:
+        # Placement, not peril. ``dest is None`` is an identity check that invokes
+        # no dunder on dest at all, and a pathological dest first throws at the
+        # os.path.abspath() below, which has always been inside the try. The one
+        # thin but honest reason to keep it here: RAW_ARCHIVE_PATH is then read
+        # under the guard, so losing or renaming the constant is a logged warning
+        # rather than a NameError escaping the finally in main(). Starting the try
+        # at the top of the body closes that one class of escape and no more — it
+        # does not let a reader read the never-raises contract off the shape of
+        # the function, because the handler below runs outside every guard:
+        # delete the module logger and its logger.warning() raises NameError
+        # straight out of this function.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
         if not os.path.isdir(work_dir):
             logger.warning("raw capture: %s is not a directory — nothing to archive", work_dir)
             return
@@ -297,7 +322,7 @@ def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
     except Exception as exc:
         logger.warning("raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc)
         try:
-            if os.path.exists(dest_abs):
+            if dest_abs is not None and os.path.exists(dest_abs):
                 os.remove(dest_abs)
         except OSError:
             pass

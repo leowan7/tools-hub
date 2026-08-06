@@ -1459,7 +1459,7 @@ def parse_designs(run_dir: Path) -> list[dict]:
 # ===========================================================================
 
 
-def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+def archive_raw_outputs(out_dir: Path, dest: str | None = None) -> None:
     """Tar the COMPLETE shard output tree to ``dest``. Best-effort: never raises.
 
     A container must not decide which fields are worth keeping. Everything above
@@ -1482,8 +1482,39 @@ def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
     Failure to archive must never break the run: a shard that crashed before
     writing output is exactly when the diagnostics matter most, so problems are
     logged, never raised.
+
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on CALL rather
+    than being bound as a default argument at def time — a default argument
+    freezes the constant at import, which silently ignores any later reassignment
+    of it (the tests set RAW_ARCHIVE_PATH to keep their archives inside tmp_path,
+    and were writing to the real /tmp path instead). Only None resolves; an
+    explicit dest is used exactly as given.
     """
+    # Contract hardening, not a bug seen in production: main() hands this a real
+    # Path, where neither str() nor abspath can throw. It is pre-bound so that
+    # "never raises" is a property of this function instead of a property of its
+    # current callers — the handler reads dest_abs, and an UnboundLocalError is a
+    # NameError, which the inner ``except OSError`` does not catch and which would
+    # then escape a function called from a finally.
+    dest_abs: str | None = None
     try:
+        # The reason this sits inside the try is a modest one, so state it plainly.
+        # It is not that the line is dangerous: ``is None`` compares identity and
+        # calls no method on dest, and an adversarial dest raises at the abspath
+        # below, which was inside the try before this default existed. It is here
+        # because the body reads four module globals — RAW_ARCHIVE_PATH, logger,
+        # os, tarfile — and keeping this line here is what puts the
+        # RAW_ARCHIVE_PATH read under the guard: renaming the constant should log,
+        # not fire a NameError through main()'s finally. Only that one read; the
+        # handler's own logger.warning() sits outside every guard already, and
+        # hoisting some other line would take its globals out too. One escape
+        # closed,
+        # not the contract proved. "Never raises" remains an argument rather than
+        # a shape, because the handler below runs outside every guard — delete the
+        # module logger and its logger.warning() raises NameError straight out of
+        # this function.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
         src = os.path.abspath(str(out_dir))
         if not os.path.isdir(src):
             logger.warning("raw capture: nothing to archive, no dir at %s", src)
@@ -1509,7 +1540,7 @@ def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest_abs):
+            if dest_abs is not None and os.path.exists(dest_abs):
                 os.remove(dest_abs)
         except OSError:
             pass

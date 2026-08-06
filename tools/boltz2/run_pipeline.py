@@ -460,7 +460,7 @@ def _num(value: Any) -> float | None:
 # ===========================================================================
 
 
-def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
+def archive_raw_outputs(work_dir: str, dest: str | None = None) -> None:
     """Tar the ENTIRE work tree to ``dest`` before teardown destroys it.
 
     A container must never decide which fields are worth keeping. This pipeline
@@ -476,8 +476,38 @@ def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
     need. Best-effort by design: capture must never fail the run, so problems
     are logged and never raised — a crash before output is written is precisely
     when the diagnostics matter most.
+
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
+    at import: a ``dest: str = RAW_ARCHIVE_PATH`` default binds the constant's
+    value once at def time, so any later reassignment of the module constant is
+    silently ignored and the tar lands on the original path regardless. Only
+    None resolves — an explicit dest is used exactly as given.
     """
+    # Contract hardening, not a fix for anything seen in production: every caller
+    # passes an absolute str, and os.path.isdir() swallows OSError/ValueError for
+    # any str it is handed, so today nothing reaches the handler with dest_abs
+    # unbound. Bind it up front anyway, because "never raises" should be true of
+    # this function rather than of its current call sites: an UnboundLocalError
+    # is a NameError, and the inner ``except OSError`` does not catch it.
+    dest_abs: str | None = None
     try:
+        # Inside the try, though not because this line is itself risky: ``is None``
+        # is an identity test, so it runs neither __bool__ nor __eq__ on dest, and
+        # a hostile dest first throws at the os.path.abspath() below, which the try
+        # already covered. The real reason is modest. This body reads four module
+        # globals — RAW_ARCHIVE_PATH, logger, os, tarfile — and keeping this line
+        # here is what puts the RAW_ARCHIVE_PATH read under the guard, so a
+        # renamed or deleted constant is a logged warning instead of a NameError
+        # out of main()'s finally. Only that one read: the handler's own
+        # logger.warning() is outside every guard already, and a future hoist of
+        # some other line would take its globals out too. That closes one class
+        # of escape and no more: it does NOT make
+        # "never raises" checkable from the shape of the function. The except
+        # handler's own statements run outside every guard — delete the module
+        # logger and its logger.warning() raises NameError straight out of here —
+        # so the contract still has to be argued rather than read off the layout.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
         if not os.path.isdir(work_dir):
             logger.warning(
                 "raw capture: %s is not a directory — nothing to archive", work_dir,
@@ -510,7 +540,7 @@ def archive_raw_outputs(work_dir: str, dest: str = RAW_ARCHIVE_PATH) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest_abs):
+            if dest_abs is not None and os.path.exists(dest_abs):
                 os.remove(dest_abs)
         except OSError:
             pass
