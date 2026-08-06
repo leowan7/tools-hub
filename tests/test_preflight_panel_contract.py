@@ -692,6 +692,43 @@ def test_the_panel_does_not_block_proteinas_own_multichain_flow(client):
     assert body["ok"] is True, (
         f"panel refused a submit the adapter accepts: {body.get('reason')!r}"
     )
+    # `ok is True` alone pins neither half of the fix: without the contig
+    # chains C73 is skipped as unparseable and the panel is still green with
+    # one hotspot, and without the chain-set/gate agreement C73 resolves and
+    # is then dropped downstream. Both show up here and nowhere else, because
+    # preflight.js:143 and preflight_panel.html:63 render `surviving` only —
+    # so a dropped hotspot is invisible to the user by construction.
+    assert body["hotspots"]["dropped"] == [], body["hotspots"]
+    assert body["hotspots"]["surviving"] == ["A113", "C73"], (
+        f"panel kept {body['hotspots']['surviving']!r}; the user typed "
+        f"A113,C73 and would read 'all preserved' either way"
+    )
+    # The echoed chain set is what the refusal sentence and the cleanup list
+    # interpolate, so it must be the chains the run actually targets — not a
+    # union carrying the untyped default "A".
+    assert body["target_chain"] == "A C", body["target_chain"]
+
+
+def test_the_panel_verdict_does_not_change_with_the_hotspot_field(client):
+    """The chain set feeds cleanup, the size envelope and the gap analysis.
+    Computing it inside `if raw_hotspots:` made all three — and the sentence
+    the user reads — flip when they typed into an unrelated box."""
+    _login(client)
+    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+
+    def _panel(hotspots):
+        return _post_preflight(
+            client, target_chain="A", target_input="A12-80,C12-80",
+            hotspot_residues=hotspots,
+            target_pdb=(io.BytesIO(pdb), "ac.pdb"),
+        ).get_json()
+
+    empty, filled = _panel(""), _panel("A113")
+    assert empty["target_chain"] == filled["target_chain"], (
+        f"chain set is {empty['target_chain']!r} with an empty hotspot field "
+        f"and {filled['target_chain']!r} with one filled in"
+    )
+    assert empty["cleanup_items"] == filled["cleanup_items"]
 
 
 _GATE_SLUGS = ["rfdiffusion", "bindcraft", "pxdesign"]
@@ -761,11 +798,68 @@ def test_the_panel_is_never_stricter_than_the_gate(client, slug, hotspots):
         f"{slug} hotspots={hotspots!r}: the gate says READY but the panel "
         f"disabled Run: {body.get('reason')!r}"
     )
-    assert body["hotspots"]["dropped"] == gate.hotspot_status["dropped"], (
+    # NOT an equality assertion, and the difference is the point. On a
+    # multi-chain target the adapters attribute a BARE hotspot to the first
+    # chain (parse_hotspot_residues("5,7", ["A","B"]) -> ["A5","A7"]) while
+    # the panel keeps it unattributed, so "5" can survive here and be dropped
+    # by the gate. That is the panel being more permissive, which is the
+    # direction it is allowed to be wrong in; demanding equality would make
+    # this test fail for correct behaviour.
+    assert not (
+        set(map(str, body["hotspots"]["dropped"]))
+        - set(map(str, gate.hotspot_status["dropped"]))
+    ), (
         f"{slug} hotspots={hotspots!r}: panel dropped "
-        f"{body['hotspots']['dropped']!r}, gate dropped "
+        f"{body['hotspots']['dropped']!r}, more than the gate's "
         f"{gate.hotspot_status['dropped']!r}"
     )
+
+
+@pytest.mark.parametrize("slug", _GATE_SLUGS)
+def test_the_panel_round_trips_the_chain_prefix_into_the_gate(client, slug):
+    """When the typed field is ALREADY chain-prefixed, panel and gate see the
+    same value, prefix and all.
+
+    Flattening "A5" to 5 in the panel passes the never-stricter invariant
+    above — a bare number is checked against the union, so it survives at
+    least as often — while scoring a different run than the one the Run
+    button launches, and on a homodimer a different protomer.
+    """
+    import importlib
+
+    _login(client)
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A,B", "hotspot_residues": "A5,B7"})
+    inputs, err = mod.validate(dict(form), {})
+    if err is not None:
+        pytest.skip(f"{slug} rejects the prefixed form: {err}")
+
+    pdb = _pdb({"A": list(range(1, 121)), "B": list(range(1, 121))})
+    from shared.pdb_intake import _parse_preflight_size_params
+    from shared.pdb_preflight import preflight_for_tool
+    _binder_max, _num = _parse_preflight_size_params(inputs)
+    gate = preflight_for_tool(
+        slug, pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs.get("hotspot_residues") or [],
+        binder_max_aa=_binder_max, num_designs=_num,
+    )
+    if not gate.ok:
+        pytest.skip(f"{slug}: gate refuses this target ({gate.reason})")
+
+    data = dict(form)
+    data["target_pdb"] = (io.BytesIO(pdb), "ab.pdb")
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()):
+        body = client.post(
+            f"/tools/{slug}/preflight", data=data,
+            content_type="multipart/form-data",
+        ).get_json()
+
+    assert body["hotspots"]["surviving"] == gate.hotspot_status["surviving"], (
+        f"{slug}: panel forwarded {body['hotspots']['surviving']!r}, gate saw "
+        f"{gate.hotspot_status['surviving']!r} — the prefix must round-trip"
+    )
+    assert body["hotspots"]["surviving"] == ["A5", "B7"]
 
 
 @pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))

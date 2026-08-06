@@ -766,3 +766,133 @@ def test_a_bare_suggestion_is_not_deleted_by_a_namesake_on_another_chain():
         f"nearest bare suggestion is {bare!r}, but 19/18/22 are clean on "
         f"chain A — deleted because chain B happens to share the numbers"
     )
+
+
+# --- the R1 type contract, on STRING input ------------------------------
+#
+# The three "bare hotspots stay ints" assertions above all pass ints IN, so
+# `.append(h)` and `.append(n)` are indistinguishable and an echo mutation
+# survives in every validator. The shapes that actually reach these functions
+# include strings — a reuse token, a JSON body, a form value — and echoing
+# them back puts "5" where an int was promised, into a serialised
+# hotspot_status the browser and the job row both read.
+
+@pytest.mark.parametrize("raw,expected_in,expected_out", [
+    (["5"], [5], []),
+    ([" 5 "], [5], []),
+    ([5], [5], []),
+    (["9000"], [], [9000]),
+    ([9000], [], [9000]),
+])
+def test_bare_hotspots_normalise_to_int_whatever_their_input_type(
+    raw, expected_in, expected_out,
+):
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
+    in_range, out_of_range = validate_hotspots(report, "A,B", raw)
+    assert in_range == expected_in
+    assert out_of_range == expected_out
+    assert all(isinstance(h, int) for h in in_range + out_of_range), (
+        f"{raw!r} echoed its input type back instead of normalising: "
+        f"{in_range!r} / {out_of_range!r}"
+    )
+
+
+@pytest.mark.parametrize("raw,surviving,dropped", [
+    (["5"], [5], []),
+    (["9000"], [], [9000]),
+])
+def test_preflight_hotspot_status_is_int_typed_for_bare_input(
+    raw, surviving, dropped,
+):
+    """hotspot_status is serialised into the panel JSON and stamped onto the
+    job row, so its element type is a wire contract, not an internal detail."""
+    verdict = preflight_for_tool(
+        "rfdiffusion", _asymmetric_pdb(), target_chain="A,B",
+        hotspots=raw, binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == surviving
+    assert verdict.hotspot_status["dropped"] == dropped
+    assert all(
+        isinstance(h, int)
+        for h in verdict.hotspot_status["surviving"]
+        + verdict.hotspot_status["dropped"]
+    ), verdict.hotspot_status
+
+
+def test_targets_hotspot_error_normalises_and_reports_unparseable_tokens():
+    """The third validator, including the arm the three-validator test does
+    not reach: a token that parses to nothing at all."""
+    import uuid
+
+    from shared.targets import DesignTarget
+
+    target = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", kind="pdb",
+        chain_summary={"chains": [
+            {"chain_id": "A", "min_resnum": 1, "max_resnum": 40},
+            {"chain_id": "B", "min_resnum": 500, "max_resnum": 539},
+        ]},
+    )
+    assert target.hotspot_error("A,B", ["5"]) is None
+    err = target.hotspot_error("A,B", ["xyz"])
+    assert err and "xyz" in err, err
+    # 9000 is on neither chain and must be echoed as a number, not as "9000".
+    err = target.hotspot_error("A,B", ["9000"])
+    assert err and "'9000'" not in err and "9000" in err, err
+
+
+def test_split_hotspot_prefers_the_longest_matching_chain_id():
+    """Documented as "longest match wins", and the AB12 row above cannot see
+    it: with chains ["A", "AB"] a first-match-wins parser reading "A" first
+    returns (None, None) because "B12" is not an int, so BOTH orderings
+    happen to agree there. Only a case where the short prefix leaves a valid
+    integer behind can tell them apart."""
+    from shared.pdb_inspect import split_hotspot
+
+    # "A12" is a valid parse under chain "A"; "AB12" must still win for AB.
+    assert split_hotspot("AB12", ["A", "AB"]) == ("AB", 12)
+    assert split_hotspot("AB12", ["AB", "A"]) == ("AB", 12)
+    # And the short id still resolves when it is the only match.
+    assert split_hotspot("A12", ["A", "AB"]) == ("A", 12)
+
+
+def test_nearest_suggestions_come_from_the_hotspots_own_chain():
+    """A prefixed dropped hotspot must not be offered neighbours that exist
+    only on the other protomer.
+
+    THE FIXTURE IS THE TEST. On a target whose second chain is numbered far
+    away, `pool = union` and the per-chain pool give the same answer, because
+    nothing on the other chain falls inside the window — so the assertion
+    passes for a parser that ignores the chain entirely. Chain B has to carry
+    residues NEAR the dropped number for the two to differ, and then the
+    union offers "A46".."A55": labels built from the hotspot's chain over
+    residues that exist only on B, i.e. suggestions the user cannot use.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    lines = ["HEADER    SYNTHETIC OVERLAP\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 41))),      # stops at 40
+        ("B", list(range(1, 121))),     # covers 41..55, right beside A45
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", ["A45"], [])
+    assert nearest, "expected suggestions near A45 on chain A"
+    assert all(str(r).startswith("A") for r in nearest), nearest
+    assert all(int(str(r)[1:]) <= 40 for r in nearest), (
+        f"suggestions for A45 must exist on chain A, which stops at 40: "
+        f"{nearest!r}"
+    )

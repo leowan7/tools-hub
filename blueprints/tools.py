@@ -772,26 +772,32 @@ def tool_preflight(tool: str):
     # Closing it properly means the panel asking the adapter — a
     # `hotspot_preview(form)` hook, or posting the whole form so validate()
     # can run — and that is a change to every adapter, not to this function.
+
+    # The chain set, resolved BEFORE the hotspot branch. It feeds cleanup, the
+    # size envelope, the gap analysis and two user-facing sentences, so
+    # computing it only when the hotspot box happens to be non-empty made the
+    # verdict and its wording change with an unrelated field.
+    #
+    # proteina REPLACES target_chain with the contig's chains
+    # (tools/proteina/__init__.py:495-497) rather than adding to them, and its
+    # form tells the user to leave target_chain at "A" and name the chains in
+    # the contig. Reading target_chain alone called "C73" a hotspot on an
+    # untargeted chain for the exact input the template prints as its example;
+    # unioning instead of replacing then put the untyped "A" into the set, and
+    # that string is user-visible — it reaches "Target chain 'A,H,L' isn't in
+    # this PDB. Found chain(s): H, L.", a sentence that contradicts itself.
+    _contig_chains: list = []
+    for _seg in (preflight_target_segments(request.form) or []):
+        # Segments are (chain, lo, hi) tuples; see pdb_intake.
+        _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
+        if _seg_chain and _seg_chain not in _contig_chains:
+            _contig_chains.append(_seg_chain)
+    if _contig_chains:
+        target_chain = " ".join(_contig_chains)
+    _chains = list(tool_base.parse_target_chains(target_chain))
+
     hotspots: list = []
     if raw_hotspots:
-        # proteina overrides target_chain FROM THE CONTIG
-        # (tools/proteina/__init__.py:494-505), so its real chain set is not
-        # the target_chain field: the form's own multi-chain instructions say
-        # to leave that at "A" and type the chains into target_input. Reading
-        # only target_chain called "C73" a hotspot on an untargeted chain for
-        # the exact input the template gives as its example.
-        _chains = list(tool_base.parse_target_chains(target_chain))
-        for _seg in (preflight_target_segments(request.form) or []):
-            # Segments are (chain, lo, hi) tuples; see pdb_intake.
-            _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
-            if _seg_chain and _seg_chain not in _chains:
-                _chains.append(_seg_chain)
-        # The chain set the hotspots were PARSED against has to be the one
-        # they are then CHECKED against, or a contig chain resolves here and
-        # is dropped downstream — the panel rendering "Hotspots A113 — all
-        # preserved" while C73 vanished from a field the user can still see.
-        # preflight.js and preflight_panel.html both print only `surviving`.
-        target_chain = ",".join(_chains) or target_chain
         # Tokenize the way the adapters do — tools/base.py:99 and proteina's
         # _parse_hotspots both fold separators into whitespace and split on
         # it. Splitting on commas alone made "A54 B56" one unparseable token,
