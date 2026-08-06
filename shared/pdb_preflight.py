@@ -1361,7 +1361,7 @@ def _nearest_clean_residues(
     if not dropped_by_chain:
         return []
 
-    # (label, resnum) -> min sequence distance to any dropped hotspot on it
+    # (chain-or-None, resnum) -> (distance, label)
     candidates: dict = {}
     for cid, dropped_ints in dropped_by_chain.items():
         pool = union if cid is None else by_chain.get(cid, set())
@@ -1372,12 +1372,29 @@ def _nearest_clean_residues(
                 dist = abs(r - d)
                 if dist > window:
                     continue
-                key = (r if cid is None else f"{cid}{r}", r)
+                key = (cid, r)
                 prev = candidates.get(key)
-                if prev is None or dist < prev:
-                    candidates[key] = dist
-    ranked = sorted(candidates.items(), key=lambda kv: (kv[1], kv[0][1]))
-    return [label for (label, _resnum), _dist in ranked[:max_suggestions]]
+                if prev is None or dist < prev[0]:
+                    candidates[key] = (dist, r if cid is None else f"{cid}{r}")
+
+    # A dropped list holding BOTH forms — [20, "A21"] — reaches a residue
+    # twice: once unattributed and once via its chain, and the two land under
+    # different labels. Suggesting "19, A22, 18, A19, 22" reads as five
+    # residues when it is three, in two formats, inside the message the user
+    # is reading to recover from a rejection. Prefer the attributed label and
+    # drop the bare twin; with a uniform input (which is all any adapter emits,
+    # since parse_hotspot_residues normalises the whole field to one shape)
+    # nothing here changes.
+    attributed = {r for cid, r in candidates if cid is not None}
+    ranked = sorted(candidates.items(), key=lambda kv: (kv[1][0], kv[0][1]))
+    out: list = []
+    for (cid, resnum), (_dist, label) in ranked:
+        if cid is None and resnum in attributed:
+            continue
+        out.append(label)
+        if len(out) >= max_suggestions:
+            break
+    return out
 
 
 def _verdict_from_normalizer_value_error(

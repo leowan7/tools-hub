@@ -44,6 +44,7 @@ from shared.pdb_inspect import (
     convert_cif_to_pdb_bytes,
     hotspot_range_message,
     inspect_pdb_bytes,
+    split_hotspot,
     summarize_for_log,
     validate_hotspots,
     validate_target_chain,
@@ -55,7 +56,30 @@ from shared.pdb_intake import (
     _verify_reuse_pdb_bytes,
     preflight_target_segments,
 )
-from shared.pdb_preflight import PREFLIGHT_TOOLS, preflight_for_tool
+from shared.pdb_preflight import (
+    PREFLIGHT_TOOLS,
+    CleanupSummary,
+    PreflightVerdict,
+    VerdictKind,
+    preflight_for_tool,
+)
+
+# Adapters whose validate() puts CHAIN-PREFIXED tokens in
+# inputs["hotspot_residues"] — the exact value the submit gate reads at
+# _preflight_gate below. The panel must produce the SAME shape, or it scores a
+# different input than the gate it previews.
+#
+# This is a declaration rather than "everyone gets parse_hotspot_residues"
+# because proteina emits BOTH: bare ints under hotspot_residues and the
+# chain-prefixed form under a separate hotspot_spec key. rfantibody and boltz2
+# parse ints directly and are bare for the same reason.
+#
+# tests/test_preflight_panel_contract.py drives every PREFLIGHT_TOOL's real
+# validate() and asserts this set is exactly what they emit, so it cannot
+# drift into a lie the way the comment at blueprints/jobs.py:392 did.
+_CHAIN_PREFIXED_HOTSPOT_TOOLS = frozenset({
+    "bindcraft", "boltzgen", "pxdesign", "rfdiffusion",
+})
 from shared.storage import (
     StorageError,
     copy_input,
@@ -759,19 +783,41 @@ def tool_preflight(tool: str):
         parsed, hs_err = tool_base.parse_hotspot_residues(
             raw_hotspots, _chains,
         )
-        if not hs_err:
-            hotspots = list(parsed or [])
-        else:
-            # Half-typed field: keep the tokens that do parse so the panel
-            # still renders something useful. The form validator is what
-            # refuses on submit.
-            for tok in raw_hotspots.replace(";", ",").split(","):
-                tok = tok.strip()
-                if not tok:
-                    continue
-                one, one_err = tool_base.parse_hotspot_residues(tok, _chains)
-                if not one_err and one:
-                    hotspots.extend(one)
+        if hs_err:
+            # Show what submit will say, rather than scoring the subset of
+            # the field that happens to parse. Salvaging the good tokens
+            # renders the panel GREEN for a field the gate then hard-rejects
+            # ("A5,Q" on a single-chain target is the smallest case), which
+            # is the panel/submit disagreement this whole change exists to
+            # remove — in the one direction that costs the user a click on a
+            # Run button that cannot work.
+            return (_verdict_to_json(PreflightVerdict(
+                kind=VerdictKind.NEEDS_FIX,
+                tool_slug=adapter.slug,
+                target_chain=target_chain,
+                cleanup=CleanupSummary(),
+                hotspot_status={"surviving": [], "dropped": []},
+                reason=hs_err,
+                suggested_fix=(
+                    "Use a bare residue number, or prefix it with one of the "
+                    "chains you named above (e.g. A296)."
+                ),
+            ), ""), 200)
+        hotspots = list(parsed or [])
+        if adapter.slug not in _CHAIN_PREFIXED_HOTSPOT_TOOLS:
+            # This adapter keeps inputs["hotspot_residues"] BARE, and that is
+            # the key the submit gate reads, so the panel has to hand the
+            # same bare numbers to preflight_for_tool. proteina is the live
+            # case: it carries the chain-prefixed form separately in
+            # hotspot_spec, so parsing its panel field as prefixed made the
+            # panel apply the per-chain rule its own gate does not.
+            hotspots = [
+                resnum
+                for resnum in (
+                    split_hotspot(h, _chains)[1] for h in hotspots
+                )
+                if resnum is not None
+            ]
 
     # Source the bytes: file upload OR AlphaFold fetch.
     af_accession = (request.form.get("alphafold_accession") or "").strip()

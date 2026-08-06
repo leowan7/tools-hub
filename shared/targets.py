@@ -284,15 +284,22 @@ class DesignTarget:
         summary rather than a re-parse. Returns None when there is nothing to
         check.
 
-        A residue is in range if it falls inside ANY named chain, because
-        ``target_chain`` may name several (``"A B"``, which ProteinMPNN-style
-        multi-chain design submits and rfdiffusion's validator accepts). Note
-        this deliberately does NOT reproduce
-        ``shared.pdb_inspect.validate_hotspots``, which passes the whole string
-        to ``report.chain()``, gets None for ``"A B"``, and therefore reports
-        every hotspot out of range. That is a bug in the older path (filed as
-        A18), not a contract worth mirroring — but it does mean the two paths
-        disagree on multi-chain targets until it is fixed.
+        A BARE residue number is in range if it falls inside ANY named chain,
+        because ``target_chain`` may name several (``"A B"``, which
+        ProteinMPNN-style multi-chain design submits and rfdiffusion's
+        validator accepts). A CHAIN-PREFIXED one (``"B264"``) is checked
+        against the chain it names and nothing else: on a homodimer both
+        protomers carry residue 264, so unioning would pass a hotspot sitting
+        on a protomer the design never touches.
+
+        The A18 note this docstring used to carry — that
+        ``shared.pdb_inspect.validate_hotspots`` passed the whole string to
+        ``report.chain()``, got None for ``"A B"``, and called every hotspot
+        out of range, so the two paths disagreed — is stale twice over. That
+        defect was fixed, and both functions now share
+        ``shared.pdb_inspect.split_hotspot``, so they agree by construction
+        rather than by two implementations happening to match.
+        ``tests/test_multichain_targets.py`` pins them to the same answer.
         """
         cids = [c for c in (target_chain or "").replace(",", " ").split() if c]
         ranges = []

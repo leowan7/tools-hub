@@ -429,6 +429,11 @@ def test_boltzgen_does_not_silently_discard_hotspots():
     }
     inputs, err = boltzgen_mod.validate(form, {})
     assert err is None, err
+    # Pin the adapter's own output too. boltzgen is not in GPU_VERIFIED, so
+    # this is the ONLY place its hotspots reach preflight — and an adapter
+    # that quietly dropped the prefixed tokens would otherwise sail through
+    # every assertion below, which is exactly the PR #109 failure mode.
+    assert inputs["hotspot_residues"] == ["A5", "B7"]
 
     verdict = preflight_for_tool(
         "boltzgen", _two_chain_pdb(),
@@ -441,6 +446,9 @@ def test_boltzgen_does_not_silently_discard_hotspots():
         "boltzgen returned READY while discarding "
         f"{verdict.hotspot_status['dropped']!r} — a paid run with no hotspots"
     )
+    # "nothing was dropped" is satisfied by an empty list, so assert the
+    # positive as well: these specific hotspots reached the gate intact.
+    assert verdict.hotspot_status["surviving"] == ["A5", "B7"]
 
 
 @pytest.mark.parametrize("name,mod", GPU_VERIFIED)
@@ -518,14 +526,24 @@ def test_split_hotspot(token, chains, expected):
     assert split_hotspot(token, chains) == expected
 
 
-def test_targets_hotspot_error_agrees_with_preflight():
-    """shared/targets.py runs its own copy of this check for the campaign and
-    target-launch routes. It diverging from preflight is the A18 defect all
-    over again, so pin them to the same answer."""
+def test_the_three_hotspot_validators_give_the_same_answer():
+    """There are three independent implementations of "is this hotspot on this
+    target": shared/targets.py for the campaign and target-launch routes,
+    shared/pdb_inspect.py::validate_hotspots for atomic submit and reuse, and
+    shared/pdb_preflight.py::_check_hotspots for the hard gate.
+
+    They have disagreed before — the A18 defect was validate_hotspots calling
+    every hotspot out of range on a multi-chain target while targets.py
+    accepted them, so the same job passed one route and failed another. Naming
+    one of them in a test and trusting the others to follow is how that
+    survived, so drive all three off the same inputs here.
+    """
     import uuid
 
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
     from shared.targets import DesignTarget
 
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
     target = DesignTarget(
         id=str(uuid.uuid4()), user_id="u-1", kind="pdb",
         chain_summary={"chains": [
@@ -533,8 +551,131 @@ def test_targets_hotspot_error_agrees_with_preflight():
             {"chain_id": "B", "min_resnum": 500, "max_resnum": 539},
         ]},
     )
-    assert target.hotspot_error("A,B", ["A5", "B505"]) is None
-    err = target.hotspot_error("A,B", ["B5"])
-    assert err and "B5" in err, err
-    # And the pre-multi-chain shape still behaves as it always did.
-    assert target.hotspot_error("A,B", [5, 505]) is None
+    report = inspect_pdb_bytes(pdb)
+
+    def _all_three(hotspots):
+        """(targets_ok, inspect_ok, preflight_ok) for one hotspot list."""
+        in_range, out_of_range = validate_hotspots(report, "A,B", hotspots)
+        verdict = preflight_for_tool(
+            "rfdiffusion", pdb, target_chain="A,B", hotspots=hotspots,
+            binder_max_aa=65, num_designs=2,
+        )
+        return (
+            target.hotspot_error("A,B", hotspots) is None,
+            not out_of_range,
+            not verdict.hotspot_status["dropped"],
+        )
+
+    # Valid on the chains they name.
+    assert _all_three(["A5", "B505"]) == (True, True, True)
+    # R2: B5 does not exist on chain B, and chain A having a residue 5 must
+    # not rescue it in ANY of the three.
+    assert _all_three(["B5"]) == (False, False, False)
+    # R1: the pre-multi-chain shape, unioned across both chains, unchanged.
+    assert _all_three([5, 505]) == (True, True, True)
+    # A bare number on neither chain still fails everywhere.
+    assert _all_three([9000]) == (False, False, False)
+
+
+def test_validate_hotspots_keeps_the_bare_int_contract():
+    """The R1 floor for validate_hotspots specifically: bare ints come back as
+    ints, in range against the union, exactly as before the contract changed.
+    A wholesale revert of this function to its int()-only body passes every
+    other test in this file, because everything else reaches it through
+    preflight rather than calling it.
+    """
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
+
+    in_range, out_of_range = validate_hotspots(report, "A,B", [5, 505, 9000])
+    assert in_range == [5, 505]
+    assert out_of_range == [9000]
+    assert all(isinstance(h, int) for h in in_range), in_range
+
+    # Single chain, the shape every pre-#109 caller posts.
+    in_range, out_of_range = validate_hotspots(report, "A", [5, 505])
+    assert in_range == [5]
+    assert out_of_range == [505]
+
+    # Prefixed tokens echo back as typed, so the message can name the chain.
+    in_range, out_of_range = validate_hotspots(report, "A,B", ["A5", "B5"])
+    assert in_range == ["A5"]
+    assert out_of_range == ["B5"]
+
+
+def test_a_gap_is_only_near_a_hotspot_on_its_own_chain():
+    """The gap-distance math decides whether an internal gap is a hard fail.
+
+    Measuring a chain-prefixed hotspot against gaps on every chain is wrong in
+    the direction that blocks good work: on a homodimer both protomers carry
+    the same numbering, so a gap on chain B sits "0 residues from" a hotspot
+    the user placed on chain A, and the submit is refused for a gap nowhere
+    near the epitope.
+    """
+    from shared.pdb_preflight import _check_internal_gaps
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    # A: 1..40 complete. B: 500..510 then 571..610 — a 60-residue hole whose
+    # near edge is 6 residues from B505 and far from anything on A.
+    lines = ["HEADER    SYNTHETIC GAPPED\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 41))),
+        ("B", list(range(500, 511)) + list(range(571, 611))),
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    rules = TOOL_RULES["pxdesign"]
+    near = _check_internal_gaps(pdb, "A,B", ["B505"], rules)
+    far = _check_internal_gaps(pdb, "A,B", ["A5"], rules)
+
+    assert near.gaps and far.gaps, "both runs must see the same gap"
+    assert near.gaps[0].nearest_hotspot_distance < 20, (
+        f"B505 is 6 residues from the gap on its own chain, got "
+        f"{near.gaps[0].nearest_hotspot_distance}"
+    )
+    assert far.gaps[0].nearest_hotspot_distance > 400, (
+        "A5 is on the other protomer and must not be measured against a gap "
+        f"on chain B, got {far.gaps[0].nearest_hotspot_distance}"
+    )
+    # R1: a BARE hotspot keeps measuring against every chain, as it always did.
+    bare = _check_internal_gaps(pdb, "A,B", [505], rules)
+    assert bare.gaps[0].nearest_hotspot_distance == (
+        near.gaps[0].nearest_hotspot_distance
+    )
+
+
+def test_nearest_clean_residues_keeps_the_bare_int_contract():
+    """R1 for the suggestion list: bare input returns bare ints, ordered by
+    distance then resnum. Callers render these straight into the refusal, so
+    both the type and the order are observable."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", [20], [])
+    assert nearest == [19, 21, 18, 22, 17, 23], nearest
+    assert all(isinstance(r, int) for r in nearest), nearest
+
+
+def test_suggestions_do_not_offer_the_same_residue_twice():
+    """A dropped list holding both forms reaches a residue by two routes and
+    used to render both labels — "19, A22, 18, A19, 22" is three residues
+    dressed as five, in two formats, inside a rejection message."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A", [20, "A21"], [])
+    resnums = [int(str(r).lstrip("A")) for r in nearest]
+    assert len(resnums) == len(set(resnums)), (
+        f"same residue offered twice under two labels: {nearest!r}"
+    )

@@ -582,3 +582,127 @@ def test_the_two_panels_agree_on_what_they_show():
         assert token in twin, f"the server-rendered twin no longer shows {token}"
     branch = _ready_branch()
     assert "residue_count" in branch and "hard_cap_target_aa" in branch
+
+
+# ---------------------------------------------------------------------------
+# The panel must score the SAME hotspot value the submit gate will read
+# ---------------------------------------------------------------------------
+#
+# blueprints/tools.py runs preflight twice: once for this panel, off the raw
+# form, and once as the submit hard gate, off adapter.validate()'s
+# inputs["hotspot_residues"]. Those two have to be the same value, or the panel
+# is previewing a different run than the one the Run button launches.
+#
+# They diverged twice. Before the chain-prefix fix the panel parsed with a bare
+# int() and silently dropped "A296", so it rendered a clean verdict for a field
+# the gate then rejected. The fix routed the panel through
+# tools.base.parse_hotspot_residues, which is right for the four binder tools
+# and wrong for proteina, whose validate() keeps hotspot_residues BARE and
+# carries the prefixed form separately under hotspot_spec — so the panel began
+# applying a per-chain rule proteina's own gate does not.
+
+_PANEL_HOTSPOT_FORMS = {
+    "bindcraft":   {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "boltzgen":    {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "pxdesign":    {"preset": "pilot", "binder_length": "80",
+                    "num_designs": "2"},
+    "rfdiffusion": {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "rfantibody":  {"preset": "pilot", "num_designs": "2"},
+    "boltz2":      {"preset": "standalone",
+                    "binder_sequences": "M" * 40},
+    "proteina":    {"preset": "protein_binder", "_has_custom_target": "1",
+                    "binder_length_min": "55", "binder_length_max": "65",
+                    "num_designs": "2"},
+}
+
+
+def test_every_preflight_tool_is_covered_by_the_shape_table():
+    """A new tool added to PREFLIGHT_TOOLS gets its panel/gate agreement
+    checked, instead of inheriting whichever branch it happens to fall into."""
+    from shared.pdb_preflight import PREFLIGHT_TOOLS
+
+    assert set(_PANEL_HOTSPOT_FORMS) == set(PREFLIGHT_TOOLS), (
+        "PREFLIGHT_TOOLS and the panel shape table have drifted: "
+        f"{set(PREFLIGHT_TOOLS) ^ set(_PANEL_HOTSPOT_FORMS)}"
+    )
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
+def test_the_panel_declaration_matches_what_the_adapter_actually_emits(slug):
+    """blueprints.tools._CHAIN_PREFIXED_HOTSPOT_TOOLS is a hand-written claim
+    about seven adapters. Drive each adapter's real validate() and hold the
+    declaration to it, so it cannot rot into a comment that is merely true on
+    the day it was written."""
+    import importlib
+
+    from blueprints.tools import _CHAIN_PREFIXED_HOTSPOT_TOOLS
+
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    declared = slug in _CHAIN_PREFIXED_HOTSPOT_TOOLS
+
+    form.update({"target_chain": "A B", "hotspot_residues": "A5,B7"})
+    inputs, err = mod.validate(form, {})
+
+    if not declared:
+        # A bare-hotspot adapter is entitled to refuse the prefixed form
+        # outright (rfantibody and boltz2 do). What it must NOT do is accept
+        # it and emit strings, which is what the declaration denies.
+        if err is None:
+            emitted = inputs.get("hotspot_residues") or []
+            assert not any(isinstance(h, str) for h in emitted), (
+                f"{slug} is not declared chain-prefixed but validate() emitted "
+                f"{emitted!r} — the panel will hand the gate a bare list"
+            )
+        return
+
+    assert err is None, f"{slug}: {err}"
+    emitted = inputs.get("hotspot_residues") or []
+    assert emitted == ["A5", "B7"], (
+        f"{slug} is declared chain-prefixed but validate() emitted {emitted!r}"
+    )
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
+def test_single_chain_bare_hotspots_stay_bare_for_every_tool(slug):
+    """R1 across the whole table: the pre-multi-chain payload is bare ints for
+    every adapter, declared chain-prefixed or not."""
+    import importlib
+
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A", "hotspot_residues": "5,7"})
+
+    inputs, err = mod.validate(form, {})
+    assert err is None, f"{slug}: {err}"
+    assert inputs.get("hotspot_residues") == [5, 7], (
+        f"{slug} emitted {inputs.get('hotspot_residues')!r} for a bare "
+        f"single-chain field"
+    )
+
+
+def test_the_panel_reports_the_error_submit_will_report(client):
+    """A field the gate hard-rejects must not render GREEN.
+
+    "A5,Q" on a single-chain target is the smallest case: parse_hotspot_residues
+    refuses the whole field, and a panel that salvages the parseable half scores
+    a valid one-hotspot run, enables the Run button, and the submit then refuses
+    it. Wrong in the direction that costs the user the click.
+    """
+    _login(client)
+    body = _post_preflight(
+        client, target_chain="A", hotspot_residues="A5,Q",
+    ).get_json()
+
+    assert body["ok"] is False
+    assert body["kind"] == "needs_fix"
+    # The same sentence the adapter produces, not a paraphrase.
+    from tools import base as tool_base
+    _, submit_err = tool_base.parse_hotspot_residues("A5,Q", ["A"])
+    assert submit_err is not None
+    assert body["reason"] == submit_err, (
+        f"panel says {body['reason']!r}, submit says {submit_err!r}"
+    )
