@@ -30,13 +30,15 @@
    actually missing and its sentence says "up to". One noun over both numbers
    would be wrong about one of them.
 
-   NEITHER SENTENCE GIVES A RETRY INSTRUCTION, and the truncation one used to.
-   "Star them again on the target page and submit a second request" is not
-   followable: nothing in this product clears a shortlist, the modal serialises
-   it in stored order, so a second submit carries the identical first 500 refs.
-   The route is `@idempotent()`, which collapses that replay for 60 seconds --
-   a double-click guard, not a remedy. Ops sees the shortfall on the staff
-   email, so the honest instruction is that they will follow up.
+   THE FACT IS HERE; THE ADVICE IS IN THE PANEL BELOW, and the split is not a
+   layout choice. Only the sentence that tells the customer to star the rest and
+   send a second request needs the list beside it, because that sentence is the
+   one that produced duplicate paid requests when it stood alone. The disclosure
+   that N designs never reached the lab needs nothing: it is what the counts
+   travel in the query string FOR. An earlier arrangement put both inside the
+   panel's `{% if %}`, so a row whose entries the page cannot read as designs --
+   the one case where the customer has least to go on -- was told nothing at
+   all, which is register item A-7 reproduced by the change that cites it.
 
    THE `dropped` SENTENCE IS ALLOWED TO BE CATEGORICAL. BOTH ref arms of
    /lab-projects/submit refuse the entire submission (?handoff=unverified) when
@@ -66,14 +68,103 @@
     </p>
     {% endif %}
     {% if truncated_count %}
+    {# THE FACT, AND NO INSTRUCTION. The instruction that goes with it is in the
+       panel below, next to the list of designs that makes it safe to give. #}
     <p style="margin:{{ '.6rem 0 0' if dropped_count else '0' }};">
       <strong style="color:#d69e2e;">Up to {{ truncated_count }} further starred design{{ '' if truncated_count == 1 else 's' }} {{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit.</strong>
       <span style="color:var(--text-secondary);">
-        {{ 'It was' if truncated_count == 1 else 'They were' }} not read at all. Sending the same selection again would repeat this request rather than add {{ 'it' if truncated_count == 1 else 'them' }} — the Ranomics team has the shortfall and will follow up about the rest.
+        {{ 'It was' if truncated_count == 1 else 'They were' }} not read at all, so this request does not cover {{ 'it' if truncated_count == 1 else 'them' }} — the Ranomics team has the shortfall on their copy.
       </span>
     </p>
     {% endif %}
   </div>
+{% endif %}
+
+{# WHAT THIS REQUEST COVERS, DESIGN BY DESIGN (register item A89). Built by
+   `blueprints/lab_projects.py::_ordered_shortlist` from the row this page
+   already loaded — no second read, and none of the admin fulfilment view's
+   UNSCOPED per-job reads, which are a staff-only affordance.
+
+   "REQUEST", NEVER "ORDER". Every other customer surface refuses that word —
+   the dashboard heading, the shortlist modal ("No commitment — this is a
+   scoping request"), the confirmation email's subject — because nothing has
+   been committed to and this very page renders a Declined badge. Naming it an
+   order asserts a commercial state the product can still reverse.
+
+   THE ADVICE LIVES INSIDE THE LIST'S OWN `{% if %}`, and that nesting is the
+   safeguard rather than a layout choice. "Star them and send a second request"
+   is the exact sentence that previously produced duplicate PAID requests: the
+   shortlist was never cleared, the modal serialises it in stored order, so the
+   second POST carried the identical first 500 refs. The page now hands the
+   browser the refs THIS request covered and the browser un-stars exactly those,
+   so what is left to star is the remainder — but that happens in a browser the
+   server never hears back from — JavaScript off or blocked, the script failing
+   to load, sessionStorage throwing — and a customer following the advice after
+   a silent failure would submit the same designs twice. Nested here, the advice
+   cannot reach a customer without the list of what this request already covers
+   directly beneath it, so that second confirmation page shows the same designs
+   listed back. Lift it out and the advice ships alone again.
+
+   ONLY THE ADVICE IS NESTED. The truncation FACT is disclosed above, outside
+   this block, on `truncated_count` alone: the list is a safety net for an
+   instruction, not a precondition for telling someone what did not reach the
+   lab.
+
+   `shortlist.complete` gates the advice too, because the sentence says
+   "below": the list is capped at `_MAX_LISTED_DESIGNS`, and a prefix is not
+   what the request covers. No row either ref arm can write reaches that cap —
+   it equals the per-request cap — so this only binds on the uncapped
+   `candidate_indices` shape (register item A91).
+
+   THE PANEL ITSELF IS GATED ON THE ROW HAVING A SHORTLIST COLUMN, not on that
+   column yielding designs. `stored` = `count` + `duplicates` + `malformed`, so
+   a row whose every entry is unreadable has `count` 0 and still owes the
+   customer the reconciliation: the "N shortlisted" line below prints `stored`
+   either way, and a number with nothing under it to reconcile against is the
+   failure `blueprints/admin.py::_ref_shortlist_view` was built to avoid
+   (register items A-4 / A-6). `_ordered_shortlist` answers None only for the
+   'api' shape and for a row with no readable column at all, and never for an
+   empty one, so this block always has something to say when it renders. #}
+{% if shortlist %}
+<div class="panel" style="margin-bottom:1rem;">
+  <div class="panel-header">
+    <span class="panel-title">Designs in this request</span>
+    <span class="panel-badge">{{ shortlist.count }}</span>
+  </div>
+  <div class="panel-body">
+    {% if shortlist.designs %}
+    {% if truncated_count and shortlist.complete %}
+    <p style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.7rem .85rem;margin:0 0 .85rem;">
+      <span style="color:var(--text-secondary);">
+        This request covers the {{ shortlist.count }} design{{ '' if shortlist.count == 1 else 's' }} below. To include the design{{ '' if truncated_count == 1 else 's' }} that {{ 'was' if truncated_count == 1 else 'were' }} over the limit, star {{ 'it' if truncated_count == 1 else 'them' }} on the source page and send a second request.
+      </span>
+    </p>
+    {% endif %}
+    <ol style="margin:0;padding-left:1.4rem;font-size:.9rem;max-height:20rem;overflow-y:auto;">
+      {% for design in shortlist.designs %}
+      <li style="margin:.15rem 0;">Candidate {{ design.index + 1 }}{% if design.job_id %}<span style="color:var(--text-secondary);"> · sub-job {{ design.job_id[:8] }}</span>{% endif %}</li>
+      {% endfor %}
+    </ol>
+    {% if not shortlist.complete %}
+    <p style="color:var(--text-secondary);font-size:.8rem;margin:.7rem 0 0;">
+      Showing the first {{ shortlist.designs | length }} of {{ shortlist.count }} designs on this request.
+    </p>
+    {% endif %}
+    {% endif %}
+    {# `entr{y,ies}` on `stored` too, not only on `malformed`. A one-entry row
+       is reachable through a LIVE write path, not just through corruption: the
+       legacy arm of `campaigns_submit` does `[int(i) for i in json.loads(...)]`
+       with no range check, so a POST carrying `candidate_indices=[-1]` stores
+       `[-1]` and every later view of this row printed "held 1 entries: 0
+       designs, 1 entry this page could not read as a design" — a sentence that
+       pluralises the two clauses after the colon and not the one before it. #}
+    {% if shortlist.duplicates or shortlist.malformed %}
+    <p style="color:var(--text-secondary);font-size:.8rem;margin:{{ '.7rem 0 0' if shortlist.designs else '0' }};">
+      The submitted list held {{ shortlist.stored }} entr{{ 'y' if shortlist.stored == 1 else 'ies' }}: {{ shortlist.count }} design{{ '' if shortlist.count == 1 else 's' }}{% if shortlist.duplicates %}, {{ shortlist.duplicates }} repeat{{ '' if shortlist.duplicates == 1 else 's' }} of a design already on it{% endif %}{% if shortlist.malformed %}, {{ shortlist.malformed }} entr{{ 'y' if shortlist.malformed == 1 else 'ies' }} this page could not read as a design{% endif %}.
+    </p>
+    {% endif %}
+  </div>
+</div>
 {% endif %}
 
 <div class="panel" style="margin-bottom:1rem;">
@@ -116,8 +207,20 @@
       <dd style="margin:0;">{{ campaign.assay_type | replace('_', ' ') | title }}</dd>
 
       <dt style="color:var(--text-secondary);">Candidates</dt>
-      {# 'campaign' AND 'target' both keep the shortlist in candidate_refs. #}
-      <dd style="margin:0;">{{ (campaign.candidate_refs if campaign.submission_source in ('campaign', 'target') else campaign.candidate_indices) | length }} shortlisted</dd>
+      {# The STORED length, which is what this line has always printed, taken
+         from whichever column the row carries: 'campaign' and 'target' keep the
+         shortlist in candidate_refs, 'web' in candidate_indices, and
+         `_ordered_shortlist` picks between them by the column rather than by
+         `submission_source` — so a fourth ref-carrying source inherits this
+         number with no edit here. The else-arm covers the two shapes
+         `_ordered_shortlist` returns nothing for: the 'api' row, whose
+         candidate_indices is `range(len(sequences))` and whose number here is
+         the one this line printed for it before, and a row carrying neither
+         column as a JSON array at all, where `| length` on the raw value is
+         what this line has always done. When the two disagree — repeats,
+         entries that are not designs — the panel above prints the
+         difference. #}
+      <dd style="margin:0;">{{ shortlist.stored if shortlist else (campaign.candidate_indices | length) }} shortlisted</dd>
 
       <dt style="color:var(--text-secondary);">Budget band</dt>
       <dd style="margin:0;">{{ campaign.budget_band | title }}</dd>
@@ -175,4 +278,38 @@
   <a href="/jobs/{{ campaign.source_job_id }}" class="btn-secondary">View source job</a>
   {% endif %}
 </div>
+
+{# The stars this request used, dropped — AND ONLY THOSE (register item A89).
+   `clear_shortlist_refs` is non-empty ONLY when this page was reached by
+   `?submitted=1` on a row that names a parent and carries a shortlist column;
+   `blueprints/lab_projects.py::campaign_detail` decides every one of those, so
+   there is no `and` here to edit away and no second copy of the
+   most-specific-first resolution.
+
+   THIS BLOCK RENDERS ON EVERY GET OF THAT URL, and it is meant to. The route is
+   stateless, so a reload, a bookmark, an omnibox completion, a history entry, a
+   restored tab and a brand-new tab session all produce this same markup, and
+   the flag cannot distinguish any of them from the redirect after a submit.
+   Nothing needs to: the payload NAMES the designs to un-star, so running it
+   again removes refs that are already gone. The stars the customer has added
+   since — including the remainder the advice above is about, which this request
+   never read and so cannot name — are untouched every time.
+
+   THE PAYLOAD IS THE LIST ABOVE, in `{job_id, index}` form: up to
+   `_MAX_LISTED_DESIGNS` refs, 33KB of JSON with UUID job ids, beside the same
+   number of `<li>` this page already renders. Proportionate, and stated so a
+   reader does not have to wonder.
+
+   The key format is NOT restated here. `window.dropShortlistRefs` builds it
+   with the same `storageKey()` the star toggle writes with, and compares
+   designs with the same `refKey()` the star toggle compares with, which is why
+   this page loads that file for one call rather than inlining a hand-written
+   prefix: a second spelling of either drifts and then silently matches nothing,
+   on the one path that makes the advice above safe to give. `&&` because a
+   script that did not load leaves the global undefined, and calling it then
+   throws on every confirmation page in exchange for nothing. #}
+{% if clear_shortlist_refs %}
+<script src="{{ url_for('static', filename='js/candidate_table.js') }}"></script>
+<script>window.dropShortlistRefs && window.dropShortlistRefs({{ clear_shortlist_scope | tojson }}, {{ clear_shortlist_refs | tojson }});</script>
+{% endif %}
 {% endblock %}

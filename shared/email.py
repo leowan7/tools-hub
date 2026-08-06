@@ -508,10 +508,15 @@ def send_campaign_submitted_emails(
     one noun.
 
     Earlier rounds justified the split as "opposite remedies" and gave the
-    truncated half a retry instruction. That was wrong twice over: the
-    shortlist is never cleared, so a second send carries the identical refs, and
-    the route is ``@idempotent()`` besides. Neither number now carries advice
-    the user cannot act on.
+    truncated half a retry instruction. That was wrong twice over at the time:
+    the shortlist was never cleared, so a second send carried the identical
+    refs, and the route is ``@idempotent()`` besides. The instruction is back,
+    in one form only -- ``blueprints/lab_projects.py::campaign_detail`` now
+    hands the browser the refs THIS request covered and the browser un-stars
+    exactly those (register item A89), so what stays starred is the remainder.
+    This body carries no list of what the request covers, so its sentence points
+    at the page that does rather than standing alone; see the note at the
+    ``truncated`` branch.
 
     WHAT ``dropped`` MAY CLAIM, and why it can be blunt. BOTH ref callers refuse
     the whole submission rather than reporting a shortfall they could not decide
@@ -539,7 +544,32 @@ def send_campaign_submitted_emails(
     from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
     api_key   = os.environ.get("RESEND_API_KEY", "").strip()
 
+    # THE COUNTS RIDE THIS LINK, for the same reason they ride the redirect's:
+    # `campaign_detail` reads them off the query string and has no other source
+    # for them, so a link without them reaches a page that shows the design list
+    # and says nothing about what did NOT arrive. The `truncated` sentence below
+    # sends the reader to this URL, so a bare one would point at a page missing
+    # the very fact it was sent to explain.
+    #
+    # NOT `submitted=1`. That flag is what makes the page hand the browser its
+    # covered refs to un-star, and an email opened days later is not a submit:
+    # the reader may have re-starred a covered design on purpose since. It also
+    # carries the "Scoping request submitted" banner, which is a statement about
+    # the last few seconds. Both belong to the redirect and to nothing else.
     campaign_url = f"{base_url}/lab-projects/{campaign.id}"
+    _params = []
+    if dropped:
+        _params.append(f"dropped={int(dropped)}")
+    if truncated:
+        _params.append(f"truncated={int(truncated)}")
+    if _params:
+        campaign_url += "?" + "&".join(_params)
+    # `&` is a raw ampersand in the plain-text body and an entity in the HREF.
+    # An unescaped `&` in an attribute is what an HTML parser resolves against
+    # its entity table, and the parameter names here begin with `d` and `t`, so
+    # the risk is a client that is stricter than a browser rather than a live
+    # break. Only this URL can carry a query, so only this one is escaped.
+    campaign_href = campaign_url.replace("&", "&amp;")
     source_link = _handoff_source_link(base_url, campaign)
     tools_line = _source_tools_line(source_tools)
 
@@ -606,21 +636,52 @@ def send_campaign_submitted_emails(
         # an upper bound on the designs actually missing. The staff row below
         # keeps the exact unit ("refs"), which is why the two read differently.
         #
-        # NO RETRY ADVICE. This used to say "star them again on the target page
-        # and send a second request", and following it created a DUPLICATE PAID
-        # ORDER: nothing in this product clears a shortlist, the modal
-        # serialises it in stored order, so the second POST carries the
-        # identical first 500 refs and the designs over the limit are still over
-        # it. The route is now `@idempotent()`, which collapses that replay for
-        # 60 seconds -- a double-click guard, not a remedy, and far too short to
-        # be one. The only followable path is the one below: the staff copy
-        # carries the shortfall, so ops can pick the rest up.
+        # THE RETRY ADVICE IS ROUTED THROUGH THE CAMPAIGN PAGE, NOT GIVEN HERE.
+        # This once said "star them again on the target page and send a second
+        # request", and following it created a DUPLICATE PAID REQUEST: nothing
+        # cleared the shortlist, the modal serialises it in stored order, so the
+        # second POST carried the identical first 500 refs and the designs over
+        # the limit were still over it. `campaign_detail` now hands the browser
+        # the refs that request COVERED and the browser un-stars exactly those
+        # (register item A89), so what is left starred is the remainder -- but
+        # that happens in a browser nothing here can hear back from, and the
+        # page's safeguard against a silent failure is that it prints the
+        # designs the request already covers directly under the advice. This
+        # email has no such list, so it must not carry the bare instruction; it
+        # names the page that does, and `campaign_url` above carries the counts
+        # that page needs to render the same disclosure this sentence makes.
+        #
+        # AND IT ASSERTS NOTHING ABOUT WHAT THAT PAGE RENDERS. "Check your
+        # campaign page for what this request covers" is an instruction; "your
+        # campaign page lists the designs" would be a claim about a panel
+        # rendered under conditions this module does not evaluate and could only
+        # duplicate. The server-side guarantee that makes the instruction sound
+        # is narrower and is pinned in tests/test_lab_project_confirmation.py:
+        # `_ordered_shortlist` never answers None for a row carrying a non-empty
+        # shortlist column, and no caller passes `truncated` for a row that
+        # carries an empty one.
+        #
+        # WHERE THE TWO OVERLAP, they must not drift: both tell the reader that
+        # this request covers a fixed set, that the rest must be starred, and
+        # that a second request sends them. What the page adds on top -- the
+        # designs themselves, and the count beside them -- this body neither
+        # carries nor describes. The staff copy keeps the exact ref count, so
+        # ops can still pick the rest up.
+        #
+        # NO DESIGN COUNT IN THIS SENTENCE. The page counts DISTINCT designs and
+        # `n_candidates` above is the STORED length; they agree on every row
+        # either ref arm writes, because those arms dedupe before persisting.
+        # This is NOT a drift protection -- the `dropped` sentence a few lines
+        # up already prints `n_candidates` in this same body, so the number is
+        # on both surfaces whenever both branches fire. It is here because the
+        # sentence has no list to count against: the page states its own count
+        # next to its own designs, and a bare figure here would be one more
+        # number the reader cannot reconcile.
         _sentences.append(
             f"Up to {truncated} further starred design{_tplural} {_twas} over "
-            f"the per-request limit and {_twas} not read. Sending the same "
-            f"selection again would repeat this request rather than add "
-            f"{'them' if truncated != 1 else 'it'}, so the Ranomics team has "
-            f"the shortfall on their copy and will follow up about the rest."
+            f"the per-request limit and {_twas} not read. Check your campaign "
+            f"page for what this request covers, then star the rest and send a "
+            f"second request; the Ranomics team has the shortfall as well."
         )
         truncated_row = (
             f"<tr><td {_td}>Over the limit</td><td>{truncated} "
@@ -678,7 +739,7 @@ def send_campaign_submitted_emails(
       <p>The Ranomics team will review feasibility against current lab capacity
          and follow up within <strong>2 business days</strong>.</p>
       <p style="margin:24px 0;">
-        <a href="{campaign_url}"
+        <a href="{campaign_href}"
            style="display:inline-block;padding:12px 22px;background:#2B9E7E;
                   color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
           View campaign
