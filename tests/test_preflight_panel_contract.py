@@ -694,39 +694,78 @@ def test_the_panel_does_not_block_proteinas_own_multichain_flow(client):
     )
 
 
-def test_the_panel_is_never_stricter_than_the_gate(client):
-    """The invariant, stated as a property rather than a list of cases.
+_GATE_SLUGS = ["rfdiffusion", "bindcraft", "pxdesign"]
 
-    A green panel over a submit the gate refuses costs a click. A RED panel
-    over a submit the gate would have accepted costs the whole run: the button
-    is disabled client-side and the stated reason was guessed by a function
-    that does not run the adapter. So the panel may be wrong in one direction
-    only, and the hotspot parse must never be the thing that flips it.
+
+@pytest.mark.parametrize("slug", _GATE_SLUGS)
+@pytest.mark.parametrize("hotspots", [
+    "A5,B7", "A5, B7", "A5;B7",
+    "A5 B7",        # whitespace: what tools/base.py:99 accepts
+    "5 7", "5,7",
+    "A5", "5",
+])
+def test_the_panel_is_never_stricter_than_the_gate(client, slug, hotspots):
+    """THE INVARIANT, and it has to be stated as "ok is True", not as the
+    absence of some sentence.
+
+    The first version of this test asserted that the reason did not contain
+    "does not name one of your target chains" — a string produced by
+    tools/base.py::parse_hotspot_residues, which the panel route stopped
+    calling in the same commit that added the assertion. It was born
+    unfalsifiable, and a mutation that hard-refused every unparseable token
+    (precisely the forbidden direction) passed the entire suite.
+
+    preflight.js does setSubmitEnabled(!!v.ok) with no re-enable path except
+    the network-error catch. So: whenever the adapter accepts a field, the
+    panel must not be what stops the user submitting it.
     """
-    _login(client)
-    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+    import importlib
 
-    # Fields that are valid, half-typed, or malformed — the panel fires while
-    # the user is still editing, so all three reach it in practice.
-    for hotspots in ("A113,C73", "113", "A113", "A11", "A113,", "A113,Q",
-                     "", "113,73", "A113;C73", "xyz"):
-        body = _post_preflight(
-            client,
-            target_chain="A",
-            target_input="A12-80,C12-80",
-            hotspot_residues=hotspots,
-            target_pdb=(io.BytesIO(pdb), "ac.pdb"),
+    _login(client)
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A,B", "hotspot_residues": hotspots})
+    inputs, adapter_err = mod.validate(dict(form), {})
+    if adapter_err is not None:
+        pytest.skip(f"{slug} rejects {hotspots!r} at the adapter: {adapter_err}")
+
+    pdb = _pdb({"A": list(range(1, 121)), "B": list(range(1, 121))})
+
+    # THE GATE, exactly as blueprints/tools.py runs it at submit: the
+    # adapter's own inputs, not the raw form. Comparing the panel against
+    # validate() alone is wrong — bindcraft's adapter accepts a multi-chain
+    # target while its container gate refuses one, and a red panel there is
+    # correct rather than a violation.
+    from shared.pdb_intake import _parse_preflight_size_params
+    from shared.pdb_preflight import preflight_for_tool
+    _binder_max, _num = _parse_preflight_size_params(inputs)
+    gate = preflight_for_tool(
+        slug, pdb,
+        target_chain=inputs["target_chain"],
+        hotspots=inputs.get("hotspot_residues") or [],
+        binder_max_aa=_binder_max, num_designs=_num,
+    )
+
+    data = dict(form)
+    data["target_pdb"] = (io.BytesIO(pdb), "ab.pdb")
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()):
+        body = client.post(
+            f"/tools/{slug}/preflight", data=data,
+            content_type="multipart/form-data",
         ).get_json()
-        if body["ok"]:
-            continue
-        # A refusal is allowed, but it must not be one this function invented
-        # about the hotspot FIELD. Size, gaps and chain checks are the gate's
-        # own reasons and re-run identically at submit.
-        reason = (body.get("reason") or "").lower()
-        assert "does not name one of your target chains" not in reason, (
-            f"hotspots={hotspots!r}: panel blocked Run on its own hotspot "
-            f"parse: {body.get('reason')!r}"
-        )
+
+    if not gate.ok:
+        return  # the gate refuses too; panel and gate agree.
+
+    assert body["ok"] is True, (
+        f"{slug} hotspots={hotspots!r}: the gate says READY but the panel "
+        f"disabled Run: {body.get('reason')!r}"
+    )
+    assert body["hotspots"]["dropped"] == gate.hotspot_status["dropped"], (
+        f"{slug} hotspots={hotspots!r}: panel dropped "
+        f"{body['hotspots']['dropped']!r}, gate dropped "
+        f"{gate.hotspot_status['dropped']!r}"
+    )
 
 
 @pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))

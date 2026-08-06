@@ -607,22 +607,29 @@ def test_validate_hotspots_keeps_the_bare_int_contract():
 def test_a_gap_is_only_near_a_hotspot_on_its_own_chain():
     """The gap-distance math decides whether an internal gap is a hard fail.
 
-    Measuring a chain-prefixed hotspot against gaps on every chain is wrong in
-    the direction that blocks good work: on a homodimer both protomers carry
-    the same numbering, so a gap on chain B sits "0 residues from" a hotspot
-    the user placed on chain A, and the submit is refused for a gap nowhere
-    near the epitope.
+    THE FIXTURE IS THE TEST. An earlier version of this used a heterodimer
+    with chain B numbered from 500, so even a chain-BLIND minimum measured
+    A5 against B's gap as ~506 and the "far" assertion (> 400) passed anyway:
+    the numbering offset, not the chain routing, was carrying it. A
+    homodimer is the only fixture that can tell them apart, and a homodimer
+    is the case that matters — both Fc protomers carry the same numbering,
+    so a chain-blind minimum reports a gap on B as sitting 4 residues from a
+    hotspot the user placed on A, and refuses the submit.
     """
+    import math
+
     from shared.pdb_preflight import _check_internal_gaps
     from shared.pdb_preflight_rules import TOOL_RULES
 
-    # A: 1..40 complete. B: 500..510 then 571..610 — a 60-residue hole whose
-    # near edge is 6 residues from B505 and far from anything on A.
-    lines = ["HEADER    SYNTHETIC GAPPED\n"]
+    # Identical numbering on both protomers. A is complete; B is missing
+    # 41..100. A45 falls INSIDE that range numerically, so a chain-blind
+    # minimum scores it 4 residues from the gap while the truth is that it
+    # sits on the other protomer entirely.
+    lines = ["HEADER    SYNTHETIC HOMODIMER\n"]
     serial = 0
     for ci, (cid, resnums) in enumerate((
-        ("A", list(range(1, 41))),
-        ("B", list(range(500, 511)) + list(range(571, 611))),
+        ("A", list(range(1, 121))),
+        ("B", list(range(1, 41)) + list(range(101, 121))),
     )):
         for i, resnum in enumerate(resnums):
             for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
@@ -636,23 +643,27 @@ def test_a_gap_is_only_near_a_hotspot_on_its_own_chain():
     pdb = "".join(lines).encode()
 
     rules = TOOL_RULES["pxdesign"]
-    near = _check_internal_gaps(pdb, "A,B", ["B505"], rules)
-    far = _check_internal_gaps(pdb, "A,B", ["A5"], rules)
+    near = _check_internal_gaps(pdb, "A,B", ["B45"], rules)
+    far = _check_internal_gaps(pdb, "A,B", ["A45"], rules)
 
-    assert near.gaps and far.gaps, "both runs must see the same gap"
-    assert near.gaps[0].nearest_hotspot_distance < 20, (
-        f"B505 is 6 residues from the gap on its own chain, got "
+    assert near.gaps and far.gaps, "both runs must see the same gap on B"
+    assert near.gaps[0].nearest_hotspot_distance == 4, (
+        f"B45 is 4 residues from the gap on its own chain, got "
         f"{near.gaps[0].nearest_hotspot_distance}"
     )
-    assert far.gaps[0].nearest_hotspot_distance > 400, (
-        "A5 is on the other protomer and must not be measured against a gap "
-        f"on chain B, got {far.gaps[0].nearest_hotspot_distance}"
+    # inf, not "some large number" — a chain-blind union scores this 4, and
+    # any threshold-based assertion would pass for the wrong reason.
+    assert far.gaps[0].nearest_hotspot_distance == math.inf, (
+        "A45 is on the other protomer; a gap on chain B must not be measured "
+        f"against it at all, got {far.gaps[0].nearest_hotspot_distance}"
+    )
+    # And the verdict, not just the distance: this is a hard submit gate.
+    assert near.hard_fail_message and not far.hard_fail_message, (
+        f"near={near.hard_fail_message!r} far={far.hard_fail_message!r}"
     )
     # R1: a BARE hotspot keeps measuring against every chain, as it always did.
-    bare = _check_internal_gaps(pdb, "A,B", [505], rules)
-    assert bare.gaps[0].nearest_hotspot_distance == (
-        near.gaps[0].nearest_hotspot_distance
-    )
+    bare = _check_internal_gaps(pdb, "A,B", [45], rules)
+    assert bare.gaps[0].nearest_hotspot_distance == 4
 
 
 def test_nearest_clean_residues_keeps_the_bare_int_contract():
@@ -684,20 +695,23 @@ def test_suggestions_do_not_offer_the_same_residue_twice():
 def test_every_dropped_chain_gets_at_least_one_suggestion():
     """One global top-N starves a protomer.
 
-    Two dropped hotspots on different chains, six slots: whichever chain has
-    the tighter neighbours takes all six, and the refusal says nothing about
-    the other one. The user re-picks chain A, resubmits, and is refused again
-    for the chain B hotspot nobody mentioned.
+    THE FIXTURE IS THE TEST, again. An earlier version gave chain B a clean
+    residue at distance 1, which TIES chain A's best — so a global top-N
+    still surfaced it at index 2 and the mutation this test exists to kill
+    survived. Chain B's nearest must be strictly worse than chain A's sixth,
+    or ranking and round-robin produce the same chain set.
+
+    Here A offers six candidates at distances 1,1,2,2,3,3 and B's nearest is
+    5 away, so a global top-N fills every slot from A and the user is told
+    nothing at all about their chain B hotspot.
     """
     from shared.pdb_preflight import _nearest_clean_residues
 
-    # A is dense around 20 (every neighbour clean); B has exactly one clean
-    # residue near 505, so a global ranking fills every slot from A.
     lines = ["HEADER    SYNTHETIC STARVE\n"]
     serial = 0
     for ci, (cid, resnums) in enumerate((
-        ("A", list(range(1, 41))),
-        ("B", [504] + list(range(520, 560))),
+        ("A", list(range(1, 41))),          # dense around the dropped A20
+        ("B", list(range(510, 551))),       # nearest to dropped B505 is 5 away
     )):
         for i, resnum in enumerate(resnums):
             for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
@@ -715,4 +729,40 @@ def test_every_dropped_chain_gets_at_least_one_suggestion():
     assert chains == {"A", "B"}, (
         f"only chain(s) {chains} got suggestions: {nearest!r} — the other "
         f"dropped hotspot is unaddressed"
+    )
+
+
+def test_a_bare_suggestion_is_not_deleted_by_a_namesake_on_another_chain():
+    """The de-dup that stops "19, A19" being offered as two residues must not
+    fire across protomers, where 19 and B19 really are different residues.
+
+    Keyed on the number alone, a single dropped "B21" deleted A19, A18 and
+    A22 — the nearest clean neighbours of the bare hotspot 20 — leaving a
+    residue ten away as the closest thing the user was offered.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    # Homodimer, identical numbering, 20 and 21 broken on BOTH protomers.
+    lines = ["HEADER    SYNTHETIC HOMODIMER DEDUP\n"]
+    serial = 0
+    for ci, cid in enumerate(("A", "B")):
+        for i, resnum in enumerate(range(1, 61)):
+            atoms = ([("N", 0.0), ("CA", 1.0)] if resnum in (20, 21)
+                     else [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)])
+            for aname, off in atoms:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", [20, "B21"], [])
+    bare = [r for r in nearest if isinstance(r, int)]
+    assert bare, f"the bare hotspot 20 got no suggestions at all: {nearest!r}"
+    assert min(abs(r - 20) for r in bare) <= 2, (
+        f"nearest bare suggestion is {bare!r}, but 19/18/22 are clean on "
+        f"chain A — deleted because chain B happens to share the numbers"
     )

@@ -1385,7 +1385,17 @@ def _nearest_clean_residues(
     # drop the bare twin; with a uniform input (which is all any adapter emits,
     # since parse_hotspot_residues normalises the whole field to one shape)
     # nothing here changes.
-    attributed = {r for cid, r in candidates if cid is not None}
+    # Suppressing a bare suggestion because an attributed one shares its
+    # number is only sound when there is ONE chain, where "19" and "A19" name
+    # the same residue. On a homodimer they do not: both protomers carry 19,
+    # so keying the suppression on the number alone let a single dropped
+    # "B21" delete A19, A18 and A22 — the nearest clean neighbours of the
+    # bare hotspot 20 — and the user was offered a distance-10 residue as the
+    # closest thing available.
+    attributed = (
+        {r for cid, r in candidates if cid is not None}
+        if len(by_chain) == 1 else set()
+    )
     ranked = sorted(candidates.items(), key=lambda kv: (kv[1][0], kv[0][1]))
 
     # Group by the chain the suggestion belongs to, then take from each group

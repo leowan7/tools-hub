@@ -786,15 +786,25 @@ def tool_preflight(tool: str):
             _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
             if _seg_chain and _seg_chain not in _chains:
                 _chains.append(_seg_chain)
-        # Per token, keeping whatever form the user typed. An unparseable
-        # token is skipped rather than fatal — the adapter refuses it on
-        # submit, with wording this function has no business inventing.
-        for _tok in raw_hotspots.replace(";", ",").split(","):
-            _tok = _tok.strip()
-            if not _tok:
-                continue
+        # The chain set the hotspots were PARSED against has to be the one
+        # they are then CHECKED against, or a contig chain resolves here and
+        # is dropped downstream — the panel rendering "Hotspots A113 — all
+        # preserved" while C73 vanished from a field the user can still see.
+        # preflight.js and preflight_panel.html both print only `surviving`.
+        target_chain = ",".join(_chains) or target_chain
+        # Tokenize the way the adapters do — tools/base.py:99 and proteina's
+        # _parse_hotspots both fold separators into whitespace and split on
+        # it. Splitting on commas alone made "A54 B56" one unparseable token,
+        # so the panel saw zero hotspots, said "This tool needs at least one
+        # hotspot residue", and disabled Run for a field the gate accepts.
+        # That direction is the one the rule above forbids, and 8644c74 is
+        # what created it: before that commit the gate refused the same input,
+        # so panel and gate agreed by both being wrong.
+        for _tok in raw_hotspots.replace(";", ",").replace(",", " ").split():
             _cid, _resnum = split_hotspot(_tok, _chains)
             if _resnum is None:
+                # Skipped, not fatal — the adapter refuses it on submit, with
+                # wording this function has no business inventing.
                 continue
             hotspots.append(_resnum if _cid is None else f"{_cid}{_resnum}")
 
