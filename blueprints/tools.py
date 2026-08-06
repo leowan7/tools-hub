@@ -748,19 +748,30 @@ def tool_preflight(tool: str):
 
     target_chain = (request.form.get("target_chain") or "A").strip()
     raw_hotspots = (request.form.get("hotspot_residues") or "").strip()
+    # Parse with the SAME helper the adapters' validate() uses, so the panel
+    # above the Run button and the hard gate behind it read the field
+    # identically. Splitting on int() here instead is what made the panel
+    # report a clean verdict for chain-prefixed hotspots that submit then
+    # evaluated for real — the panel was scoring a different input.
     hotspots: list = []
     if raw_hotspots:
-        for tok in raw_hotspots.split(","):
-            tok = tok.strip()
-            if not tok:
-                continue
-            try:
-                hotspots.append(int(tok))
-            except ValueError:
-                # Non-integer hotspot entries are surfaced through the
-                # form validator on submit; for preflight purposes we
-                # ignore them so the panel renders something useful.
-                pass
+        _chains = tool_base.parse_target_chains(target_chain)
+        parsed, hs_err = tool_base.parse_hotspot_residues(
+            raw_hotspots, _chains,
+        )
+        if not hs_err:
+            hotspots = list(parsed or [])
+        else:
+            # Half-typed field: keep the tokens that do parse so the panel
+            # still renders something useful. The form validator is what
+            # refuses on submit.
+            for tok in raw_hotspots.replace(";", ",").split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                one, one_err = tool_base.parse_hotspot_residues(tok, _chains)
+                if not one_err and one:
+                    hotspots.extend(one)
 
     # Source the bytes: file upload OR AlphaFold fetch.
     af_accession = (request.form.get("alphafold_accession") or "").strip()

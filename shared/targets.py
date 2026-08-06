@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from shared.credits import get_service_client
+from shared.pdb_inspect import split_hotspot
 from shared.storage import StorageError, upload_input
 
 logger = logging.getLogger(__name__)
@@ -301,15 +302,19 @@ class DesignTarget:
                 ranges.append((cid, chain["min_resnum"], chain["max_resnum"]))
         if not ranges:
             return None
+        named = [cid for cid, _, _ in ranges]
         bad: list = []
         for h in hotspots or []:
-            try:
-                n = int(h)
-            except (TypeError, ValueError):
+            cid, n = split_hotspot(h, named)
+            if n is None:
                 bad.append(h)
-                continue
-            if not any(lo <= n <= hi for _, lo, hi in ranges):
-                bad.append(n)
+            elif cid is None:
+                # Unprefixed: in range on any named chain is good enough.
+                if not any(lo <= n <= hi for _, lo, hi in ranges):
+                    bad.append(n)
+            elif not any(c == cid and lo <= n <= hi for c, lo, hi in ranges):
+                # Prefixed: must be in range on the chain it names.
+                bad.append(h)
         if not bad:
             return None
         spans = ", ".join(f"{cid} {lo}-{hi}" for cid, lo, hi in ranges)

@@ -338,3 +338,203 @@ def test_preflight_refuses_multichain_for_the_unverified_image(name, mod, typed)
         f"refused for the wrong reason: {reason!r}"
     )
     assert "GPU image" in reason, reason
+
+
+# ---------------------------------------------------------------------------
+# The OTHER half of the same seam: hotspot_residues
+# ---------------------------------------------------------------------------
+#
+# The two tests above pass ``hotspots=[]``. That is precisely why they went
+# green while the hotspot half of the contract was broken: fixing the
+# target_chain seam and then asserting it with an empty hotspot list proves
+# only that the field you happened to think about works.
+#
+# validate() emits ["A296", "B264"]; blueprints/tools.py hands that POST-
+# validate value to preflight_for_tool; and shared/pdb_inspect.py and
+# shared/pdb_preflight.py both coerced every token with a bare int(). So:
+#
+#   rfdiffusion / pxdesign  -> NEEDS_FIX, "backbone is incomplete in this
+#                              PDB" — a false claim about a complete file
+#   boltzgen                -> READY, every hotspot silently discarded, and
+#                              a paid A100 run with no epitope constraint
+#
+# Anything below that reaches for a hotspot must use the value validate()
+# actually produced, never a hand-written list.
+
+def _asymmetric_pdb(n_res: int = 40) -> bytes:
+    """Chain A numbered 1..n, chain B numbered 500..500+n.
+
+    Disjoint ranges, so "is this hotspot on the chain it names" and "is it on
+    any chain at all" give different answers — which is the only way to prove
+    the check is chain-aware rather than unioning.
+    """
+    lines = ["HEADER    SYNTHETIC ASYMMETRIC\n"]
+    serial = 0
+    for ci, (cid, first) in enumerate((("A", 1), ("B", 500))):
+        for i in range(n_res):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=first + i, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+@pytest.mark.parametrize("name,mod", GPU_VERIFIED)
+@pytest.mark.parametrize("typed", ["A,B", "A B"])
+def test_preflight_keeps_the_hotspots_validate_emits(name, mod, typed):
+    """form -> validate() -> preflight_for_tool, carrying the hotspots through.
+
+    Every emitted hotspot must survive. A dropped one is not cosmetic: for
+    these two tools ``hotspots_required=True`` turns it into a NEEDS_FIX that
+    blocks submit.
+    """
+    inputs, err = mod.validate(_form(name, typed, "A5,B7"), {})
+    assert err is None, err
+    emitted = inputs["hotspot_residues"]
+    assert emitted == ["A5", "B7"]
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"], hotspots=emitted,
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["dropped"] == [], (
+        f"{name}: preflight dropped {verdict.hotspot_status['dropped']!r} of "
+        f"the hotspots validate() emitted — the seam is broken"
+    )
+    assert verdict.hotspot_status["surviving"] == ["A5", "B7"]
+    assert verdict.ok, verdict.reason
+    assert "backbone" not in (verdict.reason or "").lower(), (
+        f"{name}: blamed the file's backbone for a parser failure: "
+        f"{verdict.reason!r}"
+    )
+
+
+def test_boltzgen_does_not_silently_discard_hotspots():
+    """boltzgen has hotspots_required=False, so a dropped hotspot does NOT
+    block submit — it returns READY and launches an A100 run with the epitope
+    constraint quietly removed. That is worse than the hard refusal the other
+    tools got, and it is why 'the verdict was ok' is not enough to assert.
+    """
+    from tools import boltzgen as boltzgen_mod
+
+    form = {
+        "preset": "pilot", "target_chain": "A,B",
+        "hotspot_residues": "A5,B7", "num_designs": "2",
+        "binder_length_min": "55", "binder_length_max": "65",
+    }
+    inputs, err = boltzgen_mod.validate(form, {})
+    assert err is None, err
+
+    verdict = preflight_for_tool(
+        "boltzgen", _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.ok, verdict.reason
+    assert verdict.hotspot_status["dropped"] == [], (
+        "boltzgen returned READY while discarding "
+        f"{verdict.hotspot_status['dropped']!r} — a paid run with no hotspots"
+    )
+
+
+@pytest.mark.parametrize("name,mod", GPU_VERIFIED)
+def test_single_chain_bare_int_hotspots_are_byte_identical(name, mod):
+    """The backward-compatibility floor. Every job submitted before the
+    multi-chain contract posts bare ints on one chain; those must round-trip
+    through preflight as ints, not as newly-prefixed strings.
+    """
+    inputs, err = mod.validate(_form(name, "A", "5,7"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == [5, 7]
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == [5, 7]
+    assert verdict.hotspot_status["dropped"] == []
+
+
+def test_a_hotspot_is_checked_against_the_chain_it_names():
+    """``B5`` must not be accepted because chain A happens to have residue 5.
+
+    On a homodimer both protomers carry the same numbering, so a union check
+    passes every prefixed hotspot regardless of which protomer it names — it
+    would report a valid epitope on a chain the design never touches.
+    """
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    verdict = preflight_for_tool(
+        "rfdiffusion", pdb, target_chain="A,B",
+        hotspots=["A5", "B5"], binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == ["A5"]
+    assert verdict.hotspot_status["dropped"] == ["B5"], (
+        "B5 does not exist on chain B (which runs 500..539) and must not be "
+        "accepted just because chain A has a residue 5"
+    )
+
+
+def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
+    """The refusal suggests nearby clean residues. For a prefixed hotspot they
+    must come from that chain and come back prefixed, so they can be pasted
+    straight back into the field."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", ["B498"], [])
+    assert nearest, "expected suggestions near B498 on chain B"
+    assert all(str(r).startswith("B") for r in nearest), nearest
+    assert all(500 <= int(str(r)[1:]) <= 539 for r in nearest), nearest
+
+
+# --- split_hotspot, the one parser all of the above now share ---------------
+
+@pytest.mark.parametrize("token,chains,expected", [
+    (296,           ["A", "B"], (None, 296)),   # already an int
+    ("296",         ["A", "B"], (None, 296)),   # bare, unattributed
+    ("  296  ",     ["A", "B"], (None, 296)),
+    ("A296",        ["A", "B"], ("A", 296)),
+    ("B264",        ["A", "B"], ("B", 264)),
+    ("-5",          ["A"],      (None, -5)),    # author numbering allows it
+    ("C25",         ["A", "B"], (None, None)),  # names an untargeted chain
+    ("xyz",         ["A", "B"], (None, None)),
+    ("Axx",         ["A"],      (None, None)),
+    ("",            ["A"],      (None, None)),
+    ("A296",        None,       (None, None)),  # no chain list -> bare only
+    ("AB12",        ["A", "AB"], ("AB", 12)),   # longest match wins
+    (True,          ["A"],      (None, None)),  # bool is an int subclass
+])
+def test_split_hotspot(token, chains, expected):
+    from shared.pdb_inspect import split_hotspot
+
+    assert split_hotspot(token, chains) == expected
+
+
+def test_targets_hotspot_error_agrees_with_preflight():
+    """shared/targets.py runs its own copy of this check for the campaign and
+    target-launch routes. It diverging from preflight is the A18 defect all
+    over again, so pin them to the same answer."""
+    import uuid
+
+    from shared.targets import DesignTarget
+
+    target = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", kind="pdb",
+        chain_summary={"chains": [
+            {"chain_id": "A", "min_resnum": 1, "max_resnum": 40},
+            {"chain_id": "B", "min_resnum": 500, "max_resnum": 539},
+        ]},
+    )
+    assert target.hotspot_error("A,B", ["A5", "B505"]) is None
+    err = target.hotspot_error("A,B", ["B5"])
+    assert err and "B5" in err, err
+    # And the pre-multi-chain shape still behaves as it always did.
+    assert target.hotspot_error("A,B", [5, 505]) is None
