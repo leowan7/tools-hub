@@ -125,7 +125,7 @@
         // _counted asserts residues_kept_on_target_chain == 600 alongside
         // size_envelope.residue_count == 130 — so neither can rot. The 300 is
         // _BIG_UPLOAD's chain A, range(1, 301). Do not restate this argument
-        // against a structure the repo does not build — the version before
+        // against a structure no PDB fixture here builds — the version before
         // this one used 3S7G and quoted 830/415 for the same pair, which is
         // wrong on the repo's own 3S7G stand-in (_fc_pdb in
         // tests/test_pdb_preflight.py, four chains, 830 aa): there "A B" is

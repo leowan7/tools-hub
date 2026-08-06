@@ -1613,7 +1613,7 @@ def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
     THE BAND IS +/-5%, AND IT IS ANCHORED TO THIS POINT'S RESIDUAL, not to the
     worst residual anywhere on the fit. The shipped curve puts 130 aa at
     9.25 min against the measured 9.6 — 3.7% low — so +/-5% is the tightest
-    round band that admits the fit HERE. The 415 aa point runs out to ~10%
+    round band that admits the fit HERE. The 260 aa point runs out to ~9%
     (test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards, block 3,
     is where that looser bound belongs), and importing it into this assertion
     is not a correction, it is lost coverage. EXECUTED, not reasoned: at

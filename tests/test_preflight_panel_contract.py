@@ -482,7 +482,7 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
     key = _FIELD_OF[_APPENDED_FROM["target_input"]][1]
     body = _post_preflight(client, **{key: _CONTIG}).get_json()
     assert body["ok"] is True, body.get("reason")
-    # 130, not 400: the number the panel reports is the SELECTION's. Asserted
+    # 130, not 600: the number the panel reports is the SELECTION's. Asserted
     # on the count rather than on a `size_basis` flag because the JSON block
     # ships neither `size_basis` nor `selection_label` (shared/pdb_intake.py
     # ::_verdict_to_json), and the count is the discriminator anyway — nothing
