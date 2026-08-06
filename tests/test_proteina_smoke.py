@@ -2636,9 +2636,13 @@ class TestRuntimeCopyMatchesMeasurement:
 
     IT HAS BEEN WRONG TWICE. It shipped claiming "30 to 120" minutes per shard
     for all three design variants — a placeholder 5-20x above anything real.
-    It was then corrected to "~6" from a 359 s shard, which was also wrong:
-    that shard died before its AF2/ESM stack loaded, so it timed an incomplete
-    run and the copy under-stated a complete one by ~40%.
+    It was then corrected to "~6" from a 359 s reading, which was also wrong:
+    two readings exist at 130 aa and they disagree by ~60% — 359 s and 576 s.
+    The 576 s one is the run whose completion was verified (exit 0, 8 scored
+    designs), and copy drawn from the 359 s one under-stated it by ~40%. Why
+    the two differ is recorded nowhere in this repo, so the discrepancy is
+    unexplained rather than diagnosed; the older figure is simply not used for
+    anything.
 
     Three COMPLETED shards now exist — 576 s at 130 aa, 645 s at 260 aa, 874 s
     at 415 aa, i.e. 9.6 to 14.6 min. Both errors were load-bearing beyond the
@@ -2654,10 +2658,27 @@ class TestRuntimeCopyMatchesMeasurement:
             "protein_binder still quotes the placeholder band; the completed "
             "shards run 9.6 to 14.6 min across 130-415 residues")
         assert entry.strip() != "~6", (
-            "protein_binder still quotes the 359 s shard, which never loaded "
-            "its AF2/ESM stack; a complete run at that size took 576 s")
-        # The band must span the measurement rather than sit under it.
-        assert "10" in entry and "15" in entry, entry
+            "protein_binder still quotes the 359 s reading; the 130 aa run "
+            "whose completion was verified took 576 s")
+        # THE BAND MUST BRACKET THE MEASUREMENT, and that has to be read as
+        # numbers rather than as substrings. ``"10" in entry and "15" in
+        # entry`` was satisfied by "~10 to 150" — a ceiling ten times anything
+        # ever run — and by any string carrying those two digit pairs
+        # anywhere. It also passed the band it was written for, "~10 to 15",
+        # whose FLOOR sat above the 9.6 min shard it claimed to describe.
+        bounds = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", entry)]
+        assert len(bounds) == 2, f"{entry!r} is not a two-ended band"
+        lo, hi = bounds
+        assert lo <= 9.6, (
+            f"{entry!r} claims a floor above the fastest completed shard "
+            f"(576 s = 9.6 min at 130 aa)")
+        assert hi >= 14.6, (
+            f"{entry!r} claims a ceiling below the slowest completed shard "
+            f"(874 s = 14.6 min at 415 aa)")
+        assert hi <= 20.0, (
+            f"{entry!r} claims a ceiling far above anything measured: the "
+            f"largest target ever run took 14.6 min, and the 500-aa cap "
+            f"models at ~14.6 too")
 
     def test_untimed_variants_are_labelled_untimed(self):
         """ligand_binder and motif_ame have never been run on a GPU here. Their
@@ -2680,13 +2701,20 @@ class TestRuntimeCopyMatchesMeasurement:
             assert "30 to 120" not in typical, (
                 f"about.runtime_table[{preset}] still quotes the placeholder")
         assert "measured" in rows["protein_binder"]
+        # And the two copies must quote the SAME band, not merely both be
+        # non-placeholder — the whole failure mode here is one of them moving.
+        band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
+        assert band in rows["protein_binder"], (
+            f"about.runtime_table quotes {rows['protein_binder']!r} while "
+            f"PRESET_RUNTIME quotes {band!r}; the tool page and the preset "
+            f"map are telling the user different things")
 
     def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
         """The specific coupling that turned a docs placeholder into a number
         the preflight panel presented as calibrated.
 
         Both retired anchors are named, because "not 75" alone would be
-        satisfied by the 5.4 that came from the incomplete 359 s shard.
+        satisfied by the 5.4 that came from the 359 s reading.
         """
         from shared.pdb_preflight_rules import TOOL_RULES
         env = TOOL_RULES["proteina"].size
@@ -2695,8 +2723,9 @@ class TestRuntimeCopyMatchesMeasurement:
             "runtime_base_min is still the midpoint of meta.py's retired "
             "30-120 min band")
         assert base != 5.4, (
-            "runtime_base_min is still solved from the 359 s shard that died "
-            "before its AF2/ESM stack loaded")
+            "runtime_base_min is still solved from the 359 s reading — the "
+            "one of the two 130 aa readings with no verified completion "
+            "attached, and 60% off the one that has")
         # base x (aa/120)^alpha x (8/8) must reproduce all three completed
         # shards, not just one — a single-point check cannot see the exponent.
         for aa, secs in ((130, 576), (260, 645), (415, 874)):

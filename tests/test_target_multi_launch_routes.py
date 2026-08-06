@@ -1107,7 +1107,20 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     THE FIXTURE MOVED WITH THE CAP, and it had to. This was posed on the
     default 210 aa target, which was over the 140 cap of the day; 210 is
     comfortably inside the measured 500 cap now, so leaving it there would
-    have turned a money gate into a test that asserts nothing."""
+    have turned a money gate into a test that asserts nothing.
+
+    AND THE ASSERTION HAD TO MOVE WITH IT, which the fixture change on its own
+    did not do. ``_visible_text`` is the WHOLE document, and
+    ``templates/base.html:28`` ships a Google Fonts URL on every rendered page
+    containing ``wght@8..60,400;8..60,500;8..60,600``, so "500" and "600" are
+    unconditionally present in every response body. ``"600" in body and "500"
+    in body`` therefore asserted nothing about this gate: with
+    ``hard_cap_target_aa`` mutated 500 -> 100000 the route still returns 400,
+    because 600 aa plus the adapter's 120 aa max binder is over the 620-aa
+    COMBINED budget, and this test passed. The retired 140/210 pair was safe
+    from that only by accident — no font weight is 140. Pinned below as a
+    contiguous phrase only the target-size branch of ``_check_size_envelope``
+    can emit."""
     _login(client)
     t = _over_cap_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
@@ -1118,7 +1131,7 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     assert resp.status_code == 400, _visible_text(resp)[-400:]
     assert rec.calls == []
     body = _visible_text(resp)
-    assert "600" in body and "500" in body
+    assert "600 residues, above the 500-residue limit" in body, body[-600:]
 
 
 def test_a_contig_smaller_than_the_upload_is_sized_on_the_contig(client):
@@ -1178,7 +1191,9 @@ def test_a_target_that_fits_but_whose_complex_does_not_is_refused(client):
     assert resp.status_code == 400, _visible_text(resp)[-400:]
     assert rec.calls == []
     body = _visible_text(resp)
-    assert "combined budget" in body and "620" in body
+    # Contiguous, for the reason spelled out on the target-cap test above:
+    # "620" happens not to be in base.html today, and "600" is.
+    assert "620-aa combined budget" in body, body[-600:]
 
 
 def test_a_binder_inside_the_combined_budget_still_launches(client):
@@ -1225,7 +1240,9 @@ def test_the_combined_cap_reads_rfdiffusions_dict_shaped_binder_length(client):
     assert resp.status_code == 400, _visible_text(resp)[-400:]
     assert rec.calls == []
     body = _visible_text(resp)
-    assert "combined budget" in body and "600" in body
+    # "600" alone would have been supplied by base.html's font URL whatever
+    # rfdiffusion's budget is; the phrase can only come from this branch.
+    assert "600-aa combined budget" in body, body[-600:]
 
 
 def test_proteina_motif_variant_is_refused_against_a_stored_target(client):

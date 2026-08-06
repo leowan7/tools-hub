@@ -103,13 +103,23 @@
       if (v.source_label) {
         // THE NUMBER ON SCREEN MUST BE THE NUMBER THE GATE JUDGED. This line
         // used to print residues_kept_on_target_chain unconditionally — the
-        // whole named chains, i.e. the FILE. Once the contig started reaching
-        // the server that became a live contradiction: an 830 aa upload
-        // narrowed to A236-300,B236-300 is admitted on 130 residues against
-        // proteina's cap, and the panel said "Ready to run — 830 residues"
-        // directly after having refused the same upload for being over it.
-        // Nothing on screen reconciled the two. When the envelope reports it
-        // sized a SELECTION, name the selection and print its count.
+        // whole of the NAMED chains, which equals the file only when the user
+        // named every chain in it. Once the contig started reaching the server
+        // that became a live contradiction: an 830 aa two-chain upload with
+        // target_chain "A B", narrowed to A236-300,B236-300, is admitted on
+        // 130 residues against proteina's cap, and the panel said "Ready to
+        // run — 830 residues" directly after having refused that same upload
+        // for being over it. Nothing on screen reconciled the two.
+        //
+        // The "named chains" wording is load-bearing and the equation with
+        // "the file" was not: name only chain A on the same upload and this
+        // count is 415, not 830. There is then nothing to reconcile either,
+        // because 415 fits the cap and the upload is never refused — which is
+        // why the contradiction above is stated at "A B" specifically. Both
+        // figures verified against /tools/proteina/preflight.
+        //
+        // When the envelope reports it sized a SELECTION, name the selection
+        // and print its count.
         const env = v.size_envelope;
         const sized = env && env.size_basis === "selection" && env.selection_label;
         html += `<div class="preflight-meta">

@@ -8,7 +8,9 @@ and completely unguarded. Six further mutations survived with them:
 ``preflight_target_segments`` returning None, ``_segments_label`` returning
 None, the chain-span clamp deleted, a malformed segment counted as 0 instead of
 falling back to whole chains, the combined-budget cap left unarmed, and the
-soft-warn "untested" copy branch switched off. Every one is pinned below.
+cautious soft-warn copy branch switched off. Every one is pinned below.
+(That branch used to key on ``cap_basis == "untested"``; it keys on
+``!= "literature"`` now, and proteina's basis is ``"measured"``.)
 
 WHY THE ORDER IS ASSERTED AND NOT JUST THE STATUS. A 400 proves the user saw an
 error; it does not prove nothing was bought first. ``POST /campaigns`` reaches
@@ -209,6 +211,36 @@ def _proteina_form(**kw):
 
 # ---------------------------------------------------------------------------
 # F2 — the gates themselves, on both branches
+#
+# WHY EVERY REFUSAL BELOW IS ASSERTED AS A CONTIGUOUS PHRASE AND NEVER AS A
+# BARE NUMBER. ``_visible()`` is the WHOLE document, ``<head>`` included, and
+# ``templates/base.html:28`` ships a Google Fonts URL on every rendered page
+# containing ``wght@8..60,400;8..60,500;8..60,600`` and ``9..40,700``; the
+# page's own inline CSS then repeats ``font-weight: 600`` and ``700``. So the
+# substrings "400", "500", "600" and "700" are present in every response body
+# whatever the gate did — nine occurrences of "500" on this page alone. On top
+# of that, ``size_only_refusal`` appends "Narrow the target region to at most
+# <hard_cap_target_aa> residues" to the COMBINED-cap message too, so even the
+# wrong branch repeats the target cap.
+#
+# ``assert "600" in body and "500" in body`` was therefore INERT. Mutate
+# ``hard_cap_target_aa`` 500 -> 100000 — the target cap effectively deleted —
+# and a 600 aa target with the form's 120 aa max binder is still refused, by
+# the COMBINED cap ("...720 aa total complex, which exceeds the 620-aa
+# combined budget for Proteina"), which quotes the target size too. All three
+# passed.
+#
+# ONE OF THEM USED TO CATCH IT. Under the 140 cap this file asserted
+# ``"415" in body and "140" in body``, and no font weight is 140, so that
+# mutation failed it; the launch route's twin asserted ``"210" ... "140"`` and
+# failed with it. Moving the fixtures onto 500/600 to keep pace with the cap
+# moved the assertions onto font weights and disarmed both. The other two here
+# were already inert before that — ``"415"`` alone and ``"400"`` alone are
+# each satisfied by the combined-cap message.
+#
+# Each one now pins a phrase only the target-size branch of
+# ``_check_size_envelope`` can emit, which is the shape the combined-cap tests
+# further down already used with "620-aa combined budget".
 # ---------------------------------------------------------------------------
 
 def test_target_bound_branch_refuses_over_cap(client):
@@ -232,7 +264,7 @@ def test_target_bound_branch_refuses_over_cap(client):
         f"of preauth / upload_input / create / fund / drive"
     )
     body = _visible(resp)
-    assert "600" in body and "500" in body
+    assert "600 residues, above the 500-residue limit" in body, body[-600:]
 
 
 def test_target_bound_branch_admits_under_cap(client):
@@ -255,7 +287,8 @@ def test_fresh_upload_branch_refuses_over_cap(client):
     )
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
-    assert "600" in _visible(resp)
+    body = _visible(resp)
+    assert "600 residues, above the 500-residue limit" in body, body[-600:]
 
 
 def test_fresh_upload_branch_admits_under_cap(client):
@@ -306,7 +339,13 @@ def test_a_contig_that_is_still_too_big_is_still_refused(client):
     ), target=t)
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
-    assert "600" in _visible(resp)
+    body = _visible(resp)
+    # The selection wording, so this also cannot be satisfied by the
+    # whole-chain branch having been counted instead of the contig.
+    assert (
+        "(A1-300,B1-300) has 600 residues, above the 500-residue limit"
+        in body
+    ), body[-600:]
 
 
 def test_the_refusal_names_the_selection_not_the_file(client):
@@ -434,7 +473,10 @@ def test_combined_cap_fires_on_the_target_bound_branch(client):
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
     body = _visible(resp)
-    assert "combined budget" in body and "620" in body
+    # One contiguous phrase rather than "combined budget" and "620"
+    # separately, for the reason set out above the target-cap gates: only the
+    # number's neighbours make it unforgeable by page chrome.
+    assert "620-aa combined budget" in body, body[-600:]
 
 
 def test_combined_cap_fires_on_the_fresh_upload_branch(client):
@@ -445,7 +487,7 @@ def test_combined_cap_fires_on_the_fresh_upload_branch(client):
     )
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
-    assert "combined budget" in _visible(resp)
+    assert "620-aa combined budget" in _visible(resp)
 
 
 def test_a_binder_inside_the_budget_still_runs(client):
@@ -577,9 +619,14 @@ def test_other_tools_are_refused_above_their_own_cap(client, slug, branch):
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == [], f"{slug}/{branch} refused only after {spy.calls}"
     body = _visible(resp)
-    assert str(over_aa) in body and str(cap) in body
-    # Their copy is the literature-backed one, NOT proteina's untested wording.
-    assert "tops out around" in body, body[-400:]
+    # Contiguous, for the reason above: rfdiffusion's fixture is 700 aa
+    # against a 500 cap and BOTH of those bare substrings are in base.html's
+    # font URL, so ``str(over_aa) in body and str(cap) in body`` proved
+    # nothing about this tool's own numbers.
+    assert f"have {over_aa} residues" in body, body[-600:]
+    assert f"tops out around {cap} on" in body, body[-600:]
+    # Their copy is the literature-backed one, NOT the cautious wording that
+    # proteina's measured (non-literature) basis earns.
     assert "precaution rather than a measured failure point" not in body
 
 

@@ -1312,8 +1312,9 @@ def test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards():
     numbers are; this guards WHERE THEY CAME FROM, which is the part that has
     gone wrong every previous time.
 
-    Three independent ways the cap could be re-derived wrongly, all of which
-    have precedent on this tool, and all of which this test refuses:
+    Three independent ways THIS ENVELOPE could be re-derived wrongly, all of
+    which have precedent on this tool, and all of which this test refuses.
+    Read the scope of each — they are not all about the same number:
 
     1. FROM A PREALLOCATION-ERA READING. The two shards before these read
        67,546 and 67,570 MB and agreed to 24 MB across a doubled chain count,
@@ -1321,16 +1322,23 @@ def test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards():
        is necessarily at or above that 61,440 MB floor, and a constant-
        dominated set cannot spread with target size. Both properties are
        asserted, so a reading taken with preallocation back on cannot be
-       substituted into this table unnoticed.
+       substituted into this table unnoticed. This one IS about the VRAM
+       readings the size cap comes from.
 
     2. FROM A TWO-POINT FIT. Two points always fit a power law exactly, which
        is precisely why two points prove nothing. Every pair here is refitted
        and shown to MISS the omitted third shard by more than 10%, so the
-       curve genuinely required all three.
+       curve genuinely required all three. DEMONSTRATED ON THE RUNTIME CURVE,
+       in block (4) below — that is the fit whose parameters actually ship
+       (runtime_base_min / runtime_alpha) and the only one this table can be
+       refitted into. It establishes that these three shards are not
+       collinear enough for any two of them to stand in for the third; it is
+       not itself an assertion about hard_cap_target_aa, and should not be
+       read as one.
 
     3. BY EXTRAPOLATING FURTHER THAN THE EVIDENCE CARRIES. The cap is held to
        a modest step beyond the largest MEASURED size, not to wherever the fit
-       stops predicting an OOM (~992 aa).
+       stops predicting an OOM (~992 aa). About the cap again.
     """
     from shared.pdb_preflight_rules import TOOL_RULES
     env = TOOL_RULES["proteina"].size
@@ -1373,8 +1381,10 @@ def test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards():
             f"{secs / 60.0:.1f} ({residual:.0%} out)"
         )
 
-    # (4) And two of the three points could not have produced that curve. Each
-    # pair is refitted exactly and misses the shard it omitted.
+    # (4) And two of the three points could not have produced that RUNTIME
+    # curve. Each pair is refitted exactly and misses the shard it omitted.
+    # See the scope note in the docstring: this is the two-point argument, run
+    # on the fit whose parameters ship, not a second guard on the VRAM cap.
     for omit in range(3):
         (a1, _, s1), (a2, _, s2) = [
             p for i, p in enumerate(_PROTEINA_CANARY) if i != omit
@@ -1542,11 +1552,16 @@ def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
     measured wall-clocks, so the advisory estimate has to land on it. It has
     been wrong twice before in the copy users plan against: first anchored to
     meta.py's invented "30 to 120 min" band (~83 min for this shard), then to a
-    359 s shard that died before its AF2/ESM stack loaded (6.0 min).
+    359 s reading at the same size (6.0 min) — one of two 130 aa readings that
+    disagree by ~60%, and the one with no verified completion attached. The
+    576 s figure is the run that exited 0 with 8 scored designs; why the two
+    differ is recorded nowhere in this repo.
 
-    The band is +/-5% of the measurement and NOT tighter. The fit is a
+    The band is +/-10% of the measurement and NOT tighter. The fit is a
     least-squares through three points with residuals up to ~10%, so pinning
-    tighter than that would be inventing precision the data does not carry.
+    tighter than that would be inventing precision the data does not carry —
+    which is exactly what the +/-5% asserted here previously did, in the same
+    breath as the sentence saying it should not.
     """
     data = _fc_pdb("A", "B", last={"A": 300, "B": 300})   # the measured 130 aa
     v = preflight_for_tool(
@@ -1556,7 +1571,7 @@ def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
     assert est is not None
     # 576 s = 9.6 min. Both bounds are clear of the estimator's max(5.0, ...)
     # floor, so this cannot be satisfied by the floor instead of the anchor.
-    assert 9.12 <= est <= 10.08, f"estimate {est} min is not the measured 9.6"
+    assert 8.64 <= est <= 10.56, f"estimate {est} min is not the measured 9.6"
 
 
 def test_proteina_runtime_curve_bends_with_target_size():

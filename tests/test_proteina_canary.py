@@ -63,6 +63,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -6535,12 +6536,16 @@ class TestTheNullMarginIsNotMadeOfCroppedHotspots:
 # VRAM INSTRUMENTATION PROVENANCE
 # ===========================================================================
 #
-# The only two VRAM numbers this tool has (67,546 MB and 67,570 MB) turned out
-# to be ~91% a JAX preallocation constant, because the design subprocess
-# inherited JAX's default PREALLOCATE=true and reserved 0.75 x 81,920 =
-# 61,440 MB on its first op whatever the target size. run_pipeline now builds an
-# allocator env for its children. The canaries are what TAKE the measurements,
-# so three properties of theirs decide whether the next reading means anything:
+# The FIRST two VRAM numbers this tool produced (67,546 MB and 67,570 MB)
+# turned out to be ~91% a JAX preallocation constant, because the design
+# subprocess inherited JAX's default PREALLOCATE=true and reserved
+# 0.75 x 81,920 = 61,440 MB on its first op whatever the target size.
+# run_pipeline now builds an allocator env for its children, and three further
+# readings have been taken under it — 8,943 MB at 130 aa, 15,541 at 260 and
+# 25,457 at 415 — which is the whole basis of _PROTEINA's size envelope. Five
+# readings, then, in two incomparable regimes, which is precisely why the
+# canaries matter: they are what TAKE the measurements, so three properties of
+# theirs decide whether the next reading means anything:
 #
 #   * the child actually gets that env (else the reading is the constant again);
 #   * the poller takes a sample even when the design outlives it by a hair
@@ -7553,3 +7558,47 @@ class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
         )
         assert f"hard_cap_target_aa={env.hard_cap_target_aa}" in emitted
         assert f"soft_warn_target_aa={env.soft_warn_target_aa}" in emitted
+
+    def test_the_quoted_measurements_match_the_canonical_table(self):
+        """THE DATA, not only the caps it was derived into.
+
+        The test above pins the two CAPS this footer quotes, so a drifted cap
+        dies. The three MEASUREMENTS it quotes alongside them were pinned by
+        nothing at all: mutating 8,943 -> 9,943 MB, 25,457 -> 55,457 MB, or
+        576 -> 999 s in the footer left the entire suite green. That is the
+        worst place in the repo for an unguarded number. This text is what an
+        operator reads at 2 a.m. after a ~$12 shard, and its only job is to
+        let them decide whether the reading they just took extends the
+        envelope or merely re-confirms it — a drifted row here is a wrong cap
+        two commits later, argued from a table nobody re-checked.
+
+        Pinned against ``tests/test_pdb_preflight.py::_PROTEINA_CANARY``, the
+        same tuple the envelope's provenance test refits, so the harness copy,
+        the shipped caps and the provenance proof cannot disagree about what
+        was actually measured.
+        """
+        from tests.test_pdb_preflight import _PROTEINA_CANARY
+
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        # The footer is one sentence on the console and several adjacent
+        # string literals in the source, so undo the implicit concatenation
+        # and collapse the wrapping before matching. Otherwise this test would
+        # pin where the author happened to wrap the line.
+        flat = re.sub(r'"\s*"', "", " ".join(emitted.split()))
+        for aa, mb, secs in _PROTEINA_CANARY:
+            quoted = f"{aa} aa / {mb:,} MB / {secs} s"
+            assert quoted in flat, (
+                f"the canary's post-run footer does not quote {quoted!r}; its "
+                f"measurement table has drifted from the one the size "
+                f"envelope is derived from"
+            )
+        # And it quotes those three and no others, so an invented fourth row
+        # cannot be smuggled in beside them.
+        assert flat.count(" MB / ") == len(_PROTEINA_CANARY), (
+            f"the footer quotes {flat.count(' MB / ')} measurement rows, not "
+            f"the {len(_PROTEINA_CANARY)} completed shards the envelope has"
+        )

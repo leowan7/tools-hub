@@ -361,8 +361,15 @@ _PROTEINA = ToolRules(
         # 500 IS STILL A POLICY NUMBER; what changed is its anchor — a scaling
         # curve instead of an allocator constant. It is a 1.2x step past the
         # measured 415 at 38.9% of the card, the worst extrapolation error this
-        # tool has shown us was 8% low at a 1.6x step, and even a 100% model
-        # error at 500 aa still fits. Being wrong-high costs what it always
+        # tool has shown us was 11% LOW at a 1.6x step, and even a 100% model
+        # error at 500 aa still fits. (That 11% is the power-law miss, which is
+        # the form this comment argues in two paragraphs above: fitted to 130
+        # and 260 aa it predicts 22,564 MB at 415 against a measured 25,457.
+        # A straight line through the same two points is the friendlier miss at
+        # 8% low, and quoting that one instead would be picking the flattering
+        # number. Both under-read, which is the direction that bills.)
+        #
+        # Being wrong-high costs what it always
         # did: a 4-shard first wave (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"]
         # = 4) running to _MAX_SESSION_S = 7200 at ~$12.58 a shard for zero
         # designs, inside a ~$15/shard hold that covers all of it.
@@ -381,9 +388,13 @@ _PROTEINA = ToolRules(
         # MEASURED. Least squares on the three runtimes above, in this
         # estimator's own form (minutes = base x (n/120)^alpha at 8 designs),
         # gives base=9.0 with residuals inside +/-10% across 130-415 aa. The
-        # 5.4 that used to be here was solved from a 359 s shard at 130 aa
-        # that died before its AF2/ESM stack loaded; a complete run at that
-        # size takes 576 s.
+        # 5.4 that used to be here was solved from a 359 s reading at 130 aa.
+        # TWO READINGS EXIST AT THAT SIZE AND THEY DISAGREE BY ~60%: 359 s and
+        # 576 s. Only the 576 s one has a verified completion attached (exit 0,
+        # 8 scored designs), and it is one of the three points above. What the
+        # 359 s run did, and why the two differ, is recorded nowhere in this
+        # repo — the discrepancy is unexplained rather than diagnosed, and the
+        # older figure is not used for anything.
         runtime_base_min=9.0,
         # MEASURED, and it was previously labelled ASSUMED: 1.3, borrowed from
         # pxdesign's AF2-validation regime because one target size cannot
