@@ -632,6 +632,80 @@ def crop_pdb_to_contig(
     return "\n".join(out) + "\n"
 
 
+class TargetCropError(ValueError):
+    """The staged file does not satisfy the count upstream will assert.
+
+    A distinct type, not a bare ValueError, because the two callers of
+    ``stage_cropped_target`` must convert it differently and neither may
+    swallow it: production turns it into ``_fail("input", "target_crop", ...)``
+    and exits, the canary turns it into a refusal record and returns. Sharing
+    the raise but not the handling is the only way both get the same verdict
+    from the same code.
+    """
+
+
+def stage_cropped_target(
+    dest: Path,
+    pdb_text: str,
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> tuple[int, int]:
+    """THE staging step: write ``pdb_text`` cropped to ``segments`` at ``dest``.
+
+    ONE FUNCTION, TWO CALLERS, BY CONSTRUCTION. ``prepare_custom_target`` calls
+    it and so does ``_hotspot_canary._stage``, and that is the whole point of
+    its existing separately from either.
+
+    WHAT IT COST TO LEARN THIS. The crop was written inline in
+    ``prepare_custom_target``. ``_stage`` — whose docstring said "Stage the
+    target EXACTLY the way ``prepare_custom_target`` does", under a
+    block-capital "THE CANARY MUST NOT EXERCISE A PATH PRODUCTION NEVER RUNS" —
+    kept doing ``p.write_text(pdb_text)``. That claim was true when it was
+    written and the crop commit made it false, in the one file whose entire job
+    is fidelity to production. A paid A100 phase-1 shard then staged the
+    uncropped file and reproduced the exact assertion the crop prevents
+    (``metric_utils.py:217``, contig ``A236-300,B236-300`` on 3S7G). Production
+    was correct throughout; the harness that exists to prove it was not.
+
+    ``_stage_dir`` already had the right idea for the PATH — "Derived, not
+    copied, so the two cannot drift: if prod's staging directory moves, the
+    canary follows it in the same commit or not at all." This applies it to the
+    BYTES. A canary that re-implements the crop can drift again; a canary that
+    calls this cannot.
+
+    THE SELF-CHECK IS INSIDE, deliberately, and it is the half that pays for
+    itself. It is upstream's own comparison made locally: CA residues of the
+    written file restricted to the chains the contig NAMES (ranges discarded,
+    exactly as ``binder_eval_utils`` does it) against the residues the contig
+    SELECTS. Had it been shared from the start, the canary's uncropped staging
+    would have raised here — before the GPU — instead of after it.
+
+    Returns ``(n_staged, n_selected)``, the two numbers upstream compares.
+    Raises ``TargetCropError`` when they disagree and ``OSError`` if the write
+    fails; neither is caught here, because what to do about them is the
+    caller's to decide and the two callers decide differently.
+    """
+    keep = selected_residue_keys(residues, segments)
+    dest.write_text(crop_pdb_to_contig(pdb_text, keep))
+    staged_residues, _ = pdb_ca_residues(dest)
+    named_chains = {chain for chain, _lo, _hi in segments}
+    n_staged = sum(1 for c, _r, _i in staged_residues if c in named_chains)
+    if n_staged != len(keep):
+        # Not ``format_contig``: a bare chain id parses to (chain, None, None)
+        # — legal input to the crop, and "ANone-None" in a refusal message an
+        # operator is meant to act on.
+        shown = ",".join(
+            f"{c}{lo}-{hi}" if lo is not None else c for c, lo, hi in segments)
+        raise TargetCropError(
+            f"cropping the uploaded target to {shown} left "
+            f"{n_staged} residue(s) in chain(s) {'/'.join(sorted(named_chains))} "
+            f"but the range selects {len(keep)}. The design engine compares "
+            "exactly these two numbers and would have failed after the GPU work "
+            "was already paid for."
+        )
+    return n_staged, len(keep)
+
+
 def hotspot_keys(selected: list[tuple[str, int]]) -> set[str]:
     """The exact key set upstream matches against: chain id + author number,
     concatenated, no separator, case preserved."""
@@ -1117,47 +1191,29 @@ def prepare_custom_target(
     staged = target_dir / f"{key}.pdb"
 
     # --- 6b. CROP THE STAGED FILE TO THE CONTIG ---------------------------
-    # The upload used to be staged verbatim, which is what made every sub-range
-    # contig die in `evaluate` on a billed A100: upstream compares the CA count
-    # of the contig's selection against the CA count of the WHOLE named chains
-    # in this file, so the two agree only when the contig covers each chain it
-    # names entirely. See crop_pdb_to_contig for the assertion and the columns.
-    #
     # ``pdb_sha`` is deliberately still the SHA of what the user uploaded — it
     # is the identity of their input, and the registry key derives from it.
-    keep = selected_residue_keys(residues, segments)
+    #
+    # The staging itself is ``stage_cropped_target``, which is ALSO what the
+    # canary calls. See its docstring: writing those four lines here instead is
+    # exactly what let the canary stage uncropped bytes and reproduce, on a paid
+    # A100, the failure this crop exists to prevent.
     try:
-        staged.write_text(
-            crop_pdb_to_contig(incoming.read_text(errors="replace"), keep)
-        )
+        n_staged, n_selected = stage_cropped_target(
+            staged, incoming.read_text(errors="replace"), residues, segments)
+    except TargetCropError as exc:
+        _fail("input", "target_crop", str(exc))
     except OSError as exc:
         _fail("input", "target_crop", f"could not write the cropped target: {exc}")
     incoming.unlink(missing_ok=True)
     record["target_path"] = str(staged)
-
-    # ...and prove it, on the file that will actually be registered, using the
-    # same parser the counts above came from. This is upstream's comparison
-    # made locally: CA residues of the staged file restricted to the chains the
-    # contig NAMES (ranges discarded, exactly as binder_eval_utils does it)
-    # against the residues the contig SELECTS. A crop bug is then a free
-    # refusal here instead of a full-price crash three stages into the GPU run.
-    staged_residues, _ = pdb_ca_residues(staged)
-    named_chains = {chain for chain, _lo, _hi in segments}
-    n_staged = sum(1 for c, _r, _i in staged_residues if c in named_chains)
-    if n_staged != len(keep):
-        _fail(
-            "input", "target_crop",
-            f"cropping the uploaded target to {contig} left {n_staged} residue(s) "
-            f"in chain(s) {'/'.join(sorted(named_chains))} but the range selects "
-            f"{len(keep)}. The design engine compares exactly these two numbers "
-            "and would have failed after the GPU work was already paid for.",
-        )
     if n_staged != len(residues):
         logger.info(
-            "custom target: cropped %d of %d residues to %s; %d chain(s) in the "
-            "upload were dropped entirely",
-            n_staged, len(residues), contig,
-            len({r[0] for r in residues}) - len(named_chains),
+            "custom target: cropped %d of %d residues to %s (%d selected); "
+            "%d chain(s) in the upload were dropped entirely",
+            n_staged, len(residues), contig, n_selected,
+            len({r[0] for r in residues})
+            - len({chain for chain, _lo, _hi in segments}),
         )
 
     try:
