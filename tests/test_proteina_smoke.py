@@ -2638,11 +2638,13 @@ class TestRuntimeCopyMatchesMeasurement:
     for all three design variants — a placeholder 5-20x above anything real.
     It was then corrected to "~6" from a 359 s reading, which was also wrong:
     two readings exist at 130 aa and they disagree by ~60% — 359 s and 576 s.
-    The 576 s one is the run whose completion was verified (exit 0, 8 scored
-    designs), and copy drawn from the 359 s one under-stated it by ~40%. Why
-    the two differ is recorded nowhere in this repo, so the discrepancy is
-    unexplained rather than diagnosed; the older figure is simply not used for
-    anything.
+    Both are recorded as completed 8-design shards at that size, and what
+    separates them is the JAX allocator regime: 359 s is the preallocation-ON
+    shard, 576 s is one of the three taken with preallocation off.
+    shared/pdb_preflight_rules.py::_PROTEINA documents those regimes as
+    non-comparable, so 576 s is the reading that describes what production
+    does today and copy drawn from the 359 s one under-stated a real shard by
+    ~40%. The older figure is simply not used for anything.
 
     Three COMPLETED shards now exist — 576 s at 130 aa, 645 s at 260 aa, 874 s
     at 415 aa, i.e. 9.6 to 14.6 min. Both errors were load-bearing beyond the
@@ -2658,27 +2660,41 @@ class TestRuntimeCopyMatchesMeasurement:
             "protein_binder still quotes the placeholder band; the completed "
             "shards run 9.6 to 14.6 min across 130-415 residues")
         assert entry.strip() != "~6", (
-            "protein_binder still quotes the 359 s reading; the 130 aa run "
-            "whose completion was verified took 576 s")
+            "protein_binder still quotes the 359 s reading; that one was "
+            "taken with JAX preallocation ON and is not comparable to the "
+            "three this band is drawn from, where the 130 aa shard took 576 s")
         # THE BAND MUST BRACKET THE MEASUREMENT, and that has to be read as
         # numbers rather than as substrings. ``"10" in entry and "15" in
         # entry`` was satisfied by "~10 to 150" — a ceiling ten times anything
         # ever run — and by any string carrying those two digit pairs
         # anywhere. It also passed the band it was written for, "~10 to 15",
         # whose FLOOR sat above the 9.6 min shard it claimed to describe.
+        # BOTH ENDS ARE BOUNDED FROM BOTH SIDES. A one-sided bound on either
+        # end lets the band be widened into meaninglessness in the direction
+        # it is not watched, and this copy's whole history is being wrong in
+        # the direction the user plans against. With only `lo <= 9.6` and
+        # `hi >= 14.6` in force, "~5 to 15", "~1 to 15" and "~0.1 to 15" all
+        # passed the entire suite; with `hi <= 20.0`, so did "~9 to 19".
+        # Each end must be a ROUNDING of the shard it describes.
         bounds = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", entry)]
         assert len(bounds) == 2, f"{entry!r} is not a two-ended band"
         lo, hi = bounds
         assert lo <= 9.6, (
             f"{entry!r} claims a floor above the fastest completed shard "
             f"(576 s = 9.6 min at 130 aa)")
+        assert lo >= 9.0, (
+            f"{entry!r} claims a floor below anything this tool has done: the "
+            f"fastest completed shard is 9.6 min, and 9 is that rounded down "
+            f"to the whole minute — a floor under it is not a rounding of the "
+            f"measurement, it is a different claim")
         assert hi >= 14.6, (
             f"{entry!r} claims a ceiling below the slowest completed shard "
             f"(874 s = 14.6 min at 415 aa)")
-        assert hi <= 20.0, (
-            f"{entry!r} claims a ceiling far above anything measured: the "
-            f"largest target ever run took 14.6 min, and the 500-aa cap "
-            f"models at ~14.6 too")
+        assert hi <= 16.0, (
+            f"{entry!r} claims a ceiling above anything measured OR modelled: "
+            f"the largest target ever run took 14.6 min and the 500-aa cap "
+            f"models at ~14.6 too, so 15 is the whole-minute rounding and 16 "
+            f"is already a minute of slack past it")
 
     def test_untimed_variants_are_labelled_untimed(self):
         """ligand_binder and motif_ame have never been run on a GPU here. Their
@@ -2703,11 +2719,25 @@ class TestRuntimeCopyMatchesMeasurement:
         assert "measured" in rows["protein_binder"]
         # And the two copies must quote the SAME band, not merely both be
         # non-placeholder — the whole failure mode here is one of them moving.
+        #
+        # COMPARED AS NUMBERS, NOT AS A SUBSTRING. `band in row` was the
+        # obvious way to write this and it does not do the job: the about
+        # table reads "<band> min / shard (measured at 130-415 residues)", so
+        # the shipped band is a PREFIX of it, and every string that extends
+        # the shipped band's own digits contains it too. "~9 to 15" is in
+        # "~9 to 15000 min / shard", so moving only the about-table copy to a
+        # ceiling a thousand times anything ever run left this test green —
+        # which is precisely the drift the assertion names.
         band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
-        assert band in rows["protein_binder"], (
-            f"about.runtime_table quotes {rows['protein_binder']!r} while "
-            f"PRESET_RUNTIME quotes {band!r}; the tool page and the preset "
-            f"map are telling the user different things")
+        row = rows["protein_binder"]
+        band_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", band)]
+        # The about row carries the measured span (130-415) after the band, so
+        # take the leading pair — the band is what this compares.
+        row_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", row)][:2]
+        assert len(band_nums) == 2 and row_nums == band_nums, (
+            f"about.runtime_table quotes {row!r} while PRESET_RUNTIME quotes "
+            f"{band!r} — parsed as {row_nums} against {band_nums}; the tool "
+            f"page and the preset map are telling the user different things")
 
     def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
         """The specific coupling that turned a docs placeholder into a number
@@ -2724,8 +2754,9 @@ class TestRuntimeCopyMatchesMeasurement:
             "30-120 min band")
         assert base != 5.4, (
             "runtime_base_min is still solved from the 359 s reading — the "
-            "one of the two 130 aa readings with no verified completion "
-            "attached, and 60% off the one that has")
+            "one of the two 130 aa readings taken with JAX preallocation ON, "
+            "which _PROTEINA documents as not comparable to the three "
+            "preallocation-off shards the shipped curve is fitted to")
         # base x (aa/120)^alpha x (8/8) must reproduce all three completed
         # shards, not just one — a single-point check cannot see the exponent.
         for aa, secs in ((130, 576), (260, 645), (415, 874)):

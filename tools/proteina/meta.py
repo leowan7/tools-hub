@@ -30,21 +30,33 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # against. It shipped as "30 to 120" for all three variants, a placeholder
     # never re-set, which overstated a real shard by 5-20x. It was then
     # corrected to "~6" from a 359 s reading at 130 aa. TWO readings exist at
-    # that size and they disagree by ~60%: 359 s and 576 s. The 576 s one is
-    # the run whose completion was verified — exit 0, 8 scored designs — and it
-    # is one of the three this band is drawn from. Nothing in this repo records
-    # what the 359 s run did or why it differs, so the gap is unexplained
-    # rather than explained away; the older figure is simply not used for
-    # anything. Both times the number here was also load-bearing:
+    # that size and they disagree by ~60%: 359 s and 576 s. Both are recorded
+    # as completed 8-design protein_binder shards at 130 aa; what separates
+    # them is the JAX ALLOCATOR REGIME. The 359 s wall-clock belongs to the
+    # preallocation-ON shard that read 67,570 MB; the three shards this band is
+    # drawn from all ran with preallocation disabled.
+    # shared/pdb_preflight_rules.py::_PROTEINA documents those two regimes as
+    # non-comparable and names allocate-on-demand as a candidate for the gap,
+    # not a diagnosis of it. The 576 s reading is the one taken under the
+    # allocator settings production runs today, so it is the one that describes
+    # what a user's shard will do; the 359 s figure is not used for anything.
+    # Both times the number here was also load-bearing:
     # shared/pdb_preflight_rules.py anchors its runtime estimator to this
     # measurement, so an error in a docs constant reaches the preflight panel
     # looking calibrated.
     #
     # ligand_binder and motif_ame have NEVER been timed. Their band is bounded,
     # not measured: the floor is the smallest complete protein_binder
-    # measurement (9.6 min, rounded up) and the ceiling is the physical
+    # measurement (9.6 min) and the ceiling is the physical
     # _MAX_SESSION_S = 7200 s (120 min) session wall in modal_app.py, past
     # which the shard is killed. Re-set each from its own canary.
+    #
+    # THAT FLOOR ROUNDS DOWN, TO 9, for the same reason protein_binder's does.
+    # It read 10 while protein_binder's read 9 — the same 9.6 min rounded two
+    # different ways in adjacent lines, which had the never-measured presets
+    # claiming a HIGHER floor than the only preset anyone has timed, and
+    # overstated the sentence below by 0.4 min. Rounding down keeps a lower
+    # bound a lower bound; rounding up turns it into a claim.
     #
     # AND THE FLOOR IS WEAKER THAN IT LOOKS. This used to read "same container,
     # same reward stack". The container is the same; the reward stack is NOT.
@@ -55,11 +67,11 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # ``reward_attributions`` below splits them the same way. So the floor is
     # not evidence transferred from a comparable run; it is a lower bound
     # borrowed from a DIFFERENT scoring path, and there is no reason to think
-    # RF3 scoring is as fast as AF2 scoring. Treat 10 as "cannot plausibly be
+    # RF3 scoring is as fast as AF2 scoring. Treat 9 as "cannot plausibly be
     # quicker than the fastest thing we timed", not as a measurement.
     "protein_binder": {"typical_minutes": "~9 to 15"},
-    "ligand_binder": {"typical_minutes": "10 to 120 (not yet measured)"},
-    "motif_ame": {"typical_minutes": "10 to 120 (not yet measured)"},
+    "ligand_binder": {"typical_minutes": "9 to 120 (not yet measured)"},
+    "motif_ame": {"typical_minutes": "9 to 120 (not yet measured)"},
     "validate": {"typical_minutes": "1 to 3"},
 }
 

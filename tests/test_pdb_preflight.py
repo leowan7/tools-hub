@@ -1425,6 +1425,56 @@ def test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards():
     assert abs(_quadratic_through_canary(600) - 40_209) < 50
 
 
+def test_the_proteina_comment_table_is_the_canonical_measurement_table():
+    """The table in ``_PROTEINA``'s comment IS the evidence, and it was the one
+    copy of it that nothing pinned.
+
+    Every number below that table is argued from it — the quadratic, the two
+    power-law exponents, the percentage of the card at the cap, the runtime
+    fit, and ultimately hard_cap_target_aa itself. The shipped CONSTANTS are
+    pinned, and the canary's copy of the same three rows is pinned (tests/
+    test_proteina_canary.py::...::test_the_quoted_measurements_match_the_
+    canonical_table), but the rows the constants are justified BY were free to
+    move: change 8,943 to 9,943 in that comment and the whole suite stayed
+    green, while the next person to re-derive the cap would re-derive it from
+    a reading nobody took. That is the same failure the canary-footer pin
+    exists for, on the copy more people read.
+
+    Deliberately tolerant of FORMAT and strict about DATA: a row is
+    ``aa | MB | % of card | seconds`` in that order with any spacing, so
+    re-wrapping or re-aligning the table costs nothing. The percentage column
+    is not taken on faith either — it is recomputed against the card size.
+    """
+    import re as _re
+
+    from shared import pdb_preflight_rules
+
+    src = Path(pdb_preflight_rules.__file__).read_text(encoding="utf-8")
+    block = src.split("_PROTEINA = ToolRules(", 1)[1].split(
+        "TOOL_RULES: dict", 1)[0]
+    rows = _re.findall(
+        r"^\s*#\s*(\d+)\s+([\d,]+)\s*MB\s+([\d.]+)\s*%\s+(\d+)\s*s\s*$",
+        block, _re.M,
+    )
+    parsed = [
+        (int(aa), int(mb.replace(",", "")), float(pct), int(secs))
+        for aa, mb, pct, secs in rows
+    ]
+    assert [(aa, mb, secs) for aa, mb, _, secs in parsed] == [
+        tuple(row) for row in _PROTEINA_CANARY
+    ], (
+        f"_PROTEINA's comment tabulates {[(a, m, s) for a, m, _, s in parsed]} "
+        f"but the envelope is derived from {list(_PROTEINA_CANARY)}; the "
+        f"argument for the cap and the data behind it have separated"
+    )
+    for aa, mb, pct, _ in parsed:
+        expected = round(mb / _A100_80GB_MB * 100, 1)
+        assert abs(pct - expected) < 0.05, (
+            f"the {aa} aa row calls {mb} MB {pct}% of the card; on "
+            f"{_A100_80GB_MB} MB it is {expected}%"
+        )
+
+
 def test_proteina_cap_still_admits_the_size_we_actually_measured():
     """The guard against over-correcting. 130 aa across 2 chains is the
     smallest of the three measured shards (8,943 MB of 81,920, 576 s wall); a
@@ -1552,16 +1602,24 @@ def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
     measured wall-clocks, so the advisory estimate has to land on it. It has
     been wrong twice before in the copy users plan against: first anchored to
     meta.py's invented "30 to 120 min" band (~83 min for this shard), then to a
-    359 s reading at the same size (6.0 min) — one of two 130 aa readings that
-    disagree by ~60%, and the one with no verified completion attached. The
-    576 s figure is the run that exited 0 with 8 scored designs; why the two
-    differ is recorded nowhere in this repo.
+    359 s reading at the same size (6.0 min) — the other of two 130 aa readings
+    that disagree by ~60%. Both are recorded as completed 8-design shards; what
+    separates them is the JAX allocator regime (359 s with preallocation on,
+    576 s with it off), which shared/pdb_preflight_rules.py::_PROTEINA
+    documents as non-comparable. 576 s is the reading taken under the allocator
+    settings production runs today, which is why the estimate has to reproduce
+    it and not the other one.
 
-    The band is +/-10% of the measurement and NOT tighter. The fit is a
-    least-squares through three points with residuals up to ~10%, so pinning
-    tighter than that would be inventing precision the data does not carry —
-    which is exactly what the +/-5% asserted here previously did, in the same
-    breath as the sentence saying it should not.
+    THE BAND IS +/-5%, AND IT IS ANCHORED TO THIS POINT'S RESIDUAL, not to the
+    worst residual anywhere on the fit. The shipped curve puts 130 aa at
+    9.25 min against the measured 9.6 — 3.7% low — so +/-5% is the tightest
+    round band that admits the fit HERE. The 415 aa point runs out to ~10%
+    (test_the_proteina_cap_is_traceable_to_three_post_prealloc_shards, block 3,
+    is where that looser bound belongs), and importing it into this assertion
+    is not a correction, it is lost coverage. EXECUTED, not reasoned: at
+    +/-10% the lower bound falls to 8.64, and a runtime_base_min of 8.7 —
+    which models this shard at 8.94 min — then leaves the ENTIRE suite green,
+    with no other test anywhere refusing it.
     """
     data = _fc_pdb("A", "B", last={"A": 300, "B": 300})   # the measured 130 aa
     v = preflight_for_tool(
@@ -1571,7 +1629,7 @@ def test_proteina_runtime_estimate_is_anchored_to_the_measured_shard():
     assert est is not None
     # 576 s = 9.6 min. Both bounds are clear of the estimator's max(5.0, ...)
     # floor, so this cannot be satisfied by the floor instead of the anchor.
-    assert 8.64 <= est <= 10.56, f"estimate {est} min is not the measured 9.6"
+    assert 9.12 <= est <= 10.08, f"estimate {est} min is not the measured 9.6"
 
 
 def test_proteina_runtime_curve_bends_with_target_size():

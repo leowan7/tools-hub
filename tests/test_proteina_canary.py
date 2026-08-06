@@ -7515,6 +7515,47 @@ class TestTheNegativeNumberingGuardReachesTheCanaryToo:
 # corrected here rather than removed.
 # ===========================================================================
 
+def _emit_literals() -> str:
+    """Every string literal the canary hands to ``_emit`` — i.e. its OUTPUT.
+
+    Used by ONE test in the class below, deliberately. The others read the
+    module as source text with ``#`` lines dropped, and for what they check
+    ("this retired imperative is not in the file any more") that is the right
+    artifact. It is NOT the right artifact for "the operator is shown these
+    three measurements": a module-level string literal that nothing prints
+    reads exactly the same in the source, so a footer could be gutted and the
+    rows parked somewhere dead with the assertion none the wiser. EXECUTED,
+    not reasoned: replace the footer ``_emit`` with ``"(table removed)"`` and
+    move the three rows into an unused module-level constant, and the
+    source-text reading passes this class 4/4 while the console the operator
+    reads after a ~$12 shard shows no measurements at all.
+
+    So this walks the AST and keeps only what reaches ``_emit``, the single
+    function every print in that module goes through. f-string interpolations
+    are dropped and their literal segments kept; the footer this pins is plain
+    adjacent literals, which the parser has already concatenated for us. One
+    line per emitted literal, so a match cannot be assembled across two
+    separate calls that merely print next to each other.
+    """
+    tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+    parts: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_emit"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                parts.append(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                parts.append("".join(
+                    p.value for p in arg.values
+                    if isinstance(p, ast.Constant)
+                    and isinstance(p.value, str)
+                ))
+    return "\n".join(" ".join(p.split()) for p in parts)
+
+
 class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
 
     def test_the_retired_set_the_cap_from_this_run_imperative_is_gone(self):
@@ -7576,29 +7617,26 @@ class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
         same tuple the envelope's provenance test refits, so the harness copy,
         the shipped caps and the provenance proof cannot disagree about what
         was actually measured.
+
+        ASSERTED AGAINST WHAT THE CANARY PRINTS, via ``_emit_literals`` — see
+        that helper for why the source-text reading the rest of this class
+        uses is the wrong artifact for this particular claim, and for the
+        mutant that walks through it.
         """
         from tests.test_pdb_preflight import _PROTEINA_CANARY
 
-        source = _CANARY_PATH.read_text(encoding="utf-8")
-        emitted = "\n".join(
-            line for line in source.splitlines()
-            if not line.lstrip().startswith("#")
-        )
-        # The footer is one sentence on the console and several adjacent
-        # string literals in the source, so undo the implicit concatenation
-        # and collapse the wrapping before matching. Otherwise this test would
-        # pin where the author happened to wrap the line.
-        flat = re.sub(r'"\s*"', "", " ".join(emitted.split()))
+        printed = _emit_literals()
         for aa, mb, secs in _PROTEINA_CANARY:
             quoted = f"{aa} aa / {mb:,} MB / {secs} s"
-            assert quoted in flat, (
-                f"the canary's post-run footer does not quote {quoted!r}; its "
-                f"measurement table has drifted from the one the size "
-                f"envelope is derived from"
+            assert quoted in printed, (
+                f"nothing this canary prints quotes {quoted!r}; the "
+                f"measurement table the operator is shown after a paid run "
+                f"has drifted from the one the size envelope is derived from"
             )
-        # And it quotes those three and no others, so an invented fourth row
+        # And it prints those three and no others, so an invented fourth row
         # cannot be smuggled in beside them.
-        assert flat.count(" MB / ") == len(_PROTEINA_CANARY), (
-            f"the footer quotes {flat.count(' MB / ')} measurement rows, not "
-            f"the {len(_PROTEINA_CANARY)} completed shards the envelope has"
+        assert printed.count(" MB / ") == len(_PROTEINA_CANARY), (
+            f"the canary prints {printed.count(' MB / ')} measurement rows, "
+            f"not the {len(_PROTEINA_CANARY)} completed shards the envelope "
+            f"has"
         )

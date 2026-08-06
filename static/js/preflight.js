@@ -105,18 +105,30 @@
         // used to print residues_kept_on_target_chain unconditionally — the
         // whole of the NAMED chains, which equals the file only when the user
         // named every chain in it. Once the contig started reaching the server
-        // that became a live contradiction: an 830 aa two-chain upload with
-        // target_chain "A B", narrowed to A236-300,B236-300, is admitted on
-        // 130 residues against proteina's cap, and the panel said "Ready to
-        // run — 830 residues" directly after having refused that same upload
-        // for being over it. Nothing on screen reconciled the two.
+        // that became a live contradiction. Take the upload the route tests
+        // drive, tests/test_preflight_panel_contract.py::_BIG_UPLOAD — 600 aa
+        // over chains A and B. With target_chain "A B" and the contig
+        // "A100-164,B236-300" the run is admitted on 130 residues against
+        // proteina's 500 cap, and the panel said "Ready to run — 600
+        // residues" directly after having refused that same upload for being
+        // over it. Nothing on screen reconciled the two.
         //
         // The "named chains" wording is load-bearing and the equation with
         // "the file" was not: name only chain A on the same upload and this
-        // count is 415, not 830. There is then nothing to reconcile either,
-        // because 415 fits the cap and the upload is never refused — which is
-        // why the contradiction above is stated at "A B" specifically. Both
-        // figures verified against /tools/proteina/preflight.
+        // count is 300, not 600. There is then nothing to reconcile either,
+        // because 300 fits the cap and the upload is never refused — which is
+        // why the contradiction above is stated at "A B" specifically.
+        //
+        // Every figure here is a live /tools/proteina/preflight response, and
+        // two of the three are pinned there so they cannot rot: 600 by
+        // test_the_whole_upload_is_refused_without_a_contig and 130 by
+        // test_the_contig_the_browser_posts_sizes_the_selection. The 300 is
+        // _BIG_UPLOAD's chain A, range(1, 301). Do not restate this argument
+        // against a structure the repo does not build — the version before
+        // this one used 3S7G and quoted 830/415 for the same pair, which is
+        // wrong on the repo's own 3S7G stand-in (_fc_pdb in
+        // tests/test_pdb_preflight.py, four chains, 830 aa): there "A B" is
+        // 415 and "A" is 208.
         //
         // When the envelope reports it sized a SELECTION, name the selection
         // and print its count.

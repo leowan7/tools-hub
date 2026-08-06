@@ -360,14 +360,23 @@ _PROTEINA = ToolRules(
         #
         # 500 IS STILL A POLICY NUMBER; what changed is its anchor — a scaling
         # curve instead of an allocator constant. It is a 1.2x step past the
-        # measured 415 at 38.9% of the card, the worst extrapolation error this
-        # tool has shown us was 11% LOW at a 1.6x step, and even a 100% model
-        # error at 500 aa still fits. (That 11% is the power-law miss, which is
-        # the form this comment argues in two paragraphs above: fitted to 130
-        # and 260 aa it predicts 22,564 MB at 415 against a measured 25,457.
-        # A straight line through the same two points is the friendlier miss at
-        # 8% low, and quoting that one instead would be picking the flattering
-        # number. Both under-read, which is the direction that bills.)
+        # measured 415 at 38.9% of the card, the worst VRAM extrapolation error
+        # this tool has shown us was 11% LOW at a 1.6x step, and even a 100%
+        # model error at 500 aa still fits. (That 11% is the power-law miss,
+        # which is the form this comment argues in two paragraphs above:
+        # fitted to 130 and 260 aa it predicts 22,564 MB at 415 against a
+        # measured 25,457. A straight line through the same two points is the
+        # friendlier miss at 8% low, and quoting that one instead would be
+        # picking the flattering number. Both under-read, which is the
+        # direction that bills. And VRAM is load-bearing on that sentence
+        # rather than decoration: 11% is NOT this tool's worst extrapolation
+        # error of any kind. Refit RUNTIME over the same two points across the
+        # same 1.6x step and it misses the 415 aa shard by 20.35% low — block
+        # (4) of tests/test_pdb_preflight.py::test_the_proteina_cap_is_
+        # traceable_to_three_post_prealloc_shards runs exactly that refit. The
+        # cap's headroom is a VRAM argument, so the VRAM figure is the one that
+        # belongs here; it just may not be read as a bound on the tool at
+        # large.)
         #
         # Being wrong-high costs what it always
         # did: a 4-shard first wave (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"]
@@ -390,11 +399,30 @@ _PROTEINA = ToolRules(
         # gives base=9.0 with residuals inside +/-10% across 130-415 aa. The
         # 5.4 that used to be here was solved from a 359 s reading at 130 aa.
         # TWO READINGS EXIST AT THAT SIZE AND THEY DISAGREE BY ~60%: 359 s and
-        # 576 s. Only the 576 s one has a verified completion attached (exit 0,
-        # 8 scored designs), and it is one of the three points above. What the
-        # 359 s run did, and why the two differ, is recorded nowhere in this
-        # repo — the discrepancy is unexplained rather than diagnosed, and the
-        # older figure is not used for anything.
+        # 576 s. Both are recorded here as completed 8-design protein_binder
+        # shards — the 359 s one by the immediately preceding revision of this
+        # same comment (at ce609c3: "one protein_binder shard, 8 designs, at
+        # 130 residues over 2 chains, completed in 359 s"), the 576 s one by
+        # the table above. So "what the 359 s run did is recorded nowhere in
+        # this repo", which stood here, was false about the file it was
+        # written in. What separates them is the ALLOCATOR REGIME: the 359 s
+        # wall-clock belongs to the PREALLOCATION-ON shard that read 67,570 MB,
+        # and all three points above were taken with preallocation DISABLED.
+        # Forty lines up, this comment says those two regimes must never be
+        # mixed; that applies to their wall-clocks as much as to their VRAM.
+        # The regime is a CANDIDATE for the gap and not a diagnosis of it:
+        # preallocation-off makes JAX allocate on demand instead of reserving
+        # up front, which is work moved into the run, but nobody has measured
+        # that it accounts for ~60%. It is the difference in run conditions
+        # this repo does record; do not upgrade it to the cause, and do not
+        # replace it with a fresh claim that nothing anywhere explains the gap
+        # — that assertion is what stood here, and it was wrong.
+        #
+        # WHICH FIGURE THE ESTIMATOR USES DOES NOT DEPEND ON CLOSING THAT.
+        # 576 s is the reading taken under the allocator settings production
+        # runs today (_ALLOCATOR_ENV in tools/proteina/run_pipeline.py), so it
+        # is the one of the two that describes what a user's shard will do.
+        # The 359 s figure is not used for anything.
         runtime_base_min=9.0,
         # MEASURED, and it was previously labelled ASSUMED: 1.3, borrowed from
         # pxdesign's AF2-validation regime because one target size cannot

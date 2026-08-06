@@ -486,7 +486,7 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
     # on the count rather than on a `size_basis` flag because the JSON block
     # ships neither `size_basis` nor `selection_label` (shared/pdb_intake.py
     # ::_verdict_to_json), and the count is the discriminator anyway — nothing
-    # but the contig can move it from 400 to 130.
+    # but the contig can move it from 600 to 130.
     assert body["size_envelope"]["residue_count"] == 130
 
 
