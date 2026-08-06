@@ -3215,7 +3215,7 @@ in-product handoff the plan prefers.
   that is only correct for the caller that happens to reach it is the
   duplication it replaced.
 
-- **A91 (NEW, filed with A88, not fixed). The LEGACY single-job shortlist arm
+- **A91 (NEW, filed with A88, FIXED). The LEGACY single-job shortlist arm
   has none of the refusal model, and cannot get the truncation half of it.**
   `campaigns_submit`'s third branch reads `candidate_indices` (a bare JSON
   array of ints), not `candidate_refs`, so it never touches
@@ -3233,6 +3233,67 @@ in-product handoff the plan prefers.
   *Next:* decide first whether this arm still needs to exist. If it does, the
   fix is to route it through the counted parser on a refs payload rather than
   to bolt a second parser onto `candidate_indices`.
+
+  **Fixed.** The arm stays -- it serves 13 of the 14 tool result pages -- and it
+  now has the sibling shape. `_submit_job_shortlist` computes `trunc_qs` above
+  its guards so the count rides the failure exits, splits the one collapsed
+  guard into `none` / `noname` / silent-no-parent, reads the parent through
+  `read_job` instead of `get_job`, dedupes on `(job_id, index)`, tests
+  parentage, range-checks against `candidate_count`, and routes every exit to
+  `/jobs/<id>` with a reason instead of to the jobs list in silence.
+  `_parse_candidate_indices_counted` replaces the bare-except comprehension and
+  returns the ref shape, capped and counted, so a malformed entry costs its own
+  entry rather than the whole shortlist. `/jobs/<id>` gained the five-reason
+  vocabulary in the sibling commit.
+
+  THE `read_job` SWAP IS A PRECONDITION, NOT AN EXTRA. `shared/email.py`
+  licenses the `dropped` sentence only because an arm refuses the WHOLE
+  submission when a rejection had an undecidable cause, and it named this arm as
+  one that "passes neither count and must not start". `get_job` cannot support
+  that gate -- it returns None for an absent row and an unreadable one alike --
+  so the disclosure was blocked behind the swap. That paragraph is updated.
+
+  ORDER IS LOAD-BEARING and pinned: the undecidable gate is decided above the
+  loop that rejects any individual design, because `rejected`'s banner promises
+  the same selection "will be refused the same way", which is false for a
+  transient fault. A mutation that reverses it reds three tests.
+
+  Persistence stays in `candidate_indices`; no migration. Writing
+  `candidate_refs` on the row as well would flip `_ref_shortlist_view` from the
+  plain index list to the rich designs view and break a pin whose docstring
+  calls this "the arm that must NOT change". Both payload formats are accepted
+  for one release: the job modal emits `candidate_refs` alongside
+  `candidate_indices`, refs preferred when they parse to anything. No JS change
+  was needed for the payload -- `openCampaignModal` already looks the two inputs
+  up independently -- but one WAS needed for the review list, because
+  `refsInput` had been standing in for "campaign or target scope" and stopped
+  identifying scope the moment job mode got a refs input; unfixed it would have
+  labelled a single-job candidate a sub-job of its own job on 13 pages.
+
+  **Four corrections to the filing above, established by reading the code.**
+  (a) "AFTER the row is written and both emails are sent" is backwards on the
+  emails: the order is row write, storage range check, emails. And the check
+  stops nothing a user can see -- it declines one upload each while the row
+  keeps the values, so both emails, the confirmation page and the admin
+  fulfilment view all count them. `[-1, 0, 99]` reads as three designs on every
+  surface. (b) "the one remaining request-amplification lever on this route"
+  imports the ref arms' cost model, which does not apply: this arm makes exactly
+  ONE database read whatever the list length, and the amplification is one
+  Storage download plus one upload per in-range index, duplicates included.
+  (c) the arm is live on **13** pages, not 14 -- `mpnn_results.html` deliberately
+  skips the macro. (d) "(d) one uncoercible entry" understates the parse: it
+  never checked the JSON was a list, so `{"1": 2, "3": 4}` was accepted as
+  `[1, 3]` (the object's keys) and `"012"` as `[0, 1, 2]` (the string's
+  characters), and `int()` silently truncated `2.7` to design index 2.
+
+  One thing the filing did not have and the fix needed: `loadShortlist` coerces
+  a legacy bare-int store entry to `{j: null, i}`, and the refs parser drops
+  those AND does not count them in `requested` -- so switching job scope to refs
+  naively would have lost them from the shortlist and from the truncation
+  disclosure at the same time. In job scope the job id is known, so an entry
+  naming none is credited to the source job. `_parse_candidate_refs_counted`
+  takes a keyword-only `default_job_id` for it, and the two ref arms and
+  `_starred_refs` are byte-unchanged.
 
 - **A92 (NEW, filed with A88, FIXED). The admin campaigns LIST prints "0"
   in the Cands column for every ref-based row.**
@@ -3374,6 +3435,29 @@ in-product handoff the plan prefers.
   None, which every caller handles, but structural rather than guaranteed.
   Moving it inside the `try` in two of the three siblings would create exactly
   the asymmetry A97 is about.
+
+- **A106 (NEW, filed with A91, filed not fixed). The `rejected` banner on
+  `/jobs/<id>` can point at a table the page is not rendering.** The shared
+  sentence says "star designs from the table on this page". On a job page the
+  candidate table lives in the tool's results partial, included only when the
+  job succeeded and carries a result (`templates/job_detail.html:229-230`), and
+  `_submit_job_shortlist` does not gate on status -- `candidate_records(None)`
+  is empty, so every index is rejected. A customer who submits against a job
+  that has since failed gets a banner naming a control that is not there.
+
+  Reachable but narrow, and NOT fixed deliberately. Any fix is a page-state
+  variant of copy shared by four templates, which is the fourth-wording cost
+  register item **A95** declines for the same reason on the 503 page: the whole
+  point of moving these five sentences into one partial was that per-caller
+  variants are how one of them went stale unnoticed. Recorded in the
+  `templates/job_detail.html` comment naming A95 as the same class, so the next
+  reader does not mistake it for an oversight.
+
+  *Next:* if it is fixed, fix it for A95 at the same time and in the same shape,
+  or the partial grows two page-state branches that do not know about each
+  other. The cheaper alternative is upstream: refuse the submission earlier when
+  the source job is not in a state that can have designs, which turns a banner
+  problem into a `failed`-shaped one the existing vocabulary already covers.
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

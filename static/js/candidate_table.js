@@ -231,10 +231,15 @@
     var modal = document.getElementById('campaign-modal-' + scope);
     if (!modal) return;
 
-    // Campaign mode has a candidate_refs field; single-job mode has
-    // candidate_indices. Populate whichever the modal carries.
+    // Campaign and target mode carry candidate_refs. Single-job mode carries
+    // BOTH since A91: refs, which the server prefers, and candidate_indices,
+    // kept for one release so a page served before that deploy still submits
+    // against the new server. Populate whichever the modal carries.
     var refsInput = modal.querySelector('[name="candidate_refs"]');
     var idxInput  = modal.querySelector('[name="candidate_indices"]');
+    // The scope's own parent field, which is the thing that actually differs:
+    // the macro emits exactly one of the three, and only job scope emits this.
+    var singleJob = !!modal.querySelector('[name="source_job_id"]');
     if (refsInput) {
       refsInput.value = JSON.stringify(sl.map(function (r) {
         return { job_id: r.j, index: r.i };
@@ -257,7 +262,13 @@
       } else {
         list.innerHTML = sl.map(function (r) {
           var label = 'Candidate ' + (r.i + 1);
-          if (refsInput && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
+          // "sub-job" is a CAMPAIGN/TARGET word. Those tables interleave
+          // rows from several jobs, so the id disambiguates; a single-job
+          // table has exactly one, and calling it a sub-job of itself reads
+          // as a rendering fault. Keyed on the parent field rather than on
+          // `refsInput`, which stopped identifying scope the moment A91 gave
+          // job mode a refs input of its own.
+          if (!singleJob && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
           return '<li>' + label + '</li>';
         }).join('');
       }

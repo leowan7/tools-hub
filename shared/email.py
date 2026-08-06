@@ -519,9 +519,14 @@ def send_campaign_submitted_emails(
     that came back short), so every design counted here was refused by a check
     that ran to completion. That is what makes "rejected", rather than "we could
     not confirm", an honest word for it. This function does not enforce that --
-    it is a property of the callers -- so a THIRD caller passing ``dropped``
-    without such a gate makes the sentence below false. The legacy single-job
-    arm passes neither count and must not start.
+    it is a property of the callers -- so a caller passing ``dropped`` without
+    such a gate makes the sentence below false. ALL THREE CALLERS NOW HAVE ONE:
+    A91 gave the legacy single-job arm the same shape, refusing the whole
+    submission with ``?handoff=unverified`` when its parent ``read_job`` comes
+    back UNAVAILABLE, decided above the loop that rejects any individual design.
+    Before that it read through ``get_job``, which cannot tell an unreadable row
+    from an absent one, so it could not have had the gate and correctly passed
+    neither count.
 
     WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
     sentence below asserts that any PDB was written:
