@@ -77,6 +77,37 @@ def _target(**kw):
     return DesignTarget(**base)
 
 
+def _proteina_target(**kw):
+    """A stored target small enough for proteina's size cap.
+
+    THE DEFAULT `_target()` IS 210 RESIDUES AND PROTEINA NOW REFUSES IT. That
+    is not a fixture accident, it is the cap doing its job: the only size ever
+    run on a GPU here is 130 residues, so shared/pdb_preflight_rules.py caps
+    proteina at 140 and blueprints/targets.py enforces it per tool on this
+    route. A HER2-sized 210 aa target is over it.
+
+    The proteina tests below are about plumbing — does the contig reach the
+    container, are bare hotspots chain-prefixed — so they use a target the
+    size gate admits, and `test_proteina_oversized_target_is_refused_before_
+    any_run_is_funded` covers the refusal itself. Raise the numbers here only
+    together with the cap, and only on the strength of a measurement.
+    """
+    base = dict(
+        name="small antigen",
+        filename="small.pdb",
+        chain_summary={
+            "total_standard_residues": 130,
+            "chains": [{
+                "chain_id": "A", "standard_residue_count": 130,
+                "hetatm_resnames": [], "water_count": 0,
+                "min_resnum": 1, "max_resnum": 130,
+            }],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
 def _squash(html: str) -> str:
     """Collapse whitespace runs so attribute assertions can be contiguous.
 
@@ -968,7 +999,7 @@ def test_proteina_designs_against_this_target_not_a_benchmark_task(client):
     custom-target run and the adapter refuses a curated task alongside it.
     """
     _login(client)
-    t = _target()
+    t = _proteina_target()
     base = dict(
         tools=["proteina"], proteina__designs="8",
         proteina__preset="protein_binder",
@@ -987,7 +1018,7 @@ def test_proteina_receives_the_shared_hotspots_chain_prefixed(client):
     numbers are promoted onto the run's target chain — that promotion is what
     keeps proteina co-launchable with rfdiffusion/pxdesign from one field."""
     _login(client)
-    t = _target()
+    t = _proteina_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina"], proteina__designs="8",
@@ -1004,7 +1035,7 @@ def test_proteina_receives_the_shared_hotspots_chain_prefixed(client):
 def test_proteina_and_rfdiffusion_co_launch_from_one_hotspot_field(client):
     """The regression that a chain-prefixed-only parser would have caused."""
     _login(client)
-    t = _target()
+    t = _proteina_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina", "rfdiffusion"],
@@ -1023,18 +1054,135 @@ def test_proteina_target_region_reaches_the_container(client):
     pipeline, so a multi-chain target was unreachable. The contig is now the
     single source of truth for both."""
     _login(client)
-    t = _target()
+    t = _proteina_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina"], proteina__designs="8",
             proteina__preset="protein_binder",
-            proteina__target_input="A1-150",
+            proteina__target_input="A1-130",
             hotspot_residues="A42,A88",
         ))
         assert resp.status_code == 302, _visible_text(resp)[-400:]
     params = rec.kwargs_for("proteina")["params"]
-    assert params["target_input"] == "A1-150"
+    assert params["target_input"] == "A1-130"
     assert params["target_chain"] == "A"
+
+
+def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
+    """THE COST HOLE THIS ROUTE HAD. Nothing on the multi-tool launch path
+    called the size envelope, so a target of any size funded a campaign — and
+    this route funds one PER SELECTED TOOL, with proteina opening 4 concurrent
+    shards at ~$12.58 each inside a ~$15/shard hold that covers all of it.
+
+    A 210-residue HER2-sized target is over proteina's 140 cap, so the launch
+    is refused, the message names the tool, and `create_campaign` is never
+    reached — the refusal has to land before any money moves, not after."""
+    _login(client)
+    t = _target()                      # the default 210 aa fixture
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "210" in body and "140" in body
+
+
+def test_a_contig_smaller_than_the_upload_is_sized_on_the_contig(client):
+    """Sizing the FILE rather than the SELECTION would refuse runs that fit.
+
+    The same 210 aa target, with a contig naming 100 of its residues, is a
+    100-residue run. It has to be allowed: the container designs against the
+    contig's selection, so refusing it would force the user to hand-trim a PDB
+    to run something the gate would then accept unchanged."""
+    _login(client)
+    t = _target()                      # 210 aa, over the cap on its own
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__target_input="A1-100",
+            hotspot_residues="A42,A88",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    assert rec.kwargs_for("proteina")["params"]["target_input"] == "A1-100"
+
+
+def test_a_target_that_fits_but_whose_complex_does_not_is_refused(client):
+    """THE OTHER HALF OF THE ENVELOPE, and it was dead on every money route.
+
+    `hard_cap_combined_aa` fires on (target_aa + binder_max_aa), and no caller
+    ever passed `binder_max_aa` — not this route, not either /campaigns branch
+    — even though the validated binder length was in scope at all three. So a
+    130 aa target with a 300 aa max binder is 430 against proteina's 260
+    budget: `/tools/proteina/submit` refused it and this route funded four
+    shards for it.
+
+    The target half is deliberately INSIDE the cap here (130 < 140), so a gate
+    that only ever reads the target size cannot pass this test.
+    """
+    _login(client)
+    t = _proteina_target()             # 130 aa — fits on its own
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__binder_length_min="60",
+            proteina__binder_length_max="300",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "combined budget" in body and "260" in body
+
+
+def test_a_binder_inside_the_combined_budget_still_launches(client):
+    """Guards the fix from over-firing: 130 + 120 = 250 is under 260, and this
+    is the shape the two paid canary shards actually ran."""
+    _login(client)
+    t = _proteina_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__binder_length_min="60",
+            proteina__binder_length_max="120",
+        ))
+        assert resp.status_code == 302, _visible_text(resp)[-400:]
+    assert rec.kwargs_for("proteina")["params"]["binder_length"] == [60, 120]
+
+
+def test_the_combined_cap_reads_rfdiffusions_dict_shaped_binder_length(client):
+    """THE SHAPE TRAP. Every adapter names and shapes its binder length
+    differently — proteina emits a [min, max] LIST, rfdiffusion a {min, max}
+    DICT, pxdesign a bare int, boltzgen/bindcraft a separate
+    `binder_length_max` key. A reader that assumes proteina's shape returns
+    None for rfdiffusion, and None means "no combined cap" rather than an
+    error, so the gate would silently do nothing for it.
+
+    500 aa target + 150 aa binder = 650 against rfdiffusion's 600 budget, with
+    the target itself at exactly its 500 cap and therefore NOT over it.
+    """
+    _login(client)
+    t = _target(chain_summary={
+        "total_standard_residues": 500,
+        "chains": [{
+            "chain_id": "A", "standard_residue_count": 500,
+            "hetatm_resnames": [], "water_count": 0,
+            "min_resnum": 1, "max_resnum": 500,
+        }],
+    })
+    resp, rec = _launch(client, t, form=_form(
+        tools=["rfdiffusion"], rfdiffusion__designs="12",
+        rfdiffusion__binder_length_min="100",
+        rfdiffusion__binder_length_max="150",
+    ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "combined budget" in body and "600" in body
 
 
 def test_proteina_motif_variant_is_refused_against_a_stored_target(client):
@@ -1520,7 +1668,7 @@ def test_each_run_is_created_with_its_own_divided_concurrency(client):
     in-flight shards against a 32 global cap and inflate every first-wave hold.
     """
     _login(client)
-    t = _target()
+    t = _proteina_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["rfdiffusion", "pxdesign", "boltzgen", "proteina"],

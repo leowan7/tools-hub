@@ -46,6 +46,8 @@ import subprocess
 import sys
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -99,6 +101,59 @@ def _make_pdb(spans, extra=""):
             )
             serial += 1
     return "\n".join(lines) + "\n" + extra
+
+
+def _atom(serial, atom, resname, chain, resseq, icode="", record="ATOM  "):
+    """One coordinate line in the real column layout.
+
+    Cols 1-6 record, 7-11 serial, 13-16 atom name, 18-20 resName, 22 chainID,
+    23-26 resSeq, 27 iCode, 31-54 xyz. The crop reads columns 22, 23-26 and 27
+    and copies the line verbatim, so a fixture built with sloppy columns would
+    test a parser this code does not have.
+    """
+    return (
+        f"{record}{serial:5d} {atom:<4s} {resname:>3s} {chain}{resseq:4d}"
+        f"{icode:1s}   {serial * 1.0:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00           C"
+    )
+
+
+def _make_3s7g_like():
+    """A stand-in for the campaign input that crashed, with its arithmetic.
+
+    Chain A 236-443 (208 CA) and chain B 236-442 (207 CA) — the real spans of
+    ``3S7G.pdb`` — plus the two chains the contig will not name, 20 waters at
+    resid 1-20 (outside every range and carrying no CA, exactly as in the
+    deposit), a HETATM ligand numbered INSIDE chain A's range, and the
+    annotation records that describe residues the crop removes.
+
+    Each residue gets N, CA and C so the crop is exercised on more than the one
+    atom the counting parser looks at.
+    """
+    lines, serial = [], 1
+    for chain, lo, hi in (("A", 236, 443), ("B", 236, 442),
+                          ("C", 1, 90), ("D", 1, 90)):
+        for resseq in range(lo, hi + 1):
+            for atom in (" N", "CA", "C"):
+                lines.append(_atom(serial, atom, "ALA", chain, resseq))
+                serial += 1
+        lines.append(f"TER   {serial:5d}      ALA {chain}{hi:4d}")
+        serial += 1
+    for resseq in range(1, 21):
+        lines.append(_atom(serial, "O", "HOH", "A", resseq, record="HETATM"))
+        serial += 1
+    lines.append(_atom(serial, "C1", "GDP", "A", 500, record="HETATM"))
+    serial += 1
+    lines.append(_atom(serial, "C1", "GDP", "A", 300, record="HETATM"))
+    lines.insert(0, "HEADER    IMMUNE SYSTEM")
+    lines.insert(1, "SEQRES   1 A  208  ALA ALA ALA ALA ALA ALA ALA ALA")
+    # An ANISOU on a residue the crop KEEPS, so its removal is a decision about
+    # the record type rather than a side effect of the range filter.
+    lines.insert(
+        3, "ANISOU    2  CA  ALA A 236     1000   1000   1000      0      0"
+           "      0       C")
+    lines.append("CONECT    1    2")
+    lines.append("END")
+    return "\n".join(lines) + "\n"
 
 
 def _custom(**form):
@@ -683,6 +738,50 @@ class TestStructureVerification:
         sel = rp.select_residues(res, rp.parse_target_input("A10-13,B5-6"))
         assert rp.missing_hotspots(sel, ["A12", "B5"]) == []
 
+    def test_a_resnum_at_or_above_10000_is_MISPARSED_not_counted_unparsable(
+            self, tmp_path):
+        """A DEFECT, CHARACTERISED - not endorsed, and not fixed here.
+
+        ``pdb_ca_residues``'s docstring used to claim that "columns 22:26
+        overflow at residue numbers >= 10000" and that the resulting residue is
+        counted in ``n_unparsable`` and skipped. Both halves are false, and the
+        docstring now says so; this test is what makes that correction checkable
+        rather than a second unverified claim in place of the first.
+
+        A residue numbered 10000 occupies columns 23-27, so ``line[22:26]``
+        reads "1000": an int, no ValueError, nothing counted, nothing skipped -
+        a SILENT MISPARSE onto a different residue number that no caller can
+        currently detect.
+
+        Left unfixed deliberately: a correct fix has to decide what a 5-column
+        resSeq means, and PDB has no legal answer (hybrid-36 and the mmCIF
+        convention disagree), which is a change to what counts as a residue
+        rather than a docstring correction. If someone later fixes it, this test
+        SHOULD fail - read the docstring before changing the expectation.
+        """
+        text = "\n".join(
+            _atom(i + 1, "CA", "ALA", "A", r)
+            for i, r in enumerate(range(9995, 10010))) + "\nEND\n"
+        path = tmp_path / "big.pdb"
+        path.write_text(text)
+        residues, n_unparsable = rp.pdb_ca_residues(path)
+        assert n_unparsable == 0, "the overflow does NOT raise, so nothing counts it"
+        assert [r[1] for r in residues] == [9995, 9996, 9997, 9998, 9999] + [1000] * 10
+        # Worse than one collision: the 5th digit lands in the INSERTION-CODE
+        # column, so 10000..10009 come back as ten residues all numbered 1000,
+        # told apart only by an "insertion code" of "0".."9".
+        assert [r[2] for r in residues[5:]] == list("0123456789")
+        # ...and the reason it does not break the crop: the keep key and the
+        # count are built from the same wrong number, so they agree with each
+        # other. That is containment, not correctness - upstream's assertion
+        # holds while every one of these residues has the wrong id.
+        segments = rp.parse_target_input("A1000-1000")
+        keep = rp.selected_residue_keys(residues, segments)
+        cropped = tmp_path / "c.pdb"
+        cropped.write_text(rp.crop_pdb_to_contig(text, keep))
+        staged, _ = rp.pdb_ca_residues(cropped)
+        assert len(staged) == len(rp.select_residues(residues, segments)) == 10
+
 
 class TestTargetAddCmd:
     """`complexa target add` argv. Each assertion here is a distinct silent
@@ -950,7 +1049,7 @@ class TestCustomTargetRegistration:
     the ordering: verify, then register, then design."""
 
     def _drive(self, rp, tmp_path, monkeypatch, job_spec, *, calls, hotspot_spec=(),
-               fail_registration=False, pdb_spans=None):
+               fail_registration=False, pdb_spans=None, pdb_text=None):
         result_file = tmp_path / "smoke.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
         monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
@@ -976,7 +1075,7 @@ class TestCustomTargetRegistration:
 
         def fake_download(url, dest):
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(_make_pdb(spans))
+            dest.write_text(pdb_text if pdb_text is not None else _make_pdb(spans))
             return dest
         monkeypatch.setattr(rp, "download_target", fake_download)
 
@@ -1123,6 +1222,354 @@ class TestCustomTargetRegistration:
         assert data["status"] == "FAILED"
         assert data["error"]["check"] == "target_key_collision"
         assert calls == []
+
+
+def _write(path, text):
+    path.write_text(text)
+    return path
+
+
+class TestStagedTargetIsCroppedToTheContig:
+    """THE INVARIANT UPSTREAM ASSERTS AND NEVER CHECKS.
+
+    ``proteinfoundation/metrics/metric_utils.py`` (pinned 916eaaed) ends the
+    evaluate stage with::
+
+        assert (np.isin(gen_pdb.chain_id, gen_pdb_target_chain)).sum() == len(target_seq)
+
+    Left: CA atoms of the target chains in the GENERATED complex, which holds
+    only the contig's selection (``pdb_utils`` masks through
+    ``AtomSelectionStack.from_contig``). Right: ``len(target_seq)``, built by
+    ``binder_eval_utils`` from the STAGED file restricted to the chains the
+    contig NAMES — ``sorted(set(x[0] for x in target_input.split(",")))``, the
+    letters only, the ranges discarded.
+
+    It compares COUNTS, never residue numbers, so upstream silently requires the
+    contig to cover every CA residue of each chain it names. This wrapper used
+    to stage the upload verbatim, so every sub-range contig died in evaluate
+    after the GPU had generated and scored every design.
+
+    Every test below is driven from a SUB-RANGE contig on a multi-chain input.
+    A whole-chain case would have satisfied the invariant before this fix too
+    and would prove nothing.
+    """
+
+    _CONTIG = "A236-300,B236-300"
+
+    # Borrowed rather than inherited: subclassing TestCustomTargetRegistration
+    # would re-run all of its tests under this name as well.
+    _drive = TestCustomTargetRegistration._drive
+    _spec = TestCustomTargetRegistration._spec
+
+    def _parsed(self, tmp_path, text=None, name="in.pdb"):
+        p = tmp_path / name
+        p.write_text(text if text is not None else _make_3s7g_like())
+        residues, _ = rp.pdb_ca_residues(p)
+        return p, residues
+
+    def _upstream_counts(self, residues, contig):
+        """(left, right) of upstream's assertion for a file with ``residues``.
+
+        ``named`` drops the ranges exactly as ``binder_eval_utils`` does.
+        """
+        segments = rp.parse_target_input(contig)
+        named = {seg[0] for seg in segments}
+        return (sum(1 for r in residues if r[0] in named),
+                len(rp.select_residues(residues, segments)))
+
+    def test_the_uncropped_upload_violates_the_assertion(self, tmp_path):
+        """The premise. Without this the tests below could pass vacuously.
+
+        These are the real 3S7G numbers: 208 CA in chain A, 207 in chain B, and
+        a contig selecting 65 of each.
+        """
+        _p, residues = self._parsed(tmp_path)
+        assert rp.chain_span_summary(residues) == "A236-443, B236-442, C1-90, D1-90"
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert (left, right) == (415, 130)
+        assert left != right, "the crash this fix exists to stop"
+
+    def test_the_cropped_file_satisfies_the_assertion(self, tmp_path):
+        """The one that matters, on the exact quantity upstream compares."""
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        cropped = tmp_path / "cropped.pdb"
+        cropped.write_text(rp.crop_pdb_to_contig(
+            (tmp_path / "in.pdb").read_text(),
+            rp.selected_residue_keys(residues, segments)))
+        staged_residues, unparsable = rp.pdb_ca_residues(cropped)
+        assert unparsable == 0
+        left, right = self._upstream_counts(staged_residues, self._CONTIG)
+        assert left == right == 130
+        # ...and the selection did not change while we cropped: the residues the
+        # contig picks out of the cropped file are the ones it picked before.
+        assert (rp.select_residues(staged_residues, segments)
+                == rp.select_residues(residues, segments))
+
+    def test_a_single_chain_sub_range_is_cropped_too(self, tmp_path):
+        """It is NOT a multi-chain problem and NOT a non-1-based-numbering one.
+
+        ``A1-115`` on a 1-based single chain of 208 residues crashes upstream
+        for the same reason, so the crop may not be conditional on either.
+        """
+        text = "\n".join(
+            _atom(i + 1, "CA", "ALA", "A", i + 1) for i in range(208)) + "\nEND\n"
+        _p, residues = self._parsed(tmp_path, text)
+        assert self._upstream_counts(residues, "A1-115") == (208, 115)
+        segments = rp.parse_target_input("A1-115")
+        out = tmp_path / "c.pdb"
+        out.write_text(rp.crop_pdb_to_contig(
+            text, rp.selected_residue_keys(residues, segments)))
+        staged, _ = rp.pdb_ca_residues(out)
+        assert self._upstream_counts(staged, "A1-115") == (115, 115)
+
+    def test_author_numbering_survives_the_crop_unchanged(self, tmp_path):
+        """THE thing the crop must never do.
+
+        Upstream matches a hotspot as the literal string ``f"{chain_id}{res_id}"``
+        and this wrapper's preflight is built on the same concatenation, so a
+        crop that renumbered 236-300 to 1-65 would move every hotspot silently —
+        the exact failure class the whole custom-target path exists to close.
+        """
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        out = tmp_path / "c.pdb"
+        out.write_text(rp.crop_pdb_to_contig(
+            (tmp_path / "in.pdb").read_text(),
+            rp.selected_residue_keys(residues, segments)))
+        staged, _ = rp.pdb_ca_residues(out)
+        assert rp.chain_span_summary(staged) == "A236-300, B236-300"
+        assert [(c, r) for c, r, _i in staged][:3] == [
+            ("A", 236), ("A", 237), ("A", 238)]
+        # The hotspot keys are literally unchanged, which is the property the
+        # span check above only implies.
+        before = rp.hotspot_keys(rp.select_residues(residues, segments))
+        assert rp.hotspot_keys(rp.select_residues(staged, segments)) == before
+        assert "A236" in before and "B300" in before and "A301" not in before
+
+    def test_chains_the_contig_does_not_name_are_dropped_entirely(self, tmp_path):
+        """4-chain deposit, 2-chain contig. C and D contribute nothing to the
+        right-hand side, but leaving them means the model is handed a structure
+        the contig cannot describe."""
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        out = tmp_path / "c.pdb"
+        out.write_text(rp.crop_pdb_to_contig(
+            (tmp_path / "in.pdb").read_text(),
+            rp.selected_residue_keys(residues, segments)))
+        staged, _ = rp.pdb_ca_residues(out)
+        assert sorted({r[0] for r in staged}) == ["A", "B"]
+        for line in out.read_text().splitlines():
+            if line[:6] in ("ATOM  ", "HETATM"):
+                assert line[21:22] in ("A", "B"), line
+
+    def test_waters_ligands_and_annotation_are_dropped(self, tmp_path):
+        """The deliberate non-CA decision, including the case that is easy to
+        miss: a ligand numbered INSIDE the range, sharing a residue number with
+        a polymer residue the crop keeps."""
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        text = rp.crop_pdb_to_contig(
+            (tmp_path / "in.pdb").read_text(),
+            rp.selected_residue_keys(residues, segments))
+        assert "HOH" not in text, "water"
+        assert "GDP" not in text, "ligand at A300 is inside the range and must go"
+        assert "HETATM" not in text
+        assert "SEQRES" not in text, (
+            "SEQRES declares the FULL chain sequence; any code deriving the "
+            "target length from it would read the uncropped number back")
+        assert "CONECT" not in text and "HEADER" not in text
+        # ANISOU on a KEPT residue, so this is a decision about the record type,
+        # not a side effect of the range filter. It goes because dropping it
+        # alongside a rejected ligand would mean matching it back to its parent
+        # atom, and a dangling ANISOU is worse than no ANISOU.
+        assert "ANISOU" in (tmp_path / "in.pdb").read_text(), "fixture check"
+        assert "ANISOU" not in text
+        assert text.rstrip().endswith("END")
+        assert text.count("\nTER   ") == 2, "one TER per surviving chain"
+        # ...and only the two record types the crop declares it carries.
+        assert {line[:6].strip() for line in text.splitlines()} == {
+            "ATOM", "TER", "END"}
+
+    def test_a_modified_residue_inside_the_range_survives(self, tmp_path):
+        """The other side of the HETATM rule. MSE is protein to biotite AND to
+        pdb_ca_residues, so dropping it would make our count disagree with
+        upstream's in the direction that still crashes."""
+        text = "\n".join(
+            [_atom(1, "CA", "ALA", "A", 10),
+             _atom(2, "CA", "MSE", "A", 11, record="HETATM"),
+             _atom(3, "CA", "HOH", "A", 12, record="HETATM"),
+             _atom(4, "CA", "VAL", "A", 13)]) + "\nEND\n"
+        _p, residues = self._parsed(tmp_path, text)
+        segments = rp.parse_target_input("A10-13")
+        out = rp.crop_pdb_to_contig(
+            text, rp.selected_residue_keys(residues, segments))
+        assert "MSE" in out and "HOH" not in out
+        assert len(rp.pdb_ca_residues(_write(tmp_path / "m.pdb", out))[0]) == 3
+
+    def test_only_the_first_model_survives(self, tmp_path):
+        """pdb_ca_residues counts model 1 only. An NMR ensemble staged whole
+        would put N models' worth of CA on the left-hand side."""
+        text = (
+            "MODEL        1\n"
+            + "\n".join(_atom(i + 1, "CA", "ALA", "A", i + 1) for i in range(40))
+            + "\nENDMDL\nMODEL        2\n"
+            + "\n".join(_atom(i + 1, "CA", "ALA", "A", i + 1) for i in range(40))
+            + "\nENDMDL\nEND\n")
+        _p, residues = self._parsed(tmp_path, text)
+        assert len(residues) == 40
+        out = rp.crop_pdb_to_contig(
+            text, rp.selected_residue_keys(residues, rp.parse_target_input("A1-40")))
+        assert out.count("\nATOM  ") + out.startswith("ATOM  ") == 40
+        assert "MODEL" not in out and "ENDMDL" not in out
+
+    def test_insertion_coded_twins_both_survive(self, tmp_path):
+        """A13 and A13A are two residues with two CA atoms; upstream counts both
+        on the left AND on the right, so the crop must keep both or the counts
+        part company."""
+        text = "\n".join(
+            [_atom(1, "CA", "ALA", "A", 12),
+             _atom(2, "CA", "VAL", "A", 13),
+             _atom(3, "CA", "LEU", "A", 13, icode="A"),
+             _atom(4, "CA", "GLY", "A", 14)]) + "\nEND\n"
+        _p, residues = self._parsed(tmp_path, text)
+        segments = rp.parse_target_input("A12-13")
+        keep = rp.selected_residue_keys(residues, segments)
+        assert keep == {("A", 12, ""), ("A", 13, ""), ("A", 13, "A")}
+        out = rp.crop_pdb_to_contig(text, keep)
+        staged, _ = rp.pdb_ca_residues(_write(tmp_path / "i.pdb", out))
+        assert len(staged) == 3
+        assert self._upstream_counts(staged, "A12-13") == (3, 3)
+
+    def test_an_insertion_coded_residue_with_no_plain_sibling_survives(self, tmp_path):
+        """Why the keep key carries the insertion code at all.
+
+        The RANGE filter cannot need it: every icode variant of a residue number
+        is in range exactly when the bare number is. It is needed because the
+        keep key must be the PARSER's residue key. A13A here has no A13 beside
+        it, so a crop keyed on ``(chain, resseq)`` alone finds nothing to match
+        it against and drops a residue the contig selected — one CA short of
+        upstream's count, on a paid GPU. (A survived mutation put this test
+        here: keying on ``(chain, resseq, "")`` passed the twin test above.)
+        """
+        text = "\n".join(
+            [_atom(1, "CA", "ALA", "A", 12),
+             _atom(2, "CA", "LEU", "A", 13, icode="A"),
+             _atom(3, "CA", "GLY", "A", 14)]) + "\nEND\n"
+        _p, residues = self._parsed(tmp_path, text)
+        assert ("A", 13, "") not in residues and ("A", 13, "A") in residues
+        segments = rp.parse_target_input("A12-13")
+        keep = rp.selected_residue_keys(residues, segments)
+        assert keep == {("A", 12, ""), ("A", 13, "A")}
+        out = rp.crop_pdb_to_contig(text, keep)
+        staged, _ = rp.pdb_ca_residues(_write(tmp_path / "j.pdb", out))
+        assert self._upstream_counts(staged, "A12-13") == (2, 2)
+        assert "LEU" in out, "the insertion-coded residue must survive the crop"
+
+    def test_cropping_is_idempotent(self, tmp_path):
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        once = rp.crop_pdb_to_contig(
+            (tmp_path / "in.pdb").read_text(),
+            rp.selected_residue_keys(residues, segments))
+        again_res, _ = rp.pdb_ca_residues(_write(tmp_path / "o.pdb", once))
+        assert rp.crop_pdb_to_contig(
+            once, rp.selected_residue_keys(again_res, segments)) == once
+
+    # ---- end to end, through main() ------------------------------------
+
+    def test_the_registered_file_is_the_cropped_one(self, tmp_path, monkeypatch):
+        """The wiring: --target-path must name a file that satisfies the
+        assertion, and --target-input must still be the contig the user asked
+        for (omitting it makes upstream default to "A1-100")."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._CONTIG
+        staged = Path(add[add.index("--target-path") + 1])
+        residues, _ = rp.pdb_ca_residues(staged)
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert left == right == 130, (
+            f"the registered file would fail upstream's evaluate assertion "
+            f"({left} != {right})")
+
+    def test_the_archived_input_is_what_was_designed_against(self, tmp_path, monkeypatch):
+        """run_dir/_hub_input/target.pdb is documented as the exact bytes that
+        were designed against. After the crop that is the cropped file."""
+        calls: list = []
+        self._drive(rp, tmp_path, monkeypatch,
+                    self._spec(target_input=self._CONTIG, target_chain="A B"),
+                    calls=calls, pdb_text=_make_3s7g_like())
+        archived = tmp_path / "proteina" / "inference" / "_hub_input" / "target.pdb"
+        assert archived.is_file()
+        residues, _ = rp.pdb_ca_residues(archived)
+        assert self._upstream_counts(residues, self._CONTIG) == (130, 130)
+
+    def test_a_whole_chain_contig_still_registers(self, tmp_path, monkeypatch):
+        """The case that already worked must keep working — and the two chains
+        the contig does not name are gone from the registered file."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A236-443,B236-442", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        residues, _ = rp.pdb_ca_residues(Path(add[add.index("--target-path") + 1]))
+        assert sorted({r[0] for r in residues}) == ["A", "B"]
+        assert self._upstream_counts(residues, "A236-443,B236-442") == (415, 415)
+
+    def test_a_hotspot_outside_the_contig_is_refused_before_any_subprocess(
+            self, tmp_path, monkeypatch):
+        """UNCHANGED BEHAVIOUR, PINNED. ``missing_hotspots`` has always been
+        evaluated against the contig's SELECTION rather than the whole file, so
+        this already failed pre-GPU before the crop; the crop makes it true of
+        the staged bytes as well. What is new is that the message distinguishes
+        "that residue does not exist" from "that residue is outside the range
+        you asked for", which have different fixes."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._CONTIG, target_chain="A B",
+                       hotspot_spec=["A350"]),
+            calls=calls, hotspot_spec=["A350"], pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "hotspot_missing"
+        assert calls == [], "no subprocess may run once a hotspot is unmatched"
+        detail = data["error"]["detail"]
+        assert "A350" in detail and self._CONTIG in detail
+        assert "outside" in detail and "widen" in detail
+
+    def test_a_hotspot_absent_from_the_file_says_so_differently(self, tmp_path):
+        """The other half of the pair: A9999 is in no chain at all, so the
+        widen-the-range advice would be wrong and must not appear."""
+        _p, residues = self._parsed(tmp_path)
+        segments = rp.parse_target_input(self._CONTIG)
+        selected = rp.select_residues(residues, segments)
+        assert rp.hotspots_outside_contig(residues, selected, ["A9999"]) == []
+        assert rp.hotspots_outside_contig(residues, selected, ["A350"]) == ["A350"]
+        # A chain the contig does not name counts as outside too — after the
+        # crop chain C is not in the file either.
+        assert rp.hotspots_outside_contig(residues, selected, ["C5"]) == ["C5"]
+
+    def test_the_self_check_refuses_rather_than_paying_for_the_crash(
+            self, tmp_path, monkeypatch):
+        """The crop is verified on the file that will actually be registered.
+        A crop that silently kept the whole upload must fail HERE, for free."""
+        calls: list = []
+        monkeypatch.setattr(rp, "crop_pdb_to_contig", lambda text, keep: text)
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_crop"
+        assert "415" in data["error"]["detail"] and "130" in data["error"]["detail"]
+        assert calls == [], "nothing may run once the staged file is wrong"
 
 
 # ---------------------------------------------------------------------------
@@ -2130,3 +2577,113 @@ class TestValidateSmokeIsTargetable:
             "_validate_smoke's docstring no longer states the limit of what a "
             "green run proves (that it tests the DEPLOYED image, not a fresh "
             "build of Dockerfile.modal)")
+
+
+class TestJaxDoesNotPreallocateTheCard:
+    """The allocator flags are load-bearing for MEASUREMENT, not just for VRAM.
+
+    proteinfoundation.generate imports colabdesign -> JAX, and JAX's default is
+    XLA_PYTHON_CLIENT_PREALLOCATE=true at MEM_FRACTION=0.75: the first JAX op
+    reserves 0.75 x 81,920 = 61,440 MB on an A100-80GB whatever the target
+    size, and holds it. That default silently invalidated both paid canary
+    measurements — 67,546 MB at 129 aa and 67,570 MB at 130 aa are ~91% that
+    constant, which is why they agreed to 24 MB while the chain count doubled.
+
+    So these are not performance tests. They protect the only route by which
+    this tool can ever learn its own size limits. tools/af2 and tools/colabfold
+    have set the same flags all along; proteina set none and passed no env= at
+    all.
+    """
+
+    def test_the_allocator_env_disables_preallocation(self):
+        env = rp.design_subprocess_env()
+        assert env["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+        assert env["XLA_PYTHON_CLIENT_ALLOCATOR"] == "platform"
+        assert env["TF_FORCE_GPU_ALLOW_GROWTH"] == "true"
+
+    def test_unified_memory_stays_off_so_an_oversized_run_dies_cheaply(self):
+        """Deliberate divergence from af2/colabfold. Host-memory spill turns an
+        OOM (seconds, cents) into thrashing that bills to _MAX_SESSION_S
+        (~$12.58/shard). For the tool whose open risk is uncapped spend on
+        oversized targets, failing fast is worth more than finishing slowly."""
+        assert "TF_FORCE_UNIFIED_MEMORY" not in rp._ALLOCATOR_ENV
+
+    def test_an_operator_override_still_wins(self):
+        """setdefault, not assignment — so a per-run override is possible
+        without editing the file."""
+        with patch.dict(os.environ, {"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}):
+            assert (rp.design_subprocess_env()
+                    ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true")
+
+    def test_run_streaming_actually_passes_the_env_to_the_child(self):
+        """The flags existing in a dict is worth nothing if the subprocess does
+        not receive them. run_streaming passed NO env= before this."""
+        seen = {}
+
+        def _fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(rp.subprocess, "run", _fake_run):
+            rp.run_streaming(["echo", "hi"], Path("."))
+        env = seen.get("env") or {}
+        assert env.get("XLA_PYTHON_CLIENT_PREALLOCATE") == "false", (
+            "run_streaming launched the child without the allocator flags")
+
+
+class TestRuntimeCopyMatchesMeasurement:
+    """meta.py's runtime copy is what a user plans and budgets against.
+
+    It shipped claiming "30 to 120" minutes per shard for all three design
+    variants. The one paid canary shard that has ever been timed returned 8
+    designs in 359 s (6.0 min) at a 130-residue target — the published band
+    started 5x above the measurement and ran 20x above it. Worse, it was
+    load-bearing beyond the copy: shared/pdb_preflight_rules.py anchored its
+    runtime estimator to "the middle of that band", so an invented number in a
+    docs constant had propagated into the preflight panel as if calibrated.
+    """
+
+    def test_protein_binder_runtime_reflects_the_359_second_shard(self):
+        from tools.proteina import meta
+        entry = meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"]
+        assert "30 to 120" not in entry, (
+            "protein_binder still quotes the placeholder band; the measured "
+            "shard was 359 s (6.0 min) at a 130-residue target")
+        assert "6" in entry
+
+    def test_untimed_variants_are_labelled_untimed(self):
+        """ligand_binder and motif_ame have never been run on a GPU here. Their
+        copy must say so rather than borrow protein_binder's measurement — the
+        reward stacks differ (RF3 vs AF2) and nothing licenses the transfer."""
+        from tools.proteina import meta
+        for preset in ("ligand_binder", "motif_ame"):
+            entry = str(meta.PRESET_RUNTIME[preset]["typical_minutes"]).lower()
+            assert "not yet measured" in entry, (
+                f"{preset} quotes a runtime nobody has measured")
+
+    def test_about_panel_table_agrees_with_preset_runtime(self):
+        """Two copies of the same claim drift, and the drifting one is the one
+        the user reads. The about panel and the preset map both render runtime,
+        so neither may still carry the retired band."""
+        from tools.proteina import meta
+        rows = {r["preset"]: r["typical"] for r in meta.about["runtime_table"]}
+        assert set(rows) == set(meta.PRESET_RUNTIME)
+        for preset, typical in rows.items():
+            assert "30 to 120" not in typical, (
+                f"about.runtime_table[{preset}] still quotes the placeholder")
+        assert "measured" in rows["protein_binder"]
+
+    def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
+        """The specific coupling that turned a docs placeholder into a number
+        the preflight panel presented as calibrated."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+        base = TOOL_RULES["proteina"].size.runtime_base_min
+        assert base != 75.0, (
+            "runtime_base_min is still the midpoint of meta.py's retired "
+            "30-120 min band")
+        # base x (130/120)^1.3 x (8/8) must reproduce the measured 6.0 min.
+        env = TOOL_RULES["proteina"].size
+        est = base * (130.0 / 120.0) ** env.runtime_alpha
+        assert 5.0 <= est <= 7.5, (
+            f"the estimator puts the measured 8-design shard at {est:.1f} min, "
+            f"not the 6.0 min it actually took")

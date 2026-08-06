@@ -1911,6 +1911,19 @@ _MAIN_MAY_CALL_FROM_SCORING = frozenset({
     # the $4 gate in front of the $12 run, and "upstream kept 1 of the 8 we
     # ordered" is the fact that decides whether to start it.
     "designs_yield_note",
+    # WIDENED BY ONE MORE NAME, on the identical argument, and the criterion is
+    # the allowlist's own rather than a fresh one: it is a RENDERER over three
+    # integers and a string the container already reported (``exit_code``,
+    # ``n_scored_designs``, ``n_reward_rows``, ``label``). It opens nothing,
+    # globs nothing, takes no per-design geometry and computes no number that
+    # is not already in the payload, so it cannot manufacture local evidence.
+    # It earns its place because ``shard_failure`` no longer condemns a shard
+    # that exited non-zero and still delivered scored designs, and the danger in
+    # that change is the crash going quiet: if it no longer moves the verdict it
+    # has to move the console. Note this is the RENDERER only — ``shard_
+    # delivery``, which decides the state, stays off the list and is executed
+    # directly by this suite.
+    "delivery_note",
 })
 
 # Scoring primitives ``run_shard`` must never touch directly: going through
@@ -2384,13 +2397,30 @@ _CANARY_CONSTS = frozenset({
     # BOTH the Hydra override and ``n_designs_expected``, and a test that
     # rebinds them in the namespace is how "the two cannot drift" is checked.
     "_NSAMPLES", "_REPLICAS",
+    # How long ``run_shard`` waits for the VRAM poller to finish its last
+    # sample. Lifted rather than stubbed because the number is the fix: a join
+    # shorter than one poll iteration throws the final reading away.
+    "_VRAM_JOIN_TIMEOUT_S",
 })
 
 # Lifted whether or not a caller asks for it: EVERY function in the harness
 # prints through ``_emit`` (the print that cannot raise), so leaving it out
 # turns each one of those prints into a NameError inside the lifted body and
 # every caller would have to remember to name it.
-_CANARY_ALWAYS_LIFT = frozenset({"_emit"})
+#
+# ``_prealloc_disabled`` joins it for the same reason from the other side: it
+# is what ``_poll_vram`` derives its provenance flag from, and a caller lifting
+# the poller always means the real derivation. Stubbing it would put back
+# exactly the hardcoded answer this pair exists to prevent.
+#
+# ``_scored_design_counts`` joins them from the same side. It is what turns
+# ``run_shard``'s directory into the two numbers the DELIVERY state is decided
+# from, and it is deliberately built on production's own ``parse_designs``;
+# stubbing it would put back a canary-local answer to "would production have
+# delivered this", which is the divergence the whole delivery split exists to
+# remove.
+_CANARY_ALWAYS_LIFT = frozenset({
+    "_emit", "_prealloc_disabled", "_scored_design_counts"})
 
 
 def load_canary_functions(names, **injected):
@@ -2511,6 +2541,12 @@ def _fake_rp(home):
             "pdb_ca_residues", "parse_target_input", "select_residues",
             "missing_hotspots", "format_contig", "derive_segments",
             "build_target_add_cmd", "hotspot_keys", "_HUB_SOURCE",
+            # REAL, and it has to be. It is the whole point of the DELIVERY
+            # split that the canary answers "would production have delivered
+            # this" with PRODUCTION'S OWN parser over the real reward CSV in the
+            # real inference tree. A stub here would put back a canary-local
+            # answer to that question, which is the divergence being removed.
+            "parse_designs",
         )
     })
     fake.PROTEINA_HOME = str(home)
@@ -2530,6 +2566,12 @@ def _fake_rp(home):
     fake.build_design_cmd = lambda **kwargs: (
         fake.design_cmd_kwargs.append(dict(kwargs)) or ["designed"])
     fake._rf3_enabled = lambda: False
+    # REAL, not stubbed. The canary must launch its design under the same
+    # allocator policy production uses — JAX otherwise preallocates 61,440 MB
+    # and every VRAM number the shard reports is that constant rather than
+    # demand. Lifting the real function is what makes "the canary measures what
+    # production runs" checkable instead of assumed.
+    fake.design_subprocess_env = rp.design_subprocess_env
     return fake
 
 
@@ -2557,6 +2599,22 @@ def _shard_namespace(tmp_path, design_files=(), rc=0):
         ran.append(list(cmd))
         return types.SimpleNamespace(returncode=rc)
 
+    # The design is launched with Popen now, not subprocess.run: the VRAM
+    # poller needs the child's pid to attribute memory to the design rather
+    # than to the whole device. The fake records the SAME ``ran`` list, and
+    # records the env it was handed so a test can assert the allocator flags
+    # actually reach the child.
+    popen_env = []
+
+    def _popen(cmd, **kwargs):
+        ran.append(list(cmd))
+        popen_env.append(kwargs.get("env") or {})
+        return types.SimpleNamespace(
+            pid=4321,
+            wait=lambda timeout=None: rc,
+            kill=lambda: None,
+        )
+
     namespace = load_canary_functions(
         # ``_collect_run_logs`` / ``_collect_tree`` / ``_mtime`` are lifted, not
         # stubbed: they are the container-side halves of the new diagnostics and
@@ -2568,16 +2626,29 @@ def _shard_namespace(tmp_path, design_files=(), rc=0):
          "_collect_tree", "_mtime"},
         _load_rp=lambda: fake,
         _prune_registry=lambda module: [],
-        _poll_vram=lambda stop, out: out.update(peak_vram_mb=0),
+        # ``child_env`` is part of the real signature now: the provenance flag
+        # is DERIVED from the env the design child was handed rather than
+        # asserted, so the poller has to be told what that env was. The stub
+        # accepts and ignores it — what it stands in for is the nvidia-smi
+        # polling, not the derivation, which
+        # test_the_real_poller_is_the_one_that_sets_the_provenance_keys covers
+        # on the real function.
+        _poll_vram=lambda stop, out, pid=None, child_env=None: out.update(
+            peak_vram_mb=0, peak_proc_vram_mb=0,
+            vram_poll_interval_s=1, vram_prealloc_disabled=True,
+            vram_poll_complete=True),
+        _device_used_mb=lambda: 0,
         _read_hydra_assertion=lambda *a, **k: {"ok": True},
         # rmtree would delete the design files placed above; nothing else in
         # the lifted body needs it.
         shutil=types.SimpleNamespace(rmtree=lambda *a, **k: None),
         subprocess=types.SimpleNamespace(
-            run=_run, TimeoutExpired=subprocess.TimeoutExpired),
+            run=_run, Popen=_popen,
+            TimeoutExpired=subprocess.TimeoutExpired),
     )
     namespace["_fake_rp"] = fake
     namespace["_design_commands"] = ran
+    namespace["_design_env"] = popen_env
     return namespace
 
 
@@ -2696,6 +2767,103 @@ class TestHarnessBehaviour:
             False, ["A99999"])
         assert "cross-reference" in out["error"] and "A99999" in out["error"]
         assert namespace["_design_commands"] == []
+
+    def test_the_design_runs_under_productions_allocator_policy(self, tmp_path):
+        """A canary that measures a different allocator measures nothing.
+
+        The two paid shards recorded ~67.5 GB peak, of which 61,440 MB was
+        JAX's default preallocation (0.75 x 80 GB, claimed on the first JAX op
+        regardless of target size). That is why they agreed to within 24 MB
+        while the chain count doubled, and why no size cap could be derived
+        from them. run_pipeline now disables preallocation, and the canary must
+        launch its design through the SAME helper — not a copy, and not the
+        bare environment, or the next measurement is spoiled the same way.
+        """
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        envs = namespace["_design_env"]
+        assert envs, "the design was never launched through Popen"
+        assert envs[-1].get("XLA_PYTHON_CLIENT_PREALLOCATE") == "false", (
+            "the canary launched its design without production's allocator "
+            "flags, so its VRAM figure is a preallocation constant again")
+
+    def test_the_shard_reports_which_allocator_it_measured_under(self, tmp_path):
+        """Readings from before and after the allocator fix are not comparable,
+        so a shard has to say which it is. Without this flag the next operator
+        cannot tell a 67 GB preallocation reading from a 67 GB real one."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out["vram_prealloc_disabled"] is True
+        # Device-wide, process-only and the pre-run baseline are all reported:
+        # the single device figure is what was misread as demand.
+        assert "peak_proc_vram_mb" in out
+        assert "baseline_vram_mb" in out
+
+    def test_the_real_poller_is_the_one_that_sets_the_provenance_keys(self):
+        """The test above runs against a STUBBED _poll_vram, so on its own it
+        only proves run_shard copies keys through — deleting the real poller's
+        provenance fields would not fail it. This executes the real function
+        (stop already set, so it takes one sample and returns) and pins that it
+        is the poller, not the stub, that reports the interval and the
+        allocator state, plus the per-process figure the device reading has to
+        be checked against.
+
+        THE ENV IS NOW PASSED, and that is the point rather than a detail. This
+        test used to call the poller with no env at all and assert the flag was
+        True — which passed only because the flag WAS an unconditional literal.
+        The assertion was therefore a restatement of the defect: it would have
+        gone on passing for an operator who exported
+        XLA_PYTHON_CLIENT_PREALLOCATE=true and got a child that preallocated
+        61,440 MB under a shard reporting `disabled=True`. Handing it
+        production's real env keeps `is True` while making it mean something —
+        that the derivation reads this env as preallocation-off — and
+        ``test_an_operator_override_is_reported_as_preallocating`` covers the
+        other side.
+        """
+        import threading as _threading
+        namespace = load_canary_functions(
+            {"_poll_vram"},
+            _device_used_mb=lambda: 1234,
+            _proc_used_mb=lambda pid: 567,
+        )
+        stop = _threading.Event()
+        stop.set()
+        out: dict = {}
+        namespace["_poll_vram"](stop, out, 999,
+                                child_env=rp.design_subprocess_env())
+        assert out["vram_prealloc_disabled"] is True
+        assert out["vram_poll_interval_s"] == 1, (
+            "the poll interval is part of the reading: the existing "
+            "measurements were sampled at 5 s and are lower bounds")
+        assert out["peak_vram_mb"] == 1234
+        assert out["peak_proc_vram_mb"] == 567
+
+    def test_the_poller_reports_an_overridden_allocator_honestly(self):
+        """The companion the assertion above needs to mean anything. Same real
+        function, same call, an env where the operator put preallocation back
+        on — the flag has to follow the CHILD, not this file's intentions."""
+        import threading as _threading
+        namespace = load_canary_functions(
+            {"_poll_vram"},
+            _device_used_mb=lambda: 1234,
+            _proc_used_mb=lambda pid: 567,
+        )
+        stop = _threading.Event()
+        stop.set()
+        out: dict = {}
+        env = dict(rp.design_subprocess_env())
+        env["XLA_PYTHON_CLIENT_PREALLOCATE"] = "true"
+        namespace["_poll_vram"](stop, out, 999, child_env=env)
+        assert out["vram_prealloc_disabled"] is False, (
+            "a shard whose child preallocated still claims the allocator fix "
+            "was in force; that is the mislabelling this field exists to stop"
+        )
 
     def test_a_resolvable_shard_scores_its_designs(self, tmp_path):
         """The refusals must not be blanket ones: the same path with a good
@@ -2916,6 +3084,69 @@ class TestHarnessBehaviour:
             namespace["main"](phase=2, target_pdb=str(target),
                               hotspots="A1 A2", negative="A50 A51 A52 A53")
         assert excinfo.value.code == cs.EXIT_CODES[cs.FAIL]
+
+    # -- the delivery note is WIRED IN, not merely written ------------------
+    #
+    # ``cs.delivery_note`` had tests; ``main`` calling it had none, so deleting
+    # both call sites passed 561/561. That is not a silent hole - the verdict
+    # reason carries a ``[DELIVERED-DEGRADED]`` prefix through ``_print_verdict``
+    # independently - but a crash that no longer moves the verdict must move the
+    # console, and "must" is worth an assertion rather than an argument.
+
+    @staticmethod
+    def _degraded(label, **over):
+        """A shard that CRASHED and DELIVERED, in ``_shard``'s shape."""
+        out = _shard(label, exit_code=1, **over)
+        out["n_scored_designs"] = out["n_designs_expected"]
+        out["n_reward_rows"] = out["n_designs_expected"]
+        return out
+
+    def test_phase_one_prints_the_delivery_note_for_a_crashed_delivering_shard(
+            self, tmp_path, capsys):
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = self._degraded("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED" in out
+        assert "Production would have shipped this run" in out, (
+            "main() no longer prints cs.delivery_note for phase 1")
+        assert "fully scored 8" in out
+
+    def test_phase_one_prints_nothing_extra_for_a_clean_shard(self, tmp_path, capsys):
+        """The other half: a healthy run's console must be unchanged."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = _shard("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        assert "DEGRADED" not in capsys.readouterr().out
+
+    def test_phase_two_prints_the_delivery_note_per_shard(self, tmp_path, capsys):
+        """PER SHARD, and the loop is what makes it per shard: a phase-2 run
+        where only one control crashed-but-delivered is exactly the case the
+        label has to attribute."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        results = [
+            _shard("positive", n=8, recall=1.0, centroid=0.0, cross=1.0),
+            self._degraded("negative", n=8, recall=1.0, centroid=1.0, cross=0.0),
+            _shard("null", n=8, recall=None, centroid=1.0, cross=0.0),
+        ]
+        namespace = self._main_namespace(
+            shard=_Remote(handles=[_Handle(result=r) for r in results]))
+        namespace["main"](phase=2, target_pdb=str(target), hotspots="A1 A2",
+                          negative="A50 A51 A52 A53")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED [negative]" in out, (
+            "main() no longer prints cs.delivery_note for phase 2")
+        assert "DELIVERED-DEGRADED [positive]" not in out
+        assert "DELIVERED-DEGRADED [null]" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -6271,3 +6502,694 @@ class TestTheNullMarginIsNotMadeOfCroppedHotspots:
         line = " ".join(cs.verdict_diagnostics(cs.null_verdict(pos, null)))
         assert "positive hotspots present in the null designs (median) 1" in line
         assert "margin if every cropped hotspot was touched 0" in line
+
+
+# ===========================================================================
+# VRAM INSTRUMENTATION PROVENANCE
+# ===========================================================================
+#
+# The only two VRAM numbers this tool has (67,546 MB and 67,570 MB) turned out
+# to be ~91% a JAX preallocation constant, because the design subprocess
+# inherited JAX's default PREALLOCATE=true and reserved 0.75 x 81,920 =
+# 61,440 MB on its first op whatever the target size. run_pipeline now builds an
+# allocator env for its children. The canaries are what TAKE the measurements,
+# so three properties of theirs decide whether the next reading means anything:
+#
+#   * the child actually gets that env (else the reading is the constant again);
+#   * the poller takes a sample even when the design outlives it by a hair
+#     (else a fast or early-dying shard reports peak 0, which reads as "used no
+#     VRAM" rather than "was never measured");
+#   * the run says which allocator policy produced it, DERIVED from the env
+#     handed to the child rather than asserted, so a pre-fix and a post-fix
+#     reading can never be silently compared.
+#
+# _design_canary.py had none of the three. It is a live paid A100 harness whose
+# own docstring says its VRAM feeds the 40-vs-80GB decision, and run today it
+# would have reproduced the same discredited ~67.5 GB constant.
+#
+# Neither canary is importable (both build a modal.App at module scope), so the
+# structural half is AST over the source and the behavioural half EXECUTES the
+# real function bodies in a bare namespace -- the code under test, not a copy.
+# ===========================================================================
+
+_DESIGN_CANARY_PATH = _SCORING_PATH.parent / "_design_canary.py"
+_BOTH_CANARIES = [_CANARY_PATH, _DESIGN_CANARY_PATH]
+
+
+def _canary_func(path, name, also=(), **injected):
+    """The named function, compiled standalone from the file's real source.
+
+    Neither canary can be imported (``modal.App`` at module scope), and a
+    hand-copied duplicate of the body would be a test of the copy. Pulling the
+    ``FunctionDef`` out of the parsed module and exec'ing it gives the
+    production bytecode with none of the module-level imports.
+
+    ``also`` names sibling functions to lift alongside it — the ones the target
+    genuinely calls and whose real behaviour is part of what is under test
+    (``_prealloc_disabled`` is always one). ``injected`` replaces names AFTER
+    exec, which is how the nvidia-smi readers become constants without
+    touching the body being tested. Same shape as ``load_canary_functions``,
+    scoped to work on either canary file rather than only the hotspot one.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    wanted = {name, "_prealloc_disabled", *also}
+    body = [n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    for node in body:
+        # ``@app.function(...)`` / ``@app.local_entrypoint()`` are Modal
+        # plumbing, not behaviour, and ``app`` does not exist in this namespace
+        # by design — same rule as ``load_canary_functions``. Without this only
+        # the undecorated helpers could be lifted, which is exactly the set that
+        # excludes both entrypoints.
+        node.decorator_list = []
+    found = {n.name for n in body}
+    assert name in found, f"{name} not found in {path.name}"
+    ns: dict = {"subprocess": subprocess, "threading": threading}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(path), "exec"), ns)
+    ns.update(injected)
+    return ns[name]
+
+
+def _poll_iteration_budget(path):
+    """Worst-case seconds ONE poll iteration can take, from the source.
+
+    The nvidia-smi calls do not all live in ``_poll_vram``: the hotspot canary
+    factors them into ``_device_used_mb`` / ``_proc_used_mb``, the design
+    canary inlines one. Summing the timeouts of every nvidia-smi call reachable
+    from the poller covers both layouts, so the join-headroom assertion is
+    about the real cost rather than about where the code happens to sit.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    poller = funcs["_poll_vram"]
+    reachable = [poller] + [
+        funcs[c.func.id] for c in ast.walk(poller)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        and c.func.id in funcs
+    ]
+    total = 0
+    for fn in reachable:
+        for call in ast.walk(fn):
+            if isinstance(call, ast.Call) and "nvidia-smi" in ast.unparse(call):
+                for kw in call.keywords:
+                    if kw.arg == "timeout" and isinstance(kw.value, ast.Constant):
+                        total += kw.value.value
+    return total
+
+
+def _func_node(path, name):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found in {path.name}")
+
+
+class TestPreallocProvenanceIsDerived:
+    """``vram_prealloc_disabled`` must report the RUN, not the intent."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_operator_override_is_reported_as_preallocating(self, path):
+        """THE HOLE. ``design_subprocess_env`` uses ``setdefault`` so an
+        operator can override any flag per run -- deliberately. Exporting
+        XLA_PYTHON_CLIENT_PREALLOCATE=true therefore produces a child that DOES
+        preallocate, and a hardcoded ``True`` would stamp that run as if the
+        allocator fix had been in force. That is the original mislabelling with
+        a certificate of authenticity on it."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "true"}) is False
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "1"}) is False
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_fixed_env_is_reported_as_not_preallocating(self, path):
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "false"}) is True
+        assert fn({"XLA_PYTHON_CLIENT_PREALLOCATE": "FALSE"}) is True
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_absent_flag_is_neither_true_nor_false(self, path):
+        """None, not False. Absent means JAX's own default (preallocation ON)
+        applies, which has the same effect as False but is a DEFAULT rather
+        than a declaration -- and a reader deciding whether two readings are
+        comparable should be able to see which it was."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn({}) is None
+        assert fn(None) is None
+        assert fn({"SOMETHING_ELSE": "x"}) is None
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_real_production_env_reads_as_disabled(self, path):
+        """Driven through the ACTUAL env production builds, so a change to
+        ``_ALLOCATOR_ENV`` that silently stops disabling preallocation fails
+        here rather than on a paid shard."""
+        fn = _canary_func(path, "_prealloc_disabled")
+        assert fn(rp.design_subprocess_env()) is True
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_flag_is_never_a_literal(self, path):
+        """The structural half. ``out["vram_prealloc_disabled"] = True`` is
+        what shipped, and no value-level test can catch its return."""
+        node = _func_node(path, "_poll_vram")
+        for assign in [n for n in ast.walk(node) if isinstance(n, ast.Assign)]:
+            for tgt in assign.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.slice, ast.Constant)
+                        and tgt.slice.value == "vram_prealloc_disabled"):
+                    assert not isinstance(assign.value, ast.Constant), (
+                        f"{path.name} assigns a literal to "
+                        f"vram_prealloc_disabled; it must be derived from the "
+                        f"env the child received"
+                    )
+
+
+class TestThePollerAlwaysTakesASample:
+    """`while not stop.is_set()` takes ZERO samples when the design finishes
+    before the thread is first scheduled, and then reports peak 0 -- which reads
+    as "used no VRAM" on exactly the shard whose memory you most want to see.
+    Both canaries must sample first and test the flag second."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_loop_does_not_gate_the_first_sample_on_the_stop_flag(self, path):
+        node = _func_node(path, "_poll_vram")
+        for loop in [n for n in ast.walk(node) if isinstance(n, ast.While)]:
+            assert not (
+                isinstance(loop.test, ast.UnaryOp)
+                and isinstance(loop.test.op, ast.Not)
+            ), (
+                f"{path.name}::_poll_vram still loops on `while not ...`, so a "
+                f"design that outruns the poller reports peak 0 rather than "
+                f"'never measured'"
+            )
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_an_already_stopped_poller_still_records_a_reading(self, path):
+        """The behavioural half, on the real body. The stop flag is ALREADY set
+        before the poller starts -- the worst case -- and it must still produce
+        a measurement rather than silence."""
+        fn = _canary_func(
+            path, "_poll_vram", also=("_device_used_mb", "_proc_used_mb"),
+            _device_used_mb=lambda: 4321, _proc_used_mb=lambda pid: 21,
+        )
+        out: dict = {}
+        stop = threading.Event()
+        stop.set()
+        fn(stop, out)
+        assert "peak_vram_mb" in out, (
+            f"{path.name}::_poll_vram took no sample at all when the design "
+            f"had already finished"
+        )
+        assert out.get("vram_poll_complete") is True
+
+
+class TestBothCanariesRunTheChildUnderProductionsAllocator:
+    """A canary that measures a different allocator than production measures
+    nothing production can act on -- which is precisely how the two existing
+    readings became unusable. ``_design_canary`` was still on the old path."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_design_child_is_launched_with_an_env(self, path):
+        src = path.read_text(encoding="utf-8")
+        assert "rp.design_subprocess_env()" in src, (
+            f"{path.name} does not build the production allocator env; its "
+            f"child will inherit JAX's PREALLOCATE=true default and every "
+            f"VRAM number it reports will be the 61,440 MB reservation"
+        )
+        tree = ast.parse(src)
+        spawns = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in ("run", "Popen")
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "subprocess"
+            # nvidia-smi calls are instrumentation, not the design; identified
+            # by their literal argv rather than excluded by position.
+            and "nvidia-smi" not in ast.unparse(n)
+        ]
+        assert spawns, f"no design subprocess found in {path.name}"
+        for call in spawns:
+            kwargs = {kw.arg for kw in call.keywords}
+            assert "env" in kwargs, (
+                f"{path.name}:{call.lineno} spawns the design without env=, so "
+                f"it runs under JAX's default allocator: "
+                f"{ast.unparse(call)[:90]}"
+            )
+
+
+class TestTheJoinOutlastsTheFinalSample:
+    """``poller.join(timeout=10)`` could expire mid-sample -- after
+    ``stop.set()`` the poller still has a full iteration of nvidia-smi calls,
+    each capped at 10 s -- leaving every VRAM key None, which reads as "never
+    measured" on a shard that measured fine."""
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_the_join_timeout_clears_one_full_poll_iteration(self, path):
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        joins = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "join"
+            and any(kw.arg == "timeout" for kw in n.keywords)
+        ]
+        assert joins, f"no poller join with a timeout found in {path.name}"
+        needed = _poll_iteration_budget(path)
+        assert needed > 0, f"no nvidia-smi timeout found in {path.name}"
+        declared = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    if (isinstance(tgt, ast.Name)
+                            and tgt.id == "_VRAM_JOIN_TIMEOUT_S"
+                            and isinstance(node.value, ast.Constant)):
+                        declared = node.value.value
+        assert declared is not None, (
+            f"{path.name} has no named join timeout constant"
+        )
+        assert declared > needed, (
+            f"{path.name} joins the poller after {declared}s but one poll "
+            f"iteration can take {needed}s, so the final sample can be cut off "
+            f"and every VRAM key reported as None"
+        )
+
+    @pytest.mark.parametrize("path", _BOTH_CANARIES, ids=lambda p: p.name)
+    def test_a_cut_off_poller_is_distinguishable_from_a_silent_one(self, path):
+        """The other half of the fix: even with headroom the join CAN expire,
+        so the timeout case must be tellable from a genuine no-sample. The
+        completion flag is written last and only on the normal exit."""
+        assert "vram_poll_complete" in path.read_text(encoding="utf-8"), (
+            f"{path.name} cannot distinguish 'the poller was cut off' from "
+            f"'the poller measured nothing'"
+        )
+
+
+# ===========================================================================
+# DELIVERY: the canary must not condemn a run production would have shipped
+# ===========================================================================
+#
+# THE MISJUDGEMENT, and it was a real one. A shard produced 8 designs, 8 files,
+# 8 reward rows and 8 complexes, then crashed in `evaluate`. The canary printed
+# FAILED. Production's rule, in run_pipeline immediately after `complexa design`
+# returns, is:
+#
+#     n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+#     if rc != 0:
+#         if n_scored == 0:
+#             _fail("search", "complexa", ...)
+#         logger.warning("... but %d/%d designs are fully scored - delivering")
+#
+# and the reward CSV it reads is written by the GENERATE stage, not by evaluate.
+# So that run would have SHIPPED 8 scored designs to a paying customer. A
+# measurement campaign was nearly cancelled on the canary's reading of it.
+#
+# THE VOCABULARY IS THREE-VALUED AND ORTHOGONAL TO THE OUTCOME. Delivery
+# (clean / degraded / failed) answers "would production have shipped this";
+# the outcome (PASS / FAIL / INCONCLUSIVE) answers "did the binders land on the
+# patch". They are independent, and folding one into the other is what produced
+# the wrong answer. A DEGRADED shard is stamped onto every verdict it touches
+# and printed in full, because the fix is to stop calling it FAILED, not to stop
+# reporting it.
+# ===========================================================================
+
+
+def _delivering_shard(**over):
+    """A shard that CRASHED and DELIVERED: the exact shape that was misjudged."""
+    shard = {
+        "label": "phase1", "exit_code": 1,
+        "n_designs_expected": 8, "n_scored_designs": 8, "n_reward_rows": 8,
+        "designs": [{"name": f"sample_{i}.pdb", "is_complex": True}
+                    for i in range(8)],
+        "n_complexes": 8,
+        "hydra": {"task_name_selected": True, "hotspots_match": True},
+    }
+    shard.update(over)
+    return shard
+
+
+class TestDeliveryIsNotTheExitCode:
+    """``shard_delivery`` executed directly - it is the decision, so it is not
+    on the local entrypoint's renderer allowlist and is covered here."""
+
+    def test_a_clean_shard_is_clean(self):
+        assert cs.shard_delivery({"exit_code": 0}) == (cs.CLEAN, "")
+        assert cs.shard_failure({"exit_code": 0}) is None
+        assert cs.shard_degradation({"exit_code": 0}) is None
+
+    def test_a_crash_that_delivered_is_not_a_failure(self):
+        """THE FIX. Production delivers on this reading; the canary said FAILED."""
+        shard = _delivering_shard()
+        state, detail = cs.shard_delivery(shard)
+        assert state == cs.DEGRADED
+        assert cs.shard_failure(shard) is None, (
+            "a shard production would have shipped must not read as a failure")
+        assert cs.shard_degradation(shard) == detail
+        assert "8 design(s) came back fully scored" in detail
+        assert "exited 1" in detail
+
+    def test_a_crash_with_nothing_scored_is_still_a_failure(self):
+        """The other side. Production _fail()s here, so the canary must too."""
+        shard = _delivering_shard(n_scored_designs=0)
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "no scored designs" in cs.shard_failure(shard)
+        assert cs.shard_degradation(shard) is None
+
+    def test_a_crash_that_did_not_report_a_count_is_a_failure(self):
+        """CONSERVATIVE ON PURPOSE. "we cannot tell" is not "it delivered":
+        guessing the other way blesses a broken run, and it keeps every
+        hand-built payload in this suite on its original verdict unless it opts
+        in by reporting the count."""
+        shard = _delivering_shard()
+        del shard["n_scored_designs"]
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "did not report" in cs.shard_failure(shard)
+
+    @pytest.mark.parametrize("value", [None, "eight", -1, True, [8]])
+    def test_an_unusable_count_is_not_a_delivery(self, value):
+        shard = _delivering_shard(n_scored_designs=value)
+        assert cs.scored_design_count(shard) is None
+        assert cs.shard_delivery(shard)[0] == cs.FAILED, value
+
+    def test_the_old_hard_failures_are_untouched(self):
+        """Nothing that used to be a FAIL for a reason other than the exit code
+        may have become one of the new soft states."""
+        for shard, fragment in (
+            (None, "no result was returned"),
+            ({"error": "boom", "exit_code": 0, "n_scored_designs": 8}, "boom"),
+            ({"n_scored_designs": 8}, "no exit code"),
+            ({"exit_code": "x", "n_scored_designs": 8}, "non-numeric"),
+        ):
+            assert cs.shard_delivery(shard)[0] == cs.FAILED, shard
+            assert fragment in cs.shard_failure(shard)
+
+    def test_it_agrees_with_production_on_every_combination(self):
+        """THE ALIGNMENT ASSERTION, stated as the rule rather than as examples.
+
+        Production fails a shard exactly when a non-zero exit left nothing
+        scored. Anything else it delivers. The canary must draw the same line.
+        """
+        for rc in (0, 1, 2, 124):
+            for n_scored in (0, 1, 8):
+                shard = _delivering_shard(exit_code=rc, n_scored_designs=n_scored)
+                production_fails = rc != 0 and n_scored == 0
+                canary_fails = cs.shard_failure(shard) is not None
+                assert canary_fails == production_fails, (
+                    f"rc={rc} scored={n_scored}: production "
+                    f"{'fails' if production_fails else 'delivers'} but the "
+                    f"canary {'fails' if canary_fails else 'delivers'}")
+
+    def test_production_still_writes_the_rule_this_is_aligned_to(self):
+        """If run_pipeline's delivery rule ever moves, the test above is
+        asserting agreement with something that no longer exists. Read the
+        source rather than trusting the comment."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        assert 'sum(1 for d in designs if d.get("total_reward") is not None)' in source
+        assert "if n_scored == 0:" in source
+        assert '_fail("search", "complexa"' in source
+
+
+class TestADegradedRunIsStillLoud:
+    """The danger in the fix is the opposite of the defect: a crash going quiet
+    because it no longer moves the verdict. It has to move the console."""
+
+    def test_the_verdict_says_so_in_the_one_line_that_always_prints(self):
+        verdict = cs.phase1_verdict(_delivering_shard())
+        assert verdict.outcome == cs.PASS, verdict.reason
+        assert verdict.reason.startswith("[DELIVERED-DEGRADED]")
+        assert "exited 1" in verdict.reason
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["n_scored_designs"] == 8
+
+    def test_a_clean_run_is_not_labelled(self):
+        """A healthy run's console must be byte-for-byte what it was."""
+        verdict = cs.phase1_verdict(_delivering_shard(exit_code=0))
+        assert verdict.outcome == cs.PASS
+        assert "DEGRADED" not in verdict.reason
+        assert verdict.metrics["delivery"] == cs.CLEAN
+        assert cs.delivery_note(_delivering_shard(exit_code=0)) == []
+
+    def test_the_console_note_names_the_numbers_behind_it(self):
+        lines = cs.delivery_note(_delivering_shard())
+        assert lines, "a crashed-but-delivering shard printed nothing"
+        text = " ".join(lines)
+        assert "DELIVERED-DEGRADED" in text and "phase1" in text
+        assert "reward-table rows 8" in text and "fully scored 8" in text
+        assert "Production would have shipped this run" in text
+
+    def test_a_failed_shard_is_not_given_the_degraded_note(self):
+        """The two states are mutually exclusive; a FAILED shard's reason
+        already says it once."""
+        assert cs.delivery_note(_delivering_shard(n_scored_designs=0)) == []
+
+    def test_every_phase_two_verdict_carries_the_stamp(self):
+        pos = _delivering_shard(label="positive")
+        neg = _delivering_shard(label="negative")
+        null = _delivering_shard(label="null")
+        for verdict in (cs.positive_verdict(pos), cs.negative_verdict(neg),
+                        cs.null_verdict(pos, null)):
+            assert verdict.metrics["delivery"] == cs.DEGRADED, verdict.name
+            assert verdict.reason.startswith("[DELIVERED-DEGRADED]"), verdict.name
+            assert verdict.metrics["delivery_detail"], verdict.name
+
+    def test_the_null_verdict_takes_the_worse_of_its_two_shards(self):
+        """A comparison is only as sound as its weaker half."""
+        clean = _delivering_shard(label="positive", exit_code=0)
+        degraded = _delivering_shard(label="null")
+        verdict = cs.null_verdict(clean, degraded)
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["delivery_detail"][0].startswith("null:")
+
+    def test_the_diagnostics_block_prints_the_delivery_state(self):
+        """For a FAIL or an INCONCLUSIVE, where the reason prefix is not the
+        only thing an operator reads."""
+        shard = _delivering_shard(hydra={"task_name_selected": False,
+                                         "task_name_values": ["other"]})
+        verdict = cs.phase1_verdict(shard)
+        assert verdict.outcome == cs.FAIL
+        line = " ".join(cs.verdict_diagnostics(verdict))
+        assert "delivery degraded" in line
+        assert "designs fully scored (production would deliver) 8" in line
+
+
+class TestTheShardReportsWhatProductionWouldDeliver:
+    """The count itself, through the REAL ``run_shard`` body over real files."""
+
+    @staticmethod
+    def _rewards(rows):
+        """A reward table in the shape ``run_pipeline.parse_designs`` reads:
+        one row per design with a ``total_reward``. ``None`` for a row's reward
+        writes an empty cell, which is what an unscored sample looks like."""
+        head = "sample,total_reward,af2folding_plddt"
+        body = [f"design_{i},{'' if r is None else r},0.9"
+                for i, r in enumerate(rows)]
+        return "\n".join([head, *body]) + "\n"
+
+    def _shard(self, tmp_path, rows, rc=0):
+        files = [(f"sample_{i}.pdb", CORRECT_DESIGN_PDB) for i in range(len(rows))]
+        files.append(("rewards_canary_0.csv", self._rewards(rows)))
+        namespace = _shard_namespace(tmp_path, design_files=files, rc=rc)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out.get("error") is None, out.get("error")
+        return out
+
+    def test_the_shard_counts_scored_designs_with_productions_parser(self, tmp_path):
+        out = self._shard(tmp_path, [0.5] * 8, rc=1)
+        assert out["n_reward_rows"] == 8
+        assert out["n_scored_designs"] == 8
+        assert cs.shard_delivery(out)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_as_delivered(self, tmp_path):
+        """``total_reward is not None`` is production's test, not ``nrows``."""
+        out = self._shard(tmp_path, [0.5, None, None, 0.7], rc=1)
+        assert out["n_reward_rows"] == 4
+        assert out["n_scored_designs"] == 2
+
+    def test_a_crash_with_a_wholly_unscored_table_still_fails(self, tmp_path):
+        out = self._shard(tmp_path, [None, None], rc=1)
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_no_reward_table_at_all_is_zero_not_unknown(self, tmp_path):
+        """``parse_designs`` returns [] when it finds no CSV, and zero scored
+        designs on a non-zero exit is precisely what production fails on."""
+        namespace = _shard_namespace(
+            tmp_path,
+            design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)], rc=1)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_a_broken_counter_never_kills_the_shard_it_describes(self, tmp_path):
+        """A diagnostic that can fail the run it is describing would be the same
+        defect wearing a different hat. It reports None, which reads as FAILED
+        - the conservative direction - and the shard still returns."""
+        namespace = load_canary_functions({"_scored_design_counts"})
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert namespace["_scored_design_counts"](_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}
+
+
+class TestTheDesignCanaryHasTheSameDivergence:
+    """``_design_canary.py`` carried the identical rule (``exit_code != 0 ->
+    SHARD FAILED``) in its local entrypoint. Same fix, same three states."""
+
+    @staticmethod
+    def _main(res, capsys):
+        main = _canary_func(
+            _DESIGN_CANARY_PATH, "main",
+            run_design_canary=_Remote(result=res),
+            json=json, sys=sys)
+        code = 0
+        try:
+            main()
+        except SystemExit as exc:
+            code = exc.code
+        return code, capsys.readouterr().out
+
+    @staticmethod
+    def _res(**over):
+        base = {"preset": "protein_binder", "task_name": "02_PDL1",
+                "exit_code": 0, "n_scored_designs": 8, "n_reward_rows": 8,
+                "csv_files": {}}
+        base.update(over)
+        return base
+
+    def test_a_clean_run_still_exits_zero(self, capsys):
+        code, out = self._main(self._res(), capsys)
+        assert code == 0
+        assert "FAILED" not in out and "DEGRADED" not in out
+
+    def test_a_crash_that_delivered_is_no_longer_called_failed(self, capsys):
+        code, out = self._main(self._res(exit_code=1), capsys)
+        assert code == 0, "production would have shipped these 8 designs"
+        assert "SHARD FAILED" not in out
+        assert "DELIVERED-DEGRADED" in out
+        assert "exited 1" in out and "8 of 8 reward rows" in out
+        assert "still a real defect" in out, (
+            "the crash must stay visible; the fix is to stop calling it FAILED")
+
+    def test_a_crash_with_nothing_scored_still_fails(self, capsys):
+        code, out = self._main(self._res(exit_code=1, n_scored_designs=0), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no scored designs" in out
+
+    def test_a_crash_with_no_count_still_fails(self, capsys):
+        res = self._res(exit_code=1)
+        del res["n_scored_designs"]
+        code, out = self._main(res, capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable scored count" in out
+
+    @pytest.mark.parametrize("rc", [None, "x"])
+    def test_an_unusable_exit_code_fails_rather_than_reading_as_delivered(
+            self, rc, capsys):
+        """``if rc == 0: return`` alone let a shard with no exit code fall
+        through to the DELIVERED-DEGRADED line and print "exited None"."""
+        code, out = self._main(self._res(exit_code=rc), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable exit code" in out
+        assert "DELIVERED-DEGRADED" not in out
+
+    @staticmethod
+    def _rooted_path(root):
+        """``Path`` with the container's hardcoded ``/opt/proteina`` rebased.
+
+        ``run_design_canary`` writes that path as a literal, not a constant, so
+        there is nothing to inject except ``Path`` itself. Every other value
+        passes straight through to the real class.
+        """
+        def _P(value=""):
+            text = str(value)
+            return Path(root) if text == "/opt/proteina" else Path(text)
+        return _P
+
+    def _run_shard(self, tmp_path, rewards, rc=0):
+        """EXECUTE ``run_design_canary`` and return the dict it really builds.
+
+        THE POINT OF THIS HARNESS, and why the source-substring test it replaced
+        was not good enough: setting ``n_scored = None`` immediately after the
+        parse kept every substring that test asserted, passed, and made the
+        canary report no count on every run. Only running the function and
+        reading the payload can catch that.
+
+        The design command is stubbed, and the stub WRITES the reward CSV -
+        which is faithful, because the CSV is what the design command produces,
+        and because the body wipes ``inference/`` before it runs. ``rp`` is the
+        real ``run_pipeline`` loaded from the repo, so the count comes from
+        production's parser over a real file on disk.
+        """
+        inference = tmp_path / "inference"
+
+        def _run(cmd, **kwargs):
+            inference.mkdir(parents=True, exist_ok=True)
+            (inference / "rewards_canary_0.csv").write_text(rewards)
+            return types.SimpleNamespace(returncode=rc)
+
+        run_design_canary = _canary_func(
+            _DESIGN_CANARY_PATH, "run_design_canary",
+            also=("_scored_design_counts",),
+            _RUN_PIPELINE_REMOTE=str(Path(rp.__file__)),
+            _VRAM_JOIN_TIMEOUT_S=1,
+            Path=self._rooted_path(tmp_path),
+            sys=sys, time=time, glob=glob, json=json, threading=threading,
+            subprocess=types.SimpleNamespace(
+                run=_run, TimeoutExpired=subprocess.TimeoutExpired),
+            _poll_vram=lambda stop, out, child_env=None: out.update(
+                peak_vram_mb=0, vram_poll_interval_s=1,
+                vram_prealloc_disabled=True, vram_poll_complete=True),
+        )
+        return run_design_canary(
+            "protein_binder", "search_binder_local_pipeline", "02_PDL1", 4, 2)
+
+    def test_the_payload_really_carries_the_count_the_entrypoint_judges_on(
+            self, tmp_path):
+        """The two halves live in different processes. If the container stops
+        putting a real number in the payload, the entrypoint fails every run for
+        want of it - and no assertion over the SOURCE can tell."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5] * 8), rc=1)
+        assert result["n_reward_rows"] == 8
+        assert result["n_scored_designs"] == 8
+        assert cs.shard_delivery(result)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_in_the_payload(self, tmp_path):
+        """``total_reward is not None``, not ``nrows`` - production's test,
+        executed here rather than asserted about."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5, None, None, 0.7]), rc=1)
+        assert (result["n_reward_rows"], result["n_scored_designs"]) == (4, 2)
+
+    def test_the_payload_and_the_entrypoint_agree_end_to_end(self, tmp_path, capsys):
+        """The shard's real payload driven straight into the real entrypoint:
+        the two halves are only useful if they meet."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [None, None]), rc=1)
+        code, out = self._main(result, capsys)
+        assert code == 1, "a crash with a wholly unscored table must still fail"
+        assert "no scored designs" in out
+
+    def test_a_broken_counter_never_kills_the_design_shard_either(self, tmp_path):
+        """THE ASYMMETRY THIS CLOSES. The hotspot canary's twin is pinned;
+        this one was not, so turning its ``except`` into a ``raise`` survived
+        the whole suite - a diagnostic able to kill the paid shard it exists to
+        describe."""
+        counts = _canary_func(_DESIGN_CANARY_PATH, "_scored_design_counts")
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert counts(_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}

@@ -361,10 +361,31 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
     * altloc duplicates collapsed on ``(chain, resseq, icode)``.
 
     ``n_unparsable`` counts CA lines whose residue-sequence columns would not
-    convert to an int. Columns 22:26 overflow at residue numbers >= 10000, and
-    a silently-skipped residue there could make a legitimate hotspot look
-    missing — so the count is surfaced in the failure message rather than
-    swallowed.
+    convert to an int, so a residue this parser could not place is surfaced in
+    the failure message rather than swallowed.
+
+    THIS DOCSTRING USED TO CLAIM MORE THAN THE CODE DOES, and the correction is
+    the point rather than a tidy-up. It said "columns 22:26 overflow at residue
+    numbers >= 10000, and a silently-skipped residue there could make a
+    legitimate hotspot look missing". Measured, that is false in both halves. A
+    residue numbered 10000 occupies columns 23-27 in the file, so ``line[22:26]``
+    reads "1000" — an int, no ValueError, nothing counted and nothing skipped.
+    Residues 9995-10009 parse as ``[9995..9999, 1000 x 10]``, with
+    ``n_unparsable == 0``. So the >= 10000 case is a SILENT MISPARSE onto a
+    wrong residue number, which ``n_unparsable`` cannot report and which no
+    caller of this function can currently detect. The fifth digit lands in the
+    INSERTION-CODE column, so those ten residues are additionally told apart
+    only by an "insertion code" of "0".."9" — which is why they do not collapse
+    onto one key, and why they would all answer to the hotspot token ``A1000``.
+
+    Left as-is deliberately: the misparse predates this parser's current callers
+    and fixing it means deciding what a 5-column resSeq means (PDB has no legal
+    answer; the hybrid-36 and mmCIF conventions disagree), which is a change to
+    what counts as a residue rather than a docstring correction. The hazard is
+    real but bounded — the crop keys on the same misparsed number the count
+    keys on, so the two stay consistent with each other, and a hotspot on such a
+    residue would be refused pre-GPU rather than silently dropped. Anything
+    beyond that is unverified.
     """
     residues: list[tuple[str, int, str]] = []
     seen: set[tuple[str, int, str]] = set()
@@ -459,6 +480,158 @@ def select_residues(
     return out
 
 
+def selected_residue_keys(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> set[tuple[str, int, str]]:
+    """``select_residues`` as a SET of full residue keys, insertion code kept.
+
+    ``select_residues`` returns a list of ``(chain, resseq)`` in file order and
+    repeats a residue named by two overlapping segments; that is right for the
+    size gate and for hotspot matching, and wrong for cropping, where the
+    question is "which residue lines survive". The insertion code is carried
+    because ``A100`` and ``A100A`` are two residues with two CA atoms — upstream
+    counts both, so the crop has to keep both.
+    """
+    keep: set[tuple[str, int, str]] = set()
+    for chain, lo, hi in segments:
+        for c, resseq, icode in residues:
+            if c != chain:
+                continue
+            if lo is not None and not (lo <= resseq <= hi):
+                continue
+            keep.add((c, resseq, icode))
+    return keep
+
+
+# The only records the crop carries over. ANISOU is deliberately NOT here: to
+# drop it alongside a rejected ligand it would have to be matched back to its
+# parent atom, nothing downstream reads an anisotropic B-factor, and a dangling
+# ANISOU is worse than no ANISOU.
+_CROP_COORD_RECORDS = ("ATOM  ", "HETATM")
+
+
+def crop_pdb_to_contig(
+    text: str, keep: set[tuple[str, int, str]]
+) -> str:
+    """The uploaded PDB reduced to exactly the residues the contig selects.
+
+    WHY THIS EXISTS. Upstream's evaluate stage asserts a COUNT, in
+    ``proteinfoundation/metrics/metric_utils.py``::
+
+        assert (np.isin(gen_pdb.chain_id, gen_pdb_target_chain)).sum() == len(target_seq)
+
+    The left side counts CA atoms of the target chains in the GENERATED complex,
+    which contains only the contig's selection — ``pdb_utils`` masks the target
+    through ``AtomSelectionStack.from_contig`` before the model sees it. The
+    right side is ``len(target_seq)``, built in ``binder_eval_utils`` from the
+    STAGED file restricted to the chains the contig NAMES: that chain set is
+    ``sorted(set(x[0] for x in target_input.split(",")))``, the letters only,
+    with the ranges thrown away. Nothing crops the file on that path.
+
+    So upstream silently requires the contig to select every CA residue present
+    in each chain it names. 42 of its own 44 curated targets happen to satisfy
+    that. A sub-range does not, and the run dies in ``evaluate`` after the GPU
+    has generated and scored every design — the most expensive place to learn
+    it. Cropping here makes the invariant true by construction, and the contig
+    stays exactly as the user wrote it (``--target-input`` is never omitted:
+    upstream defaults it to ``"A1-100"``, which would silently truncate).
+
+    WHAT SURVIVES, AND WHY IT IS THIS AND NOT MORE:
+
+    * ``ATOM`` lines, and ``HETATM`` lines for a modified residue in
+      ``_MODRES_EQUIV``, whose ``(chain, resseq, icode)`` is in ``keep`` —
+      verbatim, byte for byte, so the AUTHOR NUMBERING is
+      untouched. Hotspot matching upstream is the literal concatenation
+      ``f"{chain_id}{res_id}"``, and this wrapper's own preflight and
+      ``missing_hotspots`` are built on the same string, so a crop that
+      renumbered would silently move every hotspot. Renumbering is the one
+      thing this function must never do.
+    * one ``TER`` per chain, synthesised from that chain's last kept atom.
+      Chains are unambiguous from column 22 alone, but a reader that infers
+      polymer breaks from ``TER`` should not see two chains fused.
+    * a final ``END``.
+
+    Everything else is dropped, and the dropped records are the point rather
+    than an oversight:
+
+    * Residues OUTSIDE the ranges, and every residue of a chain the contig does
+      not name. That second one is the whole reason a 4-chain deposit works: the
+      right-hand side counts every CA in the named chains, so chains C and D may
+      stay, but nothing of A or B outside the range may.
+    * EVERY water, ion and ligand, whatever it is numbered. In the real campaign
+      input the 20 waters sit at resid 1-30, outside every range, so the range
+      rule alone would have removed those — but a ligand numbered INSIDE a range
+      would have ridden along, and that is the case that matters. A ``HETATM``
+      is kept only when its residue name is in ``_MODRES_EQUIV``, i.e. only when
+      ``pdb_ca_residues`` COUNTED it; the file that comes out therefore holds
+      exactly the residues this wrapper counted and nothing else. That is what
+      makes the left-hand side of upstream's assertion unable to exceed our
+      count: a modified residue outside ``_MODRES_EQUIV`` that biotite happens
+      to call protein cannot inflate a file it is no longer in. (The converse —
+      a residue we count that biotite does NOT — is still open; see the module
+      note on ``_MODRES_EQUIV``.) The custom-target path is ``protein_binder``
+      only (``_CUSTOM_TARGET_PRESETS``), which does not model a co-factor, so
+      nothing that was being used is lost.
+    * ``SEQRES``, ``CONECT``, ``SSBOND``, ``HELIX``, ``SHEET``, ``LINK``,
+      ``SITE`` and the rest of the annotation block. Each describes residues or
+      bonds that the crop has removed. ``SEQRES`` is the load-bearing one: it
+      declares the FULL chain sequence, so any code deriving a target sequence
+      from it rather than from coordinates would read the uncropped length back
+      and the assertion would fire anyway. Dropping it forces coordinates.
+    * Everything after the first ``ENDMDL``. ``pdb_ca_residues`` counts model 1
+      only, so on an NMR ensemble the count and the file would otherwise
+      disagree by a factor of however many models were deposited.
+
+    Idempotent: cropping an already-cropped file returns the same residue set.
+    """
+    by_chain: dict[str, list[str]] = {}
+    for raw in text.splitlines():
+        record = raw[:6]
+        if record.startswith("ENDMDL"):
+            break
+        if record not in _CROP_COORD_RECORDS:
+            continue
+        if record == "HETATM" and raw[17:20].strip().upper() not in _MODRES_EQUIV:
+            # The same protein test ``pdb_ca_residues`` applies, moved from the
+            # CA atom to every atom of the residue. Water, ions and ligands go
+            # even when they are numbered inside a range.
+            continue
+        chain = raw[21:22].strip()
+        try:
+            resseq = int(raw[22:26])
+        except ValueError:
+            # The same columns, read the same way, as ``pdb_ca_residues``: a
+            # line this cannot place is a line that cannot be proven to be
+            # inside the contig, so it goes. Note what that does NOT cover — a
+            # resSeq >= 10000 overruns into column 27 and reads back as a
+            # DIFFERENT number rather than raising here. That misparse is
+            # unfixed (see pdb_ca_residues), and the reason it does not break
+            # the crop is that both sides make it identically: the keep key and
+            # the count are built from the same wrong number, so they agree.
+            continue
+        if (chain, resseq, raw[26:27].strip()) not in keep:
+            continue
+        # Bucketed by chain rather than streamed, so an input that interleaves
+        # chains still comes out with each chain contiguous and ONE TER. Within
+        # a chain the original line order — and therefore the original residue
+        # order — is preserved exactly.
+        by_chain.setdefault(chain, []).append(raw.rstrip("\r\n"))
+
+    out: list[str] = []
+    for chain, lines in by_chain.items():
+        out.extend(lines)
+        # Cols 1-6 record, 7-11 serial, 12-17 blank, 18-27 resName/chain/resSeq
+        # /iCode lifted straight off the last atom so the TER names a residue
+        # that is actually still in the file. The serial is 0: PDB readers key
+        # chains off column 22, TER serials are not referenced by anything the
+        # crop emits (CONECT is dropped), and inventing a plausible-looking one
+        # would be the more misleading choice.
+        out.append(f"TER   {0:5d}      {lines[-1][17:27]}")
+    out.append("END")
+    return "\n".join(out) + "\n"
+
+
 def hotspot_keys(selected: list[tuple[str, int]]) -> set[str]:
     """The exact key set upstream matches against: chain id + author number,
     concatenated, no separator, case preserved."""
@@ -476,6 +649,27 @@ def missing_hotspots(
     """
     available = hotspot_keys(selected)
     return [token for token in spec if token not in available]
+
+
+def hotspots_outside_contig(
+    residues: list[tuple[str, int, str]],
+    selected: list[tuple[str, int]],
+    spec: list[str],
+) -> list[str]:
+    """Unmatched hotspots that EXIST in the upload, just not inside the contig.
+
+    The refusal these feed already fired before the crop landed — ``missing_
+    hotspots`` has always been evaluated against the contig's selection, not
+    against the whole file — so no behaviour changes here. What changes is that
+    the residue is now genuinely absent from the file handed to the design
+    engine rather than merely unselected by it, and "A250 is not in the selected
+    region" reads identically whether the user mistyped a residue that does not
+    exist or picked a real one outside the range they asked for. Those have
+    different fixes (correct the hotspot / widen the contig) and the message
+    could not tell them apart.
+    """
+    in_file = hotspot_keys([(chain, resseq) for chain, resseq, _icode in residues])
+    return [token for token in missing_hotspots(selected, spec) if token in in_file]
 
 
 def format_contig(segments: list[tuple[str, int, int]]) -> str:
@@ -889,12 +1083,20 @@ def prepare_custom_target(
     # --- 5. THE guard: every hotspot must exist ---------------------------
     missing = missing_hotspots(selected, hotspot_spec)
     if missing:
+        outside = hotspots_outside_contig(residues, selected, hotspot_spec)
         _fail(
             "input", "hotspot_missing",
             f"hotspot residue(s) {', '.join(missing)} are not in the selected "
             f"region of the uploaded target ({format_contig(segments)}). The "
             f"target contains: {spans}. Hotspots are chain-prefixed and "
             "case-sensitive, in original PDB numbering (e.g. A45)."
+            + (
+                f" {', '.join(outside)} do exist in the upload but fall outside "
+                "that range, and the target is cropped to the range before the "
+                "design engine sees it — widen the chain range to include them, "
+                "or move the hotspot inside it."
+                if outside else ""
+            )
             + (f" {n_unparsable} residue lines were unparsable." if n_unparsable else ""),
         )
     if hotspot_spec:
@@ -913,8 +1115,50 @@ def prepare_custom_target(
     }
     key = custom_target_key(job_id, pdb_sha, record)
     staged = target_dir / f"{key}.pdb"
-    incoming.replace(staged)
+
+    # --- 6b. CROP THE STAGED FILE TO THE CONTIG ---------------------------
+    # The upload used to be staged verbatim, which is what made every sub-range
+    # contig die in `evaluate` on a billed A100: upstream compares the CA count
+    # of the contig's selection against the CA count of the WHOLE named chains
+    # in this file, so the two agree only when the contig covers each chain it
+    # names entirely. See crop_pdb_to_contig for the assertion and the columns.
+    #
+    # ``pdb_sha`` is deliberately still the SHA of what the user uploaded — it
+    # is the identity of their input, and the registry key derives from it.
+    keep = selected_residue_keys(residues, segments)
+    try:
+        staged.write_text(
+            crop_pdb_to_contig(incoming.read_text(errors="replace"), keep)
+        )
+    except OSError as exc:
+        _fail("input", "target_crop", f"could not write the cropped target: {exc}")
+    incoming.unlink(missing_ok=True)
     record["target_path"] = str(staged)
+
+    # ...and prove it, on the file that will actually be registered, using the
+    # same parser the counts above came from. This is upstream's comparison
+    # made locally: CA residues of the staged file restricted to the chains the
+    # contig NAMES (ranges discarded, exactly as binder_eval_utils does it)
+    # against the residues the contig SELECTS. A crop bug is then a free
+    # refusal here instead of a full-price crash three stages into the GPU run.
+    staged_residues, _ = pdb_ca_residues(staged)
+    named_chains = {chain for chain, _lo, _hi in segments}
+    n_staged = sum(1 for c, _r, _i in staged_residues if c in named_chains)
+    if n_staged != len(keep):
+        _fail(
+            "input", "target_crop",
+            f"cropping the uploaded target to {contig} left {n_staged} residue(s) "
+            f"in chain(s) {'/'.join(sorted(named_chains))} but the range selects "
+            f"{len(keep)}. The design engine compares exactly these two numbers "
+            "and would have failed after the GPU work was already paid for.",
+        )
+    if n_staged != len(residues):
+        logger.info(
+            "custom target: cropped %d of %d residues to %s; %d chain(s) in the "
+            "upload were dropped entirely",
+            n_staged, len(residues), contig,
+            len({r[0] for r in residues}) - len(named_chains),
+        )
 
     try:
         existing = read_targets_dict(_TARGETS_DICT)
@@ -980,11 +1224,81 @@ def prepare_custom_target(
     return key
 
 
+# GPU allocator flags for every subprocess this module launches.
+#
+# ``proteinfoundation.generate`` imports colabdesign, which imports JAX (the
+# image pins colabdesign 1.1.1 / jax 0.4.29 — Dockerfile.modal:17). JAX's
+# DEFAULT is XLA_PYTHON_CLIENT_PREALLOCATE=true at MEM_FRACTION=0.75, so the
+# first JAX op reserves 0.75 x 81,920 = 61,440 MB on an A100-80GB regardless of
+# how big the target is, and holds it for the life of the process.
+#
+# That default did more damage than wasted VRAM: it invalidated the only two
+# size measurements this tool has. Both canary shards reported ~67.5 GB peak
+# from a device-wide nvidia-smi poll, of which 61,440 MB was this reservation.
+# Subtract it and ~6.1 GB is left over — but that residual is NOT "the real
+# working set", and calling it that would be the same species of invented
+# confidence this whole block exists to remove. With preallocation on, JAX
+# serves its own allocations FROM the 61,440 MB pool, so they never appear in a
+# device-wide reading at all. The ~6.1 GB is only the NON-JAX half (the torch
+# generator plus the CUDA context); the JAX/AF2 half is invisible and could be
+# anywhere from close to nothing up to the full 61,440 MB. Which makes the
+# conclusion stronger, not weaker: the two runs agreed to within 24 MB because
+# a CONSTANT dominated the reading, not because the workload is flat in target
+# size, and the part that would actually scale with the target is precisely the
+# part the reading could not see. Any envelope derived from those numbers is
+# arithmetic on an allocator policy. See shared/pdb_preflight_rules.py
+# ::_PROTEINA, which states this the same way.
+#
+# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py:584
+# and tools/colabfold/run_pipeline.py:301, "keeps preflight from preallocating
+# most of the VRAM". proteina set none of them, and ``run_streaming`` passed no
+# ``env=`` at all, so the design subprocess inherited the bare JAX default.
+#
+# DELIBERATE DIVERGENCE from those two: they also set TF_FORCE_UNIFIED_MEMORY=1
+# and this does not. Unified memory lets an oversized job spill to host RAM and
+# thrash instead of dying, and thrashing is the EXPENSIVE failure here — it
+# bills on to _MAX_SESSION_S = 7200 s (~$12.58 per shard) while a clean OOM
+# dies in seconds for cents. For a tool whose open risk is uncapped spend on
+# oversized targets, failing fast is worth more than finishing slowly. With
+# PREALLOCATE=false and ALLOCATOR=platform, allocation goes through the CUDA
+# driver on demand and OOMs at the true device limit; MEM_FRACTION is then
+# effectively inert, and is kept only to match the two files above rather than
+# to have an effect.
+_ALLOCATOR_ENV = {
+    "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+    "XLA_PYTHON_CLIENT_ALLOCATOR": "platform",
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": "4.0",
+}
+
+
+def design_subprocess_env() -> dict:
+    """``os.environ`` plus ``_ALLOCATOR_ENV``, for any GPU subprocess.
+
+    Exported, not private, so the canary launches its design under the SAME
+    allocator policy production uses. The canary cannot reach these through
+    ``run_streaming`` — it needs its own Popen for the timeout and the VRAM
+    poller — and a canary that measures a different allocator than production
+    measures nothing production can act on. That is not hypothetical: it is
+    exactly how the two existing measurements came to be unusable.
+
+    ``setdefault``, so an operator can still override any of them per-run
+    without editing this file.
+    """
+    env = dict(os.environ)
+    for key, value in _ALLOCATOR_ENV.items():
+        env.setdefault(key, value)
+    return env
+
+
 def run_streaming(cmd: list[str], cwd: Path) -> int:
     """Run a subprocess, live-streaming stdout/stderr to Modal logs (never
     capture_output for long GPU work, per the Modal-subprocess memory)."""
     logger.info("cmd (cwd=%s): %s", cwd, " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False)
+    result = subprocess.run(
+        cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False,
+        env=design_subprocess_env(),
+    )
     return result.returncode
 
 

@@ -81,6 +81,80 @@ def _clean_int_list(values) -> Optional[list]:
     return out or None
 
 
+def _segments_label(segments) -> Optional[str]:  # noqa: ANN001
+    """``[("A",236,300),("B",None,None)]`` -> ``"A236-300,B"``, or None."""
+    parts = []
+    for segment in segments or []:
+        try:
+            cid, lo, hi = segment
+        except (TypeError, ValueError):
+            return None
+        parts.append(str(cid) if lo is None else f"{cid}{lo}-{hi}")
+    return ",".join(parts) or None
+
+
+def selection_residue_count(
+    chain_summary, target_chain: str, segments,  # noqa: ANN001
+) -> Optional[int]:
+    """UPPER bound on the residues a run will design against, from the summary.
+
+    Works off ``design_targets.chain_summary`` (and the identically-shaped
+    ``TargetUpload.chain_summary``), so it costs no download — which is what
+    makes a size gate possible on the two campaign routes at all.
+
+    THE BOUND IS AN UPPER BOUND ON PURPOSE. The summary carries a per-chain
+    residue COUNT plus min/max resnum, not the resnum list, so for an explicit
+    range the true count cannot be recovered — a chain with internal gaps holds
+    fewer residues than its span suggests. Every clamp below therefore rounds
+    UP. Over-counting costs a user an error message on a run that would have
+    fitted; under-counting bills for a run that does not. The in-container
+    selection stays the authority, exactly as ``DesignTarget.segment_error``
+    documents for its own check.
+
+    ``segments`` empty or None means no contig was declared, i.e. the whole of
+    the named chain(s) — the same reading ``_parse_target_input`` gives it.
+    Returns None when there is no usable summary, so a caller can tell "fits"
+    apart from "cannot say".
+    """
+    summary = chain_summary or {}
+    rows = list(summary.get("chains") or [])
+    if not rows:
+        return None
+    by_id = {r.get("chain_id"): r for r in rows}
+
+    def _whole(cid: str) -> int:
+        row = by_id.get(cid) or {}
+        return int(row.get("standard_residue_count") or 0)
+
+    if segments:
+        total = 0
+        for segment in segments:
+            try:
+                cid, lo, hi = segment
+            except (TypeError, ValueError):
+                # Unreadable segment: fall back to the whole named chains,
+                # which is the larger number and therefore the safe one.
+                return selection_residue_count(chain_summary, target_chain, None)
+            cid = str(cid)
+            if lo is None or hi is None:
+                total += _whole(cid)
+                continue
+            row = by_id.get(cid) or {}
+            cmin, cmax = row.get("min_resnum"), row.get("max_resnum")
+            span = int(hi) - int(lo) + 1
+            if cmin is not None and cmax is not None:
+                span = min(int(hi), int(cmax)) - max(int(lo), int(cmin)) + 1
+            total += max(0, min(span, _whole(cid)))
+        return total
+
+    tokens = [t for t in (target_chain or "").split() if t]
+    if not tokens:
+        # No chain named either: the whole structure is in play.
+        total = summary.get("total_standard_residues")
+        return int(total) if total is not None else None
+    return sum(_whole(t) for t in tokens)
+
+
 @dataclass
 class DesignTarget:
     """A row of ``public.design_targets``."""
@@ -284,6 +358,40 @@ class DesignTarget:
                     f"target's chain {cid} ({cmin}-{cmax})."
                 )
         return None
+
+    def size_error(
+        self, tool: str, target_chain: str, segments,  # noqa: ANN001
+        binder_max_aa=None,  # noqa: ANN001
+    ) -> Optional[str]:
+        """Reject a launch whose target is over the tool's size cap.
+
+        THE GAP THIS CLOSES. The per-tool size envelope was enforced only in
+        ``preflight_for_tool``, which only ``/tools/<slug>/submit`` calls — and
+        that route refuses anything bigger than one container. So the cap never
+        guarded a campaign, which is the shape that spends real money (proteina
+        opens 4 concurrent shards at ~$12.58 each, inside a ~$15/shard hold
+        that covers all of it). Both campaign routes land here.
+
+        Size ONLY, deliberately. The full preflight also applies a min-residue
+        floor, gap rules and hotspot rules; switching those on for campaigns
+        would change behaviour far beyond the cost hole, and these routes
+        cannot run them cheaply anyway — a target-bound launch never downloads
+        the structure. Same family as :meth:`chain_error`, :meth:`hotspot_error`
+        and :meth:`segment_error`, and it reads the same persisted summary.
+
+        Returns None when there is no summary to judge: a target predating the
+        summary column must not be blocked by a check that cannot see it.
+        """
+        count = selection_residue_count(
+            self.chain_summary, target_chain, segments,
+        )
+        if count is None:
+            return None
+        from shared.pdb_preflight import size_only_refusal  # noqa: PLC0415
+        return size_only_refusal(
+            tool, count, binder_max_aa=binder_max_aa,
+            selection_label=_segments_label(segments),
+        )
 
     def to_dict(self) -> dict:
         """JSON-friendly view for templates and status endpoints."""
