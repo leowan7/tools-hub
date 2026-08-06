@@ -120,9 +120,10 @@
         // why the contradiction above is stated at "A B" specifically.
         //
         // Every figure here is a live /tools/proteina/preflight response, and
-        // two of the three are pinned there so they cannot rot: 600 by
-        // test_the_whole_upload_is_refused_without_a_contig and 130 by
-        // test_the_contig_the_browser_posts_sizes_the_selection. The 300 is
+        // the pair the contradiction is made of is pinned on that route in
+        // exactly this scenario — test_the_verdict_says_which_number_the_gate
+        // _counted asserts residues_kept_on_target_chain == 600 alongside
+        // size_envelope.residue_count == 130 — so neither can rot. The 300 is
         // _BIG_UPLOAD's chain A, range(1, 301). Do not restate this argument
         // against a structure the repo does not build — the version before
         // this one used 3S7G and quoted 830/415 for the same pair, which is
