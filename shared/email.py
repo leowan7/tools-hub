@@ -447,6 +447,39 @@ def _source_tools_line(source_tools) -> str:  # noqa: ANN001
     return ", ".join(f"{slug} ({n})" for slug, n in items)
 
 
+# Customer vocabulary for the assay a lab_campaigns row records. The keys are
+# the three values the assay_type CHECK in migration 0011 accepts, which is
+# also shared.campaigns.ASSAY_TYPES.
+_ASSAY_CUSTOMER_LABELS = {
+    "yeast_display": "yeast display",
+    "mammalian_display": "mammalian display",
+    "dms": "deep mutational scanning",
+}
+
+
+def _assay_customer_label(assay_type) -> str:  # noqa: ANN001
+    """Lower-case, mid-sentence assay name for CUSTOMER copy, or ``""``.
+
+    ``""`` is returned for anything outside ``_ASSAY_CUSTOMER_LABELS``, which
+    the caller handles by dropping the adjective: "your scoping request"
+    rather than a raw enum or the word None. That branch is unreachable from
+    any row the database currently holds -- assay_type is NOT NULL and CHECKed
+    to those three values (migration 0011) and every writer validates against
+    ASSAY_TYPES before insert -- so it is cover for a future widening of that
+    CHECK, not for today's data.
+
+    Deliberately NOT the ``.replace('_', ' ').title()`` transform used for the
+    staff Assay rows below: that renders 'dms' as "Dms", and title case is
+    wrong for a phrase sitting mid-sentence after the word "your".
+
+    Takes the value rather than the campaign, so the caller can read the
+    attribute through ``getattr`` with a default and this helper cannot raise
+    on a row that lacks it. That is narrower than the sender being None-safe:
+    the sender still calls ``.title()`` on ``budget_band`` unguarded.
+    """
+    return _ASSAY_CUSTOMER_LABELS.get(str(assay_type or "").strip(), "")
+
+
 def send_campaign_submitted_emails(
     *, campaign, user_email: str, source_tools=None, dropped: int = 0,  # noqa: ANN001
     truncated: int = 0,
@@ -480,12 +513,15 @@ def send_campaign_submitted_emails(
     the route is ``@idempotent()`` besides. Neither number now carries advice
     the user cannot act on.
 
-    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. The caller refuses the
-    whole submission rather than reporting a shortfall it could not decide (a
-    read that never completed, a campaign id set that came back short), so
-    every design counted here was refused by a check that ran to completion.
-    That is what makes "rejected", rather than "we could not confirm", an
-    honest word for it.
+    WHAT ``dropped`` MAY CLAIM, and why it can be blunt. BOTH ref callers refuse
+    the whole submission rather than reporting a shortfall they could not decide
+    (a job read that never completed; on the target arm also a campaign id set
+    that came back short), so every design counted here was refused by a check
+    that ran to completion. That is what makes "rejected", rather than "we could
+    not confirm", an honest word for it. This function does not enforce that --
+    it is a property of the callers -- so a THIRD caller passing ``dropped``
+    without such a gate makes the sentence below false. The legacy single-job
+    arm passes neither count and must not start.
 
     WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
     sentence below asserts that any PDB was written:
@@ -541,13 +577,20 @@ def send_campaign_submitted_emails(
     truncated_row = ""
     if dropped:
         _plural = "s" if dropped != 1 else ""
-        # "matched to a DESIGN on this target", not "matched to this target":
-        # the write path rejects on four grounds, and one of them is an index
-        # past the end of an otherwise-legitimate run of this very target.
+        # "matched to a DESIGN in the results", not "matched to the results":
+        # the write paths reject on four grounds, and one of them is an index
+        # past the end of an otherwise-legitimate run of this very parent.
+        #
+        # NAMES NO PARENT KIND. Both ref callers pass `dropped` -- the target arm
+        # against "a design on this target", the campaign arm against "a child of
+        # this compute campaign" -- and this function takes no parameter saying
+        # which. A branch on `campaign.submission_source` would need a field this
+        # module reads only through `getattr` (see _handoff_source_link), and its
+        # else-arm would go stale on the next source added.
         _sentences.append(
             f"{dropped} starred design{_plural} could not be matched to a "
-            f"design on this target and {'were' if dropped != 1 else 'was'} "
-            f"left out. This request covers "
+            f"design in the results this shortlist was built from and "
+            f"{'were' if dropped != 1 else 'was'} left out. This request covers "
             f"{n_candidates} design{'s' if n_candidates != 1 else ''}."
         )
         dropped_row = (
@@ -590,13 +633,45 @@ def send_campaign_submitted_emails(
     )
     dropped_note_text = ("\n" + "\n".join(_sentences) + "\n") if _sentences else ""
 
+    # Customer copy names the assay THIS row records. The word was hardcoded
+    # to "yeast display", so a mammalian_display or dms submission was
+    # confirmed back with an assay the customer did not pick (A93). The
+    # trailing space is folded into the local so the unknown case degrades to
+    # "your scoping request" without a second branch at the use site, and so
+    # neither body needs an f-string nested in another f-string's replacement
+    # field (the PEP 701 constraint noted above).
+    _assay = _assay_customer_label(getattr(campaign, "assay_type", None))
+    assay_phrase = f"{_assay} " if _assay else ""
+    # Sentence-initial in the plain-text body, mid-sentence in the HTML, so the
+    # capitalised form is built once here. `.capitalize()` is safe on every
+    # value of the map because all three labels are already lower case.
+    assay_text_lead = (
+        f"{assay_phrase.capitalize()}scoping request received"
+        if assay_phrase else "Scoping request received"
+    )
+    # Staff vocabulary, unchanged for all three values the CHECK permits
+    # ('yeast_display' -> "Yeast Display", 'dms' -> "Dms"). Read through
+    # getattr only so a row with no usable assay_type prints an em dash instead
+    # of raising: this used to be `campaign.assay_type.replace(...)` inline, and
+    # an AttributeError there fires ABOVE the only try block in this function
+    # (which wraps just the HTTP post), so it escaped into the callers' except
+    # blocks and lost the customer confirmation as well as this notification.
+    # Only assay_type is guarded here; the sibling budget_band.title() calls
+    # below are not, so this does not make the function None-safe.
+    _assay_staff = str(getattr(campaign, "assay_type", "") or "").replace("_", " ").title()
+    assay_staff_label = _assay_staff or "—"
+
     # User confirmation
+    # Subject deliberately carries NO assay: it never claimed one, so there is
+    # nothing here to correct. The assay is in the opening paragraph of the
+    # HTML body -- the <h2> above that paragraph names none either -- and in
+    # the first line of the plain-text one.
     user_subject = f"Scoping request received — {campaign.target_name}"
     user_html = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
                 color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
       <h2 style="margin-top:0;">Scoping request received</h2>
-      <p>We've received your yeast display scoping request for
+      <p>We've received your {assay_phrase}scoping request for
          <strong>{campaign.target_name}</strong> ({n_candidates}
          candidate{'s' if n_candidates != 1 else ''}).</p>
       {dropped_note_html}
@@ -620,8 +695,10 @@ def send_campaign_submitted_emails(
     # a text body that never states the request size left that comparison
     # pointing at nothing (the note previously read "Only the 7 above were
     # sent" in a body with no 7 anywhere above it).
+    # The assay is an ADDITION to this half, not a correction: the plain-text
+    # body never named one. It is here so the two formats of one email agree.
     user_text = (
-        f"Scoping request received for {campaign.target_name} "
+        f"{assay_text_lead} for {campaign.target_name} "
         f"({n_candidates} candidate{'s' if n_candidates != 1 else ''}).\n"
         f"{dropped_note_text}\n"
         "The Ranomics team will review and follow up within 2 business days.\n\n"
@@ -642,7 +719,7 @@ def send_campaign_submitted_emails(
         <tr><td style="color:#666;padding:4px 12px 4px 0;">From</td>
             <td>{user_email}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Assay</td>
-            <td>{campaign.assay_type.replace('_', ' ').title()}</td></tr>
+            <td>{assay_staff_label}</td></tr>
         <tr><td style="color:#666;padding:4px 12px 4px 0;">Candidates</td>
             <td>{n_candidates}</td></tr>
         {dropped_row}
@@ -666,7 +743,7 @@ def send_campaign_submitted_emails(
         f"New scoping request\n\n"
         f"Target: {campaign.target_name}\n"
         f"From: {user_email}\n"
-        f"Assay: {campaign.assay_type.replace('_', ' ').title()}\n"
+        f"Assay: {assay_staff_label}\n"
         f"Candidates: {n_candidates}\n"
         + (f"Not included: {dropped} starred design(s) rejected\n"
            if dropped else "")

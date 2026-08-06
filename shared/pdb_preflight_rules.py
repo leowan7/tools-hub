@@ -84,14 +84,63 @@ class SizeEnvelope:
     runtime_base_min: float
     runtime_alpha: float
     runtime_baseline_designs: int = 100
+    # WHERE THE CAP CAME FROM, because the refusal copy must not claim more
+    # confidence than the number has. "literature" = set from published
+    # binder-design work plus (for rfantibody) a clean in-house run near the
+    # cap; the panel may say the job would likely exhaust GPU memory.
+    # "untested" = no run has ever approached this number here, so the copy
+    # says the limit is a precaution rather than a predicted failure point.
+    # Default is the cautious one on purpose: a new tool that forgets to
+    # declare this under-claims instead of over-claiming.
+    cap_basis: str = "untested"
 
 
 @dataclass(frozen=True)
 class ToolRules:
-    """All preflight rules for a single binder design tool."""
+    """All preflight rules for a single binder design tool.
+
+    On the two multi-chain flags
+    ----------------------------
+    They answer different questions and BOTH must be True before preflight
+    lets a multi-chain target through (see
+    ``pdb_preflight.preflight_for_tool``):
+
+    ``multi_chain_supported``
+        Can the MODEL do it? Upstream/published capability. RFdiffusion,
+        BindCraft, BoltzGen, PXDesign and Proteina all genuinely design
+        against multi-chain targets; rfantibody does not (it builds a VHH
+        against one chain).
+
+    ``multi_chain_container_ready``
+        Can the IMAGE WE ACTUALLY RUN do it? This is the one that bills.
+        Today it is True for proteina alone, because proteina is the only
+        tool whose container lives in THIS repo
+        (``tools/proteina/run_pipeline.py``) and was rewritten and proven on
+        a live A100. Every other tool is dispatched to an image built from
+        the sibling repo ``llm-proteinDesigner``, whose
+        ``backend/pdb_utils/pipeline_normalize.py`` still matches the target
+        chain by exact string equality (:301) and raises when the whole
+        ``target_chain`` string is not a chain id (:383). Verified by
+        importing that module and executing it against a clean two-chain
+        PDB: ``chain="A"`` normalizes, ``chain="A B"`` raises ValueError,
+        for rfdiffusion / boltzgen / pxdesign / rfantibody alike. BindCraft
+        ships as a separate prebuilt image (``kendrew-bindcraft:v7``) that
+        cannot be inspected from here, so it is UNVERIFIED rather than
+        known-good and is gated on the same conservative footing.
+
+    Keeping them separate matters. Collapsing the truth into
+    ``multi_chain_supported=False`` for rfdiffusion et al. would encode a
+    claim that is simply false about the model, and the next person to read
+    it would be right to "fix" it back to True — silently re-opening a paid
+    failure. The split records the aspiration AND the reality, and names the
+    thing that has to change: port the multi-chain normalizer to
+    llm-proteinDesigner, rebuild those images, then flip
+    ``multi_chain_container_ready``. Nothing else here needs to move.
+    """
     slug: str
     gpu: str                       # human-readable, surfaced in the panel
-    multi_chain_supported: bool    # False for rfantibody (upstream limit)
+    multi_chain_supported: bool    # can the MODEL do it (upstream capability)
+    multi_chain_container_ready: bool  # can OUR IMAGE do it (what bills)
     hotspots_required: bool        # True for rfantibody / rfdiffusion / bindcraft
     min_target_aa: int             # below this the model has nothing to design
     size: SizeEnvelope
@@ -131,7 +180,8 @@ class ToolRules:
 _RFANTIBODY = ToolRules(
     slug="rfantibody",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfantibody_app.py:_GPU
-    multi_chain_supported=False,
+    multi_chain_supported=False,     # VHH against one chain — an upstream limit
+    multi_chain_container_ready=False,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -140,6 +190,7 @@ _RFANTIBODY = ToolRules(
         hard_cap_combined_aa=720,    # +120 VHH framework (binder fixed)
         runtime_base_min=200.0,      # Week 2 calibrated from 412/4 = 41 min
         runtime_alpha=1.2,           # RF2 triangle attention dominates
+        cap_basis="literature",      # + a clean 412 aa in-house run
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -151,7 +202,8 @@ _RFANTIBODY = ToolRules(
 _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfdiffusion_app.py:_GPU
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Watson 2023 designs against multi-chain targets
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -160,6 +212,7 @@ _RFDIFFUSION = ToolRules(
         hard_cap_combined_aa=600,
         runtime_base_min=150.0,      # Faster than rfantibody (no RF2 stage)
         runtime_alpha=1.2,
+        cap_basis="literature",      # Watson 2023 training distribution
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -177,7 +230,14 @@ _RFDIFFUSION = ToolRules(
 _BINDCRAFT = ToolRules(
     slug="bindcraft",
     gpu="A100-80GB",
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Pacesa 2024 takes multi-chain target settings
+    # UNVERIFIED, not known-good: bindcraft runs from a separate prebuilt
+    # image (config.runpod_image_bindcraft = kendrew-bindcraft:v7) rather
+    # than llm-pd's normalizer, so its chain handling could not be executed
+    # from here the way the other four were. Gated on the conservative
+    # footing — this restores exactly the pre-change outcome and costs a
+    # user only a message, where guessing wrong costs a funded A100 run.
+    multi_chain_container_ready=False,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -187,6 +247,7 @@ _BINDCRAFT = ToolRules(
         runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
         runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
         runtime_baseline_designs=10, # bindcraft default trajectories
+        cap_basis="literature",      # Pacesa 2024 default-settings examples
     ),
     gap=GapThresholds(
         warn_length=10,
@@ -198,7 +259,8 @@ _BINDCRAFT = ToolRules(
 _BOLTZGEN = ToolRules(
     slug="boltzgen",
     gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
-    multi_chain_supported=True,
+    multi_chain_supported=True,      # Boltz-class models cofold multi-chain
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=False,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -207,6 +269,7 @@ _BOLTZGEN = ToolRules(
         hard_cap_combined_aa=700,
         runtime_base_min=600.0,      # Boltz-1 diffusion ~5-10 min/design × 100
         runtime_alpha=1.0,
+        cap_basis="literature",      # AF3-class headroom
     ),
     gap=GapThresholds(
         warn_length=20,
@@ -220,6 +283,7 @@ _PXDESIGN = ToolRules(
     slug="pxdesign",
     gpu="A100-80GB",                 # matches tools/pxdesign/__init__.py docstring
     multi_chain_supported=True,
+    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
     hotspots_required=True,          # pxdesign requires >=1 hotspot
     min_target_aa=30,
     size=SizeEnvelope(
@@ -232,6 +296,7 @@ _PXDESIGN = ToolRules(
         runtime_base_min=300.0,      # AF2-IG validation per design
         runtime_alpha=1.3,
         runtime_baseline_designs=8,  # pxdesign default num_designs
+        cap_basis="literature",      # BindCraft/Pacesa 2025 practical ceiling
     ),
     gap=GapThresholds(
         # pxdesign renumbers the target chain to 1..N, so a numbering gap
@@ -248,29 +313,88 @@ _PROTEINA = ToolRules(
     slug="proteina",
     gpu="A100-80GB",                 # matches tools/proteina/modal_app.py:_GPU
     multi_chain_supported=True,      # a 3-chain target is a validated upstream example
+    # The ONLY True in this column. proteina is the one tool whose container
+    # lives in this repo (tools/proteina/run_pipeline.py) and it was rewritten
+    # for multi-chain and proven end-to-end on a live A100 — custom PDB +
+    # multi-chain contig + cross-chain hotspots reaching the model. The other
+    # five dispatch to images that still carry the single-chain normalizer.
+    multi_chain_container_ready=True,
     hotspots_required=False,         # hotspot-directed, but an open search is valid
     min_target_aa=30,
     size=SizeEnvelope(
-        # PROVISIONAL, and this entry is a COST GATE before it is a UI panel.
-        # Until bring-your-own targets landed, proteina was reachable only with
-        # curated ~115 aa targets, so it was absent from TOOL_RULES entirely and
-        # got NO size check (pdb_preflight.py early-returns for tools outside
-        # BINDER_DESIGN_TOOLS). With uploads, an oversized target runs to the
-        # _MAX_SESSION_S = 7200 wall, is killed, and bills the full per-shard
-        # ceiling (~$12.58) for zero designs — across 4 concurrent shards, and
-        # the $15/shard hold covers all of it, so nothing else stops it.
+        # This entry is a COST GATE before it is a UI panel.
         #
-        # These numbers are the AF2-80GB regime (same as pxdesign, which shares
-        # the reward stack's memory profile). The hotspot canary's phase 1
-        # measures real peak VRAM and wall-clock on a large multi-chain target;
-        # RE-SET hard_cap_target_aa from that measurement before the flag flips.
-        hard_cap_target_aa=600,
-        soft_warn_target_aa=360,
-        hard_cap_combined_aa=950,
-        # One shard = one 8-design container, quoted at 30-120 min in
-        # tools/proteina/meta.py — anchor at the middle of that band.
-        runtime_base_min=75.0,
-        runtime_alpha=1.3,           # flow-matching generator + AF2/RF3 refold
+        # THERE IS NO USABLE VRAM MEASUREMENT FOR THIS TOOL. Read that before
+        # changing any number here, because the two runs that look like
+        # measurements are not.
+        #
+        # Two paid A100-80GB canary shards (protein_binder, binder_length
+        # [60, 120], 8 designs) recorded 67,546 MB at 129 aa / 1 chain and
+        # 67,570 MB at 130 aa / 2 chains, device-wide nvidia-smi. Both figures
+        # are ~91% a JAX preallocation constant: proteinfoundation.generate
+        # imports colabdesign -> JAX, and JAX's default is PREALLOCATE=true at
+        # MEM_FRACTION=0.75, i.e. 0.75 x 81,920 = 61,440 MB reserved on the
+        # first JAX op no matter how big the target is. Subtract it and the
+        # readings are 6,106 MB and 6,130 MB. They agreed to 24 MB because a
+        # CONSTANT dominated, not because the workload is flat in target size.
+        # tools/proteina/run_pipeline.py now disables that preallocation
+        # (_ALLOCATOR_ENV, following tools/af2 and tools/colabfold, which had
+        # set the same flags all along). Consequences:
+        #     - "130 aa sits at 82.5% of the card" was never true of DEMAND;
+        #     - any cap computed by scaling 67,570 scales an allocator policy;
+        #     - readings taken BEFORE that change cannot be compared with
+        #       readings taken after it. The canary now reports
+        #       ``vram_prealloc_disabled`` so the two can never be mixed.
+        #
+        # WHAT IS ACTUALLY KNOWN: one protein_binder shard, 8 designs, at
+        # 130 residues over 2 chains, completed in 359 s. That is a working
+        # configuration and a wall-clock. It is not a memory ceiling, and no
+        # second target size has ever been run, so there is no slope of any
+        # kind — not in VRAM, not in runtime.
+        #
+        # 140 IS THEREFORE A POLICY NUMBER, NOT A DERIVED ONE. It is "the one
+        # configuration we have seen work, plus a little slack", chosen so the
+        # tool stays usable for targets of the size we have evidence for while
+        # refusing sizes we have never run. No arithmetic supports a specific
+        # value; anyone who writes one here is inventing it. Deliberately no
+        # percentage-of-card figure appears in this comment.
+        #
+        # WHAT THIS COSTS: it refuses the campaign the feature was built for.
+        # 3S7G is 830 aa across 4 chains and the typical CH2+CH3 two-chain
+        # SELECTION is 415 aa. Note the gate sizes the contig selection, not
+        # the upload (shared/pdb_preflight.py::_selection_residue_count), so
+        # uploading whole 3S7G and designing against A236-300,B236-300 is 130
+        # residues and runs — it does not need hand-trimming. Wrong-low costs
+        # one error message; wrong-high costs a 4-shard first wave
+        # (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"] = 4) that runs to
+        # _MAX_SESSION_S = 7200 and bills ~$12.58 per shard for zero designs,
+        # which the ~$15/shard hold covers, so nothing downstream stops it.
+        #
+        # TO RAISE THIS, MEASURE — and note the earlier plan to settle it with
+        # a single 415 aa run was WRONG while preallocation was on: that run
+        # would have read ~68 GB right up until it OOMed inside JAX's own pool,
+        # so it could not have discriminated anything. With _ALLOCATOR_ENV in
+        # force, run one protein_binder shard per size at 130 (to re-baseline
+        # post-change), 260 and 415 residues, recording peak_proc_vram_mb,
+        # baseline_vram_mb and runtime_s. Three points across a 3x span give
+        # the first real scaling curve this tool has had; set the cap from it.
+        hard_cap_target_aa=140,
+        # The one size ever run. Anything above it is untested, so the amber
+        # notice starts exactly there rather than at some fraction of the cap.
+        soft_warn_target_aa=130,
+        # 140 target + 120 binder. 120 is the top of the binder range the
+        # canaries actually ran; the form's _BINDER_LEN_MAX of 300 has never
+        # been measured against any target.
+        hard_cap_combined_aa=260,
+        # MEASURED: 359 s = 6.0 min for one 8-design shard at 130 aa. Solving
+        # this estimator's own curve at that point — base x (130/120)^1.3 x 8/8
+        # — gives base = 5.4. The 75.0 that used to be here was anchored to
+        # meta.py's "30 to 120 min" placeholder, i.e. 5-20x the real number.
+        runtime_base_min=5.4,
+        # ASSUMED, not measured — borrowed from pxdesign's AF2-validation
+        # regime. One target size cannot yield a scaling exponent, so this
+        # curve is advisory copy only and must not be treated as calibrated.
+        runtime_alpha=1.3,
         runtime_baseline_designs=8,  # _SHARD_DESIGNS
     ),
     gap=GapThresholds(

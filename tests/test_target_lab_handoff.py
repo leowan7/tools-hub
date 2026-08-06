@@ -453,7 +453,15 @@ def test_the_dispatcher_prefers_the_target_branch(client):
 
 
 def test_a_campaign_shortlist_is_untouched_by_the_new_branch(client):
-    """The pair. Adding a branch above the campaign one must not capture it."""
+    """The pair. Adding a branch above the campaign one must not capture it.
+
+    Patches ``read_job`` and not ``get_job``: the campaign arm reads jobs
+    through the three-outcome form for the same reason the target arm does, so
+    a ``get_job`` patch leaves ``read_job`` unpatched, the blanked Supabase env
+    makes every read UNAVAILABLE, and the arm's refusal gate turns this into a
+    ``?handoff=unverified`` with nothing created. That failure is the fix
+    working, not a regression -- do not repair it by restoring ``get_job``.
+    """
     captured: list[dict] = []
 
     def fake_create(**kw):
@@ -471,8 +479,9 @@ def test_a_campaign_shortlist_is_untouched_by_the_new_branch(client):
     }
     _login(client)
     with patch("blueprints.lab_projects.load_user_context", return_value=_ctx()), \
-            patch("blueprints.lab_projects.get_job",
-                  return_value=_job("j-bc", "bindcraft", campaign_id=_CID)), \
+            patch("blueprints.lab_projects.read_job",
+                  return_value=JobRead(
+                      _job("j-bc", "bindcraft", campaign_id=_CID), JOB_READ_OK)), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   return_value=[]), \
             patch("shared.compute_campaigns.get_campaign",
@@ -806,8 +815,10 @@ def test_starred_designs_past_the_cap_are_reported_not_silently_dropped(client):
     handoff did not.
 
     Reported SEPARATELY from `dropped`: these designs were never read, so
-    "could not be matched to this target" would be a verdict nobody reached,
-    and unlike a rejection a second smaller request does deliver them.
+    "could not be matched to this target" would be a verdict nobody reached.
+    NOT because it has a different remedy -- nothing in this product clears a
+    shortlist, so a second request re-posts the identical first 500 refs, which
+    is why neither count carries retry advice.
     """
     from blueprints.lab_projects import _MAX_CANDIDATE_REFS
     cap = _MAX_CANDIDATE_REFS
@@ -863,7 +874,10 @@ def test_the_confirmation_page_states_how_many_designs_were_refused(client):
     not delivered whole, and it has to survive a reload of this URL."""
     html = _lab_project_page(client, "?submitted=1&dropped=3")
     assert "3 starred designs were not included" in html
-    assert "could not be matched to a design on the source target" in html
+    # Parent-neutral: one string serves a target-sourced and a campaign-sourced
+    # row, so it names the RESULTS the shortlist came from rather than a target.
+    assert "could not be matched to a design in the results this shortlist " \
+        "was built from" in html
 
 
 def test_the_confirmation_page_states_how_many_designs_were_over_the_limit(client):

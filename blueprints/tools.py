@@ -53,6 +53,7 @@ from shared.pdb_intake import (
     _parse_preflight_size_params,
     _verdict_to_json,
     _verify_reuse_pdb_bytes,
+    preflight_target_segments,
 )
 from shared.pdb_preflight import PREFLIGHT_TOOLS, preflight_for_tool
 from shared.storage import (
@@ -841,6 +842,20 @@ def tool_preflight(tool: str):
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
         binder_max_aa=binder_max_aa, num_designs=num_designs,
+        # Sizes the region the user typed, so the panel and the submit-time
+        # gate below judge the same run. Without it the panel would size the
+        # whole upload and refuse targets that submit then accepts.
+        #
+        # HALF OF THIS LIVES IN THE BROWSER. `preflight_target_segments` reads
+        # `target_input` off the form, so the sentence above is only true while
+        # static/js/preflight.js actually POSTS that field — and for its first
+        # release it did not. The server was correct in isolation and the
+        # feature was still dead: whole 3S7G plus contig `A236-300,B236-300`
+        # arrived here with no contig at all, sized 415, and greyed out the Run
+        # button for a 130-residue run. Both halves are pinned by
+        # tests/test_preflight_panel_contract.py; do not read this comment as a
+        # description of the system unless that file is still passing.
+        target_segments=preflight_target_segments(request.form),
     )
     return (_verdict_to_json(verdict, source_label), 200)
 
@@ -1213,6 +1228,10 @@ def tool_submit(tool: str):
                 hotspots=preflight_hotspots,
                 binder_max_aa=preflight_binder_max,
                 num_designs=preflight_num_designs,
+                # The validator already parsed the contig, so this is the
+                # exact selection that will reach the model — no re-parse and
+                # no chance of the gate sizing something the run will not use.
+                target_segments=preflight_target_segments(inputs),
             )
         except Exception:
             # Defensive: a preflight crash must not block submit on
@@ -1571,6 +1590,7 @@ def tool_submit(tool: str):
                 filename=staged_filename or "input.pdb",
                 binder_max_aa=reuse_binder_max,
                 num_designs=reuse_num_designs,
+                target_segments=preflight_target_segments(inputs),
             )
             if reuse_err:
                 mark_failed(

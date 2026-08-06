@@ -60,7 +60,12 @@ lab_projects_bp = Blueprint("lab_projects", __name__)
 # Stars persist in sessionStorage and the pooled table renders 300 rows per
 # view, so accumulating past 500 is an ordinary path, not an attack.
 #
-# The CAMPAIGN branch still has no equivalent; filed as A88.
+# BOTH ref branches now do that: each takes `requested_refs` from
+# `_parse_candidate_refs_counted` and reports the overflow. The legacy
+# single-job branch does not and cannot, because it never reads this field --
+# its shortlist arrives as `candidate_indices`, which is parsed by neither
+# function here and is neither capped nor counted. Passing a `truncated` there
+# would print a hardcoded zero. Filed separately.
 _MAX_CANDIDATE_REFS = 500
 
 
@@ -131,11 +136,35 @@ def _parse_candidate_refs_counted(raw: str) -> tuple[list[dict], int]:
 def _submit_campaign_shortlist(
     ctx, source_campaign_id, candidate_refs, target_name, target_context,
     assay_type, budget_band, affinity_goal_kd_nm, timeline_weeks,
+    *, requested_refs,
 ):
     """Create a lab campaign from a shortlist spanning many sub-jobs of a
     compute campaign, then stage each shortlisted PDB. Every referenced job is
     re-checked against the caller (IDOR-safe) and must be a child of the named
-    compute campaign; PDBs are namespaced by source sub-job."""
+    compute campaign; PDBs are namespaced by source sub-job.
+
+    ``requested_refs`` is how many well-formed refs the POST body carried BEFORE
+    :data:`_MAX_CANDIDATE_REFS` truncated it. Required rather than defaulted,
+    for the reason :func:`_submit_target_shortlist` gives: a default would mean
+    "nothing was truncated" on exactly the request where that is wrong.
+
+    THE PARENTAGE TEST IS ONE EQUALITY, and that is the whole difference from
+    the target arm. A design reaches THIS page by one route only -- it is a
+    child of this compute campaign -- so the test is
+    ``job.campaign_id == source_campaign_id``. The target arm's second clause
+    (``job.target_id`` or membership of ``campaign_ids_for_target``) has no
+    counterpart here and must not be copied: there is no target id in scope, and
+    widening the test is the one change that would admit a foreign design.
+
+    WHY ``read_job`` AND NOT ``get_job``. Every refusal on this route feeds two
+    decisions -- whether to submit at all, and what the user is then told --
+    and ``get_job`` answers ``None`` for a job that is absent, one that is not
+    the caller's, and a read that never completed. Reporting a shortfall from
+    that ``None`` tells a paying customer their designs are permanently
+    unmatchable because Supabase blinked; refusing on it tells a user to retry a
+    selection that can never work. The count and the copy downstream are only
+    honest because this reads the cause.
+    """
     from collections import defaultdict  # noqa: PLC0415
     from shared import compute_campaigns as cc  # noqa: PLC0415
     from shared.campaigns import create_campaign_from_refs  # noqa: PLC0415
@@ -144,29 +173,141 @@ def _submit_campaign_shortlist(
     detail = url_for(
         "campaigns.compute_campaign_detail", campaign_id=source_campaign_id,
     )
-    if not target_name or not candidate_refs:
-        return redirect(detail)
+
+    # Refs the parse-time cap discarded before any check ran, counted in REFS
+    # rather than designs: the tail past the bound was never parsed into pairs,
+    # so a duplicate hiding in it cannot be subtracted. Computed ABOVE the
+    # guards so it rides the failure exits too -- a 620-star shortlist that was
+    # refused otherwise has 120 designs nobody ever mentions, on the paths where
+    # the user is already being told something went wrong.
+    truncated = max(0, requested_refs - len(candidate_refs))
+    # `none` cannot carry it: the parser counts a ref as requested only when it
+    # also emits one (up to the cap), so an empty accepted list means an empty
+    # requested count.
+    trunc_qs = f"&truncated={truncated}" if truncated else ""
+
+    # Two causes, two answers. These were one silent `redirect(detail)`.
+    if not candidate_refs:
+        return redirect(detail + "?handoff=none")
+    if not target_name:
+        return redirect(detail + "?handoff=noname" + trunc_qs)
+    # Unreasoned on purpose, and identical to the target arm's `get_target`
+    # gate: this exit LEAVES the page that renders the banners, so there is
+    # nowhere to put one. `cc.get_campaign` also returns None for an unreadable
+    # row (shared/compute_campaigns.py:909-918), so a transient fault still
+    # bounces silently here; that needs a three-outcome campaign read and is
+    # filed, not fixed in this diff.
     if cc.get_campaign(source_campaign_id, user_id=ctx.user_id) is None:
         return redirect(url_for("jobs.jobs_list"))
 
     jobs_by_id: dict = {}
+    # ``{job_id: candidate_count(job.result)}``, filled from the job already in
+    # hand so the index check below costs no extra read. None means the result
+    # shape does not state a length -- see the check itself.
+    n_records: dict = {}
+    # Ids already refused PERMANENTLY, and ids we simply could not read. Two
+    # sets rather than one because they are two verdicts and only the second
+    # implicates the database. Both short-circuit the re-read: a miss never
+    # writes to ``jobs_by_id``, so without this a body naming one job 500 times
+    # issues 500 identical Supabase round trips (register item A87).
+    rejected: set = set()
+    unreadable: set = set()
+    # ``(job_id, index)`` pairs already decided, so a repeat is collapsed rather
+    # than counted twice.
+    seen: set = set()
     refs_by_job = defaultdict(list)
     clean_refs: list[dict] = []
+    # Distinct DESIGNS the checks below refused. Not derived by subtraction from
+    # the ref count: a repeat and a truncation are neither of them a refusal.
+    dropped = 0
+    # THE ONE FLAG THAT DECIDES WHETHER THIS SUBMISSION MAY PROCEED: set when a
+    # ref was refused for a reason WE COULD NOT ACTUALLY DECIDE.
+    #
+    # EXACTLY ONE SETTER HERE, where the target arm has two, and the second one
+    # must not be copied. That arm also refuses when its campaign-id set came
+    # back a prefix, because its parentage test consults a SECOND, paged read
+    # (`campaign_ids_for_target`) whose completeness is in doubt. This arm has
+    # no second read: `job.campaign_id` arrives on the same row as the job, in
+    # the same round trip, so once `read` is not `unavailable` the parentage
+    # answer is fully determined and nothing else can have narrowed it.
+    unresolved = False
     for ref in candidate_refs:
         jid = ref["job_id"]
         idx = ref["index"]
+        # DEDUPE FIRST, before ownership and before counting. A repeated
+        # (job_id, index) names ONE physical design, so the second occurrence is
+        # not a design that went missing and must not reach `dropped`, and
+        # persisting it would tell ops to order the same structure twice (the
+        # read-side half of this is blueprints/admin.py's `duplicates`).
+        if (jid, idx) in seen:
+            continue
+        seen.add((jid, idx))
+        if jid in rejected or jid in unreadable:
+            dropped += 1
+            continue
         job = jobs_by_id.get(jid)
         if job is None:
-            job = get_job(jid, user_id=ctx.user_id)
-            # Must be the caller's own job AND a child of this campaign.
+            read = read_job(jid, user_id=ctx.user_id)
+            if read.unavailable:
+                # NOT a rejection. We never learned anything about this job, so
+                # the checks below have nothing to apply and the submission as a
+                # whole is no longer decidable; see `unresolved`.
+                unreadable.add(jid)
+                dropped += 1
+                unresolved = True
+                continue
+            # `absent` from here on: the read completed, so `job is None` means
+            # the row is genuinely not there or is not this caller's -- a
+            # permanent verdict rather than a shrug.
+            job = read.job
+            # Must be the caller's own job AND a child of THIS compute campaign.
+            # One clause, deliberately: see the docstring.
             if job is None or job.campaign_id != source_campaign_id:
+                rejected.add(jid)
+                dropped += 1
                 continue
             jobs_by_id[jid] = job
+            n_records[jid] = candidate_count(job.result)
+        # The index has to exist in the source job's results. Unvalidated, an
+        # out-of-range ref is persisted, counted on the staff email and on the
+        # customer's page -- and then silently skipped by
+        # `stage_campaign_candidates` (shared/storage.py:218-220), so the lab
+        # receives fewer PDBs than every number anyone can see.
+        #
+        # `candidate_count` and not `len(candidate_records(...))`: the list form
+        # answers `[]` both for a job that delivered zero designs and for a
+        # result shape this app cannot read. Only the second is a reason to wave
+        # a ref through, and it reports None for it; a `{"candidates": []}` job
+        # HAS a known length, it is zero, and every index into it is refused.
+        n = n_records.get(jid)
+        if n is not None and idx >= n:
+            dropped += 1
+            continue
         refs_by_job[jid].append(idx)
         clean_refs.append({"job_id": jid, "index": idx})
 
+    # A REJECTION WE COULD NOT DECIDE IS NOT A VERDICT. This route stages a PAID
+    # order, so proceeding on a shortlist whose refusals we cannot stand behind
+    # hands the wet lab a list quietly missing designs the user selected and paid
+    # to compute. Refusing costs one click: the stars live in sessionStorage and
+    # survive the redirect.
+    #
+    # Gated on `unresolved`, NOT on `dropped`: `dropped` also counts refs naming
+    # a job that provably is not there or is not the caller's, a job belonging to
+    # a different run, and an index past the end of its job -- all decided by a
+    # read that COMPLETED.
+    #
+    # ORDER IS LOAD-BEARING. This precedes the empty-`clean_refs` exit below,
+    # because `rejected`'s banner says the same selection "will be refused the
+    # same way", which is false for a transient fault.
+    if unresolved:
+        return redirect(detail + "?handoff=unverified" + trunc_qs)
+
+    # NOT `none`. The request DID carry designs; every one failed the tenancy,
+    # provenance or index check, and (past the gate above) failed it for a reason
+    # we can stand behind. `none` is recoverable by retrying; this is not.
     if not clean_refs:
-        return redirect(detail)
+        return redirect(detail + "?handoff=rejected" + trunc_qs)
 
     try:
         lab_campaign = create_campaign_from_refs(
@@ -180,10 +321,14 @@ def _submit_campaign_shortlist(
             affinity_goal_kd_nm=affinity_goal_kd_nm,
             timeline_weeks=timeline_weeks,
         )
+    # THE SILENT NO-OP THIS ARM SHIPPED WITH (register item A-8). Both returns
+    # sent the user back to the page they came from with no banner, no error and
+    # nothing changed, which reads as "the button does nothing" rather than "your
+    # submission failed" -- on the one action that hands work to the wet lab.
     except ValueError:
-        return redirect(detail)
+        return redirect(detail + "?handoff=failed" + trunc_qs)
     if lab_campaign is None:
-        return redirect(detail)
+        return redirect(detail + "?handoff=failed" + trunc_qs)
 
     for jid, idxs in refs_by_job.items():
         job = jobs_by_id[jid]
@@ -198,6 +343,12 @@ def _submit_campaign_shortlist(
                 indices=idxs,
                 user_id=ctx.user_id,
                 job_id=jid,
+                # NO TOOL SLUG, unlike the target arm. A compute campaign has
+                # exactly one tool (`compute_campaigns.tool` is NOT NULL,
+                # migration 0034:36), so there is no two-tools-one-filename
+                # collision to namespace against -- and changing this prefix
+                # would split the bucket layout of new orders from every
+                # campaign-sourced folder ops already has open.
                 prefix=f"{jid[:8]}/",
             )
         except StorageError:
@@ -209,13 +360,28 @@ def _submit_campaign_shortlist(
     try:
         send_campaign_submitted_emails(
             campaign=lab_campaign, user_email=session.get("user_email", ""),
+            # NO `source_tools`. It is a {tool: count} spread over an accepted
+            # shortlist, and this one spans sub-jobs of a single-tool campaign,
+            # so the row would print one tool back at ops. shared/email.py's own
+            # docstring states that contract; passing it here would falsify it.
+            dropped=dropped,
+            truncated=truncated,
         )
     except Exception:
         logger.warning("campaign submit emails failed", exc_info=True)
 
+    # Both counts ride the query string so the confirmation page can state what
+    # was NOT sent. They stay SEPARATE because they are different facts in
+    # different units -- a `dropped` design was read and refused, a `truncated`
+    # one was never read -- and not because they have different remedies:
+    # neither has one the user can carry out, since nothing in this product
+    # clears a shortlist. Each is omitted when zero, so the common case keeps
+    # exactly today's URL.
     return redirect(
         url_for("lab_projects.campaign_detail", campaign_id=lab_campaign.id)
         + "?submitted=1"
+        + (f"&dropped={dropped}" if dropped else "")
+        + (f"&truncated={truncated}" if truncated else "")
     )
 
 
@@ -316,7 +482,7 @@ def _submit_target_shortlist(
     # implicates the database. Both short-circuit the re-read: without that, a
     # body naming the same job 500 times issues 500 identical Supabase round
     # trips, since a miss never writes to ``jobs_by_id`` and so is never a cache
-    # hit. The campaign branch above still has that shape; filed as A88.
+    # hit.
     rejected: set = set()
     unreadable: set = set()
     # ``(job_id, index)`` pairs already decided, so a repeat is collapsed
@@ -488,12 +654,10 @@ def _submit_target_shortlist(
     # changed, which reads as "the button does nothing" rather than "your
     # submission failed" -- on the one action that hands work to the wet lab.
     #
-    # Scoped to the target branch on purpose. `_submit_campaign_shortlist`
-    # above has a byte-identical pair of returns and is out of Phase 5's
-    # scope; it is filed as A88 in
-    # docs/audit-2026-07-22-campaign-rework-open-items.md. (Round 19 claimed
-    # it was filed and it was not: the register ended at A87, a different
-    # defect.)
+    # BOTH ref arms now route this pair to `?handoff=failed` on their own
+    # parent's page. `_submit_campaign_shortlist` above had a byte-identical
+    # pair of bare redirects and was fixed with this one (register item A88);
+    # the legacy single-job arm below still redirects to /jobs and is filed.
     except ValueError:
         return redirect(detail + "?handoff=failed" + trunc_qs)
     if lab_campaign is None:
@@ -631,22 +795,26 @@ def campaigns_submit():
     # both cannot use the narrower parentage test to smuggle in a job the
     # target branch would have rejected. The legacy single-job form is last.
     source_target_id = request.form.get("source_target_id", "").strip()
-    # The counted form, because the target branch below reports what the
+    # The counted form, because both ref branches below report what the
     # parse-time cap removed. `requested_refs` is the well-formed ref count
     # BEFORE truncation; `candidate_refs` is capped at _MAX_CANDIDATE_REFS, so
     # its length cannot tell the two apart.
     candidate_refs, requested_refs = _parse_candidate_refs_counted(
         request.form.get("candidate_refs", ""),
     )
-    # Gated on the parent ALONE, not on `and candidate_refs`, unlike the
-    # campaign arm below. Phase 5.2 removed the `disabled` attribute from the
-    # send button, so a user with nothing starred can now open the modal and
-    # submit it. With `and candidate_refs` that body falls through both ref
-    # branches to the legacy single-job one, which finds no source_job_id and
-    # redirects to /jobs -- a user who clicked "Send shortlist" on a target page
-    # would land on an unrelated list. The target branch's own guard already
-    # returns them to the target. The campaign arm keeps its shape because its
-    # button is unchanged and its empty case is not newly reachable.
+    # BOTH ref branches are gated on the parent ALONE, not on
+    # `and candidate_refs`. The shortlist bar is one macro
+    # (templates/components/candidate_table.html, the .cand-shortlist-bar
+    # block) and its button carries no `disabled` attribute in ANY scope, while
+    # openCampaignModal (static/js/candidate_table.js) has no zero-star guard --
+    # so an empty body is reachable from a target page and from a
+    # compute-campaign page alike. Gated on `and candidate_refs` it falls
+    # through both ref branches to the legacy single-job one, which finds no
+    # source_job_id and redirects to /jobs: a user who clicked "Send shortlist"
+    # lands on an unrelated list. Each ref branch's own empty guard returns them
+    # to the page they came from and says why. The earlier version of this
+    # comment claimed the campaign arm's empty case was "not newly reachable";
+    # it was, from the same change.
     if source_target_id:
         return _submit_target_shortlist(
             ctx, source_target_id, candidate_refs, target_name,
@@ -655,11 +823,11 @@ def campaigns_submit():
         )
 
     source_campaign_id = request.form.get("source_campaign_id", "").strip()
-    if source_campaign_id and candidate_refs:
+    if source_campaign_id:
         return _submit_campaign_shortlist(
             ctx, source_campaign_id, candidate_refs, target_name,
             target_context, assay_type, budget_band, affinity_goal_kd_nm,
-            timeline_weeks,
+            timeline_weeks, requested_refs=requested_refs,
         )
 
     # -- Legacy single-job shortlist --------------------------------------
@@ -742,9 +910,13 @@ def campaign_detail(campaign_id: str):
     submitted_flash = request.args.get("submitted") == "1"
     # How many starred designs the submit REJECTED, and how many the
     # per-request cap discarded before it ever looked at them. Two counts and
-    # not one, because a rejected design will be rejected again and a
-    # truncated one only needs a second, smaller request. Only the target
-    # branch sends either, and only when non-zero. Clamped rather than
+    # not one because they are different facts in different units -- a rejected
+    # design was read and refused, a truncated one was never read -- and NOT
+    # because they have different remedies: neither has a remedy the user can
+    # carry out, since nothing in this product clears a shortlist, so a second
+    # request re-posts the identical first 500 refs. (That withdrawn retry
+    # advice created duplicate paid orders; see the note in shared/email.py.)
+    # Both ref branches send them, and only when non-zero. Clamped rather than
     # validated: these are display counts on a page the user already owns, so
     # a crafted value misinforms nobody but its author.
     try:

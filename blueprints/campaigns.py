@@ -29,13 +29,33 @@ from flask import (
 from shared.auth import login_required
 from shared.credits import get_service_client, load_user_context
 from shared.idempotency import idempotent
-from shared.pdb_intake import resolve_target_upload
+from shared.pdb_intake import _parse_preflight_size_params, resolve_target_upload
 from shared.storage import StorageError, upload_input
 from tools import base as tool_base
 
 logger = logging.getLogger(__name__)
 
 campaigns_bp = Blueprint("campaigns", __name__)
+
+# Why the lab handoff sent the user back to this run's page.
+# `compute_campaign_detail` whitelists these and hands the survivor to the
+# template, which has one branch per reason.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER TESTS CAN IMPORT IT, for the reason
+# blueprints/targets.py records beside its own copy: a hand-written copy of
+# these keys in a test file does not couple to anything, so a sixth reason added
+# here renders the `{% else %}` arm's copy -- "your request could not be
+# submitted" -- for an unrelated cause with the whole suite green.
+#
+# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, DIFFERENT COPY.
+# Two of the five describe a cause that differs by arm: where this route's
+# `rejected` tests parentage it asks "child of this run" rather than "on this
+# target" -- though parentage is not its only ground, since a ref naming an
+# index past the end of a job that IS a child lands there too. And its
+# `unverified` can only mean a sub-job read that did not complete, because
+# _submit_campaign_shortlist makes no second read to come back short. The two
+# templates are therefore not one partial.
+LAB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 
 
 # The campaign detail page polls the status endpoint every ~5s per open tab,
@@ -391,6 +411,23 @@ def compute_campaign_create():
         segment_err = target.segment_error(validated.get("_target_segments") or [])
         if segment_err:
             return _err(segment_err)
+        # Size cap. Runs BEFORE the wallet gate below, so an oversized launch
+        # costs an error message rather than a wave of shards that bill to the
+        # session wall for zero designs. Size only — see DesignTarget.size_error
+        # for why the full preflight does not belong on this route.
+        # binder_max_aa arms the COMBINED cap (target + binder). Without it
+        # only the target half of the envelope ran here, so a 140 aa target
+        # with a 300 aa max binder — 440 against proteina's 260 budget — was
+        # refused by /tools/proteina/submit and funded by this route. Read via
+        # _parse_preflight_size_params because the validated binder shape is
+        # per-tool ({min,max} dict, [min,max] list, bare int, or a separate
+        # binder_length_max key) and that helper already reads all four.
+        size_err = target.size_error(
+            tool, run_chain, validated.get("_target_segments") or [],
+            binder_max_aa=_parse_preflight_size_params(validated)[0],
+        )
+        if size_err:
+            return _err(size_err)
     elif uploaded is None or not uploaded.filename:
         if not is_proteina:
             return _err("Upload a target PDB file.")
@@ -411,6 +448,36 @@ def compute_campaign_create():
         )
         if upload is None:
             return _err(upload_err or "Upload a target PDB file.")
+        # Same size cap on the fresh-upload branch, from the inspection just
+        # produced. Placed here so it is still ahead of campaign_preauth and
+        # create_campaign: nothing has moved money or written a row yet, so
+        # returning an error is clean.
+        from shared.pdb_preflight import size_only_refusal  # noqa: PLC0415
+        from shared.targets import (  # noqa: PLC0415
+            _segments_label, selection_residue_count,
+        )
+        upload_segments = validated.get("_target_segments") or []
+        # getattr, not attribute access: an SDF upload carries no inspection
+        # (and so no summary), and this must not turn a ligand campaign into a
+        # 500. A missing summary means "cannot say", which skips the gate —
+        # the same posture selection_residue_count takes for a target that
+        # predates the summary column.
+        upload_aa = selection_residue_count(
+            getattr(upload, "chain_summary", None),
+            validated.get("target_chain") or validated.get("antigen_chain") or "",
+            upload_segments,
+        )
+        if upload_aa is not None:
+            size_err = size_only_refusal(
+                tool, upload_aa,
+                # Same combined-cap arming as the target-bound branch above.
+                # This branch and that one take different kwargs, so a fix
+                # applied to one of them leaves the other blind.
+                binder_max_aa=_parse_preflight_size_params(validated)[0],
+                selection_label=_segments_label(upload_segments),
+            )
+            if size_err:
+                return _err(size_err)
 
     # 4. Prepaid START gate (checks, never debits): the wallet only has to
     #    cover the first wave; the rest funds as the campaign drains, and it
@@ -567,6 +634,16 @@ def compute_campaign_detail(campaign_id):
             )
         return redirect(url_for("campaigns.compute_campaigns_list"))
     counts = cc.get_progress_counts(campaign_id)
+    # Why the lab handoff sent the user back here. Four of the five were a bare
+    # `redirect(detail)` with no banner and nothing changed, which on the one
+    # action that hands work to the wet lab reads as a dead button (register
+    # item A-8, filed as A88 for this arm); the fifth, `unverified`, had no exit
+    # at all -- the arm silently shipped a short paid order instead.
+    # Whitelisted so an unknown or crafted value renders nothing at all rather
+    # than an empty alert.
+    handoff = (request.args.get("handoff") or "").strip()
+    if handoff not in LAB_HANDOFF_REASONS:
+        handoff = ""
     # Fan every succeeded sub-job's designs into one ranked table (top 300).
     agg = cc.aggregate_campaign_candidates(
         campaign_id, user_id=ctx.user_id, limit=300,
@@ -583,6 +660,7 @@ def compute_campaign_detail(campaign_id):
         candidates_total=agg.get("total", 0),
         candidates_capped=agg.get("capped", False),
         was_running=not terminal,
+        handoff=handoff,
     )
 
 @campaigns_bp.route("/campaigns/<campaign_id>/status.json", methods=["GET"])

@@ -980,11 +980,81 @@ def prepare_custom_target(
     return key
 
 
+# GPU allocator flags for every subprocess this module launches.
+#
+# ``proteinfoundation.generate`` imports colabdesign, which imports JAX (the
+# image pins colabdesign 1.1.1 / jax 0.4.29 — Dockerfile.modal:17). JAX's
+# DEFAULT is XLA_PYTHON_CLIENT_PREALLOCATE=true at MEM_FRACTION=0.75, so the
+# first JAX op reserves 0.75 x 81,920 = 61,440 MB on an A100-80GB regardless of
+# how big the target is, and holds it for the life of the process.
+#
+# That default did more damage than wasted VRAM: it invalidated the only two
+# size measurements this tool has. Both canary shards reported ~67.5 GB peak
+# from a device-wide nvidia-smi poll, of which 61,440 MB was this reservation.
+# Subtract it and ~6.1 GB is left over — but that residual is NOT "the real
+# working set", and calling it that would be the same species of invented
+# confidence this whole block exists to remove. With preallocation on, JAX
+# serves its own allocations FROM the 61,440 MB pool, so they never appear in a
+# device-wide reading at all. The ~6.1 GB is only the NON-JAX half (the torch
+# generator plus the CUDA context); the JAX/AF2 half is invisible and could be
+# anywhere from close to nothing up to the full 61,440 MB. Which makes the
+# conclusion stronger, not weaker: the two runs agreed to within 24 MB because
+# a CONSTANT dominated the reading, not because the workload is flat in target
+# size, and the part that would actually scale with the target is precisely the
+# part the reading could not see. Any envelope derived from those numbers is
+# arithmetic on an allocator policy. See shared/pdb_preflight_rules.py
+# ::_PROTEINA, which states this the same way.
+#
+# af2 and colabfold already set exactly these — tools/af2/run_pipeline.py:584
+# and tools/colabfold/run_pipeline.py:301, "keeps preflight from preallocating
+# most of the VRAM". proteina set none of them, and ``run_streaming`` passed no
+# ``env=`` at all, so the design subprocess inherited the bare JAX default.
+#
+# DELIBERATE DIVERGENCE from those two: they also set TF_FORCE_UNIFIED_MEMORY=1
+# and this does not. Unified memory lets an oversized job spill to host RAM and
+# thrash instead of dying, and thrashing is the EXPENSIVE failure here — it
+# bills on to _MAX_SESSION_S = 7200 s (~$12.58 per shard) while a clean OOM
+# dies in seconds for cents. For a tool whose open risk is uncapped spend on
+# oversized targets, failing fast is worth more than finishing slowly. With
+# PREALLOCATE=false and ALLOCATOR=platform, allocation goes through the CUDA
+# driver on demand and OOMs at the true device limit; MEM_FRACTION is then
+# effectively inert, and is kept only to match the two files above rather than
+# to have an effect.
+_ALLOCATOR_ENV = {
+    "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+    "XLA_PYTHON_CLIENT_ALLOCATOR": "platform",
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": "4.0",
+}
+
+
+def design_subprocess_env() -> dict:
+    """``os.environ`` plus ``_ALLOCATOR_ENV``, for any GPU subprocess.
+
+    Exported, not private, so the canary launches its design under the SAME
+    allocator policy production uses. The canary cannot reach these through
+    ``run_streaming`` — it needs its own Popen for the timeout and the VRAM
+    poller — and a canary that measures a different allocator than production
+    measures nothing production can act on. That is not hypothetical: it is
+    exactly how the two existing measurements came to be unusable.
+
+    ``setdefault``, so an operator can still override any of them per-run
+    without editing this file.
+    """
+    env = dict(os.environ)
+    for key, value in _ALLOCATOR_ENV.items():
+        env.setdefault(key, value)
+    return env
+
+
 def run_streaming(cmd: list[str], cwd: Path) -> int:
     """Run a subprocess, live-streaming stdout/stderr to Modal logs (never
     capture_output for long GPU work, per the Modal-subprocess memory)."""
     logger.info("cmd (cwd=%s): %s", cwd, " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False)
+    result = subprocess.run(
+        cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False,
+        env=design_subprocess_env(),
+    )
     return result.returncode
 
 

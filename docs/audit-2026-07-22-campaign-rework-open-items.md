@@ -2894,7 +2894,7 @@ in-product handoff the plan prefers.
   *Next:* widen `isolate_supabase` (or add a sibling fixture) to neutralise the
   other `.env` keys that change assertable output, `PUBLIC_BASE_URL` first.
 
-- **A87 (NEW, not fixed). The CAMPAIGN shortlist branch still re-queries a
+- **A87 (NEW, FIXED with A88). The CAMPAIGN shortlist branch still re-queries a
   rejected job id once per ref.** `_submit_campaign_shortlist` writes to
   `jobs_by_id` only on success, so a miss is never cached and a body naming the
   same foreign job N times issues N identical Supabase round trips. The target
@@ -2902,10 +2902,16 @@ in-product handoff the plan prefers.
   diff scoped to the new path. The parse-time cap
   (`_MAX_CANDIDATE_REFS = 500`, added to the shared parser so both branches
   inherit it) now bounds the amplification at 500 rather than unbounded.
-  *Next:* backport the four-line negative cache to
-  `_submit_campaign_shortlist`.
+  **Fixed:** landed as part of the A88 loop rewrite -- `_submit_campaign_
+  shortlist` now carries the same `rejected` / `unreadable` pair, so a body
+  naming one job N times issues ONE read. `tests/test_campaign_lab_handoff.py`
+  pins both halves separately (`test_a_repeated_rejected_job_id_is_looked_up_
+  once` and `test_an_unreadable_job_is_read_once_however_many_refs_name_it`),
+  each paired with `test_every_ref_naming_one_rejected_job_counts_as_its_own_
+  drop` so the cache cannot swallow the shortfall count it short-circuits.
+  *Next:* none.
 
-- **A88 (NEW, not fixed). Everything round 19 and round 20 fixed on the TARGET
+- **A88 (NEW, FIXED). Everything round 19 and round 20 fixed on the TARGET
   shortlist branch is still broken on the CAMPAIGN one.**
   `_submit_campaign_shortlist` is the sibling of `_submit_target_shortlist` in
   `blueprints/lab_projects.py` and was left alone to keep Phase 5's diff scoped
@@ -2953,8 +2959,36 @@ in-product handoff the plan prefers.
      legitimately disagree about the same campaign-sourced order.
   4. **No negative cache** — that half is A87, kept separate because it is a
      load defect rather than a correctness one.
-  *Next:* lift the target branch's loop into a shared helper rather than
-  copying it a second time; the two branches now differ only in their
+  **Fixed.** `_submit_campaign_shortlist` now takes `requested_refs` (keyword-
+  only, non-defaulted, exactly as the target arm) and reads jobs through
+  `read_job`, and carries the full refusal model: dedupe on `(job_id, index)`,
+  a negative cache over two verdict sets, an index check against
+  `candidate_count(job.result)`, a `dropped` count of distinct refused DESIGNS,
+  and an `unresolved` flag that REFUSES the whole submission
+  (`?handoff=unverified`) when any refusal had a cause the database caused.
+  Both counts now ride the redirect and the emails, and the five silent exits
+  became `?handoff=none|noname|rejected|unverified|failed` with a banner apiece
+  on `templates/runs/detail.html`, whitelisted through
+  `blueprints/campaigns.py::LAB_HANDOFF_REASONS`. The `get_job` -> `read_job`
+  swap is a PRECONDITION for reporting `dropped` at all, not a separate
+  improvement: on `get_job` a two-second Supabase fault would be reported to a
+  paying customer as a permanent rejection. New suites
+  `tests/test_campaign_lab_handoff.py` and `tests/test_run_handoff_banners.py`;
+  every assertion was mutation-verified.
+
+  Exit 5 (`cc.get_campaign(...) is None` -> `/jobs`) is deliberately UNCHANGED,
+  because that exit leaves the page that renders the banners; see A90.
+
+  **The *Next:* line below is DECLINED, and this is the reasoning.** The two
+  arms differ on six axes, not one: the parentage predicate, the number of
+  `unresolved` setters (two against one), whether an auxiliary read happens at
+  all, the staging prefix, whether `source_tools` is sent, and the failure-exit
+  URL vocabulary. A six-axis helper is harder to verify than two explicit
+  loops, and extracting it means rewriting the TARGET arm -- the only arm
+  currently protected by a 1360-line test file -- on a paid intake path. Filed
+  as a follow-up now that the campaign arm has a suite of its own.
+  *Next (superseded):* lift the target branch's loop into a shared helper rather
+  than copying it a second time; the two branches now differ only in their
   parentage test, which is the one thing that must stay distinct. Round 21
   widened the gap further: the campaign branch still reads jobs through
   `get_job`, so it cannot tell a job that is absent from one it failed to read,
@@ -2984,6 +3018,118 @@ in-product handoff the plan prefers.
   confirmation page listing the refs that were ordered. Either makes a second
   request deliver the remainder; neither is in `blueprints/lab_projects.py`,
   which is why this is filed rather than fixed.
+
+- **A90 (NEW, filed with A88, not fixed). The parent gate on BOTH ref arms
+  cannot tell a missing parent from an unreadable one.**
+  `_submit_campaign_shortlist` refuses on `cc.get_campaign(...) is None` and
+  `_submit_target_shortlist` on `get_target(...) is None`, and both of those
+  functions return None for an unreadable row as well as an absent one
+  (`shared/compute_campaigns.py::get_campaign` says so in its own docstring).
+  So a transient Supabase fault on the parent read bounces the user to an
+  unrelated list with no message, on the one action that hands work to a wet
+  lab. A88 left this exit untouched on purpose: it LEAVES the page that renders
+  the five handoff banners, so there is nowhere to put a reason without a
+  three-outcome read to branch on.
+  *Next:* a `read_campaign` / `read_target` pair with the `read_job` shape
+  (ok / absent / unavailable), then land the user back on their own page with
+  `?handoff=unverified`. New shared API plus new fakes across the app, and it
+  is symmetric across both arms, so it is one item and not two.
+
+- **A91 (NEW, filed with A88, not fixed). The LEGACY single-job shortlist arm
+  has none of the refusal model, and cannot get the truncation half of it.**
+  `campaigns_submit`'s third branch reads `candidate_indices` (a bare JSON
+  array of ints), not `candidate_refs`, so it never touches
+  `_parse_candidate_refs_counted` and `requested_refs` is structurally 0 there
+  -- passing `truncated=` would print a hardcoded-false zero, which is the
+  exact defect class A88 exists to fix. It is live, not dead:
+  `templates/components/candidate_table.html` still emits that modal in
+  single-job scope. Four distinct gaps: (a) the list is UNCAPPED, so it is the
+  one remaining request-amplification lever on this route; (b) no dedupe, so a
+  repeated index tells ops to order the same structure twice; (c) negative and
+  out-of-range indices are persisted -- `int("-1")` parses and only
+  `shared/storage.py`'s range check stops them, AFTER the row is written and
+  both emails are sent; (d) one uncoercible entry voids the whole shortlist
+  into a silent `/jobs` redirect.
+  *Next:* decide first whether this arm still needs to exist. If it does, the
+  fix is to route it through the counted parser on a refs payload rather than
+  to bolt a second parser onto `candidate_indices`.
+
+- **A92 (NEW, filed with A88, FIXED). The admin campaigns LIST prints "0"
+  in the Cands column for every ref-based row.**
+  `templates/admin/campaigns_list.html` renders
+  `c.candidate_indices | length`, and a 'campaign' or 'target' row leaves that
+  column empty by its own shape CHECK (migration 0037/0040) -- the shortlist
+  lives in `candidate_refs`. The DETAIL view is right (A84 fixed it); the list
+  above it is not, so ops scanning the queue sees every ref-based order as
+  empty. Read-side only, and independent of which refs the write path accepts.
+  *Next:* the same `len(candidate_indices) or len(candidate_refs or [])`
+  reconciliation `shared/email.py` already uses, or a call into
+  `_ref_shortlist_view`'s `count`.
+  **Fixed:** the cell now reads `candidate_refs` for `'campaign'` and
+  `'target'` and `candidate_indices` otherwise, the same rule
+  `templates/campaigns/dashboard.html:34` already carries. Four corrections to
+  the filing above, established by reading the code rather than trusting it:
+  (a) the route did NOT need changing -- `list_all_campaigns` is
+  `select("*")`, so `candidate_refs` was already on the object; (b) the first
+  enum arm is `'web'`, not `'job'`; (c) the shape CHECK does not empty
+  `candidate_indices` and says nothing about it -- the ref writers simply never
+  set the key and the column defaults to empty (0011:27), so nothing stops a
+  future writer populating both; (d) `'api'` was NOT broken, because
+  `create_api_campaign` does set `candidate_indices`, so "every ref-based row"
+  overstated it and a fix applied to all ref rows would have broken a working
+  arm. The `_ref_shortlist_view` option was rejected on cost: up to 60 uncached
+  `get_job` reads per campaign against a 200-row list is ~12,000 full-row reads
+  to render one page. Pinned by `tests/test_admin_campaigns_list.py`;
+  mutation-verified (reverting the cell reds it).
+
+- **A93 (NEW, filed with A88, FIXED). The customer confirmation email
+  hardcodes "yeast display" for every assay.**
+  `shared/email.py` writes "your yeast display scoping request" in the user
+  half while the staff half prints the real `assay_type`, and the modal in
+  `templates/components/candidate_table.html` offers three. False on ALL THREE
+  submit arms today and not made false by A88, but it is the same class of
+  defect -- a sentence asserting something the row does not say -- and it needs
+  copy tests of its own.
+  *Next:* render the row's assay in the customer copy, with a label map so an
+  enum value never reaches a customer verbatim.
+  **Fixed:** `_ASSAY_CUSTOMER_LABELS` maps the three values the 0011 CHECK
+  permits to customer wording, verified against that CHECK, against
+  `shared.campaigns.ASSAY_TYPES` and against the modal's radio values -- all
+  three agree. Anything outside the map degrades to "your scoping request"
+  rather than a raw enum or the word None; that branch is unreachable from any
+  row the database currently holds (`assay_type` is NOT NULL and CHECKed), so
+  it is cover for a future widening, not for today's data. The plain-text
+  customer body never named an assay, so its change is an ADDITION for
+  agreement between the two formats, not a correction. The subject line never
+  claimed an assay and is untouched.
+  **Wider than filed, three ways.** (1) The staff `Assay` cell was
+  `campaign.assay_type.replace(...)` inline, and an `AttributeError` there
+  fires ABOVE this function's only try block (which wraps just the HTTP post),
+  so a row with no usable `assay_type` would have escaped into the callers'
+  except blocks and lost the CUSTOMER confirmation as well as the staff
+  notification. Now read through `getattr`, printing an em dash. Only
+  `assay_type` is guarded: the sibling `budget_band.title()` calls are still
+  unguarded, so this function is NOT None-safe. (2) Four other customer-facing
+  surfaces asserted the same thing and are corrected:
+  `templates/components/candidate_table.html` (the modal subtitle, above a
+  radio group offering three), `templates/tools/comparison.html` (three
+  places) and `templates/campaigns_new_stub.html`. (3) A pre-existing comment
+  in `candidate_table.html` claiming "The microcopy in this modal is UNCHANGED
+  and deliberately so" became false when that subtitle was edited, and is
+  corrected rather than left behind. Pinned by 194 new lines in
+  `tests/test_campaign_submitted_email.py`; three mutations verified (HTML
+  body, plain-text lead, staff cell -- each reverts red).
+
+### Ops-visible consequence of A88 (announcement, no code change)
+
+`blueprints/admin.py::_ref_shortlist_view` does at READ time what the campaign
+arm did not do at WRITE time. For **new** campaign-sourced rows only:
+`duplicates` falls to 0, `out_of_range` falls to 0, and `raw` shrinks to equal
+`count`. **`count` -- the order quantity ops fulfils against -- does not move**,
+because admin already deduped and range-checked it before displaying it. Rows
+written before this commit keep their old shape, so the fulfilment queue now
+holds two populations. That is the intended direction; it is recorded here so
+it is announced rather than discovered.
 
 ### Divergences from the master plan, resolved in favour of the code
 

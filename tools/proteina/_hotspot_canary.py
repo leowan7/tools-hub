@@ -248,21 +248,134 @@ def _load_rp():
     return _load_by_path("rp", _RUN_PIPELINE_REMOTE)
 
 
-def _poll_vram(stop: threading.Event, out: dict) -> None:
-    """Device-wide peak VRAM, not per-process — the shard is the only tenant."""
+def _device_used_mb() -> int:
+    """One device-wide ``memory.used`` sample, or 0 if nvidia-smi is unhappy."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return max(
+            (int(line.strip()) for line in r.stdout.strip().splitlines()),
+            default=0,
+        )
+    except Exception:  # noqa: BLE001 — instrumentation may never fail a shard
+        return 0
+
+
+def _proc_used_mb(pid: int) -> int:
+    """VRAM attributed to ``pid`` by the driver, or 0 when it is not listed.
+
+    A process appears in ``--query-compute-apps`` only while it holds a CUDA
+    context, so 0 means "not measurable right now", never "used nothing".
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0] == str(pid):
+                return int(parts[1])
+    except Exception:  # noqa: BLE001 — instrumentation may never fail a shard
+        return 0
+    return 0
+
+
+# One poll iteration is two nvidia-smi calls, each capped at 10 s, and the
+# poller always completes an iteration after the stop flag is set. Anything at
+# or below 20 can cut the final sample off.
+_VRAM_JOIN_TIMEOUT_S = 25
+
+
+def _prealloc_disabled(env: dict | None) -> bool | None:
+    """Was JAX preallocation OFF in the env the CHILD actually received?
+
+    DERIVED, NEVER ASSERTED. This field exists for exactly one purpose: to make
+    it impossible to silently compare a reading taken before the allocator fix
+    with one taken after it. A hardcoded ``True`` cannot do that job — it
+    reports the intent of the code rather than the condition of the run.
+
+    The hole is real, not theoretical. ``design_subprocess_env`` builds its env
+    with ``setdefault`` so an operator can override any flag per run, which is
+    a deliberate feature. An operator who exports
+    ``XLA_PYTHON_CLIENT_PREALLOCATE=true`` therefore gets a child that DOES
+    preallocate — 61,440 MB of an A100-80GB on the first JAX op — while the
+    shard's JSON still says ``vram_prealloc_disabled: true``. That is the exact
+    mislabelling that made the previous two measurements unusable, reproduced
+    with a stamp of authenticity on it.
+
+    Returns None when the variable is absent from the env entirely, because
+    "absent" means JAX's own default applies and that default is preallocation
+    ON — but it is a default rather than a declaration, and a reader deciding
+    whether two numbers are comparable should see the difference.
+    """
+    if not env:
+        return None
+    raw = env.get("XLA_PYTHON_CLIENT_PREALLOCATE")
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in ("false", "0", "no", "off")
+
+
+def _poll_vram(
+    stop: threading.Event, out: dict, pid: int | None = None,
+    child_env: dict | None = None,
+) -> None:
+    """Peak VRAM during the design, device-wide AND for the design process.
+
+    WHY THIS IS NOT JUST THE DEVICE READING. The device figure is what the two
+    existing canary shards recorded, and it turned out to be ~91% a JAX
+    preallocation constant: with PREALLOCATE=true at MEM_FRACTION=0.75 the
+    first JAX op reserves 61,440 MB of an A100-80GB whatever the target size,
+    so both shards read ~67.5 GB and agreed to 24 MB. ``run_pipeline``
+    now disables that (``_ALLOCATOR_ENV``), which is what makes a device
+    reading mean demand again — but only for runs taken AFTER that change.
+    Numbers from before it are not comparable to numbers from after it.
+
+    ``peak_proc_mb`` attributes memory to the design subprocess, so a reading
+    is not silently inflated by anything else sharing the card, and
+    ``baseline_mb`` is the device reading taken BEFORE the design starts, so a
+    reader can subtract what was already resident rather than assume this shard
+    is the sole tenant. The old docstring asserted sole tenancy; it was never
+    checked, and now it does not have to be.
+
+    Every number here is SAMPLED, so each is a LOWER bound: a spike shorter
+    than the interval is invisible. The interval is 1 s rather than the 5 s the
+    existing measurements were taken at.
+
+    Note ``torch.cuda.max_memory_allocated()`` is deliberately absent: the
+    design is a separate process with its own CUDA context, so the harness
+    cannot read its torch allocator at all, and a field that always reported 0
+    would be worse than no field. Per-PID driver accounting is the equivalent
+    that is actually observable from here.
+    """
     peak = 0
-    while not stop.is_set():
-        try:
-            r = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for line in r.stdout.strip().splitlines():
-                peak = max(peak, int(line.strip()))
-        except Exception:
-            pass
-        stop.wait(5)
+    peak_proc = 0
+    # Sample FIRST, then test the stop flag: a `while not stop.is_set()` loop
+    # takes zero samples when the design ends before the poller is scheduled,
+    # and reports peak 0 — which reads as "used no VRAM" rather than "was never
+    # measured". A shard that dies early is exactly the one whose memory you
+    # want to see.
+    while True:
+        peak = max(peak, _device_used_mb())
+        if pid is not None:
+            peak_proc = max(peak_proc, _proc_used_mb(pid))
+        if stop.is_set():
+            break
+        stop.wait(1)
     out["peak_vram_mb"] = peak
+    out["peak_proc_vram_mb"] = peak_proc if pid is not None else None
+    out["vram_poll_interval_s"] = 1
+    # From the env handed to the child, not from this file's intentions.
+    out["vram_prealloc_disabled"] = _prealloc_disabled(child_env)
+    # Set LAST, and only on the normal exit. The join below has a timeout; if
+    # it expires this key is absent and the caller can tell "the poller was cut
+    # off mid-sample" from "the poller ran and measured nothing".
+    out["vram_poll_complete"] = True
 
 
 def _stage_dir(rp) -> Path:
@@ -704,17 +817,53 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
 
     vram: dict = {}
     stop = threading.Event()
-    poller = threading.Thread(target=_poll_vram, args=(stop, vram), daemon=True)
-    poller.start()
+    # Baseline BEFORE the design holds anything, so the peak below can be read
+    # as demand rather than as "whatever the card happened to contain".
+    baseline_mb = _device_used_mb()
     t0 = time.time()
+    # Popen, not subprocess.run: the poller needs the child's pid to attribute
+    # VRAM to the design rather than to the whole device. env= carries the
+    # allocator flags from run_pipeline — WITHOUT them JAX preallocates 61,440
+    # MB and every number this function reports is that constant.
+    child_env = rp.design_subprocess_env()
+    proc = subprocess.Popen(
+        cmd, cwd=str(work_dir), stdout=sys.stdout, stderr=sys.stderr,
+        env=child_env,
+    )
+    poller = threading.Thread(
+        target=_poll_vram, args=(stop, vram, proc.pid),
+        kwargs={"child_env": child_env}, daemon=True,
+    )
+    poller.start()
     try:
-        rc = subprocess.run(cmd, cwd=str(work_dir), stdout=sys.stdout,
-                            stderr=sys.stderr, timeout=3600).returncode
+        rc = proc.wait(timeout=3600)
     except subprocess.TimeoutExpired:
+        # subprocess.run used to do this kill for us. Losing it would leave a
+        # billed A100 process alive after the harness moved on.
+        proc.kill()
+        try:
+            proc.wait(timeout=60)
+        except Exception:  # noqa: BLE001
+            pass
         rc = 124
     runtime_s = int(time.time() - t0)
     stop.set()
-    poller.join(timeout=10)
+    # THE JOIN MUST OUTLAST THE FINAL SAMPLE. The poller samples first and
+    # tests the stop flag second, so after `stop.set()` it still has a full
+    # iteration to finish: two nvidia-smi calls at `timeout=10` each. A 10 s
+    # join could therefore expire mid-sample, leave `vram` empty, and report
+    # all four VRAM keys as None — which reads as "never measured" on a shard
+    # that measured fine. 25 s clears both calls with margin, and this is
+    # bounded wall-clock on a shard that already ran for minutes.
+    poller.join(timeout=_VRAM_JOIN_TIMEOUT_S)
+    if not vram.get("vram_poll_complete"):
+        # Say so rather than emitting a silent row of Nones. Only reachable if
+        # the join above still expired, i.e. nvidia-smi is wedged.
+        _emit(
+            f"[canary/{label}] WARNING: VRAM poller did not finish within "
+            f"{_VRAM_JOIN_TIMEOUT_S}s; its readings are incomplete.",
+            flush=True,
+        )
 
     out: dict = {
         "label": label, "key": key, "contig": contig,
@@ -731,7 +880,26 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         # built with, immediately above, so it cannot describe a different run.
         "n_designs_expected": _NSAMPLES * _REPLICAS,
         "exit_code": rc, "runtime_s": runtime_s,
+        # Four keys, not one, because the single key this replaced was read as
+        # "demand" when it was mostly a JAX reservation. peak_vram_mb is still
+        # device-wide; baseline_vram_mb is what was resident before the design;
+        # peak_proc_vram_mb is the design process alone; prealloc_disabled says
+        # whether the allocator fix was in force, so a reading from before it
+        # can never be silently compared against one from after.
         "peak_vram_mb": vram.get("peak_vram_mb"),
+        "peak_proc_vram_mb": vram.get("peak_proc_vram_mb"),
+        "baseline_vram_mb": baseline_mb,
+        "vram_poll_interval_s": vram.get("vram_poll_interval_s"),
+        # DERIVED from the env the child got (see _prealloc_disabled), not
+        # asserted. True means the allocator fix was in force for THIS run;
+        # False means an operator override put preallocation back on and the
+        # peak is ~61 GB of reservation; None means the flag was not set at all
+        # and JAX's own default (ON) applied. All three are different rows.
+        "vram_prealloc_disabled": vram.get("vram_prealloc_disabled"),
+        # False/absent means the poller was cut off and the four numbers above
+        # are incomplete rather than measured. Without it a timed-out join is
+        # indistinguishable from a shard that used no VRAM.
+        "vram_poll_complete": bool(vram.get("vram_poll_complete")),
         # The chains scored as target (the contig's) and every chain the input
         # file carried. They differ exactly when --contig names a subset, and
         # printing both is what makes that visible instead of inferable.
@@ -1144,7 +1312,17 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             _emit(f"Complexes whose target chain IS the input target: "
                   f"{res.get('n_target_verified')} "
                   f"(unverified: {res.get('n_target_unverified')})")
-            _emit(f"Peak VRAM: {res.get('peak_vram_mb')} MB   Runtime: {res.get('runtime_s')} s")
+            # Print the process figure alongside the device one. The operator
+            # reads this line and then writes a size cap from it, so it has to
+            # show which number is demand and what was already on the card.
+            _emit(
+                f"Peak VRAM: device {res.get('peak_vram_mb')} MB   "
+                f"design-process {res.get('peak_proc_vram_mb')} MB   "
+                f"baseline {res.get('baseline_vram_mb')} MB   "
+                f"(poll {res.get('vram_poll_interval_s')}s, "
+                f"prealloc_disabled={res.get('vram_prealloc_disabled')})   "
+                f"Runtime: {res.get('runtime_s')} s"
+            )
             _emit("\nSET shared/pdb_preflight_rules.py::_PROTEINA SizeEnvelope."
                   "hard_cap_target_aa FROM THIS RUN before flag-on.")
             # HOW MANY OF THE ORDERED DESIGNS UPSTREAM ACTUALLY KEPT. Phase 1

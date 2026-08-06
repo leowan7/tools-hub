@@ -729,3 +729,101 @@ def test_normalizer_still_rejects_a_chain_that_is_absent():
         assert "Z" in str(exc.value)
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# Size gate on the campaign routes.
+#
+# The per-tool size cap lived only in preflight_for_tool, which only
+# /tools/<slug>/submit calls — and that route refuses anything larger than one
+# container. So the cap never guarded a campaign, which is the shape that
+# spends real money. These cover the counting that makes a size gate possible
+# without downloading the structure.
+# ---------------------------------------------------------------------------
+
+_FC_SUMMARY = {
+    "total_standard_residues": 830,
+    "chains": [
+        {"chain_id": "A", "standard_residue_count": 208,
+         "min_resnum": 236, "max_resnum": 443},
+        {"chain_id": "B", "standard_residue_count": 207,
+         "min_resnum": 236, "max_resnum": 442},
+        {"chain_id": "C", "standard_residue_count": 208,
+         "min_resnum": 237, "max_resnum": 444},
+        {"chain_id": "D", "standard_residue_count": 207,
+         "min_resnum": 238, "max_resnum": 444},
+    ],
+}
+
+
+def test_selection_count_uses_the_contig_not_the_whole_file():
+    from shared.targets import selection_residue_count
+    n = selection_residue_count(
+        _FC_SUMMARY, "A B", [("A", 236, 300), ("B", 236, 300)],
+    )
+    assert n == 130          # the canaried window, not the 830 aa file
+
+
+def test_selection_count_without_a_contig_is_the_named_chains():
+    from shared.targets import selection_residue_count
+    assert selection_residue_count(_FC_SUMMARY, "A B", []) == 415
+    assert selection_residue_count(_FC_SUMMARY, "A B C D", None) == 830
+
+
+def test_selection_count_clips_a_range_to_the_chain_it_names():
+    """A range running past the end of the chain counts what exists, not what
+    was typed — otherwise "A1-9999" would refuse itself."""
+    from shared.targets import selection_residue_count
+    assert selection_residue_count(_FC_SUMMARY, "A", [("A", 236, 9999)]) == 208
+
+
+def test_selection_count_never_exceeds_the_chain_it_reads():
+    """The summary has no resnum list, so a span is only an upper bound. It
+    must still be clamped by the chain's actual residue count: a chain
+    numbered 236-443 with gaps holds fewer than 208, and claiming more would
+    refuse runs that fit."""
+    from shared.targets import selection_residue_count
+    sparse = {"chains": [{"chain_id": "A", "standard_residue_count": 50,
+                          "min_resnum": 1, "max_resnum": 400}]}
+    assert selection_residue_count(sparse, "A", [("A", 1, 400)]) == 50
+
+
+def test_selection_count_says_it_cannot_tell_rather_than_guessing_zero():
+    """A target predating the chain_summary column must not be blocked by a
+    check that cannot see it — None means "no verdict", and 0 would mean "too
+    small", which is a different and wrong answer."""
+    from shared.targets import selection_residue_count
+    assert selection_residue_count(None, "A", []) is None
+    assert selection_residue_count({}, "A", []) is None
+
+
+def test_a_malformed_segment_falls_back_to_the_larger_count():
+    """An unreadable contig must round UP to the whole chains. Rounding down
+    is what would let an oversized campaign through."""
+    from shared.targets import selection_residue_count
+    assert selection_residue_count(_FC_SUMMARY, "A B", [("A", 236)]) == 415
+
+
+def test_size_error_refuses_an_over_cap_target_for_proteina():
+    from shared.targets import DesignTarget
+    t = DesignTarget(
+        id="t-1", user_id="u-1", kind="pdb", name="Fc", filename="3s7g.pdb",
+        storage_path="u-1/t-1/3s7g.pdb", target_chain="A B",
+        chain_summary=_FC_SUMMARY,
+    )
+    # 415 aa selection: over proteina's cap, inside rfdiffusion's 500.
+    assert t.size_error("proteina", "A B", []) is not None
+    assert t.size_error("rfdiffusion", "A B", []) is None
+    # Narrowed to the canaried window, proteina accepts it.
+    assert t.size_error(
+        "proteina", "A B", [("A", 236, 300), ("B", 236, 300)],
+    ) is None
+
+
+def test_size_error_is_silent_when_it_cannot_see_a_summary():
+    from shared.targets import DesignTarget
+    t = DesignTarget(
+        id="t-2", user_id="u-1", kind="pdb", name="old", filename="old.pdb",
+        storage_path="u-1/t-2/old.pdb", target_chain="A", chain_summary=None,
+    )
+    assert t.size_error("proteina", "A", []) is None

@@ -48,7 +48,17 @@
                 {{ c.user_id[:8] }}
               </td>
               <td style="padding:.5rem .75rem;">{{ c.assay_type | replace('_', ' ') | title }}</td>
-              <td style="padding:.5rem .75rem;">{{ c.candidate_indices | length }}</td>
+              {# 'campaign' (migration 0037) and 'target' (0040) rows keep the
+                 shortlist in candidate_refs: neither writer sets
+                 candidate_indices, and the column defaults to empty (0011), so
+                 reading it alone printed 0 for every ref-based order. Testing
+                 for 'campaign' alone would leave every target-sourced row still
+                 printing 0 -- the mistake already made and fixed once on the
+                 user-facing list this mirrors, templates/campaigns/dashboard.html.
+                 `or []` because Campaign.candidate_refs is Optional and Jinja's
+                 length filter raises on None. This is the stored list's length;
+                 the detail page is what reconciles it against the source jobs. #}
+              <td style="padding:.5rem .75rem;">{{ ((c.candidate_refs or []) if c.submission_source in ('campaign', 'target') else c.candidate_indices) | length }}</td>
               <td style="padding:.5rem .75rem;">{{ c.budget_band | title }}</td>
               <td style="padding:.5rem .75rem;">
                 <span class="panel-badge">{{ c.status }}</span>
