@@ -203,7 +203,12 @@ _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfdiffusion_app.py:_GPU
     multi_chain_supported=True,      # Watson 2023 designs against multi-chain targets
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:56} in 153 s — both protomers intact, one binder, no
+    # target/binder swap. The llm-pd normalizer is no longer exact-match
+    # (leowan7/llm-proteinDesigner#11 ports parse_target_chains) and the image
+    # was rebuilt against it.
+    multi_chain_container_ready=True,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -231,6 +236,13 @@ _BINDCRAFT = ToolRules(
     slug="bindcraft",
     gpu="A100-80GB",
     multi_chain_supported=True,      # Pacesa 2024 takes multi-chain target settings
+    # Still UNVERIFIED as of the 2026-08-05 GPU session that cleared
+    # rfdiffusion / boltzgen / pxdesign. It could not be cleared the same way:
+    # bindcraft is the one binder tool with no smoke tier, so the only way to
+    # exercise its chain handling is a full paid pilot run. Its wrapper does
+    # pass target_chain straight through to BindCraft's native `chains`
+    # setting and needed no code change — but that is a docs read plus a code
+    # path, not evidence.
     # UNVERIFIED, not known-good: bindcraft runs from a separate prebuilt
     # image (config.runpod_image_bindcraft = kendrew-bindcraft:v7) rather
     # than llm-pd's normalizer, so its chain handling could not be executed
@@ -260,7 +272,10 @@ _BOLTZGEN = ToolRules(
     slug="boltzgen",
     gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
     multi_chain_supported=True,      # Boltz-class models cofold multi-chain
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:55} in 430 s. include:/binding_types: are per-chain
+    # LISTS upstream and the wrapper now builds them per chain.
+    multi_chain_container_ready=True,
     hotspots_required=False,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -283,7 +298,11 @@ _PXDESIGN = ToolRules(
     slug="pxdesign",
     gpu="A100-80GB",                 # matches tools/pxdesign/__init__.py docstring
     multi_chain_supported=True,
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:80} in 445 s. target.chains is a per-chain MAP upstream;
+    # ensure_cif no longer filters to one chain and each chain gets its own
+    # crop and hotspot list.
+    multi_chain_container_ready=True,
     hotspots_required=True,          # pxdesign requires >=1 hotspot
     min_target_aa=30,
     size=SizeEnvelope(
