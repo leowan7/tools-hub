@@ -1197,12 +1197,20 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     unconstrained, so "these tokens resolve to nothing" is never a warning; it
     is a refusal, and it must be issued where it costs nothing.
 
-    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads
-    a file and calls ``run_pipeline``'s own matcher, neither of which the
-    offline suite can do for a container; the two ``raise``s are in
-    ``_canary_scoring`` where the suite executes them. Both refusals previously
-    survived deletion — the tests could only see that a call existed — while
-    ``--hotspots A99999`` went on spawning three A100s.
+    THE NAME IS NARROWER THAN THE JOB, DELIBERATELY NOT RENAMED. This is where
+    every pre-spawn refusal goes, because "before a shard exists" is the only
+    property they share and having one such place is what makes a missing guard
+    visible. It now runs four: the target has structure, the contig is
+    renderable, the contig selects enough target, the hotspots resolve — in
+    ``prepare_custom_target``'s order, so the canary refuses for the same reason
+    production would rather than for whichever consequence it noticed first.
+
+    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads a
+    file and calls ``run_pipeline``'s own matcher, predicate and threshold, none
+    of which the offline suite can do for a container; every ``raise`` is in
+    ``_canary_scoring`` where the suite executes them. Both original refusals
+    survived deletion once — the tests could only see that a call existed —
+    while ``--hotspots A99999`` went on spawning three A100s.
     """
     rp_local = _load_rp_local()
     residues, n_unparsable = rp_local.pdb_ca_residues(Path(target_pdb))
@@ -1220,6 +1228,14 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
         rp_local.unrenderable_segments(
             [s for s in segments if s[1] is not None]))
     selected = rp_local.select_residues(residues, segments)
+    # Production's minimum-size floor, called rather than restated, and BEFORE
+    # the hotspot check because that is production's order: a sliver of a contig
+    # also makes most tokens "missing", and the operator who asked for
+    # ``--contig A10-20`` needs to be told the range is too small, not that the
+    # hotspots outside it do not resolve. See cs.refuse_target_too_small.
+    cs.refuse_target_too_small(
+        target_pdb, resolved, rp_local.target_too_small(selected),
+        len(selected), rp_local.MIN_TARGET_RESIDUES)
     cs.refuse_unresolvable_hotspots(
         target_pdb, resolved, len(selected),
         [(label, rp_local.missing_hotspots(selected, list(spec or [])))

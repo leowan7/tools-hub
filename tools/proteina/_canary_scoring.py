@@ -1599,6 +1599,44 @@ def refuse_unrenderable_contig(target_pdb: Any, contig: Any,
         "shard would boot, load checkpoints and die. NO GPU TIME WAS USED.")
 
 
+def refuse_target_too_small(target_pdb: Any, contig: Any, too_small: bool,
+                            n_selected: int, minimum: Any) -> None:
+    """Refuse a contig that selects too little target to design against.
+
+    THE THIRD GUARD PRODUCTION HAD AND THE CANARY DID NOT, and the class is now
+    established rather than suspected: ``prepare_custom_target`` refuses a
+    selection below ``run_pipeline.MIN_TARGET_RESIDUES`` before any GPU is
+    touched, and the harness had nothing equivalent — only the non-EMPTY checks
+    above, which a ten-residue contig passes. ``--contig A10-20`` would spawn
+    one A100 in phase 1 (~$4) or three in phase 2 (~$12) to discover what a
+    length knows for free.
+
+    Unlike the other two this one costs money in BOTH directions if it is
+    missed. The shard does not necessarily crash: upstream will happily design
+    against a sliver, so the run can come back green having measured hotspot
+    recall over a target production would have refused to accept at all. A
+    canary that answers a question production never asks is worse than one that
+    fails.
+
+    ``too_small`` IS PRODUCTION'S ANSWER, NOT ONE COMPUTED HERE, which is why it
+    is a parameter rather than ``n_selected < minimum``. The comparison and the
+    threshold both live in ``run_pipeline.target_too_small``; this turns its
+    verdict into the refusal, and ``minimum`` is carried only so the message can
+    quote the number the operator has to clear. Recomputing either here would
+    reintroduce exactly the drift this round exists to remove.
+    """
+    if not too_small:
+        return
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} selects {n_selected} residue(s) of "
+        f"{target_pdb}, fewer than the {minimum} production requires before it "
+        "will accept a target at all. prepare_custom_target refuses this "
+        "upload for free; the canary would have spent ~$4 in phase 1 or ~$12 "
+        "in phase 2 to design against a sliver of surface, and could have come "
+        "back GREEN having measured a run production would never have run. "
+        "Widen --contig. NO GPU TIME WAS USED.")
+
+
 def shard_spec_refusal(label: str, missing: Sequence[str],
                        missing_cross: Sequence[str]) -> dict | None:
     """The in-container twin of the two refusals above, as a shard result.

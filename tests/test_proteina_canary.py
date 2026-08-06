@@ -7640,3 +7640,217 @@ class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
             f"not the {len(_PROTEINA_CANARY)} completed shards the envelope "
             f"has"
         )
+class _RpWithVerdict:
+    """The real ``run_pipeline`` with ONE answer overridden.
+
+    Everything is delegated to ``rp`` except ``target_too_small``, which returns
+    whatever the test says. That is how "the canary obeys production's verdict"
+    is separated from "the canary happens to agree with production on this
+    fixture" — the two are indistinguishable while both sides say the same
+    thing, and telling them apart is the entire subject of this round.
+    """
+
+    def __init__(self, verdict: bool):
+        self._verdict = verdict
+        self.asked = []
+
+    def __getattr__(self, name):
+        return getattr(rp, name)
+
+    def target_too_small(self, selected):
+        self.asked.append(len(selected))
+        return self._verdict
+
+
+class TestTheMinimumTargetSizeGuardReachesTheCanaryToo:
+    """THE THIRD INSTANCE OF THE SAME CLASS, and by now it is a class.
+
+    ``prepare_custom_target`` refuses a contig selecting fewer than
+    ``MIN_TARGET_RESIDUES`` before any GPU is started — there is not enough
+    surface in a sliver to place a 60-120 residue binder. The canary's pre-spawn
+    refusals checked that the selection was non-EMPTY and nothing more, so
+    ``--contig A10-20`` passed every one of them and spawned: one A100 in phase
+    1 (~$4), three in phase 2 (~$12).
+
+    THIS ONE COSTS MONEY IN BOTH DIRECTIONS, which the first two did not. A
+    tagged construct and an uncropped file both CRASH the shard, so the money is
+    lost but the verdict is at least honest. A sliver does not crash: upstream
+    will design against it, the metrics come back, and the harness can report
+    PASS — a green result measured on a target production would have refused to
+    accept. The canary would be answering a question production never asks.
+
+    The two already closed are ``stage_cropped_target`` (the crop) and
+    ``unrenderable_segments`` (negative numbering), both by CALLING production's
+    own code rather than restating it. Same shape here: the number and the
+    comparison are ``rp.MIN_TARGET_RESIDUES`` and ``rp.target_too_small``, and
+    the tests below are written against the constant, never against 20.
+    """
+
+    @staticmethod
+    def _target(tmp_path):
+        """60 residues on chain A, numbered A1..A60."""
+        path = tmp_path / "t.pdb"
+        path.write_text(SIXTY_RES_PDB)
+        return path
+
+    @staticmethod
+    def _contig(n):
+        """A chain-A contig selecting exactly ``n`` residues of SIXTY_RES_PDB."""
+        return f"A1-{n}"
+
+    def _below(self):
+        return self._contig(rp.MIN_TARGET_RESIDUES - 1)
+
+    def _at(self):
+        return self._contig(rp.MIN_TARGET_RESIDUES)
+
+    def _namespace(self, shard, rp_local=None):
+        return load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=(lambda: rp_local if rp_local is not None else rp),
+            run_shard=shard, phase0=_Remote(result={}))
+
+    def test_a_sliver_of_a_contig_is_refused_before_any_shard_spawns(self, tmp_path):
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._target(tmp_path)), self._below(),
+                [("positive", ["A1", "A2"])])
+        message = str(excinfo.value)
+        assert str(rp.MIN_TARGET_RESIDUES - 1) in message, (
+            "the operator needs to know how many residues the contig actually "
+            f"selected: {message}")
+        assert str(rp.MIN_TARGET_RESIDUES) in message, (
+            f"...and the floor they have to clear: {message}")
+        assert "NO GPU TIME WAS USED" in message
+
+    def test_main_does_not_spawn_the_four_dollar_shard_on_a_sliver(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it. MUTATION: delete the
+        ``cs.refuse_target_too_small`` call and phase 1 bills $4."""
+        shard = _Remote()
+        namespace = self._namespace(shard)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(self._target(tmp_path)),
+                              hotspots="A1 A2", contig=self._below())
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 designing against a contig production refuses")
+
+    def test_main_does_not_spawn_the_three_twelve_dollar_shards_either(
+            self, tmp_path):
+        """``--negative`` skips ``pick_far_patch``, so this is the path with the
+        least local code between the operator and three A100 startups."""
+        shard = _Remote()
+        namespace = self._namespace(shard)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=2, target_pdb=str(self._target(tmp_path)),
+                              hotspots="A1 A2", negative="A8 A9 A10",
+                              contig=self._below())
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 2 spawned three shards on a contig production refuses")
+
+    def test_a_contig_at_the_floor_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, and the bound is ``<``: exactly
+        ``MIN_TARGET_RESIDUES`` residues is acceptable to production, so a
+        canary that refuses it is refusing a run production would have run."""
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), self._at(),
+            [("positive", ["A1"])]) == self._at()
+
+    def test_a_whole_chain_target_is_not_refused(self, tmp_path):
+        """The ordinary case, with no ``--contig`` at all."""
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), "", [("positive", ["A1"])]) == "A1-60"
+
+    def test_the_size_refusal_precedes_the_hotspot_one(self, tmp_path):
+        """PRODUCTION'S ORDER, AND THE ACTIONABLE MESSAGE.
+
+        A sliver also puts most tokens outside the selection, so the hotspot
+        refusal fires on the same input. Answering with "A55 does not resolve"
+        sends the operator to fix a hotspot that is fine; the range is what is
+        wrong, and ``prepare_custom_target`` checks the size first for exactly
+        this reason.
+        """
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._target(tmp_path)), self._below(),
+                [("positive", ["A1", "A55"])])
+        message = str(excinfo.value)
+        assert str(rp.MIN_TARGET_RESIDUES) in message and "Widen" in message
+        assert "A55" not in message, (
+            "the size refusal must win; a hotspot message here sends the "
+            f"operator to the wrong fix: {message}")
+
+    def test_the_canary_obeys_production_s_verdict_rather_than_its_own(
+            self, tmp_path):
+        """THE DRIFT TEST, and the reason the threshold was lifted out of
+        ``prepare_custom_target`` at all.
+
+        A canary carrying its own ``< 20`` passes every other test in this
+        class — it agrees with production today. It fails this one, in both
+        directions, because production's answer is the only thing consulted. If
+        the floor moves, the canary moves with it in the same commit or not at
+        all.
+        """
+        # (a) production says too small; the target is 60 residues and the
+        #     canary must refuse anyway.
+        fake = _RpWithVerdict(True)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: fake)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._target(tmp_path)), "", [("positive", ["A1"])])
+        assert fake.asked == [60], (
+            "the canary must hand production the selection it resolved, not a "
+            f"count of something else: {fake.asked}")
+
+        # (b) production says it is fine; the contig is a sliver and the canary
+        #     must NOT invent a floor of its own.
+        fake = _RpWithVerdict(False)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: fake)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), self._below(),
+            [("positive", ["A1"])]) == self._below()
+
+    def test_the_threshold_is_run_pipelines_and_not_a_restatement(self):
+        """The structural half: the canary ASKS, and the number is not written
+        down anywhere in the refusal."""
+        assert rp.target_too_small(
+            [("A", i) for i in range(rp.MIN_TARGET_RESIDUES - 1)])
+        assert not rp.target_too_small(
+            [("A", i) for i in range(rp.MIN_TARGET_RESIDUES)])
+        refusal = next(
+            n for n in ast.walk(ast.parse(_CANARY_PATH.read_text(encoding="utf-8")))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "target_too_small" in called, (
+            "the canary must ASK run_pipeline whether the contig selects enough")
+        literals = {node.value for node in ast.walk(refusal)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
+                    and not isinstance(node.value, bool)}
+        assert rp.MIN_TARGET_RESIDUES not in literals, (
+            f"{rp.MIN_TARGET_RESIDUES} is written out in the canary; it must "
+            "come from rp_local.MIN_TARGET_RESIDUES")
+
+    def test_the_refusal_actually_raises_rather_than_computing_and_returning(self):
+        """MUTATION: ``cs.refuse_target_too_small`` computing the verdict and
+        returning it. Both earlier refusals shipped in exactly that shape — the
+        suite could see the call existed and nothing more — while
+        ``--hotspots A99999`` went on spawning three A100s."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            cs.refuse_target_too_small("t.pdb", "A10-20", True, 11, 20)
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+        assert cs.refuse_target_too_small("t.pdb", "A1-60", False, 60, 20) is None

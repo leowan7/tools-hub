@@ -1646,6 +1646,134 @@ class TestNegativeResidueNumbering:
         assert err is not None and "negative residue numbers" in err
 
 
+class TestMinimumTargetSize:
+    """The floor below which a target is refused before any GPU is started.
+
+    ``prepare_custom_target`` has always refused a selection under 20 residues —
+    there is not enough surface there to place a 60-120 residue binder — but the
+    threshold was a bare literal inside that function and NOTHING covered it.
+    Two consequences, and this class exists for the second as much as the first:
+    the check could be deleted with the suite still green, and
+    ``_hotspot_canary`` could not call it, so the harness had no floor at all
+    and ``--contig A10-20`` would spend ~$4 (phase 1) or ~$12 (phase 2) learning
+    what a length knows for free.
+
+    Every assertion below is written against ``rp.MIN_TARGET_RESIDUES`` rather
+    than against 20, so moving the threshold moves the tests with it. That is
+    the property being pinned: ONE number, read by both sides.
+    """
+
+    def test_a_selection_under_the_floor_is_refused(self):
+        floor = rp.MIN_TARGET_RESIDUES
+        assert rp.target_too_small([("A", i) for i in range(floor - 1)])
+        assert rp.target_too_small([])
+
+    def test_a_selection_at_the_floor_is_accepted(self):
+        """The bound is ``<``, not ``<=``. Off by one here refuses a target the
+        engine would have designed against, which is the same class of harm in
+        the other direction."""
+        floor = rp.MIN_TARGET_RESIDUES
+        assert not rp.target_too_small([("A", i) for i in range(floor)])
+        assert not rp.target_too_small([("A", i) for i in range(floor + 40)])
+
+    def test_the_floor_is_a_real_floor(self):
+        """A sanity bound on the constant itself. A threshold of 0 or 1 would
+        make the predicate vacuous and every test above pass on nothing."""
+        assert rp.MIN_TARGET_RESIDUES >= 10
+
+    def _prepare(self, tmp_path, monkeypatch, target_input):
+        """Run ``prepare_custom_target`` against a 60-residue chain A.
+
+        THE STRUCTURAL TESTS BELOW ARE NOT ENOUGH ON THEIR OWN, which is the
+        lesson this branch keeps paying for: an AST check sees that a call
+        exists, and a refusal that computes its verdict and never acts on it
+        satisfies that exactly. So the floor is also EXECUTED, and what is
+        asserted is the consequence — the process exits, and nothing is staged
+        for the design engine.
+
+        Everything outside ``tmp_path`` is patched away. Nothing here reaches
+        ``complexa``: the registry read is the next step after the crop and it
+        raises on a path that does not exist, which is a DIFFERENT ``check``
+        name and is exactly what makes the at-the-floor control meaningful.
+        """
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb({"A": (1, 60)})))
+        with pytest.raises(SystemExit) as excinfo:
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input=target_input, hotspot_spec=[],
+                binder_length=[60, 120], run_dir=tmp_path / "run")
+        assert excinfo.value.code == 1
+        payload = json.loads(results.read_text())
+        return payload["error"], sorted(p.name for p in hub.glob("hub_*.pdb"))
+
+    def test_a_contig_under_the_floor_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        floor = rp.MIN_TARGET_RESIDUES
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{floor - 1}")
+        assert error["check"] == "target_input", error
+        assert str(floor - 1) in error["detail"] and str(floor) in error["detail"], (
+            f"the operator needs both the count and the floor: {error['detail']}")
+        assert staged == [], (
+            "the target was staged for the design engine despite the refusal")
+
+    def test_a_contig_at_the_floor_gets_past_the_gate(
+            self, tmp_path, monkeypatch):
+        """The control, and the reason the bound is ``<`` rather than ``<=``.
+
+        It still fails — the registry does not exist here — but on a different
+        check, and the staged file proves it reached the crop, which is
+        downstream of the floor.
+        """
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{rp.MIN_TARGET_RESIDUES}")
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, (
+            f"a target at the floor never reached the crop: {error}")
+
+    def test_production_asks_the_predicate_instead_of_restating_the_number(self):
+        """THE POINT OF EXTRACTING IT. ``prepare_custom_target`` used to hold
+        ``if len(selected) < 20``. A second copy of a threshold is a threshold
+        that drifts, and the canary — which now reads this one — would have gone
+        on spending money against whichever copy it did not follow."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+        called = {node.func.id for node in ast.walk(prepare)
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        assert "target_too_small" in called, (
+            "prepare_custom_target must ASK for the floor, not restate it")
+        literals = {node.value for node in ast.walk(prepare)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
+                    and not isinstance(node.value, bool)}
+        assert rp.MIN_TARGET_RESIDUES not in literals, (
+            f"{rp.MIN_TARGET_RESIDUES} is written out inside "
+            "prepare_custom_target; it must come from MIN_TARGET_RESIDUES")
+
+    def test_the_refusal_message_quotes_the_threshold(self):
+        """The operator's next action is "widen the range to at least N", so N
+        has to be in the sentence — and has to be the constant, or the message
+        sends them to a number the code no longer enforces."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+        guard = next(
+            node for node in ast.walk(prepare)
+            if isinstance(node, ast.If) and "target_too_small" in ast.unparse(node.test))
+        rendered = ast.unparse(guard)
+        assert "MIN_TARGET_RESIDUES" in rendered, (
+            f"the refusal must quote the threshold it enforces: {rendered}")
+
+
 class TestTemplatesParse:
     def _templates(self):
         return Path(__file__).resolve().parents[1] / "templates"

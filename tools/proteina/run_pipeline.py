@@ -774,6 +774,35 @@ def unrenderable_segments(
     return [(c, lo, hi) for c, lo, hi in segments if lo < 0 or hi < 0]
 
 
+# The smallest target selection worth starting a GPU for. Below it there is not
+# enough surface to place a 60-120 residue binder against, so the run would burn
+# an A100 to produce designs nobody can use.
+MIN_TARGET_RESIDUES = 20
+
+
+def target_too_small(selected: list[tuple[str, int]]) -> bool:
+    """True when the contig selects too little target to design a binder against.
+
+    THE NUMBER AND THE COMPARISON BOTH LIVE HERE BECAUSE TWO CALLERS READ THEM.
+    This was a bare ``if len(selected) < 20`` inside ``prepare_custom_target``,
+    which is the shape that has now cost three separate rounds on this branch:
+    production grows a pre-GPU refusal, ``_hotspot_canary`` has no equivalent,
+    and the harness whose entire job is fidelity to production spends real money
+    to discover what a comparison knows for free. ``--contig A10-20`` would
+    spawn one A100 in phase 1 (~$4) or three in phase 2 (~$12).
+
+    The two already closed the same way — ``stage_cropped_target`` for the crop
+    and ``unrenderable_segments`` for negative residue numbers — and the rule
+    both established is the one applied here: the canary CALLS this, it does not
+    restate it. A restated threshold is a threshold that drifts on the next
+    commit that moves this one, silently, in the direction of spending money.
+
+    Takes the SELECTION rather than a count so neither caller has to decide what
+    to count; ``select_residues`` is what produces it on both sides.
+    """
+    return len(selected) < MIN_TARGET_RESIDUES
+
+
 def chain_span_summary(residues: list[tuple[str, int, str]]) -> str:
     """`A1-115, B3-97` — for failure messages, so a user whose hotspot missed
     can see what the file actually contains without re-uploading it."""
@@ -1137,12 +1166,14 @@ def prepare_custom_target(
         "custom target: selected %d of %d residues (%s); chains present: %s",
         len(selected), len(residues), format_contig(segments), spans,
     )
-    if len(selected) < 20:
+    # ``target_too_small``, not an inline comparison: the canary calls the same
+    # predicate, and a second copy of the number is a second thing to move.
+    if target_too_small(selected):
         _fail(
             "input", "target_input",
             f"the selected target region has only {len(selected)} residues, "
-            "which is too small to design a binder against. Widen the chain "
-            f"range. The target contains: {spans}.",
+            f"fewer than the {MIN_TARGET_RESIDUES} needed to design a binder "
+            f"against it. Widen the chain range. The target contains: {spans}.",
         )
 
     ambiguous = ambiguous_insertion_codes(residues)
