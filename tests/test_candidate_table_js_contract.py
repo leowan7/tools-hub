@@ -367,8 +367,24 @@ _HOOKS = [
      _el(id_prefix="campaign-modal-")),
     (r"'\.shortlist-review'", "ul.shortlist-review inside the modal", _ALL,
      _el(cls="shortlist-review")),
+    # THE PER-MODE MAPPING OF THESE TWO CHANGED UNDER A91, and the change is
+    # what the mode tuples record. `candidate_refs` was campaign+target and is
+    # now every mode: the job branch posts it as well, because it is the shape
+    # both ref arms take and `campaigns_submit` prefers it there too.
+    # `candidate_indices` stays job-only -- it is the shape a page served before
+    # that change carries, which is the entire reason the job branch emits two
+    # fields instead of one, and emitting it in a ref mode would hand the ref
+    # arms a payload neither of them parses.
+    #
+    # `openCampaignModal` looks the two inputs up INDEPENDENTLY and fills each
+    # one it finds, which is why a mode carrying both needs no JS change -- and
+    # why these rows are per-mode rather than global. A mode that stops emitting
+    # an input posts nothing for it, and the arm then sees only whatever other
+    # shortlist field that mode still carries: for the ref modes there is none,
+    # so the submit answers `?handoff=none` -- "you starred nothing" -- to a
+    # user who starred designs.
     (r'\[name="candidate_refs"\]', 'the hidden input name="candidate_refs"',
-     ("campaign", "target"), _el(tag="input", name="candidate_refs")),
+     _ALL, _el(tag="input", name="candidate_refs")),
     (r'\[name="candidate_indices"\]',
      'the hidden input name="candidate_indices"', ("job",),
      _el(tag="input", name="candidate_indices")),
