@@ -281,11 +281,13 @@ def validate_target_chain(
 ) -> Optional[str]:
     """Confirm the user-typed target chain(s) exist with protein residues.
 
-    Accepts a single chain ID (``"A"``) or several whitespace-separated
-    IDs (``"A B"``) -- the latter is what ProteinMPNN multi-chain design
-    submits (the form invites ``A B`` / ``H L``). Each chain is validated
-    independently; the first missing or residue-free chain produces the
-    error, naming that specific chain rather than the whole string.
+    Accepts a single chain ID (``"A"``) or several separated by whitespace
+    (``"A B"``) or commas (``"A,B"``). Whitespace is what this module has
+    always taken and what the form copy invites; the comma form is what the
+    tool adapters now emit canonically, so both must parse here. Each chain
+    is validated independently; the first missing or residue-free chain
+    produces the error, naming that specific chain rather than the whole
+    string.
 
     Returns None on success, or a user-facing error string on failure.
     Case-sensitive (matches Biopython chain IDs). When a user types ``a``
@@ -293,7 +295,7 @@ def validate_target_chain(
     """
     if not target_chain or not target_chain.strip():
         return "Target chain is required."
-    for cid in target_chain.split():
+    for cid in target_chain.replace(",", " ").split():
         chain = report.chain(cid)
         if chain is None:
             present = report.chain_ids()
@@ -335,7 +337,7 @@ def validate_hotspots(
     call this helper directly.
     """
     ranges = []
-    for cid in (target_chain or "").split() or [target_chain or ""]:
+    for cid in (target_chain or "").replace(",", " ").split() or [target_chain or ""]:
         chain = report.chain(cid)
         if chain is not None and chain.min_resnum is not None:
             ranges.append((chain.min_resnum, chain.max_resnum))
@@ -367,7 +369,7 @@ def hotspot_range_message(
     first token for the displayed range and omit the range entirely when
     the chain is absent or carries no protein residues, rather than crash.
     """
-    tokens = (target_chain or "").split()
+    tokens = (target_chain or "").replace(",", " ").split()
     primary = tokens[0] if tokens else (target_chain or "")
     chain = report.chain(primary)
     if chain is not None and chain.min_resnum is not None:

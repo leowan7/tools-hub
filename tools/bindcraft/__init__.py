@@ -15,7 +15,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from tools.base import Preset, ToolAdapter, register
+from tools.base import (
+    Preset,
+    ToolAdapter,
+    parse_hotspot_residues,
+    parse_target_chains,
+    register,
+)
 
 
 def validate(
@@ -26,23 +32,29 @@ def validate(
     if preset != "pilot":
         return None, "Pick a preset."
 
+    # BindCraft's pipeline has always passed target_chain straight through to
+    # its "chains" setting, so "A,B" already worked end to end there — this
+    # form layer was the only thing rejecting chain-prefixed hotspots.
+    # Upstream BindCraft documents both: "chains -> which chains to target"
+    # and "target_hotspot_residues -> ... chain specific `A1-10,B1-20`".
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
-    if len(target_chain) > 4:
-        return None, "Target chain must be at most 4 characters."
 
-    raw_hotspots = (form.get("hotspot_residues") or "").strip()
-    if not raw_hotspots:
-        return None, "At least one hotspot residue is required."
-    try:
-        hotspot_residues = [
-            int(tok.strip()) for tok in raw_hotspots.split(",") if tok.strip()
-        ]
-    except ValueError:
-        return None, "Hotspot residues must be comma-separated integers (e.g. 54,56,115)."
-    if not hotspot_residues:
-        return None, "At least one hotspot residue is required."
+    target_chains = parse_target_chains(target_chain)
+    if not target_chains:
+        return None, "Target chain is required."
+    # Per TOKEN, not per string: a whole-string cap of 4 admitted "A,B" but
+    # rejected "A,B,C", silently capping every target at two chains.
+    for cid in target_chains:
+        if len(cid) > 4:
+            return None, f"Chain id {cid!r} is too long (max 4 characters)."
+
+    hotspot_residues, err = parse_hotspot_residues(
+        form.get("hotspot_residues") or "", target_chains
+    )
+    if err:
+        return None, err
 
     try:
         binder_length_min = int(form.get("binder_length_min") or 50)
@@ -73,7 +85,10 @@ def validate(
     return (
         {
             "preset": preset,
-            "target_chain": target_chain,
+            # Canonical comma form regardless of what the user typed:
+            # both separators are accepted at this boundary, exactly one
+            # is emitted, so no container has to guess.
+            "target_chain": ",".join(target_chains),
             "hotspot_residues": hotspot_residues,
             "binder_length_min": binder_length_min,
             "binder_length_max": binder_length_max,
