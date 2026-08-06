@@ -280,7 +280,15 @@ def test_validate_target_chain_accepts_whatever_validate_emits(typed):
     assert validate_target_chain(report, inputs["target_chain"]) is None
 
 
-@pytest.mark.parametrize("name,mod", ADAPTERS)
+# The container gate (shared/pdb_preflight_rules.multi_chain_container_ready)
+# is what decides whether a multi-chain target is actually runnable, and it
+# tracks GPU EVIDENCE, not model capability. Splitting the parametrisation by
+# evidence level keeps the distinction executable instead of a comment.
+GPU_VERIFIED = [("pxdesign", pxdesign_mod), ("rfdiffusion", rfdiffusion_mod)]
+GATED = [("bindcraft", bindcraft_mod)]
+
+
+@pytest.mark.parametrize("name,mod", GPU_VERIFIED)
 @pytest.mark.parametrize("typed", ["A,B", "A B"])
 def test_preflight_accepts_the_canonical_form_end_to_end(name, mod, typed):
     """The exact path blueprints/tools.py takes: form -> validate() ->
@@ -301,3 +309,32 @@ def test_preflight_accepts_the_canonical_form_end_to_end(name, mod, typed):
         f"residues for {inputs['target_chain']!r}; expected both chains"
     )
     assert verdict.cleanup.chains_dropped == []
+
+
+@pytest.mark.parametrize("name,mod", GATED)
+@pytest.mark.parametrize("typed", ["A,B", "A B"])
+def test_preflight_refuses_multichain_for_the_unverified_image(name, mod, typed):
+    """bindcraft parses the multi-chain form correctly and is then refused by
+    the container gate, because its image has never been run on a multi-chain
+    target — it is the one binder tool with no smoke tier, so clearing it costs
+    a full paid pilot.
+
+    The refusal must name the IMAGE, not the structure. Before the shared-layer
+    fix, this same input was refused with "Target chain 'A,B' isn't in this
+    PDB" — a wrong reason that sends the user off to re-examine a perfectly
+    good file. A gate is only useful if it says what is actually blocking.
+    """
+    inputs, err = mod.validate(_form(name, typed, "A5,B5"), {})
+    assert err is None, err
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=[], binder_max_aa=65, num_designs=2,
+    )
+    assert not verdict.ok
+    reason = verdict.reason or ""
+    assert "isn't in this PDB" not in reason, (
+        f"refused for the wrong reason: {reason!r}"
+    )
+    assert "GPU image" in reason, reason

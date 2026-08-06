@@ -908,26 +908,41 @@ def test_single_chain_gap_message_is_unchanged():
 #
 # Teaching THIS repo's consumers to split on whitespace was correct but only
 # half the job. The images that run the job are built from the sibling repo
-# llm-proteinDesigner, whose backend/pdb_utils/pipeline_normalize.py still
-# exact-matches the chain and raises on "A B" — verified by executing it
-# against a clean two-chain PDB for rfdiffusion / boltzgen / pxdesign /
-# rfantibody. bindcraft ships from a separate prebuilt image that could not be
-# inspected, so it is gated as unverified. So the fix did not grant a
-# capability to the 4 tools that declare multi_chain_supported=True and are
-# gated here; it removed a free refusal and replaced it with a funded run that
-# dies in the container. 5 tools are blocked in total — those 4 plus
-# rfantibody, whose model cannot do it either.
+# llm-proteinDesigner, whose backend/pdb_utils/pipeline_normalize.py used to
+# exact-match the chain and raise on "A B". So the fix did not grant a
+# capability; it removed a free refusal and would have replaced it with a
+# funded run that dies in the container. Hence two flags, and a gate that
+# needs both.
 #
-# Only proteina is genuinely ready: its container lives in this repo and was
-# proven on a live A100. Hence two flags, and a gate that needs both.
+# THE STOPGAP'S EXIT CONDITION HAS NOW BEEN MET FOR THREE TOOLS.
+# leowan7/llm-proteinDesigner#11 ports the multi-chain normalizer
+# (parse_target_chains) into that repo, and the images were rebuilt and run on
+# a live A100 against a real two-chain target (4ZQK, PD-1/PD-L1) on 2026-08-05:
+#
+#   rfdiffusion  {A:115, B:106, C:56}  153 s
+#   boltzgen     {A:115, B:106, C:55}  430 s
+#   pxdesign     {A:115, B:106, C:80}  445 s
+#
+# Asserted on the RETURNED STRUCTURE, not the status field — a job that
+# silently designed against one protomer would still report COMPLETED with
+# plausible scores. Both protomers intact, exactly one binder chain, no
+# target/binder swap. So those three move to the ready side.
+#
+# Two tools stay gated, for DIFFERENT reasons, and the distinction is the whole
+# point of having two flags:
+#   bindcraft   — image limit. Ships from a separate prebuilt image
+#                 (kendrew-bindcraft:v7) that never runs llm-pd's normalizer,
+#                 and it is the one binder tool with no smoke tier, so the only
+#                 way to clear it is a full paid pilot. Temporary: "not yet".
+#   rfantibody  — model limit. Builds a VHH against one chain by construction.
+#                 Permanent: never.
 # ---------------------------------------------------------------------------
 
 # Tools whose container is NOT multi-chain ready today. Deliberately spelled
 # out rather than derived from TOOL_RULES: if someone flips a flag, these
 # tests must FAIL and make them justify it, not silently follow along.
-_SINGLE_CHAIN_TOOLS = ["rfantibody", "rfdiffusion", "bindcraft",
-                       "boltzgen", "pxdesign"]
-_MULTI_CHAIN_TOOLS = ["proteina"]
+_SINGLE_CHAIN_TOOLS = ["rfantibody", "bindcraft"]
+_MULTI_CHAIN_TOOLS = ["proteina", "rfdiffusion", "boltzgen", "pxdesign"]
 
 
 def _two_chain_target() -> bytes:
@@ -1090,18 +1105,31 @@ def test_the_gate_fails_closed_when_the_invariant_is_violated(monkeypatch):
     assert "image" not in (v.reason or "").lower(), v.reason
 
 
-def test_only_proteina_is_container_ready_today():
-    """A tripwire on the stopgap: today exactly one tool is container-ready."""
+def test_container_ready_set_is_exactly_what_has_been_run_on_a_gpu():
+    """A tripwire on the gate: container_ready must track GPU EVIDENCE.
+
+    This deliberately hardcodes the set rather than deriving it, so flipping a
+    flag cannot silently follow along — it has to come here and be justified.
+
+    The original form of this test asserted ``ready == {"proteina"}`` and its
+    failure message named the exit condition: "If llm-proteinDesigner's
+    multi-chain normalizer has been ported and these images rebuilt, that is
+    the intended outcome: update this test and the stopgap note." That is what
+    happened — leowan7/llm-proteinDesigner#11 plus live two-chain 4ZQK runs on
+    2026-08-05 for the three added here. The other half of that message still
+    stands: if a slug appears below WITHOUT a GPU run behind it, revert it,
+    because this gate is the only thing between a user and a funded run that
+    dies in the container.
+    """
     from shared.pdb_preflight_rules import TOOL_RULES
 
     ready = {s for s, r in TOOL_RULES.items() if r.multi_chain_container_ready}
-    assert ready == {"proteina"}, (
-        f"container-ready set changed to {sorted(ready)}. If llm-proteinDesigner's "
-        f"multi-chain normalizer has been ported and these images rebuilt, that "
-        f"is the intended outcome: update this test and the stopgap note in "
-        f"shared/pdb_preflight.py. If not, a flag was flipped without the "
-        f"container being able to honour it — revert it, because the gate is "
-        f"the only thing stopping a funded run that dies in the container."
+    assert ready == {"proteina", "rfdiffusion", "boltzgen", "pxdesign"}, (
+        f"container-ready set changed to {sorted(ready)}. Every slug in this "
+        f"set must have a real multi-chain GPU run behind it, asserted on the "
+        f"returned structure (both protomers present at full length, exactly "
+        f"one binder chain). bindcraft is the live example of what does NOT "
+        f"qualify: its wrapper looks correct and it has never been run."
     )
 
 
@@ -1145,13 +1173,13 @@ def test_proteina_is_only_recommended_when_it_is_actually_available(monkeypatch)
 
     monkeypatch.setenv("FLAG_TOOL_PROTEINA", "on")
     on = preflight_for_tool(
-        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+        "bindcraft", data, target_chain="A B", hotspots=[40, 60],
     )
     assert "Proteina" in (on.suggested_fix or "")
 
     monkeypatch.setenv("FLAG_TOOL_PROTEINA", "off")
     off = preflight_for_tool(
-        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+        "bindcraft", data, target_chain="A B", hotspots=[40, 60],
     )
     assert "Proteina" not in (off.suggested_fix or "")
     # The actionable half must survive either way.
@@ -1159,7 +1187,7 @@ def test_proteina_is_only_recommended_when_it_is_actually_available(monkeypatch)
 
     monkeypatch.delenv("FLAG_TOOL_PROTEINA", raising=False)
     missing = preflight_for_tool(
-        "rfdiffusion", data, target_chain="A B", hotspots=[40, 60],
+        "bindcraft", data, target_chain="A B", hotspots=[40, 60],
     )
     assert "Proteina" not in (missing.suggested_fix or "")
 
