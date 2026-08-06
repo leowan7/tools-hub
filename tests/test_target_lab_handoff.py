@@ -10,9 +10,9 @@ acceptance test that the same over-broad or over-narrow gate would fail.
 Everything below the route is patched at ITS OWN module, matching how
 ``blueprints/lab_projects.py`` imports it: ``read_job`` and
 ``stage_campaign_candidates`` are module-level imports on the blueprint, while
-``get_target``, ``campaign_ids_for_target``, ``create_campaign_from_target_refs``
-and ``send_campaign_submitted_emails`` are function-local and therefore resolve
-against their own modules at call time.
+``read_target``, ``campaign_ids_for_target``,
+``create_campaign_from_target_refs`` and ``send_campaign_submitted_emails`` are
+function-local and therefore resolve against their own modules at call time.
 
 THE TARGET BRANCH READS JOBS THROUGH ``read_job``, NOT ``get_job``, and the
 difference is the subject of half this file. ``get_job`` answers ``None`` for a
@@ -21,6 +21,14 @@ completed; this route has to behave differently in the last case, so it uses the
 form that reports which happened. ``_submit`` below therefore fakes ``read_job``
 and can be told to make a specific id UNREADABLE, which is the only way to
 construct the fault the refusal gate exists for.
+
+IT READS ITS PARENT TARGET THE SAME WAY, through ``read_target`` (register item
+A90). The gate used to refuse on ``get_target(...) is None``, which is the same
+three facts in one value, and its exit LEAVES this page -- so a two-second
+Supabase fault sent the user to /targets with no message at all. ``_submit``
+takes ``target_unreadable=`` for that fault, separately from ``target=None``,
+because the two outcomes now go to different places and a fixture that could
+only build one of them cannot tell whether they are still apart.
 """
 
 from __future__ import annotations
@@ -32,7 +40,14 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.compute_campaigns import CAMPAIGN_READ_OK, CampaignRead
 from shared.jobs import JOB_READ_ABSENT, JOB_READ_OK, JOB_READ_UNAVAILABLE, JobRead
+from shared.targets import (
+    TARGET_READ_ABSENT,
+    TARGET_READ_OK,
+    TARGET_READ_UNAVAILABLE,
+    TargetRead,
+)
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -109,12 +124,18 @@ _CREATE_OK = object()
 
 def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
             campaign_ids_complete=True, create_result=_CREATE_OK,
-            target_owner="u-1", campaign_owner="u-1", unreadable=()):
+            target_owner="u-1", campaign_owner="u-1", unreadable=(),
+            target_unreadable=False):
     """Drive POST /lab-projects/submit and return (response, harness).
 
     ``jobs`` maps job id -> job. An id that is absent from the mapping is a job
     that is not there or is not the caller's, which an owner-scoped read reports
     as ``JOB_READ_ABSENT``.
+
+    ``target_unreadable`` makes the PARENT target read fail -- reported as
+    ``TARGET_READ_UNAVAILABLE``. Separate from ``target=None``, which is the
+    target being absent, because those are the two outcomes the gate now tells
+    apart: a fixture that folded them together could not show that it does.
 
     ``unreadable`` is the set of ids whose LOOKUP FAILS -- no service client, or
     the query raised -- reported as ``JOB_READ_UNAVAILABLE``. It is a separate
@@ -182,15 +203,26 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
     def fake_email(**kw):
         h.emails.append(kw)
 
-    def fake_get_target(tid, *, user_id=None):
-        # Models shared.targets.get_target, which applies user_id as a QUERY
-        # filter: another tenant's target comes back None, indistinguishable
-        # from absent. A `return_value=` patch hands the row back regardless
-        # and so stays green against a route that dropped the scope.
+    def fake_read_target(tid, *, user_id=None):
+        # Models shared.targets.read_target, including the two things about it
+        # that matter here.
+        #
+        # 1. `user_id` is applied as a QUERY FILTER, so another tenant's target
+        #    comes back as zero rows -- which is ABSENT, not a distinct
+        #    "forbidden" outcome. A `return_value=` patch hands the row back
+        #    regardless and so stays green against a route that dropped the
+        #    scope.
+        # 2. An unreadable parent reports UNAVAILABLE even when `target` is a
+        #    perfectly good object, because a read that did not complete learned
+        #    nothing about the row. A fake that quietly handed the target back
+        #    instead would make the new exit untestable in the one direction it
+        #    exists for.
         h.target_lookups.append((tid, user_id))
+        if target_unreadable:
+            return TargetRead(None, TARGET_READ_UNAVAILABLE)
         if target is None or (user_id is not None and target_owner != user_id):
-            return None
-        return target
+            return TargetRead(None, TARGET_READ_ABSENT)
+        return TargetRead(target, TARGET_READ_OK)
 
     def fake_campaign_ids(tid, *, user_id=None):
         # Same, for the parentage id set. Owner-scoped inside the real
@@ -214,7 +246,7 @@ def _submit(client, jobs, *, form=None, target=object(), campaign_ids=(_CID,),
             patch("blueprints.lab_projects.read_job", side_effect=fake_read_job), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   side_effect=fake_stage), \
-            patch("shared.targets.get_target", side_effect=fake_get_target), \
+            patch("shared.targets.read_target", side_effect=fake_read_target), \
             patch("shared.targets.campaign_ids_for_target",
                   side_effect=fake_campaign_ids), \
             patch("shared.campaigns.create_campaign_from_target_refs",
@@ -295,27 +327,58 @@ def test_a_ref_naming_the_callers_own_job_on_another_target_creates_nothing(clie
 
 
 def test_a_missing_target_creates_nothing(client):
-    """The parent gate short-circuits BEFORE any job is read.
+    """The parent gate short-circuits BEFORE any job is read, and an ABSENT
+    target goes back to the targets list in silence.
 
     Renamed in round 19. As `test_a_foreign_target_creates_nothing` it claimed
     to prove the read was owner-scoped, but `target=None` only makes the
-    patched function return None: it shows the route handles that answer, not
+    patched function return ABSENT: it shows the route handles that answer, not
     that it asks the question. The two tests below are the ones that fail if
     the scope is dropped (register item A-1).
+
+    The silence is asserted rather than assumed (register item A90): the row
+    really is gone, so there is no page to land the user on and nothing to say
+    beyond returning them to their targets. Without this a later
+    "simplification" could route both parent outcomes to `?handoff=unverified`
+    -- telling a user whose target was deleted to try again forever -- with
+    ``test_an_unreadable_parent_target_refuses_with_a_reason`` still green.
     """
     jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
     resp, h = _submit(client, jobs, target=None)
     assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/targets")
+    assert "handoff" not in resp.headers["Location"]
     assert h.created == []
+    assert h.job_lookups == []
+
+
+def test_an_unreadable_parent_target_refuses_with_a_reason(client):
+    """THE OTHER HALF OF THE PARENT GATE (register item A90).
+
+    `get_target` answered None for a target that is not there, one that is not
+    the caller's, and a read that never completed, and the gate bounced on all
+    three to /targets with no message. A transient Supabase fault now lands the
+    user back on THIS target's page with `?handoff=unverified` instead, on the
+    one action that hands work to a wet lab.
+
+    Nothing is created and no ref is read: the gate still short-circuits, it
+    just says which way it went.
+    """
+    jobs = {"j-bc": _job("j-bc", "bindcraft", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, target_unreadable=True)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/targets/{_TID}?handoff=unverified")
+    assert h.created == []
+    assert h.staged == []
     assert h.job_lookups == []
 
 
 def test_a_target_belonging_to_someone_else_creates_nothing(client):
     """A-1, the half that was missing. The target EXISTS and its campaign
     really is this shortlist's parent; the only thing between the caller and
-    another tenant's target is the owner scope on `get_target`.
+    another tenant's target is the owner scope on `read_target`.
 
-    The fake models that scope the way `fake_get_job` models `get_job`'s, so
+    The fake models that scope the way `fake_read_job` models `read_job`'s, so
     dropping `user_id=ctx.user_id` at the call site makes this return the row
     and the assertions below fail.
     """
@@ -455,12 +518,14 @@ def test_the_dispatcher_prefers_the_target_branch(client):
 def test_a_campaign_shortlist_is_untouched_by_the_new_branch(client):
     """The pair. Adding a branch above the campaign one must not capture it.
 
-    Patches ``read_job`` and not ``get_job``: the campaign arm reads jobs
-    through the three-outcome form for the same reason the target arm does, so
-    a ``get_job`` patch leaves ``read_job`` unpatched, the blanked Supabase env
-    makes every read UNAVAILABLE, and the arm's refusal gate turns this into a
-    ``?handoff=unverified`` with nothing created. That failure is the fix
-    working, not a regression -- do not repair it by restoring ``get_job``.
+    Patches ``read_job`` and not ``get_job``, and ``read_campaign`` and not
+    ``get_campaign``: the campaign arm reads its sub-jobs AND its parent run
+    through the three-outcome form, for the same reason the target arm does. A
+    patch aimed at either ``get_*`` name leaves the ``read_*`` one unpatched, the
+    blanked Supabase env makes that read UNAVAILABLE, and the arm turns this into
+    a ``?handoff=unverified`` with nothing created. That failure is the fix
+    working, not a regression -- do not repair it by restoring the ``get_*``
+    patch.
     """
     captured: list[dict] = []
 
@@ -484,8 +549,9 @@ def test_a_campaign_shortlist_is_untouched_by_the_new_branch(client):
                       _job("j-bc", "bindcraft", campaign_id=_CID), JOB_READ_OK)), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   return_value=[]), \
-            patch("shared.compute_campaigns.get_campaign",
-                  return_value=SimpleNamespace(id=_CID)), \
+            patch("shared.compute_campaigns.read_campaign",
+                  return_value=CampaignRead(
+                      SimpleNamespace(id=_CID), CAMPAIGN_READ_OK)), \
             patch("shared.campaigns.create_campaign_from_refs",
                   side_effect=fake_create), \
             patch("shared.email.send_campaign_submitted_emails"):
@@ -1093,6 +1159,20 @@ def test_an_unverifiable_shortlist_still_reports_what_the_cap_discarded(client):
     )
 
 
+def test_an_unreadable_parent_target_also_reports_what_the_cap_discarded(client):
+    """And on the newest exit (A90). `truncated` is computed above every guard
+    precisely so it rides them all, and a gate added later is exactly where that
+    stops being true without anyone noticing."""
+    jobs = {"j-bc": _job("j-bc", "bindcraft", target_id=_TID, n=700)}
+    resp, h = _submit(client, jobs,
+                      form={"candidate_refs": _over_cap_refs("j-bc")},
+                      target_unreadable=True)
+    assert resp.headers["Location"].endswith(
+        f"/targets/{_TID}?handoff=unverified&truncated=120"
+    )
+    assert h.created == []
+
+
 def test_a_failed_creation_still_reports_what_the_cap_discarded(client):
     """And on the A-8 exit."""
     jobs = {"j-bc": _job("j-bc", "bindcraft", target_id=_TID, n=700)}
@@ -1161,7 +1241,8 @@ def _submit_with_claim(client, state, row):
                   return_value=JobRead(job, JOB_READ_OK)), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   return_value=[]), \
-            patch("shared.targets.get_target", return_value=object()), \
+            patch("shared.targets.read_target",
+                  return_value=TargetRead(object(), TARGET_READ_OK)), \
             patch("shared.targets.campaign_ids_for_target",
                   return_value=([_CID], True)), \
             patch("shared.campaigns.create_campaign_from_target_refs",

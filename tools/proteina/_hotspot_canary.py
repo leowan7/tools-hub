@@ -387,8 +387,10 @@ def _stage_dir(rp) -> Path:
     return Path(rp._HUB_TARGET_DIR)
 
 
-def _stage(rp, pdb_text: str, key: str) -> Path:
-    """Stage the target EXACTLY the way ``prepare_custom_target`` does.
+def _stage(rp, pdb_text: str, key: str, contig: str = "") -> tuple:
+    """Stage the target THROUGH ``prepare_custom_target``'s own staging step.
+
+    Returns ``(staged_path, raw_residues, contig)``.
 
     THE CANARY MUST NOT EXERCISE A PATH PRODUCTION NEVER RUNS. It used to write
     ``/tmp/canary_targets/<label>.pdb`` — a directory prod never touches, under
@@ -400,6 +402,27 @@ def _stage(rp, pdb_text: str, key: str) -> Path:
     literal strings in that record; testing it with a different directory and a
     different stem tests a request prod never makes.
 
+    THIS DOCSTRING WAS TRUE WHEN IT WAS WRITTEN AND THEN BECAME FALSE, WHICH IS
+    WHY THE BYTES ARE NOW DERIVED TOO. Production grew a crop —
+    ``stage_cropped_target``, reducing the file to the contig's residues so
+    upstream's ``metric_utils.py:217`` count assertion holds — and this function
+    went on doing ``p.write_text(pdb_text)``. A paid A100 phase-1 shard then
+    staged the uncropped file and reproduced the exact assertion the crop
+    prevents, contig ``A236-300,B236-300`` on 3S7G. The claim of fidelity
+    outlived the fidelity, in the one file whose entire job is fidelity.
+
+    So the bytes follow the same rule ``_stage_dir`` states for the path:
+    derived, not copied, so the two cannot drift. Everything below is
+    production's own function — ``pdb_ca_residues``, ``derive_segments``,
+    ``parse_target_input``, ``stage_cropped_target``. Nothing about cropping is
+    decided here, because anything decided here can drift again.
+
+    THE RAW FILE IS PARSED, NOT THE STAGED ONE, which is production's ordering:
+    it resolves the contig against what the user uploaded and only then crops.
+    That is also why ``raw_residues`` comes back — ``run_shard`` reports
+    ``input_chains`` as "every chain the upload carried", and after the crop the
+    staged file no longer knows about the chains the contig did not name.
+
     ``$PROTEINA_HOME/hub_targets`` is in the image's writable layer, NOT on a
     mounted Volume — the Dockerfile pre-creates only ``ckpts``, ``rewards`` and
     ``.cache``, and the first two are the Volume mount points — so this is a
@@ -408,9 +431,35 @@ def _stage(rp, pdb_text: str, key: str) -> Path:
     """
     target_dir = _stage_dir(rp)
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Production stages the upload as ``incoming.pdb``, parses THAT, resolves
+    # the contig against it and only then writes ``<key>.pdb``. Same two files,
+    # same order, same names.
+    incoming = target_dir / "incoming.pdb"
+    incoming.write_text(pdb_text)
+    residues, _ = rp.pdb_ca_residues(incoming)
+
+    # The contig, resolved the way prod resolves it: explicit if the operator
+    # gave one, else the full observed span of every chain present.
+    if contig:
+        segments = rp.parse_target_input(contig)
+    else:
+        segments = rp.derive_segments(residues, sorted({r[0] for r in residues}))
+        contig = rp.format_contig(segments)
+
     p = target_dir / f"{key}.pdb"
-    p.write_text(pdb_text)
-    return p
+    try:
+        # Read back rather than reusing ``pdb_text``, so the bytes handed to the
+        # crop have been through the same write/decode round trip production's
+        # download puts them through.
+        rp.stage_cropped_target(
+            p, incoming.read_text(errors="replace"), residues, segments)
+    finally:
+        # ``finally``, because ``stage_cropped_target`` raises on a bad crop and
+        # ``incoming.pdb`` is not ``canary_``-prefixed, so ``_prune_staged``
+        # would not collect it from a warm container.
+        incoming.unlink(missing_ok=True)
+    return p, residues, contig
 
 
 def _prune_staged(rp) -> list[str]:
@@ -492,10 +541,12 @@ def phase0(pdb_text: str) -> dict:
 
     # (a) A hotspot that is not in the structure must be refused, and nothing
     #     may be executed — not the registration, not the design.
-    staged = _stage(rp, pdb_text, key)
-    residues, _ = rp.pdb_ca_residues(staged)
-    chains = sorted({r[0] for r in residues})
-    contig = rp.format_contig(rp.derive_segments(residues, chains))
+    # No contig: phase 0 is about the refusals, not about a sub-range, so the
+    # crop resolves to the whole of every chain and the staged file is the input
+    # again. It still goes through production's staging step rather than around
+    # it — a control that took a different path to the same bytes would be
+    # asserting something about this file rather than about production.
+    staged, residues, contig = _stage(rp, pdb_text, key)
     selected = rp.select_residues(residues, rp.parse_target_input(contig))
     missing = rp.missing_hotspots(selected, ["A99999"])
     results["typo_control"] = {
@@ -717,6 +768,32 @@ def _collect_tree(work_dir: Path) -> list[str]:
         return [f"<the file listing could not be built: {type(exc).__name__}: {exc}>"]
 
 
+def _scored_design_counts(rp, inference) -> dict:
+    """``{n_scored_designs, n_reward_rows}`` from PRODUCTION's own parser.
+
+    ``run_pipeline.parse_designs`` is called rather than re-derived, because the
+    number this produces is compared against production's delivery rule and a
+    second implementation of that rule is a second thing to drift.
+
+    Never raises. A diagnostic that can kill the shard it is describing would
+    turn a delivering run into a lost one, which is the very failure mode this
+    key exists to stop reporting wrongly. On any error both counts are None,
+    which ``cs.shard_delivery`` reads as "did not say" and therefore FAILED —
+    the conservative direction: an unproven delivery is not a delivery.
+    """
+    try:
+        designs = rp.parse_designs(inference)
+        return {
+            "n_scored_designs": sum(
+                1 for d in designs if d.get("total_reward") is not None),
+            "n_reward_rows": len(designs),
+        }
+    except Exception as exc:  # noqa: BLE001 — never fail a shard over a count
+        _emit(f"[canary] could not count scored designs: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        return {"n_scored_designs": None, "n_reward_rows": None}
+
+
 @app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S,
               volumes={"/opt/proteina/ckpts": weights, "/opt/proteina/rewards": rewards})
 def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
@@ -765,11 +842,22 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
     # (``staged = target_dir / f"{key}.pdb"`` then ``filename_stem=staged.stem``)
     # and reproducing it is the point of the exercise.
     key = cs.canary_task_key(label, seed)
-    staged = _stage(rp, pdb_text, key)
+    # Staged THROUGH production's own staging step, contig included, so the
+    # bytes upstream reads here are the bytes it would read in production. This
+    # used to be a bare write_text of the upload, which is how a paid shard came
+    # to reproduce the very assertion the crop was written to prevent.
+    try:
+        staged, raw_residues, contig = _stage(rp, pdb_text, key, contig)
+    except rp.TargetCropError as exc:
+        # Production converts this to a `_fail`; the canary cannot host that
+        # (it must RETURN a diagnostic, not sys.exit inside a billed container),
+        # so it becomes a refusal record with the same sentence.
+        return {"label": label, "key": key, "error": f"target staging: {exc}"}
+    # From the UPLOAD, not the staged file: after the crop the staged file no
+    # longer carries the chains the contig did not name, and this key's whole
+    # job is to be compared against ``target_chains`` below.
+    input_chains = sorted({r[0] for r in raw_residues})
     residues, _ = rp.pdb_ca_residues(staged)
-    input_chains = sorted({r[0] for r in residues})
-    contig = contig or rp.format_contig(
-        rp.derive_segments(residues, input_chains))
     cross_spec = list(cross_reference_spec or [])
 
     # Refuse here too rather than discovering it in the output. The predicate
@@ -880,6 +968,21 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         # built with, immediately above, so it cannot describe a different run.
         "n_designs_expected": _NSAMPLES * _REPLICAS,
         "exit_code": rc, "runtime_s": runtime_s,
+        # WOULD PRODUCTION HAVE DELIVERED THIS RUN? The exit code alone cannot
+        # say, and this harness used to answer with the exit code alone: a shard
+        # that produced 8 designs, 8 files, 8 reward rows and 8 complexes and
+        # then crashed in `evaluate` was reported FAILED, while run_pipeline
+        # would have shipped all 8 to a paying customer. That reading nearly
+        # cancelled a measurement campaign.
+        #
+        # Computed by PRODUCTION'S OWN parser on the same directory, not by a
+        # re-implementation here, so the canary cannot drift from the rule it
+        # exists to mirror: run_pipeline counts designs whose `total_reward` is
+        # not None and fails only when a non-zero exit left that count at zero.
+        # The reward CSV is written by the GENERATE stage, which is why a late
+        # evaluate/analyze crash can leave a fully scored table behind.
+        # ``cs.shard_delivery`` turns the pair into the verdict's DELIVERY state.
+        **_scored_design_counts(rp, inference),
         # Four keys, not one, because the single key this replaced was read as
         # "demand" when it was mostly a JAX reservation. peak_vram_mb is still
         # device-wide; baseline_vram_mb is what was resident before the design;
@@ -1107,8 +1210,16 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     chains = sorted({r[0] for r in residues})
     resolved = contig or rp_local.format_contig(
         rp_local.derive_segments(residues, chains))
-    selected = rp_local.select_residues(
-        residues, rp_local.parse_target_input(resolved))
+    segments = rp_local.parse_target_input(resolved)
+    # Production's negative-numbering guard, called rather than restated. The
+    # canary had no equivalent, so a tagged construct would have spawned an
+    # A100 to discover what a regex knows for free. See
+    # cs.refuse_unrenderable_contig.
+    cs.refuse_unrenderable_contig(
+        target_pdb, resolved,
+        rp_local.unrenderable_segments(
+            [s for s in segments if s[1] is not None]))
+    selected = rp_local.select_residues(residues, segments)
     cs.refuse_unresolvable_hotspots(
         target_pdb, resolved, len(selected),
         [(label, rp_local.missing_hotspots(selected, list(spec or [])))
@@ -1305,6 +1416,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             # `harden_stream` exists for, on text this repo does not author.
             for line in cs.format_log_diagnostics(res):
                 _emit(line)
+            # BEFORE the verdict, for the same reason the log tails are: a shard
+            # that exited non-zero and still delivered scored designs no longer
+            # FAILS, and the operator must not have to infer that from a PASS.
+            for line in cs.delivery_note(res):
+                _emit(line)
             verdict = cs.phase1_verdict(res)
             _emit("\n--- verdict ---")
             _print_verdict(verdict)
@@ -1466,6 +1582,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
                   f"cross_recall_median={r.get('cross_hotspot_recall_median')}")
             if r.get("error"):
                 _emit(f"    ERROR: {r['error']}")
+            # A non-zero exit no longer condemns a shard that delivered scored
+            # designs, so it has to be loud somewhere else. Here, per shard,
+            # before the verdicts.
+            for line in cs.delivery_note(r):
+                _emit(line)
             if r.get("n_complexes") and not r.get("n_target_verified"):
                 _emit("    UNSCORABLE: the chains treated as target do not "
                       "carry the input target's residues — the design output "

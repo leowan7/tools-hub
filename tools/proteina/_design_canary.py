@@ -217,6 +217,38 @@ def _poll_vram(
     out["vram_poll_complete"] = True
 
 
+def _scored_design_counts(rp, inference) -> dict:
+    """``{n_scored_designs, n_reward_rows}`` from PRODUCTION's own parser.
+
+    ``run_pipeline`` counts designs whose ``total_reward`` is not None and fails
+    ONLY when a non-zero exit left that count at zero — and the reward CSV is
+    written by the GENERATE stage, so a late evaluate/analyze crash routinely
+    leaves a fully scored table behind. That is the whole reason this canary may
+    not judge a shard on its exit code alone.
+
+    ``rp.parse_designs`` is CALLED rather than re-derived: the number is
+    compared against production's delivery rule, and a second implementation of
+    that rule is a second thing to drift.
+
+    Never raises. A diagnostic that can kill the shard it is describing would be
+    the same defect wearing a different hat. On any error both counts are None,
+    which the entrypoint reads as a failure — an unproven delivery is not a
+    delivery. (Twin of ``_hotspot_canary._scored_design_counts``; duplicated
+    rather than imported for the reason given at the top of this file.)
+    """
+    try:
+        designs = rp.parse_designs(inference)
+        return {
+            "n_scored_designs": sum(
+                1 for d in designs if d.get("total_reward") is not None),
+            "n_reward_rows": len(designs),
+        }
+    except Exception as exc:  # noqa: BLE001 — never fail a shard over a count
+        print(f"[canary] could not count scored designs: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        return {"n_scored_designs": None, "n_reward_rows": None}
+
+
 @app.function(
     image=image, gpu=_GPU, timeout=_MAX_SESSION_S,
     volumes={"/opt/proteina/ckpts": weights, "/opt/proteina/rewards": rewards},
@@ -317,6 +349,11 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
     result = {
         "preset": preset, "task_name": task_name,
         "exit_code": rc, "runtime_s": runtime_s,
+        # WOULD PRODUCTION HAVE DELIVERED THIS RUN? Same divergence this file's
+        # sibling ``_hotspot_canary`` carried: the local entrypoint below judged
+        # the shard on ``exit_code`` alone, which is stricter than production
+        # and condemns runs production ships. See ``_scored_design_counts``.
+        **_scored_design_counts(rp, inference),
         "peak_vram_mb": vram.get("peak_vram_mb"),
         # Provenance for the number above. Device-wide nvidia-smi cannot tell a
         # JAX reservation from demand, so a peak taken with preallocation ON is
@@ -346,6 +383,46 @@ def main(preset: str = "protein_binder",
         print(f"  {path}")
         print(f"    columns: {info.get('columns')}")
         print(f"    nrows:   {info.get('nrows')}")
-    if res.get("exit_code") != 0:
-        print("[canary] SHARD FAILED (nonzero exit)")
+    # THREE STATES, NOT TWO. ``exit_code != 0 -> FAILED`` was stricter than
+    # production and would condemn a run production ships: 8 designs, 8 reward
+    # rows, all scored, then a crash in evaluate. The same reading, in the
+    # sibling harness, nearly cancelled a measurement campaign.
+    #
+    # CLEAN (exit 0) / DEGRADED (non-zero, but designs came back scored, so
+    # production delivers) / FAILED (non-zero with nothing scored, or no count
+    # to judge by). DEGRADED exits 0 because production would have shipped it —
+    # and prints in full, because the non-zero exit is still a real defect that
+    # needs its own diagnosis, just not a verdict on the run's output.
+    #
+    # The same THREE STATES as ``_canary_scoring.shard_delivery``, written out
+    # rather than imported for the reason given at the top of this file: this
+    # harness deliberately depends on no other harness's private module. Not the
+    # byte-identical rule, and saying so matters more than the tidier sentence:
+    # ``shard_delivery`` coerces the count with ``int()``, so a string "3" or a
+    # float 2.5 would read there as a delivery and here as a failure. Both
+    # counts are written by ``_scored_design_counts`` above, which emits an int
+    # or None and nothing else, so the divergence is unreachable — but it is a
+    # divergence, and "the same rule" would have been a claim nobody checked.
+    rc = res.get("exit_code")
+    scored = res.get("n_scored_designs")
+    try:
+        rc_int = int(rc)
+    except (TypeError, ValueError):
+        # A shard that reported no usable exit code did not report a success
+        # either. `if rc == 0: return` alone would have fallen through to the
+        # DELIVERED-DEGRADED line and printed "exited None".
+        print(f"[canary] SHARD FAILED: no usable exit code ({rc!r}) — "
+              "the shard cannot be interpreted at all")
         sys.exit(1)
+    if rc_int == 0:
+        return
+    if not isinstance(scored, int) or isinstance(scored, bool) or scored <= 0:
+        print(f"[canary] SHARD FAILED: exited {rc_int} with "
+              f"{'no scored designs' if scored == 0 else f'no usable scored count ({scored!r})'}"
+              " — production fails a run on exactly this reading")
+        sys.exit(1)
+    print(f"[canary] SHARD DELIVERED-DEGRADED: exited {rc_int}, but {scored} of "
+          f"{res.get('n_reward_rows')} reward rows are fully scored. "
+          "run_pipeline only fails when a non-zero exit left nothing scored, "
+          "so production would have SHIPPED these designs. The non-zero exit "
+          "is still a real defect — read the stage-log tails above.")

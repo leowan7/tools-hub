@@ -1911,6 +1911,19 @@ _MAIN_MAY_CALL_FROM_SCORING = frozenset({
     # the $4 gate in front of the $12 run, and "upstream kept 1 of the 8 we
     # ordered" is the fact that decides whether to start it.
     "designs_yield_note",
+    # WIDENED BY ONE MORE NAME, on the identical argument, and the criterion is
+    # the allowlist's own rather than a fresh one: it is a RENDERER over three
+    # integers and a string the container already reported (``exit_code``,
+    # ``n_scored_designs``, ``n_reward_rows``, ``label``). It opens nothing,
+    # globs nothing, takes no per-design geometry and computes no number that
+    # is not already in the payload, so it cannot manufacture local evidence.
+    # It earns its place because ``shard_failure`` no longer condemns a shard
+    # that exited non-zero and still delivered scored designs, and the danger in
+    # that change is the crash going quiet: if it no longer moves the verdict it
+    # has to move the console. Note this is the RENDERER only — ``shard_
+    # delivery``, which decides the state, stays off the list and is executed
+    # directly by this suite.
+    "delivery_note",
 })
 
 # Scoring primitives ``run_shard`` must never touch directly: going through
@@ -2399,7 +2412,15 @@ _CANARY_CONSTS = frozenset({
 # is what ``_poll_vram`` derives its provenance flag from, and a caller lifting
 # the poller always means the real derivation. Stubbing it would put back
 # exactly the hardcoded answer this pair exists to prevent.
-_CANARY_ALWAYS_LIFT = frozenset({"_emit", "_prealloc_disabled"})
+#
+# ``_scored_design_counts`` joins them from the same side. It is what turns
+# ``run_shard``'s directory into the two numbers the DELIVERY state is decided
+# from, and it is deliberately built on production's own ``parse_designs``;
+# stubbing it would put back a canary-local answer to "would production have
+# delivered this", which is the divergence the whole delivery split exists to
+# remove.
+_CANARY_ALWAYS_LIFT = frozenset({
+    "_emit", "_prealloc_disabled", "_scored_design_counts"})
 
 
 def load_canary_functions(names, **injected):
@@ -2520,6 +2541,24 @@ def _fake_rp(home):
             "pdb_ca_residues", "parse_target_input", "select_residues",
             "missing_hotspots", "format_contig", "derive_segments",
             "build_target_add_cmd", "hotspot_keys", "_HUB_SOURCE",
+            # REAL, and it has to be. It is the whole point of the DELIVERY
+            # split that the canary answers "would production have delivered
+            # this" with PRODUCTION'S OWN parser over the real reward CSV in the
+            # real inference tree. A stub here would put back a canary-local
+            # answer to that question, which is the divergence being removed.
+            "parse_designs",
+            # REAL for the same reason, and this one cost a paid A100 to learn.
+            # ``stage_cropped_target`` IS production's staging step - the crop
+            # plus the count self-check - and ``_stage`` is required to go
+            # through it rather than write the upload verbatim. A stub here
+            # would let the canary stage whatever it liked and the suite would
+            # still be green, which is precisely the state that reproduced
+            # upstream's assertion on real hardware.
+            "stage_cropped_target", "TargetCropError",
+            "crop_pdb_to_contig", "selected_residue_keys",
+            # Production's negative-numbering guard, which the canary had no
+            # equivalent of until the same audit found it.
+            "unrenderable_segments",
         )
     })
     fake.PROTEINA_HOME = str(home)
@@ -3057,6 +3096,69 @@ class TestHarnessBehaviour:
             namespace["main"](phase=2, target_pdb=str(target),
                               hotspots="A1 A2", negative="A50 A51 A52 A53")
         assert excinfo.value.code == cs.EXIT_CODES[cs.FAIL]
+
+    # -- the delivery note is WIRED IN, not merely written ------------------
+    #
+    # ``cs.delivery_note`` had tests; ``main`` calling it had none, so deleting
+    # both call sites passed 561/561. That is not a silent hole - the verdict
+    # reason carries a ``[DELIVERED-DEGRADED]`` prefix through ``_print_verdict``
+    # independently - but a crash that no longer moves the verdict must move the
+    # console, and "must" is worth an assertion rather than an argument.
+
+    @staticmethod
+    def _degraded(label, **over):
+        """A shard that CRASHED and DELIVERED, in ``_shard``'s shape."""
+        out = _shard(label, exit_code=1, **over)
+        out["n_scored_designs"] = out["n_designs_expected"]
+        out["n_reward_rows"] = out["n_designs_expected"]
+        return out
+
+    def test_phase_one_prints_the_delivery_note_for_a_crashed_delivering_shard(
+            self, tmp_path, capsys):
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = self._degraded("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED" in out
+        assert "Production would have shipped this run" in out, (
+            "main() no longer prints cs.delivery_note for phase 1")
+        assert "fully scored 8" in out
+
+    def test_phase_one_prints_nothing_extra_for_a_clean_shard(self, tmp_path, capsys):
+        """The other half: a healthy run's console must be unchanged."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        result = _shard("phase1", n=8, recall=1.0, centroid=0.0)
+        result["hydra"] = {"task_name_selected": True, "hotspots_match": True,
+                           "hotspots_order_matches": True}
+        namespace = self._main_namespace(shard=_Remote(result=result))
+        namespace["main"](phase=1, target_pdb=str(target), hotspots="A1 A2")
+        assert "DEGRADED" not in capsys.readouterr().out
+
+    def test_phase_two_prints_the_delivery_note_per_shard(self, tmp_path, capsys):
+        """PER SHARD, and the loop is what makes it per shard: a phase-2 run
+        where only one control crashed-but-delivered is exactly the case the
+        label has to attribute."""
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        results = [
+            _shard("positive", n=8, recall=1.0, centroid=0.0, cross=1.0),
+            self._degraded("negative", n=8, recall=1.0, centroid=1.0, cross=0.0),
+            _shard("null", n=8, recall=None, centroid=1.0, cross=0.0),
+        ]
+        namespace = self._main_namespace(
+            shard=_Remote(handles=[_Handle(result=r) for r in results]))
+        namespace["main"](phase=2, target_pdb=str(target), hotspots="A1 A2",
+                          negative="A50 A51 A52 A53")
+        out = capsys.readouterr().out
+        assert "DELIVERED-DEGRADED [negative]" in out, (
+            "main() no longer prints cs.delivery_note for phase 2")
+        assert "DELIVERED-DEGRADED [positive]" not in out
+        assert "DELIVERED-DEGRADED [null]" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -5365,7 +5467,22 @@ class TestStagingMatchesProduction:
         assert expected.is_file(), (
             f"the target was not staged at {expected}; production stages "
             "every uploaded target there and nowhere else")
-        assert expected.read_text() == INPUT_TARGET_PDB
+        # THIS ASSERTION USED TO READ ``== INPUT_TARGET_PDB``, AND IT ENCODED
+        # THE WRONG EXPECTATION. It said the canary stages the upload VERBATIM,
+        # which was true until production grew a crop and then became the bug:
+        # a paid phase-1 shard staged uncropped bytes and reproduced upstream's
+        # ``metric_utils.py:217`` assertion on real hardware. Replaced, not
+        # weakened - the staged bytes must now be what PRODUCTION'S staging step
+        # produces for the same input, which is a strictly stronger claim than
+        # equality with any literal this file could hold.
+        reference = tmp_path / "reference.pdb"
+        raw = tmp_path / "raw.pdb"
+        raw.write_text(INPUT_TARGET_PDB)
+        residues, _ = rp.pdb_ca_residues(raw)
+        rp.stage_cropped_target(
+            reference, INPUT_TARGET_PDB, residues,
+            rp.derive_segments(residues, sorted({r[0] for r in residues})))
+        assert expected.read_text() == reference.read_text()
         add = self._registered(fake.streamed[0])
         assert add["--target-path"] == str(expected)
         assert add["--target-filename"] == key, (
@@ -5390,7 +5507,7 @@ class TestStagingMatchesProduction:
         fake = _fake_rp(tmp_path / "proteina")
         namespace = load_canary_functions({"_stage", "_stage_dir"})
         key = cs.canary_task_key("positive", 1234)
-        staged = namespace["_stage"](fake, INPUT_TARGET_PDB, key)
+        staged, _raw, _contig = namespace["_stage"](fake, INPUT_TARGET_PDB, key)
         assert staged.parent == Path(fake._HUB_TARGET_DIR)
         assert staged.stem == key
         # run_pipeline's own expression, evaluated here: `target_dir /
@@ -6465,6 +6582,13 @@ def _canary_func(path, name, also=(), **injected):
     wanted = {name, "_prealloc_disabled", *also}
     body = [n for n in tree.body
             if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    for node in body:
+        # ``@app.function(...)`` / ``@app.local_entrypoint()`` are Modal
+        # plumbing, not behaviour, and ``app`` does not exist in this namespace
+        # by design — same rule as ``load_canary_functions``. Without this only
+        # the undecorated helpers could be lifted, which is exactly the set that
+        # excludes both entrypoints.
+        node.decorator_list = []
     found = {n.name for n in body}
     assert name in found, f"{name} not found in {path.name}"
     ns: dict = {"subprocess": subprocess, "threading": threading}
@@ -6684,3 +6808,684 @@ class TestTheJoinOutlastsTheFinalSample:
             f"{path.name} cannot distinguish 'the poller was cut off' from "
             f"'the poller measured nothing'"
         )
+
+
+# ===========================================================================
+# DELIVERY: the canary must not condemn a run production would have shipped
+# ===========================================================================
+#
+# THE MISJUDGEMENT, and it was a real one. A shard produced 8 designs, 8 files,
+# 8 reward rows and 8 complexes, then crashed in `evaluate`. The canary printed
+# FAILED. Production's rule, in run_pipeline immediately after `complexa design`
+# returns, is:
+#
+#     n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+#     if rc != 0:
+#         if n_scored == 0:
+#             _fail("search", "complexa", ...)
+#         logger.warning("... but %d/%d designs are fully scored - delivering")
+#
+# and the reward CSV it reads is written by the GENERATE stage, not by evaluate.
+# So that run would have SHIPPED 8 scored designs to a paying customer. A
+# measurement campaign was nearly cancelled on the canary's reading of it.
+#
+# THE VOCABULARY IS THREE-VALUED AND ORTHOGONAL TO THE OUTCOME. Delivery
+# (clean / degraded / failed) answers "would production have shipped this";
+# the outcome (PASS / FAIL / INCONCLUSIVE) answers "did the binders land on the
+# patch". They are independent, and folding one into the other is what produced
+# the wrong answer. A DEGRADED shard is stamped onto every verdict it touches
+# and printed in full, because the fix is to stop calling it FAILED, not to stop
+# reporting it.
+# ===========================================================================
+
+
+def _delivering_shard(**over):
+    """A shard that CRASHED and DELIVERED: the exact shape that was misjudged."""
+    shard = {
+        "label": "phase1", "exit_code": 1,
+        "n_designs_expected": 8, "n_scored_designs": 8, "n_reward_rows": 8,
+        "designs": [{"name": f"sample_{i}.pdb", "is_complex": True}
+                    for i in range(8)],
+        "n_complexes": 8,
+        "hydra": {"task_name_selected": True, "hotspots_match": True},
+    }
+    shard.update(over)
+    return shard
+
+
+class TestDeliveryIsNotTheExitCode:
+    """``shard_delivery`` executed directly - it is the decision, so it is not
+    on the local entrypoint's renderer allowlist and is covered here."""
+
+    def test_a_clean_shard_is_clean(self):
+        assert cs.shard_delivery({"exit_code": 0}) == (cs.CLEAN, "")
+        assert cs.shard_failure({"exit_code": 0}) is None
+        assert cs.shard_degradation({"exit_code": 0}) is None
+
+    def test_a_crash_that_delivered_is_not_a_failure(self):
+        """THE FIX. Production delivers on this reading; the canary said FAILED."""
+        shard = _delivering_shard()
+        state, detail = cs.shard_delivery(shard)
+        assert state == cs.DEGRADED
+        assert cs.shard_failure(shard) is None, (
+            "a shard production would have shipped must not read as a failure")
+        assert cs.shard_degradation(shard) == detail
+        assert "8 design(s) came back fully scored" in detail
+        assert "exited 1" in detail
+
+    def test_a_crash_with_nothing_scored_is_still_a_failure(self):
+        """The other side. Production _fail()s here, so the canary must too."""
+        shard = _delivering_shard(n_scored_designs=0)
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "no scored designs" in cs.shard_failure(shard)
+        assert cs.shard_degradation(shard) is None
+
+    def test_a_crash_that_did_not_report_a_count_is_a_failure(self):
+        """CONSERVATIVE ON PURPOSE. "we cannot tell" is not "it delivered":
+        guessing the other way blesses a broken run, and it keeps every
+        hand-built payload in this suite on its original verdict unless it opts
+        in by reporting the count."""
+        shard = _delivering_shard()
+        del shard["n_scored_designs"]
+        assert cs.shard_delivery(shard)[0] == cs.FAILED
+        assert "did not report" in cs.shard_failure(shard)
+
+    @pytest.mark.parametrize("value", [None, "eight", -1, True, [8]])
+    def test_an_unusable_count_is_not_a_delivery(self, value):
+        shard = _delivering_shard(n_scored_designs=value)
+        assert cs.scored_design_count(shard) is None
+        assert cs.shard_delivery(shard)[0] == cs.FAILED, value
+
+    def test_the_old_hard_failures_are_untouched(self):
+        """Nothing that used to be a FAIL for a reason other than the exit code
+        may have become one of the new soft states."""
+        for shard, fragment in (
+            (None, "no result was returned"),
+            ({"error": "boom", "exit_code": 0, "n_scored_designs": 8}, "boom"),
+            ({"n_scored_designs": 8}, "no exit code"),
+            ({"exit_code": "x", "n_scored_designs": 8}, "non-numeric"),
+        ):
+            assert cs.shard_delivery(shard)[0] == cs.FAILED, shard
+            assert fragment in cs.shard_failure(shard)
+
+    def test_it_agrees_with_production_on_every_combination(self):
+        """THE ALIGNMENT ASSERTION, stated as the rule rather than as examples.
+
+        Production fails a shard exactly when a non-zero exit left nothing
+        scored. Anything else it delivers. The canary must draw the same line.
+        """
+        for rc in (0, 1, 2, 124):
+            for n_scored in (0, 1, 8):
+                shard = _delivering_shard(exit_code=rc, n_scored_designs=n_scored)
+                production_fails = rc != 0 and n_scored == 0
+                canary_fails = cs.shard_failure(shard) is not None
+                assert canary_fails == production_fails, (
+                    f"rc={rc} scored={n_scored}: production "
+                    f"{'fails' if production_fails else 'delivers'} but the "
+                    f"canary {'fails' if canary_fails else 'delivers'}")
+
+    def test_production_still_writes_the_rule_this_is_aligned_to(self):
+        """If run_pipeline's delivery rule ever moves, the test above is
+        asserting agreement with something that no longer exists. Read the
+        source rather than trusting the comment."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        assert 'sum(1 for d in designs if d.get("total_reward") is not None)' in source
+        assert "if n_scored == 0:" in source
+        assert '_fail("search", "complexa"' in source
+
+
+class TestADegradedRunIsStillLoud:
+    """The danger in the fix is the opposite of the defect: a crash going quiet
+    because it no longer moves the verdict. It has to move the console."""
+
+    def test_the_verdict_says_so_in_the_one_line_that_always_prints(self):
+        verdict = cs.phase1_verdict(_delivering_shard())
+        assert verdict.outcome == cs.PASS, verdict.reason
+        assert verdict.reason.startswith("[DELIVERED-DEGRADED]")
+        assert "exited 1" in verdict.reason
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["n_scored_designs"] == 8
+
+    def test_a_clean_run_is_not_labelled(self):
+        """A healthy run's console must be byte-for-byte what it was."""
+        verdict = cs.phase1_verdict(_delivering_shard(exit_code=0))
+        assert verdict.outcome == cs.PASS
+        assert "DEGRADED" not in verdict.reason
+        assert verdict.metrics["delivery"] == cs.CLEAN
+        assert cs.delivery_note(_delivering_shard(exit_code=0)) == []
+
+    def test_the_console_note_names_the_numbers_behind_it(self):
+        lines = cs.delivery_note(_delivering_shard())
+        assert lines, "a crashed-but-delivering shard printed nothing"
+        text = " ".join(lines)
+        assert "DELIVERED-DEGRADED" in text and "phase1" in text
+        assert "reward-table rows 8" in text and "fully scored 8" in text
+        assert "Production would have shipped this run" in text
+
+    def test_a_failed_shard_is_not_given_the_degraded_note(self):
+        """The two states are mutually exclusive; a FAILED shard's reason
+        already says it once."""
+        assert cs.delivery_note(_delivering_shard(n_scored_designs=0)) == []
+
+    def test_every_phase_two_verdict_carries_the_stamp(self):
+        pos = _delivering_shard(label="positive")
+        neg = _delivering_shard(label="negative")
+        null = _delivering_shard(label="null")
+        for verdict in (cs.positive_verdict(pos), cs.negative_verdict(neg),
+                        cs.null_verdict(pos, null)):
+            assert verdict.metrics["delivery"] == cs.DEGRADED, verdict.name
+            assert verdict.reason.startswith("[DELIVERED-DEGRADED]"), verdict.name
+            assert verdict.metrics["delivery_detail"], verdict.name
+
+    def test_the_null_verdict_takes_the_worse_of_its_two_shards(self):
+        """A comparison is only as sound as its weaker half."""
+        clean = _delivering_shard(label="positive", exit_code=0)
+        degraded = _delivering_shard(label="null")
+        verdict = cs.null_verdict(clean, degraded)
+        assert verdict.metrics["delivery"] == cs.DEGRADED
+        assert verdict.metrics["delivery_detail"][0].startswith("null:")
+
+    def test_the_diagnostics_block_prints_the_delivery_state(self):
+        """For a FAIL or an INCONCLUSIVE, where the reason prefix is not the
+        only thing an operator reads."""
+        shard = _delivering_shard(hydra={"task_name_selected": False,
+                                         "task_name_values": ["other"]})
+        verdict = cs.phase1_verdict(shard)
+        assert verdict.outcome == cs.FAIL
+        line = " ".join(cs.verdict_diagnostics(verdict))
+        assert "delivery degraded" in line
+        assert "designs fully scored (production would deliver) 8" in line
+
+
+class TestTheShardReportsWhatProductionWouldDeliver:
+    """The count itself, through the REAL ``run_shard`` body over real files."""
+
+    @staticmethod
+    def _rewards(rows):
+        """A reward table in the shape ``run_pipeline.parse_designs`` reads:
+        one row per design with a ``total_reward``. ``None`` for a row's reward
+        writes an empty cell, which is what an unscored sample looks like."""
+        head = "sample,total_reward,af2folding_plddt"
+        body = [f"design_{i},{'' if r is None else r},0.9"
+                for i, r in enumerate(rows)]
+        return "\n".join([head, *body]) + "\n"
+
+    def _shard(self, tmp_path, rows, rc=0):
+        files = [(f"sample_{i}.pdb", CORRECT_DESIGN_PDB) for i in range(len(rows))]
+        files.append(("rewards_canary_0.csv", self._rewards(rows)))
+        namespace = _shard_namespace(tmp_path, design_files=files, rc=rc)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out.get("error") is None, out.get("error")
+        return out
+
+    def test_the_shard_counts_scored_designs_with_productions_parser(self, tmp_path):
+        out = self._shard(tmp_path, [0.5] * 8, rc=1)
+        assert out["n_reward_rows"] == 8
+        assert out["n_scored_designs"] == 8
+        assert cs.shard_delivery(out)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_as_delivered(self, tmp_path):
+        """``total_reward is not None`` is production's test, not ``nrows``."""
+        out = self._shard(tmp_path, [0.5, None, None, 0.7], rc=1)
+        assert out["n_reward_rows"] == 4
+        assert out["n_scored_designs"] == 2
+
+    def test_a_crash_with_a_wholly_unscored_table_still_fails(self, tmp_path):
+        out = self._shard(tmp_path, [None, None], rc=1)
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_no_reward_table_at_all_is_zero_not_unknown(self, tmp_path):
+        """``parse_designs`` returns [] when it finds no CSV, and zero scored
+        designs on a non-zero exit is precisely what production fails on."""
+        namespace = _shard_namespace(
+            tmp_path,
+            design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)], rc=1)
+        out = namespace["run_shard"](
+            INPUT_TARGET_PDB, "positive", ["A1", "A2"], "", 1234, [60, 120],
+            False, ["A1", "A2"])
+        assert out["n_scored_designs"] == 0
+        assert cs.shard_delivery(out)[0] == cs.FAILED
+
+    def test_a_broken_counter_never_kills_the_shard_it_describes(self, tmp_path):
+        """A diagnostic that can fail the run it is describing would be the same
+        defect wearing a different hat. It reports None, which reads as FAILED
+        - the conservative direction - and the shard still returns."""
+        namespace = load_canary_functions({"_scored_design_counts"})
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert namespace["_scored_design_counts"](_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}
+
+
+class TestTheDesignCanaryHasTheSameDivergence:
+    """``_design_canary.py`` carried the identical rule (``exit_code != 0 ->
+    SHARD FAILED``) in its local entrypoint. Same fix, same three states."""
+
+    @staticmethod
+    def _main(res, capsys):
+        main = _canary_func(
+            _DESIGN_CANARY_PATH, "main",
+            run_design_canary=_Remote(result=res),
+            json=json, sys=sys)
+        code = 0
+        try:
+            main()
+        except SystemExit as exc:
+            code = exc.code
+        return code, capsys.readouterr().out
+
+    @staticmethod
+    def _res(**over):
+        base = {"preset": "protein_binder", "task_name": "02_PDL1",
+                "exit_code": 0, "n_scored_designs": 8, "n_reward_rows": 8,
+                "csv_files": {}}
+        base.update(over)
+        return base
+
+    def test_a_clean_run_still_exits_zero(self, capsys):
+        code, out = self._main(self._res(), capsys)
+        assert code == 0
+        assert "FAILED" not in out and "DEGRADED" not in out
+
+    def test_a_crash_that_delivered_is_no_longer_called_failed(self, capsys):
+        code, out = self._main(self._res(exit_code=1), capsys)
+        assert code == 0, "production would have shipped these 8 designs"
+        assert "SHARD FAILED" not in out
+        assert "DELIVERED-DEGRADED" in out
+        assert "exited 1" in out and "8 of 8 reward rows" in out
+        assert "still a real defect" in out, (
+            "the crash must stay visible; the fix is to stop calling it FAILED")
+
+    def test_a_crash_with_nothing_scored_still_fails(self, capsys):
+        code, out = self._main(self._res(exit_code=1, n_scored_designs=0), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no scored designs" in out
+
+    def test_a_crash_with_no_count_still_fails(self, capsys):
+        res = self._res(exit_code=1)
+        del res["n_scored_designs"]
+        code, out = self._main(res, capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable scored count" in out
+
+    @pytest.mark.parametrize("rc", [None, "x"])
+    def test_an_unusable_exit_code_fails_rather_than_reading_as_delivered(
+            self, rc, capsys):
+        """``if rc == 0: return`` alone let a shard with no exit code fall
+        through to the DELIVERED-DEGRADED line and print "exited None"."""
+        code, out = self._main(self._res(exit_code=rc), capsys)
+        assert code == 1
+        assert "SHARD FAILED" in out and "no usable exit code" in out
+        assert "DELIVERED-DEGRADED" not in out
+
+    @staticmethod
+    def _rooted_path(root):
+        """``Path`` with the container's hardcoded ``/opt/proteina`` rebased.
+
+        ``run_design_canary`` writes that path as a literal, not a constant, so
+        there is nothing to inject except ``Path`` itself. Every other value
+        passes straight through to the real class.
+        """
+        def _P(value=""):
+            text = str(value)
+            return Path(root) if text == "/opt/proteina" else Path(text)
+        return _P
+
+    def _run_shard(self, tmp_path, rewards, rc=0):
+        """EXECUTE ``run_design_canary`` and return the dict it really builds.
+
+        THE POINT OF THIS HARNESS, and why the source-substring test it replaced
+        was not good enough: setting ``n_scored = None`` immediately after the
+        parse kept every substring that test asserted, passed, and made the
+        canary report no count on every run. Only running the function and
+        reading the payload can catch that.
+
+        The design command is stubbed, and the stub WRITES the reward CSV -
+        which is faithful, because the CSV is what the design command produces,
+        and because the body wipes ``inference/`` before it runs. ``rp`` is the
+        real ``run_pipeline`` loaded from the repo, so the count comes from
+        production's parser over a real file on disk.
+        """
+        inference = tmp_path / "inference"
+
+        def _run(cmd, **kwargs):
+            inference.mkdir(parents=True, exist_ok=True)
+            (inference / "rewards_canary_0.csv").write_text(rewards)
+            return types.SimpleNamespace(returncode=rc)
+
+        run_design_canary = _canary_func(
+            _DESIGN_CANARY_PATH, "run_design_canary",
+            also=("_scored_design_counts",),
+            _RUN_PIPELINE_REMOTE=str(Path(rp.__file__)),
+            _VRAM_JOIN_TIMEOUT_S=1,
+            Path=self._rooted_path(tmp_path),
+            sys=sys, time=time, glob=glob, json=json, threading=threading,
+            subprocess=types.SimpleNamespace(
+                run=_run, TimeoutExpired=subprocess.TimeoutExpired),
+            _poll_vram=lambda stop, out, child_env=None: out.update(
+                peak_vram_mb=0, vram_poll_interval_s=1,
+                vram_prealloc_disabled=True, vram_poll_complete=True),
+        )
+        return run_design_canary(
+            "protein_binder", "search_binder_local_pipeline", "02_PDL1", 4, 2)
+
+    def test_the_payload_really_carries_the_count_the_entrypoint_judges_on(
+            self, tmp_path):
+        """The two halves live in different processes. If the container stops
+        putting a real number in the payload, the entrypoint fails every run for
+        want of it - and no assertion over the SOURCE can tell."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5] * 8), rc=1)
+        assert result["n_reward_rows"] == 8
+        assert result["n_scored_designs"] == 8
+        assert cs.shard_delivery(result)[0] == cs.DEGRADED
+
+    def test_an_unscored_row_is_not_counted_in_the_payload(self, tmp_path):
+        """``total_reward is not None``, not ``nrows`` - production's test,
+        executed here rather than asserted about."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [0.5, None, None, 0.7]), rc=1)
+        assert (result["n_reward_rows"], result["n_scored_designs"]) == (4, 2)
+
+    def test_the_payload_and_the_entrypoint_agree_end_to_end(self, tmp_path, capsys):
+        """The shard's real payload driven straight into the real entrypoint:
+        the two halves are only useful if they meet."""
+        result = self._run_shard(
+            tmp_path, TestTheShardReportsWhatProductionWouldDeliver._rewards(
+                [None, None]), rc=1)
+        code, out = self._main(result, capsys)
+        assert code == 1, "a crash with a wholly unscored table must still fail"
+        assert "no scored designs" in out
+
+    def test_a_broken_counter_never_kills_the_design_shard_either(self, tmp_path):
+        """THE ASYMMETRY THIS CLOSES. The hotspot canary's twin is pinned;
+        this one was not, so turning its ``except`` into a ``raise`` survived
+        the whole suite - a diagnostic able to kill the paid shard it exists to
+        describe."""
+        counts = _canary_func(_DESIGN_CANARY_PATH, "_scored_design_counts")
+
+        class _Boom:
+            @staticmethod
+            def parse_designs(path):
+                raise OSError("the volume went away")
+
+        assert counts(_Boom(), tmp_path) == {
+            "n_scored_designs": None, "n_reward_rows": None}
+
+
+# ===========================================================================
+# THE CANARY'S STAGED BYTES ARE PRODUCTION'S, NOT A LOOKALIKE
+# ===========================================================================
+#
+# WHAT THIS COST. ``prepare_custom_target`` grew a crop - the staged file is
+# reduced to the contig's residues so upstream's ``metric_utils.py:217`` count
+# assertion holds - and ``_stage`` went on doing ``p.write_text(pdb_text)``. Its
+# docstring said "Stage the target EXACTLY the way ``prepare_custom_target``
+# does" under a block-capital "THE CANARY MUST NOT EXERCISE A PATH PRODUCTION
+# NEVER RUNS". True when written; false the moment the crop landed. A paid A100
+# phase-1 shard then staged the uncropped file and reproduced the exact
+# assertion the crop prevents, on the same contig (A236-300,B236-300 on 3S7G).
+# Production was correct the whole time. The harness that exists to prove it
+# was not.
+#
+# WHY "DOES _stage PRODUCE CROPPED OUTPUT" IS THE WRONG TEST. It can be
+# satisfied by a second implementation inside the canary, which is the same
+# defect one commit later. What has to be pinned is that the bytes come from
+# PRODUCTION'S OWN function, so a future change to cropping cannot leave the
+# canary behind - the rule ``_stage_dir`` already states for the path
+# ("derived, not copied ... the canary follows it in the same commit or not at
+# all"), applied to the bytes.
+# ===========================================================================
+
+
+def _three_chain_upload(sub_range=False):
+    """A multi-chain upload with the shape that failed on hardware.
+
+    Chain A 236-300 and B 236-300 carry 65 residues each; chain C is the one a
+    two-chain contig does not name. When ``sub_range`` is set, A and B run to
+    350 instead, so a contig of A236-300,B236-300 selects a strict subset of
+    each named chain - the case upstream's count assertion rejects.
+    """
+    hi = 350 if sub_range else 300
+    lines = []
+    serial = 1
+    for chain in ("A", "B", "C"):
+        seq = [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(hi - 236 + 1)]
+        lines += _trace(chain, seq, first_res=236, serial0=serial)
+        serial += len(seq)
+    return "\n".join(lines) + "\n"
+
+
+class TestTheCanaryStagesThroughProduction:
+
+    _CONTIG = "A236-300,B236-300"
+
+    @staticmethod
+    def _upstream_counts(residues, contig):
+        """(left, right) of ``metric_utils.py:217`` for a file with ``residues``.
+
+        ``named`` discards the ranges exactly as ``binder_eval_utils`` does.
+        """
+        segments = rp.parse_target_input(contig)
+        named = {seg[0] for seg in segments}
+        return (sum(1 for r in residues if r[0] in named),
+                len(rp.select_residues(residues, segments)))
+
+    def test_the_staged_bytes_come_from_productions_own_function(self, tmp_path):
+        """THE TEST THAT WOULD HAVE CAUGHT IT, and it does not mention cropping.
+
+        ``stage_cropped_target`` is replaced with a sentinel. If ``_stage``
+        calls it, the staged file carries the sentinel; if ``_stage`` writes the
+        bytes itself - verbatim OR by re-implementing the crop correctly - it
+        does not. That is the property that survives the next change to
+        cropping, which "the output looks cropped" would not.
+        """
+        fake = _fake_rp(tmp_path / "proteina")
+        marks = []
+
+        def _sentinel(dest, pdb_text, residues, segments):
+            marks.append((Path(dest).name, len(residues), list(segments)))
+            dest.write_text("REMARK PRODUCTION STAGED THIS\nEND\n")
+            return 1, 1
+
+        fake.stage_cropped_target = _sentinel
+        namespace = load_canary_functions({"_stage", "_stage_dir"})
+        key = cs.canary_task_key("positive", 1234)
+        staged, _raw, _contig = namespace["_stage"](
+            fake, _three_chain_upload(sub_range=True), key, self._CONTIG)
+        assert staged.read_text() == "REMARK PRODUCTION STAGED THIS\nEND\n", (
+            "_stage wrote the staged file itself instead of going through "
+            "run_pipeline.stage_cropped_target; a canary that stages its own "
+            "bytes can drift from production again, which is what cost a paid "
+            "A100 shard")
+        assert len(marks) == 1, "production's staging step was not called"
+        name, n_residues, segments = marks[0]
+        assert name == f"{key}.pdb"
+        # ...and it was handed the RAW residues and the operator's contig, i.e.
+        # production's arguments, not something already narrowed.
+        assert n_residues == 345, "the raw upload's residues, all three chains"
+        assert segments == [("A", 236, 300), ("B", 236, 300)]
+
+    def test_a_sub_range_contig_stages_a_file_upstream_will_accept(self, tmp_path):
+        """THE PAID FAILURE, REPRODUCED OFFLINE, through the real ``run_shard``.
+
+        This is the assertion the A100 hit: CA atoms of the named chains in the
+        staged file against the residues the contig selects.
+        """
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236", "B300"],
+            self._CONTIG, 1234, [60, 120], False, ["A236", "B300"])
+        assert out.get("error") is None, out.get("error")
+        staged = Path(namespace["_fake_rp"]._HUB_TARGET_DIR) / f"{out['key']}.pdb"
+        residues, _ = rp.pdb_ca_residues(staged)
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert left == right == 130, (
+            f"the shard staged a file upstream's evaluate stage would reject "
+            f"({left} != {right}) - this is the run that failed on hardware")
+
+    def test_the_uncropped_upload_would_have_failed_that_assertion(self, tmp_path):
+        """The premise, so the test above cannot pass vacuously."""
+        raw = tmp_path / "raw.pdb"
+        raw.write_text(_three_chain_upload(sub_range=True))
+        residues, _ = rp.pdb_ca_residues(raw)
+        left, right = self._upstream_counts(residues, self._CONTIG)
+        assert (left, right) == (230, 130) and left != right
+
+    def test_input_chains_still_names_every_chain_the_upload_carried(self, tmp_path):
+        """The crop removes chain C from the staged file, and ``input_chains``
+        is documented as "every chain the input file carried" - read off the
+        UPLOAD, not off the staged file, or the key silently becomes a copy of
+        ``target_chains`` and the two can never disagree again."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        assert out["input_chains"] == ["A", "B", "C"]
+        assert out["target_chains"] == ["A", "B"]
+
+    def test_a_crop_mismatch_becomes_a_refusal_record_not_a_process_exit(
+            self, tmp_path, monkeypatch):
+        """Production converts ``TargetCropError`` into ``_fail`` and exits.
+        The canary cannot: a ``sys.exit`` inside a billed container throws away
+        the diagnostic the run was bought for. Same error, different handling -
+        which is exactly why ``stage_cropped_target`` raises instead of
+        deciding."""
+        # Patched on ``run_pipeline`` itself, not on the fake: the self-check
+        # lives INSIDE production's ``stage_cropped_target``, which resolves the
+        # crop from its own module globals. That is the point - the canary
+        # inherits the check by calling the function, and cannot opt out of it.
+        monkeypatch.setattr(rp, "crop_pdb_to_contig", lambda text, keep: text)
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        assert "target staging" in (out.get("error") or "")
+        assert "230" in out["error"] and "130" in out["error"]
+        assert namespace["_design_commands"] == [], (
+            "the shard ran the design command on a file upstream would reject")
+
+    def test_phase_zero_stages_through_production_too(self, tmp_path):
+        """No contig: the crop resolves to the whole of every chain, so the
+        bytes are the input again - but by the same route, not around it."""
+        fake = _fake_rp(tmp_path / "proteina")
+        namespace = load_canary_functions(
+            {"phase0", "_stage", "_stage_dir"},
+            _load_rp=lambda: fake, _prune_registry=lambda module: [])
+        results = namespace["phase0"](INPUT_TARGET_PDB)
+        assert results["pass"] is True, results
+        staged = (Path(fake._HUB_TARGET_DIR)
+                  / f"{cs.canary_task_key('phase0', 0)}.pdb")
+        residues, _ = rp.pdb_ca_residues(staged)
+        assert self._upstream_counts(residues, "A1-30") == (30, 30)
+
+    def test_the_staged_file_is_the_one_that_gets_registered(self, tmp_path):
+        """The crop is pointless if the registration names a different file."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        out = namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        add = namespace["_fake_rp"].streamed[0]
+        registered = Path(add[add.index("--target-path") + 1])
+        assert registered.name == f"{out['key']}.pdb"
+        residues, _ = rp.pdb_ca_residues(registered)
+        assert self._upstream_counts(residues, self._CONTIG) == (130, 130)
+        assert add[add.index("--target-input") + 1] == self._CONTIG, (
+            "omitting the contig makes upstream default to A1-100")
+
+    def test_no_incoming_file_is_left_behind(self, tmp_path):
+        """``incoming.pdb`` is not ``canary_``-prefixed, so ``_prune_staged``
+        would not collect it from a warm container."""
+        namespace = _shard_namespace(
+            tmp_path, design_files=[("sample_0.pdb", CORRECT_DESIGN_PDB)])
+        namespace["run_shard"](
+            _three_chain_upload(sub_range=True), "phase1", ["A236"],
+            self._CONTIG, 1234, [60, 120], False, ["A236"])
+        stage_dir = Path(namespace["_fake_rp"]._HUB_TARGET_DIR)
+        assert not (stage_dir / "incoming.pdb").exists()
+
+
+class TestTheNegativeNumberingGuardReachesTheCanaryToo:
+    """THE SECOND INSTANCE OF THE SAME CLASS, found auditing the first.
+
+    ``run_pipeline`` refuses a negative author residue number before the GPU
+    (``unrenderable_segments``): atomworks' ``CONTIG_REGEX`` carries no sign, so
+    a construct that keeps its expression tag derives ``A-5-240`` and raises
+    inside ``complexa design`` - after checkpoints are loaded. Every other
+    pre-GPU check passes on such a target. The canary had no equivalent, so
+    ``--target-pdb <tagged construct>`` would have spent ~$4 in phase 1 or ~$12
+    in phase 2 to learn what a regex knows for free.
+    """
+
+    @staticmethod
+    def _tagged(tmp_path):
+        """A construct numbered from -5, as an expression tag leaves it."""
+        path = tmp_path / "tagged.pdb"
+        path.write_text("\n".join(
+            _trace("A", _TARGET_SEQ, first_res=-5)) + "\n")
+        return path
+
+    def test_a_tagged_construct_is_refused_before_any_shard_spawns(self, tmp_path):
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._tagged(tmp_path)), "", [("positive", ["A1"])])
+        message = str(excinfo.value)
+        assert "A-5-24" in message and "NO GPU TIME WAS USED" in message
+        assert "CONTIG_REGEX" in message
+
+    def test_main_does_not_spawn_on_a_tagged_construct(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it."""
+        shard = _Remote()
+        namespace = load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=lambda: rp, run_shard=shard,
+            phase0=_Remote(result={}))
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(self._tagged(tmp_path)),
+                              hotspots="A1 A2")
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 on a contig upstream cannot parse")
+
+    def test_a_normally_numbered_target_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, or the harness never runs."""
+        path = tmp_path / "ok.pdb"
+        path.write_text(INPUT_TARGET_PDB)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "", [("positive", ["A1"])]) == "A1-30"
+
+    def test_the_predicate_is_run_pipelines_and_not_a_restatement(self, tmp_path):
+        """The whole point of this round: call production's function, do not
+        re-derive its answer. A canary with its own idea of "unrenderable" is
+        the drift this audit exists to remove."""
+        assert rp.unrenderable_segments([("A", -5, 240)]) == [("A", -5, 240)]
+        assert rp.unrenderable_segments([("A", 0, 240)]) == []
+        tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+        refusal = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "unrenderable_segments" in called, (
+            "the canary must ASK run_pipeline whether a contig is renderable")
