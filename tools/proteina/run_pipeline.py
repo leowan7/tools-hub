@@ -464,6 +464,46 @@ def derive_segments(
     return out
 
 
+def expand_bare_chains(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> list[tuple[str, Optional[int], Optional[int]]]:
+    """``(chain, None, None)`` — "the whole chain" — as an explicit span.
+
+    ``parse_target_input`` yields a bare chain id with no bounds, and every
+    check downstream of it compares numbers: ``unrenderable_segments`` reads
+    ``lo < 0``, ``format_contig`` renders ``lo``-``hi``, and upstream's contig
+    regex needs digits. Resolving the bounds FIRST is what makes those checks
+    apply to ``--contig A`` at all.
+
+    IT IS EXTRACTED BECAUSE THE CANARY HAD NO EXPANSION AND THEREFORE NO
+    GUARDS. ``_hotspot_canary`` filtered unexpanded segments OUT before asking
+    ``unrenderable_segments``, so ``--contig A`` on a construct numbered from
+    -5 skipped the negative-numbering refusal entirely and spawned ~$4 (phase
+    1) or ~$12 (phase 2) to die in ``from_contig``. Production does not refuse
+    that input either — it EXPANDS it to ``A-5-240`` and then refuses it for
+    the right reason. A canary that refused the bare id itself would be
+    over-refusing, which on this branch is its own defect class: it stops runs
+    production would have accepted.
+
+    A chain absent from the upload has no span to expand to and is returned
+    UNCHANGED, still carrying its ``None``s. That is deliberate: it is not this
+    function's business to decide what an unresolvable chain means, and both
+    callers already have a refusal for it — ``prepare_custom_target`` names it
+    ("chain Z is not present"), the canary reaches it through
+    ``empty_segments``. Anything downstream that compares bounds must therefore
+    tolerate a ``None`` lower bound; ``unrenderable_segments`` does.
+    """
+    out: list[tuple[str, Optional[int], Optional[int]]] = []
+    for chain, lo, hi in segments:
+        if lo is None:
+            nums = [r[1] for r in residues if r[0] == chain]
+            out.append((chain, min(nums), max(nums)) if nums else (chain, lo, hi))
+        else:
+            out.append((chain, lo, hi))
+    return out
+
+
 def select_residues(
     residues: list[tuple[str, int, str]],
     segments: list[tuple[str, Optional[int], Optional[int]]],
@@ -487,11 +527,25 @@ def selected_residue_keys(
     """``select_residues`` as a SET of full residue keys, insertion code kept.
 
     ``select_residues`` returns a list of ``(chain, resseq)`` in file order and
-    repeats a residue named by two overlapping segments; that is right for the
-    size gate and for hotspot matching, and wrong for cropping, where the
-    question is "which residue lines survive". The insertion code is carried
-    because ``A100`` and ``A100A`` are two residues with two CA atoms — upstream
-    counts both, so the crop has to keep both.
+    REPEATS a residue named by two overlapping segments. That is right for
+    hotspot matching, which set-ifies through ``hotspot_keys`` before it
+    compares anything, and it is right for cropping only after this function
+    has de-duplicated it — the question there is "which residue lines survive".
+
+    IT IS WRONG FOR ANYTHING THAT COUNTS, and this docstring used to claim the
+    opposite ("right for the size gate"). The size gate believed it: measured
+    on a 60-residue chain, ``--contig A10-20`` counted 11 and was refused, while
+    ``--contig A10-20,A10-20`` counted 22 for the same 11 residues and was not.
+    One comma bought a run of exactly the input the floor exists to stop. On the
+    WEB route production was shielded from that by the adapter, which rejects a
+    chain named twice ("Chain A appears more than once in the target chain
+    range", ``tools/proteina/__init__.py``); ``prepare_custom_target`` itself
+    was not, and the canary does not go through the adapter at all.
+    ``target_too_small`` now counts THIS, which is also what the crop stages.
+
+    The insertion code is carried because ``A100`` and ``A100A`` are two
+    residues with two CA atoms — upstream counts both, so the crop has to keep
+    both.
     """
     keep: set[tuple[str, int, str]] = set()
     for chain, lo, hi in segments:
@@ -770,17 +824,86 @@ def unrenderable_segments(
     matches, so the shard boots, loads checkpoints and only then dies inside
     ``complexa design``. Refusing here converts a full-price crash into a free
     message. ``0`` is fine (``A0-240`` matches), so the bound is ``< 0``.
+
+    A segment still carrying ``lo is None`` is NOT unrenderable, it is
+    unresolved: ``expand_bare_chains`` leaves a bare chain id that is absent
+    from the upload exactly as it found it, and "chain Z is not in this file"
+    is a different refusal with a different fix. Skipping it here is what lets
+    both callers hand this function a parsed contig unfiltered — the canary
+    used to strip unexpanded segments itself, which silently stripped the
+    negative-numbering guard along with them (``--contig A`` on a tagged
+    construct). Unreachable inside ``prepare_custom_target``, which refuses an
+    absent chain before it gets here; live in the canary, which does not.
     """
-    return [(c, lo, hi) for c, lo, hi in segments if lo < 0 or hi < 0]
+    return [(c, lo, hi) for c, lo, hi in segments
+            if lo is not None and (lo < 0 or hi < 0)]
 
 
-# The smallest target selection worth starting a GPU for. Below it there is not
-# enough surface to place a 60-120 residue binder against, so the run would burn
-# an A100 to produce designs nobody can use.
-MIN_TARGET_RESIDUES = 20
+def empty_segments(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> list[tuple[str, Optional[int], Optional[int]]]:
+    """Segments of the contig that select no residue of the upload at all.
+
+    PER SEGMENT, WHICH IS THE WHOLE POINT: the aggregate selection can be
+    healthy while one segment is dead, and a dead segment is a request upstream
+    cannot honour. ``prepare_custom_target`` has always refused this; the canary
+    checked only that the TOTAL selection was non-empty, so ``--contig
+    A1-300,Z1-50`` on a file of chains A and B selected 300 residues, cleared
+    every aggregate check, and spawned one A100 in phase 1 (~$4) or three in
+    phase 2 (~$12) for a request production refuses for free. PR #109 made
+    multi-segment contigs the ordinary input shape, which is what turned a
+    latent hole into a reachable one.
+
+    Also catches a bare chain id ``expand_bare_chains`` could not resolve — the
+    chain is not in the file, so it selects nothing — and that case is why the
+    message this feeds must not say "widen the range". Widening cannot conjure
+    a chain the upload does not contain.
+
+    ``select_residues`` is what decides, one segment at a time, so this asks the
+    same question of each segment that the aggregate selection answers for all
+    of them together.
+    """
+    return [seg for seg in segments if not select_residues(residues, [seg])]
 
 
-def target_too_small(selected: list[tuple[str, int]]) -> bool:
+# The smallest DISTINCT selection worth starting a GPU for.
+#
+# UNCALIBRATED — the same provenance convention ``SizeEnvelope.cap_basis`` uses
+# for the other end of this range ("untested" = no run has ever approached the
+# number here, so the copy must claim it as a precaution and not as a predicted
+# failure point). Nothing has measured this one either. It entered the codebase
+# as a bare uncommented ``20`` inside ``prepare_custom_target``; no A100 run has
+# ever been made at, above or below it; and the only property any test asserts
+# of the number itself is ``>= 10``. The stated rationale — that there is not
+# enough surface in fewer than 20 residues to place a 60-120 residue binder — is
+# plausible and is NOT evidence. Treat it as the floor production happens to
+# enforce, which is exactly what makes it worth mirroring: the canary's job is
+# to agree with production, not to be right about biophysics.
+#
+# NOT ``shared/pdb_preflight.py::MIN_TARGET_RESIDUES``, which is 30 and is a
+# different quantity: that one is ``min(r.min_target_aa ...)`` over the binder
+# tools and bounds the WHOLE named chain, before any contig is applied, on the
+# ``/tools/<slug>/submit`` route. This one bounds the contig's SELECTION. A
+# 400-residue chain cropped to 15 residues clears theirs and fails this. The
+# campaign route (``shared/targets.py::size_error``) runs size-only and
+# deliberately does not apply a minimum at all, so on that route this floor,
+# inside the container, is the only one that ever fires.
+MIN_SELECTED_RESIDUES = 20
+
+
+def n_selected_residues(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> int:
+    """How many DISTINCT residues the contig selects — what the crop stages."""
+    return len(selected_residue_keys(residues, segments))
+
+
+def target_too_small(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> bool:
     """True when the contig selects too little target to design a binder against.
 
     THE NUMBER AND THE COMPARISON BOTH LIVE HERE BECAUSE TWO CALLERS READ THEM.
@@ -797,10 +920,18 @@ def target_too_small(selected: list[tuple[str, int]]) -> bool:
     restate it. A restated threshold is a threshold that drifts on the next
     commit that moves this one, silently, in the direction of spending money.
 
-    Takes the SELECTION rather than a count so neither caller has to decide what
-    to count; ``select_residues`` is what produces it on both sides.
+    IT TAKES ``(residues, segments)`` RATHER THAN A SELECTION, AND THAT
+    SIGNATURE IS THE FIX. It first took whatever list a caller handed it and
+    measured ``len``, and both callers handed it ``select_residues``, which
+    appends per segment and never de-duplicates. On a 60-residue chain A:
+    ``A10-20`` counted 11 and was refused; ``A10-20,A10-20`` counted 22 for the
+    same 11 residues and was not; ``A1-7,A1-7,A1-7`` counted 21 for 7. One comma
+    defeated the floor, and the contig it defeated it with is the exact one this
+    round was opened to stop. Counting is now this function's job, on the same
+    de-duplicated key set the crop stages, and there is no longer a collection a
+    caller could pass that would give the wrong answer.
     """
-    return len(selected) < MIN_TARGET_RESIDUES
+    return n_selected_residues(residues, segments) < MIN_SELECTED_RESIDUES
 
 
 def chain_span_summary(residues: list[tuple[str, int, str]]) -> str:
@@ -1102,19 +1233,19 @@ def prepare_custom_target(
             raw_segments = parse_target_input(target_input)
         except ValueError as exc:
             _fail("input", "target_input", str(exc))
-        segments = []
-        for chain, lo, hi in raw_segments:
+        # ``expand_bare_chains``, not an inline loop: the canary calls the same
+        # expansion, and until it did, ``--contig A`` reached it unexpanded and
+        # was filtered out of the negative-numbering guard. A chain the upload
+        # does not contain comes back still carrying its ``None``s, which is
+        # what this refusal names.
+        segments = expand_bare_chains(residues, raw_segments)
+        for chain, lo, _hi in segments:
             if lo is None:
-                nums = [r[1] for r in residues if r[0] == chain]
-                if not nums:
-                    _fail(
-                        "input", "target_input",
-                        f"chain {chain} is not present in the uploaded target. "
-                        f"It contains: {spans}.",
-                    )
-                segments.append((chain, min(nums), max(nums)))
-            else:
-                segments.append((chain, lo, hi))
+                _fail(
+                    "input", "target_input",
+                    f"chain {chain} is not present in the uploaded target. "
+                    f"It contains: {spans}.",
+                )
     else:
         segments = derive_segments(residues, requested_chains)
         if not segments:
@@ -1152,27 +1283,33 @@ def prepare_custom_target(
     # Upstream hands the contig to atomworks' AtomSelectionStack.from_contig,
     # whose behaviour on an unresolvable chain is unverified. We never depend
     # on it: the selection is computed here and an empty one is a refusal.
-    for chain, lo, hi in segments:
-        picked = select_residues(residues, [(chain, lo, hi)])
-        if not picked:
-            _fail(
-                "input", "target_input",
-                f"chain {chain} residues {lo}-{hi} select 0 residues in the "
-                f"uploaded target. It contains: {spans}.",
-            )
-
-    selected = select_residues(residues, segments)
-    logger.info(
-        "custom target: selected %d of %d residues (%s); chains present: %s",
-        len(selected), len(residues), format_contig(segments), spans,
-    )
-    # ``target_too_small``, not an inline comparison: the canary calls the same
-    # predicate, and a second copy of the number is a second thing to move.
-    if target_too_small(selected):
+    # ``empty_segments``, not an inline loop, for the same reason as every other
+    # predicate here — the canary calls this one too, and checked only the
+    # AGGREGATE until it did, so one dead segment hid behind a healthy one.
+    for chain, lo, hi in empty_segments(residues, segments):
         _fail(
             "input", "target_input",
-            f"the selected target region has only {len(selected)} residues, "
-            f"fewer than the {MIN_TARGET_RESIDUES} needed to design a binder "
+            f"chain {chain} residues {lo}-{hi} select 0 residues in the "
+            f"uploaded target. It contains: {spans}.",
+        )
+
+    selected = select_residues(residues, segments)
+    n_distinct = n_selected_residues(residues, segments)
+    logger.info(
+        "custom target: selected %d of %d residues (%s); chains present: %s",
+        n_distinct, len(residues), format_contig(segments), spans,
+    )
+    # ``target_too_small``, not an inline comparison: the canary calls the same
+    # predicate, and a second copy of the number is a second thing to move. It
+    # is handed ``(residues, segments)`` rather than ``selected`` because
+    # ``select_residues`` repeats a residue two segments both name — ``A10-20,
+    # A10-20`` used to count 22 of the same 11 and clear a floor of 20 — and the
+    # count the message quotes is the one the gate used and the crop stages.
+    if target_too_small(residues, segments):
+        _fail(
+            "input", "target_input",
+            f"the selected target region has only {n_distinct} residues, "
+            f"fewer than the {MIN_SELECTED_RESIDUES} needed to design a binder "
             f"against it. Widen the chain range. The target contains: {spans}.",
         )
 

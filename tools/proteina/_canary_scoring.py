@@ -1564,6 +1564,31 @@ def refuse_unresolvable_hotspots(target_pdb: Any, contig: Any, n_selected: int,
         "nothing. NO GPU TIME WAS USED.")
 
 
+def refuse_unparsable_contig(target_pdb: Any, contig: Any, detail: Any) -> None:
+    """Turn ``parse_target_input``'s ``ValueError`` into a refusal. Always raises.
+
+    NO MONEY IS AT STAKE HERE AND IT IS STILL A DEFECT. ``--contig Zz9`` came
+    out of ``_refuse_unresolvable_hotspots`` as a bare
+    ``ValueError: unparsable target_input segment 'Zz9'`` with a traceback,
+    which is the one refusal in the harness that did not tell the operator the
+    thing every other refusal tells them: that nothing was spent. Production
+    converts the identical failure — same function, same exception — into a
+    ``_fail``, so this is the same mirroring rule as the guards around it,
+    applied to the cheapest case rather than the most expensive one.
+
+    The parse is production's; only the wrapping is here. It always raises
+    because its one call site is an ``except`` branch: there is no "no error"
+    input to return on.
+    """
+    raise CanaryRefusal(
+        f"[canary] --contig {contig} cannot be parsed against {target_pdb}: "
+        f"{detail}. A contig segment is a chain letter and a range, e.g. "
+        "A1-150, or a bare chain id, e.g. A; several are comma-separated. "
+        "run_pipeline refuses the same text with the same parser, so this "
+        "would never have reached a GPU — but it escaped as a traceback "
+        "instead of a refusal. NO GPU TIME WAS USED.")
+
+
 def refuse_unrenderable_contig(target_pdb: Any, contig: Any,
                                bad: Sequence[Any]) -> None:
     """Refuse a contig upstream's own parser cannot read back.
@@ -1599,31 +1624,82 @@ def refuse_unrenderable_contig(target_pdb: Any, contig: Any,
         "shard would boot, load checkpoints and die. NO GPU TIME WAS USED.")
 
 
+def refuse_empty_segments(target_pdb: Any, contig: Any, dead: Sequence[Any],
+                          spans: Any) -> None:
+    """Refuse a contig segment that selects no residue of the upload.
+
+    PER SEGMENT, WHICH IS THE ENTIRE DEFECT. ``prepare_custom_target`` refuses
+    each segment that picks nothing; the canary checked only that the AGGREGATE
+    selection was non-empty, so one dead segment hid behind a healthy one.
+    Measured: ``--contig A1-300,Z1-50`` against a file of chains A and B selects
+    300 residues, clears the size floor, resolves its hotspots in chain A, and
+    spawns — one A100 in phase 1 (~$4), three in phase 2 (~$12) — for a request
+    production settles for free. PR #109 made multi-segment contigs the ordinary
+    input shape, which is what turned this from latent into reachable.
+
+    THE MESSAGE NAMES THE SEGMENT AND THE FILE'S ACTUAL CONTENTS, and that also
+    repairs a misdirection the size refusal was giving on its own. ``--contig
+    Z1-50`` alone used to come back as "selects 0 residue(s) ... fewer than the
+    20 production requires ... Widen --contig", which sends the operator to
+    widen a range on a chain the upload does not contain. Widening cannot help;
+    naming chain Z and listing the chains that ARE there can.
+
+    ``dead`` IS PRODUCTION'S ANSWER (``run_pipeline.empty_segments``), not one
+    computed here. A segment may arrive with ``None`` bounds — an unresolvable
+    bare chain id, which ``expand_bare_chains`` deliberately leaves alone — and
+    is rendered as the bare chain rather than as ``Z None-None``.
+    """
+    if not dead:
+        return
+    shown = ", ".join(
+        f"{seg[0]}{seg[1]}-{seg[2]}" if len(seg) >= 3 and seg[1] is not None
+        else f"chain {seg[0]}" if len(seg) >= 1 else str(seg)
+        for seg in dead)
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} names {shown}, which selects no residue "
+        f"of {target_pdb}. The file contains: {spans}. prepare_custom_target "
+        "refuses a segment that picks nothing, one segment at a time; the "
+        "canary checked only that the whole selection was non-empty, so a dead "
+        "segment beside a healthy one would have spent ~$4 in phase 1 or ~$12 "
+        "in phase 2 to fail in the container. Fix the chain id or the range — "
+        "if the chain is not in the list above, widening will not help. "
+        "NO GPU TIME WAS USED.")
+
+
 def refuse_target_too_small(target_pdb: Any, contig: Any, too_small: bool,
                             n_selected: int, minimum: Any) -> None:
     """Refuse a contig that selects too little target to design against.
 
     THE THIRD GUARD PRODUCTION HAD AND THE CANARY DID NOT, and the class is now
     established rather than suspected: ``prepare_custom_target`` refuses a
-    selection below ``run_pipeline.MIN_TARGET_RESIDUES`` before any GPU is
+    selection below ``run_pipeline.MIN_SELECTED_RESIDUES`` before any GPU is
     touched, and the harness had nothing equivalent — only the non-EMPTY checks
     above, which a ten-residue contig passes. ``--contig A10-20`` would spawn
     one A100 in phase 1 (~$4) or three in phase 2 (~$12) to discover what a
     length knows for free.
 
-    Unlike the other two this one costs money in BOTH directions if it is
-    missed. The shard does not necessarily crash: upstream will happily design
-    against a sliver, so the run can come back green having measured hotspot
-    recall over a target production would have refused to accept at all. A
-    canary that answers a question production never asks is worse than one that
-    fails.
+    WHAT UPSTREAM DOES WITH A SLIVER IS UNVERIFIED, IN BOTH DIRECTIONS, and
+    that is the reason to refuse rather than an argument against it. Nothing in
+    this repo evidences whether ``complexa design`` refuses a sub-20-residue
+    selection or designs happily against it, and no GPU run has ever tested it.
+    Both branches are bad and only one of them is loud: if it refuses, the
+    money is spent and the verdict is at least honest; if it designs, the
+    metrics come back, the harness can report PASS, and the number measured is
+    hotspot recall over a target production would have refused to accept at
+    all. The pre-GPU answer costs nothing either way, which is why the refusal
+    sits here and not in the container. Note the contrast with the two guards
+    above, whose failure modes ARE evidenced — atomworks' ``CONTIG_REGEX`` was
+    read, and the uncropped-target crash was reproduced on a paid A100.
 
     ``too_small`` IS PRODUCTION'S ANSWER, NOT ONE COMPUTED HERE, which is why it
     is a parameter rather than ``n_selected < minimum``. The comparison and the
     threshold both live in ``run_pipeline.target_too_small``; this turns its
     verdict into the refusal, and ``minimum`` is carried only so the message can
     quote the number the operator has to clear. Recomputing either here would
-    reintroduce exactly the drift this round exists to remove.
+    reintroduce exactly the drift this round exists to remove. ``n_selected`` is
+    likewise production's count — ``n_selected_residues``, the DISTINCT one —
+    and not ``len(select_residues(...))``, which double-counts a residue two
+    segments both name and let ``A10-20,A10-20`` clear a floor of 20.
     """
     if not too_small:
         return
@@ -1639,7 +1715,11 @@ def refuse_target_too_small(target_pdb: Any, contig: Any, too_small: bool,
 
 def shard_spec_refusal(label: str, missing: Sequence[str],
                        missing_cross: Sequence[str]) -> dict | None:
-    """The in-container twin of the two refusals above, as a shard result.
+    """The in-container twin of the hotspot refusal above, as a shard result.
+
+    Deliberately count-free: it used to say "the two refusals above" and there
+    are now five ``refuse_*`` functions between it and the top of this section.
+    It mirrors ``refuse_unresolvable_hotspots`` and nothing else.
 
     ``run_shard`` cannot raise: its contract is to RETURN a dict, and the
     entrypoint attributes a returned ``{"error": ...}`` to its label instead of
@@ -1647,6 +1727,19 @@ def shard_spec_refusal(label: str, missing: Sequence[str],
     suite executes it — the local pre-spawn check and this one must agree, and
     the second is the only one that sees the contig the container actually
     resolved.
+
+    THE OTHER FOUR HAVE NO TWIN HERE, AND THE SIZE ONE IS AN OPEN GAP. The
+    reason cannot be "an in-container check would save nothing": by this line
+    the container is running, but a shard that returns an error immediately
+    stops billing, while one that designs runs to completion (up to
+    ``_MAX_SESSION_S``, ~$12.58 on the cap). The paragraph above is the real
+    argument — this is the only place that sees the contig the container
+    resolved, and for the size floor that is exactly the case a pre-spawn check
+    cannot cover: a contig derived in-container from a target the operator did
+    not crop. It is not written yet. What holds today is that every path into a
+    shard passes through ``_refuse_unresolvable_hotspots`` first, so the
+    remaining exposure is drift between the two resolutions, not a missing
+    check on the resolutions we have.
 
     A cross-reference patch that is not in the structure is as fatal as an own
     one: scoring every shard against a reference that resolves to nothing gives

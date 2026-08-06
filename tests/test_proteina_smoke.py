@@ -1650,38 +1650,179 @@ class TestMinimumTargetSize:
     """The floor below which a target is refused before any GPU is started.
 
     ``prepare_custom_target`` has always refused a selection under 20 residues —
-    there is not enough surface there to place a 60-120 residue binder — but the
-    threshold was a bare literal inside that function and NOTHING covered it.
-    Two consequences, and this class exists for the second as much as the first:
-    the check could be deleted with the suite still green, and
-    ``_hotspot_canary`` could not call it, so the harness had no floor at all
-    and ``--contig A10-20`` would spend ~$4 (phase 1) or ~$12 (phase 2) learning
-    what a length knows for free.
+    the stated reason is that there is not enough surface there to place a
+    60-120 residue binder, which is UNCALIBRATED and marked as such at the
+    constant — but the threshold was a bare literal inside that function and
+    NOTHING covered it. Two consequences, and this class exists for the second
+    as much as the first: the check could be deleted with the suite still green,
+    and ``_hotspot_canary`` could not call it, so the harness had no floor at
+    all and ``--contig A10-20`` would spend ~$4 (phase 1) or ~$12 (phase 2)
+    learning what a length knows for free.
 
-    Every assertion below is written against ``rp.MIN_TARGET_RESIDUES`` rather
+    IT COUNTS DISTINCT RESIDUES, WHICH IS THE HALF THAT SHIPPED BROKEN.
+    ``target_too_small`` first took whatever selection a caller handed it and
+    measured ``len``; ``select_residues`` appends per segment and never
+    de-duplicates, so ``A10-20,A10-20`` counted 22 for the same 11 residues and
+    cleared a floor of 20. It now takes ``(residues, segments)`` and counts the
+    de-duplicated key set the crop actually stages, so there is no collection a
+    caller can pass that gives the wrong answer.
+
+    Every assertion below is written against ``rp.MIN_SELECTED_RESIDUES`` rather
     than against 20, so moving the threshold moves the tests with it. That is
     the property being pinned: ONE number, read by both sides.
     """
 
+    @staticmethod
+    def _sel(n, chain="A"):
+        """``(residues, segments)`` selecting exactly ``n`` residues of a chain."""
+        return ([(chain, i, "") for i in range(1, n + 1)],
+                [(chain, 1, max(n, 1))])
+
     def test_a_selection_under_the_floor_is_refused(self):
-        floor = rp.MIN_TARGET_RESIDUES
-        assert rp.target_too_small([("A", i) for i in range(floor - 1)])
-        assert rp.target_too_small([])
+        floor = rp.MIN_SELECTED_RESIDUES
+        assert rp.target_too_small(*self._sel(floor - 1))
+        assert rp.target_too_small([], [("A", 1, 60)])
 
     def test_a_selection_at_the_floor_is_accepted(self):
         """The bound is ``<``, not ``<=``. Off by one here refuses a target the
         engine would have designed against, which is the same class of harm in
         the other direction."""
-        floor = rp.MIN_TARGET_RESIDUES
-        assert not rp.target_too_small([("A", i) for i in range(floor)])
-        assert not rp.target_too_small([("A", i) for i in range(floor + 40)])
+        floor = rp.MIN_SELECTED_RESIDUES
+        assert not rp.target_too_small(*self._sel(floor))
+        assert not rp.target_too_small(*self._sel(floor + 40))
 
     def test_the_floor_is_a_real_floor(self):
         """A sanity bound on the constant itself. A threshold of 0 or 1 would
         make the predicate vacuous and every test above pass on nothing."""
-        assert rp.MIN_TARGET_RESIDUES >= 10
+        assert rp.MIN_SELECTED_RESIDUES >= 10
 
-    def _prepare(self, tmp_path, monkeypatch, target_input):
+    def test_an_overlapping_contig_does_not_inflate_the_count(self):
+        """THE MONEY DEFECT, AT THE PREDICATE. ``select_residues`` repeats a
+        residue two segments both name. Naming the same sliver twice must not
+        make it twice as big — one comma was the entire bypass."""
+        floor = rp.MIN_SELECTED_RESIDUES
+        residues = [("A", i, "") for i in range(1, 61)]
+        half = [("A", 1, floor - 1)]
+        assert len(rp.select_residues(residues, half * 2)) == 2 * (floor - 1), (
+            "the fixture must actually double-count, or this proves nothing")
+        assert rp.n_selected_residues(residues, half * 2) == floor - 1
+        assert rp.target_too_small(residues, half * 2), (
+            "a sliver named twice cleared the floor on a doubled count")
+        assert rp.target_too_small(residues, [("A", 1, 7)] * 3)
+
+    def test_the_count_is_the_one_the_crop_stages(self):
+        """Why DISTINCT is the right count and not merely the smaller one: the
+        gate has to measure the file the design engine is handed, and
+        ``stage_cropped_target`` writes ``selected_residue_keys``."""
+        residues = [("A", i, "") for i in range(1, 61)]
+        segments = [("A", 1, 30), ("A", 20, 40)]
+        assert (rp.n_selected_residues(residues, segments)
+                == len(rp.selected_residue_keys(residues, segments)) == 40)
+
+    def test_a_two_chain_selection_is_counted_across_both_chains(self):
+        """THE OVER-REFUSAL DIRECTION, ON THE INPUT SHAPE #109 JUST ENABLED.
+
+        Two near-miss counts both pass every single-chain test and both REFUSE a
+        legitimate multi-chain target: counting only the first segment's chain,
+        and counting distinct residue NUMBERS chain-blind. Each sees
+        ``floor - 1`` where there are ``2 * (floor - 1)`` residues, and every
+        fixture in this file used to be single-chain, so nothing could tell them
+        apart from the correct predicate.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        hi = floor - 1
+        residues = ([("A", i, "") for i in range(1, hi + 1)]
+                    + [("B", i, "") for i in range(1, hi + 1)])
+        segments = [("A", 1, hi), ("B", 1, hi)]
+        assert rp.n_selected_residues(residues, segments) == 2 * hi
+        assert len({r for _c, r in rp.select_residues(residues, segments)}) == hi, (
+            "the fixture must be chain-blind-ambiguous, or this proves nothing")
+        assert not rp.target_too_small(residues, segments), (
+            "a legitimate two-chain target was refused; the count is per chain")
+
+    def test_insertion_coded_twins_are_two_residues_not_one(self):
+        """THE NEAREST MISS OF ALL: ``len(set(selected))``.
+
+        ``select_residues`` drops the insertion code, so a set of ITS output
+        collapses ``A100`` and ``A100A`` into one. They are two residues with
+        two CA atoms — upstream counts both and the crop stages both — so a gate
+        built on that set refuses a target the design engine would have accepted
+        whenever insertion codes bring it to the floor. ``selected_residue_keys``
+        is the set that keeps them apart, which is why it is the one that counts.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        plain = [("A", i, "") for i in range(1, floor - 1)]
+        twins = [("A", 1, "A"), ("A", 2, "A")]
+        residues = plain + twins
+        segments = [("A", 1, floor)]
+        assert len({r for _c, r in rp.select_residues(residues, segments)}) == floor - 2
+        assert rp.n_selected_residues(residues, segments) == floor
+        assert not rp.target_too_small(residues, segments), (
+            "insertion-coded twins were collapsed and a target at the floor "
+            "was refused")
+
+    def test_the_floor_is_labelled_uncalibrated(self):
+        """THE PROVENANCE CLAIM, PINNED WHERE IT CAN ROT.
+
+        Nothing has measured this number: it entered as a bare literal, no A100
+        run has been made at, above or below it, and the stated rationale about
+        binder surface is plausible and is not evidence. The repo already has a
+        convention for exactly this (``SizeEnvelope.cap_basis``: "untested" =
+        the copy must claim a precaution, not a predicted failure point), and a
+        constant that quietly loses its label reads as measured.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        declaration = source.index("MIN_SELECTED_RESIDUES = ")
+        preamble = source[max(0, declaration - 1600):declaration]
+        assert "UNCALIBRATED" in preamble, (
+            "the floor's comment no longer says the number is unmeasured")
+
+    def test_the_floor_stays_below_the_preflight_minimum_it_sits_behind(self):
+        """AN UPPER BOUND WITH A REASON, to go with the ``>= 10`` lower one.
+
+        ``shared/pdb_preflight_rules.py`` already refuses a whole named chain
+        under ``min_target_aa`` on the submit route. A contig floor ABOVE that
+        would make the container stricter than the gate that feeds it: a target
+        the preflight blessed would be refused after the job was accepted, which
+        is the worst place to learn it. Not a calibration — a consistency bound.
+        """
+        from shared.pdb_preflight_rules import TOOL_RULES
+        assert rp.MIN_SELECTED_RESIDUES <= TOOL_RULES["proteina"].min_target_aa
+
+    def test_the_predicate_actually_READS_the_constant(self, monkeypatch):
+        """THE CONSTANT MUST GOVERN, NOT MERELY AGREE.
+
+        Found by mutation after the round-2 fixes: replacing the predicate's
+        ``< MIN_SELECTED_RESIDUES`` with a literal ``< 20`` left all 658 tests
+        green. Every other test here pins the floor's VALUE or its BEHAVIOUR at
+        the current number, and both are satisfied by a hardcoded 20 while the
+        constant reads 20 — so the one thing nothing checked was whether the
+        constant is wired to anything at all.
+
+        That is this branch's own failure mode aimed at its own fix. The whole
+        point of lifting the literal out of ``prepare_custom_target`` was that
+        one number governs both callers; a predicate that restates it agrees
+        today and drifts silently the moment anyone edits the constant — which
+        is precisely the edit the constant exists to make safe.
+
+        Moving the number must move the answer. Asserted in both directions so
+        it cannot pass by a coincidence of the fixture's size.
+        """
+        residues = [("A", i, " ") for i in range(1, 61)]
+        segments = [("A", 1, 25)]           # 25 distinct residues
+        assert rp.n_selected_residues(residues, segments) == 25
+
+        monkeypatch.setattr(rp, "MIN_SELECTED_RESIDUES", 30)
+        assert rp.target_too_small(residues, segments), (
+            "raising the floor above the selection must refuse it; the "
+            "predicate is not reading MIN_SELECTED_RESIDUES")
+
+        monkeypatch.setattr(rp, "MIN_SELECTED_RESIDUES", 10)
+        assert not rp.target_too_small(residues, segments), (
+            "lowering the floor below the selection must accept it; the "
+            "predicate is not reading MIN_SELECTED_RESIDUES")
+
+    def _prepare(self, tmp_path, monkeypatch, target_input, spans=None):
         """Run ``prepare_custom_target`` against a 60-residue chain A.
 
         THE STRUCTURAL TESTS BELOW ARE NOT ENOUGH ON THEIR OWN, which is the
@@ -1703,7 +1844,7 @@ class TestMinimumTargetSize:
         monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
         monkeypatch.setattr(
             rp, "download_target",
-            lambda url, dest: dest.write_text(_make_pdb({"A": (1, 60)})))
+            lambda url, dest: dest.write_text(_make_pdb(spans or {"A": (1, 60)})))
         with pytest.raises(SystemExit) as excinfo:
             rp.prepare_custom_target(
                 input_url="https://example.invalid/target.pdb", job_id="j1",
@@ -1713,16 +1854,56 @@ class TestMinimumTargetSize:
         payload = json.loads(results.read_text())
         return payload["error"], sorted(p.name for p in hub.glob("hub_*.pdb"))
 
+    @staticmethod
+    def _size_fields(detail):
+        """Production's size refusal, BY ROLE.
+
+        ``str(floor) in detail`` is not a test of this sentence: transposing the
+        count with the floor leaves both numbers in it, and the count can be
+        supplied by the CONTIG rather than by the selection. Both numbers are
+        parsed out of their slots instead.
+        """
+        match = re.search(
+            r"has only (?P<count>\d+) residues, fewer than the (?P<floor>\d+) "
+            r"needed", detail)
+        assert match, f"the size refusal no longer renders its fields: {detail}"
+        return int(match.group("count")), int(match.group("floor"))
+
     def test_a_contig_under_the_floor_is_refused_and_nothing_is_staged(
             self, tmp_path, monkeypatch):
-        floor = rp.MIN_TARGET_RESIDUES
+        floor = rp.MIN_SELECTED_RESIDUES
         error, staged = self._prepare(
             tmp_path, monkeypatch, f"A1-{floor - 1}")
         assert error["check"] == "target_input", error
-        assert str(floor - 1) in error["detail"] and str(floor) in error["detail"], (
+        count, quoted = self._size_fields(error["detail"])
+        assert (count, quoted) == (floor - 1, floor), (
             f"the operator needs both the count and the floor: {error['detail']}")
+        assert count < quoted, (
+            f"the refusal quotes a floor below its own count: {error['detail']}")
+        assert "Widen the chain range" in error["detail"]
         assert staged == [], (
             "the target was staged for the design engine despite the refusal")
+
+    def test_an_overlapping_contig_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        """THE MONEY DEFECT, END TO END THROUGH PRODUCTION.
+
+        ``A1-19,A1-19`` is 19 residues written twice. The gate counted 38 and
+        staged the target; the crop then wrote the 19 the gate had just decided
+        were too few. On the web route the adapter happens to shield this — it
+        rejects a chain named twice ("Chain A appears more than once in the
+        target chain range") — but ``prepare_custom_target`` is also reached
+        with a contig the adapter never saw, and the canary bypasses the
+        adapter entirely.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{floor - 1},A1-{floor - 1}")
+        assert error["check"] == "target_input", error
+        count, quoted = self._size_fields(error["detail"])
+        assert (count, quoted) == (floor - 1, floor), (
+            f"the count in the message must be the DISTINCT one: {error['detail']}")
+        assert staged == []
 
     def test_a_contig_at_the_floor_gets_past_the_gate(
             self, tmp_path, monkeypatch):
@@ -1733,45 +1914,271 @@ class TestMinimumTargetSize:
         downstream of the floor.
         """
         error, staged = self._prepare(
-            tmp_path, monkeypatch, f"A1-{rp.MIN_TARGET_RESIDUES}")
+            tmp_path, monkeypatch, f"A1-{rp.MIN_SELECTED_RESIDUES}")
         assert error["check"] == "target_registry", error
         assert len(staged) == 1, (
             f"a target at the floor never reached the crop: {error}")
+
+    @staticmethod
+    def _prepare_ast():
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        return next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+
+    @classmethod
+    def _size_guard_ast(cls):
+        return next(
+            node for node in ast.walk(cls._prepare_ast())
+            if isinstance(node, ast.If)
+            and "target_too_small" in ast.unparse(node.test))
 
     def test_production_asks_the_predicate_instead_of_restating_the_number(self):
         """THE POINT OF EXTRACTING IT. ``prepare_custom_target`` used to hold
         ``if len(selected) < 20``. A second copy of a threshold is a threshold
         that drifts, and the canary — which now reads this one — would have gone
-        on spending money against whichever copy it did not follow."""
+        on spending money against whichever copy it did not follow.
+
+        SCOPED TO THE GUARD, NOT TO THE FUNCTION, and the narrowing is a fix.
+        Scanning every literal in ``prepare_custom_target`` made the test fire
+        on constants that have nothing to do with the floor: an unrelated
+        ``ambiguous[:10]`` in the insertion-code warning meant a floor of 10
+        "failed the drift test", and any future literal equal to the floor would
+        do the same. What is being pinned is that the threshold reaches the
+        refusal from the constant, which is a property of the guard.
+        """
+        called = {node.func.id for node in ast.walk(self._prepare_ast())
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        assert "target_too_small" in called, (
+            "prepare_custom_target must ASK for the floor, not restate it")
+        guard = self._size_guard_ast()
+        literals = {node.value for node in ast.walk(guard)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
+                    and not isinstance(node.value, bool)}
+        assert not literals, (
+            f"the size guard carries its own numbers ({sorted(literals)}); the "
+            "threshold must come from MIN_SELECTED_RESIDUES")
+
+    def test_the_refusal_message_quotes_the_threshold(self):
+        """The operator's next action is "widen the range to at least N", so N
+        has to be in the sentence — and has to be the constant, or the message
+        sends them to a number the code no longer enforces."""
+        rendered = ast.unparse(self._size_guard_ast())
+        assert "MIN_SELECTED_RESIDUES" in rendered, (
+            f"the refusal must quote the threshold it enforces: {rendered}")
+
+    def test_the_size_guard_runs_after_the_segment_and_numbering_ones(self):
+        """PRODUCTION'S ORDER, PINNED ON PRODUCTION'S SIDE.
+
+        The canary's ordering had a test; production's had none, so the guard
+        could be moved above the per-segment check or the numbering one with the
+        suite still green — and the canary, which mirrors production's order
+        deliberately, would then be mirroring an order production no longer had.
+        Statement positions rather than behaviour, because two of the three
+        orderings are only observable on inputs that are invalid twice over.
+        """
+        body = self._prepare_ast().body
+        def index_of(needle):
+            return next(i for i, stmt in enumerate(body)
+                        if needle in ast.unparse(stmt))
+        size = index_of("target_too_small")
+        assert index_of("unrenderable_segments") < size, (
+            "a tagged construct must be told about its numbering, not its size")
+        assert index_of("empty_segments") < size, (
+            "a chain that is not in the file must not be told to widen a range")
+        assert size < index_of("missing_hotspots"), (
+            "a sliver puts most hotspots outside the selection; answering the "
+            "hotspot sends the operator to fix one that is fine")
+
+    def test_the_size_guard_beats_the_hotspot_one_behaviourally(
+            self, tmp_path, monkeypatch):
+        """The same ordering where it is observable. ``A41-59`` is a sliver AND
+        puts ``A5`` outside the selection; the answer must be the range."""
+        floor = rp.MIN_SELECTED_RESIDUES
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb({"A": (1, 60)})))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input=f"A41-{41 + floor - 2}",
+                hotspot_spec=["A5"], binder_length=[60, 120],
+                run_dir=tmp_path / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "target_input", error
+        assert self._size_fields(error["detail"]) == (floor - 1, floor)
+        assert "A5" not in error["detail"], (
+            f"the hotspot refusal won and misdirects the fix: {error['detail']}")
+
+    def test_a_dead_segment_beats_the_size_guard(self, tmp_path, monkeypatch):
+        """``A1-5,Z1-50`` is a sliver AND names a chain that is not there. The
+        fix for the second is not "widen the range"."""
+        error, staged = self._prepare(tmp_path, monkeypatch, "A1-5,Z1-50")
+        assert error["check"] == "target_input", error
+        assert "select 0 residues" in error["detail"], error
+        assert "fewer than" not in error["detail"], (
+            f"the size refusal answered a question about chain Z: {error}")
+        assert staged == []
+
+    def test_negative_numbering_beats_the_size_guard(self, tmp_path, monkeypatch):
+        """``A-5-0`` on a file numbered from 1 selects nothing AND cannot be
+        rendered. Upstream's parser is the fault the operator has to fix."""
+        error, staged = self._prepare(tmp_path, monkeypatch, "A-5-0")
+        assert error["check"] == "target_input_negative", error
+        assert staged == []
+
+    def test_a_two_chain_target_at_the_floor_reaches_the_crop(
+            self, tmp_path, monkeypatch):
+        """END TO END, ON THE MULTI-CHAIN SHAPE #109 ENABLED. A count that is
+        per-first-chain or chain-blind refuses this, and every other behavioural
+        fixture in this class is single-chain."""
+        hi = rp.MIN_SELECTED_RESIDUES - 1
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{hi},B1-{hi}",
+            spans={"A": (1, hi), "B": (1, hi)})
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, (
+            f"a legitimate two-chain target never reached the crop: {error}")
+
+    def test_the_floor_does_not_collide_with_the_shared_preflight_one(self):
+        """TWO NUMBERS, TWO NAMES, ON PURPOSE.
+
+        ``shared/pdb_preflight.py`` also exports a ``MIN_TARGET_RESIDUES``, and
+        it is a DIFFERENT quantity with a different value: the lowest
+        ``min_target_aa`` across the binder tools, bounding the whole named
+        chain before any contig, on the ``/tools/<slug>/submit`` route. This one
+        bounds the contig's SELECTION inside the container. They were briefly
+        the same identifier with different values, in a commit whose thesis was
+        "one number, one home".
+        """
+        from shared import pdb_preflight as pre
+        assert not hasattr(rp, "MIN_TARGET_RESIDUES"), (
+            "the proteina-local floor must not reuse shared's name")
+        assert pre.MIN_TARGET_RESIDUES != rp.MIN_SELECTED_RESIDUES, (
+            "if these ever coincide, say so deliberately — they measure "
+            "different things and nothing keeps them equal")
+
+
+class TestEmptyContigSegments:
+    """A segment that selects nothing is a refusal, one segment at a time.
+
+    ``prepare_custom_target`` has always checked per segment. What is new is
+    that the check is a named predicate (``empty_segments``) the canary calls
+    too: it checked only the AGGREGATE, so ``--contig A1-300,Z1-50`` selected
+    300 residues, cleared every gate, and spawned ~$4 or ~$12 to fail in the
+    container on a request production settles for free. PR #109 made
+    multi-segment contigs the ordinary input shape.
+    """
+
+    _RESIDUES = [("A", i, "") for i in range(1, 61)] + [("B", i, "") for i in range(1, 41)]
+
+    def test_a_dead_segment_is_found_beside_a_healthy_one(self):
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("Z", 1, 50)]) == [
+            ("Z", 1, 50)]
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("A", 900, 999)]) == [
+            ("A", 900, 999)]
+
+    def test_healthy_segments_are_left_alone(self):
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("B", 1, 40)]) == []
+        assert rp.empty_segments(self._RESIDUES, [("A", 55, 900)]) == []
+
+    def test_an_unresolvable_bare_chain_selects_nothing(self):
+        """``expand_bare_chains`` leaves a chain it cannot find alone, and this
+        is what then names it. Widening a range cannot add a missing chain, so
+        the two cases share one refusal rather than two messages."""
+        segments = rp.expand_bare_chains(self._RESIDUES, [("Z", None, None)])
+        assert segments == [("Z", None, None)]
+        assert rp.empty_segments(self._RESIDUES, segments) == [("Z", None, None)]
+
+    def test_production_asks_the_predicate_instead_of_looping_inline(self):
         source = Path(rp.__file__).read_text(encoding="utf-8")
         prepare = next(
             n for n in ast.walk(ast.parse(source))
             if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
         called = {node.func.id for node in ast.walk(prepare)
                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-        assert "target_too_small" in called, (
-            "prepare_custom_target must ASK for the floor, not restate it")
-        literals = {node.value for node in ast.walk(prepare)
-                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
-                    and not isinstance(node.value, bool)}
-        assert rp.MIN_TARGET_RESIDUES not in literals, (
-            f"{rp.MIN_TARGET_RESIDUES} is written out inside "
-            "prepare_custom_target; it must come from MIN_TARGET_RESIDUES")
+        assert {"empty_segments", "expand_bare_chains"} <= called, (
+            "prepare_custom_target must ASK for these, not restate them — the "
+            "canary reads the same two")
 
-    def test_the_refusal_message_quotes_the_threshold(self):
-        """The operator's next action is "widen the range to at least N", so N
-        has to be in the sentence — and has to be the constant, or the message
-        sends them to a number the code no longer enforces."""
-        source = Path(rp.__file__).read_text(encoding="utf-8")
-        prepare = next(
-            n for n in ast.walk(ast.parse(source))
-            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
-        guard = next(
-            node for node in ast.walk(prepare)
-            if isinstance(node, ast.If) and "target_too_small" in ast.unparse(node.test))
-        rendered = ast.unparse(guard)
-        assert "MIN_TARGET_RESIDUES" in rendered, (
-            f"the refusal must quote the threshold it enforces: {rendered}")
+    def test_a_dead_segment_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        """Behaviourally, through ``prepare_custom_target``: the aggregate is
+        healthy (60 residues of chain A) and the run still stops for free."""
+        error, staged = TestMinimumTargetSize()._prepare(
+            tmp_path, monkeypatch, "A1-60,Z1-50")
+        assert error["check"] == "target_input", error
+        assert "Z" in error["detail"] and "0 residues" in error["detail"]
+        assert staged == []
+
+
+class TestBareChainExpansion:
+    """``--contig A`` means "the whole chain", and it must be RESOLVED, not
+    dropped.
+
+    Production expands a bare chain id to the chain's observed span and only
+    then applies the numeric guards, so ``A`` on a construct numbered from -5
+    becomes ``A-5-240`` and is refused for negative numbering. The canary had
+    no expansion and FILTERED unexpanded segments out of that guard instead, so
+    the same input spawned. The expansion is extracted here so both sides run
+    the one implementation — and so neither is tempted to "fix" it by refusing
+    the bare id, which would refuse a run production accepts.
+    """
+
+    _RESIDUES = [("A", i, "") for i in range(-5, 25)] + [("B", i, "") for i in range(1, 41)]
+
+    def test_a_bare_chain_becomes_its_observed_span(self):
+        assert rp.expand_bare_chains(self._RESIDUES, [("A", None, None)]) == [
+            ("A", -5, 24)]
+        assert rp.expand_bare_chains(self._RESIDUES, [("B", None, None)]) == [
+            ("B", 1, 40)]
+
+    def test_an_explicit_range_is_untouched(self):
+        assert rp.expand_bare_chains(self._RESIDUES, [("A", 1, 20)]) == [("A", 1, 20)]
+        assert rp.expand_bare_chains(
+            self._RESIDUES, [("A", None, None), ("B", 2, 9)]) == [
+                ("A", -5, 24), ("B", 2, 9)]
+
+    def test_the_expansion_feeds_the_negative_numbering_guard(self):
+        """The composition that was missing. A bare chain id on a tagged
+        construct is unrenderable ONCE EXPANDED and invisible before that."""
+        segments = rp.expand_bare_chains(self._RESIDUES, [("A", None, None)])
+        assert rp.unrenderable_segments(segments) == [("A", -5, 24)]
+
+    def test_unrenderable_segments_tolerates_an_unresolved_chain(self):
+        """It is asked about parsed contigs now, and a parsed contig may carry
+        a chain that is not in the file. That is not a NEGATIVE NUMBER — it is
+        an empty segment, refused with a different message and a different fix
+        — so it must not be reported here, and must not raise."""
+        assert rp.unrenderable_segments([("Z", None, None)]) == []
+        assert rp.unrenderable_segments(
+            [("Z", None, None), ("A", -5, 24)]) == [("A", -5, 24)]
+
+    def test_a_bare_chain_on_a_tagged_construct_is_refused_by_production(
+            self, tmp_path, monkeypatch):
+        """The behavioural half, and the reason the canary must EXPAND rather
+        than refuse: production accepts the bare id and refuses the span."""
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb({"A": (-5, 40)})))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input="A", hotspot_spec=[],
+                binder_length=[60, 120], run_dir=tmp_path / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-40" in error["detail"]
 
 
 class TestTemplatesParse:
