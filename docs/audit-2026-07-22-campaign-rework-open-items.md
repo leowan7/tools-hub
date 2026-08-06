@@ -3207,9 +3207,10 @@ in-product handoff the plan prefers.
   `_submit_target_shortlist` sends `?handoff=unverified` to this exact URL, so
   dropping the query string would drop the reason on the route's own output.
   The five banner sentences moved to `templates/components/lab_handoff_banner.html`
-  so the three templates that import them cannot drift into three variants; each
-  detail page keeps its own wrapper, whitelist and suite, and the partial takes
-  the arm's noun. `parent='run'` never reaches `unavailable.html` in production
+  so the templates that import them cannot drift into per-page variants -- three
+  at the time of A90, four once A91 added `templates/job_detail.html`. Each page
+  keeps its own wrapper, whitelist and suite, and the partial takes the arm's
+  noun. `parent='run'` never reaches `unavailable.html` in production
   after A94, and the macro still takes the noun on every call, because a partial
   that is only correct for the caller that happens to reach it is the
   duplication it replaced.

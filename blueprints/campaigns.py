@@ -63,11 +63,11 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # sentences into templates/components/lab_handoff_banner.html, which takes the
 # arm's noun -- each page keeps its own wrapper, its own whitelist and its own
 # suite. Two inline copies were how one of these sentences went stale unnoticed,
-# and the partial has THREE importers rather than two: templates/unavailable.html
-# renders them as well. That third page is reached only from the TARGET arm's
-# detail route, never from this one (see `compute_campaign_detail` below and
-# register item A94), so the run-noun rendering of it does not occur in
-# production -- the macro nonetheless takes the noun, because a partial whose
+# and the partial now has FOUR importers rather than two:
+# templates/unavailable.html and templates/job_detail.html render them as well.
+# The 503 page is reached only from the TARGET arm's detail route, never from
+# this one (see `compute_campaign_detail` below and register item A94), so the
+# run-noun rendering of it does not occur in production -- the macro nonetheless takes the noun, because a partial whose
 # correctness depends on which caller reaches it is the duplication again.
 #
 # `unverified` USED TO differ too, and no longer does beyond the noun. It named

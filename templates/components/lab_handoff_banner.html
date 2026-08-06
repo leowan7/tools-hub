@@ -1,45 +1,61 @@
 {# THE FIVE `?handoff=` SENTENCES, and the size-cap paragraph that rides them.
 
-   THREE templates import these, which is why they live here rather than inline.
-   `templates/runs/detail.html` and `templates/targets/detail.html` are the two
-   the submit gate redirects to, and `templates/unavailable.html` is where the
-   user lands when the redirect arrives while the fault that caused it is still
-   live and the parent read at the top of that page fails too (register item
-   A90). One of these sentences had already gone stale on the target page with
-   nothing noticing, while it sat inline in a template of its own; a third
-   inline copy would only have been a third place to keep true.
+   FOUR templates import these, which is why they live here rather than inline.
+   THREE are detail pages whose route whitelists a `?handoff=` reason:
+   `templates/runs/detail.html`, `templates/targets/detail.html` and
+   `templates/job_detail.html`. The fourth,
+   `templates/unavailable.html`, is where the user lands when the redirect
+   arrives while the fault that caused it is still live and the parent read at
+   the top of that page fails too (register item A90). One of these sentences
+   had already gone stale on the target page with nothing noticing, while it
+   sat inline in a template of its own; each further inline copy would only
+   have been one more place to keep true.
 
-   THAT THIRD TEMPLATE IS REACHED FROM ONE ARM ONLY. `target_detail` renders it;
-   `compute_campaign_detail` does not, because its absent answer is a redirect
-   rather than the 404 the target arm had, and answering an unreadable run with
-   a render costs extra Supabase round trips under exactly the outage in
-   question (register item A94, and the count is beside that route). So
-   `parent='run'` never reaches unavailable.html in production. The macro still
-   takes the noun on every call: a partial that is only correct for the caller
-   that happens to reach it is the duplication this replaced.
+   THE FOURTH TEMPLATE IS REACHED FROM ONE ARM ONLY. `target_detail` renders
+   it; `compute_campaign_detail` does not, because its absent answer is a
+   redirect rather than the 404 the target arm had, and answering an unreadable
+   run with a render costs extra Supabase round trips under exactly the outage
+   in question (register item A94, and the count is beside that route).
+   `job_detail` does not either: it resolves its job through the two-outcome
+   `get_job` and answers None with 404.html, which is the shape `target_detail`
+   had before A90 and is not changed here. So neither `parent='run'` nor
+   `parent='job'` reaches unavailable.html. The macro still takes the noun on
+   every call: a partial that is only correct for the caller that happens to
+   reach it is the duplication this replaced.
 
-   ONLY THE TEXT, no wrapper. The two detail pages style their banner
-   differently (`.panel` on the target page, `.rd-handoff` on the run page) and
-   each caller keeps its own `<p>`, its own `{% if handoff %}`, and its own
-   `{% set truncated_count %}`. What is shared is the copy, which is the only
-   part that was ever duplicated.
+   ONLY THE TEXT, no wrapper. Each caller supplies its own wrapper -- `.panel`
+   on the target and job pages, `.rd-handoff` on the run page -- its own `<p>`,
+   its own `{% if handoff %}`, and its own `{% set truncated_count %}`. What is
+   shared is the copy, which is the only part that was ever duplicated.
 
-   `parent` IS 'run' OR 'target', and it is the ONLY thing that differs between
-   the two arms' copy. Three of the five sentences (`none`, `noname`, and the
-   `{% else %}` arm) never mentioned either. `rejected` does, and the difference
-   is real rather than cosmetic: the two arms attribute a design differently, so
-   one says "produced by this run" and the other "on this target".
+   `parent` NAMES THE PAGE THE BANNER IS ON, and THREE VALUES ARE KNOWN: 'run',
+   'target' and 'job'. Only two of the five sentences say it at all, `rejected`
+   and `unverified`; `none`, `noname` and the `{% else %}` arm never named any
+   page.
+
+   THE `rejected` NOUN IS A LOOKUP WITH A TOTAL DEFAULT, not a branch, and that
+   shape is the fix rather than a detail of it. It was
+   `{% if parent == 'run' %}...{% else %}...{% endif %}` for as long as there
+   were two callers, so the caller register item A91 adds -- /jobs/<id> -- would
+   have taken the else arm. Rendered with `parent='job'` before this change, the
+   sentence came out byte-identical to the target arm's: a page with no target
+   telling the user their designs could not be matched to a design "on this
+   target". Adding a third arm to a fall-through would leave a fourth
+   caller the same trap. A mapping does not, because ITS DEFAULT NAMES NO PAGE:
+   an unknown noun degrades to a sentence true of every parent rather than to
+   another parent's claim. `unverified` interpolates `parent` itself, so an
+   unknown noun there renders the caller's own word and never another page's.
 
    `unverified` NAMES THE NOUN AND NOTHING ELSE. The run arm reaches it from two
    CAUSES and the target arm from three. Causes, not redirect statements -- each
-   arm has exactly two of those, so the two numbers are not comparable unless
-   you say which you mean. A sentence naming one cause is false
-   whenever another fired -- which is exactly how the target page's old wording
-   went stale. What the sentence says instead is that a lookup this submission
-   depends on did not complete, and that is true of every exit but one:
-   `campaign_ids_for_target` also reports its id list incomplete when it hits
-   its own page bound, where the individual page reads all completed and the
-   ENUMERATION did not, so "lookup" is doing that work.
+   of those two arms has exactly two of those, so the two numbers are not
+   comparable unless you say which you mean. A sentence naming one cause is
+   false whenever another fired -- which is exactly how the target page's old
+   wording went stale. What the sentence says instead is that a lookup this
+   submission depends on did not complete, and that is true of every exit but
+   one: `campaign_ids_for_target` also reports its id list incomplete when it
+   hits its own page bound, where the individual page reads all completed and
+   the ENUMERATION did not, so "lookup" is doing that work.
 
    ONE GROUND IT IS STILL NOT LITERALLY TRUE OF, stated rather than glossed:
    `cc.read_campaign` reports UNAVAILABLE for a row that came back in a shape
@@ -48,13 +64,13 @@
    sentence is not rewritten for it because every wording that covers it is
    worse for the user on the grounds they will actually hit, and because what
    the reader is told to do -- the stars survive, try again, contact us if it
-   repeats -- is right on that ground too. Both banner suites pin the
+   repeats -- is right on that ground too. All three banner suites pin the
    cause-neutrality in both directions.
 
    NO SENTENCE HERE SAYS "nothing was charged". /lab-projects/submit has no
    wallet or Stripe code on any path -- it inserts a lab_campaigns row and
    stages PDBs -- and the modal that opens this flow says "No commitment".
-   A reassurance that no money moved implies money could have moved. Both
+   A reassurance that no money moved implies money could have moved. All three
    banner suites assert the word "charge" appears in neither of the two
    paragraphs this file emits: the reason sentence, for each of the five
    reasons, and the size-cap sentence rendered alongside it. #}
@@ -64,8 +80,13 @@
 Nothing was sent to the lab, because the request arrived with no designs in it.
 Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
 {% elif handoff == 'rejected' %}
+{% set _unmatched = {
+     'run': 'a design produced by this run',
+     'target': 'a design on this target',
+     'job': 'a design this job produced',
+   } %}
 Nothing was sent to the lab. The request did carry designs, but none of them
-could be matched to a design {% if parent == 'run' %}produced by this run{% else %}on this target{% endif %}, so there was nothing to send.
+could be matched to {{ _unmatched.get(parent, 'a design in the scope this request was made against') }}, so there was nothing to send.
 Sending the same selection again will be refused the same way. Star designs
 from the table on this page, or contact us and we will trace where they went.
 {% elif handoff == 'noname' %}

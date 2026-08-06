@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "components/status_badge.html" import status_badge %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
+{% from "components/lab_handoff_banner.html" import handoff_sentence, truncation_sentence %}
 
 {% block title %}Job {{ job.id[:8] }} — Ranomics Tools{% endblock %}
 
@@ -117,6 +118,55 @@
       submitted {{ job.created_at[:19] if job.created_at else '—' }}
     </p>
   </div>
+
+  {# WHY THIS PAGE HAS A HANDOFF BANNER. The legacy single-job shortlist is
+     starred and submitted from this page's own results table --
+     components/candidate_table.html falls back to the job id for its scope and
+     emits the modal there -- and register item A91 is the work of giving that
+     arm the refusal disclosure the two ref arms already have. This template is
+     the receiving half: `blueprints/jobs.py::job_detail` whitelists the five
+     reasons and this block renders whichever one arrives. Which exits send
+     them is written in blueprints/lab_projects.py, not here.
+
+     THE COPY IS components/lab_handoff_banner.html, shared with
+     templates/targets/detail.html, templates/runs/detail.html and
+     templates/unavailable.html, and it takes this page's noun. Before A91 the
+     noun was a two-arm branch and this caller would have taken the target
+     arm's wording -- "a design on this target", on a page with no target. This
+     template keeps its own wrapper, its own `{% if handoff %}` and its own
+     `?truncated=` read; only the words are shared. The partial is also where
+     the reasoning for saying nothing about charges lives.
+
+     ONE OF THE FIVE POINTS AT A TABLE THIS PAGE MAY NOT BE RENDERING, and it
+     is recorded rather than reworded. `rejected` says "Star designs from the
+     table on this page", and the results container below includes the tool's
+     results partial -- which is where that table is -- only under
+     `job.status == 'succeeded' and job.result`, so a `rejected` banner on a job
+     in any other state names a control that is not on the page. Register item
+     A95 is the same class on templates/unavailable.html, filed and not fixed;
+     this one is NOT fixed here either. The copy is shared by four callers, so a
+     page-state variant of that sentence would be one more wording to keep true
+     at all of them, and that choice belongs with A95 rather than to one caller.
+
+     THE SECOND PARAGRAPH IS A DIFFERENT FACT, not a softener: `?truncated=`
+     counts starred refs a request's size cap discarded BEFORE any of the five
+     checks ran, so it rides any of the five. It is read straight from the query
+     string and is display-only -- `|int` yields 0 for anything that is not a
+     number, so only a positive integer draws the paragraph, and a crafted value
+     misinforms nobody but its author. A91 records that this arm's shortlist was
+     not counted at all when it was filed; the counting half is in
+     blueprints/lab_projects.py. #}
+  {% set truncated_count = request.args.get('truncated', 0) | int %}
+  {% if handoff %}
+  <div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
+    <div class="panel-body">
+      <p style="margin: 0; color: #e8846b;">{{ handoff_sentence(handoff, 'job') }}</p>
+      {% if truncated_count > 0 %}
+      <p style="margin: 0.6rem 0 0; color: #e8846b;">{{ truncation_sentence(truncated_count) }}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <div class="panel" id="job-status-panel" data-job-id="{{ job.id }}">
     <div class="panel-header">
