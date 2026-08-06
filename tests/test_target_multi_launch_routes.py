@@ -78,19 +78,22 @@ def _target(**kw):
 
 
 def _proteina_target(**kw):
-    """A stored target small enough for proteina's size cap.
+    """A stored target comfortably inside proteina's size cap.
 
-    THE DEFAULT `_target()` IS 210 RESIDUES AND PROTEINA NOW REFUSES IT. That
-    is not a fixture accident, it is the cap doing its job: the only size ever
-    run on a GPU here is 130 residues, so shared/pdb_preflight_rules.py caps
-    proteina at 140 and blueprints/targets.py enforces it per tool on this
-    route. A HER2-sized 210 aa target is over it.
+    130 residues is the SMALLEST of the three shards proteina's envelope is
+    calibrated from (130 / 260 / 415 aa on an A100-80GB), so it is inside the
+    500 cap with a wide margin and inside the measured span rather than the
+    extrapolated part of it.
 
     The proteina tests below are about plumbing — does the contig reach the
-    container, are bare hotspots chain-prefixed — so they use a target the
-    size gate admits, and `test_proteina_oversized_target_is_refused_before_
-    any_run_is_funded` covers the refusal itself. Raise the numbers here only
-    together with the cap, and only on the strength of a measurement.
+    container, are bare hotspots chain-prefixed — so they use a size the gate
+    cannot have an opinion about, and the refusal itself is covered by
+    `test_proteina_oversized_target_is_refused_before_any_run_is_funded`.
+
+    It was written when the cap was 140 and the default `_target()`'s 210
+    residues were over it. That is no longer why it exists: 210 fits now. It
+    stays at 130 because a plumbing test should sit far from every boundary,
+    not because it has to.
     """
     base = dict(
         name="small antigen",
@@ -101,6 +104,29 @@ def _proteina_target(**kw):
                 "chain_id": "A", "standard_residue_count": 130,
                 "hetatm_resnames": [], "water_count": 0,
                 "min_resnum": 1, "max_resnum": 130,
+            }],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def _over_cap_target(**kw):
+    """A stored target genuinely over proteina's 500 cap.
+
+    600 residues: above the cap, and above the 415 aa where measurement stops.
+    Exists because the sizes that used to be over the cap (210, 415) are all
+    inside it now, and a gate test needs a fixture the gate actually refuses.
+    """
+    base = dict(
+        name="big antigen",
+        filename="big.pdb",
+        chain_summary={
+            "total_standard_residues": 600,
+            "chains": [{
+                "chain_id": "A", "standard_residue_count": 600,
+                "hetatm_resnames": [], "water_count": 0,
+                "min_resnum": 1, "max_resnum": 600,
             }],
         },
     )
@@ -1074,11 +1100,16 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     this route funds one PER SELECTED TOOL, with proteina opening 4 concurrent
     shards at ~$12.58 each inside a ~$15/shard hold that covers all of it.
 
-    A 210-residue HER2-sized target is over proteina's 140 cap, so the launch
-    is refused, the message names the tool, and `create_campaign` is never
-    reached — the refusal has to land before any money moves, not after."""
+    A 600-residue target is over proteina's 500 cap, so the launch is refused,
+    the message names the tool, and `create_campaign` is never reached — the
+    refusal has to land before any money moves, not after.
+
+    THE FIXTURE MOVED WITH THE CAP, and it had to. This was posed on the
+    default 210 aa target, which was over the 140 cap of the day; 210 is
+    comfortably inside the measured 500 cap now, so leaving it there would
+    have turned a money gate into a test that asserts nothing."""
     _login(client)
-    t = _target()                      # the default 210 aa fixture
+    t = _over_cap_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina"], proteina__designs="8",
@@ -1087,18 +1118,22 @@ def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     assert resp.status_code == 400, _visible_text(resp)[-400:]
     assert rec.calls == []
     body = _visible_text(resp)
-    assert "210" in body and "140" in body
+    assert "600" in body and "500" in body
 
 
 def test_a_contig_smaller_than_the_upload_is_sized_on_the_contig(client):
     """Sizing the FILE rather than the SELECTION would refuse runs that fit.
 
-    The same 210 aa target, with a contig naming 100 of its residues, is a
+    The same 600 aa target, with a contig naming 100 of its residues, is a
     100-residue run. It has to be allowed: the container designs against the
     contig's selection, so refusing it would force the user to hand-trim a PDB
-    to run something the gate would then accept unchanged."""
+    to run something the gate would then accept unchanged.
+
+    It uses the over-cap fixture for the same reason the test above does — on
+    a 210 aa target both the file and the contig now fit, so nothing here
+    would depend on which one the gate counted."""
     _login(client)
-    t = _target()                      # 210 aa, over the cap on its own
+    t = _over_cap_target()             # 600 aa, over the cap on its own
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina"], proteina__designs="8",
@@ -1116,15 +1151,23 @@ def test_a_target_that_fits_but_whose_complex_does_not_is_refused(client):
     `hard_cap_combined_aa` fires on (target_aa + binder_max_aa), and no caller
     ever passed `binder_max_aa` — not this route, not either /campaigns branch
     — even though the validated binder length was in scope at all three. So a
-    130 aa target with a 300 aa max binder is 430 against proteina's 260
+    400 aa target with a 300 aa max binder is 700 against proteina's 620
     budget: `/tools/proteina/submit` refused it and this route funded four
     shards for it.
 
-    The target half is deliberately INSIDE the cap here (130 < 140), so a gate
-    that only ever reads the target size cannot pass this test.
+    The target half is deliberately INSIDE the cap here (400 < 500), so a gate
+    that only ever reads the target size cannot pass this test. 300 is the
+    form's maximum binder length; every canary shard ran at 120.
     """
     _login(client)
-    t = _proteina_target()             # 130 aa — fits on its own
+    t = _proteina_target(chain_summary={
+        "total_standard_residues": 400,
+        "chains": [{
+            "chain_id": "A", "standard_residue_count": 400,
+            "hetatm_resnames": [], "water_count": 0,
+            "min_resnum": 1, "max_resnum": 400,
+        }],
+    })                                 # 400 aa — fits on its own
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
         resp, rec = _launch(client, t, form=_form(
             tools=["proteina"], proteina__designs="8",
@@ -1135,12 +1178,12 @@ def test_a_target_that_fits_but_whose_complex_does_not_is_refused(client):
     assert resp.status_code == 400, _visible_text(resp)[-400:]
     assert rec.calls == []
     body = _visible_text(resp)
-    assert "combined budget" in body and "260" in body
+    assert "combined budget" in body and "620" in body
 
 
 def test_a_binder_inside_the_combined_budget_still_launches(client):
-    """Guards the fix from over-firing: 130 + 120 = 250 is under 260, and this
-    is the shape the two paid canary shards actually ran."""
+    """Guards the fix from over-firing: 130 + 120 = 250 is well under the 620
+    budget, and this is the shape all three paid canary shards actually ran."""
     _login(client)
     t = _proteina_target()
     with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):

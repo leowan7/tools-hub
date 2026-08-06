@@ -29,8 +29,9 @@ NONE. That is a real behaviour change shipped by a commit whose subject says
 literature-backed numbers, the campaign routes genuinely had no size protection
 at all, and the failure direction is a free refusal rather than a funded OOM.
 Kept, therefore declared and tested: see the non-proteina section at the bottom,
-which also pins that those tools get their OWN cap_basis wording rather than
-proteina's "untested" copy. (iggm is unaffected — it has no TOOL_RULES entry, so
+which also pins that those tools get their OWN cap_basis wording — the
+literature-backed copy that may predict an OOM — rather than proteina's
+cautious "measured" copy. (iggm is unaffected — it has no TOOL_RULES entry, so
 ``size_error`` returns None for it and no gate exists to test.)
 """
 
@@ -211,13 +212,19 @@ def _proteina_form(**kw):
 # ---------------------------------------------------------------------------
 
 def test_target_bound_branch_refuses_over_cap(client):
-    """THE TARGET-BOUND GATE. 415 aa is over proteina's 140 cap.
+    """THE TARGET-BOUND GATE, exercised at 600 aa against proteina's 500 cap.
+
+    The subject is the GATE, not the number. This used to be posed at 415 aa
+    against a 140 cap; 415 is now the largest size the tool has been measured
+    at and runs, so holding the assertion there would have quietly turned a
+    money gate into a test of nothing. 600 is over the cap for the same reason
+    415 used to be — no shard has run there.
 
     Rewriting this branch's `if size_err:` to `if False:` left the entire
     suite green before this test existed.
     """
     _login(client)
-    t = _target(chain_summary=_summary(415, {"A": (415, 1, 415)}))
+    t = _target(chain_summary=_summary(600, {"A": (600, 1, 600)}))
     resp, spy = _post(client, _proteina_form(), target=t)
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == [], (
@@ -225,7 +232,7 @@ def test_target_bound_branch_refuses_over_cap(client):
         f"of preauth / upload_input / create / fund / drive"
     )
     body = _visible(resp)
-    assert "415" in body and "140" in body
+    assert "600" in body and "500" in body
 
 
 def test_target_bound_branch_admits_under_cap(client):
@@ -244,11 +251,11 @@ def test_fresh_upload_branch_refuses_over_cap(client):
     _login(client)
     resp, spy = _post(
         client, _proteina_form(),
-        upload_summary=_summary(415, {"A": (415, 1, 415)}),
+        upload_summary=_summary(600, {"A": (600, 1, 600)}),
     )
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
-    assert "415" in _visible(resp)
+    assert "600" in _visible(resp)
 
 
 def test_fresh_upload_branch_admits_under_cap(client):
@@ -287,18 +294,19 @@ def test_a_contig_narrows_an_oversized_target_into_the_cap(client):
 
 
 def test_a_contig_that_is_still_too_big_is_still_refused(client):
-    """The contig is not an escape hatch — it re-sizes, it does not disable."""
+    """The contig is not an escape hatch — it re-sizes, it does not disable.
+    600 of the file's 830 residues is still over the 500 cap."""
     _login(client)
     t = _target(chain_summary=_summary(
         830, {"A": (415, 1, 415), "B": (415, 1, 415)},
     ))
     resp, spy = _post(client, _proteina_form(
-        target_chain="A B", target_input="A1-200,B1-200",
+        target_chain="A B", target_input="A1-300,B1-300",
         hotspot_residues="A100,B100",
     ), target=t)
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
-    assert "400" in _visible(resp)
+    assert "600" in _visible(resp)
 
 
 def test_the_refusal_names_the_selection_not_the_file(client):
@@ -311,11 +319,11 @@ def test_the_refusal_names_the_selection_not_the_file(client):
         830, {"A": (415, 1, 415), "B": (415, 1, 415)},
     ))
     resp, _ = _post(client, _proteina_form(
-        target_chain="A B", target_input="A1-200,B1-200",
+        target_chain="A B", target_input="A1-300,B1-300",
         hotspot_residues="A100,B100",
     ), target=t)
     body = _visible(resp)
-    assert "A1-200,B1-200" in body, body[-500:]
+    assert "A1-300,B1-300" in body, body[-500:]
     assert "The region you selected" in body
 
 
@@ -333,10 +341,15 @@ def test_a_range_that_overshoots_the_chain_numbering_counts_what_exists():
 
     Both numbers are "safe" in the over-count sense, which is why deleting the
     clamp survived the whole suite. It is still wrong in the direction this
-    commit exists to fix: 65 is under the 140 cap and 300 is not, so dropping
-    the clamp refuses a run the container would have completed, and the user's
-    only recourse is to guess the numbering. The cap must refuse big runs, not
-    unusual numbering.
+    gate exists to serve: dropping the clamp refuses runs the container would
+    have completed, and the user's only recourse is to guess the numbering.
+    The cap must refuse big runs, not unusual numbering.
+
+    THE ARITHMETIC MOVED WITH THE CAP. Under the old 140 cap this 65-vs-300
+    pair straddled it directly. At 500 it does not — both fit — so the
+    consequence is demonstrated on a chain big enough to still straddle, in
+    ``test_an_overshooting_range_is_admitted_at_its_real_size`` below. The
+    clamp's own behaviour is cap-independent and is what this test asserts.
     """
     from shared.targets import selection_residue_count
 
@@ -351,12 +364,22 @@ def test_a_range_that_overshoots_the_chain_numbering_counts_what_exists():
     ) == 415
 
 
+# The same shape on a chain big enough that the clamp still decides the
+# verdict at a 500 cap: 830 residues numbered from 236, so A1-600 is 365
+# residues clamped (admitted) and 600 unclamped (refused). The 415-residue
+# fixture above can no longer flip a proteina verdict either way — the
+# fallback is min(span, whole_chain) and the whole chain is already under the
+# cap — so without this the clamp's consequence would be untested on the money
+# route.
+_LONG_NUMBERED_FROM_236 = _summary(830, {"A": (830, 236, 1065)})
+
+
 def test_an_overshooting_range_is_admitted_at_its_real_size(client):
     """The consequence of the clamp, on the route that spends the money."""
     _login(client)
-    t = _target(chain_summary=_FC_NUMBERED_FROM_236)
+    t = _target(chain_summary=_LONG_NUMBERED_FROM_236)
     resp, spy = _post(client, _proteina_form(
-        target_input="A1-300", hotspot_residues="A250",
+        target_input="A1-600", hotspot_residues="A250",
     ), target=t)
     assert resp.status_code in (302, 303), _visible(resp)[-500:]
     assert ("create", "proteina") in spy.calls
@@ -390,27 +413,35 @@ def test_an_unreadable_segment_falls_back_to_the_whole_chains(client):
 #
 # hard_cap_combined_aa fires on (target_aa + binder_max_aa). No caller passed
 # binder_max_aa, so the whole half was dead on every route that spends money: a
-# 140 aa target with a 300 aa max binder is 440 against proteina's 260 budget,
+# 400 aa target with a 300 aa max binder is 700 against proteina's 620 budget,
 # refused by /tools/proteina/submit and funded by both branches here.
+#
+# The target half is deliberately INSIDE the cap (400 < 500) and inside the
+# measured span, so a gate that only ever reads the target size cannot pass
+# these. 300 is the form's _BINDER_LEN_MAX; every canary shard ran at 120.
 # ---------------------------------------------------------------------------
 
 _OVER_COMBINED = dict(binder_length_min="60", binder_length_max="300")
+_COMBINED_TARGET = _summary(400, {"A": (400, 1, 400)})
 
 
 def test_combined_cap_fires_on_the_target_bound_branch(client):
     _login(client)
-    resp, spy = _post(client, _proteina_form(**_OVER_COMBINED), target=_target())
+    resp, spy = _post(
+        client, _proteina_form(**_OVER_COMBINED),
+        target=_target(chain_summary=_COMBINED_TARGET),
+    )
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
     body = _visible(resp)
-    assert "combined budget" in body and "260" in body
+    assert "combined budget" in body and "620" in body
 
 
 def test_combined_cap_fires_on_the_fresh_upload_branch(client):
     _login(client)
     resp, spy = _post(
         client, _proteina_form(**_OVER_COMBINED),
-        upload_summary=_summary(130, {"A": (130, 1, 130)}),
+        upload_summary=_COMBINED_TARGET,
     )
     assert resp.status_code == 400, _visible(resp)[-500:]
     assert spy.calls == []
@@ -418,7 +449,7 @@ def test_combined_cap_fires_on_the_fresh_upload_branch(client):
 
 
 def test_a_binder_inside_the_budget_still_runs(client):
-    """130 + 120 = 250, under the 260 budget. Guards against the combined cap
+    """130 + 120 = 250, under the 620 budget. Guards against the combined cap
     being armed with something that refuses every campaign."""
     _login(client)
     resp, spy = _post(client, _proteina_form(), target=_target())
@@ -430,19 +461,26 @@ def test_a_binder_inside_the_budget_still_runs(client):
 # F13 — the soft-warn copy branch may not predict an OOM it cannot predict
 # ---------------------------------------------------------------------------
 
-def test_the_untested_soft_warn_copy_does_not_predict_an_oom():
-    """proteina's cap_basis is "untested": the largest target ever run is 130
-    residues, so nothing above that is known-to-fail, only unmeasured. The
-    generic soft-warn copy this falls through to says "a higher chance of
-    out-of-memory", which is exactly the claim the untested branch exists to
-    avoid making — and deleting that branch left the suite green while the
-    hard-cap twin was caught by one test.
+def test_the_measured_soft_warn_copy_does_not_predict_an_oom():
+    """proteina's cap_basis is "measured": its soft warn sits exactly at 415,
+    the largest size any shard has run, so the first residue above it is
+    unmeasured — not known-to-fail. Its own fit puts the 500 cap at ~39% of an
+    A100-80GB, so an OOM is not even predicted there.
+
+    The generic soft-warn copy this would otherwise fall through to says "a
+    higher chance of out-of-memory", which is exactly the claim this branch
+    exists to avoid making — and deleting the branch left the suite green
+    while the hard-cap twin was caught by one test.
+
+    The basis was "untested" while the cap was 140 and nothing near it had run.
+    Renaming it was the honest half of raising the cap: the field records WHERE
+    THE NUMBER CAME FROM, and it now comes from this tool's own scaling curve.
     """
     from shared.pdb_preflight import _check_size_envelope
     from shared.pdb_preflight_rules import TOOL_RULES
 
     rules = TOOL_RULES["proteina"]
-    assert rules.size.cap_basis == "untested"   # precondition for the branch
+    assert rules.size.cap_basis == "measured"   # precondition for the branch
     status = _check_size_envelope(
         rules, rules.size.soft_warn_target_aa + 1,
         binder_max_aa=None, num_designs=None,
@@ -460,12 +498,38 @@ def test_a_literature_backed_tool_keeps_the_generic_soft_warn():
     from shared.pdb_preflight_rules import TOOL_RULES
 
     rules = TOOL_RULES["rfdiffusion"]
-    assert rules.size.cap_basis != "untested"
+    assert rules.size.cap_basis == "literature"
     status = _check_size_envelope(
         rules, rules.size.soft_warn_target_aa + 1,
         binder_max_aa=None, num_designs=None,
     )
     assert "out-of-memory" in (status.warn_message or "")
+
+
+def test_only_a_literature_backed_cap_may_predict_an_oom():
+    """THE GUARD IS "IS IT LITERATURE-BACKED", NOT "IS IT THE STRING
+    UNTESTED". It used to be the latter, and adding a third basis value would
+    then have silently routed proteina onto the OOM copy — asserting a failure
+    its own measurements say does not happen at the cap.
+
+    So: any basis that is not "literature" gets the cautious wording, which
+    makes an unrecognised or misspelled value fail safe.
+    """
+    from dataclasses import replace
+
+    from shared.pdb_preflight import _check_size_envelope
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    rules = TOOL_RULES["proteina"]
+    for basis in ("measured", "untested", "somethingnobodyanticipated"):
+        probe = replace(rules, size=replace(rules.size, cap_basis=basis))
+        status = _check_size_envelope(
+            probe, probe.size.hard_cap_target_aa + 1,
+            binder_max_aa=None, num_designs=None,
+        )
+        msg = status.hard_fail_message or ""
+        assert "run out of memory" not in msg, (basis, msg)
+        assert "precaution rather than a measured failure point" in msg, basis
 
 
 # ---------------------------------------------------------------------------

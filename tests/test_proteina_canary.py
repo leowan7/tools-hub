@@ -7489,3 +7489,67 @@ class TestTheNegativeNumberingGuardReachesTheCanaryToo:
         }
         assert "unrenderable_segments" in called, (
             "the canary must ASK run_pipeline whether a contig is renderable")
+
+
+# ===========================================================================
+# THE POST-RUN INSTRUCTION MUST DESCRIBE THE ENVELOPE THAT EXISTS
+# ===========================================================================
+#
+# The canary closed every run with "SET shared/pdb_preflight_rules.py::
+# _PROTEINA SizeEnvelope.hard_cap_target_aa FROM THIS RUN before flag-on."
+# That was right while the cap was a placeholder and no shard had ever sized
+# it. It has since been carried out: three completed shards at 130, 260 and
+# 415 aa (preallocation disabled) produced the scaling curve the envelope is
+# derived from.
+#
+# Left standing, the imperative would be worse than stale. It instructs an
+# operator to re-derive a money cap from ONE reading — the single-point
+# reasoning that produced the two discredited ~67.5 GB numbers — and doing it
+# would replace a three-point fit with something strictly weaker. The output
+# of a paid harness is the one place that instruction gets read, so it is
+# corrected here rather than removed.
+# ===========================================================================
+
+class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
+
+    def test_the_retired_set_the_cap_from_this_run_imperative_is_gone(self):
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "FROM THIS RUN" not in emitted, (
+            "the canary still tells the operator to set the size cap from a "
+            "single run; the envelope is a three-point fit and one reading "
+            "cannot lawfully replace it"
+        )
+
+    def test_it_names_where_measurement_stops_and_what_would_extend_it(self):
+        """The replacement has to carry the two facts an operator acts on:
+        that 415 aa is the edge of measurement, and that only a COMPLETED
+        shard beyond it moves the envelope."""
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "415" in emitted
+        assert "does NOT raise the cap" in emitted
+        assert "ABOVE 415 aa is the only thing that" in emitted
+        # And the allocator caveat travels with it, because a reading taken
+        # with preallocation on is not a data point at all.
+        assert "prealloc_disabled must read True" in emitted
+
+    def test_the_quoted_envelope_matches_the_shipped_one(self):
+        """Two copies of a number drift, and the one in the paid harness is
+        the one an operator reads at 2 a.m. Pin them together."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+
+        env = TOOL_RULES["proteina"].size
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert f"hard_cap_target_aa={env.hard_cap_target_aa}" in emitted
+        assert f"soft_warn_target_aa={env.soft_warn_target_aa}" in emitted

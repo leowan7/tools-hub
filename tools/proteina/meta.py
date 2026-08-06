@@ -15,23 +15,29 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # total campaign time depends on the requested design count and the launch
     # concurrency (4), not on this number alone.
     #
-    # protein_binder is MEASURED: a paid A100-80GB canary shard returned 8
-    # designs in 359 s (6.0 min) against a 130-residue, 2-chain target. That is
-    # the ONLY size ever timed, and the size cap in
-    # shared/pdb_preflight_rules.py (_PROTEINA, hard_cap_target_aa=140) keeps
-    # real targets within a few residues of it, so the band here covers Modal
-    # cold-start and GPU contention rather than a bigger target.
+    # protein_binder is MEASURED, at three sizes. Paid A100-80GB canary shards
+    # returned 8 designs in 576 s (9.6 min) at 130 aa, 645 s (10.8 min) at
+    # 260 aa and 874 s (14.6 min) at 415 aa. The band below spans them, and the
+    # top of it also covers the 500-aa cap in shared/pdb_preflight_rules.py
+    # (_PROTEINA): runtime scales as (aa/120)^0.34, so a target at the cap
+    # comes out at ~14.6 min too — the curve is nearly flat in target size, and
+    # Modal cold-start and GPU contention matter more than the extra residues.
     #
-    # The previous value for all three design variants was "30 to 120", a
-    # placeholder that was never re-set. It overstated the measured shard by
-    # 5-20x, and shared/pdb_preflight_rules.py had in turn anchored its runtime
-    # estimator to the middle of that invented band.
+    # THIS COPY HAS BEEN WRONG TWICE, both times in the direction a user plans
+    # against. It shipped as "30 to 120" for all three variants, a placeholder
+    # never re-set, which overstated a real shard by 5-20x. It was then
+    # corrected to "~6" from a 359 s shard — but that shard died before its
+    # AF2/ESM stack loaded, so it timed an incomplete run. A COMPLETE run at
+    # that same 130 aa takes 576 s. Both times the number here was also
+    # load-bearing: shared/pdb_preflight_rules.py anchors its runtime estimator
+    # to this measurement, so an error in a docs constant reaches the preflight
+    # panel looking calibrated.
     #
     # ligand_binder and motif_ame have NEVER been timed. Their band is bounded,
-    # not measured: the floor is the one protein_binder measurement and the
-    # ceiling is the physical _MAX_SESSION_S = 7200 s (120 min) session wall in
-    # modal_app.py, past which the shard is killed. Re-set each from its own
-    # canary.
+    # not measured: the floor is the smallest complete protein_binder
+    # measurement and the ceiling is the physical _MAX_SESSION_S = 7200 s
+    # (120 min) session wall in modal_app.py, past which the shard is killed.
+    # Re-set each from its own canary.
     #
     # AND THE FLOOR IS WEAKER THAN IT LOOKS. This used to read "same container,
     # same reward stack". The container is the same; the reward stack is NOT.
@@ -42,11 +48,11 @@ PRESET_RUNTIME: dict[str, dict[str, object]] = {
     # ``reward_attributions`` below splits them the same way. So the floor is
     # not evidence transferred from a comparable run; it is a lower bound
     # borrowed from a DIFFERENT scoring path, and there is no reason to think
-    # RF3 scoring is as fast as AF2 scoring. Treat 6 as "cannot plausibly be
-    # quicker than the one thing we timed", not as a measurement.
-    "protein_binder": {"typical_minutes": "~6"},
-    "ligand_binder": {"typical_minutes": "6 to 120 (not yet measured)"},
-    "motif_ame": {"typical_minutes": "6 to 120 (not yet measured)"},
+    # RF3 scoring is as fast as AF2 scoring. Treat 10 as "cannot plausibly be
+    # quicker than the fastest thing we timed", not as a measurement.
+    "protein_binder": {"typical_minutes": "~10 to 15"},
+    "ligand_binder": {"typical_minutes": "10 to 120 (not yet measured)"},
+    "motif_ame": {"typical_minutes": "10 to 120 (not yet measured)"},
     "validate": {"typical_minutes": "1 to 3"},
 }
 
@@ -201,11 +207,11 @@ about: dict = {
         },
     ],
     # Kept in lockstep with PRESET_RUNTIME above — see the provenance note
-    # there for what is measured (protein_binder, one 130-residue target) and
-    # what is only bounded by the 7200 s session wall.
+    # there for what is measured (protein_binder, at 130 / 260 / 415-residue
+    # targets) and what is only bounded by the 7200 s session wall.
     "runtime_table": [
         {"preset": "protein_binder",
-         "typical": "~6 min / shard (measured at a 130-residue target)"},
+         "typical": "~10 to 15 min / shard (measured at 130-415 residues)"},
         {"preset": "ligand_binder", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "motif_ame", "typical": "not yet measured (under 120 min / shard)"},
         {"preset": "validate", "typical": "1 to 3 min (free)"},

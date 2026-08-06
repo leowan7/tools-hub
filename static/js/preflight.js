@@ -105,9 +105,9 @@
         // used to print residues_kept_on_target_chain unconditionally — the
         // whole named chains, i.e. the FILE. Once the contig started reaching
         // the server that became a live contradiction: an 830 aa upload
-        // narrowed to A236-300,B236-300 is admitted on 130 residues against a
-        // 140 cap, and the panel said "Ready to run — 400 residues" directly
-        // after having refused the same upload for being over that cap.
+        // narrowed to A236-300,B236-300 is admitted on 130 residues against
+        // proteina's cap, and the panel said "Ready to run — 830 residues"
+        // directly after having refused the same upload for being over it.
         // Nothing on screen reconciled the two. When the envelope reports it
         // sized a SELECTION, name the selection and print its count.
         const env = v.size_envelope;

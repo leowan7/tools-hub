@@ -2634,22 +2634,30 @@ class TestJaxDoesNotPreallocateTheCard:
 class TestRuntimeCopyMatchesMeasurement:
     """meta.py's runtime copy is what a user plans and budgets against.
 
-    It shipped claiming "30 to 120" minutes per shard for all three design
-    variants. The one paid canary shard that has ever been timed returned 8
-    designs in 359 s (6.0 min) at a 130-residue target — the published band
-    started 5x above the measurement and ran 20x above it. Worse, it was
-    load-bearing beyond the copy: shared/pdb_preflight_rules.py anchored its
-    runtime estimator to "the middle of that band", so an invented number in a
-    docs constant had propagated into the preflight panel as if calibrated.
+    IT HAS BEEN WRONG TWICE. It shipped claiming "30 to 120" minutes per shard
+    for all three design variants — a placeholder 5-20x above anything real.
+    It was then corrected to "~6" from a 359 s shard, which was also wrong:
+    that shard died before its AF2/ESM stack loaded, so it timed an incomplete
+    run and the copy under-stated a complete one by ~40%.
+
+    Three COMPLETED shards now exist — 576 s at 130 aa, 645 s at 260 aa, 874 s
+    at 415 aa, i.e. 9.6 to 14.6 min. Both errors were load-bearing beyond the
+    copy: shared/pdb_preflight_rules.py anchors its runtime estimator here, so
+    a wrong number in a docs constant reaches the preflight panel looking
+    calibrated.
     """
 
-    def test_protein_binder_runtime_reflects_the_359_second_shard(self):
+    def test_protein_binder_runtime_reflects_the_completed_shards(self):
         from tools.proteina import meta
-        entry = meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"]
+        entry = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
         assert "30 to 120" not in entry, (
-            "protein_binder still quotes the placeholder band; the measured "
-            "shard was 359 s (6.0 min) at a 130-residue target")
-        assert "6" in entry
+            "protein_binder still quotes the placeholder band; the completed "
+            "shards run 9.6 to 14.6 min across 130-415 residues")
+        assert entry.strip() != "~6", (
+            "protein_binder still quotes the 359 s shard, which never loaded "
+            "its AF2/ESM stack; a complete run at that size took 576 s")
+        # The band must span the measurement rather than sit under it.
+        assert "10" in entry and "15" in entry, entry
 
     def test_untimed_variants_are_labelled_untimed(self):
         """ligand_binder and motif_ame have never been run on a GPU here. Their
@@ -2675,15 +2683,25 @@ class TestRuntimeCopyMatchesMeasurement:
 
     def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
         """The specific coupling that turned a docs placeholder into a number
-        the preflight panel presented as calibrated."""
+        the preflight panel presented as calibrated.
+
+        Both retired anchors are named, because "not 75" alone would be
+        satisfied by the 5.4 that came from the incomplete 359 s shard.
+        """
         from shared.pdb_preflight_rules import TOOL_RULES
-        base = TOOL_RULES["proteina"].size.runtime_base_min
+        env = TOOL_RULES["proteina"].size
+        base = env.runtime_base_min
         assert base != 75.0, (
             "runtime_base_min is still the midpoint of meta.py's retired "
             "30-120 min band")
-        # base x (130/120)^1.3 x (8/8) must reproduce the measured 6.0 min.
-        env = TOOL_RULES["proteina"].size
-        est = base * (130.0 / 120.0) ** env.runtime_alpha
-        assert 5.0 <= est <= 7.5, (
-            f"the estimator puts the measured 8-design shard at {est:.1f} min, "
-            f"not the 6.0 min it actually took")
+        assert base != 5.4, (
+            "runtime_base_min is still solved from the 359 s shard that died "
+            "before its AF2/ESM stack loaded")
+        # base x (aa/120)^alpha x (8/8) must reproduce all three completed
+        # shards, not just one — a single-point check cannot see the exponent.
+        for aa, secs in ((130, 576), (260, 645), (415, 874)):
+            est = base * (aa / 120.0) ** env.runtime_alpha
+            measured = secs / 60.0
+            assert abs(est - measured) / measured <= 0.10, (
+                f"the estimator puts the {aa} aa 8-design shard at "
+                f"{est:.1f} min, not the {measured:.1f} min it actually took")

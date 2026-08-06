@@ -1428,9 +1428,10 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             _emit(f"Complexes whose target chain IS the input target: "
                   f"{res.get('n_target_verified')} "
                   f"(unverified: {res.get('n_target_unverified')})")
-            # Print the process figure alongside the device one. The operator
-            # reads this line and then writes a size cap from it, so it has to
-            # show which number is demand and what was already on the card.
+            # Print the process figure alongside the device one. This line is
+            # a candidate data point for the size envelope, so it has to show
+            # which number is demand, what was already on the card, and under
+            # which allocator policy it was taken.
             _emit(
                 f"Peak VRAM: device {res.get('peak_vram_mb')} MB   "
                 f"design-process {res.get('peak_proc_vram_mb')} MB   "
@@ -1439,8 +1440,42 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
                 f"prealloc_disabled={res.get('vram_prealloc_disabled')})   "
                 f"Runtime: {res.get('runtime_s')} s"
             )
-            _emit("\nSET shared/pdb_preflight_rules.py::_PROTEINA SizeEnvelope."
-                  "hard_cap_target_aa FROM THIS RUN before flag-on.")
+            # WHAT THIS USED TO SAY, and why it no longer does. It read "SET
+            # shared/pdb_preflight_rules.py::_PROTEINA SizeEnvelope.
+            # hard_cap_target_aa FROM THIS RUN before flag-on." That
+            # instruction has been carried out — three shards at 130, 260 and
+            # 415 aa produced the envelope's scaling curve. Leaving the
+            # imperative standing would now be actively harmful: it tells an
+            # operator to re-derive a money cap from ONE reading, which is the
+            # single-point mistake this tool has already made once, and doing
+            # so would silently overwrite a three-point fit with something
+            # weaker. Replaced rather than deleted, because this is a paid
+            # harness whose entire point is that a human reads the output
+            # afterwards, and a run that says nothing about what its numbers
+            # are FOR is how the previous cap went stale in the first place.
+            _emit(
+                "\nWHAT TO DO WITH THESE NUMBERS. _PROTEINA's size envelope "
+                "is already derived from three completed shards, all with "
+                "preallocation disabled: 130 aa / 8,943 MB / 576 s, 260 aa / "
+                "15,541 MB / 645 s, 415 aa / 25,457 MB / 874 s. Hence "
+                "hard_cap_target_aa=500, soft_warn_target_aa=415."
+            )
+            _emit(
+                "  * prealloc_disabled must read True above. If it does not, "
+                "this reading is dominated by a JAX allocator constant, is "
+                "not comparable to those three, and must not be used at all."
+            )
+            _emit(
+                "  * A shard at 415 aa or below re-confirms that curve. It "
+                "does NOT raise the cap."
+            )
+            _emit(
+                "  * A COMPLETED shard ABOVE 415 aa is the only thing that "
+                "moves the envelope. Then soft_warn_target_aa becomes that "
+                "size, hard_cap_target_aa a modest step above it, and "
+                "runtime_base_min / runtime_alpha are refit over all four "
+                "points — not solved from the new one alone."
+            )
             # HOW MANY OF THE ORDERED DESIGNS UPSTREAM ACTUALLY KEPT. Phase 1
             # does not fail on a thin yield — it asserts wiring — but it is the
             # fact that decides whether the ~$12 run is worth starting, and
