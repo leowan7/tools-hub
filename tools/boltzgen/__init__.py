@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from tools.base import Preset, ToolAdapter, register
+from tools.base import (
+    Preset,
+    ToolAdapter,
+    parse_hotspot_residues,
+    parse_target_chains,
+    register,
+)
 
 
 # Boltz-2 design protocols the wrapper forwards via ``--protocol``.
@@ -50,20 +56,30 @@ def validate(
     if preset != "pilot":
         return None, "Pick a preset."
 
+    # target_chain may name one chain ("A") or several ("A,B" / "A B"):
+    # BoltzGen's include: and binding_types: are per-chain LISTS upstream, and
+    # the two-chain path is verified on GPU.
     target_chain = (form.get("target_chain") or "A").strip()
     if not target_chain:
         return None, "Target chain is required."
-    if len(target_chain) > 4:
-        return None, "Target chain must be at most 4 characters."
+
+    target_chains = parse_target_chains(target_chain)
+    if not target_chains:
+        return None, "Target chain is required."
+    # Per TOKEN, not per string: a whole-string cap of 4 admitted "A,B" but
+    # rejected "A,B,C", silently capping every target at two chains.
+    for cid in target_chains:
+        if len(cid) > 4:
+            return None, f"Chain id {cid!r} is too long (max 4 characters)."
 
     raw_hotspots = (form.get("hotspot_residues") or "").strip()
     if raw_hotspots:
-        try:
-            hotspot_residues = [
-                int(tok.strip()) for tok in raw_hotspots.split(",") if tok.strip()
-            ]
-        except ValueError:
-            return None, "Hotspot residues must be comma-separated integers (e.g. 54,56,115)."
+        # Parsing these as bare ints accepted "A,B" as a target and then
+        # attributed EVERY hotspot to chain A — both protomers in the design
+        # context, the epitope spec silently on one of them.
+        hotspot_residues, err = parse_hotspot_residues(raw_hotspots, target_chains)
+        if err:
+            return None, err
     else:
         # BoltzGen accepts an empty hotspot list as "no hotspot constraint".
         hotspot_residues = []
@@ -104,7 +120,10 @@ def validate(
     return (
         {
             "preset": preset,
-            "target_chain": target_chain,
+            # Canonical comma form regardless of what the user typed:
+            # both separators are accepted at this boundary, exactly one
+            # is emitted, so no container has to guess.
+            "target_chain": ",".join(target_chains),
             "hotspot_residues": hotspot_residues,
             "binder_length_min": binder_length_min,
             "binder_length_max": binder_length_max,
