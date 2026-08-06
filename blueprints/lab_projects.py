@@ -205,6 +205,14 @@ def _ordered_shortlist(campaign):  # noqa: ANN001
     a paid request, which is the same failure register item A-5 records the
     staff page taking from a bare string in the SAME column. That fix hardened
     the ELEMENTS and left the CONTAINER open.
+
+    THIS RETURN VALUE GATES A DESTRUCTIVE SIDE EFFECT, which is not visible
+    from here. ``campaign_detail`` emits the un-star payload only when this
+    answers non-``None``, so narrowing the None-domain -- "return None when
+    there is nothing worth showing" is the obvious such edit -- switches the
+    clearing off for the rows it newly covers. Every narrowing reachable today
+    is harmless because it also empties ``_covered_refs``; a future one need
+    not be. Change the domain and re-read that route.
     """
     from collections.abc import Mapping  # noqa: PLC0415
 
@@ -284,7 +292,9 @@ def _covered_refs(campaign, shortlist) -> list:  # noqa: ANN001
     remainder with it and left them nothing to re-identify it from but a list of
     the 500 that did go. Removing named refs keeps it, and is idempotent
     besides, so a reload, a bookmark, a restored tab or a new tab session
-    reaching the same URL removes nothing that is not already gone.
+    reaching the same URL removes nothing the payload does not NAME. What it
+    does name it removes every time, which is register item A102: a design
+    re-starred since the request that covered it goes again.
 
     NOT A SECOND PARSER. Every entry here comes out of ``_ordered_shortlist``'s
     ``designs``, so a shape that page counts as a design is the same shape this
@@ -296,8 +306,11 @@ def _covered_refs(campaign, shortlist) -> list:  # noqa: ANN001
     the legacy arm of ``campaigns_submit`` writes that same job to
     ``source_job_id``. So a design with no job_id of its own is emitted under
     that column. A ref that still cannot name a job is DROPPED rather than
-    emitted with an empty one: ``refKey('', i)`` matches no stored star, so
-    emitting it could only ever be noise.
+    emitted with an empty one, and that guard is load-bearing rather than
+    tidiness: ``refKey`` concatenates, so ``refKey('', i)`` matches a stored
+    star whose own job id is the empty string EXACTLY. Emitting it could remove
+    a star this request never covered. The drop is what makes that unreachable,
+    so it is not safe to delete on the grounds that it looks like noise.
 
     CAPPED WITH THE LIST, at :data:`_MAX_LISTED_DESIGNS`, because it is the same
     list. That is up to 500 refs -- 33KB of JSON with UUID job ids, measured
@@ -306,7 +319,10 @@ def _covered_refs(campaign, shortlist) -> list:  # noqa: ANN001
     The one shape that can exceed the cap is the uncapped ``candidate_indices``
     arm (register item A91); its un-listed tail keeps its stars, which is the
     same direction the page takes when it prints a prefix and withholds the
-    advice.
+    advice. Name the consequence rather than just the direction: on that row
+    the surviving stars are ENTIRELY designs this request already covered, and
+    nothing distinguishes them from a fresh selection. Safe against the old
+    behaviour, which kept all of them, but it is a state no copy explains.
     """
     if not shortlist:
         return []

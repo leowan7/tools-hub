@@ -647,8 +647,10 @@ def send_campaign_submitted_emails(
         # that happens in a browser nothing here can hear back from, and the
         # page's safeguard against a silent failure is that it prints the
         # designs the request already covers directly under the advice. This
-        # email has no such list, so it must not carry the bare instruction; it
-        # names the page that does, and `campaign_url` above carries the counts
+        # email has no such list, so the instruction must not lead: it is
+        # PREFIXED by "check your campaign page for what this request covers",
+        # which sends the reader to the surface that does list them before it
+        # tells them to do anything. `campaign_url` above carries the counts
         # that page needs to render the same disclosure this sentence makes.
         #
         # AND IT ASSERTS NOTHING ABOUT WHAT THAT PAGE RENDERS. "Check your
@@ -663,10 +665,11 @@ def send_campaign_submitted_emails(
         #
         # WHERE THE TWO OVERLAP, they must not drift: both tell the reader that
         # this request covers a fixed set, that the rest must be starred, and
-        # that a second request sends them. What the page adds on top -- the
-        # designs themselves, and the count beside them -- this body neither
-        # carries nor describes. The staff copy keeps the exact ref count, so
-        # ops can still pick the rest up.
+        # that a second request sends them. What the page adds on top is the
+        # designs THEMSELVES, listed. It is not the count: the `dropped`
+        # sentence below prints `n_candidates` in this same body whenever that
+        # branch fires, so the number is on both surfaces. The staff copy keeps
+        # the exact ref count, so ops can still pick the rest up.
         #
         # NO DESIGN COUNT IN THIS SENTENCE. The page counts DISTINCT designs and
         # `n_candidates` above is the STORED length; they agree on every row

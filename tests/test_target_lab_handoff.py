@@ -999,7 +999,7 @@ def test_the_over_the_limit_page_states_the_fact_and_advises_beside_the_list(cli
     assert "Star them again" not in flat
     assert "Up to 120 further starred designs were over the per-request limit" \
         in flat
-    assert "To include the designs that were over the limit, star them on the " \
+    assert "To include anything that was over the limit, star it on the " \
         "source page and send a second request." in flat
     # The list it points at, on the same page: the fixture row names one design.
     assert "Designs in this request" in flat
@@ -1008,7 +1008,7 @@ def test_the_over_the_limit_page_states_the_fact_and_advises_beside_the_list(cli
     # advice. The advice says "below", and only its words were ever asserted.
     assert flat.index("over the per-request limit") \
         < flat.index("Designs in this request") \
-        < flat.index("To include the designs") \
+        < flat.index("To include anything") \
         < flat.index("Candidate 1")
     # THE ABSENCE, on the same route with the same query. A row whose stored
     # entries resolve to no designs has no list, so the advice must not ship --
@@ -1016,7 +1016,7 @@ def test_the_over_the_limit_page_states_the_fact_and_advises_beside_the_list(cli
     # told what did not reach the lab.
     bare = re.sub(r"\s+", " ", _lab_project_page(
         client, "?submitted=1&truncated=120", refs=["not-a-ref"]))
-    assert "To include the designs" not in bare
+    assert "To include anything" not in bare
     assert "Up to 120 further starred designs were over the per-request limit" \
         in bare
 

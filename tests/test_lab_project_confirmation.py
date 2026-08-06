@@ -61,11 +61,15 @@ tests/test_candidate_table_js_contract.py, and it reuses that file's
 comment-stripper rather than growing a second one: a plain search would let the
 header comment answer for a definition that had been renamed away.
 
-AND THE JS HALF IS EXECUTED, which is new. There is no JS runtime in CI
-(.github/workflows has no node), the constraint
-tests/test_preflight_panel_contract.py records, so PART 4 runs `node` when it is
-on PATH and SKIPS when it is not -- and every assertion that is source-only says
-so in its own name or docstring. The round that reviewed the first version of
+AND THE JS HALF IS EXECUTED, which is new. `.github/workflows` installs no node
+and this repo carries no JS test runner, but a hosted runner image can still put
+one on PATH, so whether PART 4 runs on the machine that gates merges is NOT
+established either way -- an earlier version of this paragraph inferred that it
+does not. PART 4 runs `node` where it finds it and SKIPS where it does not, and
+every assertion that is source-only says so in its own name or docstring. The
+two properties whose loss would be worst, the filter's polarity and the bfcache
+handler not re-binding, are pinned in PART 1 as source as well, so neither of
+them depends on what CI turns out to have. The round that reviewed the first version of
 this feature found two mutations to its one-shot that went GREEN against the
 whole suite, because source-order assertions cannot execute anything. Part 4 is
 what closes that: the removal is driven against the real file with a stubbed
@@ -206,17 +210,27 @@ def _client_sites() -> list:
     """``[(module, attr, original)]`` -- every live binding of a Supabase client
     factory in a module loaded FROM THIS REPO, found rather than named.
 
-    Every query in this codebase starts at `shared.credits.get_service_client`
-    or `get_supabase_client`, and most modules bind those at import, so the
-    source AND each already-bound alias have to be replaced together. Walking
-    `sys.modules` is what keeps this from degenerating back into a list of
-    function names, which is the form that let a real extra read through.
+    Nearly every query in this codebase starts at
+    `shared.credits.get_service_client` or `get_supabase_client`, and most
+    modules bind those at import, so the source AND each already-bound alias
+    have to be replaced together. Walking `sys.modules` is what keeps this from
+    degenerating back into a list of function names, which is the form that let
+    a real extra read through.
+
+    NEARLY, AND THE GAP IS NAMED RATHER THAN GLOSSED. `scout/handoff.py` and
+    `scout/quota.py` each define a private `_get_service_client` calling
+    `supabase.create_client` directly, across seven call sites, and this sweep
+    sees neither. So the two names below are still an allowlist and the path
+    filter fixed only the other half of the staleness. Sound for what it is
+    used for -- `campaign_detail` reaches no `scout` module -- and it would
+    widen silently the day either of those is renamed to the public spelling.
 
     THE FILTER IS THE FILE PATH, NOT A PACKAGE LIST, and the package list is why
     this docstring was false when it was written. It named ("shared",
-    "blueprints", "app", "cron"), which left `webhooks.modal.get_service_client`
-    and `webhooks.stripe.get_service_client` live and excluded, along with every
-    binding in `scout`, `scripts`, `billing`, `tools` and `gpu`. A list of
+    "blueprints", "app", "cron"), which left `webhooks.modal`,
+    `webhooks.stripe` and `scripts/calibration/poll_results.py` live and
+    excluded. `billing`, `tools` and `gpu` bind neither name anywhere, so an
+    earlier version of this sentence also listed exclusions that never existed. A list of
     top-level packages is a list of names wearing a different hat, and it goes
     stale the first time a package is added -- silently, in the direction that
     makes the guards below pass on code they never covered. A path test cannot:
@@ -409,7 +423,7 @@ _COMMERCIAL = re.compile(
     re.IGNORECASE,
 )
 
-_ADVICE = ("To include the designs that were over the limit, star them on the "
+_ADVICE = ("To include anything that was over the limit, star it on the "
            "source page and send a second request.")
 # The truncation FACT, which is disclosed whatever the list does. Kept apart
 # from `_ADVICE` on purpose: they are asserted present and absent in different
@@ -544,6 +558,9 @@ def test_the_js_filters_the_stored_list_and_holds_no_marker(client):
     dies with the tab while the URL that triggers the wipe does not. And the
     presence of `saveShortlist(scope, kept)`: a filter whose result is never
     stored removes nothing at all.
+
+    Plus the filter's POLARITY, which is not from that round and was the one
+    property here that nothing source-only pinned at all.
     """
     src = _STRIPPED_JS
     assert "removeItem(" not in src
@@ -556,6 +573,13 @@ def test_the_js_filters_the_stored_list_and_holds_no_marker(client):
     # would have matched it.
     assert body.count("refKey(") == 2, body
     assert "saveShortlist(scope, kept)" in body
+    # THE POLARITY, and it is the whole safe/destructive axis. `=== true` keeps
+    # exactly the refs this request covered and destroys the never-read
+    # remainder -- round 1's defect verbatim -- while satisfying every other
+    # assertion in this test. Added in round 3 after a reviewer replayed that
+    # two-character edit against a copy and found every source-only assertion
+    # in this file still green, with only node-gated tests catching it.
+    assert "drop[refKey(r.j, r.i)] !== true" in body
     # It goes through the two helpers rather than touching the store itself,
     # which is what keeps `storageKey()` the single spelling of the key.
     assert "sessionStorage" not in body
@@ -580,6 +604,25 @@ def test_the_falsy_scope_guard_stands_in_front_of_all_of_it(client):
     # file, so the naive anchor compares against a position before `i_def` and
     # the assertion can never hold.
     assert i_def < i_guard < src.index("var before = loadShortlist(scope);")
+
+
+def test_the_bfcache_handler_repaints_and_does_not_rebind(client):
+    """SOURCE, NOT EXECUTION, and it exists because PART 4 was the only cover
+    this handler had. Two properties, each removable by one line:
+
+    `e.persisted`, without which the handler also runs on every ordinary load,
+    repainting a page that has just painted. And the ABSENCE of `initTable`,
+    which is the real hazard: re-initialising binds a second copy of every
+    listener, so one star click toggles on and then straight back off and the
+    star reads as dead software. This handler is the one thing in the file that
+    runs on a page nobody submitted anything from.
+    """
+    src = _STRIPPED_JS
+    assert src.count("window.addEventListener('pageshow'") == 1, src
+    tail = src[src.index("window.addEventListener('pageshow'"):]
+    assert "if (!e.persisted) return;" in tail
+    assert "initTable" not in tail
+    assert "restoreStarState(table, scope)" in tail
 
 
 def test_a_page_reached_without_the_submitted_flag_names_nothing(client):
@@ -692,7 +735,9 @@ def test_a_row_with_no_parent_id_names_nothing_rather_than_a_bare_prefix(client)
 
     THE SAME ROW IS ALSO WHY `_covered_refs` DROPS A REF IT CANNOT NAME A JOB
     FOR: bare indices with no `source_job_id` to resolve against would key as
-    "#N" and match no stored star.
+    "#N", which is NOT harmless. `refKey` concatenates, so "#N" matches a
+    stored star whose own job id is the empty string exactly. The drop is what
+    makes the empty case unreachable, not a tidy-up on top of a guarantee.
     """
     html = _page(client, _row(
         submission_source="web", candidate_indices=[0]), "?submitted=1")
@@ -704,8 +749,9 @@ def test_a_bare_index_with_no_source_job_is_left_out_of_the_payload(client):
     in `_covered_refs` is reachable. A row whose shortlist column holds bare
     integers but which names no `source_job_id` has nothing to resolve them
     against, so those refs would go out as `{"job_id": "", ...}` and key as
-    "#N" -- matching no stored star, since the macro's `data-job` is never
-    empty on a page that renders a table.
+    "#N" -- which matches a stored star spelled the same way, since `refKey`
+    only concatenates. Whether the macro's `data-job` can ever render empty is
+    not pinned anywhere, so the payload is not allowed to depend on it.
 
     Constructed rather than found: no live arm writes this shape, because the
     legacy arm is the only one that stores bare integers and it always writes
@@ -992,7 +1038,7 @@ def test_the_customer_and_the_staff_page_count_the_same_row_the_same_way(refs):
         theirs["count"], theirs["duplicates"], theirs["malformed"]), refs
 
 
-def test_ordered_shortlist_answers_for_every_row_that_stores_anything():
+def test_ordered_shortlist_answers_for_every_non_empty_refs_column():
     """THE SERVER-SIDE INVARIANT THE EMAIL'S SENTENCE LEANS ON. That body says
     "check your campaign page for what this request covers" and carries no list
     of its own, so `_ordered_shortlist` answering None for a row that stored
@@ -1160,10 +1206,11 @@ def test_the_page_never_calls_this_an_order_or_a_purchase(client):
     # THE BASELINE, described as what it is. An 'api' row renders none of the
     # strings this item added, so this is the rest of THIS TEMPLATE plus the
     # layout around it -- not "the chrome", which is what this comment used to
-    # claim while rendering the whole of detail.html minus one panel. So a copy
-    # change anywhere else on this page reports here first, which is wider than
-    # the claimed localisation but is at least true: whatever this line catches
-    # is something the panel below did not introduce.
+    # claim while rendering the whole of detail.html minus one panel. Narrower
+    # than that in turn: the three conditional banners are absent from this row
+    # as well, so a commercial word added to one of THEM reports on the second
+    # render below and never here. What this line is good for is the one-way
+    # reading -- whatever it catches, the panel did not introduce.
     baseline = _visible(_page(client, _row(
         submission_source="api", candidate_indices=[0])))
     assert not _COMMERCIAL.search(baseline), _COMMERCIAL.search(baseline)
@@ -1345,7 +1392,7 @@ def test_a_star_added_after_the_submit_is_not_touched(tmp_path):
 
 
 @_needs_node
-def test_a_design_deliberately_re_starred_is_dropped_again(tmp_path):
+def test_a_re_starred_covered_design_is_dropped_again(tmp_path):
     """THE ONE CASE THAT IS NOT A NO-OP, asserted rather than left to be
     discovered. A customer who re-stars a design this request already covered
     and then returns to the confirmation URL loses that star again.

@@ -30,13 +30,21 @@
    actually missing and its sentence says "up to". One noun over both numbers
    would be wrong about one of them.
 
+   AND THE ADVICE IN THE PANEL BELOW INFLECTS OFF NEITHER. It used to take its
+   singular/plural from `truncated_count`, which is the ref count -- so on a
+   truncated ref that would not have resolved to a design it said "the design
+   that was over the limit" where no design was. It is number-free now, which
+   is the same hedge "up to" makes here, spelled the only way a sentence with
+   no figure in it can.
+
    THE FACT IS HERE; THE ADVICE IS IN THE PANEL BELOW, and the split is not a
    layout choice. Only the sentence that tells the customer to star the rest and
    send a second request needs the list beside it, because that sentence is the
    one that produced duplicate paid requests when it stood alone. The disclosure
    that N designs never reached the lab needs nothing: it is what the counts
    travel in the query string FOR. An earlier arrangement put both inside the
-   panel's `{% if %}`, so a row whose entries the page cannot read as designs --
+   list's `{% if shortlist.designs %}`, so a row whose entries the page cannot
+   read as designs --
    the one case where the customer has least to go on -- was told nothing at
    all, which is register item A-7 reproduced by the change that cites it.
 
@@ -123,8 +131,9 @@
    either way, and a number with nothing under it to reconcile against is the
    failure `blueprints/admin.py::_ref_shortlist_view` was built to avoid
    (register items A-4 / A-6). `_ordered_shortlist` answers None only for the
-   'api' shape and for a row with no readable column at all, and never for an
-   empty one, so this block always has something to say when it renders. #}
+   'api' shape and for a row whose shortlist column is absent or empty, and
+   never for a NON-EMPTY column whatever its entries look like, so this block
+   always has something to say when it renders. #}
 {% if shortlist %}
 <div class="panel" style="margin-bottom:1rem;">
   <div class="panel-header">
@@ -136,7 +145,7 @@
     {% if truncated_count and shortlist.complete %}
     <p style="background:rgba(214,158,46,.12);border:1px solid rgba(214,158,46,.45);border-radius:var(--radius-md);padding:.7rem .85rem;margin:0 0 .85rem;">
       <span style="color:var(--text-secondary);">
-        This request covers the {{ shortlist.count }} design{{ '' if shortlist.count == 1 else 's' }} below. To include the design{{ '' if truncated_count == 1 else 's' }} that {{ 'was' if truncated_count == 1 else 'were' }} over the limit, star {{ 'it' if truncated_count == 1 else 'them' }} on the source page and send a second request.
+        This request covers the {{ shortlist.count }} design{{ '' if shortlist.count == 1 else 's' }} below. To include anything that was over the limit, star it on the source page and send a second request.
       </span>
     </p>
     {% endif %}
@@ -291,14 +300,18 @@
    restored tab and a brand-new tab session all produce this same markup, and
    the flag cannot distinguish any of them from the redirect after a submit.
    Nothing needs to: the payload NAMES the designs to un-star, so running it
-   again removes refs that are already gone. The stars the customer has added
-   since — including the remainder the advice above is about, which this request
-   never read and so cannot name — are untouched every time.
+   again removes refs that are already gone. The remainder the advice above is
+   about is untouched every time, because this request never read it and so
+   cannot name it. A star the customer has added SINCE is untouched only if it
+   is not one of the designs this request covered; re-starring one of those and
+   returning here drops it again, which is register item A102.
 
    THE PAYLOAD IS THE LIST ABOVE, in `{job_id, index}` form: up to
-   `_MAX_LISTED_DESIGNS` refs, 33KB of JSON with UUID job ids, beside the same
-   number of `<li>` this page already renders. Proportionate, and stated so a
-   reader does not have to wonder.
+   `_MAX_LISTED_DESIGNS` refs, 33KB of JSON with UUID job ids, beside at most
+   the same number of `<li>` this page already renders — fewer whenever a
+   listed design has no job to name, which is dropped from the payload and
+   still printed. Proportionate either way, and stated so a reader does not
+   have to wonder.
 
    The key format is NOT restated here. `window.dropShortlistRefs` builds it
    with the same `storageKey()` the star toggle writes with, and compares

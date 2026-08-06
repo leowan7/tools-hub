@@ -94,10 +94,11 @@
   //
   // ONE SPELLING OF THE IDENTITY. refKey is the star toggle's own comparison,
   // so a design is removed here exactly when clicking its star would have
-  // matched it. A stored entry carrying no job id keys as "null#N" -- only
-  // reachable from the bare-int shape loadShortlist coerces, which nothing
-  // writes today -- and matches no server ref, so it survives. A star left
-  // standing is the recoverable direction; a star destroyed is not.
+  // matched it. refKey only concatenates, so a stored entry carrying no job id
+  // keys as "null#N" or "#N" and WOULD match a server ref spelled the same
+  // way. What makes that unreachable is on the server: `_covered_refs` drops
+  // any ref it cannot name a job for, so no such ref is ever sent. Do not read
+  // the empty case as harmless here; read it as never arriving.
   //
   // NOTHING REMOVED MEANS NOTHING WRITTEN, so a repeat visit does not rewrite
   // the customer's stored list at all. A falsy scope writes nothing rather than

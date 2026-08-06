@@ -3042,8 +3042,9 @@ in-product handoff the plan prefers.
      something, so the page never names designs it is not printing -- which is
      what excludes 'api'. A row naming no parent emits nothing rather than
      reaching `shortlist_`. The payload is capped with the list, at
-     `_MAX_LISTED_DESIGNS`: up to 500 refs, roughly 25KB of JSON, beside the 500
-     `<li>` the page already renders.
+     `_MAX_LISTED_DESIGNS`: up to 500 refs, 33KB of JSON with UUID job ids
+     (32,890 bytes measured), beside at most the 500 `<li>` the page already
+     renders.
 
      **A REMOVAL BY NAME, BECAUSE THE FIRST VERSION WIPED THE KEY AND THAT WAS
      WRONG IN TWO DIRECTIONS AT ONCE.**
@@ -3072,11 +3073,13 @@ in-product handoff the plan prefers.
 
      Naming the refs dissolves both. Removing refs that are already gone is a
      no-op, so a reload, a bookmark, a history entry, a restored tab, a new tab
-     session and a cloned tab are all harmless and there is no marker, no token
-     and no `clearedKey` left to reason about. The remainder survives, so "send a
+     session and a cloned tab are all harmless -- unless the customer has
+     re-starred one of the covered designs in between, which is A102 below --
+     and there is no marker, no token and no `clearedKey` left to reason about. The remainder survives, so "send a
      second request" stops meaning "re-identify 120 designs by eye" and starts
-     meaning "click submit again". `history.replaceState` is no longer a
-     question either: there is nothing left that a repeat execution could cost.
+     meaning "click submit again". `history.replaceState` is no longer worth
+     its complexity either: a repeat execution costs nothing EXCEPT in the one
+     case below, and a marker cannot be made to outlive a permanent URL anyway.
 
      **THE ONE CASE THAT IS NOT A NO-OP** is filed as A102 rather than left to
      be discovered: a customer who deliberately re-stars a design this request
@@ -3123,8 +3126,8 @@ in-product handoff the plan prefers.
      sub-jobs, a 1-ref row and a row with no panel at all all issue the same
      number of client acquisitions, and `_ordered_shortlist` itself runs under a
      guard that makes every route to a client raise.
-  3. **The copy.** "This request covers the N designs below. To include the
-     designs that were over the limit, star them on the source page and send a
+  3. **The copy.** "This request covers the N designs below. To include
+     anything that was over the limit, star it on the source page and send a
      second request", rendered INSIDE the list's own `{% if %}` block and
      additionally gated on the list being complete. That nesting is the point:
      the un-starring happens in a browser the server never hears back from, so
@@ -3202,6 +3205,10 @@ in-product handoff the plan prefers.
   uncapped `candidate_indices` shape (A91) the payload stops at
   `_MAX_LISTED_DESIGNS`, so an un-listed tail keeps its stars -- the same
   direction the page takes when it prints a prefix and withholds the advice.
+  Named rather than left implicit: on that row the surviving stars are ENTIRELY
+  designs the request already covered, and nothing distinguishes them from a
+  fresh selection. Safe against the old behaviour, which kept all of them, but
+  it is a state no copy on the page explains.
 
   Pinned by `tests/test_lab_project_confirmation.py`, which asserts the payload
   is exactly the covered set, that the SAME flagged URL twice emits a
@@ -3211,9 +3218,10 @@ in-product handoff the plan prefers.
   `tests/test_campaign_submitted_email.py`) and one renamed hook in
   `tests/test_candidate_table_js_contract.py`'s comment-stripping guard.
 
-  THE JS HALF IS NOW EXECUTED, which it was not. There is still no JS runtime in
-  CI (`.github/workflows` has no node), the constraint
-  `tests/test_preflight_panel_contract.py` records -- so PART 4 of that file
+  THE JS HALF IS NOW EXECUTED, which it was not. `.github/workflows` installs no
+  node and this repo carries no JS test runner, but a hosted runner image can
+  still put one on PATH, so "there is no JS runtime in CI" -- asserted here and
+  in four docstrings before round 3 -- was an inference, not a fact. PART 4
   runs the real `static/js/candidate_table.js` under `node` against a stubbed
   `sessionStorage` and SKIPS where node is absent, and every remaining
   source-only assertion says so in its own docstring. That gap is why this is
@@ -3230,6 +3238,38 @@ in-product handoff the plan prefers.
   suite and restoring from a byte copy. The evidence is the suite itself rather
   than a number in this document: an earlier version of this paragraph claimed
   "18 mutations ... all 18 red", which nothing in the tree can check.
+
+  ROUND 3 REVIEWED THE REDESIGN ITSELF, which until then only its author had
+  seen, and split two reviewers across the mechanism and the prose. **No
+  behavioural defect was found in either lens.** Idempotence held against every
+  identity attack the reviewer could construct -- numeric-string against int
+  index, number against string job id, whitespace, case, and the legacy
+  bare-int shape `loadShortlist` coerces -- and where a match fails the star
+  STANDS. Every
+  rendered sentence reconciled against the numbers beneath it, including the
+  zero-design and 501-design pages.
+
+  What it did find was the guard around the mechanism, in this round's own
+  signature form: **round 3's contribution was a test harness, and that harness
+  was the only thing pinning the two edits that matter.** Inverting the filter's
+  polarity -- `!== true` to `=== true`, which restores round 1's defect verbatim
+  by destroying the never-read remainder -- passed EVERY source-only assertion,
+  and all SIX tests that caught it were gated on `node` being present (measured
+  here after the fix: the same mutation now reds seven, the seventh being the
+  source-only assertion this round added). The
+  `pageshow` handler had no source-only cover at all. Both are now pinned in
+  PART 1 as well, and both mutations plus a re-bind via `initTable` were
+  re-verified red afterwards.
+
+  Four comments also claimed `refKey('', i)` "matches no stored star". It
+  matches one exactly -- `refKey` concatenates -- and the code is safe only
+  because `_covered_refs` drops a ref it cannot name a job for. Presenting that
+  guard as redundant noise is the sentence a future editor reads before deleting
+  it, so all four now say the guard is load-bearing. Alongside them: a comment
+  in `shared/email.py` that contradicted itself eight lines apart about whether
+  the body carries a count, an unhedged "untouched every time" in two shipped
+  comments that A102 exists to deny, and the same universal in this entry two
+  paragraphs above A102 itself.
 
 - **A90 (NEW, filed with A88, FIXED). The parent gate on BOTH ref arms
   cannot tell a missing parent from an unreadable one.**
@@ -3630,7 +3670,7 @@ in-product handoff the plan prefers.
 
 - **A101 (NEW, filed with the A89 remediation, filed not fixed). Every
   authenticated render resolves the user context at least twice, and issues
-  three or four Supabase queries before the page body.**
+  four or five Supabase queries before the page body.**
   `shared/credits.py::load_user_context` caches nothing and calls `get_tier`,
   which is a Supabase read. `app.py::inject_workspace_context` is a template
   context processor, so it calls `load_user_context()` on every render -- and
@@ -3640,29 +3680,62 @@ in-product handoff the plan prefers.
   balance -- reads `tool_jobs` for the onboarding ribbon.
   `blueprints/lab_projects.py::campaign_detail` is one of the routes that has
   already resolved the context, so the page A89 is about costs two `user_tier`
-  reads plus three more queries before it renders a byte. An earlier version of
-  this entry said "two `user_tier` reads plus the navbar wallet chip" and
-  undercounted by two. Found while building the read guard for that page, which
+  reads plus two more queries before it renders a byte, and a fifth whenever
+  the wallet chip shows a positive balance. Measured by patching every client
+  factory with a recording fake and issuing one authenticated GET. An earlier
+  version of this entry said "two `user_tier` reads plus the navbar wallet
+  chip" and undercounted; the version after it disagreed with its own headline. Found while building the read guard for that page, which
   could not be written as "this page issues no query" because of it. App-wide,
   pre-existing, and orthogonal to this change set; a `g`-scoped per-request memo
   on `load_user_context` is the obvious shape for the duplicate half.
 
 - **A102 (NEW, filed with the A89 round-2 remediation, accepted not fixed). A
-  design DELIBERATELY re-starred after the request that covered it is un-starred
-  again on the next visit to the confirmation URL.** This is the one case where
+  design re-starred after the request that covered it is un-starred again on the
+  next visit to the confirmation URL.** This is the one case where
   `window.dropShortlistRefs` is not a no-op. `?submitted=1` is permanent, so the
   customer can return to it from history, a bookmark or the omnibox; the payload
   still names the designs that request covered; and if one of them has been
-  re-starred since, it goes. Accepted rather than guarded, because the guard is
+  re-starred since, it goes. The mechanism cannot see intent, so "deliberately"
+  is not a condition: the trigger is any overlap between the current selection
+  and the covered set, and a customer who re-stars a batch without knowing
+  which the first request already covered loses the overlap with no notice. Accepted rather than guarded, because the guard is
   a marker and the marker is what round 2 removed: it lived in `sessionStorage`,
   died with the tab, and left the permanent URL unguarded from day 3 onward
   (see A89). Un-starring a design already sent to the lab is also the
   defensible reading of the action. Pinned as a KNOWN outcome by
-  `test_a_design_deliberately_re_starred_is_dropped_again`, so it cannot change
+  `test_a_re_starred_covered_design_is_dropped_again`, so it cannot change
   silently.
   *Related decision:* the confirmation email's link carries `dropped` and
   `truncated` but deliberately NOT `submitted=1`, so opening that email days
   later does not trigger this. Only the post-submit redirect does.
+
+- **A103 (NEW, filed with the A89 round-3 remediation, filed not fixed). The
+  no-extra-read guard's client sweep cannot see `scout`'s client factory.**
+  `tests/test_lab_project_confirmation.py::_client_sites` walks `sys.modules`
+  and replaces every binding of `get_service_client` or `get_supabase_client` in
+  a module loaded from this repo. Round 2 replaced its stale package list with a
+  file-path filter, which fixed the PATH half of the staleness and left the NAME
+  half: `scout/handoff.py` and `scout/quota.py` each define a private
+  `_get_service_client` that calls `supabase.create_client` directly, across
+  seven call sites, and the sweep sees neither. Bounded today -- `campaign_detail`
+  reaches no `scout` module, so A89's "no extra read" conclusion stands -- but
+  the guard would widen silently the day either is renamed to the public
+  spelling, which is the direction that makes it pass on code it never covered.
+  The docstring now names the gap; closing it means matching on what a binding
+  IS rather than what it is called.
+
+- **A104 (NEW, filed with the A89 round-3 remediation, accepted not fixed). A
+  bfcache restore now clears a star whose write `sessionStorage` refused.**
+  `saveShortlist` swallows a throwing store the way its neighbours do, so a
+  click paints a star the store never received. Before the `pageshow` handler
+  shipped with A89 that paint survived a back/forward restore; now the restore
+  repaints from the store and the star vanishes. This makes the UI HONEST --
+  the store is what `openCampaignModal` submits, so the painted star was
+  already a lie -- but it is a new visible loss with no message attached, and
+  the node harness does not model it, because its stub `setItem` never throws.
+  Reachable only under storage quota pressure. Fixing it properly means
+  surfacing the failed write at click time, which is a results-page change
+  rather than a confirmation-page one.
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 
