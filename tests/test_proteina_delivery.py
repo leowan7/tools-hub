@@ -371,6 +371,11 @@ def _drive_collect(tmp_path, monkeypatch, smoke, *, exit_code=0, outdir=None):
     from tools.proteina import direct_call_fc as dc
 
     state = tmp_path / "state.json"
+    # Callers that hand this a SUBDIRECTORY of their tmp_path (to keep the
+    # shard's tree and the operator's tree apart) would otherwise trip here
+    # rather than in the code under test. A no-op for the callers passing
+    # pytest's own tmp_path.
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text(json.dumps(
         {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
     monkeypatch.setattr(dc, "STATE", state)
@@ -721,11 +726,24 @@ class TestDeliveredRankIsDenseAndOneBased:
 
     _BODY = b"ATOM      1  CA  GLY A   1       1.000   2.000   3.000\nEND\n"
 
+    @classmethod
+    def _body(cls, name):
+        """Per-design bytes, NOT one shared blob.
+
+        ``_drive_real_parser`` keys ``break_upload_for`` on a design's bytes
+        rather than on its filename, because the filename is derived from the
+        very rank these tests exist to pin. That only discriminates if the
+        bytes differ per design — with one shared ``_BODY``, asking to break
+        charlie's upload broke all three, and the test read that as "the drop
+        path is broken" when the fixture was.
+        """
+        return b"REMARK   1 " + name.encode() + b"\n" + cls._BODY
+
     def _rows(self, *names):
         """CSV order deliberately reversed against reward order, so nothing
         here can pass by the rows happening to arrive pre-sorted."""
         n = len(names)
-        return [(name, -1.0 * (n - i), self._BODY)
+        return [(name, -1.0 * (n - i), self._body(name))
                 for i, name in enumerate(names)]
 
     def test_the_best_design_is_rank_1_not_rank_0(self, tmp_path, monkeypatch):
@@ -856,7 +874,11 @@ class TestDeliveredRankIsDenseAndOneBased:
         assert rc == 0
         assert sorted(p.name for p in outdir.glob("*.pdb")) == [
             "design_001.pdb", "design_002.pdb", "design_003.pdb"]
-        assert (outdir / "design_001.pdb").read_bytes() == self._BODY
+        # "delta" was the best design and it was the one dropped, so the file
+        # the operator opens as design_001.pdb must hold CHARLIE's atoms — a
+        # dense renumbering that shifted the bytes under the name would satisfy
+        # the glob above and still hand the operator the wrong molecule.
+        assert (outdir / "design_001.pdb").read_bytes() == self._body("charlie")
 
 
 class TestInlineSizeCap:
