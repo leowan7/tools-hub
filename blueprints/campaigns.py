@@ -57,17 +57,18 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # too. `unverified` is the second, and the paragraphs below say how: the two
 # arms reach it from different causes and `cc.read_campaign` has a ground
 # `read_target` does not (register item A97). The SENTENCE is now shared; the
-# CAUSE SETS are not, and nothing here licenses merging the two banner suites.
+# CAUSE SETS are not, and nothing here licenses merging the banner suites --
+# two when this was written, three since A91 added blueprints/jobs.py.
 #
 # THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
 # sentences into templates/components/lab_handoff_banner.html, which takes the
 # arm's noun -- each page keeps its own wrapper, its own whitelist and its own
 # suite. Two inline copies were how one of these sentences went stale unnoticed,
-# and the partial has THREE importers rather than two: templates/unavailable.html
-# renders them as well. That third page is reached only from the TARGET arm's
-# detail route, never from this one (see `compute_campaign_detail` below and
-# register item A94), so the run-noun rendering of it does not occur in
-# production -- the macro nonetheless takes the noun, because a partial whose
+# and the partial now has FOUR importers rather than two:
+# templates/unavailable.html and templates/job_detail.html render them as well.
+# The 503 page is reached only from the TARGET arm's detail route, never from
+# this one (see `compute_campaign_detail` below and register item A94), so the
+# run-noun rendering of it does not occur in production -- the macro nonetheless takes the noun, because a partial whose
 # correctness depends on which caller reaches it is the duplication again.
 #
 # `unverified` USED TO differ too, and no longer does beyond the noun. It named

@@ -53,6 +53,28 @@ logger = logging.getLogger(__name__)
 jobs_bp = Blueprint("jobs", __name__)
 
 
+# The `?handoff=` reasons /jobs/<id> renders a banner for (register item A91).
+# Whitelisted so an unknown or crafted value renders nothing at all rather than
+# an empty alert.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER SUITE CAN IMPORT IT, the same reason
+# blueprints/targets.py::HANDOFF_REASONS and
+# blueprints/campaigns.py::LAB_HANDOFF_REASONS are, and the note beside the
+# first of those records what a hand-written copy of these keys in a test file
+# cost: it couples to nothing, so a sixth reason added to a route renders the
+# shared macro's `{% else %}` arm -- "your request could not be submitted" --
+# for an unrelated cause with the whole suite green.
+#
+# A THIRD LITERAL TUPLE AND NOT A LIFTED ONE. blueprints/campaigns.py states
+# beside its own copy that the duplication is deliberate -- the five KEYS are
+# common to the arms while the CAUSE SETS behind them are not -- and declines to
+# license merging the banner suites. That reasoning covers this arm as well, so
+# it gets its own tuple and its own suite (tests/test_job_handoff_banners.py,
+# which asserts set equality against this name in both directions) rather than
+# an import from either of the other two.
+JOB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
+
+
 def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
     """Return True when ``user_metadata.allow_share`` is explicitly True.
 
@@ -204,6 +226,15 @@ def job_detail(job_id: str):
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
+    # The reason a failed lab handoff carries, read from the query string.
+    # Whitelisted so an unknown or crafted value renders nothing at all rather
+    # than an empty alert -- the wording both sibling routes use. It does NOT
+    # stop a hand-pasted WHITELISTED value from rendering the full banner; that
+    # is true of all three pages and is what this suite's per-reason render
+    # tests drive.
+    handoff = (request.args.get("handoff") or "").strip()
+    if handoff not in JOB_HANDOFF_REASONS:
+        handoff = ""
     adapter = tool_base.get(job.tool)
     preset_obj = adapter.preset_for(job.preset) if adapter else None
 
@@ -258,6 +289,7 @@ def job_detail(job_id: str):
         user_email=session.get("user_email") or "",
         send_target_tools=send_target_tools,
         share_allowed=share_allowed,
+        handoff=handoff,
     )
 
 @jobs_bp.route("/jobs/<job_id>/status.json", methods=["GET"])
