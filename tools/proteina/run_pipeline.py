@@ -2141,8 +2141,18 @@ def parse_designs(run_dir: Path) -> list[dict]:
         )
     # Rank by total_reward desc (None at the bottom), mirroring filter.py.
     parsed.sort(key=lambda d: (d["total_reward"] is not None, d["total_reward"] or 0.0), reverse=True)
-    for rank, d in enumerate(parsed):
-        d["rank"] = rank
+    # ``rank`` HERE IS THE REWARD-SORT POSITION, 0-BASED, AND IT IS NOT THE
+    # NUMBER ANY CALLER EVER SEES. It says "this row sorted Nth"; it does not
+    # say "this is delivered design N", because whether a row is delivered at
+    # all is decided later — main()'s loop drops a row whose PDB never
+    # materialised, whose upload raised, or whose file reads as zero bytes.
+    # Feeding this index straight into the candidate would therefore hand a
+    # direct caller a rank 0 (every sibling generator's best design is rank 1)
+    # and, after any drop, a gapped set. main() counts the DELIVERED rank
+    # itself, densely and from 1 — see ``emitted_rank`` there, and boltzgen /
+    # rfantibody, which carry the same split for the same reason.
+    for sort_position, d in enumerate(parsed):
+        d["rank"] = sort_position
     return parsed
 
 
@@ -2296,6 +2306,27 @@ def main() -> None:
     target_source = str(job_spec.get("target_source") or "curated")
     # Both accept the shared cross-tool spelling as well as this file's native
     # one; see normalize_target_chain / normalize_hotspots.
+    #
+    # ACCEPTED WEB-PATH CHANGE, recorded here rather than discovered later.
+    # Routing this field through normalize_target_chain also DE-DUPLICATES it,
+    # and the web adapter does not (tools/proteina/__init__.py joins the form
+    # field on whitespace and stops). So a form entry of "A A" or "A,A" —
+    # which validate() accepts — used to reach ``derive_segments`` as two
+    # tokens and register ``--target-input A1-200,A1-200``; it now registers
+    # ``A1-200``. Measured across the adapter's whole accepted input space,
+    # that is the ONLY divergence this change introduces on the web path.
+    #
+    # It is accepted because the deduplicated form is the one whose meaning is
+    # known. A repeated segment is not a harmless spelling here: counting one
+    # is what let ``A10-20,A10-20`` report 22 residues for 11 and walk through
+    # the minimum-size floor (see selected_residue_keys — that particular hole
+    # is closed, by counting a de-duplicated key set, but it is what the shape
+    # costs when something downstream forgets). And upstream's own contig
+    # grammar is unread: atomworks is not vendored here, so what
+    # ``AtomSelectionStack.from_contig`` does with the same range named twice
+    # is not something this file may assume. Sending it once removes the
+    # question. Pinned end to end by TestAcceptedWebPathChanges in
+    # tests/test_proteina_delivery.py.
     target_chain = normalize_target_chain(str(job_spec.get("target_chain") or ""))
     target_input = str(job_spec.get("target_input") or "")
     try:
@@ -2567,13 +2598,48 @@ def main() -> None:
         inline_bytes_used = 0
         n_inlined = 0
         n_inline_capped = 0
+        # THE DELIVERED RANK IS COUNTED HERE, not read off the parsed row.
+        #
+        # ``parse_designs`` numbers rows by reward-sort position, 0-based, over
+        # rows that have not yet faced any of the three drops below (no PDB
+        # matched, upload/read raised, zero-byte file). Using it as the
+        # candidate rank produced BOTH defects the other five generators
+        # already fixed: a best design at rank 0 / design_000.pdb where every
+        # sibling emits rank 1 / design_001.pdb, and — once anything was
+        # dropped — surviving ranks like 2,3,4 with no rank 1 in the result at
+        # all. boltzgen's comment on the identical bug: "designs without a
+        # matching structure file get skipped — so we can't use rank_idx for
+        # the candidate rank or we end up with gaps"; rfantibody mirrors it.
+        #
+        # It matters beyond cosmetics. ``shared/exports.py`` states the
+        # cross-tool invariant that "every tool emits a rank 1 and a
+        # ``design_1.pdb``" and copies this number into ``source_rank``, so a
+        # merged campaign export listed proteina's rows off by one against
+        # every other generator; ``direct_call_fc`` names the operator's output
+        # files from it, so a collected shard began at design_002.pdb with
+        # nothing to distinguish "two were dropped" from "the numbering is
+        # offset"; and the candidate table renders it verbatim, showing "0" for
+        # the top design.
+        #
+        # ``emitted_rank`` advances ONLY when a design actually joins the
+        # candidate list, which is why ``rank`` below is provisional until the
+        # append: proteina — unlike the siblings, which batch their uploads
+        # after the loop — can still drop a design AFTER the name is needed for
+        # the upload request. A dropped design must not burn its number, or the
+        # gap simply moves to a later drop path. Reusing the basename is
+        # correct as well as dense: the drop means nothing of that design was
+        # delivered, so no candidate points at the object it would have written.
+        emitted_rank = 0
         for d in designs:
-            rank = d["rank"]
             pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
             if pdb_path is None:
                 n_failures += 1
-                logger.warning("design rank %d: no PDB file matched — skipping", rank)
+                logger.warning(
+                    "design %s (reward CSV row %d): no PDB file matched — skipping",
+                    d["name"], d["_row_index"],
+                )
                 continue
+            rank = emitted_rank + 1
             basename = f"design_{rank:03d}.pdb"
             # The `designs/` prefix is a claim that the bytes are in Storage —
             # the web service's resolver reads it as {user}/{job}/designs/<name>
@@ -2598,9 +2664,12 @@ def main() -> None:
                     upload_pdb(urls[basename], pdb_bytes)
             except Exception as exc:
                 n_failures += 1
+                # Named by DESIGN, not by rank: this one is being dropped, so
+                # it never gets a delivered rank and the number it was about to
+                # take goes to the next survivor instead.
                 logger.warning(
-                    "design rank %d: %s failed (%s) — skipping",
-                    rank, "upload" if upload_endpoint else "PDB read", exc,
+                    "design %s: %s failed (%s) — skipping",
+                    d["name"], "upload" if upload_endpoint else "PDB read", exc,
                 )
                 continue
 
@@ -2627,8 +2696,8 @@ def main() -> None:
             if inline_pdbs and not pdb_bytes:
                 n_failures += 1
                 logger.warning(
-                    "design rank %d: %s is empty (0 bytes), so there are no "
-                    "coordinates to inline — skipping", rank, pdb_path,
+                    "design %s: %s is empty (0 bytes), so there are no "
+                    "coordinates to inline — skipping", d["name"], pdb_path,
                 )
                 continue
 
@@ -2681,6 +2750,13 @@ def main() -> None:
                     # dropped quietly — a truncated result set that looks
                     # complete is the failure mode this whole file guards.
                     n_inline_capped += 1
+            # The design survived every drop, so the number it was assigned is
+            # now spent. Committing here rather than at the top of the loop is
+            # what keeps the delivered ranks contiguous no matter WHICH drop
+            # fired — a design that lost its atoms to the cap is still
+            # delivered (scores, rank and pdb_key are all present), so it
+            # rightly consumes a rank; the three ``continue``s above do not.
+            emitted_rank = rank
             out_designs.append(design_entry)
             out_candidates.append(candidate_entry)
             # Heartbeat new_candidate keys match webhook _sanitize_candidate.

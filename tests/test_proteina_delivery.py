@@ -63,11 +63,24 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
     # the same tmp_path.
     pdb_dir = tmp_path / "pdbs"
     pdb_dir.mkdir(exist_ok=True)
+    # NO ``rank`` KEY, DELIBERATELY. This fixture used to fabricate
+    # ``"rank": i + 1`` — pxdesign's convention, not this pipeline's, whose
+    # parser numbers from 0 — while also stubbing ``parse_designs`` out. Every
+    # assertion below on a delivered ``pdb_key`` was therefore checking a
+    # filename production could not emit, and the whole file was blind to the
+    # rank base in either direction: flipping this one line to ``i`` turned
+    # three tests red with no production code touched.
+    #
+    # main() now COUNTS the delivered rank itself (``emitted_rank``) instead of
+    # reading one off the row, so omitting the key is not a convenience — it is
+    # the guard. Any regression that goes back to trusting the parsed row
+    # raises KeyError here rather than quietly agreeing with a fixture.
+    # ``TestDeliveredRankIsDenseAndOneBased`` drives the REAL parser end to end
+    # for the same reason.
     rows = []
     for i in range(designs):
         (pdb_dir / f"d{i}.pdb").write_bytes(pdb_body)
         rows.append({
-            "rank": i + 1,
             "name": f"design_{i}",
             "_row_index": i,
             "total_reward": -1.0 * (i + 1),
@@ -141,6 +154,97 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
             "exit_code to the caller, so it must match _fail's 1")
     else:
         rp.main()
+    return json.loads(result_file.read_text()), calls
+
+
+def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
+                       break_upload_for=()):
+    """Drive ``main()`` with the REAL ``parse_designs`` and ``find_pdb_for``.
+
+    ``_drive_design_loop`` above stubs both, which is right for the delivery
+    branches it targets but leaves the whole reward-CSV -> candidate chain —
+    ordering, row-to-file matching, and the number the caller finally reads as
+    ``rank`` — asserted only against rows a test fabricated. Everything here
+    comes out of the pipeline's own parser instead.
+
+    ``rows`` is ``[(name, total_reward, pdb_bytes_or_None)]`` in CSV order,
+    which is deliberately NOT reward order: the parser sorts. A row whose
+    bytes are ``None`` gets a CSV entry pointing at a file that was never
+    written — the real "the design has no structure on disk" case, reached
+    through ``find_pdb_for``'s own fallbacks rather than by stubbing it out.
+
+    ``break_upload_for`` names designs whose ``upload_pdb`` raises. It matches
+    on the design's BYTES, not on its filename, because the filename is
+    derived from the rank this helper exists to test — keying on it would let
+    a wrong rank silently break a different design than the test asked for.
+
+    Returns ``(result_dict, calls)``.
+    """
+    home = tmp_path / "proteina"
+    run_dir = home / "inference"
+    monkeypatch.setattr(rp, "PROTEINA_HOME", str(home))
+    result_file = tmp_path / "smoke.json"
+    monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+
+    calls: list[tuple] = []
+
+    def fake_design(cmd, work_dir):
+        # What `complexa design` leaves behind: the per-design PDBs and the
+        # reward CSV. Written from inside run_streaming because main() wipes
+        # and recreates ./inference immediately before calling it.
+        header = ("pdb_path,total_reward,af2folding_i_ptm_log,"
+                  "af2folding_plddt,af2folding_rmsd,metadata_tag")
+        lines = [header]
+        for name, reward, body in rows:
+            pdb = run_dir / f"{name}.pdb"
+            if body is not None:
+                pdb.write_bytes(body)
+            lines.append(f"{pdb},{reward},0.7,0.8,1.2,{name}")
+        (run_dir / "rewards_search_binder_local_pipeline_0.csv").write_text(
+            "\n".join(lines) + "\n")
+        return 0
+
+    broken_bodies = [body for name, _reward, body in rows
+                     if body is not None and name in break_upload_for]
+
+    def fake_request_upload_urls(ep, token, filenames):
+        calls.append(("request", ep, token, tuple(filenames)))
+        return {f: f"https://put/{f}" for f in filenames}
+
+    def fake_upload_pdb(url, data):
+        if data in broken_bodies:
+            raise RuntimeError("PUT failed: HTTP 500")
+        calls.append(("put", url, data))
+
+    monkeypatch.setattr(rp, "run_streaming", fake_design)
+    monkeypatch.setattr(rp, "archive_raw_outputs", lambda *a, **k: None)
+    monkeypatch.setattr(
+        rp, "send_heartbeat",
+        lambda *a, **kw: calls.append(
+            ("heartbeat", kw.get("stage"), kw.get("new_candidate"))))
+    monkeypatch.setattr(rp, "request_upload_urls", fake_request_upload_urls)
+    monkeypatch.setattr(rp, "upload_pdb", fake_upload_pdb)
+    monkeypatch.setattr(rp, "build_design_cmd", lambda **k: ["true"])
+    monkeypatch.setattr(rp, "shard_seed", lambda job_id: 1)
+
+    monkeypatch.setenv("JOB_PAYLOAD", json.dumps({
+        "job_spec": {
+            "config_name": "search_binder_local_pipeline",
+            "task_name": "02_PDL1", "rf3_required": False,
+            "nsamples": 4, "replicas": 2,
+        },
+        "input_presigned_url": "",
+        "upload_urls_endpoint": endpoint,
+        "job_token": "tok" if endpoint else "",
+        "tier": "protein_binder",
+    }))
+    monkeypatch.setenv("JOB_TIER", "protein_binder")
+    monkeypatch.setenv("JOB_ID", "job-realparse")
+    monkeypatch.setenv("PROTEINA_RF3", "on")
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("PROTEINA_INLINE_PDBS", raising=False)
+
+    rp.main()
     return json.loads(result_file.read_text()), calls
 
 
@@ -587,6 +691,172 @@ class TestUploadPathUnchanged:
         assert strip(web["candidates"]) == strip(direct["candidates"])
         for key in ("status", "designs_completed", "designs_total", "n_failures"):
             assert web[key] == direct[key], f"{key} differs between modes"
+
+
+class TestDeliveredRankIsDenseAndOneBased:
+    """The number a caller reads as ``rank``, driven through the REAL parser.
+
+    All five sibling generators guarantee a dense 1-based rank and derive the
+    filename from it: boltzgen ``rank = rank_idx + 1`` -> ``design_001.pdb``,
+    rfantibody, pxdesign, bindcraft and rfdiffusion the same, and boltzgen and
+    rfantibody both carry an explicit ``emitted_rank`` counter with a comment
+    saying why ("designs without a matching structure file get skipped — so we
+    can't use rank_idx for the candidate rank or we end up with gaps").
+    Proteina used the parsed reward-sort index instead, which is 0-based and
+    goes sparse the moment anything is dropped.
+
+    Two consequences, neither cosmetic. ``shared/exports.py`` states the
+    cross-tool invariant — "every tool emits a rank 1 and a ``design_1.pdb``"
+    — and copies the tool's own rank into ``source_rank``, so a merged
+    campaign export listed proteina's rows off by one against every sibling.
+    And ``direct_call_fc`` writes the operator's files as
+    ``design_{rank:03d}.pdb``, so a collected shard started at design_000.pdb,
+    or after drops at design_002.pdb with nothing to say which had happened.
+
+    EVERY test here uses ``_drive_real_parser``. The class exists because the
+    other harness could not see this: it stubbed ``parse_designs`` out and
+    fabricated 1-based rows, so it asserted the sibling convention while the
+    code under test disagreed.
+    """
+
+    _BODY = b"ATOM      1  CA  GLY A   1       1.000   2.000   3.000\nEND\n"
+
+    def _rows(self, *names):
+        """CSV order deliberately reversed against reward order, so nothing
+        here can pass by the rows happening to arrive pre-sorted."""
+        n = len(names)
+        return [(name, -1.0 * (n - i), self._BODY)
+                for i, name in enumerate(names)]
+
+    def test_the_best_design_is_rank_1_not_rank_0(self, tmp_path, monkeypatch):
+        """The bare parity statement. A direct caller's top hit must be rank 1
+        / design_001.pdb, as it is from all five siblings."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=self._rows("alfa", "bravo", "charlie"))
+        assert [c["rank"] for c in data["candidates"]] == [1, 2, 3]
+        assert [c["pdb_key"] for c in data["candidates"]] == [
+            "design_001.pdb", "design_002.pdb", "design_003.pdb"]
+
+    def test_rank_1_really_is_the_best_scoring_design(self, tmp_path, monkeypatch):
+        """Renumbering must not decouple the rank from the ranking. The rows
+        are fed in worst-first, so a counter that ignored the parser's sort
+        would label the worst design rank 1."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=self._rows("alfa", "bravo", "charlie"))
+        assert [c["name"] for c in data["candidates"]] == [
+            "charlie", "bravo", "alfa"]
+        rewards = [c["scores"]["total_reward"] for c in data["candidates"]]
+        assert rewards == sorted(rewards, reverse=True), (
+            "protein total_reward is negative and higher is better")
+
+    def test_the_upload_path_numbers_from_1_too(self, tmp_path, monkeypatch):
+        """The web tier is the path real jobs take. Its pointers and its upload
+        exchange must carry the same dense 1-based basenames, or the resolver
+        at {user}/{job}/designs/<basename> and the candidate disagree."""
+        data, calls = _drive_real_parser(
+            tmp_path, monkeypatch, rows=self._rows("alfa", "bravo", "charlie"),
+            endpoint="https://hub/upload")
+        assert [c["rank"] for c in data["candidates"]] == [1, 2, 3]
+        assert [c["pdb_key"] for c in data["candidates"]] == [
+            "designs/design_001.pdb", "designs/design_002.pdb",
+            "designs/design_003.pdb"]
+        assert [c[3] for c in calls if c[0] == "request"] == [
+            ("design_001.pdb",), ("design_002.pdb",), ("design_003.pdb",)]
+
+    def test_a_design_with_no_pdb_on_disk_leaves_NO_gap(self, tmp_path, monkeypatch):
+        """The gap case, through ``find_pdb_for``'s real fallbacks: the two
+        BEST designs have no file, so the parsed indices of the survivors are
+        2,3,4. Delivered they must be 1,2,3 — rfantibody's ``emitted_rank``
+        exists for exactly this, and without it a result set contains no rank
+        1 at all while still reporting COMPLETED."""
+        rows = self._rows("alfa", "bravo", "charlie", "delta", "echo")
+        # rows are worst-first, so the two best are the last two.
+        rows[-1] = (rows[-1][0], rows[-1][1], None)
+        rows[-2] = (rows[-2][0], rows[-2][1], None)
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+
+        assert data["n_failures"] == 2
+        assert data["designs_completed"] == 3
+        assert [c["rank"] for c in data["candidates"]] == [1, 2, 3], (
+            "a dropped design left a hole in the delivered ranks")
+        assert [c["pdb_key"] for c in data["candidates"]] == [
+            "design_001.pdb", "design_002.pdb", "design_003.pdb"]
+
+    def test_an_upload_FAILURE_does_not_burn_a_rank_number(self, tmp_path, monkeypatch):
+        """The drop path the siblings do not have. Proteina uploads inside the
+        loop and skips the design when the PUT raises, so a rank committed
+        before the upload would be spent on a candidate that never shipped —
+        moving the gap rather than closing it. The best design's PUT fails
+        here; the survivors must still be 1 and 2."""
+        rows = self._rows("alfa", "bravo", "charlie")
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
+            break_upload_for=("charlie",))
+        assert data["n_failures"] == 1
+        assert [c["name"] for c in data["candidates"]] == ["bravo", "alfa"]
+        assert [c["rank"] for c in data["candidates"]] == [1, 2]
+        assert [c["pdb_key"] for c in data["candidates"]] == [
+            "designs/design_001.pdb", "designs/design_002.pdb"]
+
+    def test_a_ZERO_BYTE_pdb_does_not_burn_a_rank_number(self, tmp_path, monkeypatch):
+        """The third drop path, inline-only: a file that reads as b"" is a
+        failed design, not a delivered one, so it may not consume a rank
+        either."""
+        rows = self._rows("alfa", "bravo", "charlie")
+        rows[-1] = (rows[-1][0], rows[-1][1], b"")   # the best design
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+        assert data["n_failures"] == 1
+        assert [c["name"] for c in data["candidates"]] == ["bravo", "alfa"]
+        assert [c["rank"] for c in data["candidates"]] == [1, 2]
+        assert [c["pdb_key"] for c in data["candidates"]] == [
+            "design_001.pdb", "design_002.pdb"]
+
+    def test_the_pdb_key_and_the_rank_can_never_disagree(self, tmp_path, monkeypatch):
+        """The pair is what the UI and the exporter read, and they are built in
+        two places (candidate + designs list). Pinned as an invariant over a
+        run that exercises a drop, on BOTH delivery modes, rather than as two
+        more hardcoded lists."""
+        for endpoint in ("", "https://hub/upload"):
+            rows = self._rows("alfa", "bravo", "charlie", "delta")
+            rows[-1] = (rows[-1][0], rows[-1][1], None)
+            data, _ = _drive_real_parser(
+                tmp_path / f"m{bool(endpoint)}", monkeypatch, rows=rows,
+                endpoint=endpoint)
+            assert data["candidates"], "guard must run against a populated list"
+            for cand, design in zip(data["candidates"], data["designs"]):
+                expected = f"design_{cand['rank']:03d}.pdb"
+                assert cand["pdb_key"].rsplit("/", 1)[-1] == expected
+                assert design["rank"] == cand["rank"]
+                assert design["pdb_key"] == cand["pdb_key"]
+
+    def test_the_heartbeat_carries_the_delivered_rank(self, tmp_path, monkeypatch):
+        """The live UI streams candidates off the heartbeat before the result
+        exists, so a heartbeat still announcing rank 0 would show the top
+        design as "0" for the whole run and then silently change."""
+        data, calls = _drive_real_parser(
+            tmp_path, monkeypatch, rows=self._rows("alfa", "bravo", "charlie"))
+        beats = [c[2] for c in calls if c[0] == "heartbeat" and c[2]]
+        assert [b["rank"] for b in beats] == [1, 2, 3]
+        assert [b["rank"] for b in beats] == [
+            c["rank"] for c in data["candidates"]]
+
+    def test_the_OPERATOR_S_FILES_start_at_design_001(self, tmp_path, monkeypatch):
+        """END TO END, through the real ``cmd_collect``: the thing this parity
+        work is for is a direct ``modal.Function.from_name`` call whose output
+        directory an operator then reads. It used to start at design_000.pdb —
+        and after any drop at design_002.pdb, indistinguishable from an offset.
+
+        The shard result is PRODUCED by main(), not hand-written, so the two
+        halves of the contract are pinned against each other."""
+        rows = self._rows("alfa", "bravo", "charlie", "delta")
+        rows[-1] = (rows[-1][0], rows[-1][1], None)   # drop the best design
+        smoke, _ = _drive_real_parser(tmp_path / "shard", monkeypatch, rows=rows)
+
+        rc, outdir, _ = _drive_collect(tmp_path / "op", monkeypatch, smoke)
+        assert rc == 0
+        assert sorted(p.name for p in outdir.glob("*.pdb")) == [
+            "design_001.pdb", "design_002.pdb", "design_003.pdb"]
+        assert (outdir / "design_001.pdb").read_bytes() == self._BODY
 
 
 class TestInlineSizeCap:
