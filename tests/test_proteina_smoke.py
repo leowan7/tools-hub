@@ -2116,6 +2116,38 @@ class TestEmptyContigSegments:
         assert "Z" in error["detail"] and "0 residues" in error["detail"]
         assert staged == []
 
+    def test_a_bare_chain_that_is_absent_is_named_not_rendered_as_None(
+            self, tmp_path, monkeypatch):
+        """PRODUCTION'S ABSENT-BARE-CHAIN REFUSAL, WHICH HAD NO TEST AT ALL.
+
+        Found by an independent QC pass: deleting this refusal outright, and
+        narrowing it to a single hard-coded chain, BOTH left the whole suite
+        green. The run still stops either way — ``empty_segments`` catches it a
+        few lines later — so no money is at stake, which is exactly why nothing
+        noticed. What the operator sees is not the same:
+
+            with the guard:    chain Q is not present in the uploaded target.
+            without it:        chain Q residues None-None select 0 residues ...
+
+        ``None-None`` is not a range anyone typed, and this refusal is the only
+        thing standing between a customer and that string.
+
+        It matters beyond the wording because three of this branch's own claims
+        rest on it behaving as described — ``expand_bare_chains``' docstring
+        says both callers already have a refusal for an absent bare chain and
+        names this one, and the canary's "six of production's eight" count
+        includes it. This commit restructured the refusal (out of the expansion
+        loop into a standalone one) and added no coverage for it.
+        """
+        error, staged = TestMinimumTargetSize()._prepare(
+            tmp_path, monkeypatch, "Q")
+        assert error["check"] == "target_input", error
+        assert "chain Q is not present" in error["detail"], error["detail"]
+        assert "None" not in error["detail"], (
+            "the absent-chain refusal is gone and the unexpanded segment is "
+            f"leaking into the message: {error['detail']}")
+        assert staged == []
+
 
 class TestBareChainExpansion:
     """``--contig A`` means "the whole chain", and it must be RESOLVED, not

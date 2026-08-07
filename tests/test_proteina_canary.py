@@ -7684,6 +7684,35 @@ def _empty_refusal_fields(message):
             match.group("target"), match.group("spans"))
 
 
+_UNPARSABLE_REFUSAL_RE = re.compile(
+    r"--contig (?P<contig>.*?) cannot be parsed against (?P<target>.*?): "
+    r"(?P<detail>.*?)\. A contig segment")
+
+
+def _unparsable_refusal_fields(message):
+    """The unparsable refusal's three values, by role.
+
+    THE HELPER ABOVE WAS BUILT AND THIS REFUSAL WAS NOT GIVEN ONE, in the same
+    commit that added it — so the defect the other two were hardened against
+    was live here the whole time. An independent QC pass found it by mutation:
+    transposing the first two arguments at the call site
+    (``refuse_unparsable_contig(resolved, target_pdb, exc)``) left all 659 tests
+    green, and renders
+
+        [canary] --contig /data/fc.pdb cannot be parsed against Zz9: ...
+
+    telling the operator their FILE PATH is the unparsable contig and their
+    contig is the target file. The covering tests survived it because the only
+    substrings they asserted — ``"Zz9"`` and ``"NO GPU TIME WAS USED"`` — are
+    supplied by the input and by boilerplate, and ``"Zz9"`` appears whichever
+    slot it lands in. Exactly the failure ``_size_refusal_fields`` documents,
+    one refusal along.
+    """
+    match = _UNPARSABLE_REFUSAL_RE.search(message)
+    assert match, f"the unparsable refusal no longer renders its fields: {message}"
+    return (match.group("contig"), match.group("target"), match.group("detail"))
+
+
 class _RpWithVerdict:
     """The real ``run_pipeline`` with ONE answer overridden.
 
@@ -8149,6 +8178,38 @@ class TestAnOverlappingContigCannotDefeatTheFloor:
         assert (rp.n_selected_residues(residues, segments)
                 == len(rp.selected_residue_keys(residues, segments)) == 25)
 
+    def test_the_hotspot_refusal_reports_the_distinct_count_too(self, tmp_path):
+        """THE OTHER PLACE THE OLD COUNT COULD COME BACK.
+
+        The size refusal was the reason the de-duplication was introduced, and
+        it is well covered. ``refuse_unresolvable_hotspots`` takes a residue
+        count as well, on the same line of this commit's diff, and reverting it
+        to ``len(selected)`` left the whole suite green — found by mutation in
+        an independent QC pass.
+
+        Nothing is spent either way: the refusal fires regardless. But the
+        operator reads that number to decide whether to widen the contig, and
+        on ``A1-30,A20-40`` the repeated count says 51 residues where the crop
+        stages 40. A message that overstates the target by a quarter is a
+        message that argues against the fix it is reporting.
+        """
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(target), "A1-30,A20-40", [("positive", ["A99999"])])
+        message = str(excinfo.value)
+        # 41 distinct residues (A1..A40 is 40, plus the overlap counted once);
+        # the repeated count for the same contig is 51.
+        distinct = rp.n_selected_residues(
+            [("A", i, "") for i in range(1, 61)],
+            [("A", 1, 30), ("A", 20, 40)])
+        assert f"{distinct} residues selected" in message, (
+            f"the hotspot refusal must quote the DISTINCT count ({distinct}), "
+            f"not the repeated one: {message}")
+
 
 class TestADeadSegmentCannotHideBehindAHealthyOne:
     """PRODUCTION REFUSES PER SEGMENT; THE CANARY CHECKED THE AGGREGATE.
@@ -8350,11 +8411,21 @@ class TestAnUnparsableContigIsARefusalNotATraceback:
         return _CanaryProbe.write(tmp_path, "t.pdb", SIXTY_RES_PDB)
 
     def test_an_unparsable_contig_raises_a_refusal(self, tmp_path):
+        target = self._target(tmp_path)
         with pytest.raises(cs.CanaryRefusal) as excinfo:
-            _CanaryProbe.refuse(self._target(tmp_path), "Zz9")
+            _CanaryProbe.refuse(target, "Zz9")
         message = str(excinfo.value)
         assert "NO GPU TIME WAS USED" in message
-        assert "Zz9" in message
+        # BY ROLE, not by substring. "Zz9" appears in this message whichever
+        # slot it lands in, so `"Zz9" in message` passed while the contig and
+        # the file path were transposed. See _unparsable_refusal_fields.
+        contig, shown_target, detail = _unparsable_refusal_fields(message)
+        assert contig == "Zz9", (
+            f"the contig slot must hold the contig, got {contig!r}")
+        assert shown_target == str(target), (
+            f"the target slot must hold the file, got {shown_target!r}")
+        assert "Zz9" in detail, (
+            f"the parser's own complaint must survive, got {detail!r}")
 
     def test_it_is_no_longer_a_bare_value_error(self, tmp_path):
         """MUTATION: drop the ``except ValueError`` and this test sees a

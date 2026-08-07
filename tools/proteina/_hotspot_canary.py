@@ -1201,8 +1201,9 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     every pre-spawn refusal that inspects the REQUEST goes, because "before a
     shard exists" is the only property they share and having one such place is
     what makes a missing guard visible. It now runs six, in
-    ``prepare_custom_target``'s order, so the canary refuses for the same reason
-    production would rather than for whichever consequence it noticed first: the
+    ``prepare_custom_target``'s order, so the canary USUALLY refuses for the
+    same reason production would rather than for whichever consequence it
+    noticed first: the
     target has structure, the contig parses, the contig is renderable once bare
     chain ids are expanded, every segment selects something, the selection is
     big enough, the hotspots resolve.
@@ -1222,11 +1223,37 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     key collision, the registration read-back — runs INSIDE the shard on this
     path and cannot be mirrored before one exists.
 
+    TWO INPUTS WHERE THE VERDICTS AGREE AND THE REASONS DO NOT. Both were found
+    by a differential sweep of production against this function; neither costs
+    money, and stating them is cheaper than a future reader discovering the
+    "same reason" sentence above is absolute when it is not.
+
+    * ``--contig Z,A`` on a construct numbered from -5: production refuses the
+      absent chain Z (it checks that before renderability), this refuses the
+      negative numbering of A (the absent chain is folded into the dead-segment
+      refusal, which runs after). Both refuse pre-spawn. The folding is the
+      deliberate choice two paragraphs up; this is its one visible consequence.
+    * A file whose only chain id is a DIGIT, with no ``--contig``: production
+      goes through ``derive_segments`` and never re-parses, so it proceeds;
+      this derives ``11-30``, re-parses it, and refuses "cannot be parsed" —
+      an OVER-refusal, the only one the sweep found in 300 cases. The re-parse
+      predates this branch (before the refusal existed the same input died as a
+      bare ``ValueError``), so this is not a regression, but
+      ``refuse_unparsable_contig``'s "production converts the identical
+      failure" holds only when ``--contig`` was actually supplied.
+
     THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads a
     file and calls ``run_pipeline``'s own parser, expansion, matcher, predicates
     and threshold, none of which the offline suite can do for a container; every
-    ``raise`` in THIS function is in ``_canary_scoring`` where the suite
-    executes them. That is a claim about this function and not about the module:
+    REFUSAL raised by this function is raised in ``_canary_scoring``, where the
+    suite executes it. The one bare ``raise`` below is not a refusal and not an
+    exception to that: it re-raises the ``ValueError`` that ``cs.refuse_
+    unparsable_contig`` was just handed, and exists only so this function still
+    fails loudly if that helper ever stops raising. (An earlier wording said
+    "every ``raise`` in THIS function is in ``_canary_scoring``" — false the
+    moment that line was added, in the same commit, three paragraphs from the
+    comment acknowledging it.) That is a claim about this function and not about
+    the module:
     ``main`` raises ``SystemExit`` locally in two places that are also pre-spawn
     — a missing ``--target-pdb`` on phases 1 and 2, and a ``pick_far_patch``
     that cannot build a negative control — and neither goes through ``cs``. Both

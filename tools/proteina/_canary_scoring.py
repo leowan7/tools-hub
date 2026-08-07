@@ -1717,9 +1717,16 @@ def shard_spec_refusal(label: str, missing: Sequence[str],
                        missing_cross: Sequence[str]) -> dict | None:
     """The in-container twin of the hotspot refusal above, as a shard result.
 
-    Deliberately count-free: it used to say "the two refusals above" and there
-    are now five ``refuse_*`` functions between it and the top of this section.
-    It mirrors ``refuse_unresolvable_hotspots`` and nothing else.
+    Deliberately count-free: it used to say "the two refusals above", and the
+    number of ``refuse_*`` functions between it and the top of this section has
+    changed in three of the last four commits. It mirrors
+    ``refuse_unresolvable_hotspots`` and nothing else — which is a fact about
+    WHICH one, not about HOW MANY, and so cannot go stale.
+
+    (The first attempt at this sentence replaced the stale "two" with "five",
+    which was already the ``origin/main`` count and was wrong by three the day
+    it was written — in the commit whose stated purpose was removing a stale
+    count. Naming the mirrored function is the only form that survives.)
 
     ``run_shard`` cannot raise: its contract is to RETURN a dict, and the
     entrypoint attributes a returned ``{"error": ...}`` to its label instead of
@@ -1728,7 +1735,10 @@ def shard_spec_refusal(label: str, missing: Sequence[str],
     the second is the only one that sees the contig the container actually
     resolved.
 
-    THE OTHER FOUR HAVE NO TWIN HERE, AND THE SIZE ONE IS AN OPEN GAP. The
+    EVERY OTHER PRE-SPAWN REFUSAL HAS NO TWIN HERE, AND THE SIZE ONE IS AN
+    OPEN GAP. (Count-free for the same reason as above; the previous wording
+    said "the other four" and the canary runs six, of which this mirrors one.)
+    The
     reason cannot be "an in-container check would save nothing": by this line
     the container is running, but a shard that returns an error immediately
     stops billing, while one that designs runs to completion (up to
