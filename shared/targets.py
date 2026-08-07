@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from shared.credits import get_service_client
+from shared.pdb_inspect import split_hotspot
 from shared.storage import StorageError, upload_input
 
 logger = logging.getLogger(__name__)
@@ -283,15 +284,22 @@ class DesignTarget:
         summary rather than a re-parse. Returns None when there is nothing to
         check.
 
-        A residue is in range if it falls inside ANY named chain, because
-        ``target_chain`` may name several (``"A B"``, which ProteinMPNN-style
-        multi-chain design submits and rfdiffusion's validator accepts). Note
-        this deliberately does NOT reproduce
-        ``shared.pdb_inspect.validate_hotspots``, which passes the whole string
-        to ``report.chain()``, gets None for ``"A B"``, and therefore reports
-        every hotspot out of range. That is a bug in the older path (filed as
-        A18), not a contract worth mirroring — but it does mean the two paths
-        disagree on multi-chain targets until it is fixed.
+        A BARE residue number is in range if it falls inside ANY named chain,
+        because ``target_chain`` may name several (``"A B"``, which
+        ProteinMPNN-style multi-chain design submits and rfdiffusion's
+        validator accepts). A CHAIN-PREFIXED one (``"B264"``) is checked
+        against the chain it names and nothing else: on a homodimer both
+        protomers carry residue 264, so unioning would pass a hotspot sitting
+        on a protomer the design never touches.
+
+        The A18 note this docstring used to carry — that
+        ``shared.pdb_inspect.validate_hotspots`` passed the whole string to
+        ``report.chain()``, got None for ``"A B"``, and called every hotspot
+        out of range, so the two paths disagreed — is stale twice over. That
+        defect was fixed, and both functions now share
+        ``shared.pdb_inspect.split_hotspot``, so they agree by construction
+        rather than by two implementations happening to match.
+        ``tests/test_multichain_targets.py`` pins them to the same answer.
         """
         cids = [c for c in (target_chain or "").replace(",", " ").split() if c]
         ranges = []
@@ -301,15 +309,19 @@ class DesignTarget:
                 ranges.append((cid, chain["min_resnum"], chain["max_resnum"]))
         if not ranges:
             return None
+        named = [cid for cid, _, _ in ranges]
         bad: list = []
         for h in hotspots or []:
-            try:
-                n = int(h)
-            except (TypeError, ValueError):
+            cid, n = split_hotspot(h, named)
+            if n is None:
                 bad.append(h)
-                continue
-            if not any(lo <= n <= hi for _, lo, hi in ranges):
-                bad.append(n)
+            elif cid is None:
+                # Unprefixed: in range on any named chain is good enough.
+                if not any(lo <= n <= hi for _, lo, hi in ranges):
+                    bad.append(n)
+            elif not any(c == cid and lo <= n <= hi for c, lo, hi in ranges):
+                # Prefixed: must be in range on the chain it names.
+                bad.append(h)
         if not bad:
             return None
         spans = ", ".join(f"{cid} {lo}-{hi}" for cid, lo, hi in ranges)

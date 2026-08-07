@@ -312,6 +312,64 @@ def validate_target_chain(
     return None
 
 
+def split_hotspot(
+    hotspot, chain_ids: Optional[list] = None,
+) -> tuple[Optional[str], Optional[int]]:
+    """Split one hotspot token into ``(chain_id, resnum)``.
+
+    The multi-chain contract lets a hotspot name its own chain, so that an Fc
+    homodimer — two protomers sharing one author numbering — can say which
+    protomer it means::
+
+        296     -> (None, 296)    chain unspecified; the caller decides
+        "296"   -> (None, 296)
+        "A296"  -> ("A", 296)
+        "B264"  -> ("B", 264)
+        "xyz"   -> (None, None)   unparseable
+
+    ``chain_ids`` is the set of chains the target actually names. A prefix is
+    recognised only when it matches one of them, which is what stops ``"A296"``
+    being read as chain ``"A2"`` residue ``96``; the longest-first ordering is
+    what keeps a multi-character mmCIF chain ID from being shadowed by a
+    single-character one that happens to be its prefix. Callers with no chain
+    list to hand parse only the bare-integer form, i.e. exactly the old
+    behaviour.
+
+    Returning ``chain=None`` for a bare integer is deliberate, and it is what
+    preserves byte-identical handling of every hotspot submitted before the
+    multi-chain contract existed: those callers union across all named chains,
+    and an unprefixed number still means "any of them".
+    """
+    if isinstance(hotspot, bool):
+        # bool subclasses int, so the int() this replaced read True as residue
+        # 1. That is a caller bug either way; refusing it is the one place
+        # this parser is deliberately NOT byte-identical to its predecessor.
+        return None, None
+    if isinstance(hotspot, (int, float)):
+        # Truncating a float is what int() did, and a JSON body carrying 296.0
+        # for residue 296 is the shape that reaches this. Routing floats
+        # through the str() path below instead made int("296.0") raise, so a
+        # hotspot that was in range before the multi-chain contract became
+        # unparseable after it.
+        return None, int(hotspot)
+    token = str(hotspot).strip()
+    if not token:
+        return None, None
+    try:
+        return None, int(token)
+    except ValueError:
+        pass
+    for cid in sorted(
+        (c for c in (chain_ids or []) if c), key=len, reverse=True,
+    ):
+        if token.startswith(cid):
+            try:
+                return cid, int(token[len(cid):].strip())
+            except ValueError:
+                continue
+    return None, None
+
+
 def validate_hotspots(
     report: InspectionReport, target_chain: str, hotspots: list,
 ) -> tuple[list, list]:
@@ -324,9 +382,22 @@ def validate_hotspots(
     Kendrew docker pipelines accept on the wire (the docker side
     rewrites them via the renumber_map after CIF prep).
 
-    ``target_chain`` may name SEVERAL chains, whitespace-separated (``"A B"``
-    for ProteinMPNN-style multi-chain design, ``"A B C"`` for a proteina trimer
-    target). A residue is in range if it falls inside ANY named chain.
+    ``target_chain`` may name SEVERAL chains, whitespace- or comma-separated
+    (``"A B"`` for ProteinMPNN-style multi-chain design, ``"A B C"`` for a
+    proteina trimer target). A BARE residue number is in range if it falls
+    inside ANY named chain. A CHAIN-PREFIXED one (``"B264"``) is checked
+    against that chain alone — on a homodimer both protomers carry residue
+    264, so unioning would accept ``"C264"`` on an A/B target and report a
+    hotspot as valid on a chain the design never touches.
+
+    Coercing every token with ``int()`` here is what made the multi-chain
+    contract unusable: the adapters emit ``["A296", "B264"]`` from
+    ``validate()``, ``blueprints/tools.py`` feeds that POST-validate value
+    straight into the preflight hard gate, and each prefixed token landed in
+    ``out_of_range``. rfdiffusion and pxdesign then refused the submit citing
+    an incomplete backbone — a claim about the FILE, which was in fact
+    complete — while boltzgen (``hotspots_required=False``) returned READY and
+    ran a paid GPU job with every hotspot silently discarded.
 
     This previously passed the whole string to ``report.chain()``, which does an
     exact single-id lookup, got None for ``"A B"``, and reported EVERY hotspot
@@ -340,21 +411,26 @@ def validate_hotspots(
     for cid in (target_chain or "").replace(",", " ").split() or [target_chain or ""]:
         chain = report.chain(cid)
         if chain is not None and chain.min_resnum is not None:
-            ranges.append((chain.min_resnum, chain.max_resnum))
+            ranges.append((cid, chain.min_resnum, chain.max_resnum))
     if not ranges:
         return [], list(hotspots)
+    named = [cid for cid, _, _ in ranges]
     in_range: list = []
     out_of_range: list = []
     for h in hotspots:
-        try:
-            n = int(h)
-        except (TypeError, ValueError):
+        cid, n = split_hotspot(h, named)
+        if n is None:
             out_of_range.append(h)
             continue
-        if any(lo <= n <= hi for lo, hi in ranges):
-            in_range.append(n)
+        if cid is None:
+            # Unprefixed: any named chain will do. Echo the bare int, which
+            # is the shape every pre-multi-chain caller already receives.
+            ok = any(lo <= n <= hi for _, lo, hi in ranges)
+            (in_range if ok else out_of_range).append(n)
         else:
-            out_of_range.append(n)
+            ok = any(c == cid and lo <= n <= hi for c, lo, hi in ranges)
+            # Echo the token as typed so the error names the chain too.
+            (in_range if ok else out_of_range).append(h)
     return in_range, out_of_range
 
 

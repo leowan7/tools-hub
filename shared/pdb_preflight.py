@@ -46,6 +46,7 @@ from shared.pipeline_normalize import (
     normalize_for_rfantibody,
     normalize_for_rfdiffusion,
 )
+from shared.pdb_inspect import split_hotspot
 from shared.pdb_preflight_rules import (
     BINDER_DESIGN_TOOLS,
     HOTSPOTS_REQUIRED,
@@ -921,20 +922,13 @@ def _clean_resnums_by_chain(
     }
 
 
-def _clean_resnums_on_chain(pdb_bytes: bytes, target_chain: str) -> list[int]:
-    """Union of ``_clean_resnums_by_chain`` across every named chain.
-
-    Union is the right reduction for the two callers that use it: hotspots
-    arrive here as bare author numbers with no chain attached (the shared
-    launch field posts ``"42,88"``), so the only question they can answer is
-    "does this number survive cleanup on any target chain". Deliberately
-    coarser than the truth, and coarser than the chain-prefixed check
-    ``tools/proteina/run_pipeline.missing_hotspots`` runs in-container.
-    """
-    merged: set = set()
-    for nums in _clean_resnums_by_chain(pdb_bytes, target_chain).values():
-        merged.update(nums)
-    return sorted(merged)
+# ``_clean_resnums_on_chain`` used to live here: the union of
+# ``_clean_resnums_by_chain`` across every named chain. Its docstring argued
+# the union was "the right reduction for the two callers that use it, because
+# hotspots arrive with no chain attached" — true when it was written, and the
+# reason both callers went on unioning after hotspots learned to name their
+# chain. Both now take the per-chain dict and union it themselves only for the
+# unprefixed case, so nothing calls this.
 
 
 def _selection_residue_count(
@@ -999,22 +993,40 @@ def _selection_residue_count(
 def _check_hotspots(
     pdb_bytes: bytes, target_chain: str, hotspots: list,
 ) -> tuple[list, list]:
-    """Return ``(surviving_hotspots, dropped_hotspots)`` after cleanup."""
+    """Return ``(surviving_hotspots, dropped_hotspots)`` after cleanup.
+
+    A bare hotspot survives if its number survives on ANY named chain; a
+    chain-prefixed one (``"B264"``) must survive on THAT chain. Both forms
+    are echoed back in the shape they arrived in, because the caller renders
+    ``dropped`` straight into the user-facing refusal and ``"B264"`` tells
+    them which protomer to re-pick on where ``264`` would not.
+
+    Every token used to go through a bare ``int()``, so the whole
+    chain-prefixed contract landed in ``dropped``. For the three tools with
+    ``hotspots_required=True`` that produced a NEEDS_FIX blaming an
+    incomplete backbone; for boltzgen it produced a READY verdict with the
+    hotspots quietly gone.
+    """
     if not hotspots:
         return [], []
-    clean = set(_clean_resnums_on_chain(pdb_bytes, target_chain))
+    by_chain = {
+        cid: set(nums)
+        for cid, nums in _clean_resnums_by_chain(pdb_bytes, target_chain).items()
+    }
+    clean: set = set()
+    for nums in by_chain.values():
+        clean.update(nums)
     surviving: list = []
     dropped: list = []
     for h in hotspots:
-        try:
-            n = int(h)
-        except (TypeError, ValueError):
+        cid, n = split_hotspot(h, list(by_chain))
+        if n is None:
             dropped.append(h)
             continue
-        if n in clean:
-            surviving.append(n)
+        if cid is None:
+            (surviving if n in clean else dropped).append(n)
         else:
-            dropped.append(n)
+            (surviving if n in by_chain.get(cid, ()) else dropped).append(h)
     return surviving, dropped
 
 
@@ -1033,14 +1045,24 @@ def _check_internal_gaps(
     """
     by_chain = _clean_resnums_by_chain(pdb_bytes, target_chain)
 
-    # Normalize hotspots to integers for distance math; non-integer entries
-    # are silently skipped (handled elsewhere by hotspot validator).
-    hs_ints: list = []
+    # Normalize hotspots to integers for distance math; unparseable entries
+    # are silently skipped (handled elsewhere by the hotspot validator).
+    # A chain-prefixed hotspot only measures against gaps on ITS chain —
+    # "how far is this gap from a hotspot" is meaningless across protomers,
+    # and on a homodimer the same resnum exists on both, so a chain-blind
+    # minimum would report distance 0 for a gap nowhere near the epitope.
+    # Unprefixed hotspots keep measuring against every chain, as before.
+    hs_any: list = []
+    hs_by_chain: dict = {}
     for h in hotspots or []:
-        try:
-            hs_ints.append(int(h))
-        except (TypeError, ValueError):
+        cid, n = split_hotspot(h, list(by_chain))
+        if n is None:
             continue
+        if cid is None:
+            hs_any.append(n)
+        else:
+            hs_by_chain.setdefault(cid, []).append(n)
+    have_hotspots = bool(hs_any or hs_by_chain)
 
     # Gaps are found per chain and tagged with the chain that owns them, so a
     # multi-chain target names the offending chain rather than echoing the
@@ -1049,15 +1071,16 @@ def _check_internal_gaps(
     for chain, clean in by_chain.items():
         if len(clean) < 2:
             continue
+        relevant = hs_any + hs_by_chain.get(chain, [])
         for prev, curr in zip(clean, clean[1:]):
             if curr <= prev + 1:
                 continue
             start = prev + 1
             end = curr - 1
             length = end - start + 1
-            if hs_ints:
+            if relevant:
                 dist = min(
-                    min(abs(h - start), abs(h - end)) for h in hs_ints
+                    min(abs(h - start), abs(h - end)) for h in relevant
                 )
                 nearest = float(dist)
             else:
@@ -1092,7 +1115,7 @@ def _check_internal_gaps(
             f"error mid-run."
         )
         hard_fail = True
-    elif rules.gap.needs_fix_length is not None and hs_ints:
+    elif rules.gap.needs_fix_length is not None and have_hotspots:
         # Length + near-hotspot rule. Find any gap that triggers BOTH
         # conditions.
         for chain, g in tagged:
@@ -1119,7 +1142,7 @@ def _check_internal_gaps(
         # gap_analysis.gaps for callers that want it.
         worst_chain, worst = max(tagged, key=lambda t: t[1].length)
         nearest_phrase = ""
-        if hs_ints and worst.nearest_hotspot_distance != math.inf:
+        if have_hotspots and worst.nearest_hotspot_distance != math.inf:
             nearest_phrase = (
                 f" — {int(worst.nearest_hotspot_distance)} residues from "
                 f"your nearest hotspot"
@@ -1320,32 +1343,90 @@ def _nearest_clean_residues(
     """For each dropped hotspot, return up to ``max_suggestions`` resnums
     on the same chain within ±``window`` of any dropped hotspot, ordered
     by sequence distance ascending then resnum ascending.
+
+    A chain-prefixed hotspot really is confined to its own chain here, and
+    its suggestions come back prefixed (``"B268"``) so they can be pasted
+    straight back into the field. Unprefixed hotspots search the union of
+    the named chains and return bare ints, unchanged.
     """
-    clean_set = set(_clean_resnums_on_chain(pdb_bytes, target_chain))
-    if not clean_set:
+    by_chain = {
+        cid: set(nums)
+        for cid, nums in _clean_resnums_by_chain(pdb_bytes, target_chain).items()
+    }
+    union: set = set()
+    for nums in by_chain.values():
+        union.update(nums)
+    if not union:
         return []
 
-    dropped_ints: list = []
+    # chain id (or None for "any named chain") -> dropped resnums on it
+    dropped_by_chain: dict = {}
     for h in dropped_hotspots:
-        try:
-            dropped_ints.append(int(h))
-        except (TypeError, ValueError):
+        cid, n = split_hotspot(h, list(by_chain))
+        if n is None:
             continue
-    if not dropped_ints:
+        dropped_by_chain.setdefault(cid, []).append(n)
+    if not dropped_by_chain:
         return []
 
-    candidates: dict = {}  # resnum -> min sequence distance to any dropped hotspot
-    for r in clean_set:
-        if r in dropped_ints:
-            continue
-        for d in dropped_ints:
-            if abs(r - d) <= window:
-                prev = candidates.get(r)
+    # (chain-or-None, resnum) -> (distance, label)
+    candidates: dict = {}
+    for cid, dropped_ints in dropped_by_chain.items():
+        pool = union if cid is None else by_chain.get(cid, set())
+        for r in pool:
+            if r in dropped_ints:
+                continue
+            for d in dropped_ints:
                 dist = abs(r - d)
-                if prev is None or dist < prev:
-                    candidates[r] = dist
-    ranked = sorted(candidates.items(), key=lambda kv: (kv[1], kv[0]))
-    return [r for r, _ in ranked[:max_suggestions]]
+                if dist > window:
+                    continue
+                key = (cid, r)
+                prev = candidates.get(key)
+                if prev is None or dist < prev[0]:
+                    candidates[key] = (dist, r if cid is None else f"{cid}{r}")
+
+    # A dropped list holding BOTH forms — [20, "A21"] — reaches a residue
+    # twice: once unattributed and once via its chain, and the two land under
+    # different labels. Suggesting "19, A22, 18, A19, 22" reads as five
+    # residues when it is three, in two formats, inside the message the user
+    # is reading to recover from a rejection. Prefer the attributed label and
+    # drop the bare twin; with a uniform input (which is all any adapter emits,
+    # since parse_hotspot_residues normalises the whole field to one shape)
+    # nothing here changes.
+    # Suppressing a bare suggestion because an attributed one shares its
+    # number is only sound when there is ONE chain, where "19" and "A19" name
+    # the same residue. On a homodimer they do not: both protomers carry 19,
+    # so keying the suppression on the number alone let a single dropped
+    # "B21" delete A19, A18 and A22 — the nearest clean neighbours of the
+    # bare hotspot 20 — and the user was offered a distance-10 residue as the
+    # closest thing available.
+    attributed = (
+        {r for cid, r in candidates if cid is not None}
+        if len(by_chain) == 1 else set()
+    )
+    ranked = sorted(candidates.items(), key=lambda kv: (kv[1][0], kv[0][1]))
+
+    # Group by the chain the suggestion belongs to, then take from each group
+    # in turn. One global top-N starves a protomer: with two dropped hotspots
+    # on different chains and a 6-slot budget, whichever chain has the tighter
+    # neighbours takes all six, and the user is told nothing at all about the
+    # other one — the message names "chain A" residues while their chain B
+    # hotspot sits there unaddressed.
+    by_group: dict = {}
+    for (cid, resnum), (_dist, label) in ranked:
+        if cid is None and resnum in attributed:
+            continue
+        by_group.setdefault(cid, []).append(label)
+
+    out: list = []
+    groups = list(by_group.values())
+    for slot in range(max(len(g) for g in groups) if groups else 0):
+        for group in groups:
+            if slot < len(group):
+                out.append(group[slot])
+                if len(out) >= max_suggestions:
+                    return out
+    return out
 
 
 def _verdict_from_normalizer_value_error(
