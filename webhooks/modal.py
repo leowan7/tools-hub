@@ -494,6 +494,15 @@ def _sanitize_candidate(cand: dict) -> dict | None:
 
     metadata_tag = cand.get("metadata_tag")
 
+    # Proteina: which residue numbering the delivered PDB carries. Only the two
+    # values the pipeline emits survive; anything else becomes None rather than
+    # being echoed back onto the status page, because this endpoint's body is
+    # unauthenticated telemetry and every other string field here is bounded the
+    # same way.
+    raw_numbering = cand.get("target_numbering")
+    target_numbering = (
+        raw_numbering if raw_numbering in ("input", "upstream") else None)
+
     return {
         "rank": rank,
         "name": str(name)[:64] if name else None,
@@ -524,6 +533,7 @@ def _sanitize_candidate(cand: dict) -> dict | None:
         "cluster_id": cluster_id,
         "has_clash": has_clash,
         "metadata_tag": str(metadata_tag)[:64] if metadata_tag else None,
+        "target_numbering": target_numbering,
         # OpenDDE confidence-head ranking score (additive; other tools leave it
         # None and the results renderer hides it).
         "ranking_score": _num(cand.get("ranking_score")),

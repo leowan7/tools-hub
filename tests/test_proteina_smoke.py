@@ -2621,6 +2621,98 @@ class TestTemplatesParse:
         assert "takes no hotspots" not in src
 
 
+class TestResultsTemplateSurfacesTheNumbering:
+    """B6. ``target_numbering`` was written into the result and rendered nowhere.
+
+    It went into ``out_designs`` only, while shared/jobs.py::candidate_records
+    prefers ``candidates`` and this partial reads ``candidates``, so the operator
+    had no way at all to learn whether the file they downloaded is keyed to the
+    numbers they typed. A field nobody can see is not a record of anything.
+
+    ``results_panel`` is stubbed: these tests are about the banner the partial
+    adds, not about the shared shell (which needs url_for, csrf_input and the
+    metric glossary to render at all).
+    """
+
+    def _render(self, candidates):
+        from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        env = Environment(loader=ChoiceLoader([
+            # ``caller()`` has to be referenced or Jinja refuses the {% call %}
+            # with "two values for the special caller argument".
+            DictLoader({"components/results_shell.html": (
+                "{% macro results_panel(candidates, columns, tool_slug, job_id,"
+                " clone_url='', tier='', gpu_seconds=None,"
+                " send_target_tools=None, campaign_id='') %}"
+                "PANEL{% if not candidates %}{{ caller() }}{% endif %}"
+                "{% endmacro %}")}),
+            FileSystemLoader(str(templates)),
+        ]))
+        return env.get_template("tools/proteina_results.html").render(
+            job=SimpleNamespace(result={"candidates": candidates}, id="j1"),
+            send_target_tools=[])
+
+    def _cand(self, rank, **kw):
+        return dict({"rank": rank, "pdb_key": f"design_{rank}.pdb",
+                     "scores": {}}, **kw)
+
+    def test_it_says_so_when_the_operators_numbering_was_restored(self):
+        html = self._render([self._cand(0, target_numbering="input"),
+                             self._cand(1, target_numbering="input")])
+        assert "Residue numbering" in html
+        assert "residue numbers from the file you uploaded" in html
+
+    def test_it_says_so_when_the_file_carries_upstreams_numbering(self):
+        html = self._render([self._cand(0, target_numbering="upstream")])
+        assert "Residue numbering" in html
+        assert "renumbered from 1" in html
+        assert "will not resolve" in html
+
+    def test_a_mixed_shard_reports_the_weaker_guarantee(self):
+        """One design in 1..N is enough to make "your hotspots resolve" false
+        for the download as a whole."""
+        html = self._render([self._cand(0, target_numbering="input"),
+                             self._cand(1, target_numbering="upstream")])
+        assert "renumbered from 1" in html
+        assert "residue numbers from the file you uploaded" not in html
+
+    def test_a_result_from_before_the_field_existed_claims_nothing(self):
+        """Jinja's ``map(attribute=...)`` yields Undefined -- not None -- for a
+        missing key, so the obvious ``| reject('none')`` spelling would let old
+        candidates through and print the reassuring message about a file nobody
+        checked. Silence is the only honest output here."""
+        html = self._render([self._cand(0), self._cand(1)])
+        assert "Residue numbering" not in html
+
+    def test_no_candidates_at_all_claims_nothing(self):
+        assert "Residue numbering" not in self._render([])
+
+
+def test_sanitize_candidate_keeps_the_target_numbering():
+    """The streamed half of the same path. ``_sanitize_candidate`` drops every
+    key it does not name, so the live candidate the status page renders would
+    have lost this field even once the pipeline sent it."""
+    from webhooks.modal import _sanitize_candidate
+
+    out = _sanitize_candidate({"rank": 0, "pdb_key": "design_000.pdb",
+                               "target_numbering": "input"})
+    assert out is not None
+    assert out["target_numbering"] == "input"
+    assert _sanitize_candidate(
+        {"rank": 0, "target_numbering": "upstream"})["target_numbering"] == "upstream"
+
+
+def test_sanitize_candidate_rejects_an_unrecognised_numbering():
+    """The heartbeat body is unauthenticated telemetry that gets rendered back
+    to the user, so every string field here is bounded. This one is bounded to
+    the two values the pipeline can emit rather than by a length cap."""
+    from webhooks.modal import _sanitize_candidate
+
+    for bogus in ("<script>", "INPUT", "", 7, None):
+        out = _sanitize_candidate({"rank": 0, "target_numbering": bogus})
+        assert out["target_numbering"] is None, bogus
+
+
 
 # ---------------------------------------------------------------------------
 # 9. Image reproducibility: the Dockerfile guards and the local entrypoints
@@ -3731,10 +3823,31 @@ _SEQ_B = ["CYS", "MET", "GLN", "ASN", "GLU", "ASP", "ARG", "LYS", "HIS", "TRP",
 _SEQ_C = ["GLY", "ALA", "SER", "VAL", "LEU", "THR", "PRO", "PHE"]
 
 
-def _chain(chain, resnames, first_res, serial0=1):
-    """CA-only lines for one chain, in the real column layout."""
+def _chain(chain, resnames, first_res, serial0=1, icodes=None):
+    """CA-only lines for one chain, in the real column layout.
+
+    ``icodes``, when given, is a per-residue insertion code and ``first_res`` is
+    then the number every one of them shares. Kabat/Chothia numbering does
+    exactly this, and it is the case the first version of the restore corrupted.
+    """
+    if icodes is not None:
+        return [_atom(serial0 + i, "CA", nm, chain, first_res, icode=ic)
+                for i, (nm, ic) in enumerate(zip(resnames, icodes))]
     return [_atom(serial0 + i, "CA", nm, chain, first_res + i)
             for i, nm in enumerate(resnames)]
+
+
+def _ter(serial, resname, chain, resseq):
+    """A TER record padded to 80 columns, as upstream really writes them.
+
+    MEASURED on the archived designs: every TER there is 80 characters. The
+    fixture used to emit a 25-character TER, which is both unrealistic and
+    unable to hold an insertion code — so a rewrite that silently GREW the line
+    to fit one would have looked fine here. ``test_every_line_keeps_its_width``
+    is what makes that matter, and it needs a fixture whose lines are the width
+    a real file's are.
+    """
+    return ("TER   %5d      %3s %1s%4d " % (serial, resname, chain, resseq)).ljust(80)
 
 
 def _design(*, a_first=1, b_first=1, c_first=1,
@@ -3746,32 +3859,42 @@ def _design(*, a_first=1, b_first=1, c_first=1,
     lines = []
     lines += _chain("A", seq_a, a_first, 1)
     if ter:
-        lines.append("TER   %5d      %3s A%4d"
-                     % (900, seq_a[-1], a_first + len(seq_a) - 1))
+        lines.append(_ter(900, seq_a[-1], "A", a_first + len(seq_a) - 1))
     lines += _chain("B", seq_b, b_first, 100)
     if ter:
         # Upstream writes a CUMULATIVE index here, not the chain's own number --
         # measured: a real design's chain B ends at ATOM 208 with TER 419.
-        lines.append("TER   %5d      %3s B%4d" % (901, seq_b[-1], 999))
+        lines.append(_ter(901, seq_b[-1], "B", 999))
     lines += _chain("C", seq_c, c_first, 200)
     if ter:
-        lines.append("TER   %5d      %3s C%4d" % (902, seq_c[-1], 888))
+        lines.append(_ter(902, seq_c[-1], "C", 888))
     return "\n".join(lines) + "\n"
+
+
+def _ref_chain(resnames, first_res, icodes=None):
+    """One reference chain as ``pdb_ca_sequence`` returns it.
+
+    ``(resseq, icode, resname)`` — the icode is part of the residue id, not
+    decoration, and dropping it here is exactly the defect that let three input
+    residues collapse onto one number in the delivered file.
+    """
+    if icodes is not None:
+        return [(first_res, ic, nm) for nm, ic in zip(resnames, icodes)]
+    return [(first_res + i, "", nm) for i, nm in enumerate(resnames)]
 
 
 def _reference(*, a_first=234, b_first=300, seq_a=None, seq_b=None):
     """What pdb_ca_sequence returns for the staged, cropped input target."""
     return {
-        "A": [(a_first + i, nm)
-              for i, nm in enumerate(_SEQ_A if seq_a is None else seq_a)],
-        "B": [(b_first + i, nm)
-              for i, nm in enumerate(_SEQ_B if seq_b is None else seq_b)],
+        "A": _ref_chain(_SEQ_A if seq_a is None else seq_a, a_first),
+        "B": _ref_chain(_SEQ_B if seq_b is None else seq_b, b_first),
     }
 
 
 def _keys(text):
-    return {"%s%d" % (c, r)
-            for c, v in rp.pdb_ca_sequence(text).items() for r, _ in v}
+    """The ``A241``-style residue tokens an operator's hotspot list is made of."""
+    return {"%s%d%s" % (c, r, i)
+            for c, v in rp.pdb_ca_sequence(text).items() for r, i, _ in v}
 
 
 class TestPdbCaSequence:
@@ -3779,16 +3902,43 @@ class TestPdbCaSequence:
         path = tmp_path / "f.pdb"
         path.write_text(FIXTURE_PDB, encoding="utf-8")
         by_chain = rp.pdb_ca_sequence(FIXTURE_PDB)
-        flat = {(c, r) for c, v in by_chain.items() for r, _ in v}
+        flat = {(c, r, i) for c, v in by_chain.items() for r, i, _ in v}
         residues, _ = rp.pdb_ca_residues(path)
-        assert flat == {(c, r) for c, r, _ in residues}
+        assert flat == set(residues)
 
     def test_it_carries_the_residue_name(self):
-        assert rp.pdb_ca_sequence(_design())["A"][0] == (1, "ALA")
+        assert rp.pdb_ca_sequence(_design())["A"][0] == (1, "", "ALA")
+
+    def test_it_carries_the_insertion_code(self):
+        """THE BLOCKER, at its source. The de-dupe key already had the icode and
+        the stored tuple threw it away one line later, so ``A100``, ``A100A``
+        and ``A100B`` became three entries all keyed 100 -- three map values
+        that collide, and a delivered file with three residues numbered 100."""
+        text = "\n".join(_chain("A", ["TRP", "ALA", "GLY"], 100,
+                                icodes=["", "A", "B"]))
+        assert rp.pdb_ca_sequence(text)["A"] == [
+            (100, "", "TRP"), (100, "A", "ALA"), (100, "B", "GLY")]
 
     def test_it_returns_each_chain_ascending(self):
         text = "\n".join(_chain("A", ["GLY", "ALA", "SER"], 5)[::-1])
-        assert [r for r, _ in rp.pdb_ca_sequence(text)["A"]] == [5, 6, 7]
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(text)["A"]] == [5, 6, 7]
+
+    def test_ties_break_on_the_insertion_code_not_the_residue_name(self):
+        """A ``(resseq, resname)`` sort broke ties on the NAME: file order
+        TRP(100) / ALA(100A) / GLY(100B) parsed back as ALA / GLY / TRP, which
+        scrambles the positional correspondence before anything can check it.
+        The names here are chosen so the two orders differ."""
+        text = "\n".join(_chain("A", ["TRP", "ALA", "GLY"], 100,
+                                icodes=["", "A", "B"]))
+        assert [n for _r, _i, n in rp.pdb_ca_sequence(text)["A"]] == [
+            "TRP", "ALA", "GLY"]
+
+    def test_a_blank_insertion_code_sorts_first(self):
+        """PDB's own convention, and the fixture is written out of order so the
+        sort has to do the work."""
+        lines = _chain("A", ["ALA", "GLY", "SER"], 7, icodes=["B", "", "A"])
+        assert [i for _r, i, _n in rp.pdb_ca_sequence("\n".join(lines))["A"]] == [
+            "", "A", "B"]
 
     def test_it_stops_at_the_first_endmdl(self):
         text = _design() + "ENDMDL\n" + "\n".join(_chain("Z", ["ALA"] * 5, 1))
@@ -3800,8 +3950,8 @@ class TestRestoreDesignNumbering:
         out, rep = rp.restore_design_numbering(_design(), ["A", "B"], _reference())
         assert rep["applied"] is True
         got = rp.pdb_ca_sequence(out)
-        assert [r for r, _ in got["A"]] == list(range(234, 254))
-        assert [r for r, _ in got["B"]] == list(range(300, 320))
+        assert [r for r, _i, _n in got["A"]] == list(range(234, 254))
+        assert [r for r, _i, _n in got["B"]] == list(range(300, 320))
 
     def test_the_operators_hotspot_tokens_resolve_only_after_the_restore(self):
         design = _design()
@@ -3824,13 +3974,25 @@ class TestRestoreDesignNumbering:
         assert coords(out) == coords(design)
         assert names(out) == names(design)
 
-    def test_only_the_resseq_columns_change(self):
+    def test_only_the_resseq_and_icode_columns_change(self):
         design = _design()
         out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
         differing = {i
                      for a, b in zip(design.split("\n"), out.split("\n"))
                      for i, (x, y) in enumerate(zip(a, b)) if x != y}
-        assert differing <= {22, 23, 24, 25}
+        assert differing <= {22, 23, 24, 25, 26}
+
+    def test_every_line_keeps_its_width(self):
+        """The companion the column test cannot do without. ``zip`` stops at the
+        shorter of two lines, so a rewrite that GREW a line -- by splicing an
+        insertion code into a record with no column for one, say -- would be
+        invisible to the comparison above. PDB is fixed-column: a line that
+        changes width has moved every field to its right."""
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        before, after = design.split("\n"), out.split("\n")
+        assert len(before) == len(after)
+        assert [len(l) for l in before] == [len(l) for l in after]
 
     def test_the_line_count_is_preserved(self):
         design = _design()
@@ -3857,6 +4019,114 @@ class TestRestoreDesignNumbering:
         assert rep["applied"] is False
         assert rep["already_input_numbering"] is True
         assert out == design
+
+    def test_matching_numbers_alone_do_not_prove_the_numbering_is_the_inputs(self):
+        """B3. ``already_input_numbering`` used to return BEFORE the sequence
+        check, so identical residue NUMBERS were enough to claim the delivered
+        file carries the operator's numbering.
+
+        The case that breaks it is ordinary: a target numbered from 1 -- an
+        AlphaFold model, say -- and a design where upstream emitted the BINDER
+        as chain A. The key lists are then identical, ``[] == []``-style
+        reasoning says "nothing to do", and the payload reports
+        ``target_numbering: "input"`` for a chain the code itself scored at 0%
+        identity. "Already correct" has to mean recognised, not merely
+        same-shaped.
+        """
+        reference = _reference(a_first=1, b_first=1)
+        design = _design(a_first=1, b_first=1, seq_a=list(reversed(_SEQ_A)))
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], reference)
+        assert rep["already_input_numbering"] is False
+        assert rep["applied"] is False
+        assert out == design
+        assert "chain A" in rep["reason"]
+        assert "sequence identity" in rep["reason"]
+
+    def test_a_design_that_really_is_already_correct_still_says_so(self):
+        """The companion: gating "already" on the sequence check must not turn
+        a genuinely already-correct design into a refusal."""
+        reference = _reference(a_first=1, b_first=1)
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], reference)
+        assert rep["already_input_numbering"] is True
+        assert out == _design()
+
+    def test_a_blank_chain_id_is_not_silently_dropped(self):
+        """``{c for c in target_chains if c}`` dropped the blank chain id, which
+        is a legal PDB chain and a legitimate key in the reference. The file was
+        then rewritten with every OTHER chain renumbered and that one left in
+        1..N -- an ``applied`` file that is half in each numbering, which is
+        exactly what the all-or-none rule exists to prevent."""
+        lines = _chain(" ", _SEQ_A, 1, 1) + _chain("A", _SEQ_B, 1, 100)
+        design = "\n".join(lines) + "\n"
+        reference = {"": _ref_chain(_SEQ_A, 500), "A": _ref_chain(_SEQ_B, 700)}
+        out, rep = rp.restore_design_numbering(design, ["", "A"], reference)
+        assert rep["applied"] is True, rep["reason"]
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _i, _n in got[""]] == list(range(500, 520))
+        assert [r for r, _i, _n in got["A"]] == list(range(700, 720))
+
+
+class TestRestoreDesignNumberingCarriesInsertionCodes:
+    """THE BLOCKER, end to end.
+
+    An input chain with insertion codes -- which is every Kabat/Chothia-numbered
+    antibody, i.e. the target market -- used to come back with several design
+    residues stamped with the SAME number and a blank icode. It cleared the 0.9
+    identity floor (0.985 on a 200-residue chain with three of them), reported
+    ``applied``, and the payload still said ``target_numbering: "input"``. A
+    delivered file with duplicate residue ids is strictly worse than the 1..N it
+    replaced, because 1..N at least keys uniquely.
+    """
+
+    # Input chain A: 100, 100A, 100B, then 101..117. 20 residues, 20 distinct
+    # names, three of them sharing residue number 100.
+    _ICODES = ["", "A", "B"] + [""] * 17
+    _NUMBERS = [100, 100, 100] + list(range(101, 118))
+
+    def _reference(self):
+        ref = _reference()
+        ref["A"] = [(n, i, nm) for n, i, nm
+                    in zip(self._NUMBERS, self._ICODES, _SEQ_A)]
+        return ref
+
+    def _restored(self):
+        return rp.restore_design_numbering(_design(), ["A", "B"], self._reference())
+
+    def test_it_applies(self):
+        _out, rep = self._restored()
+        assert rep["applied"] is True, rep["reason"]
+
+    def test_no_two_residues_end_up_with_the_same_id(self):
+        out, _rep = self._restored()
+        ids = [(l[21:22], l[22:26], l[26:27]) for l in out.split("\n")
+               if l[:6] == "ATOM  " and l[12:16].strip() == "CA"]
+        assert len(ids) == len(set(ids)), "the delivered file has duplicate residues"
+
+    def test_the_insertion_codes_reach_the_delivered_file(self):
+        out, _rep = self._restored()
+        assert {"A100", "A100A", "A100B"} <= _keys(out)
+
+    def test_the_icode_column_is_actually_written(self):
+        """Not merely "the parser agrees with itself": column 27 of the three
+        residues numbered 100 must literally read ' ', 'A', 'B'."""
+        out, _rep = self._restored()
+        at_100 = [l[26:27] for l in out.split("\n")
+                  if l[:6] == "ATOM  " and l[21:22] == "A" and l[22:26] == " 100"]
+        assert at_100 == [" ", "A", "B"]
+
+    def test_the_positional_correspondence_is_not_scrambled(self):
+        """The sort tie-break, seen from the delivered file. Every design
+        residue must keep its own NAME while taking the input's id, so residue
+        i of the output names the same amino acid as residue i of the input."""
+        out, _rep = self._restored()
+        got = rp.pdb_ca_sequence(out)["A"]
+        assert got == self._reference()["A"]
+
+    def test_line_widths_survive_an_icode_being_written(self):
+        design = _design()
+        out, _rep = self._restored()
+        assert ([len(l) for l in out.split("\n")]
+                == [len(l) for l in design.split("\n")])
 
 
 class TestRestoreDesignNumberingRefuses:
@@ -3911,10 +4181,60 @@ class TestRestoreDesignNumberingRefuses:
         rep = self._unchanged(_design(), ["A", "B"], _reference(a_first=99990))
         assert "four columns" in rep["reason"]
 
+    def test_an_insertion_code_too_wide_for_one_column_refuses(self):
+        """The other half of the same guard. resSeq gets four columns and iCode
+        gets exactly one; a two-character code has nowhere to go, and writing it
+        anyway would push every field to its right along by one."""
+        ref = _reference()
+        ref["A"] = [(234 + i, "AB" if i == 3 else "", nm)
+                    for i, nm in enumerate(_SEQ_A)]
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "single column" in rep["reason"]
+
+    def test_a_map_that_is_not_one_to_one_refuses(self):
+        """THE BACKSTOP. Two design residues mapping onto one input residue id
+        emits a file with duplicate residues in it. ``pdb_ca_sequence`` cannot
+        produce such a reference any more -- it de-dupes on the full
+        ``(chain, resseq, icode)`` -- so this is reachable only by handing the
+        function a reference built some other way, which is precisely the
+        situation a backstop is for: the shipped version of this code got here
+        by dropping one field from that tuple."""
+        ref = _reference()
+        # Two entries with the SAME (resseq, icode): distinct residues in the
+        # list, one destination id.
+        ref["A"] = [(234, "", nm) if i < 2 else (234 + i, "", nm)
+                    for i, nm in enumerate(_SEQ_A)]
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "one-to-one" in rep["reason"]
+
     def test_annotation_records_carrying_residue_numbers_make_it_decline(self):
         design = _design() + "HELIX    1   1 ALA A    1  GLY A   10  1\n"
         rep = self._unchanged(design, ["A", "B"], _reference())
         assert "HELIX" in rep["reason"]
+
+    def test_a_het_record_makes_it_decline(self):
+        """``HET`` names a residue by number in columns 14-17 the same way
+        ``HETATM`` does, and it was missing from the list."""
+        design = _design() + "HET     NAG  A 401      14\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "HET" in rep["reason"]
+
+    def test_remark_465_makes_it_decline(self):
+        """REMARK 465 tabulates the residues that are MISSING from the
+        coordinates, by number. Renumbering the coordinates and leaving that
+        table alone produces a file that contradicts itself."""
+        design = _design() + "REMARK 465   M RES C SSSEQI\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "REMARK 465" in rep["reason"]
+
+    def test_an_ordinary_remark_does_not_make_it_decline(self):
+        """The companion, and the reason REMARK is not simply in the list:
+        every real PDB carries REMARKs, so refusing on the record name alone
+        would disable the restore on any file that has one."""
+        design = _design() + "REMARK   2 RESOLUTION.    1.90 ANGSTROMS.\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert out != design
 
     def test_no_target_chains_named_is_a_no_op(self):
         rep = self._unchanged(_design(), [], _reference())
@@ -3930,52 +4250,541 @@ class TestRestoreDesignNumberingRefuses:
             assert rep["reason"]
 
 
+class TestRestoreDesignNumberingRecordCoverage:
+    """Which records the rewrite touches, and which it must not.
+
+    Every one of these was droppable from ``_RESSEQ_COORD_RECORDS`` without a
+    single test noticing, and each drop leaves a file whose coordinate section
+    and its own annotations disagree about which residue is which.
+    """
+
+    def _renumbered_line(self, record):
+        """The rewritten line for a single extra record on chain A residue 1."""
+        extra = _atom(999, "CA", "ALA", "A", 1, record=record)
+        design = _design() + extra + "\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        return [l for l in out.split("\n") if l[:6] == record][-1]
+
+    @pytest.mark.parametrize("record", ["ANISOU", "SIGATM", "SIGUIJ", "HETATM"])
+    def test_every_coordinate_record_type_is_renumbered(self, record):
+        assert int(self._renumbered_line(record)[22:26]) == 234
+
+    def test_a_record_this_rewrite_does_not_own_is_left_alone(self):
+        """CONECT carries ATOM SERIAL numbers, not residue numbers. Renumbering
+        it would corrupt a file that was correct."""
+        design = _design() + "CONECT    1    2\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert "CONECT    1    2" in out
+
+
 class TestChainRenumberMap:
     def test_it_maps_position_for_position(self):
-        obs = [(i + 1, nm) for i, nm in enumerate(_SEQ_A)]
-        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = _ref_chain(_SEQ_A, 234)
         got = rp.chain_renumber_map(obs, ref)
         assert got["ok"] is True
-        assert got["map"][1] == 234
-        assert got["map"][20] == 253
+        assert got["map"][(1, "")] == (234, "")
+        assert got["map"][(20, "")] == (253, "")
         assert got["identity"] == 1.0
+
+    def test_the_map_is_keyed_and_valued_on_the_whole_residue_id(self):
+        """``{resseq: resseq}`` is not a map between PDB residues -- it drops
+        the insertion code from both ends, which is how three input residues
+        collapsed onto one output number."""
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = _ref_chain(_SEQ_A[:3], 100, icodes=["", "A", "B"]) + \
+            _ref_chain(_SEQ_A[3:], 101)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["map"][(2, "")] == (100, "A")
+        assert got["map"][(3, "")] == (100, "B")
 
     def test_an_empty_chain_refuses(self):
         assert rp.chain_renumber_map([], [])["ok"] is False
 
     def test_a_stray_unknown_does_not_drag_a_real_chain_below_the_floor(self):
-        obs = [(i + 1, nm) for i, nm in enumerate(["UNK"] + _SEQ_A[1:])]
-        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        obs = _ref_chain(["UNK"] + _SEQ_A[1:], 1)
+        ref = _ref_chain(_SEQ_A, 234)
         got = rp.chain_renumber_map(obs, ref)
         assert got["ok"] is True
         assert got["n_informative"] == 19
 
     def test_a_few_lucky_matches_among_unknowns_still_refuses(self):
         # identity 1.0 over 3 informative pairs is not evidence of a chain.
-        # The REFERENCE must be fully informative for this to be the case under
-        # test: the floor is capped at what the reference can supply, so an
-        # all-UNK reference legitimately lowers the bar to 3 and the map is then
-        # allowed. It is the DESIGN being sequence-free that must be refused.
-        obs = [(i + 1, nm) for i, nm in enumerate(["UNK"] * 17 + _SEQ_A[17:])]
-        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        obs = _ref_chain(["UNK"] * 17 + _SEQ_A[17:], 1)
+        ref = _ref_chain(_SEQ_A, 234)
         got = rp.chain_renumber_map(obs, ref)
         assert got["n_informative"] == 3
         assert got["identity"] == 1.0
         assert got["ok"] is False
         assert "informative" in got["reason"]
 
-    def test_an_all_unknown_reference_may_still_certify_a_tiny_target(self):
-        # The other side of the same rule, pinned so a "tighten the floor"
-        # change has to argue with it: a reference that itself offers only 3
-        # informative residues sets the bar at 3, not at 10.
+    def test_a_mostly_unknown_reference_no_longer_certifies_a_whole_chain(self):
+        """CHANGED DELIBERATELY, and this comment is the argument for it.
+
+        This test used to be ``test_an_all_unknown_reference_may_still_certify_
+        a_tiny_target`` and asserted ``ok is True``: a reference offering only 3
+        informative residues lowered the absolute floor to 3, so 3 coincidental
+        matches certified a map over the whole chain. The floor is
+        ``max(1, min(10, ref_informative))``, which on a 200-residue reference
+        with 198 UNK collapses to 2 -- two matches then key 200 residues onto
+        the operator's numbering.
+
+        The cap on the absolute floor is right and stays: a genuinely tiny
+        target must still work, and it does (see the test below). What was
+        missing is the canary's second half, ``TARGET_MIN_INFORMATIVE_FRACTION
+        = 0.5``, which production never ported. A chain that is 85% unknown is
+        mostly wildcard matches rather than evidence, whatever the absolute
+        count says.
+        """
         seq = ["UNK"] * 17 + _SEQ_A[17:]
-        obs = [(i + 1, nm) for i, nm in enumerate(seq)]
-        ref = [(i + 234, nm) for i, nm in enumerate(seq)]
+        obs = _ref_chain(seq, 1)
+        ref = _ref_chain(seq, 234)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is False
+        assert "3 of the 20" in got["reason"]
+
+    def test_a_genuinely_tiny_target_still_certifies(self):
+        """The case the absolute floor's cap exists for, and the boundary the
+        fraction floor must not swallow: a 6-residue target, every name known.
+        Below the absolute minimum of 10 and comfortably above 50% evidence."""
+        obs = _ref_chain(_SEQ_A[:6], 1)
+        ref = _ref_chain(_SEQ_A[:6], 234)
         assert rp.chain_renumber_map(obs, ref)["ok"] is True
+
+    def test_the_informative_fraction_floor_is_exactly_one_half(self):
+        """Pins the VALUE, not just the presence. 10 of 20 informative is
+        exactly 0.5 and passes; 9 of 20 is below and refuses."""
+        ref = _ref_chain(_SEQ_A, 234)
+        at_floor = _ref_chain(["UNK"] * 10 + _SEQ_A[10:], 1)
+        below = _ref_chain(["UNK"] * 11 + _SEQ_A[11:], 1)
+        assert rp.chain_renumber_map(at_floor, ref)["ok"] is True
+        assert rp.chain_renumber_map(below, ref)["ok"] is False
+
+    def test_a_modified_residue_compares_equal_to_its_parent(self):
+        """B5. An upstream refold writes selenomethionine back as METHIONINE.
+        Exact ``==`` scores every one of those a mismatch, so a target with
+        enough of them drops below 0.9 and the operator silently receives 1..N
+        -- the defect this whole function exists to fix, firing on a correct
+        input. MSE and MET are the same residue."""
+        seq = ["MSE" if nm == "MET" else nm for nm in _SEQ_A]
+        obs = _ref_chain(seq, 1)          # design: refolded, MSE -> MET
+        ref = _ref_chain(_SEQ_A, 234)     # input: the deposited MSE
+        got = rp.chain_renumber_map(obs, _ref_chain(seq, 234))
+        assert got["identity"] == 1.0
+        folded = rp.chain_renumber_map(obs, ref)
+        assert folded["ok"] is True, folded["reason"]
+        assert folded["identity"] == 1.0
+
+    def test_the_whole_modified_residue_table_folds(self):
+        """Not just MSE. Every entry in the parent table is a residue an
+        upstream refold may rewrite, and a table with one entry silently
+        missing fails a real target the same way."""
+        for child, parent in rp._MODRES_PARENT.items():
+            assert rp._same_resname(child, parent), f"{child} does not fold to {parent}"
+            assert rp._same_resname(parent, child)
+
+    def test_two_different_residues_still_do_not_compare_equal(self):
+        """The folding must not become a wildcard: it is what stops a false
+        MATCH from rewriting the deliverable's keys on a correspondence that
+        does not hold."""
+        assert rp._same_resname("MSE", "CYS") is False
+        assert rp._same_resname("ALA", "GLY") is False
+
+    def test_the_identity_floor_is_exactly_zero_point_nine(self):
+        """Pins the VALUE and the BOUNDARY. 0.9 -> 0.45 and ``<`` -> ``<=``
+        both used to survive the suite, so neither the number nor the sense of
+        the comparison was defended by anything.
+
+        20 residues, so identity moves in steps of 0.05: 18/20 is exactly 0.9
+        and must PASS (the comparison is ``identity < min_identity``), 17/20 is
+        0.85 and must refuse. A floor of 0.45 would accept both.
+        """
+        ref = _ref_chain(_SEQ_A, 234)
+        # Two mismatches: 18/20 = 0.90 exactly.
+        at_floor = _ref_chain(["GLY", "ALA"] + _SEQ_A[2:], 1)
+        # Three mismatches: 17/20 = 0.85.
+        below = _ref_chain(["GLY", "ALA", "TRP"] + _SEQ_A[3:], 1)
+        assert rp.chain_renumber_map(at_floor, ref)["identity"] == 0.9
+        assert rp.chain_renumber_map(at_floor, ref)["ok"] is True
+        assert rp.chain_renumber_map(below, ref)["identity"] == 0.85
+        assert rp.chain_renumber_map(below, ref)["ok"] is False
+
+    def test_an_injective_map_is_required(self):
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = [(234, "", nm) if i < 2 else (234 + i, "", nm)
+               for i, nm in enumerate(_SEQ_A)]
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is False
+        assert got["map"] == {}
+        assert "one-to-one" in got["reason"]
+
+
+class TestUploadLoopNumbering:
+    """THE CALL SITE, exercised rather than pattern-matched.
+
+    Everything above this class tests pure functions. The only thing that stood
+    between them and the delivered file was an AST check that
+    ``restore_design_numbering`` appears somewhere in a Call node and a
+    substring check for ``"target_numbering"``. Reviewer B mutated the upload
+    loop in an isolated worktree and ALL SIX of these survived the whole suite:
+
+      * deleting the renumber block outright
+      * discarding ``restored`` and never assigning ``pdb_bytes``
+      * setting ``numbering = "input"`` unconditionally
+      * passing the BINDER chain into ``renumber_chains``
+      * reading the reference from the RAW UPLOAD instead of the staged crop
+      * running the restore on CURATED runs too
+
+    These drive ``main()`` for real with the network and ``complexa`` stubbed,
+    and capture the bytes actually handed to ``upload_pdb`` -- which is the only
+    artifact the operator ever sees.
+    """
+
+    # The upload holds 40 residues per target chain; the contig selects 20 of
+    # them. That gap is what tells "read the staged crop" apart from "read the
+    # raw upload": against the crop the design's 20-residue chains map, against
+    # the upload they fail on length.
+    _CONTIG = "A11-30,B11-30"
+    _UPLOAD_SPAN = (1, 40)
+    _CROP = (11, 30)
+
+    def _upload_text(self):
+        lines = []
+        serial = 1
+        for chain, seq in (("A", _SEQ_A), ("B", _SEQ_B)):
+            lo, hi = self._UPLOAD_SPAN
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", seq[(resseq - 1) % len(seq)],
+                                   chain, resseq))
+                serial += 1
+        return "\n".join(lines) + "\nEND\n"
+
+    def _cropped_names(self, seq):
+        lo, hi = self._CROP
+        return [seq[(r - 1) % len(seq)] for r in range(lo, hi + 1)]
+
+    def _design_text(self, *, seq_a=None, seq_b=None):
+        """A design as upstream writes one: target chains renumbered to 1..N."""
+        a = self._cropped_names(_SEQ_A) if seq_a is None else seq_a
+        b = self._cropped_names(_SEQ_B) if seq_b is None else seq_b
+        lines = []
+        lines += _chain("A", a, 1, 1)
+        lines.append(_ter(500, a[-1], "A", len(a)))
+        lines += _chain("B", b, 1, 100)
+        lines.append(_ter(501, b[-1], "B", 999))
+        lines += _chain("C", _SEQ_C, 1, 200)
+        lines.append(_ter(502, _SEQ_C[-1], "C", 888))
+        return "\n".join(lines) + "\nEND\n"
+
+    def _drive(self, tmp_path, monkeypatch, *, job_spec, n_designs=2,
+               design_text=None, input_text=None, plant_staged=None):
+        """Run main() to completion, returning (result, uploaded_bytes_by_name).
+
+        ``plant_staged`` writes a file into the hub target dir under the run's
+        task_name BEFORE main() runs -- the only way to give a CURATED run a
+        staged reference to read, which is what makes the "curated runs too"
+        mutation observable rather than inert.
+        """
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
+        home = tmp_path / "proteina"
+        (home / "configs" / "targets").mkdir(parents=True)
+        registry = home / "configs" / "targets" / "targets_dict.yaml"
+        registry.write_text(
+            "target_dict_cfg:\n"
+            "  02_PDL1:\n"
+            "    source: bindcraft_targets\n"
+            "    target_path: ./assets/target_data/bindcraft_targets/PD-L1.pdb\n"
+        )
+        monkeypatch.setattr(rp, "PROTEINA_HOME", str(home))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(registry))
+        hub_targets = home / "hub_targets"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub_targets))
+        run_dir = home / "inference"
+
+        # write_BYTES throughout, never write_text: on Windows the text writer
+        # translates "\n" to "\r\n", and the pipeline reads these files as bytes.
+        # A fixture written in text mode would be comparing the delivered file
+        # against a differently-terminated copy of itself.
+        if plant_staged:
+            hub_targets.mkdir(parents=True, exist_ok=True)
+            (hub_targets / f"{plant_staged}.pdb").write_bytes(
+                self._staged_equivalent().encode("latin-1"))
+
+        text = self._upload_text() if input_text is None else input_text
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                               dest.write_bytes(text.encode("latin-1")), dest)[-1])
+
+        design = self._design_text() if design_text is None else design_text
+
+        def fake_run(cmd, cwd):
+            if cmd[:3] == [rp.COMPLEXA_BIN, "target", "add"]:
+                import yaml
+                data = yaml.safe_load(registry.read_text()) or {}
+                data.setdefault("target_dict_cfg", {})
+                data["target_dict_cfg"][cmd[3]] = {
+                    "source": rp._HUB_SOURCE,
+                    "target_path": cmd[cmd.index("--target-path") + 1],
+                    "target_input": cmd[cmd.index("--target-input") + 1],
+                    "hotspot_residues": [],
+                    "binder_length": [
+                        int(cmd[cmd.index("--binder-length") + 1]),
+                        int(cmd[cmd.index("--binder-length") + 2]),
+                    ],
+                }
+                registry.write_text(yaml.safe_dump(data, sort_keys=False))
+                return 0
+            # `complexa design`: emit the reward CSV and the design PDBs the
+            # upload loop will read.
+            out = run_dir / "samples"
+            out.mkdir(parents=True, exist_ok=True)
+            rows = ["sample,pdb_path,total_reward"]
+            for i in range(n_designs):
+                pdb = out / f"sample_{i}.pdb"
+                pdb.write_bytes(design.encode("latin-1"))
+                rows.append(f"sample_{i},{pdb},{1.0 - i * 0.1:.3f}")
+            (run_dir / "rewards_shard.csv").write_bytes(
+                ("\n".join(rows) + "\n").encode("latin-1"))
+            return 0
+        monkeypatch.setattr(rp, "run_streaming", fake_run)
+
+        uploaded: dict[str, bytes] = {}
+        monkeypatch.setattr(
+            rp, "request_upload_urls",
+            lambda endpoint, token, names: {n: f"https://up/{n}" for n in names})
+        monkeypatch.setattr(
+            rp, "upload_pdb",
+            lambda url, pdb_bytes: uploaded.__setitem__(
+                url.rsplit("/", 1)[-1], pdb_bytes))
+
+        payload = {
+            "job_spec": job_spec,
+            "input_presigned_url": (
+                "" if job_spec.get("target_source") != "custom"
+                else "https://example/target.pdb"),
+            "upload_urls_endpoint": "https://example/upload",
+            "job_token": "t", "tier": "protein_binder",
+        }
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+        monkeypatch.setenv("JOB_ID", "job-upload")
+        monkeypatch.setenv("PROTEINA_RF3", "on")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        try:
+            rp.main()
+        except SystemExit:
+            pass
+        return json.loads(result_file.read_text()), uploaded
+
+    def _staged_equivalent(self):
+        """The staged crop's content, built the way the crop would build it."""
+        lines, serial = [], 1
+        lo, hi = self._CROP
+        for chain, seq in (("A", _SEQ_A), ("B", _SEQ_B)):
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", seq[(resseq - 1) % len(seq)],
+                                   chain, resseq))
+                serial += 1
+        return "\n".join(lines) + "\nEND\n"
+
+    def _custom(self, **kw):
+        base = {
+            "config_name": "search_binder_local_pipeline", "task_name": "",
+            "target_source": "custom", "target_chain": "A",
+            "target_input": self._CONTIG, "hotspot_spec": [],
+            "binder_length": [60, 120],
+            "rf3_required": False, "nsamples": 4, "replicas": 2,
+        }
+        base.update(kw)
+        return base
+
+    # -- the delivered bytes ------------------------------------------------
+
+    def test_the_uploaded_bytes_are_renumbered(self, tmp_path, monkeypatch):
+        """Kills "delete the renumber block" and "discard ``restored``". The
+        assertion is on the BYTES HANDED TO upload_pdb, because that is the file
+        the operator downloads -- a report that says "applied" over an
+        unmodified upload is the failure being guarded against."""
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded, "no design was uploaded at all"
+        for name, blob in uploaded.items():
+            got = rp.pdb_ca_sequence(blob.decode("latin-1"))
+            assert [r for r, _i, _n in got["A"]] == list(range(11, 31)), name
+            assert [r for r, _i, _n in got["B"]] == list(range(11, 31)), name
+
+    def test_the_operators_hotspot_token_resolves_in_the_delivered_file(
+            self, tmp_path, monkeypatch):
+        """The whole point, stated as the operator experiences it."""
+        _data, uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        # A25 is inside the crop (11-30) and OUTSIDE the 1..20 upstream wrote,
+        # so it discriminates. A15 would not: it exists in both.
+        assert "A25" in _keys(blob)
+        assert "A25" not in _keys(self._design_text())
+
+    def test_the_binder_chain_is_never_renumbered(self, tmp_path, monkeypatch):
+        """Kills "pass the binder chain into renumber_chains". Chain C is not in
+        the staged target, so including it would make every chain fail the
+        all-or-none rule and nothing would be renumbered at all -- which the
+        first assertion catches -- while this one states the property directly."""
+        _data, uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        assert (rp.pdb_ca_sequence(blob)["C"]
+                == rp.pdb_ca_sequence(self._design_text())["C"])
+
+    def test_the_reference_is_the_staged_crop_not_the_raw_upload(
+            self, tmp_path, monkeypatch):
+        """Kills "read the reference from the raw upload". The upload holds 40
+        residues per chain and the crop holds 20; the design's chains are 20
+        long, so reading the upload fails on length and delivers 1..N. This
+        passes only if the crop was read."""
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == list(range(11, 31))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"])
+
+    # -- what the payload claims -------------------------------------------
+
+    def test_target_numbering_records_what_really_happened(
+            self, tmp_path, monkeypatch):
+        """Kills ``numbering = "input"`` unconditionally. A design whose target
+        chain is a DIFFERENT protein cannot be renumbered, so the file ships in
+        upstream's 1..N -- and the payload has to say so. A constant would read
+        "input" here."""
+        scrambled = self._design_text(
+            seq_a=list(reversed(self._cropped_names(_SEQ_A))))
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=scrambled)
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert [c["target_numbering"] for c in data["candidates"]] == ["upstream"] * 2
+        assert [d["target_numbering"] for d in data["designs"]] == ["upstream"] * 2
+        # ...and the design still SHIPS, byte-for-byte as upstream wrote it.
+        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert next(iter(uploaded.values())) == scrambled.encode("latin-1")
+
+    def test_the_candidates_carry_the_numbering_not_only_the_designs(
+            self, tmp_path, monkeypatch):
+        """B6. shared/jobs.py::candidate_records prefers ``candidates`` and the
+        results template reads ``candidates`` only, so a field written into
+        ``designs`` alone is data nobody can ever see. It was."""
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        assert data["candidates"], "no candidates were recorded"
+        for cand in data["candidates"]:
+            assert cand["target_numbering"] == "input"
+
+    def test_a_byte_that_is_not_utf8_survives_the_round_trip(
+            self, tmp_path, monkeypatch):
+        """``decode("utf-8", errors="replace")`` is not a round trip. Every byte
+        it cannot decode becomes U+FFFD, and re-encoding turns that into the
+        three bytes EF BF BD -- so a design carrying a latin-1 author name, a
+        degree sign, or any stray high byte comes back CORRUPTED and longer than
+        it went in, by the very step that was supposed to touch nothing but
+        columns 23-27. latin-1 maps all 256 byte values one-to-one.
+
+        The byte here sits in a REMARK, outside the coordinate columns, so the
+        restore still applies and the rest of the file is genuinely rewritten --
+        this pins the encoding, not a decline.
+        """
+        design = self._design_text() + "REMARK   1 AUTH   J. M\xfcLLER\n"
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=design)
+        assert data["status"] == "COMPLETED", data.get("error")
+        blob = next(iter(uploaded.values()))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"]), (
+            "the file was not rewritten, so this proves nothing about encoding")
+        assert b"\xfc" in blob
+        assert b"\xef\xbf\xbd" not in blob
+        assert len(blob) == len(design.encode("latin-1"))
+
+    # -- curated runs -------------------------------------------------------
+
+    def test_a_curated_run_is_never_renumbered(self, tmp_path, monkeypatch):
+        """Kills "run the restore on curated runs too".
+
+        A curated run designs against a bundled benchmark target that this
+        wrapper never staged, so there is no operator numbering to restore and
+        nothing may be rewritten. The mutation is inert unless a file happens to
+        exist at the staged path for the curated task name -- so this test
+        PLANTS one that would map cleanly. Correct code never looks at it.
+        """
+        data, uploaded = self._drive(
+            tmp_path, monkeypatch,
+            job_spec={"config_name": "search_binder_local_pipeline",
+                      "task_name": "02_PDL1", "rf3_required": False,
+                      "nsamples": 4, "replicas": 2},
+            plant_staged="02_PDL1")
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded
+        for blob in uploaded.values():
+            assert blob == self._design_text().encode("latin-1")
+        assert all(c["target_numbering"] == "upstream"
+                   for c in data["candidates"])
+
+    # -- the paid-design guarantee -----------------------------------------
+
+    def test_a_numbering_failure_never_costs_a_paid_design(
+            self, tmp_path, monkeypatch):
+        """B8. The restore used to sit INSIDE the upload's ``try``, whose
+        ``except Exception`` increments ``n_failures`` and DROPS the design --
+        while a comment two lines above claimed it was outside the upload's
+        failure accounting. ``restore_design_numbering`` never raises, but the
+        decode/encode around it were outside that guarantee, so this makes the
+        restore itself raise and asserts every design is still delivered."""
+        def boom(*_a, **_k):
+            raise RuntimeError("numbering exploded")
+        monkeypatch.setattr(rp, "restore_design_numbering", boom)
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert data["n_failures"] == 0
+        assert data["designs_completed"] == 2
+        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+
+    def test_an_unreadable_staged_target_never_kills_the_shard(
+            self, tmp_path, monkeypatch):
+        """B7. The staged-target read was guarded by ``except OSError`` only,
+        and it sits inside main()'s outer ``try:``/``finally:`` -- which has NO
+        ``except``. A non-OSError there kills a shard that has already paid for
+        its GPU and loses all 8 designs. Nothing about a residue number is worth
+        that, so the guard has to catch everything."""
+        real = rp.pdb_ca_sequence
+        calls = {"n": 0}
+
+        def sometimes_explodes(text):
+            calls["n"] += 1
+            if calls["n"] == 1:          # the staged-reference parse
+                raise ValueError("not an OSError")
+            return real(text)
+        monkeypatch.setattr(rp, "pdb_ca_sequence", sometimes_explodes)
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert data["designs_completed"] == 2
+        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
 
 
 def test_the_upload_loop_restores_numbering_and_records_which_it_shipped():
-    """The pure functions above are worthless if run() never calls them."""
+    """The pure functions above are worthless if run() never calls them.
+
+    A STRUCTURAL SMOKE CHECK, NOT THE CALL SITE'S TEST. This assertion is what
+    the call site used to have INSTEAD of a test, and reviewer B killed six
+    separate mutations of the upload loop -- deleting the renumber block
+    outright among them -- without moving it. ``TestUploadLoopNumbering`` below
+    is the real coverage; this survives only because "the name appears in a
+    Call node" is cheap and catches a whole-function deletion early.
+    """
     src = (_PROTEINA_DIR / "run_pipeline.py").read_text(encoding="utf-8")
     called = {n.func.id for n in ast.walk(ast.parse(src))
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}

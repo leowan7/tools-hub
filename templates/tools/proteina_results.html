@@ -10,6 +10,47 @@
 {% set candidates = output.get('candidates', []) %}
 {% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd', 'cluster_id'] %}
 
+{# WHICH RESIDUE NUMBERING THE DOWNLOADED FILES CARRY. Upstream renumbers every
+   design chain to 1..N, so an operator who asked for hotspot A241 can get back
+   a structure with no residue 241 in it. The pipeline restores the uploaded
+   numbering when it can prove the correspondence and ships upstream's keys when
+   it cannot — and the difference decides whether the operator's own hotspot
+   list resolves against the file. It was recorded per candidate and rendered
+   nowhere, which is the same as not recording it.
+
+   Not a table column: candidate_table pushes every column through `| float`,
+   so a string one renders as an error. It is also a per-FILE property rather
+   than a score, and identical across the shard in every observed run, so one
+   line above the table says it once instead of eight times. `upstream` wins a
+   mixed shard, because the honest headline is the weaker guarantee.
+   Candidates from before this field existed carry neither value and print
+   nothing at all rather than guessing. #}
+{# A namespace loop over `.get`, NOT `map(attribute=...)`: Jinja's attribute
+   filter yields Undefined for a candidate that predates this field, and
+   Undefined is not None, so `reject('none')` would let it through and a shard
+   of nothing but old candidates would render the reassuring message. #}
+{% set nsnum = namespace(input=0, upstream=0) %}
+{% for c in candidates %}
+  {% set v = c.get('target_numbering') %}
+  {% if v == 'input' %}{% set nsnum.input = nsnum.input + 1 %}
+  {% elif v == 'upstream' %}{% set nsnum.upstream = nsnum.upstream + 1 %}{% endif %}
+{% endfor %}
+{% if nsnum.input or nsnum.upstream %}
+  <p class="subtitle" style="margin-top:1rem;">
+    {% if nsnum.upstream %}
+      <strong>Residue numbering:</strong> the downloaded structures carry the
+      design tool's own numbering (each target chain renumbered from 1), not the
+      numbering in the file you uploaded. Hotspot labels such as
+      <code>A241</code> will not resolve against them directly.
+    {% else %}
+      <strong>Residue numbering:</strong> the target chains in the downloaded
+      structures carry the residue numbers from the file you uploaded, so your
+      own hotspot labels resolve against them. The binder chain is numbered
+      from 1 — it is a de-novo chain and has never had any other numbering.
+    {% endif %}
+  </p>
+{% endif %}
+
 {% call results_panel(
     candidates=candidates,
     columns=columns,
