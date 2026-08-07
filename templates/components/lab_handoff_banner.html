@@ -33,7 +33,9 @@
    and `unverified`; `none`, `noname` and the `{% else %}` arm never named any
    page.
 
-   THE `rejected` NOUN IS A LOOKUP WITH A TOTAL DEFAULT, not a branch, and that
+   THE `rejected` NOUN IS A LOOKUP WITH A DEFAULT TOTAL OVER HASHABLE NOUNS
+   (`.get` still raises on a list or a dict, which no call site passes), not a
+   branch, and that
    shape is the fix rather than a detail of it. It was
    `{% if parent == 'run' %}...{% else %}...{% endif %}` for as long as there
    were two callers, so the caller register item A91 adds -- /jobs/<id> -- would
@@ -44,10 +46,14 @@
    caller the same trap. A mapping does not, because ITS DEFAULT NAMES NO PAGE:
    an unknown noun degrades to a sentence true of every parent rather than to
    another parent's claim. `unverified` interpolates `parent` itself, so an
-   unknown noun there renders the caller's own word and never another page's.
+   unknown noun there renders whatever the caller passed, verbatim -- which is
+   ungrammatical for a blank or a non-string (`belong to this None`) but is
+   never another page's noun. The unknown-noun test drives `rejected` only, so
+   the ungrammatical half is stated here and not pinned.
 
    `unverified` NAMES THE NOUN AND NOTHING ELSE. The run arm reaches it from two
-   CAUSES and the target arm from three. Causes, not redirect statements -- each
+   CAUSES, the target arm from three, and the job arm A91 added from exactly one
+   (its parent `read_job` answering UNAVAILABLE). Causes, not redirect statements -- each
    of those two arms has exactly two of those, so the two numbers are not
    comparable unless you say which you mean. A sentence naming one cause is
    false whenever another fired -- which is exactly how the target page's old

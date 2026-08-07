@@ -500,13 +500,27 @@ def test_target_mode_posts_a_source_target_id_and_no_source_job_id():
 def test_campaign_mode_still_posts_a_source_campaign_id():
     """The pair. Adding the target branch above the campaign one must not
     capture the campaign page, whose refs are scoped by a different parentage
-    test on the server."""
+    test on the server.
+
+    THE TWO ABSENCES ARE NOT SYMMETRY WITH THE TARGET SIBLING, they are load
+    bearing since A91. `openCampaignModal` decides whether to label a candidate
+    "· sub-job <id>" from `!!modal.querySelector('[name="source_job_id"]')`,
+    because A91 gave job mode a `candidate_refs` input and `refsInput` stopped
+    identifying scope. So a campaign modal that emitted `source_job_id` would
+    read as single-job and drop the disambiguator from the ONE table that
+    interleaves rows from several jobs and needs it. `candidate_indices`
+    alongside would put a second payload on an arm whose server branch never
+    reads one. Both were mutations that survived a 416-test run; the target-mode
+    sibling already asserted both absences, campaign mode did not, and campaign
+    mode is where they landed."""
     rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb", "_source_job_id": "j1"}]
     html = _render(candidates=rows, columns=["ipTM"], job_id="",
                    tool_slug="bindcraft", campaign_id="c-1")
     fields = _form_for(html, "/lab-projects/submit")
     assert fields.get("source_campaign_id") == "c-1"
     assert "source_target_id" not in fields
+    assert "source_job_id" not in fields
+    assert "candidate_indices" not in fields
 
 
 def test_single_job_mode_posts_both_shortlist_fields():

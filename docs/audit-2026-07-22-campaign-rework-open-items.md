@@ -3436,28 +3436,74 @@ in-product handoff the plan prefers.
   Moving it inside the `try` in two of the three siblings would create exactly
   the asymmetry A97 is about.
 
-- **A106 (NEW, filed with A91, filed not fixed). The `rejected` banner on
-  `/jobs/<id>` can point at a table the page is not rendering.** The shared
-  sentence says "star designs from the table on this page". On a job page the
-  candidate table lives in the tool's results partial, included only when the
-  job succeeded and carries a result (`templates/job_detail.html:229-230`), and
-  `_submit_job_shortlist` does not gate on status -- `candidate_records(None)`
-  is empty, so every index is rejected. A customer who submits against a job
-  that has since failed gets a banner naming a control that is not there.
+- **A106 (NEW, filed with A91, filed not fixed). Three of the five banners on
+  `/jobs/<id>` can name controls the page is not rendering.** `rejected` says
+  "star designs from the table on this page", `none` says "try the button
+  again", `noname` says "reopen the form" -- and the table, the star/submit
+  button and the modal are all inside the one `candidate_table` macro, included
+  only under `job.status == 'succeeded' and job.result`
+  (`templates/job_detail.html:280-281`). They vanish together, so in any other
+  state those three sentences point at nothing.
 
-  Reachable but narrow, and NOT fixed deliberately. Any fix is a page-state
-  variant of copy shared by four templates, which is the fourth-wording cost
-  register item **A95** declines for the same reason on the 503 page: the whole
-  point of moving these five sentences into one partial was that per-caller
-  variants are how one of them went stale unnoticed. Recorded in the
-  `templates/job_detail.html` comment naming A95 as the same class, so the next
-  reader does not mistake it for an oversight.
+  **The first filing of this entry named a mechanism that does not exist**, and
+  the merge commit repeated it. It said a failed job "rejects every index"
+  because `candidate_records(None)` is empty. `_submit_job_shortlist` does not
+  range-check with `candidate_records`; it uses `candidate_count(job.result)`,
+  which answers **`None`** for a NULL result -- that distinction is the entire
+  purpose of the function -- and the check is `if n_records is not None and
+  idx >= n_records`. Measured: a submit against a `status='failed', result=None`
+  job returns `302 /lab-projects/<id>?submitted=1` and creates the campaign with
+  `candidate_indices = [5, 6, 99]` unvalidated. A failed job is ACCEPTED, not
+  rejected. That is A107 below.
 
-  *Next:* if it is fixed, fix it for A95 at the same time and in the same shape,
-  or the partial grows two page-state branches that do not know about each
-  other. The cheaper alternative is upstream: refuse the submission earlier when
-  the source job is not in a state that can have designs, which turns a banner
-  problem into a `failed`-shaped one the existing vocabulary already covers.
+  So the reachable states for these three banners are a succeeded job whose
+  result carries an empty candidates list (`candidate_count == 0`, every index
+  refused, no table rendered), and any non-succeeded state arrived at by a
+  replayed or hand-pasted URL.
+
+  NOT fixed deliberately. Any fix is a page-state variant of copy now shared by
+  four templates, which is the cost register item **A95** declines for the same
+  three sentences on the 503 page: the point of moving them into one partial was
+  that per-caller variants are how one of them went stale unnoticed. Recorded in
+  the `templates/job_detail.html` comment naming A95 as the same class.
+
+  *Next:* fix it for A95 at the same time and in the same shape, or the partial
+  grows two page-state branches that do not know about each other. The upstream
+  alternative is to refuse earlier when the source job cannot have designs --
+  but route that to `rejected`, NOT to `failed`: `failed` renders "try again",
+  and a job permanently without designs cannot be retried into having them,
+  which is the advise-a-retry-that-cannot-work defect rounds 19 and 20 already
+  recorded. An earlier version of this line recommended `failed`.
+
+- **A107 (NEW, filed with A91 QC, filed not fixed). All three submit arms wave
+  every index through when the source job's result is NULL, and stage zero
+  PDBs.** `candidate_count` answers `None` for both "a result shape this app
+  cannot read" and "no result at all", and all three arms spell the check
+  `if n is not None and idx >= n` -- deliberately, so an unreadable shape is not
+  a reason to refuse a design. `_submit_campaign_shortlist` and
+  `_submit_target_shortlist` have read that way since A88; `_submit_job_shortlist`
+  matches them by construction.
+
+  For a NULL result that is the wrong call, and it lands on the exact failure
+  the check exists to prevent. Both ref arms say so in their own comments: an
+  unvalidated index is "persisted, counted on the staff email and on the
+  customer's page -- and then silently skipped by `stage_campaign_candidates`,
+  so the lab receives fewer PDBs than every number anyone can see." With a NULL
+  result, EVERY index is skipped: the customer is told N designs, ops is told N
+  designs, and the archive holds none. `result IS NULL` is "no designs", which
+  is a known length of zero, not "a length we cannot read".
+
+  Narrow to reach and not free to fix. The modal renders only for a succeeded
+  job carrying a result, so a NULL result at submit needs a replayed POST or a
+  result nulled between render and submit. But it is a PAID path and it is three
+  arms wide, so it is filed rather than patched on one of them.
+
+  *Next:* separate the two facts at the source rather than at three call sites
+  -- `candidate_count` could answer `0` for a NULL/absent result and keep `None`
+  for an unreadable non-null shape, which is what its own docstring already
+  argues the distinction is for. Check `shared/target_results.py` and the admin
+  fulfilment view before moving it; both read the same function.
+
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

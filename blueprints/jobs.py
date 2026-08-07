@@ -227,8 +227,11 @@ def job_detail(job_id: str):
     if job is None:
         return render_template("404.html"), 404
     # The reason a failed lab handoff carries, read from the query string.
-    # Unknown and crafted values are dropped rather than rendered, so a pasted
-    # link cannot make a user believe a submission failed.
+    # Whitelisted so an unknown or crafted value renders nothing at all rather
+    # than an empty alert -- the wording both sibling routes use. It does NOT
+    # stop a hand-pasted WHITELISTED value from rendering the full banner; that
+    # is true of all three pages and is what this suite's per-reason render
+    # tests drive.
     handoff = (request.args.get("handoff") or "").strip()
     if handoff not in JOB_HANDOFF_REASONS:
         handoff = ""

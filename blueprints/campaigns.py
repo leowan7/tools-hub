@@ -57,7 +57,8 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # too. `unverified` is the second, and the paragraphs below say how: the two
 # arms reach it from different causes and `cc.read_campaign` has a ground
 # `read_target` does not (register item A97). The SENTENCE is now shared; the
-# CAUSE SETS are not, and nothing here licenses merging the two banner suites.
+# CAUSE SETS are not, and nothing here licenses merging the banner suites --
+# two when this was written, three since A91 added blueprints/jobs.py.
 #
 # THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
 # sentences into templates/components/lab_handoff_banner.html, which takes the

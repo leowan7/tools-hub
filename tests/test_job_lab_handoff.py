@@ -297,6 +297,60 @@ def test_no_candidate_refs_column_is_written_on_this_row(client):
 
 
 # ---------------------------------------------------------------------------
+# The bare-int payload's own sanitizer, which nothing else on this arm repeats
+# ---------------------------------------------------------------------------
+
+def test_one_malformed_index_does_not_discard_the_whole_shortlist(client):
+    """THE HEADLINE CLAIM of ``_parse_candidate_indices_counted``'s docstring,
+    and it is a reachable path rather than a defensive one. ``starRef`` reads
+    ``dataset.refIdx`` and falls back to ``dataset.idx``, then ``parseInt``s
+    whichever it got, so a star button carrying NEITHER attribute yields
+    ``NaN`` -- which ``JSON.stringify`` writes as ``null``.
+    ``openCampaignModal`` posts ``sl.map(function (r) { return r.i; })``, so
+    that ``null`` arrives here inside an otherwise ordinary shortlist.
+
+    The arm's previous ``[int(i) for i in json.loads(raw)]`` inside a bare
+    ``except`` threw the WHOLE list away on the first one, which answers
+    `none` -- "you starred nothing" -- to a user who starred three designs, and
+    creates nothing. An all-or-nothing pre-pass anywhere in this parser
+    restores exactly that.
+    """
+    body = {"candidate_indices": json.dumps([0, None, 2])}
+    resp, h = _submit(client, {_JID: _job(n=3)}, form=body)
+    # First, so the all-or-nothing failure reports the redirect it produced
+    # rather than an IndexError off an empty `created`.
+    assert h.created, resp.headers["Location"]
+    assert h.created[0]["candidate_indices"] == [0, 2]
+    assert h.staged[0]["indices"] == [0, 2]
+    # A client defect is not a design the user chose, so it is neither a drop
+    # nor a truncation and the URL is the ordinary one. The parser excludes it
+    # from `requested` for the same reason the ref parser does.
+    assert resp.headers["Location"].endswith("?submitted=1")
+    assert h.emails[0]["dropped"] == 0
+    assert h.emails[0]["truncated"] == 0
+
+
+def test_a_negative_index_never_reaches_the_row(client):
+    """THE LOWER BOUND, and this parser is the only thing anywhere that holds
+    it. The arm's own range check is ``idx >= n_records`` -- upper bound only
+    -- so a ``-1`` that got past here would be persisted on the row, reported
+    to nobody as a drop, and then skipped by ``stage_campaign_candidates``:
+    the "lab receives fewer PDBs than every number anyone can see" failure, at
+    the other end.
+
+    ``_parse_candidate_refs_counted`` carries the same guard and
+    ``tests/test_campaign_results.py::test_parse_candidate_refs_sanitizes``
+    pins it. This payload's copy had nothing.
+    """
+    resp, h = _submit(client, {_JID: _job(n=3)}, form=_as_indices([0, -1, 2]))
+    assert h.created[0]["candidate_indices"] == [0, 2]
+    assert h.staged[0]["indices"] == [0, 2]
+    assert resp.headers["Location"].endswith("?submitted=1")
+    assert h.emails[0]["dropped"] == 0
+    assert h.emails[0]["truncated"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Refs that name no job
 # ---------------------------------------------------------------------------
 
@@ -346,6 +400,58 @@ def test_the_same_design_named_twice_is_ordered_once(client, shape):
     assert h.staged[0]["indices"] == [0, 1]
     assert h.emails[0]["dropped"] == 0
     assert resp.headers["Location"].endswith("?submitted=1")
+
+
+@pytest.mark.parametrize("shape", _SHAPES)
+def test_a_repeated_out_of_range_design_is_one_drop_not_two(client, shape):
+    """WHERE THE DEDUPE SITS, which is ABOVE both checks rather than below
+    them. The test above pairs with this one and cannot replace it: an
+    IN-RANGE repeat is collapsed identically wherever the dedupe runs, because
+    the checks it would have to pass first are checks it passes. Only a repeat
+    that also FAILS a check tells the two orders apart.
+
+    ``dropped`` is documented as distinct DESIGNS refused, and
+    ``shared/email.py`` prints it to ops as the shortfall against the order
+    they are about to fulfil. Counted below the checks, one missing design is
+    announced as two -- a number that matches nothing on the page ops opens,
+    on the arm whose whole A91 fix was making that number honest.
+    """
+    resp, h = _submit(client, {_JID: _job(n=2)}, form=shape([0, 7, 7]))
+    assert h.created[0]["candidate_indices"] == [0]
+    assert h.staged[0]["indices"] == [0]
+    assert h.emails[0]["dropped"] == 1
+    assert resp.headers["Location"].endswith("?submitted=1&dropped=1")
+
+
+def test_a_foreign_ref_cannot_swallow_the_same_index_in_the_users_own_job(
+    client,
+):
+    """THE DEDUPE KEY, which is the PAIR ``(job_id, index)`` and not the index
+    on its own. Design 0 of another job and design 0 of this one are two
+    different physical structures, and a key of one field collapses them --
+    losing the caller's own, because the foreign entry comes first and the
+    parentage check has already counted it as a drop.
+
+    Every entry would then have been refused, so the arm answers `rejected`,
+    whose banner promises the same selection "will be refused the same way".
+    That is false here: the one design the user actually owns was never judged.
+
+    ``test_a_ref_naming_another_job_is_refused`` cannot catch this -- its two
+    entries carry different indices, so a one-field key behaves identically.
+    """
+    jobs = {_JID: _job(), _OTHER_JID: _job(_OTHER_JID)}
+    body = {"candidate_refs": json.dumps([
+        {"job_id": _OTHER_JID, "index": 0},
+        {"job_id": _JID, "index": 0},
+    ])}
+    resp, h = _submit(client, jobs, form=body)
+    # First, so a one-field key reports the `?handoff=rejected` it produced
+    # rather than an IndexError off an empty `created`.
+    assert h.created, resp.headers["Location"]
+    assert h.created[0]["candidate_indices"] == [0]
+    assert h.staged[0]["indices"] == [0]
+    assert h.emails[0]["dropped"] == 1
+    assert resp.headers["Location"].endswith("?submitted=1&dropped=1")
 
 
 @pytest.mark.parametrize("shape", _SHAPES)

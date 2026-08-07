@@ -388,6 +388,19 @@ _HOOKS = [
     (r'\[name="candidate_indices"\]',
      'the hidden input name="candidate_indices"', ("job",),
      _el(tag="input", name="candidate_indices")),
+    # A NEW THING THE JS READS, and the reason this row exists at all rather
+    # than being left to the render tests: the parent field used to be a
+    # server-side detail this file had no interest in, and A91 made it the
+    # switch `openCampaignModal` decides the review list's wording on. The JS
+    # used to key that on `refsInput` -- present only in the ref modes -- and
+    # A91 gave job mode a refs input of its own, so the old key stopped
+    # identifying scope and was replaced by this lookup.
+    #
+    # Job-only, matching the macro: exactly one parent field is emitted per
+    # render. test_no_ref_mode_carries_a_job_scope_field below is the other
+    # direction, which is the one that actually bites -- see its docstring.
+    (r'\[name="source_job_id"\]', 'the hidden input name="source_job_id"',
+     ("job",), _el(tag="input", name="source_job_id")),
 ]
 
 _HOOK_IDS = [f"{h[1]} [{'+'.join(h[2])}]" for h in _HOOKS]
@@ -413,6 +426,45 @@ def test_the_starred_export_is_target_mode_only(mode):
     a filename claiming otherwise."""
     assert _el(cls="cand-starred-export")(_DOM[mode]) == []
     assert _el(tag="input", name="refs")(_DOM[mode]) == []
+
+
+@pytest.mark.parametrize("mode", ["campaign", "target", "target_grouped"])
+def test_no_ref_mode_carries_a_job_scope_field(mode):
+    """The pair for the two job-only rows above, and the direction that bites.
+
+    `source_job_id` is not merely the job form's parent field any more. Since
+    A91 it is the switch `openCampaignModal` reads --
+    `!!modal.querySelector('[name="source_job_id"]')` -- to decide whether a
+    reviewed candidate gets its `· sub-job <id>` suffix. The suffix is
+    suppressed in job scope because a single-job table has exactly one job and
+    calling it a sub-job of itself reads as a rendering fault. Emit the field
+    in a ref mode and the suppression fires on the tables that INTERLEAVE
+    several sub-jobs: the review list shows "Candidate 1, Candidate 1,
+    Candidate 2" with nothing saying which sub-job any of them came from, on
+    the last screen before a paid wet-lab order. The positive row above cannot
+    see this -- it asserts job mode still emits the field, and every mode
+    emitting it satisfies that.
+
+    Routing is unaffected, deliberately not claimed otherwise: `campaigns_submit`
+    tries `source_target_id`, then `source_campaign_id`, then `source_job_id`,
+    so a ref form carrying an extra job id still reaches its own arm. The
+    damage is entirely in what the user is shown.
+
+    `candidate_indices` is asserted here for a different reason.
+    tests/test_target_table_render.py calls it "the ONLY field this form has
+    that the ref forms do not", which is the stated reason the job branch
+    cannot yet be collapsed into the ref one; emitting it here makes that
+    sentence false. No arm reads it off a ref form today -- both parse
+    `candidate_refs` alone -- but what `openCampaignModal` would put in it is
+    `sl.map(r => r.i)`, and `data-ref-idx` on a merged table is the row's index
+    WITHIN ITS OWN sub-job, so the payload is a list of positions with the job
+    that gives each one meaning stripped off.
+    """
+    assert _el(tag="input", name="source_job_id")(_DOM[mode]) == []
+    assert _el(tag="input", name="candidate_indices")(_DOM[mode]) == []
+    # ...and the mode is not vacuously fieldless: it does render the lab-submit
+    # form, with its own parent field and the refs payload both ref arms parse.
+    assert _el(tag="input", name="candidate_refs")(_DOM[mode])
 
 
 @pytest.mark.parametrize("mode", _ALL)

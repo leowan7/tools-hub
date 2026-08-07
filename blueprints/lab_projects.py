@@ -1163,10 +1163,26 @@ def campaigns_submit():
     # take and the one that survives dropping the legacy field.
     #
     # PARSED AGAIN HERE rather than reusing the dispatcher's copy above, because
-    # `default_job_id` may only be applied where a single source job is known.
-    # Folding it into that parse would let a body carrying `source_job_id`
-    # alongside `source_target_id` have its unattributed refs credited to that
-    # job on an arm whose parentage test never sees the field.
+    # `default_job_id` is an ASSUMPTION -- "every unattributed entry belongs to
+    # this one job" -- and it is only true where a single source job is known,
+    # which is this branch alone.
+    #
+    # NOT because folding it upward would leak a foreign job into a ref arm. An
+    # earlier version of this comment said it would; it does not. A body
+    # carrying `source_job_id` beside `source_target_id` dispatches to the
+    # target arm, which re-reads every job a ref names through
+    # `read_job(jid, user_id=ctx.user_id)` and then applies `owned_by_target`,
+    # so a job that is not the caller's, or is attached to neither that target
+    # nor any of its campaigns, is refused there however it came to be named.
+    #
+    # What the separate parse buys is that each ref arm sees the refs the client
+    # sent and nothing this dispatcher added. Folded, an unattributed entry
+    # would enter BOTH `candidate_refs` and `requested_refs` on an arm that
+    # cannot place it -- changing that arm's shortlist and its `truncated`
+    # arithmetic on the strength of a field its own dispatch never consults --
+    # and its correctness would then rest wholly on the downstream check rather
+    # than on an input nobody rewrote. Defence in depth, and it costs one more
+    # pass over an array `json.loads` has already materialised in full.
     job_refs, requested_job_refs = _parse_candidate_refs_counted(
         request.form.get("candidate_refs", ""), default_job_id=source_job_id,
     )
