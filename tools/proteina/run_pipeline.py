@@ -417,6 +417,302 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
     return residues, n_unparsable
 
 
+# ---------------------------------------------------------------------------
+# Putting the DELIVERED design back into the operator's residue numbering
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT, MEASURED. Upstream renumbers every chain of a design to 1..N. On
+# 8 of 8 designs of a completed Fc shard, input chains A 234-444 (211 residues)
+# and B 237-444 (208) came back as A 1-211 and B 1-208 — contiguous, chain
+# labels preserved, residue order preserved, 100.0% positional sequence identity
+# on both chains across 3,352 correspondences. Only the keys changed.
+#
+# THIS IS NOT A CORRECTNESS BUG IN PRODUCTION, and saying so precisely matters:
+# every hotspot check runs PRE-GPU against the uploaded file, so nothing is
+# designed against the wrong residue. What breaks is the DELIVERABLE. An
+# operator who asked for hotspot A241 gets back a structure that has no residue
+# 241 in it and cannot cross-reference the result against the numbering they
+# typed.
+#
+# The restore is fail-closed: it proves the correspondence by sequence before
+# using it, and when it cannot, the design is uploaded byte-for-byte as upstream
+# wrote it — today's behaviour. A design is never lost to this step.
+
+_UNKNOWN_RESNAMES = frozenset({"UNK", "UNX", "XAA", "X"})
+
+# How far a chain may drift from the input before we refuse to call it the same
+# chain, and how many residues must carry actual evidence. Same values as the
+# canary's TARGET_MIN_SEQUENCE_IDENTITY / TARGET_MIN_INFORMATIVE_RESIDUES.
+# DUPLICATED, NOT IMPORTED, and that is forced: modal_app.py copies
+# run_pipeline.py into the image and nothing else, so _canary_scoring.py does
+# not exist in production. Keep the two in step by hand.
+_RENUMBER_MIN_IDENTITY = 0.9
+_RENUMBER_MIN_INFORMATIVE = 10
+
+# Records whose residue-sequence number lives in columns 23-26, i.e. the ones a
+# resseq rewrite must touch. TER is handled separately — see
+# restore_design_numbering.
+_RESSEQ_COORD_RECORDS = ("ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ")
+
+# Records that ALSO carry residue numbers, at other column positions. Upstream's
+# design output contains none of them (measured: a real design is ATOM / TER /
+# MODEL / ENDMDL / END and nothing else). If one ever appears, renumbering only
+# the coordinate section would leave the file self-inconsistent, so the restore
+# declines instead — the direction that ships upstream's file unchanged.
+_RESSEQ_ANNOTATION_RECORDS = (
+    "HELIX ", "SHEET ", "SSBOND", "LINK  ", "CISPEP", "SITE  ", "MODRES",
+    "SEQADV", "DBREF ",
+)
+
+
+def pdb_ca_sequence(pdb_text: str) -> dict[str, list[tuple[int, str]]]:
+    """``chain -> [(resseq, resname), ...]`` ascending, over every CA residue.
+
+    The sibling of ``pdb_ca_residues``, which returns ``(chain, resseq, icode)``
+    and no residue NAME. A positional map has to be checked by sequence, so the
+    names are the entire point, and a second parser is cheaper than changing a
+    return shape that several callers depend on.
+
+    Same model-1 / altloc / modified-residue rules as ``pdb_ca_residues``, so
+    the two never disagree about what counts as a residue.
+    """
+    by_chain: dict[str, list[tuple[int, str]]] = {}
+    seen: set[tuple[str, int, str]] = set()
+    for line in pdb_text.split("\n"):
+        record = line[:6]
+        if record.startswith("ENDMDL"):
+            break
+        if record not in ("ATOM  ", "HETATM"):
+            continue
+        if line[12:16].strip() != "CA":
+            continue
+        resname = line[17:20].strip().upper()
+        if record == "HETATM" and resname not in _MODRES_EQUIV:
+            continue
+        chain = line[21:22].strip()
+        try:
+            resseq = int(line[22:26])
+        except ValueError:
+            continue
+        icode = line[26:27].strip()
+        key = (chain, resseq, icode)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_chain.setdefault(chain, []).append((resseq, resname))
+    for chain in by_chain:
+        by_chain[chain].sort()
+    return by_chain
+
+
+def _is_unknown_resname(name: str) -> bool:
+    """``UNK`` / ``UNX`` / ``XAA`` / ``X`` — "I do not know what this is"."""
+    return str(name).strip().upper() in _UNKNOWN_RESNAMES
+
+
+def chain_renumber_map(observed: list[tuple[int, str]],
+                       reference: list[tuple[int, str]],
+                       *,
+                       min_identity: float = _RENUMBER_MIN_IDENTITY,
+                       min_informative: int = _RENUMBER_MIN_INFORMATIVE,
+                       ) -> dict:
+    """Position-for-position map from a design chain's numbering to the input's.
+
+    Both lists are ``(resseq, resname)`` ASCENDING BY ``resseq``. The i-th
+    residue of the design chain is taken to be the i-th residue of the input
+    chain — and that assumption is then CHECKED against the residue names rather
+    than trusted, because assuming it is how a rewrite ends up keyed to the
+    wrong chain.
+
+    Returns ``{"ok", "reason", "map", "n", "n_informative", "identity"}``. ``ok``
+    is False on any doubt and ``map`` is then empty.
+
+    WHAT IT REFUSES, AND WHY EACH REFUSAL EARNS ITS PLACE. A binder relabelled
+    onto a target's chain id fails on length. A binder that happens to match on
+    length fails on sequence, because a de-novo binder is not the target. A chain
+    of nothing but UNK fails the informative floor — unknown residues compare
+    equal to anything, so without that floor an all-UNK chain scores a perfect
+    identity against any reference at all and would certify a map that renumbers
+    the wrong chain onto the operator's keys.
+
+    Residue-name comparison is deliberately EXACT, with no modified-residue
+    folding, even though ``_MODRES_EQUIV`` exists a few lines up. The asymmetry
+    is the reason: a false MISMATCH costs nothing — we decline to restore and
+    ship exactly what upstream wrote, which is the current behaviour — while a
+    false MATCH rewrites the deliverable's keys on a correspondence that does
+    not hold. Only one of those two directions can do damage.
+    """
+    n_obs, n_ref = len(observed), len(reference)
+    if n_obs != n_ref:
+        return {"ok": False, "n": n_obs, "n_informative": 0, "identity": None,
+                "map": {},
+                "reason": (f"length differs: {n_obs} residues in the design, "
+                           f"{n_ref} in the input chain — a positional map needs "
+                           f"one residue per residue")}
+    if not n_obs:
+        return {"ok": False, "n": 0, "n_informative": 0, "identity": None,
+                "map": {}, "reason": "the chain carries no CA residue"}
+
+    pairs = [(o[1], r[1]) for o, r in zip(observed, reference)]
+    informative = [(a, b) for a, b in pairs
+                   if not _is_unknown_resname(a) and not _is_unknown_resname(b)]
+    identical = sum(1 for a, b in informative if a == b)
+    identity = (identical / len(informative)) if informative else None
+    ref_informative = sum(1 for _, name in reference
+                          if not _is_unknown_resname(name))
+    floor = max(1, min(int(min_informative), int(ref_informative)))
+
+    if len(informative) < floor:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"only {len(informative)} informative residue pair(s), "
+                           f"below the {floor} required — an all-unknown chain "
+                           f"matches anything and must not certify a map")}
+    if identity is None or identity < min_identity:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"sequence identity {identity!r} over "
+                           f"{len(informative)} informative pair(s) is below "
+                           f"{min_identity} — these are not the same chain in "
+                           f"the same order")}
+    return {"ok": True, "n": n_obs, "n_informative": len(informative),
+            "identity": round(identity, 4),
+            "map": {o[0]: r[0] for o, r in zip(observed, reference)},
+            "reason": ""}
+
+
+def restore_design_numbering(pdb_text: str,
+                             target_chains: list[str],
+                             reference: dict[str, list[tuple[int, str]]],
+                             *,
+                             min_identity: float = _RENUMBER_MIN_IDENTITY,
+                             min_informative: int = _RENUMBER_MIN_INFORMATIVE,
+                             ) -> tuple[str, dict]:
+    """Rewrite a design's TARGET chains back into the input's residue numbering.
+
+    Returns ``(text, report)``. ``text`` is the rewritten file when
+    ``report["applied"]`` and the input string unchanged otherwise. The binder
+    chain is never touched: it is a de-novo chain with no input to be numbered
+    against, and 1..N is the only numbering it has ever had.
+
+    ALL TARGET CHAINS MAP OR NONE IS APPLIED. A partial rewrite would leave one
+    target chain keyed to the operator's input and another to upstream's 1..N,
+    which is harder to reason about than either alone.
+
+    TER IS SET FROM THE CHAIN'S LAST COORDINATE RECORD, NOT THROUGH THE MAP, and
+    that is measured rather than stylistic. Upstream's TER records already carry
+    a cumulative index that is not in the chain's own numbering space: in a real
+    design, chain B's final ATOM is ``SER B 208`` while its TER reads
+    ``SER B 419``, and chain C's TER names a different residue than the atom it
+    follows. Those numbers are not keys in the map and a map lookup would skip
+    them — which would be fine for B and C, but chain A's TER *does* agree with
+    its atoms, so skipping it would leave ``TER ... A 211`` beside atoms
+    renumbered to 234-444 and break something that was correct. Re-deriving from
+    the last coordinate record is right for all three.
+
+    NEVER RAISES. A design that reaches this function has already been paid for;
+    losing it over a numbering nicety would be a far worse outcome than shipping
+    upstream's keys. Any failure returns the input text with a reason.
+    """
+    report: dict = {"applied": False, "already_input_numbering": False,
+                    "chains": {}, "reason": ""}
+    try:
+        wanted = sorted({c for c in target_chains if c})
+        if not wanted:
+            report["reason"] = "no target chains were named"
+            return pdb_text, report
+
+        observed = pdb_ca_sequence(pdb_text)
+        chains: dict[str, dict] = {}
+        for chain in wanted:
+            if chain not in observed:
+                chains[chain] = {"ok": False, "n": 0, "n_informative": 0,
+                                 "identity": None, "map": {},
+                                 "reason": "chain absent from the design output"}
+            elif chain not in reference:
+                chains[chain] = {"ok": False, "n": len(observed[chain]),
+                                 "n_informative": 0, "identity": None, "map": {},
+                                 "reason": "chain absent from the input target"}
+            else:
+                chains[chain] = chain_renumber_map(
+                    observed[chain], reference[chain],
+                    min_identity=min_identity, min_informative=min_informative)
+        report["chains"] = chains
+
+        # ``c in observed`` is load-bearing, not defensive noise. Without it a
+        # chain missing from BOTH sides compares [] == [] and votes "already in
+        # the input numbering", so a design that is missing every target chain
+        # would be reported as needing no work rather than as broken. The call
+        # site derives ``wanted`` from the reference's own keys, which makes that
+        # unreachable today — but it is one refactor away from being reachable,
+        # and the wrong answer here is the reassuring one.
+        already = all(
+            c in observed
+            and [k for k, _ in observed[c]] == [k for k, _ in reference.get(c, [])]
+            for c in wanted)
+        report["already_input_numbering"] = already
+        if already:
+            report["reason"] = "the design already carries the input numbering"
+            return pdb_text, report
+        if not all(c["ok"] for c in chains.values()):
+            report["reason"] = "; ".join(
+                f"chain {c}: {v['reason']}"
+                for c, v in sorted(chains.items()) if not v["ok"])
+            return pdb_text, report
+
+        remap = {c: chains[c]["map"] for c in wanted}
+        # Column 23-26 is four characters wide. A mapped value that does not fit
+        # would silently shift the insertion-code column, so refuse the whole
+        # file rather than emit a corrupted one.
+        for chain, mapping in remap.items():
+            for value in mapping.values():
+                if len(f"{value:d}") > 4:
+                    report["reason"] = (
+                        f"chain {chain}: input residue number {value} does not "
+                        f"fit the four columns PDB gives resSeq")
+                    return pdb_text, report
+
+        lines = pdb_text.split("\n")
+        for line in lines:
+            if line[:6] in _RESSEQ_ANNOTATION_RECORDS:
+                report["reason"] = (
+                    f"the design carries {line[:6].strip()} records, whose "
+                    f"residue numbers this rewrite does not maintain — "
+                    f"renumbering only the coordinates would leave the file "
+                    f"self-inconsistent")
+                return pdb_text, report
+
+        out: list[str] = []
+        last_seen: dict[str, int] = {}
+        for line in lines:
+            record = line[:6]
+            chain = line[21:22].strip() if len(line) > 21 else ""
+            if record in _RESSEQ_COORD_RECORDS and chain in remap:
+                try:
+                    old = int(line[22:26])
+                except ValueError:
+                    out.append(line)
+                    continue
+                new = remap[chain].get(old)
+                if new is None:
+                    out.append(line)
+                    continue
+                last_seen[chain] = new
+                out.append(f"{line[:22]}{new:>4d}{line[26:]}")
+                continue
+            if record.startswith("TER") and chain in remap and chain in last_seen:
+                out.append(f"{line[:22]}{last_seen[chain]:>4d}{line[26:]}")
+                continue
+            out.append(line)
+
+        report["applied"] = True
+        return "\n".join(out), report
+    except Exception as exc:  # noqa: BLE001 — never lose a paid design to this
+        report["applied"] = False
+        report["reason"] = f"{type(exc).__name__}: {exc}"
+        return pdb_text, report
+
+
 def parse_target_input(spec: str) -> list[tuple[str, Optional[int], Optional[int]]]:
     """Parse a contig such as ``A1-150`` or ``A12-157,B12-157,C12-157``.
 
@@ -2103,6 +2399,28 @@ def main() -> None:
             return
 
         # --- upload + stream each design -------------------------------------
+        # Parsed ONCE, not per design: the reference is the STAGED CROPPED file,
+        # which is what upstream was given and therefore the only thing the
+        # design's target chains can be positionally compared against. The
+        # uploaded original is the wrong reference — the crop is what defines
+        # which residues exist.
+        renumber_reference: dict[str, list[tuple[int, str]]] = {}
+        if target_source == "custom" and task_name:
+            try:
+                renumber_reference = pdb_ca_sequence(
+                    (Path(_HUB_TARGET_DIR) / f"{task_name}.pdb")
+                    .read_text(errors="replace"))
+            except OSError as exc:
+                logger.warning(
+                    "renumbering: staged target unreadable (%s) — designs ship "
+                    "in upstream's 1..N numbering", exc)
+        renumber_chains = sorted(renumber_reference)
+        # Warn once per shard, not once per design. A flag rather than a test on
+        # ``rank``: rank comes from ``enumerate(parsed)`` and therefore starts at
+        # ZERO, so "rank == 1" would announce the second design and stay silent
+        # on a one-design shard — losing the only signal the operator gets.
+        renumber_warned = False
+
         out_designs: list[dict] = []
         out_candidates: list[dict] = []
         n_failures = 0
@@ -2116,8 +2434,25 @@ def main() -> None:
                 continue
             basename = f"design_{rank:03d}.pdb"
             pdb_key = f"designs/{basename}"
+            numbering = "upstream"
             try:
                 pdb_bytes = pdb_path.read_bytes()
+                if renumber_chains:
+                    # Outside the upload's failure accounting on purpose: this
+                    # step must never turn a delivered design into a failure.
+                    restored, rep = restore_design_numbering(
+                        pdb_bytes.decode("utf-8", errors="replace"),
+                        renumber_chains, renumber_reference)
+                    if rep["applied"]:
+                        pdb_bytes = restored.encode("utf-8")
+                        numbering = "input"
+                    elif rep["already_input_numbering"]:
+                        numbering = "input"
+                    elif not renumber_warned:
+                        renumber_warned = True
+                        logger.warning(
+                            "renumbering: designs ship in upstream's 1..N "
+                            "numbering — %s", rep["reason"])
                 urls = request_upload_urls(upload_endpoint, job_token, [basename])
                 upload_pdb(urls[basename], pdb_bytes)
             except Exception as exc:
@@ -2130,6 +2465,11 @@ def main() -> None:
                 "rank": rank,
                 "name": d["name"],
                 "pdb_key": pdb_key,
+                # "input" when the delivered file carries the residue numbers the
+                # operator typed, "upstream" when it carries 1..N. Recorded per
+                # design so the answer is in the result rather than in a log line
+                # nobody reads.
+                "target_numbering": numbering,
                 # flat copies for the results template + classifiers
                 "total_reward": scores.get("total_reward"),
                 "af2_iptm": scores.get("af2_iptm"),

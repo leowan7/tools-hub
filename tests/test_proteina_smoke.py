@@ -3709,3 +3709,279 @@ class TestRuntimeCopyMatchesMeasurement:
             assert abs(est - measured) / measured <= 0.10, (
                 f"the estimator puts the {aa} aa 8-design shard at "
                 f"{est:.1f} min, not the {measured:.1f} min it actually took")
+
+
+# ---------------------------------------------------------------------------
+# Putting the DELIVERED design back into the operator's residue numbering
+# ---------------------------------------------------------------------------
+#
+# Measured on a completed Fc shard: upstream renumbers every design chain to
+# 1..N, so an operator who asked for hotspot A241 gets back a file with no
+# residue 241 in it. Against the 8 archived designs, restore_design_numbering
+# takes hotspot resolution from 0/20 to 20/20 while leaving coordinates, residue
+# names and the binder chain byte-identical.
+
+# 20 DISTINCT residue names, so a positional map is actually CONSTRAINED by
+# sequence. An all-ALA fixture would score identity 1.0 against any reference of
+# the same length and would not exercise the guard at all.
+_SEQ_A = ["ALA", "GLY", "SER", "THR", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR",
+          "TRP", "HIS", "LYS", "ARG", "ASP", "GLU", "ASN", "GLN", "MET", "CYS"]
+_SEQ_B = ["CYS", "MET", "GLN", "ASN", "GLU", "ASP", "ARG", "LYS", "HIS", "TRP",
+          "TYR", "PHE", "PRO", "ILE", "LEU", "VAL", "THR", "SER", "GLY", "ALA"]
+_SEQ_C = ["GLY", "ALA", "SER", "VAL", "LEU", "THR", "PRO", "PHE"]
+
+
+def _chain(chain, resnames, first_res, serial0=1):
+    """CA-only lines for one chain, in the real column layout."""
+    return [_atom(serial0 + i, "CA", nm, chain, first_res + i)
+            for i, nm in enumerate(resnames)]
+
+
+def _design(*, a_first=1, b_first=1, c_first=1,
+            seq_a=None, seq_b=None, seq_c=None, ter=True):
+    """A renumbered design: target chains A and B, de-novo binder C."""
+    seq_a = _SEQ_A if seq_a is None else seq_a
+    seq_b = _SEQ_B if seq_b is None else seq_b
+    seq_c = _SEQ_C if seq_c is None else seq_c
+    lines = []
+    lines += _chain("A", seq_a, a_first, 1)
+    if ter:
+        lines.append("TER   %5d      %3s A%4d"
+                     % (900, seq_a[-1], a_first + len(seq_a) - 1))
+    lines += _chain("B", seq_b, b_first, 100)
+    if ter:
+        # Upstream writes a CUMULATIVE index here, not the chain's own number --
+        # measured: a real design's chain B ends at ATOM 208 with TER 419.
+        lines.append("TER   %5d      %3s B%4d" % (901, seq_b[-1], 999))
+    lines += _chain("C", seq_c, c_first, 200)
+    if ter:
+        lines.append("TER   %5d      %3s C%4d" % (902, seq_c[-1], 888))
+    return "\n".join(lines) + "\n"
+
+
+def _reference(*, a_first=234, b_first=300, seq_a=None, seq_b=None):
+    """What pdb_ca_sequence returns for the staged, cropped input target."""
+    return {
+        "A": [(a_first + i, nm)
+              for i, nm in enumerate(_SEQ_A if seq_a is None else seq_a)],
+        "B": [(b_first + i, nm)
+              for i, nm in enumerate(_SEQ_B if seq_b is None else seq_b)],
+    }
+
+
+def _keys(text):
+    return {"%s%d" % (c, r)
+            for c, v in rp.pdb_ca_sequence(text).items() for r, _ in v}
+
+
+class TestPdbCaSequence:
+    def test_it_agrees_with_pdb_ca_residues_about_what_a_residue_is(self, tmp_path):
+        path = tmp_path / "f.pdb"
+        path.write_text(FIXTURE_PDB, encoding="utf-8")
+        by_chain = rp.pdb_ca_sequence(FIXTURE_PDB)
+        flat = {(c, r) for c, v in by_chain.items() for r, _ in v}
+        residues, _ = rp.pdb_ca_residues(path)
+        assert flat == {(c, r) for c, r, _ in residues}
+
+    def test_it_carries_the_residue_name(self):
+        assert rp.pdb_ca_sequence(_design())["A"][0] == (1, "ALA")
+
+    def test_it_returns_each_chain_ascending(self):
+        text = "\n".join(_chain("A", ["GLY", "ALA", "SER"], 5)[::-1])
+        assert [r for r, _ in rp.pdb_ca_sequence(text)["A"]] == [5, 6, 7]
+
+    def test_it_stops_at_the_first_endmdl(self):
+        text = _design() + "ENDMDL\n" + "\n".join(_chain("Z", ["ALA"] * 5, 1))
+        assert "Z" not in rp.pdb_ca_sequence(text)
+
+
+class TestRestoreDesignNumbering:
+    def test_a_renumbered_design_is_put_back_into_the_input_numbering(self):
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], _reference())
+        assert rep["applied"] is True
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _ in got["A"]] == list(range(234, 254))
+        assert [r for r, _ in got["B"]] == list(range(300, 320))
+
+    def test_the_operators_hotspot_tokens_resolve_only_after_the_restore(self):
+        design = _design()
+        assert "A241" not in _keys(design)
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True
+        assert "A241" in _keys(out)
+        assert "B305" in _keys(out)
+
+    def test_the_binder_chain_is_never_renumbered(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rp.pdb_ca_sequence(out)["C"] == rp.pdb_ca_sequence(design)["C"]
+
+    def test_coordinates_and_residue_names_are_untouched(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        coords = lambda t: [l[30:54] for l in t.split("\n") if l[:6] == "ATOM  "]
+        names = lambda t: [l[17:20] for l in t.split("\n") if l[:6] == "ATOM  "]
+        assert coords(out) == coords(design)
+        assert names(out) == names(design)
+
+    def test_only_the_resseq_columns_change(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        differing = {i
+                     for a, b in zip(design.split("\n"), out.split("\n"))
+                     for i, (x, y) in enumerate(zip(a, b)) if x != y}
+        assert differing <= {22, 23, 24, 25}
+
+    def test_the_line_count_is_preserved(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert len(out.split("\n")) == len(design.split("\n"))
+
+    def test_ter_is_re_derived_from_the_chains_last_coordinate_record(self):
+        # Chain A's TER AGREED with its atoms before the rewrite and must still
+        # agree after -- mapping it would have been fine, but leaving it alone
+        # would break something that was correct. Chain B's carried upstream's
+        # cumulative 999, which is not a key in the map at all. The binder's is
+        # left exactly as found.
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], _reference())
+        assert rep["applied"] is True
+        ters = {l[21:22]: int(l[22:26])
+                for l in out.split("\n") if l.startswith("TER")}
+        assert ters["A"] == 253
+        assert ters["B"] == 319
+        assert ters["C"] == 888
+
+    def test_a_design_already_in_the_input_numbering_is_left_alone(self):
+        design = _design(a_first=234, b_first=300)
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is False
+        assert rep["already_input_numbering"] is True
+        assert out == design
+
+
+class TestRestoreDesignNumberingRefuses:
+    def _unchanged(self, design, chains, reference):
+        out, rep = rp.restore_design_numbering(design, chains, reference)
+        assert rep["applied"] is False, rep["reason"]
+        assert out == design
+        return rep
+
+    def test_a_length_mismatch_refuses(self):
+        # A binder relabelled onto the target's chain id is caught here first.
+        rep = self._unchanged(_design(seq_a=_SEQ_A[:15]), ["A", "B"], _reference())
+        assert "length differs" in rep["reason"]
+
+    def test_a_sequence_mismatch_refuses(self):
+        # Same length, different protein: the positional map must not certify.
+        rep = self._unchanged(
+            _design(seq_a=list(reversed(_SEQ_A))), ["A", "B"], _reference())
+        assert "sequence identity" in rep["reason"]
+
+    def test_an_all_unknown_chain_refuses(self):
+        # UNK compares equal to anything, so without the informative floor this
+        # chain scores identity 1.0 against any reference of the same length.
+        rep = self._unchanged(_design(seq_a=["UNK"] * 20), ["A", "B"], _reference())
+        assert "informative" in rep["reason"]
+
+    def test_all_target_chains_map_or_none_is_applied(self):
+        # A alone would map cleanly; B is broken, so A must NOT be rewritten.
+        rep = self._unchanged(_design(seq_b=_SEQ_B[:9]), ["A", "B"], _reference())
+        assert "chain B" in rep["reason"]
+
+    def test_a_chain_missing_from_the_design_refuses(self):
+        rep = self._unchanged(_design(), ["A", "B", "D"], _reference())
+        assert "absent from the design output" in rep["reason"]
+
+    def test_a_design_missing_every_target_chain_is_not_called_already_correct(self):
+        # [] == [] would vote "already in the input numbering" and hand back the
+        # reassuring answer for a design that is in fact unusable.
+        binder_only = "\n".join(_chain("C", _SEQ_C, 1)) + "\n"
+        rep = self._unchanged(binder_only, ["A", "B"], _reference())
+        assert rep["already_input_numbering"] is False
+        assert "absent from the design output" in rep["reason"]
+
+    def test_a_chain_missing_from_the_input_refuses(self):
+        ref = _reference()
+        ref.pop("B")
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "absent from the input target" in rep["reason"]
+
+    def test_a_residue_number_too_wide_for_four_columns_refuses(self):
+        # 99990+ would overflow cols 23-26 and silently shift the iCode column.
+        rep = self._unchanged(_design(), ["A", "B"], _reference(a_first=99990))
+        assert "four columns" in rep["reason"]
+
+    def test_annotation_records_carrying_residue_numbers_make_it_decline(self):
+        design = _design() + "HELIX    1   1 ALA A    1  GLY A   10  1\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "HELIX" in rep["reason"]
+
+    def test_no_target_chains_named_is_a_no_op(self):
+        rep = self._unchanged(_design(), [], _reference())
+        assert "no target chains" in rep["reason"]
+
+    def test_it_never_raises_and_never_loses_the_design(self):
+        # A design that reaches this function has already been paid for; losing
+        # it over a numbering nicety would be far worse than shipping 1..N.
+        for bad in (None, 12, object()):
+            out, rep = rp.restore_design_numbering(bad, ["A"], _reference())
+            assert out is bad
+            assert rep["applied"] is False
+            assert rep["reason"]
+
+
+class TestChainRenumberMap:
+    def test_it_maps_position_for_position(self):
+        obs = [(i + 1, nm) for i, nm in enumerate(_SEQ_A)]
+        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["map"][1] == 234
+        assert got["map"][20] == 253
+        assert got["identity"] == 1.0
+
+    def test_an_empty_chain_refuses(self):
+        assert rp.chain_renumber_map([], [])["ok"] is False
+
+    def test_a_stray_unknown_does_not_drag_a_real_chain_below_the_floor(self):
+        obs = [(i + 1, nm) for i, nm in enumerate(["UNK"] + _SEQ_A[1:])]
+        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["n_informative"] == 19
+
+    def test_a_few_lucky_matches_among_unknowns_still_refuses(self):
+        # identity 1.0 over 3 informative pairs is not evidence of a chain.
+        # The REFERENCE must be fully informative for this to be the case under
+        # test: the floor is capped at what the reference can supply, so an
+        # all-UNK reference legitimately lowers the bar to 3 and the map is then
+        # allowed. It is the DESIGN being sequence-free that must be refused.
+        obs = [(i + 1, nm) for i, nm in enumerate(["UNK"] * 17 + _SEQ_A[17:])]
+        ref = [(i + 234, nm) for i, nm in enumerate(_SEQ_A)]
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["n_informative"] == 3
+        assert got["identity"] == 1.0
+        assert got["ok"] is False
+        assert "informative" in got["reason"]
+
+    def test_an_all_unknown_reference_may_still_certify_a_tiny_target(self):
+        # The other side of the same rule, pinned so a "tighten the floor"
+        # change has to argue with it: a reference that itself offers only 3
+        # informative residues sets the bar at 3, not at 10.
+        seq = ["UNK"] * 17 + _SEQ_A[17:]
+        obs = [(i + 1, nm) for i, nm in enumerate(seq)]
+        ref = [(i + 234, nm) for i, nm in enumerate(seq)]
+        assert rp.chain_renumber_map(obs, ref)["ok"] is True
+
+
+def test_the_upload_loop_restores_numbering_and_records_which_it_shipped():
+    """The pure functions above are worthless if run() never calls them."""
+    src = (_PROTEINA_DIR / "run_pipeline.py").read_text(encoding="utf-8")
+    called = {n.func.id for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "restore_design_numbering" in called, (
+        "run_pipeline defines the restore but never calls it -- the delivered "
+        "design would still carry upstream's 1..N numbering")
+    assert "pdb_ca_sequence" in called
+    assert '"target_numbering"' in src, (
+        "the result must record which numbering the delivered file carries")
