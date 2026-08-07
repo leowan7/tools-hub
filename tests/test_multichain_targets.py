@@ -519,6 +519,11 @@ def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
     ("A296",        None,       (None, None)),  # no chain list -> bare only
     ("AB12",        ["A", "AB"], ("AB", 12)),   # longest match wins
     (True,          ["A"],      (None, None)),  # bool is an int subclass
+    # int() truncated a float; a JSON body sending 296.0 for residue 296 is
+    # the shape that reaches this, and it was in range before the contract
+    # changed. R1 covers the wire types too, not just the happy one.
+    (296.0,         ["A", "B"], (None, 296)),
+    (296.7,         ["A"],      (None, 296)),
 ])
 def test_split_hotspot(token, chains, expected):
     from shared.pdb_inspect import split_hotspot

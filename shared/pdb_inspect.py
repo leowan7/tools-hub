@@ -341,10 +341,17 @@ def split_hotspot(
     and an unprefixed number still means "any of them".
     """
     if isinstance(hotspot, bool):
-        # bool subclasses int; a True hotspot is a caller bug, not residue 1.
+        # bool subclasses int, so the int() this replaced read True as residue
+        # 1. That is a caller bug either way; refusing it is the one place
+        # this parser is deliberately NOT byte-identical to its predecessor.
         return None, None
-    if isinstance(hotspot, int):
-        return None, hotspot
+    if isinstance(hotspot, (int, float)):
+        # Truncating a float is what int() did, and a JSON body carrying 296.0
+        # for residue 296 is the shape that reaches this. Routing floats
+        # through the str() path below instead made int("296.0") raise, so a
+        # hotspot that was in range before the multi-chain contract became
+        # unparseable after it.
+        return None, int(hotspot)
     token = str(hotspot).strip()
     if not token:
         return None, None

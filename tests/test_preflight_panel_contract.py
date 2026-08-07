@@ -897,3 +897,50 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
         )
     else:
         assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
+
+
+def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client):
+    """REPLACE, not union — and the fixture has to be able to tell them apart.
+
+    test_the_panel_does_not_block_proteinas_own_multichain_flow uses
+    target_chain="A" with a contig that already names A, so both rules produce
+    {A, C} and re-introducing the union passes it. Here the typed chain is
+    proteina's shipped default "A" and the structure does not contain an A at
+    all — which is the real shape of the bug, since the form tells the user to
+    leave that field alone and name their chains in the contig.
+
+    Under the union the panel reported:
+
+        "Target chain 'A,H,L' isn't in this PDB. Found chain(s): H, L."
+
+    naming H and L as absent in the same sentence that lists them as present,
+    over a chain set the user never typed. proteina's own validate() replaces
+    (tools/proteina/__init__.py:495-497), so unioning also put the panel and
+    the gate on different chain sets.
+    """
+    _login(client)
+    pdb = _pdb({"H": list(range(1, 61)), "L": list(range(1, 61))})
+    body = _post_preflight(
+        client, target_chain="A", target_input="H1-60,L1-60",
+        hotspot_residues="H20", target_pdb=(io.BytesIO(pdb), "hl.pdb"),
+    ).get_json()
+
+    assert body["target_chain"] == "H L", body["target_chain"]
+    assert "A" not in body["target_chain"].split(), (
+        f"the untyped default leaked into the chain set: "
+        f"{body['target_chain']!r}"
+    )
+    reason = body.get("reason") or ""
+    assert "isn't in this PDB" not in reason, reason
+
+    # And the adapter agrees, which is the whole point of replacing.
+    from tools import proteina as proteina_mod
+    inputs, err = proteina_mod.validate({
+        "preset": "protein_binder", "_has_custom_target": "1",
+        "target_chain": "A", "target_input": "H1-60,L1-60",
+        "hotspot_residues": "H20",
+        "binder_length_min": "55", "binder_length_max": "65",
+        "num_designs": "2",
+    }, {})
+    assert err is None, err
+    assert inputs["target_chain"] == "H L", inputs["target_chain"]
