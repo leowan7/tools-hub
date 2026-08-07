@@ -121,14 +121,38 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 #           is PUT to a presigned URL and the entry carries a `pdb_key`
 #           pointer. Unchanged, and it stays the only behaviour a real job
 #           sees, because a real job always supplies the endpoint.
-#   INLINE  (endpoint absent) — a direct `modal.Function.from_name(...)` call,
-#           which is the only way to pass a multi-chain target and
-#           chain-prefixed hotspots (the web tier cannot express either). There
-#           is no tools-hub server to call back to and no job_token to
+#   INLINE  (endpoint absent) — a direct `modal.Function.from_name(...)` call.
+#           There is no tools-hub server to call back to and no job_token to
 #           authenticate with, so the atoms travel in the return value as
 #           base64 under `pdb_content_b64` — the same field name and encoding
 #           PXDesign and BindCraft already emit, so a cross-generator consumer
 #           needs no per-tool special-casing.
+#
+# NOT the reason, despite what this comment used to claim: "the web tier cannot
+# express a multi-chain target or chain-prefixed hotspots". It can, and that
+# claim was wrong in a way that cost real safety. `tools/proteina/validate`
+# accepts `A236-443,B236-443` (target_chain becomes "A B") and accepts
+# `A264 B264` verbatim. The absent upload endpoint and job_token are the whole
+# justification for INLINE; multi-chain has nothing to do with it.
+#
+# That false premise is why `normalize_hotspots`' bare-integer refusal below
+# was placed on the container's direct-call entry ONLY. THE WEB TIER IS A
+# FIRST-CLASS MULTI-CHAIN PATH AND IT IS STILL UNGUARDED: _parse_hotspots in
+# tools/proteina/__init__.py promotes a bare `264` onto contig_chains[0] before
+# dispatch, so those tokens reach here already chain-prefixed and the refusal
+# cannot fire. The two payloads are byte-identical here — a promoted `A264` and
+# a deliberately typed `A264` differ in NOTHING that crosses the container
+# boundary (hotspot_residues carries the bare number either way) — so this file
+# cannot close the hole and must not pretend to. The fix belongs in
+# _parse_hotspots: refuse a bare token when len(chain_ids) > 1 instead of
+# promoting it. Do not "fix" it here by refusing when the hotspots address
+# fewer chains than the contig names — designing against one epitope of a
+# multi-chain complex, with the other chains present as steric context, is
+# ordinary and correct, and both this file and the adapter accept it today.
+# That guard would refuse legitimate campaigns to catch a case it cannot even
+# see. Pinned by test_hotspots_on_a_SUBSET_of_the_contig_chains_are_legitimate
+# in tests/test_proteina_delivery.py, so the reasoning is checkable rather than
+# asserted — no smoke test covers a STRICT subset of the contig's chains.
 #
 # The two are EXCLUSIVE, and that is a deliberate correction rather than an
 # accident of the gate. Inlining alongside an upload would put a second copy of
@@ -172,10 +196,19 @@ def _inline_cap_bytes() -> int:
 
 
 INLINE_PDB_TOTAL_CAP_BYTES = _inline_cap_bytes()
-# Smallest cap worth starting a run for. `> 0` was too weak a test: a cap of 1
-# byte passes it, admits no design, and still spends the A100 to return
-# COMPLETED with zero structures — the same failure as a cap of 0, with a
-# narrower trigger. A single-design PDB is tens of KB at minimum.
+# A DEGENERATE-cap floor, and deliberately nothing more. It catches 0 and 1 —
+# caps that cannot admit a single atom — before the GPU, because that check is
+# free and those are the values a bug produces.
+#
+# It is NOT "the smallest cap worth starting a run for", which is what this
+# constant used to claim and could not deliver. A single design's PDB is target
+# dependent and UNKNOWABLE before the run (the Fc target this work exists to
+# serve is ~340 KB, ~34x this floor; a small-target campaign is a fraction of
+# it), so no pre-GPU threshold can separate "admits some designs" from "admits
+# none". Raising the number would only move the false negative and would start
+# refusing legitimate small-target runs. The guarantee lives POST-loop instead,
+# where the real sizes are known: see the inline-delivery verdict in main(),
+# which fails a shard that inlined nothing while the cap dropped designs.
 INLINE_PDB_MIN_USEFUL_CAP_BYTES = 10 * 1024
 
 # Hard off-switch for inline delivery. It is only observable when there is NO
@@ -523,12 +556,103 @@ def normalize_target_chain(raw: str) -> str:
     return " ".join(ordered)
 
 
+def _hotspot_element(value: object, field: str) -> str:
+    """Render ONE element of a hotspot list as the token this file parses.
+
+    A WHOLE-NUMBER FLOAT IS AN INTEGER RESIDUE NUMBER, not a token of its own.
+    ``str(296.0)`` is ``"296.0"``, which the bare-integer regex below does not
+    match, so such a hotspot was neither refused as ambiguous on a multi-chain
+    target nor attributed to the chain on a single-chain one: it travelled on
+    as the literal ``"296.0"``, and upstream matches ``f"{chain_id}{res_id}"``,
+    so it addresses nothing that can exist. That is contained on the
+    custom-target path — ``missing_hotspots`` refuses it pre-GPU — but the
+    refusal then blames "not in the selected region" for what is really a
+    number format, and on the multi-chain case it means the ambiguity guard,
+    the one refusal standing between a caller and a silently half-aimed dimer,
+    is simply skipped. ``shared/pdb_inspect.split_hotspot`` already truncates a
+    float for exactly this reason: main's commit 0cbfea6 restored it because
+    "a JSON body sending a whole number as a float is the shape that reaches
+    it". This is the same shape crossing the container boundary.
+
+    A FRACTIONAL float is REFUSED rather than truncated, and that is a
+    deliberate divergence from ``split_hotspot``, which truncates. No residue
+    is numbered 296.7, so resolving it means guessing which residue was meant,
+    and guessing on the hotspot field is the whole failure class this function
+    exists to stop. The refusal costs nothing and stops nothing real: the web
+    adapter's ``_parse_hotspots`` yields ints from a regex and can never emit
+    a float, and today such a token is refused anyway — by ``missing_hotspots``
+    on the custom path, with a worse message, and dropped unread on the curated
+    path. ``bool`` is refused for the same reason ``split_hotspot`` refuses it:
+    it subclasses int, so ``True`` would otherwise read as residue 1.
+    """
+    if isinstance(value, bool):
+        raise TypeError(
+            f"job_spec.{field} contains {value!r}, which is a boolean, not a "
+            "residue number. Send the residue number itself (e.g. 264 or "
+            '"A264").'
+        )
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise TypeError(
+                f"job_spec.{field} contains {value!r}, which is not a whole "
+                "residue number. Residues are numbered with integers, and "
+                "there is no residue to round it to without guessing. Send "
+                f"{int(value)} or {int(value) + 1} explicitly."
+            )
+        return str(int(value))
+    return str(value).strip()
+
+
+def _hotspot_tokens(raw: object, field: str) -> list[str]:
+    """Tokenise ONE hotspot field. Empty -> []; a wrong TYPE -> TypeError.
+
+    Split out of ``normalize_hotspots`` so "is this field empty?" is answered by
+    the tokens it actually yields rather than by comparing the raw value against
+    a hand-listed set of empty shapes. The old predicate was
+    ``raw is None or raw == []``, which recognises exactly two of them; ``""``,
+    ``" "``, ``[""]``, ``("",)``, ``()`` and ``","`` all read as "hotspots were
+    supplied and there are none", so the ``hotspot_residues`` alias beside them
+    was never consulted and every hotspot it carried was discarded into a fully
+    unconstrained search that completes successfully.
+
+    A value of the wrong TYPE is REFUSED here rather than coerced, and both
+    ways it used to go were bad. A scalar (``264``, ``True``, ``3.5``) reached
+    ``for h in raw`` and raised ``TypeError: 'int' object is not iterable``,
+    which ``main()`` did not catch, so the container died with no
+    /tmp/smoke_results.json and the caller saw an opaque delivery failure for a
+    mistyped field. A dict did not crash at all — ``for h in {"a": 1}``
+    iterates KEYS, so it yielded the hotspot ``"a"`` out of nothing. Neither is
+    salvaged: ``main()`` turns this into a clean pre-GPU ``_fail`` naming the
+    field, and shape-guessing on the hotspot field is the same class of
+    helpfulness that produced the silent mis-aim the refusal below exists to
+    stop.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    if isinstance(raw, (list, tuple)):
+        # Per element via _hotspot_element, not a bare str(): a whole-number
+        # float is a residue number and must be seen as one by the bare-integer
+        # checks below, not carried through as the token "296.0".
+        return [t for t in (_hotspot_element(h, field) for h in raw) if t]
+    raise TypeError(
+        f"job_spec.{field} is a {type(raw).__name__} ({raw!r}), which is "
+        "neither a list of hotspot tokens nor a comma/space-separated string. "
+        "Send a list like [\"A264\", \"B264\"] or a string like \"A264 B264\" "
+        "— never a bare value, not even for a single hotspot."
+    )
+
+
 def normalize_hotspots(job_spec: dict) -> list[str]:
     """Resolve hotspot tokens from either this tool's name or the shared one.
 
     Proteina's native key is ``hotspot_spec``; the campaign side and the other
     three generators send ``hotspot_residues``. Native wins when both are
-    present so nothing already in flight changes meaning. A plain string is
+    present so nothing already in flight changes meaning — where "present"
+    means "yields at least one token", so an empty native key in ANY shape
+    (``[]``, ``""``, ``[""]``, ``{}``) falls through to the alias instead of
+    silently discarding everything the alias carries. A plain string is
     accepted for either key and split on commas/whitespace, because that is
     what a caller who typed the chain list as a string tends to send for the
     hotspots too.
@@ -553,31 +677,54 @@ def normalize_hotspots(job_spec: dict) -> list[str]:
     When no chain is known at all the token is passed through untouched rather
     than guessed at — the pre-GPU ``missing_hotspots`` guard then refuses it.
     """
-    raw = job_spec.get("hotspot_spec")
-    if raw is None or raw == []:
-        raw = job_spec.get("hotspot_residues")
-    if raw is None:
+    # Emptiness is decided by the TOKENS a field yields, not by the shape of
+    # the raw value — see _hotspot_tokens. "Native wins when both are present"
+    # is unchanged: a native key that yields any token still wins outright.
+    items = _hotspot_tokens(job_spec.get("hotspot_spec"), "hotspot_spec")
+    if not items:
+        items = _hotspot_tokens(
+            job_spec.get("hotspot_residues"), "hotspot_residues")
+    if not items:
         return []
-    if isinstance(raw, str):
-        items = [t for t in re.split(r"[,\s]+", raw.strip()) if t]
-    else:
-        items = [str(h).strip() for h in raw if str(h).strip()]
 
-    # Chains come from the UNION of both fields that can name one, because
-    # either can be the one that actually decides. prepare_custom_target
-    # derives its segments from target_input when that is present and ignores
-    # target_chain entirely, so counting target_chain alone lets
-    # {"target_chain": "A", "target_input": "A1-200,B1-200"} through: one
-    # declared chain, two real ones, bare hotspots silently promoted to A and
-    # the second protomer unconstrained. Reachable by exactly the direct
-    # callers this delivery mode exists to serve.
+    # The chains the DESIGN will actually contain — which is the only question
+    # that decides whether a bare number is ambiguous — read from whichever
+    # field prepare_custom_target itself reads.
+    #
+    # A CONTIG REPLACES target_chain, it does not add to it. prepare_custom_target
+    # derives its segments from target_input when that is present and never
+    # looks at target_chain again (``requested_chains`` is used in the else
+    # branch and nowhere else), so with a contig the contig's chains ARE the
+    # design. Counting target_chain as well invents a protomer that does not
+    # exist: {"target_chain": "A", "target_input": "C1-200"} — proteina's
+    # shipped default "A" over a structure whose chain is C, the normal shape
+    # because the form tells the user to leave that field alone and name their
+    # chains in the contig — has exactly one chain, so a bare 264 is
+    # unambiguous, yet the union counted two and refused the run while
+    # suggesting A264, a residue on a chain the upload does not contain.
+    # shared/pdb_inspect made the same replace-not-union correction on main
+    # (commit 0cbfea6) for this same input shape.
+    #
+    # The union's own motivating case is untouched, because it never needed the
+    # union: {"target_chain": "A", "target_input": "A1-200,B1-200"} has two
+    # chains read from the contig ALONE, so bare hotspots are still refused
+    # rather than silently promoted to A with the second protomer
+    # unconstrained.
     chains = normalize_target_chain(str(job_spec.get("target_chain") or "")).split()
     target_input = str(job_spec.get("target_input") or "").strip()
     if target_input:
         try:
+            contig_chains: list[str] = []
             for chain, _lo, _hi in parse_target_input(target_input):
-                if chain not in chains:
-                    chains.append(chain)
+                if chain not in contig_chains:
+                    contig_chains.append(chain)
+            # Only when the contig actually named something. A contig that
+            # parses to nothing (``","``) is refused downstream on its own
+            # terms; until then target_chain stays the best available answer,
+            # so this cannot silently drop the count to zero and let a bare
+            # token through unchecked.
+            if contig_chains:
+                chains = contig_chains
         except ValueError:
             # Malformed contig: leave it to parse_target_input's own pre-GPU
             # refusal in prepare_custom_target, which reports it properly.
@@ -1549,8 +1696,40 @@ def prepare_custom_target(
                     f"It contains: {spans}.",
                 )
     else:
+        # PER CHAIN, not in aggregate. ``derive_segments`` ``continue``s past a
+        # chain it finds no residues for, so a request for two chains against a
+        # structure that holds one produces a perfectly healthy one-chain
+        # ``segments`` and nothing downstream ever mentions the chain that
+        # vanished: every later guard (3b, 4, 4b, target_too_small,
+        # missing_hotspots) reads the ALREADY-PRUNED list, and hotspots on a
+        # strict subset of the contig's chains are legitimate, so a request
+        # aimed at one protomer clears step 5 with "all N hotspot(s) matched"
+        # while the other protomer is absent from the staged file entirely. An
+        # A100 is billed and the binders are designed against a monomer, in a
+        # run indistinguishable from a correct one.
+        #
+        # An aggregate check cannot see this — it only fires when ALL the
+        # chains are missing — and the ``target_input`` branch immediately
+        # above has always refused per chain, so this closes an asymmetry
+        # rather than adding a new class of refusal. The comma spelling
+        # ``"A,B"`` is why it matters now: ``normalize_target_chain`` turns it
+        # into two real chain tokens (it used to be one unmatchable token that
+        # emptied ``segments`` and tripped the aggregate guard), so the exact
+        # literal ``direct_call_fc.build_job_spec`` sends now takes this path.
+        present = {r[0] for r in residues}
+        absent = [c for c in requested_chains if c not in present]
+        if absent:
+            noun, verb = ("chains", "are") if len(absent) > 1 else ("chain", "is")
+            _fail(
+                "input", "target_chain",
+                f"{noun} {' '.join(absent)} {verb} not present in the uploaded "
+                f"target. It contains: {spans}.",
+            )
         segments = derive_segments(residues, requested_chains)
         if not segments:
+            # Reachable only when NO chain was requested at all (an empty
+            # target_chain with no contig): ``absent`` is empty because there
+            # was nothing to look for, and nothing was selected either.
             _fail(
                 "input", "target_chain",
                 f"chain {target_chain!r} is not present in the uploaded target. "
@@ -2029,12 +2208,21 @@ def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
 
 
 # ===========================================================================
-# validate tier (free, CPU dry-run — the staging gate)
+# validate tier (wallet-free staging gate — NOT a CPU-only container)
 # ===========================================================================
+# "free, CPU dry-run" is what this header used to say, and half of it was
+# false in the direction that costs money. WALLET-free is true: tools-hub does
+# not bill the validate preset. CPU-only is not: modal_app.py declares exactly
+# one @app.function and it is unconditionally `gpu="A100-80GB"`, so this tier
+# runs on an A100 container for its whole lifetime and Modal bills wall-clock
+# rather than utilisation. Skipping GPU *work* is not the same as not
+# allocating a GPU. See FN_GPU in tools/proteina/direct_call_fc.py, whose
+# direct path bypasses the wallet and therefore pays the infrastructure bill
+# with nothing free about it.
 
 
 def run_validate(config_dir: str, preset: str, task_name: str) -> None:
-    """Free pre-flight / staging gate. Variant-agnostic checks, no GPU compute:
+    """Pre-flight / staging gate. Variant-agnostic checks, no GPU compute:
     (1) the proteinfoundation package imports (src-layout sane), (2) all three
     variant config files are present, (3) at least one model checkpoint is
     present on the mounted weights Volume (catches an unseeded / wrong-path
@@ -2117,6 +2305,14 @@ def main() -> None:
         # has to be: the guess it refuses to make would pass every downstream
         # check and produce a run that looks correct.
         _fail("input", "hotspot_chain_ambiguous", str(exc))
+    except TypeError as exc:
+        # A hotspot field of the wrong TYPE. Caught for the same reason
+        # _inline_cap_bytes parses defensively: an uncaught exception here
+        # escapes main() before _fail can write /tmp/smoke_results.json, so
+        # modal_app's json.load finds nothing, `smoke_result` comes back None,
+        # and a mistyped field is reported as a webhook delivery failure on a
+        # container that is already allocated and billing.
+        _fail("input", "hotspot_malformed", str(exc))
     binder_length = [int(v) for v in (job_spec.get("binder_length") or [60, 120])]
 
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -2134,7 +2330,8 @@ def main() -> None:
         " ".join(hotspot_spec) or "-", rf3_required, rf3_on,
     )
 
-    # --- validate tier: free CPU dry-run, no wallet, no GPU compute ----------
+    # --- validate tier: no wallet charge, no GPU compute — but the container
+    # --- is still the A100 run_tool always allocates. See the section header.
     if preset == "validate":
         run_validate(CONFIG_DIR, preset, task_name)
         return
@@ -2182,8 +2379,8 @@ def main() -> None:
         reason = (
             "inline PDBs are disabled (PROTEINA_INLINE_PDBS=off)" if not _inline_enabled()
             else f"the inline PDB cap is {INLINE_PDB_TOTAL_CAP_BYTES} bytes, "
-                 f"below the {INLINE_PDB_MIN_USEFUL_CAP_BYTES} needed to admit "
-                 "even one design (PROTEINA_INLINE_PDB_CAP_BYTES)"
+                 f"below the {INLINE_PDB_MIN_USEFUL_CAP_BYTES} byte floor "
+                 "(PROTEINA_INLINE_PDB_CAP_BYTES)"
         )
         _fail(
             "preflight",
@@ -2333,21 +2530,31 @@ def main() -> None:
         if not designs:
             # A shard that legitimately produced no survivors still COMPLETES
             # with zero candidates — the campaign pools survivors across shards,
-            # and delivered-only billing releases this shard's hold.
+            # and delivered-only billing releases this shard's hold. NOT a
+            # delivery failure either: nothing was produced, so nothing was
+            # undelivered. The counters ride along at zero purely so
+            # `inline_delivery` is present on EVERY inline result and a caller
+            # can read it without first testing for its existence.
             runtime = int(time.time() - start)
-            _write_result(
-                {
-                    "status": "COMPLETED",
-                    "tier": preset,
-                    "designs_total": designs_total,
-                    "designs_completed": 0,
-                    "n_failures": 0,
-                    "designs": [],
-                    "candidates": [],
-                    "runtime_seconds": runtime,
-                    "provider_job_id": job_id,
+            empty_result = {
+                "status": "COMPLETED",
+                "tier": preset,
+                "designs_total": designs_total,
+                "designs_completed": 0,
+                "n_failures": 0,
+                "designs": [],
+                "candidates": [],
+                "runtime_seconds": runtime,
+                "provider_job_id": job_id,
+            }
+            if inline_pdbs:
+                empty_result["inline_delivery"] = {
+                    "n_inlined": 0,
+                    "n_inline_capped": 0,
+                    "inline_bytes_used": 0,
+                    "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
                 }
-            )
+            _write_result(empty_result)
             send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
             logger.info("shard produced 0 survivors in %ds", runtime)
             return
@@ -2394,6 +2601,34 @@ def main() -> None:
                 logger.warning(
                     "design rank %d: %s failed (%s) — skipping",
                     rank, "upload" if upload_endpoint else "PDB read", exc,
+                )
+                continue
+
+            # A PDB THAT READS AS ZERO BYTES IS A FAILED DESIGN, not a delivered
+            # one. ``read_bytes()`` on a truncated or not-yet-written file
+            # returns b"" and raises nothing, so it slid past the except above;
+            # the cap test ``inline_bytes_used + 0 <= CAP`` is then trivially
+            # true, an EMPTY base64 string is attached, and ``n_inlined``
+            # increments for a blob carrying no atoms. With every design empty
+            # the shard reported COMPLETED, 8 designs, 0 failures, "8 inlined
+            # (0.0 MB)" — a delivery of nothing, certified by the very counters
+            # a caller reads instead of parsing logs, and with no `error` key to
+            # contradict it. n_inlined=8 alongside inline_bytes_used=0 is an
+            # impossible pair the post-loop verdict could not catch, because it
+            # only fires when the CAP dropped designs.
+            #
+            # Routed to the same count-and-skip an unreadable PDB takes, because
+            # it is the same thing: this design has no atoms. INLINE ONLY. On
+            # the upload path the identical weakness is pre-existing (empty
+            # bytes are PUT and counted) and fixing it here would change what
+            # the production web tier reports — designs_completed and n_failures
+            # both — for a shape no one has observed. That belongs in its own
+            # change, deliberately made, not as a side effect of this one.
+            if inline_pdbs and not pdb_bytes:
+                n_failures += 1
+                logger.warning(
+                    "design rank %d: %s is empty (0 bytes), so there are no "
+                    "coordinates to inline — skipping", rank, pdb_path,
                 )
                 continue
 
@@ -2467,19 +2702,70 @@ def main() -> None:
             logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
 
         runtime = int(time.time() - start)
-        _write_result(
-            {
-                "status": "COMPLETED",
-                "tier": preset,
-                "designs_total": designs_total,
-                "designs_completed": len(out_designs),
-                "n_failures": n_failures,
-                "designs": out_designs,
-                "candidates": out_candidates,
-                "runtime_seconds": runtime,
-                "provider_job_id": job_id,
+        result = {
+            "status": "COMPLETED",
+            "tier": preset,
+            "designs_total": designs_total,
+            "designs_completed": len(out_designs),
+            "n_failures": n_failures,
+            "designs": out_designs,
+            "candidates": out_candidates,
+            "runtime_seconds": runtime,
+            "provider_job_id": job_id,
+        }
+
+        # --- inline delivery verdict (post-loop, sizes finally known) --------
+        # ADDED ONLY IN INLINE MODE, so the web path's result dict is exactly
+        # what it was: same keys, same values, no `pdb_content_b64`, candidates
+        # still {rank, name, pdb_key, scores}. Inline mode is unreachable when
+        # an upload endpoint is present, so nothing a real web job returns can
+        # grow a field here.
+        #
+        # These counters existed only inside logger calls, which no caller can
+        # read: a shard that delivered ZERO of the coordinates it was asked for
+        # still returned status COMPLETED with a full designs_completed count
+        # and candidates whose bare-filename pdb_key is backed by nothing at
+        # all. That is the billed-and-empty outcome
+        # INLINE_PDB_MIN_USEFUL_CAP_BYTES claims to prevent and demonstrably
+        # cannot: any cap between that floor and one real PDB clears it.
+        #
+        # n_inline_capped > 0 is what distinguishes this from an honest
+        # zero-design shard (nothing produced, nothing to deliver, still
+        # COMPLETED). Scores, ranks and the candidate list are all kept on the
+        # failed result — the science survives, and the atoms are in the raw
+        # archive — so this reports a delivery failure without destroying what
+        # the run did produce.
+        delivery_failed = False
+        if inline_pdbs:
+            result["inline_delivery"] = {
+                "n_inlined": n_inlined,
+                "n_inline_capped": n_inline_capped,
+                "inline_bytes_used": inline_bytes_used,
+                "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
             }
-        )
+            delivery_failed = n_inlined == 0 and n_inline_capped > 0
+            if delivery_failed:
+                detail = (
+                    f"the inline PDB cap ({INLINE_PDB_TOTAL_CAP_BYTES} bytes) "
+                    f"admitted none of the {n_inline_capped} design(s) this "
+                    "shard produced, so the run delivered no coordinates at "
+                    "all. Scores and ranks are in this result and the atoms "
+                    "are in the raw archive. Raise "
+                    "PROTEINA_INLINE_PDB_CAP_BYTES above one design's PDB and "
+                    "re-run."
+                )
+                logger.error(
+                    "pipeline FAILED at delivery/inline_cap_admitted_nothing: %s",
+                    detail,
+                )
+                result["status"] = "FAILED"
+                result["error"] = {
+                    "bucket": "delivery",
+                    "check": "inline_cap_admitted_nothing",
+                    "detail": detail,
+                }
+
+        _write_result(result)
         send_heartbeat(
             webhook_url, job_id, stage="complete",
             designs_completed=len(out_designs), designs_total=designs_total,
@@ -2497,6 +2783,12 @@ def main() -> None:
             len(out_designs), designs_total, n_failures, n_inlined,
             inline_bytes_used * 4 / 3 / 1e6, n_inline_capped, runtime,
         )
+        if delivery_failed:
+            # After the result is written and the logs are out, matching
+            # _fail's exit code so a delivery failure is not the one failure
+            # mode that returns 0. The `finally` below still tars the raw
+            # outputs — which is where the undelivered atoms are.
+            sys.exit(1)
     finally:
         # NOT gated on rc, on survivors, or on what got uploaded. A shard whose
         # reward CSV went missing returns [] from parse_designs and completes as a

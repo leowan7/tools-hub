@@ -1,15 +1,20 @@
 """Design delivery for the Proteina-Complexa tool: the upload path (tools-hub
 web tier) and the inline path (a direct ``modal.Function.from_name`` call).
 
-WHY THIS FILE EXISTS. The tools-hub web tier cannot express a multi-chain
-target or chain-prefixed hotspots, so an Fc campaign has to invoke the Modal
-function directly and read designs out of the return value — the way
-RFdiffusion, PXDesign and BindCraft already work. Such a caller has no
-tools-hub server to receive an upload callback and no ``job_token`` to
-authenticate one, and ``main()`` used to refuse pre-GPU on exactly that. It now
-chooses a delivery mode instead: with an endpoint it uploads and records a
-``pdb_key`` pointer, without one it carries the atoms inline as
-``pdb_content_b64``.
+WHY THIS FILE EXISTS. A caller that invokes the Modal function directly — the
+way RFdiffusion, PXDesign and BindCraft already work — has no tools-hub server
+to receive an upload callback and no ``job_token`` to authenticate one, and
+``main()`` used to refuse pre-GPU on exactly that. It now chooses a delivery
+mode instead: with an endpoint it uploads and records a ``pdb_key`` pointer,
+without one it carries the atoms inline as ``pdb_content_b64``.
+
+NOT the reason, though this docstring used to claim it: "the tools-hub web tier
+cannot express a multi-chain target or chain-prefixed hotspots". It can, and
+``TestTheWebTierIsAFirstClassMultiChainPath`` below pins that against the real
+adapter. The false belief mattered: it is why the bare-hotspot ambiguity
+refusal was put on the container's direct-call entry only, leaving the web
+form — which promotes a bare ``264`` onto the first contig chain before
+dispatch — as the one multi-chain path with no such guard.
 
 THE UPLOAD PATH IS THE ONE REAL JOBS USE. Every test in
 ``TestUploadPathUnchanged`` asserts it behaves as it did before the change —
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 
 import pytest
 
@@ -31,12 +37,24 @@ from tools.proteina import run_pipeline as rp
 
 def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
                        pdb_body=b"ATOM  fake\nEND\n", inline_env=None,
-                       cap_bytes=None, break_upload=False):
+                       cap_bytes=None, break_upload=False, break_read=False,
+                       expect_exit=False):
     """Run ``main()`` through to the design loop with the GPU stages stubbed.
 
     Returns ``(result_dict, calls)`` where ``calls`` records every
     ``request_upload_urls`` / ``upload_pdb`` invocation in order, so a test can
     assert on the exact upload exchange rather than on its side effects.
+
+    ``break_upload`` breaks the UPLOAD path only — it raises from
+    ``request_upload_urls``, which the inline path never calls. ``break_read``
+    breaks the one thing the inline path does inside the same try, the
+    ``pdb_path.read_bytes()``, so the failure accounting on that branch can be
+    pinned too. ``expect_exit`` requires the SystemExit a delivery failure
+    raises after writing its result, AND requires its code to be 1 — bare
+    ``pytest.raises(SystemExit)`` would accept ``sys.exit(0)``, and the exit
+    code is not decoration: ``modal_app.run_tool`` puts ``result.returncode``
+    straight into the value the caller receives, so a delivery failure that
+    exits 0 is a failed run reported as a clean one to anyone branching on it.
     """
     result_file = tmp_path / "smoke.json"
     monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
@@ -74,9 +92,13 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
 
     monkeypatch.setattr(rp, "run_streaming", lambda cmd, wd: 0)
     monkeypatch.setattr(rp, "parse_designs", lambda run_dir: rows)
+    # break_read points at a path that was never written, so read_bytes raises
+    # inside the same try the upload pair lives in — the inline path's only
+    # failure mode.
+    stem = "gone_d" if break_read else "d"
     monkeypatch.setattr(
         rp, "find_pdb_for",
-        lambda d, run_dir, idx, total: pdb_dir / f"d{d['_row_index']}.pdb")
+        lambda d, run_dir, idx, total: pdb_dir / f"{stem}{d['_row_index']}.pdb")
     monkeypatch.setattr(rp, "archive_raw_outputs", lambda *a, **k: None)
 
     def fake_heartbeat(*a, **kw):
@@ -111,8 +133,200 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
     else:
         monkeypatch.setenv("PROTEINA_INLINE_PDBS", inline_env)
 
-    rp.main()
+    if expect_exit:
+        with pytest.raises(SystemExit) as exc:
+            rp.main()
+        assert exc.value.code == 1, (
+            f"a delivery failure exited {exc.value.code!r}; modal_app reports "
+            "exit_code to the caller, so it must match _fail's 1")
+    else:
+        rp.main()
     return json.loads(result_file.read_text()), calls
+
+
+def _pdb_with_chains(spans):
+    """A minimal CA-only PDB, in the columns ``pdb_ca_residues`` really reads."""
+    lines = []
+    serial = 0
+    for chain, lo, hi in spans:
+        for resseq in range(lo, hi + 1):
+            serial += 1
+            lines.append(
+                f"ATOM  {serial:5d}  CA  GLY {chain}{resseq:4d}    "
+                f"{serial:8.3f}{serial:8.3f}{serial:8.3f}  1.00  0.00           C"
+            )
+    return "\n".join(lines) + "\nEND\n"
+
+
+def _drive_prepare_custom_target(tmp_path, monkeypatch, *, target_chain,
+                                 target_input="", hotspots=(),
+                                 spans=(("A", 1, 200),)):
+    """Run the REAL ``prepare_custom_target`` against a synthesised upload.
+
+    Returns ``(error_or_None, staged_filenames)``. ``target_chain`` goes through
+    ``normalize_target_chain`` first, exactly as ``main()`` does, so a test can
+    hand over the spelling a caller really sends.
+
+    The registry path deliberately does not exist, so a job that clears every
+    INPUT guard stops one step later at ``target_registry`` — a DIFFERENT check
+    name. That is what makes "it was accepted" an observable outcome here rather
+    than an exception, and it is why the controls below can assert the absence of
+    a refusal without reaching ``complexa``.
+    """
+    hub = tmp_path / "hub"
+    results = tmp_path / "smoke_results.json"
+    monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+    monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+    monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+    monkeypatch.setattr(
+        rp, "download_target",
+        lambda url, dest: dest.write_text(_pdb_with_chains(spans)))
+    with pytest.raises(SystemExit) as excinfo:
+        rp.prepare_custom_target(
+            input_url="https://example.invalid/target.pdb", job_id="j1",
+            target_chain=rp.normalize_target_chain(target_chain),
+            target_input=target_input, hotspot_spec=list(hotspots),
+            binder_length=[60, 120], run_dir=tmp_path / "run")
+    assert excinfo.value.code == 1
+    error = json.loads(results.read_text())["error"]
+    return error, sorted(p.name for p in hub.glob("hub_*.pdb"))
+
+
+def _parse_direct_call_args(argv):
+    """Parse through direct_call_fc's REAL parser, so a hardcoded default
+    cannot slip back in behind a hand-built Namespace."""
+    from tools.proteina import direct_call_fc as dc
+    return dc.build_parser().parse_args(argv)
+
+
+class _ReachedTheModalBoundary(Exception):
+    """Raised by the stubs that stand in for everything ``cmd_submit`` does
+    after its refusal guards. Reaching it is the assertion; EXECUTING PAST IT
+    SPENDS REAL MONEY."""
+
+
+@pytest.fixture
+def modal_tripwire(monkeypatch):
+    """Make every real side effect past cmd_submit's guards unreachable.
+
+    THIS EXISTS BECAUSE THE TESTS BELOW REALLY DID SPAWN A100 SHARDS. They were
+    written as ``with pytest.raises(BaseException): dc.cmd_submit(...)`` on the
+    theory that "it gets past the guard, then fails on the modal import and
+    staging it is not allowed to do here" — i.e. they depended on the real work
+    FAILING to stay offline. It does not fail. ``tests/conftest.py`` documents
+    why in its own words: ``app.py`` calls ``load_dotenv()`` at import and the
+    repo-root ``.env`` carries real service-role credentials. Any full-suite
+    run imports ``app`` during COLLECTION, so by the time these tests execute,
+    ``_stage_target`` uploads a 277 KB PDB to production storage and
+    ``fn.spawn(payload)`` launches a real ``protein_binder`` shard on
+    ``ranomics-proteina-prod`` — nsamples*replicas designs, up to the 7200 s
+    timeout. The tests then "fail" on DID NOT RAISE, long after the money is
+    committed. They passed in the narrow three-file run precisely because no
+    credentials were loaded there, which is the worst possible property for a
+    guard: silent offline, expensive in CI.
+
+    So the boundary is now enforced rather than hoped for. `_resolve_target`
+    and `_stage_target` raise before anything leaves the machine, and a fake
+    ``modal`` whose entry points raise stands behind them, so a future edit
+    that removes a stub still cannot reach the network. Tests that need a
+    working ``modal`` (the --collect ones) install their own afterwards, which
+    takes precedence.
+
+    Returns the ``reached`` list that records entry to ``_load_env_and_path``,
+    so a test can still assert it got PAST the guards without going further.
+    """
+    import sys as _sys
+    import types as _types
+    from tools.proteina import direct_call_fc as dc
+
+    def _boom(*_a, **_kw):
+        raise _ReachedTheModalBoundary(
+            "cmd_submit reached real staging / Modal; the tripwire stopped it")
+
+    reached = []
+    monkeypatch.setattr(dc, "_load_env_and_path", lambda: reached.append(1))
+    monkeypatch.setattr(dc, "_resolve_target", _boom)
+    monkeypatch.setattr(dc, "_stage_target", _boom)
+
+    fake_modal = _types.ModuleType("modal")
+    fake_modal.Function = _types.SimpleNamespace(from_name=_boom)
+    fake_modal.FunctionCall = _types.SimpleNamespace(from_id=_boom)
+    monkeypatch.setitem(_sys.modules, "modal", fake_modal)
+    return reached
+
+
+def _drive_collect(tmp_path, monkeypatch, smoke, *, exit_code=0, outdir=None):
+    """Run the REAL ``cmd_collect`` against a stubbed Modal call.
+
+    Returns ``(rc, outdir, state_path)``. Everything the operator would get is
+    produced by the real function — asserting on a hand-rolled copy of its
+    write logic would pin nothing.
+    """
+    import sys as _sys
+    import types as _types
+    from tools.proteina import direct_call_fc as dc
+
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps(
+        {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+    monkeypatch.setattr(dc, "STATE", state)
+    monkeypatch.setattr(dc, "_load_env_and_path", lambda: None)
+
+    result = {"exit_code": exit_code, "smoke_result": smoke}
+    fake_modal = _types.ModuleType("modal")
+    fake_modal.FunctionCall = _types.SimpleNamespace(
+        from_id=lambda cid: _types.SimpleNamespace(
+            get=lambda timeout=None: result))
+    monkeypatch.setitem(_sys.modules, "modal", fake_modal)
+
+    out = outdir or (tmp_path / "out")
+    rc = dc.cmd_collect(_parse_direct_call_args(
+        ["--collect", "--outdir", str(out)]))
+    return rc, out, state
+
+
+def _modal_function_gpus():
+    """Resolve every ``@app.function`` in modal_app.py to its ``gpu=`` value.
+
+    Read with ``ast`` rather than imported: importing modal_app builds an App,
+    an Image and three Volumes, which is neither offline nor free of side
+    effects. Returns ``{function_name: gpu_or_None}`` with ``Name`` kwargs
+    resolved through the module's own top-level constants, so ``gpu=_GPU``
+    reports the string that is actually deployed.
+    """
+    import ast
+    import pathlib
+
+    src = (pathlib.Path(rp.__file__).resolve().parent
+           / "modal_app.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    consts = {
+        t.id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+        for t in node.targets if isinstance(t, ast.Name)
+    }
+    found = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for dec in node.decorator_list:
+            if not (isinstance(dec, ast.Call)
+                    and getattr(dec.func, "attr", "") == "function"):
+                continue
+            gpu = {k.arg: k.value for k in dec.keywords}.get("gpu")
+            if isinstance(gpu, ast.Name):
+                found[node.name] = consts.get(gpu.id)
+            elif isinstance(gpu, ast.Constant):
+                found[node.name] = gpu.value
+            else:
+                found[node.name] = None
+    return found
+
+
+def _explode(*_a, **_kw):
+    raise AssertionError(
+        "reached past the guard — this would have hit Modal or Supabase")
 
 
 class TestInlineDesignDelivery:
@@ -326,6 +540,36 @@ class TestUploadPathUnchanged:
         assert data["n_failures"] == 2
         assert data["status"] == "COMPLETED"
 
+    def test_an_unreadable_pdb_is_counted_on_the_INLINE_path_too(self, tmp_path, monkeypatch):
+        """The mirror of test_upload_failure_still_skips_and_counts, for the
+        branch that test cannot reach. ``break_upload`` raises from
+        ``request_upload_urls``, which the inline path never calls, so the
+        inline half of that try — ``pdb_path.read_bytes()`` — had no coverage
+        at all: a design whose PDB vanished could stop incrementing
+        ``n_failures`` and simply disappear from the result, leaving
+        ``designs_completed`` under-reporting against a clean ``n_failures``
+        of 0. That is the truncated-result-that-looks-complete failure this
+        file exists to prevent, and it must be counted, not swallowed."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", break_read=True)
+        assert data["designs_completed"] == 0
+        assert data["n_failures"] == 2, (
+            "an unreadable PDB must be COUNTED on the inline path, not "
+            "silently dropped")
+        assert data["candidates"] == []
+        assert data["status"] == "COMPLETED"
+
+    def test_a_read_failure_is_counted_the_same_way_on_both_paths(self, tmp_path, monkeypatch):
+        """Delivery mode may not change the failure ARITHMETIC either. Pins the
+        two branches against each other so neither can drift alone."""
+        web, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload",
+            break_read=True)
+        direct, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", break_read=True)
+        for key in ("status", "designs_completed", "n_failures"):
+            assert web[key] == direct[key], f"{key} differs between modes"
+
     def test_scores_and_ranking_are_identical_between_the_two_modes(self, tmp_path, monkeypatch):
         """Delivery mode may change only HOW the atoms travel — never the
         scores, the ranking, or which designs survive. pdb_key is excluded
@@ -378,16 +622,180 @@ class TestInlineSizeCap:
         unrelated reason."""
         assert rp.INLINE_PDB_DEFAULT_CAP_BYTES >= 8 * 350_000
 
-    def test_a_malformed_cap_falls_back_instead_of_crashing_at_import(self, monkeypatch):
-        """int() at module scope raises BEFORE _fail can write a result file,
-        so a typo'd env var kills the container with no result and the hub
-        reports it as a webhook delivery failure — on an allocated GPU."""
+    def test_a_malformed_cap_falls_back_instead_of_crashing(self, monkeypatch):
+        """The helper's own contract. See the sibling test below for the
+        import-time claim this one does NOT make."""
         monkeypatch.setenv("PROTEINA_INLINE_PDB_CAP_BYTES", "64MB")
         assert rp._inline_cap_bytes() == rp.INLINE_PDB_DEFAULT_CAP_BYTES
         monkeypatch.setenv("PROTEINA_INLINE_PDB_CAP_BYTES", "   ")
         assert rp._inline_cap_bytes() == rp.INLINE_PDB_DEFAULT_CAP_BYTES
         monkeypatch.setenv("PROTEINA_INLINE_PDB_CAP_BYTES", "12345")
         assert rp._inline_cap_bytes() == 12345
+
+    def test_a_malformed_cap_does_not_crash_MODULE_IMPORT(self):
+        """The defect the test above is NAMED for but never exercised.
+
+        Calling ``_inline_cap_bytes()`` proves nothing about import: collapsing
+        the module-scope assignment back to a bare
+        ``int(os.environ.get(...) or DEFAULT)`` reintroduces the exact crash —
+        ValueError at import, BEFORE ``_fail`` can write
+        /tmp/smoke_results.json, so modal_app's ``json.load`` finds nothing and
+        a mistyped env var is reported as a webhook delivery failure on an
+        already-billing GPU — and left the whole suite green.
+
+        A real subprocess import is the only shape that can fail against that,
+        because reloading in-process cannot reproduce a module that never
+        finished executing.
+        """
+        import subprocess
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        env = dict(os.environ, PROTEINA_INLINE_PDB_CAP_BYTES="64MB")
+        proc = subprocess.run(
+            [_sys.executable, "-c",
+             "import tools.proteina.run_pipeline as rp;"
+             "print(rp.INLINE_PDB_TOTAL_CAP_BYTES,"
+             " rp.INLINE_PDB_DEFAULT_CAP_BYTES)"],
+            cwd=str(_Path(__file__).resolve().parents[1]),
+            env=env, capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, (
+            "a typo'd PROTEINA_INLINE_PDB_CAP_BYTES killed the module at "
+            f"import:\n{proc.stderr}")
+        live, default = proc.stdout.split()
+        assert live == default, "the malformed cap was not replaced by the default"
+
+    def test_a_cap_that_admits_NOTHING_fails_instead_of_reporting_COMPLETED(
+            self, tmp_path, monkeypatch):
+        """THE HOLE IN THE PRE-GPU FLOOR. INLINE_PDB_MIN_USEFUL_CAP_BYTES is
+        10 KiB and a real design PDB is ~340 KB, so every cap in between clears
+        the pre-GPU gate, spends the whole A100 shard, and used to return
+        status COMPLETED with a full designs_completed count and candidates
+        whose bare-filename pdb_key is backed by nothing at all — no Storage
+        object and no inline copy. The counters that knew existed only inside
+        logger calls, so no caller could tell this from a good run.
+
+        No pre-GPU threshold can close it (a PDB's size is target-dependent and
+        unknowable before the run), so the verdict is post-loop, where the real
+        sizes are known: inlined nothing while the cap dropped designs is a
+        FAILED delivery, not a completed one."""
+        # 20 KB designs under a 11 KB cap: over the 10 KiB pre-GPU floor, so
+        # the run starts, and under one design, so nothing is ever admitted.
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=4,
+            pdb_body=b"X" * 20000, cap_bytes=11000, expect_exit=True)
+        assert data["status"] == "FAILED", (
+            "a shard that delivered zero coordinates is not COMPLETED")
+        assert data["error"]["check"] == "inline_cap_admitted_nothing"
+        assert data["inline_delivery"]["n_inlined"] == 0
+        assert data["inline_delivery"]["n_inline_capped"] == 4
+        # The science survives the delivery failure.
+        assert len(data["candidates"]) == 4
+        assert all(c["scores"]["total_reward"] is not None
+                   for c in data["candidates"])
+
+    def test_the_counters_are_machine_readable_not_log_only(self, tmp_path, monkeypatch):
+        """A partial cap is NOT a failure — some designs carry atoms — but the
+        caller still has to be able to see that some do not, without parsing
+        container logs it may never receive."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=4,
+            pdb_body=b"X" * 6000, cap_bytes=13000)
+        assert data["status"] == "COMPLETED"
+        assert data["inline_delivery"] == {
+            "n_inlined": 2, "n_inline_capped": 2,
+            "inline_bytes_used": 12000, "cap_bytes": 13000,
+        }
+
+    def test_a_zero_design_shard_is_not_a_delivery_failure(self, tmp_path, monkeypatch):
+        """The verdict keys on "the cap dropped designs", not on "no atoms came
+        back". A shard that produced nothing has nothing to deliver and must
+        stay COMPLETED, exactly as before."""
+        monkeypatch.setattr(rp, "parse_designs", lambda run_dir: [])
+        data, _ = _drive_design_loop(tmp_path, monkeypatch, endpoint="",
+                                     designs=0)
+        assert data["status"] == "COMPLETED"
+        assert data["inline_delivery"]["n_inline_capped"] == 0
+
+    def test_a_ZERO_BYTE_pdb_is_not_counted_as_a_delivered_design(
+            self, tmp_path, monkeypatch):
+        """THE COUNTERS MUST NOT CERTIFY A BLOB THEY DID NOT LOOK AT.
+
+        ``read_bytes()`` on a truncated or not-yet-written file returns ``b""``
+        and raises nothing, so an empty design slid past the read/upload except;
+        the cap test ``inline_bytes_used + 0 <= CAP`` is then trivially true, an
+        EMPTY base64 string was attached, and ``n_inlined`` incremented for it.
+        With every design empty the shard reported COMPLETED, 8 designs, 0
+        failures and "8 inlined (0.0 MB)" — a delivery of nothing, certified by
+        the very counters a caller reads instead of parsing logs, with no
+        ``error`` key to contradict it. The post-loop verdict cannot catch it:
+        it fires only when the CAP dropped designs, and here it dropped none.
+
+        ``n_inlined == 8`` beside ``inline_bytes_used == 0`` is an impossible
+        pair, which is the shape of the lie."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=8, pdb_body=b"")
+
+        assert data["inline_delivery"]["n_inlined"] == 0, (
+            "a design with no atoms was counted as inlined: "
+            f"{data['inline_delivery']}")
+        assert data["n_failures"] == 8, (
+            "an empty PDB is a failed design, the same as one that could not "
+            "be read at all")
+        assert data["designs_completed"] == 0
+        assert not (data["status"] == "COMPLETED"
+                    and data["designs_completed"]), (
+            "the shard reported completed designs while delivering no "
+            "coordinates at all")
+        assert data["candidates"] == [], (
+            "a candidate carrying an empty pdb_content_b64 is a pointer at "
+            "nothing — cmd_collect filters it out and rc=1, but any consumer "
+            "trusting the counters is told the delivery succeeded")
+
+    def test_a_NON_empty_pdb_is_still_delivered_unchanged(
+            self, tmp_path, monkeypatch):
+        """The control that stops the guard above from being satisfied by
+        refusing everything."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=8,
+            pdb_body=b"ATOM  x\nEND\n")
+        assert data["inline_delivery"]["n_inlined"] == 8
+        assert data["n_failures"] == 0
+        assert all(base64.b64decode(c["pdb_content_b64"])
+                   for c in data["candidates"])
+
+    def test_the_UPLOAD_path_treats_an_empty_pdb_exactly_as_before(
+            self, tmp_path, monkeypatch):
+        """INVARIANT, stated rather than assumed. The same weakness exists on
+        the upload path — empty bytes are PUT and counted as a completed design
+        — and it is NOT fixed here, deliberately: changing it would change what
+        the production web tier reports (both ``designs_completed`` and
+        ``n_failures``) for a shape no one has observed. This pins the untouched
+        behaviour so the scoping is visible, and so a later change to it is a
+        decision rather than an accident."""
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload", designs=4,
+            pdb_body=b"")
+        assert data["status"] == "COMPLETED"
+        assert data["designs_completed"] == 4
+        assert data["n_failures"] == 0
+        assert len([c for c in calls if c[0] == "put"]) == 4
+        assert "inline_delivery" not in data
+
+    def test_the_web_path_result_grows_no_inline_delivery_key(self, tmp_path, monkeypatch):
+        """INVARIANT. The accounting is inline-only; a real web job's result
+        dict must be exactly what it was."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload", designs=4,
+            pdb_body=b"X" * 20000, cap_bytes=11000)
+        assert "inline_delivery" not in data
+        assert data["status"] == "COMPLETED"
+        assert set(data) == {
+            "status", "tier", "designs_total", "designs_completed",
+            "n_failures", "designs", "candidates", "runtime_seconds",
+            "provider_job_id",
+        }
 
     def test_a_zero_cap_is_refused_pre_gpu_not_after(self, tmp_path, monkeypatch):
         """"0" is truthy, so `env or default` does NOT fall back — the cap
@@ -510,6 +918,94 @@ class TestJobSpecAliases:
             {"hotspot_spec": [], "hotspot_residues": ["A241", "B241"]}
         ) == ["A241", "B241"]
 
+    @pytest.mark.parametrize("empty", ["", " ", [""], ("",), (), ",", " , "])
+    def test_an_empty_native_key_falls_through_in_EVERY_shape(self, empty):
+        """The fallthrough used to be ``raw is None or raw == []``, which is
+        True for exactly two shapes. Every other way of being empty — the
+        empty-string placeholder a templated job_spec produces for an unused
+        field being the obvious one — read as "hotspots were supplied and there
+        are none", so the alias beside it was never consulted and every hotspot
+        it carried was silently discarded.
+
+        Nothing then complains: missing_hotspots([]) is trivially empty, the
+        "all N matched" line is skipped because the spec is falsy, and
+        build_target_add_cmd omits --hotspot-residues entirely, so upstream gets
+        an all-zero hotspot mask. The A100 runs a completely unconstrained
+        search to a successful COMPLETED."""
+        assert rp.normalize_hotspots(
+            {"hotspot_spec": empty, "hotspot_residues": ["A241", "B241"]}
+        ) == ["A241", "B241"], f"the alias was discarded by hotspot_spec={empty!r}"
+
+    def test_a_native_key_that_yields_tokens_still_wins(self):
+        """The fallthrough must not become "prefer the alias": emptiness is
+        decided by the tokens a field yields, and a field that yields any token
+        still wins outright."""
+        assert rp.normalize_hotspots(
+            {"hotspot_spec": " A1 , A2 ", "hotspot_residues": ["B9"]}
+        ) == ["A1", "A2"]
+
+    @pytest.mark.parametrize("bad", [264, True, 3.5, {"a": 1}])
+    @pytest.mark.parametrize("field", ["hotspot_spec", "hotspot_residues"])
+    def test_a_mistyped_hotspot_field_is_refused_by_TYPE_not_by_traceback(
+            self, field, bad):
+        """``264`` is a natural shape for a one-hotspot run. It used to reach
+        ``for h in raw`` and raise ``TypeError: 'int' object is not iterable``
+        — see the sibling test for why that specific exception was expensive.
+        Refused rather than wrapped in a list: shape-guessing on the hotspot
+        field is the same class of helpfulness that produces a silent mis-aim,
+        and the message has to name the field and the two shapes that ARE
+        accepted, so it is actionable without reading this source."""
+        with pytest.raises(TypeError) as exc:
+            rp.normalize_hotspots({field: bad})
+        msg = str(exc.value)
+        assert field in msg
+        assert '["A264", "B264"]' in msg and '"A264 B264"' in msg, (
+            f"the refusal does not say what to send instead: {msg}")
+
+    def test_a_DICT_hotspot_field_never_invents_a_token(self):
+        """The mistyped shape that did NOT crash, and was worse for it:
+        ``for h in {"a": 1}`` iterates KEYS, so the old tokeniser returned
+        ``["a"]`` — a hotspot the caller never wrote, which then matches
+        nothing and leaves the search unconstrained while the run reports
+        success. It must refuse, not yield."""
+        with pytest.raises(TypeError):
+            rp.normalize_hotspots({"hotspot_spec": {"a": 1}})
+
+    def test_a_scalar_hotspot_field_still_writes_a_RESULT_FILE(
+            self, tmp_path, monkeypatch):
+        """WHY THE TYPE MATTERS. main() caught only ValueError, so the
+        TypeError propagated straight out: the process exited non-zero without
+        ever calling _fail, no /tmp/smoke_results.json was written, modal_app's
+        json.load found nothing and swallowed the FileNotFoundError, and the
+        caller saw `smoke_result: None` — an opaque delivery failure for a
+        mistyped field, on a container already allocated and billing. That is
+        exactly the failure _inline_cap_bytes' docstring says it exists to
+        prevent, left open one function away."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps({
+            "job_spec": {
+                "config_name": "search_binder_local_pipeline", "task_name": "",
+                "target_source": "custom", "target_chain": "A",
+                "hotspot_residues": 264, "rf3_required": False,
+                "nsamples": 4, "replicas": 2,
+            },
+            "input_presigned_url": "https://example/t.pdb",
+            "upload_urls_endpoint": "https://hub/upload",
+            "job_token": "t", "tier": "protein_binder"}))
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+        monkeypatch.setenv("JOB_ID", "job-scalar")
+        monkeypatch.setenv("PROTEINA_RF3", "on")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        with pytest.raises(SystemExit):
+            rp.main()
+        assert result_file.exists(), (
+            "the container died with no result file — the hub reports that as "
+            "a webhook delivery failure, not as a bad hotspot field")
+        data = json.loads(result_file.read_text())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "hotspot_malformed"
+
     def test_bare_ints_attach_to_a_single_target_chain(self):
         """Upstream matches f"{chain_id}{res_id}", so a bare 264 addresses
         nothing at all. Attributing it is the documented shared contract and
@@ -579,11 +1075,129 @@ class TestJobSpecAliases:
             })
 
     def test_a_single_chain_contig_still_allows_bare_ints(self):
-        """The union must not over-refuse: one chain named twice is one chain."""
+        """One chain named twice is one chain."""
         assert rp.normalize_hotspots({
             "target_chain": "A", "target_input": "A1-200",
             "hotspot_residues": [264],
         }) == ["A264"]
+
+    def test_a_contig_REPLACES_target_chain_rather_than_adding_to_it(self):
+        """A PHANTOM CHAIN MUST NOT INFLATE THE COUNT. ``prepare_custom_target``
+        derives its segments from ``target_input`` when present and never looks
+        at ``target_chain`` again, so with a contig the contig's chains ARE the
+        design. Counting both invented a protomer: proteina's shipped default
+        ``"A"`` over a structure whose chain is C — the normal shape, because
+        the form tells the user to leave that field alone and name their chains
+        in the contig — has exactly ONE chain, so a bare 264 is unambiguous.
+        The union counted two, refused the run, and suggested ``A264``: a
+        residue on a chain the upload does not contain. ``shared/pdb_inspect``
+        made this same replace-not-union correction on main (0cbfea6) for this
+        same input shape."""
+        assert rp.normalize_hotspots({
+            "target_chain": "A", "target_input": "C1-200",
+            "hotspot_residues": [264],
+        }) == ["C264"]
+
+    def test_replacing_does_not_weaken_the_case_the_union_was_added_for(self):
+        """``{"target_chain": "A", "target_input": "A1-200,B1-200"}`` is the
+        input that motivated counting both fields. It never needed the union:
+        read from the CONTIG ALONE it is still two chains, so the refusal that
+        stops a bare hotspot being promoted to A with the second protomer
+        unconstrained is untouched. Asserted here as well as beside its own test
+        because it is the thing the fix above could plausibly have broken."""
+        with pytest.raises(ValueError) as exc:
+            rp.normalize_hotspots({
+                "target_chain": "A", "target_input": "A1-200,B1-200",
+                "hotspot_residues": [264],
+            })
+        assert "2 chains (A B)" in str(exc.value), str(exc.value)
+
+    def test_a_contig_that_names_NOTHING_falls_back_to_target_chain(self):
+        """Replacement is conditional on the contig actually naming a chain, so
+        a degenerate contig cannot silently drop the count to zero and let a
+        bare token past the ambiguity check unexamined."""
+        assert rp.normalize_hotspots({
+            "target_chain": "A", "target_input": ",",
+            "hotspot_residues": [264],
+        }) == ["A264"]
+
+    @pytest.mark.parametrize("value", [296, 296.0])
+    def test_a_WHOLE_NUMBER_FLOAT_is_a_residue_number_not_a_token(self, value):
+        """``str(296.0)`` is ``"296.0"``, which the bare-integer regex does not
+        match, so a float hotspot was neither attributed to its chain nor
+        refused as ambiguous — it travelled on as the literal ``"296.0"``, and
+        upstream matches ``f"{chain_id}{res_id}"``, so it addressed nothing that
+        can exist. main's 0cbfea6 restored exactly this shape on the web
+        preflight side ("a JSON body sending a whole number as a float is the
+        shape that reaches it"); the two sides of the container boundary must
+        not disagree about it."""
+        assert rp.normalize_hotspots(
+            {"hotspot_residues": [value], "target_chain": "A"}) == ["A296"]
+
+    def test_a_FLOAT_does_not_slip_past_the_multi_chain_refusal(self):
+        """THE REASON THIS IS NOT COSMETIC. The bare-integer refusal is the one
+        guard between a caller and a silently half-aimed dimer, and a float
+        walked straight through it while the identical int was refused."""
+        with pytest.raises(ValueError):
+            rp.normalize_hotspots({
+                "hotspot_residues": [296.0], "target_chain": "A",
+                "target_input": "A1-200,B1-200",
+            })
+
+    def test_a_float_with_no_chain_known_is_still_left_bare_but_NORMALISED(self):
+        """It must stop being a float without acquiring a chain nobody named —
+        ``missing_hotspots`` then refuses ``296`` and says something true about
+        it, instead of blaming ``296.0`` for being outside the region."""
+        assert rp.normalize_hotspots({"hotspot_residues": [296.0]}) == ["296"]
+
+    def test_a_FRACTIONAL_float_is_refused_rather_than_truncated(self):
+        """A DELIBERATE DIVERGENCE from ``shared/pdb_inspect.split_hotspot``,
+        which truncates. No residue is numbered 296.7, so resolving it means
+        guessing which one was meant, and guessing on the hotspot field is the
+        failure class this normaliser exists to stop. It stops nothing real: the
+        web adapter's ``_parse_hotspots`` yields ints from a regex and can never
+        emit one, and today such a token is refused anyway — by
+        ``missing_hotspots``, with a message that blames the wrong thing."""
+        with pytest.raises(TypeError) as exc:
+            rp.normalize_hotspots(
+                {"hotspot_residues": [296.7], "target_chain": "A"})
+        assert "296" in str(exc.value) and "297" in str(exc.value), (
+            f"the refusal must name the two residues it will not choose "
+            f"between: {exc.value}")
+
+    def test_a_BOOL_element_never_becomes_residue_1_or_the_token_True(self):
+        """``bool`` subclasses int, so a truncating rule would read ``True`` as
+        residue 1, and ``str(True)`` is the token ``"True"`` — a hotspot the
+        caller never wrote. ``split_hotspot`` refuses it for the same reason."""
+        with pytest.raises(TypeError):
+            rp.normalize_hotspots(
+                {"hotspot_residues": [True], "target_chain": "A"})
+
+    def test_a_float_hotspot_reaches_main_as_a_pre_GPU_refusal(
+            self, tmp_path, monkeypatch):
+        """WIRING, and the exit shape: a TypeError raised out of the tokeniser
+        must land as a clean ``_fail`` with a result file, not as a container
+        that dies before ``/tmp/smoke_results.json`` exists."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps({
+            "job_spec": {
+                "config_name": "search_binder_local_pipeline", "task_name": "",
+                "target_source": "custom", "target_chain": "A",
+                "hotspot_residues": [296.7], "rf3_required": False,
+                "nsamples": 4, "replicas": 2,
+            },
+            "input_presigned_url": "https://example/t.pdb",
+            "upload_urls_endpoint": "https://hub/upload",
+            "job_token": "t", "tier": "protein_binder"}))
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+        monkeypatch.setenv("JOB_ID", "job-float")
+        monkeypatch.setenv("PROTEINA_RF3", "on")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        with pytest.raises(SystemExit):
+            rp.main()
+        assert json.loads(
+            result_file.read_text())["error"]["check"] == "hotspot_malformed"
 
     def test_a_malformed_contig_defers_rather_than_crashing(self):
         """parse_target_input has its own pre-GPU refusal with a better
@@ -661,3 +1275,675 @@ class TestJobSpecAliases:
         }
         assert rp.normalize_target_chain(spec["target_chain"]) == "A B"
         assert rp.normalize_hotspots(spec) == spec["hotspot_residues"]
+
+
+class TestEveryRequestedChainMustBePresent:
+    """A chain the caller asked for and the upload does not contain must be
+    REFUSED, not skipped.
+
+    THE ONE FAILURE MODE THAT COSTS BOTH MONEY AND SCIENCE. ``derive_segments``
+    ``continue``s past a chain it finds no residues for, and the guard beside it
+    only fired when ALL of them were missing, so a two-chain request against a
+    one-chain structure produced a healthy one-chain contig and nothing
+    downstream ever mentioned the chain that vanished: every later guard reads
+    the already-pruned list, and hotspots on a strict subset of the contig's
+    chains are legitimate (see the class below), so the run cleared the hotspot
+    gate with "all N hotspot(s) matched", billed an A100 and designed binders
+    against a monomer. Indistinguishable from a correct run.
+
+    It matters on THIS branch specifically because ``normalize_target_chain``
+    turned ``"A,B"`` from one unmatchable token — which emptied ``segments`` and
+    tripped the aggregate guard — into two real chains, and ``"A,B"`` is the
+    exact literal ``direct_call_fc.build_job_spec`` sends.
+    """
+
+    _MONOMER = (("A", 1, 200),)
+    _DIMER = (("A", 1, 200), ("B", 1, 200))
+
+    def test_a_missing_chain_is_refused_even_though_another_resolved(
+            self, tmp_path, monkeypatch):
+        error, staged = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="A B",
+            hotspots=["A100", "A120"], spans=self._MONOMER)
+        assert error["check"] == "target_chain", error
+        assert "B" in error["detail"], error["detail"]
+        assert "A1-200" in error["detail"], (
+            "the refusal must show what the upload does contain: "
+            f"{error['detail']}")
+        assert staged == [], (
+            "a target was staged for the design engine with the requested "
+            "chain B absent from it")
+
+    def test_the_COMMA_spelling_THE_DRIVER_SENDS_takes_the_same_path(
+            self, tmp_path, monkeypatch):
+        """``tools/proteina/direct_call_fc.py`` hardcodes ``"A,B"`` with no
+        contig, so this is not a hypothetical spelling. Before
+        ``normalize_target_chain`` existed, ``"A,B"`` was one token that matched
+        nothing and the aggregate guard caught it; normalising it correctly is
+        what routed this input into the silent branch."""
+        from tools.proteina import direct_call_fc as dc
+
+        spec = dc.build_job_spec(preset="protein_binder", nsamples=4, replicas=2)
+        assert not spec.get("target_input"), (
+            "the driver grew a contig — this test no longer exercises the "
+            "derive_segments branch it exists for")
+        error, staged = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain=spec["target_chain"],
+            hotspots=["A241"], spans=self._MONOMER)
+        assert error["check"] == "target_chain", error
+        assert staged == []
+
+    def test_a_ONE_CHARACTER_TYPO_on_a_real_dimer_is_refused(
+            self, tmp_path, monkeypatch):
+        """The cheapest way to reach this: the structure really is a dimer, the
+        request really is multi-chain, and one letter is wrong."""
+        error, staged = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="A,C",
+            hotspots=["A100"], spans=self._DIMER)
+        assert error["check"] == "target_chain", error
+        assert "C" in error["detail"]
+        assert staged == []
+
+    def test_the_all_missing_case_still_names_the_whole_request(
+            self, tmp_path, monkeypatch):
+        """The aggregate refusal is kept, not replaced: when nothing resolves
+        there is no "the rest was fine" to report."""
+        error, _ = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="Z", spans=self._MONOMER)
+        assert error["check"] == "target_chain", error
+        assert "Z" in error["detail"] and "A1-200" in error["detail"]
+
+    @pytest.mark.parametrize("target_chain,spans", [
+        ("A", _MONOMER),
+        ("A B", _DIMER),
+        ("A,B", _DIMER),
+    ])
+    def test_a_request_whose_chains_ARE_ALL_present_is_not_refused(
+            self, tmp_path, monkeypatch, target_chain, spans):
+        """NO OVER-REFUSAL, which on this file is its own defect class. These
+        run past every input guard and stop at the registry read — a different
+        check name — so a guard that started refusing real work would show up
+        here rather than in production."""
+        error, _ = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain=target_chain,
+            hotspots=["A100"], spans=spans)
+        assert error["check"] == "target_registry", (
+            f"a legitimate request was refused as {error['check']}: {error}")
+
+    def test_an_explicit_contig_still_refuses_per_chain_as_it_always_did(
+            self, tmp_path, monkeypatch):
+        """The branch this one was made symmetric with. Unchanged, and asserted
+        so that "the two branches agree" is checkable rather than claimed."""
+        error, staged = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="A B",
+            target_input="A1-200,B1-200", hotspots=["A100"],
+            spans=self._MONOMER)
+        assert error["check"] == "target_input", error
+        assert "B" in error["detail"]
+        assert staged == []
+
+
+class TestTheWebTierIsAFirstClassMultiChainPath:
+    """The premise three files used to state — "the web tier cannot express a
+    multi-chain target or chain-prefixed hotspots" — is FALSE, and it was load
+    bearing: believing it is why the bare-integer ambiguity refusal was put on
+    the container's direct-call entry only. These drive the REAL adapter
+    (``blueprints/targets.py`` calls exactly this ``validate``) so the
+    corrected comments cannot rot back."""
+
+    @staticmethod
+    def _form(**over):
+        form = {"preset": "protein_binder", "_has_custom_target": "1"}
+        form.update(over)
+        return form
+
+    def test_the_web_form_accepts_a_multi_chain_contig(self):
+        from tools import proteina as adapter
+        inp, err = adapter.validate(
+            self._form(target_input="A236-443,B236-443"), {})
+        assert err is None
+        assert inp["target_chain"] == "A B"
+        assert inp["target_input"] == "A236-443,B236-443"
+
+    def test_the_web_form_accepts_chain_prefixed_hotspots(self):
+        from tools import proteina as adapter
+        inp, err = adapter.validate(
+            self._form(target_input="A236-443,B236-443",
+                       hotspot_residues="A264 B264"), {})
+        assert err is None
+        assert inp["hotspot_spec"] == ["A264", "B264"]
+
+    def test_a_promoted_hotspot_is_INDISTINGUISHABLE_from_a_typed_one(self):
+        """WHY run_pipeline CANNOT CLOSE THIS. ``_parse_hotspots`` promotes a
+        bare ``264`` onto ``contig_chains[0]`` before dispatch, so the token
+        reaches the container already chain-prefixed and
+        ``normalize_hotspots``' ``bare`` list is empty — the refusal never
+        fires, ``missing_hotspots`` returns [] because a real dimer genuinely
+        contains A264, and the run designs against protomer A with B entirely
+        unconstrained while the log reports a full hotspot match.
+
+        This asserts the part that decides WHERE the fix can live: the payload
+        a promoted bare hotspot produces is byte-identical to the one a
+        deliberately typed ``A264`` produces, ``hotspot_residues`` carrying the
+        bare number in both. No container-side rule can separate them, so the
+        fix belongs in ``_parse_hotspots`` (refuse a bare token when
+        ``len(chain_ids) > 1``). If this test ever fails, the adapter has grown
+        a signal the container could act on — go and use it."""
+        from tools import proteina as adapter
+        promoted, e1 = adapter.validate(
+            self._form(target_input="A236-443,B236-443",
+                       hotspot_residues="264,301"), {})
+        typed, e2 = adapter.validate(
+            self._form(target_input="A236-443,B236-443",
+                       hotspot_residues="A264,A301"), {})
+        assert e1 is None and e2 is None
+        assert promoted == typed, (
+            "the adapter now distinguishes a promoted hotspot from a typed "
+            "one; the container can and should refuse the ambiguous case")
+        assert promoted["hotspot_spec"] == ["A264", "A301"]
+        assert rp.normalize_hotspots(promoted) == ["A264", "A301"]
+
+    def test_the_same_intent_from_a_DIRECT_caller_is_refused(self):
+        """The other half of the asymmetry, so the gap is documented as a gap
+        rather than as an oversight: expressed bare — which is what the direct
+        path receives, un-promoted — the identical request IS refused."""
+        with pytest.raises(ValueError):
+            rp.normalize_hotspots({
+                "target_input": "A236-443,B236-443",
+                "hotspot_residues": [264, 301],
+            })
+
+    def test_hotspots_on_a_SUBSET_of_the_contig_chains_are_legitimate(self):
+        """WHY THE TEMPTING ONE-LINE FIX IS WRONG, pinned rather than asserted.
+
+        The obvious way to catch the promotion hole container-side is "refuse
+        when the hotspots address fewer chains than the contig names" — it
+        would fire on the promoted-onto-A case regardless of who did the
+        prefixing. It must not be added: designing against ONE epitope of a
+        multi-chain complex, with the other chains present as steric context,
+        is an ordinary campaign, and both the adapter and the container accept
+        it today. The guard would refuse real work in order to catch a case it
+        cannot distinguish anyway (the promoted payload is byte-identical to a
+        typed one — see the test above).
+
+        This is the pin the comment in run_pipeline.py points at. It did not
+        exist before: no test in tests/test_proteina_smoke.py drives a STRICT
+        subset — test_multi_chain_hotspots uses ``A113 C73`` and
+        test_multi_chain_contig_round_trip uses ``["A12", "B5"]``, both of
+        which address every chain the contig names."""
+        from tools import proteina as adapter
+        inp, err = adapter.validate(
+            self._form(target_input="A12-157,B12-157",
+                       hotspot_residues="A113 A120"), {})
+        assert err is None, err
+        assert inp["target_chain"] == "A B"
+        assert inp["hotspot_spec"] == ["A113", "A120"]
+        assert rp.normalize_hotspots(inp) == ["A113", "A120"], (
+            "the container refused hotspots on a subset of the contig's "
+            "chains — that is a legitimate single-epitope campaign")
+
+
+class TestDirectCallDriver:
+    """``tools/proteina/direct_call_fc.py`` — the operator-facing driver. Its
+    defaults are the whole safety surface, because a mistake here costs an A100
+    shard or destroys a previous run's only recoverable copy of its atoms."""
+
+    def test_two_invocations_get_DIFFERENT_job_ids(self):
+        """The default used to be the constant "proteina-direct-fc-01", and the
+        job id is the ONLY source of shard variation: run_pipeline.shard_seed
+        is sha256(job_id) % 1_000_000 and nothing else. A shard is 8 designs
+        and a campaign needs more, so re-running --submit is the normal move —
+        and with the constant it re-ran the same seed against the same staged
+        structure for bit-identical designs and another ~$4-12 of A100.
+
+        Parses through the REAL argparse so a hardcoded default cannot come
+        back in either the parser or the resolver."""
+        from tools.proteina import direct_call_fc as dc
+
+        ids = set()
+        for _ in range(3):
+            args = _parse_direct_call_args([])
+            ids.add(dc._resolve_job_id(args))
+        assert len(ids) == 3, f"default job ids repeat: {ids}"
+
+    def test_two_default_job_ids_get_different_shard_seeds(self):
+        """The consequence, asserted against the real seed function rather than
+        restated — distinct ids are worthless if they collide downstream."""
+        from tools.proteina import direct_call_fc as dc
+
+        a = dc._resolve_job_id(_parse_direct_call_args([]))
+        b = dc._resolve_job_id(_parse_direct_call_args([]))
+        assert rp.shard_seed(a) != rp.shard_seed(b)
+
+    def test_an_explicit_job_id_is_still_honoured(self):
+        from tools.proteina import direct_call_fc as dc
+        args = _parse_direct_call_args(["--job-id", "fc-round-2"])
+        assert dc._resolve_job_id(args) == "fc-round-2"
+
+    def test_submit_refuses_to_overwrite_an_UNCOLLECTED_call(
+            self, tmp_path, monkeypatch):
+        """cmd_submit wrote STATE unconditionally, so the previous run's
+        call_id — the only handle that can ever reach its designs — was lost,
+        and that run could never be --collect'ed.
+
+        The refusal must land BEFORE modal is imported and before the target is
+        staged, which is what makes this testable offline at all: no modal, no
+        network, no Supabase upload."""
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+        monkeypatch.setattr(dc, "STATE", state)
+        monkeypatch.setattr(dc, "_load_env_and_path", _explode)
+        monkeypatch.setattr(dc, "_stage_target", _explode)
+
+        args = _parse_direct_call_args(["--submit", "--job-id", "fc-round-2"])
+        assert dc.cmd_submit(args) == 2
+        assert json.loads(state.read_text())["call_id"] == "fc-abc123", (
+            "the prior call id was overwritten and is now unreachable")
+
+    def test_submit_refuses_to_REUSE_a_job_id(self, tmp_path, monkeypatch):
+        """The second loss the constant default caused:
+        modal_app._raw_archive_name is a pure function of the job id and
+        _park_raw_archive shutil.move's onto it, so a re-run destroys the
+        previous run's raw tree — which is precisely the fallback the inline
+        cap names for coordinates it had to drop."""
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+        monkeypatch.setattr(dc, "STATE", state)
+        monkeypatch.setattr(dc, "_load_env_and_path", _explode)
+        monkeypatch.setattr(dc, "_stage_target", _explode)
+
+        args = _parse_direct_call_args(["--submit", "--job-id", "fc-round-1"])
+        assert dc.cmd_submit(args) == 2
+
+    def test_a_COLLECTED_call_no_longer_blocks_the_next_submit(
+            self, tmp_path, monkeypatch, modal_tripwire):
+        """THE GUARD MUST HAVE A NORMAL-PATH EXIT THAT IS NOT --force.
+
+        The refusal above says "run --collect first", but cmd_collect left
+        STATE untouched, so collecting satisfied nothing: every submit after
+        the first refused, and --force was the only way forward. --force also
+        switches off the job-id reuse refusal beside it, so the dead end
+        trained the operator straight into the bypass that costs an A100 shard
+        and overwrites a raw archive. Since a shard is 8 designs and a campaign
+        needs more, "submit again" is the ordinary move, not an exotic one."""
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {},
+             "collected": True}))
+        monkeypatch.setattr(dc, "STATE", state)
+
+        # A fresh default job id, no --force. The tripwire is what proves this
+        # got past the guards WITHOUT letting it stage or spawn anything.
+        with pytest.raises(_ReachedTheModalBoundary):
+            dc.cmd_submit(_parse_direct_call_args(["--submit"]))
+        assert modal_tripwire == [1], (
+            "a collected run still blocked the next submit — the only exit "
+            "left is --force, which disables the reuse guard too")
+
+    def test_a_collected_state_still_blocks_REUSING_its_job_id(
+            self, tmp_path, monkeypatch):
+        """Collecting retires the "you would lose the call id" loss and nothing
+        else. The seed collision and the raw-archive overwrite are not undone
+        by having read the result, so that refusal ignores ``collected``."""
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {},
+             "collected": True}))
+        monkeypatch.setattr(dc, "STATE", state)
+        monkeypatch.setattr(dc, "_load_env_and_path", _explode)
+        monkeypatch.setattr(dc, "_stage_target", _explode)
+
+        args = _parse_direct_call_args(["--submit", "--job-id", "fc-round-1"])
+        assert dc.cmd_submit(args) == 2
+
+    def test_collect_is_what_marks_the_state_collected(
+            self, tmp_path, monkeypatch):
+        """The other end of the same contract, driven through the REAL
+        cmd_collect with modal stubbed — asserting the flag in the submit tests
+        alone would pin a state nothing ever produces.
+
+        Marked once the result is in hand, and the call id is KEPT so
+        ``--collect`` stays repeatable."""
+        import sys as _sys
+        import types as _types
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+        monkeypatch.setattr(dc, "STATE", state)
+        monkeypatch.setattr(dc, "_load_env_and_path", lambda: None)
+
+        pdb = b"ATOM      1  CA  ALA A   1\nEND\n"
+        result = {"exit_code": 0, "smoke_result": {
+            "status": "COMPLETED", "designs_completed": 1, "designs_total": 1,
+            "candidates": [{"rank": 1, "scores": {"total_reward": 1.0},
+                            "pdb_content_b64": base64.b64encode(pdb).decode()}],
+        }}
+
+        fake_modal = _types.ModuleType("modal")
+
+        class _FunctionCall:
+            @staticmethod
+            def from_id(call_id):
+                assert call_id == "fc-abc123"
+                return _types.SimpleNamespace(get=lambda timeout=None: result)
+
+        fake_modal.FunctionCall = _FunctionCall
+        monkeypatch.setitem(_sys.modules, "modal", fake_modal)
+
+        rc = dc.cmd_collect(_parse_direct_call_args(
+            ["--collect", "--outdir", str(tmp_path / "out")]))
+        assert rc == 0
+        parked = json.loads(state.read_text())
+        assert parked["collected"] is True, (
+            "collecting left the state uncollected, so the submit guard's "
+            "'run --collect first' advice can never be satisfied")
+        assert parked["call_id"] == "fc-abc123", "--collect must stay repeatable"
+        assert (tmp_path / "out" / "design_001.pdb").read_bytes() == pdb
+
+    def test_force_is_the_documented_escape_hatch(
+            self, tmp_path, monkeypatch, modal_tripwire):
+        """The guard must be overridable, or an operator with a genuinely stale
+        state file has no way forward but to delete it by hand."""
+        from tools.proteina import direct_call_fc as dc
+
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+        monkeypatch.setattr(dc, "STATE", state)
+
+        args = _parse_direct_call_args(
+            ["--submit", "--job-id", "fc-round-1", "--force"])
+        # Getting past the guard is the assertion, and the tripwire is what
+        # makes "past the guard" observable without staging or spawning.
+        with pytest.raises(_ReachedTheModalBoundary):
+            dc.cmd_submit(args)
+        assert modal_tripwire == [1], "the guard blocked --force"
+
+    def test_a_clean_slate_is_not_blocked(
+            self, tmp_path, monkeypatch, modal_tripwire):
+        """No state file means nothing to lose; the first submit of a session
+        must not need --force."""
+        from tools.proteina import direct_call_fc as dc
+
+        monkeypatch.setattr(dc, "STATE", tmp_path / "absent.json")
+        with pytest.raises(_ReachedTheModalBoundary):
+            dc.cmd_submit(_parse_direct_call_args(["--submit"]))
+        assert modal_tripwire == [1]
+
+    def test_no_submit_test_can_reach_a_REAL_spawn(self, tmp_path, monkeypatch,
+                                                   modal_tripwire):
+        """The tripwire itself, pinned — the three tests above are only as safe
+        as it is, and a stub that silently stopped stubbing would restore the
+        original leak without any test going red.
+
+        Asserts the ORDER of the boundary too: nothing may leave this machine
+        before the refusal guards have had their say, so a refused submit must
+        not even resolve a target."""
+        from tools.proteina import direct_call_fc as dc
+        import modal as patched
+
+        assert patched.Function.from_name is not None
+        with pytest.raises(_ReachedTheModalBoundary):
+            patched.Function.from_name("app", "fn")
+        with pytest.raises(_ReachedTheModalBoundary):
+            dc._stage_target("j", tmp_path / "t.pdb")
+
+        # A REFUSED submit must stop before the tripwire, not at it.
+        state = tmp_path / "state.json"
+        state.write_text(json.dumps(
+            {"call_id": "fc-abc123", "job_id": "fc-round-1", "job_spec": {}}))
+        monkeypatch.setattr(dc, "STATE", state)
+        rc = dc.cmd_submit(_parse_direct_call_args(
+            ["--submit", "--job-id", "fc-round-1"]))
+        assert rc == 2
+        assert modal_tripwire == [], (
+            "a refused submit still entered the staging path — the guards must "
+            "run before anything touches the network")
+
+    def test_the_driver_still_selects_INLINE_delivery(self):
+        """The payload contract this whole file is about: no
+        upload_urls_endpoint and no job_token is what picks INLINE in main()."""
+        from tools.proteina import direct_call_fc as dc
+        payload = dc.build_payload(
+            "https://example/PRESIGNED", preset="protein_binder",
+            nsamples=4, replicas=2, job_id="t")
+        assert "upload_urls_endpoint" not in payload
+        assert "job_token" not in payload
+
+    # --- the two fields the driver's own docstring calls dangerous ----------
+
+    def test_the_driver_declares_target_source_custom_EXPLICITLY(self):
+        """CONTRACT QUIRK 1, which had no test at all: mutating this field to
+        "curated" left the whole file green. The driver's docstring says it
+        "must be set to 'custom' EXPLICITLY. It defaults to 'curated' ...
+        falling through to a repo-bundled benchmark target would design against
+        the wrong structure and look successful."
+
+        Asserted BOTH ways — the literal the driver writes, and the value
+        main()'s own expression reads out of it — so the test fails whichever
+        side moves. The blast radius is bounded (main()'s target-source
+        invariant refuses a drifted value pre-GPU), but bounded to one wasted
+        A100 container, which is the thing worth a two-line test."""
+        from tools.proteina import direct_call_fc as dc
+
+        spec = dc.build_job_spec(preset="protein_binder", nsamples=4, replicas=2)
+        assert spec["target_source"] == "custom"
+        # Verbatim from run_pipeline.main().
+        assert (str(spec.get("target_source") or "curated")) == "custom", (
+            "the driver's spec reads back as a CURATED run, so the container "
+            "would design against a repo-bundled benchmark target")
+
+    def test_binder_length_sits_where_run_pipeline_actually_reads_it(self):
+        """CONTRACT QUIRK 2, and the one that fails SILENTLY. The docstring
+        says binder_length is "a [lo, hi] pair at job_spec TOP LEVEL.
+        `parameters` is never read at all." Moving it under ``parameters`` also
+        left the file green — and would stay green in production, because
+        run_pipeline's fallback (``or [60, 120]``) happens to equal the value
+        the driver hardcodes today. The moment an operator edits the range, the
+        edit is silently ignored and the shard designs the old lengths.
+
+        Which is exactly why the STRUCTURAL assertions below are the ones that
+        matter: the value read back is identical under the mutation, so only
+        "the key is at the top level and there is no ``parameters`` dict" can
+        distinguish them."""
+        from tools.proteina import direct_call_fc as dc
+
+        spec = dc.build_job_spec(preset="protein_binder", nsamples=4, replicas=2)
+        assert "binder_length" in spec, (
+            "binder_length left the job_spec top level; run_pipeline reads it "
+            "there and nowhere else, so it would silently fall back to "
+            "[60, 120]")
+        assert "parameters" not in spec, (
+            "the driver grew a `parameters` dict; run_pipeline never reads one")
+        assert spec["binder_length"] == [60, 120]
+        # Verbatim from run_pipeline.main().
+        assert [int(v) for v in (spec.get("binder_length") or [60, 120])] == [
+            60, 120]
+
+    # --- --collect must persist the result on EVERY path -------------------
+
+    def test_collect_PERSISTS_the_result_when_no_candidate_carries_ATOMS(
+            self, tmp_path, monkeypatch):
+        """The `if not with_atoms: return 1` used to precede the
+        smoke_result.json write, so the failure path — the one where a
+        machine-readable diagnosis is worth most — was the one that got none.
+
+        run_pipeline keeps scores, ranks and the full candidate list on a
+        FAILED result deliberately (the inline-delivery verdict in its main()
+        says so: "the science survives"). Dropping it to terminal scrollback
+        here undoes that on the operator's side, and it was NOT recoverable by
+        re-running --collect: the fetch succeeds but hits the identical early
+        return and still writes nothing.
+
+        The non-zero exit stays — the goal genuinely is not met."""
+        smoke = {
+            "status": "FAILED", "designs_completed": 4, "designs_total": 8,
+            "error": {"bucket": "delivery",
+                      "check": "inline_cap_admitted_nothing",
+                      "detail": "the cap admitted none of the 4 design(s)"},
+            "inline_delivery": {"n_inlined": 0, "n_inline_capped": 4,
+                                "inline_bytes_used": 0, "cap_bytes": 1024},
+            "candidates": [{"rank": r, "name": f"d{r}",
+                            "scores": {"total_reward": 1.0 / r}}
+                           for r in range(1, 5)],
+        }
+        rc, outdir, _ = _drive_collect(
+            tmp_path, monkeypatch, smoke, exit_code=1)
+
+        assert rc == 1, "a run that delivered no coordinates must still exit 1"
+        saved = outdir / "smoke_result.json"
+        assert saved.exists(), (
+            "cmd_collect discarded the only machine-readable copy of a paid "
+            "shard's scores, ranks and error detail")
+        parsed = json.loads(saved.read_text())
+        assert parsed["error"]["check"] == "inline_cap_admitted_nothing"
+        assert parsed["inline_delivery"]["n_inline_capped"] == 4
+        assert [c["rank"] for c in parsed["candidates"]] == [1, 2, 3, 4], (
+            "the scores run_pipeline kept on the FAILED result did not survive")
+
+    def test_a_pre_GPU_refusal_with_ZERO_candidates_is_persisted_too(
+            self, tmp_path, monkeypatch):
+        """The reachable case, and the reason this is not merely theoretical.
+
+        Every pre-GPU `_fail` — the #116 minimum-target-size floor, the #118
+        empty-contig refusal, hotspot_chain_ambiguous, hotspot_malformed,
+        target_conflict — produces a FAILED result with an empty candidate
+        list, so it lands on this same early return without the inline cap
+        ever biting. The diagnosis in `error` is the entire value of that
+        result and it must reach disk."""
+        smoke = {
+            "status": "FAILED", "designs_completed": 0, "designs_total": 0,
+            "error": {"bucket": "preflight", "check": "target_too_small",
+                      "detail": "target has 12 residues, below the floor"},
+            "candidates": [],
+        }
+        rc, outdir, _ = _drive_collect(
+            tmp_path, monkeypatch, smoke, exit_code=1)
+
+        assert rc == 1
+        parsed = json.loads((outdir / "smoke_result.json").read_text())
+        assert parsed["error"]["check"] == "target_too_small"
+
+    def test_the_success_path_still_writes_BOTH_pdbs_and_the_result(
+            self, tmp_path, monkeypatch):
+        """Hoisting the write must not have moved it out from under the
+        success path, and must not have stopped the PDBs landing."""
+        pdb = b"ATOM      1  CA  ALA A   1\nEND\n"
+        smoke = {
+            "status": "COMPLETED", "designs_completed": 1, "designs_total": 1,
+            "candidates": [{"rank": 1, "scores": {"total_reward": 1.0},
+                            "pdb_content_b64": base64.b64encode(pdb).decode()}],
+        }
+        rc, outdir, _ = _drive_collect(tmp_path, monkeypatch, smoke)
+        assert rc == 0
+        assert (outdir / "design_001.pdb").read_bytes() == pdb
+        assert json.loads(
+            (outdir / "smoke_result.json").read_text())["status"] == "COMPLETED"
+
+    # --- what --validate actually costs ------------------------------------
+
+    def test_the_function_the_driver_calls_really_does_carry_a_GPU(self):
+        """Ground truth for every cost claim below, read out of modal_app.py
+        rather than asserted: there is exactly ONE @app.function in the app and
+        it is unconditionally A100-80GB, so every command that reaches Modal —
+        `--validate` included — allocates one. FN_GPU is the driver's copy of
+        that fact and drifting it is the failure this catches."""
+        from tools.proteina import direct_call_fc as dc
+
+        gpus = _modal_function_gpus()
+        assert dc.FN in gpus, (
+            f"the driver calls {dc.APP}/{dc.FN}, which modal_app.py no longer "
+            f"declares; it declares {sorted(gpus)}")
+        assert gpus[dc.FN] == dc.FN_GPU, (
+            f"{dc.FN} is deployed with gpu={gpus[dc.FN]!r} but direct_call_fc "
+            f"tells the operator {dc.FN_GPU!r}")
+        assert dc.FN_GPU, (
+            "FN_GPU is falsy, which claims a CPU-only container; if a genuine "
+            "CPU-only validate function now exists, route cmd_validate at it "
+            "and restore the costless wording")
+
+    def test_the_validate_BANNER_does_not_advertise_a_billed_call_as_free(
+            self, tmp_path, monkeypatch, capsys):
+        """Driven through the REAL cmd_validate, because the banner is what an
+        operator actually reads — it used to print "(free, CPU-only)" about a
+        call to an unconditionally A100-80GB function, which is not merely
+        vague but inverted on the one resource it names. Modal bills container
+        wall-clock, so skipping GPU *work* is not being CPU-only."""
+        import sys as _sys
+        import types as _types
+        from tools.proteina import direct_call_fc as dc
+
+        monkeypatch.setattr(dc, "_load_env_and_path", lambda: None)
+        monkeypatch.setattr(dc, "_resolve_target", lambda a: tmp_path / "t.pdb")
+        monkeypatch.setattr(dc, "_stage_target",
+                            lambda j, t: "https://example/PRESIGNED")
+        fake_modal = _types.ModuleType("modal")
+        fake_modal.Function = _types.SimpleNamespace(
+            from_name=lambda app, fn: _types.SimpleNamespace(
+                remote=lambda payload: {"exit_code": 0}))
+        monkeypatch.setitem(_sys.modules, "modal", fake_modal)
+
+        assert dc.cmd_validate(_parse_direct_call_args(["--validate"])) == 0
+        banner = "\n".join(
+            ln for ln in capsys.readouterr().out.splitlines()
+            if "[validate]" in ln).lower()
+
+        assert banner, "cmd_validate printed no [validate] banner at all"
+        assert "free" not in banner, (
+            f"the banner still calls a billed A100 call free: {banner!r}")
+        assert "cpu-only" not in banner, (
+            f"the banner still calls an A100 container CPU-only: {banner!r}")
+        assert dc.FN_GPU.lower() in banner, (
+            "the banner should name the accelerator it allocates so the cost "
+            f"is visible at the moment it is incurred: {banner!r}")
+
+    def test_no_MODAL_CALLING_command_is_documented_as_free(self):
+        """The usage block and cmd_validate's docstring, checked against the
+        same ground truth. `--dry-run` is exempt and deliberately so: it never
+        imports modal, so it is the one genuinely costless option and the
+        docstring should keep recommending it.
+
+        Scoped to this file on purpose. "Free validate" IS true of the
+        tools-hub WALLET (tools/proteina/__init__ says "free validate dry-run")
+        and that wording must survive; what is false is calling the
+        INFRASTRUCTURE free on a path that bypasses the wallet entirely."""
+        import inspect
+        from tools.proteina import direct_call_fc as dc
+
+        if not _modal_function_gpus().get(dc.FN):
+            pytest.skip("FN is genuinely CPU-only; costless wording is honest")
+
+        usage = [ln for ln in (dc.__doc__ or "").splitlines()
+                 if "direct_call_fc.py --" in ln]
+        assert usage, "the module docstring lost its usage block"
+        for line in usage:
+            costless = "free" in line.lower()
+            if "--dry-run" in line:
+                assert costless, (
+                    "--dry-run never touches Modal and should stay flagged as "
+                    f"the free option: {line!r}")
+            else:
+                assert not costless, (
+                    f"a command that calls {dc.APP}/{dc.FN} (gpu={dc.FN_GPU}) "
+                    f"is advertised as free: {line!r}")
+
+        doc = (inspect.getdoc(dc.cmd_validate) or "").lower()
+        assert doc, "cmd_validate lost its docstring"
+        assert "cpu-only" not in doc.replace("not cpu-only", ""), (
+            "cmd_validate's docstring still describes the container as "
+            "CPU-only")
+        assert "not free" in doc or "cheap, not free" in doc, (
+            "cmd_validate's docstring must state the cost plainly; it is the "
+            "text an operator reads before deciding to 'just validate first'")
