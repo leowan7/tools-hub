@@ -1213,15 +1213,20 @@ def _check_size_envelope(
 
     warn_msg: Optional[str] = None
     hard_msg: Optional[str] = None
-    if over_hard and env.cap_basis == "untested":
+    if over_hard and env.cap_basis != "literature":
         # THE COPY MAY NOT CLAIM MORE THAN THE NUMBER KNOWS. The other branch
         # tells the user the job "would likely run out of memory", which is a
         # fair reading of a cap set from published work plus a clean in-house
-        # run near it. proteina's cap has neither: the largest target ever run
-        # is 130 residues, so everything above the cap is UNTESTED, not
-        # known-to-fail. Asserting a predicted OOM there is the same invented
+        # run near it. proteina's cap is neither: it is set from its own
+        # measured scaling curve with headroom above the largest size ever run
+        # (415 residues), and that curve puts the 500 cap at ~39% of an
+        # A100-80GB. Nothing has been run at the cap and nothing is predicted
+        # to fail there, so everything above it is UNMEASURED, not
+        # known-to-fail. Asserting a predicted OOM would be the same invented
         # confidence the cap's own comment warns against — and worse in user
         # copy than in a comment, because the user cannot see the reasoning.
+        # Keyed on "not literature" so a basis nobody anticipated lands here
+        # rather than on the OOM claim.
         hard_msg = (
             f"{counted}, above the {env.hard_cap_target_aa}-residue limit "
             f"currently set for {rules.slug.title()} on {rules.gpu}. That "
@@ -1243,7 +1248,10 @@ def _check_size_envelope(
             f"{rules.slug.title()}. Either pick a smaller target or "
             f"shorten the max binder length."
         )
-    elif over_warn and env.cap_basis == "untested":
+    elif over_warn and env.cap_basis != "literature":
+        # Same rule on the amber branch. For a "measured" cap the soft warn
+        # sits exactly where measurement ends, so "has not been measured" is
+        # literally what is true above it.
         warn_msg = (
             f"{counted}, above the {env.soft_warn_target_aa}-residue size "
             f"{rules.slug.title()} has actually been run at here. It should "
