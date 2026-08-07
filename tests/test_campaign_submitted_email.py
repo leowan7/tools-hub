@@ -326,21 +326,43 @@ def test_the_truncated_count_is_hedged_for_the_customer_and_exact_for_ops(sent):
     assert "starred designs" not in staff_html
 
 
-def test_the_truncation_note_gives_no_advice_that_duplicates_the_order(sent):
-    """MEDIUM-4. This note used to say "Star them again on the target page and
-    send a second request".
+def test_the_truncation_note_routes_its_retry_advice_through_the_campaign_page(sent):
+    """MEDIUM-4, and register item A89, which is the other half of it.
 
-    Following it created a SECOND paid lab project covering the SAME designs:
-    `static/js/candidate_table.js` never clears the shortlist and the modal
-    serialises it in stored order, so the second POST carries the identical
-    first `_MAX_CANDIDATE_REFS` refs -- and the designs over the limit are still
-    over it. The route is now `@idempotent()`, but its TTL is 60 seconds, which
-    makes it a double-click guard rather than a remedy, so nothing here may
-    promise that a resend is harmless either.
+    This note used to say "Star them again on the target page and send a second
+    request". Following it created a SECOND paid lab project covering the SAME
+    designs: nothing cleared the shortlist, and the modal serialises it in
+    stored order, so the second POST carried the identical first
+    `_MAX_CANDIDATE_REFS` refs. `blueprints/lab_projects.py::campaign_detail`
+    now hands the browser the refs that request COVERED and the browser un-stars
+    exactly those, so starring the remainder selects the remainder rather than
+    the same 500 again.
 
-    Asserted as an absence plus a replacement, not as an absence alone: a note
-    reduced to silence would pass half of this while leaving a user who lost 120
-    designs with no idea what happens next.
+    THE ADVICE IS THEREFORE SAYABLE, BUT NOT HERE ALONE. It happens in a browser
+    this process never hears back from, and the page's guard against a silent
+    failure is that it prints the designs the request already covers directly
+    under the advice (`templates/campaigns/detail.html`, the "Designs in this
+    request" panel). This body carries no such list, so its sentence names the
+    page that does and the body links there.
+
+    AND THE LINK CARRIES THE COUNTS, which it did not. `campaign_detail` reads
+    `truncated` off the QUERY STRING and has no other source for it, so a bare
+    `/lab-projects/<id>` reached the design list and neither the truncation
+    disclosure nor the advice -- the sentence above sent the reader to a page
+    that would not repeat the fact it was sent to explain. NOT `submitted=1`:
+    that flag is what makes the page name refs for the browser to un-star, and
+    an email opened days later is not a submit.
+
+    AND IT ASSERTS NOTHING ABOUT THAT PAGE'S MARKUP. "Check your campaign page
+    for what this request covers" is an instruction; "your campaign page lists
+    the designs" was a claim about a panel rendered under conditions this module
+    does not evaluate, on a row whose entries it has not read. The narrower
+    server-side guarantee -- that a row carrying a shortlist column always gets
+    a panel -- is pinned in tests/test_lab_project_confirmation.py rather than
+    restated here as copy.
+
+    "Star them again" stays gone in both bodies whatever else changes: it names
+    the designs the request already covers rather than the ones it does not.
     """
     em.send_campaign_submitted_emails(
         campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(500)]),
@@ -349,18 +371,49 @@ def test_the_truncation_note_gives_no_advice_that_duplicates_the_order(sent):
     )
     for mail in sent:
         body = _flat(mail["html"]) + " " + mail["text"]
-        assert "send a second request" not in body
         assert "Star them again" not in body
         assert "star them again" not in body
     user_html = _flat(sent[0]["html"])
-    assert "would repeat this request rather than add them" in user_html
-    assert "will follow up about the rest" in user_html
+    assert "Check your campaign page for what this request covers" in user_html
+    assert "then star the rest and send a second request" in user_html
+    # It does not assert what that page renders. "lists the designs" was a claim
+    # about a conditionally-rendered panel; this one tells the reader to look.
+    assert "lists the designs" not in user_html
+    # The page it sends them to, in the same body, CARRYING THE COUNT the page
+    # needs to state the fact this sentence is about. Advice pointing at a page
+    # that will not repeat the shortfall is advice with nothing to check
+    # against. Asserted PATH-relative, because `app.py` calls `load_dotenv()` at
+    # import and the repo-root .env's PUBLIC_BASE_URL leaks into this process
+    # whenever another test imported the app first.
+    _link = "/lab-projects/11111111-2222-3333-4444-555555555555?truncated=120"
+    assert _link in _flat(sent[0]["text"])
+    assert _link + '"' in sent[0]["html"]
+    # NOT the submitted flag: that is what makes the page un-star the covered
+    # designs, and an email opened days later is not a submit.
+    assert "submitted=1" not in sent[0]["html"]
+    assert "submitted=1" not in sent[0]["text"]
+    # Both formats of one email, not just the HTML.
+    assert "then star the rest and send a second request" in sent[0]["text"]
+    # The staff copy states the shortfall and gives ops no customer
+    # instruction; it is the same `_sentences` list, so this is what shows if
+    # the note is ever moved out of the customer-only block.
+    staff = _flat(sent[1]["html"]) + " " + sent[1]["text"]
+    assert "send a second request" not in staff
+    assert "120 starred ref" in staff
 
 
 def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
     """They can co-occur: a 620-star shortlist is truncated to 500 AND can have
     refs among those 500 that fail the provenance check. One merged number
-    would have to be wrong about one of the two."""
+    would have to be wrong about one of the two.
+
+    IT IS ALSO THE ONLY CASE WHERE THE CAMPAIGN LINK CARRIES TWO PARAMETERS,
+    which is where the ampersand escaping matters: the HTML half of this mail is
+    parsed by a client, so a raw `&` in an HREF is resolved against an entity
+    table, while the plain-text half must keep it raw or the URL is wrong when
+    pasted. Both halves are asserted, path-relative because `load_dotenv()` in
+    `app.py` can leak the repo-root PUBLIC_BASE_URL into this process.
+    """
     em.send_campaign_submitted_emails(
         campaign=_campaign(refs=[{"job_id": "j1", "index": i} for i in range(498)]),
         user_email="scientist@example.com",
@@ -372,6 +425,9 @@ def test_both_shortfalls_at_once_read_as_two_separate_sentences(sent):
     assert "120 further starred designs were over the per-request limit" \
         in user_html
     assert "This request covers 498 designs." in user_html
+    _path = "/lab-projects/11111111-2222-3333-4444-555555555555"
+    assert _path + "?dropped=2&truncated=120" in sent[0]["text"]
+    assert _path + "?dropped=2&amp;truncated=120\"" in sent[0]["html"]
     staff_text = sent[1]["text"]
     assert "Not included: 2 starred design(s) rejected" in staff_text
     assert "Over the limit: 120 starred ref(s)" in staff_text
@@ -398,7 +454,10 @@ def test_a_single_truncated_design_reads_as_singular(sent):
     user_html = _flat(sent[0]["html"])
     assert "Up to 1 further starred design was over the per-request limit" \
         in user_html
-    assert "rather than add it" in user_html
+    # The SECOND verb site. The sentence interpolates `_twas` twice and the
+    # assertion above only reaches the first, so a singular/plural mix-up in the
+    # tail would pass on that line alone.
+    assert "and was not read" in user_html
     # Singular on the staff row too, which counts the same thing in refs.
     assert "1 starred ref past the per-request cap" in _flat(sent[1]["html"])
 

@@ -103,13 +103,36 @@
       if (v.source_label) {
         // THE NUMBER ON SCREEN MUST BE THE NUMBER THE GATE JUDGED. This line
         // used to print residues_kept_on_target_chain unconditionally — the
-        // whole named chains, i.e. the FILE. Once the contig started reaching
-        // the server that became a live contradiction: an 830 aa upload
-        // narrowed to A236-300,B236-300 is admitted on 130 residues against a
-        // 140 cap, and the panel said "Ready to run — 400 residues" directly
-        // after having refused the same upload for being over that cap.
-        // Nothing on screen reconciled the two. When the envelope reports it
-        // sized a SELECTION, name the selection and print its count.
+        // whole of the NAMED chains, which equals the file only when the user
+        // named every chain in it. Once the contig started reaching the server
+        // that became a live contradiction. Take the upload the route tests
+        // drive, tests/test_preflight_panel_contract.py::_BIG_UPLOAD — 600 aa
+        // over chains A and B. With target_chain "A B" and the contig
+        // "A100-164,B236-300" the run is admitted on 130 residues against
+        // proteina's 500 cap, and the panel said "Ready to run — 600
+        // residues" directly after having refused that same upload for being
+        // over it. Nothing on screen reconciled the two.
+        //
+        // The "named chains" wording is load-bearing and the equation with
+        // "the file" was not: name only chain A on the same upload and this
+        // count is 300, not 600. There is then nothing to reconcile either,
+        // because 300 fits the cap and the upload is never refused — which is
+        // why the contradiction above is stated at "A B" specifically.
+        //
+        // Every figure here is a live /tools/proteina/preflight response, and
+        // the pair the contradiction is made of is pinned on that route in
+        // exactly this scenario — test_the_verdict_says_which_number_the_gate
+        // _counted asserts residues_kept_on_target_chain == 600 alongside
+        // size_envelope.residue_count == 130 — so neither can rot. The 300 is
+        // _BIG_UPLOAD's chain A, range(1, 301). Do not restate this argument
+        // against a structure no PDB fixture here builds — the version before
+        // this one used 3S7G and quoted 830/415 for the same pair, which is
+        // wrong on the repo's own 3S7G stand-in (_fc_pdb in
+        // tests/test_pdb_preflight.py, four chains, 830 aa): there "A B" is
+        // 415 and "A" is 208.
+        //
+        // When the envelope reports it sized a SELECTION, name the selection
+        // and print its count.
         const env = v.size_envelope;
         const sized = env && env.size_basis === "selection" && env.selection_label;
         html += `<div class="preflight-meta">

@@ -1057,10 +1057,18 @@ def test_size_error_refuses_an_over_cap_target_for_proteina():
         storage_path="u-1/t-1/3s7g.pdb", target_chain="A B",
         chain_summary=_FC_SUMMARY,
     )
-    # 415 aa selection: over proteina's cap, inside rfdiffusion's 500.
-    assert t.size_error("proteina", "A B", []) is not None
-    assert t.size_error("rfdiffusion", "A B", []) is None
-    # Narrowed to the canaried window, proteina accepts it.
+    # THE CAP IS PER TOOL, so a discriminating size has to sit BETWEEN two
+    # tools' caps: proteina is 500 and boltzgen is 600, and a 559-residue
+    # three-chain selection straddles them. This used to be posed at 415 aa,
+    # over proteina's 140 cap and under rfdiffusion's 500 — but 415 is now the
+    # largest size proteina has been MEASURED at, so that pair discriminates
+    # nothing.
+    _over_500 = [("A", 236, 443), ("B", 236, 442), ("C", 237, 380)]   # 559 aa
+    assert t.size_error("proteina", "A B C", _over_500) is not None
+    assert t.size_error("boltzgen", "A B C", _over_500) is None
+    # The whole CH2+CH3 pair — 415 aa, the motivating campaign — now fits.
+    assert t.size_error("proteina", "A B", []) is None
+    # And narrowed to the smallest canaried window it fits with room to spare.
     assert t.size_error(
         "proteina", "A B", [("A", 236, 300), ("B", 236, 300)],
     ) is None

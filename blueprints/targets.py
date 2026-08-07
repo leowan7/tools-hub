@@ -310,8 +310,8 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         # small for this target rather than failing the launch anonymously.
         # binder_max_aa is what arms the COMBINED cap (target + binder against
         # hard_cap_combined_aa). Omitting it left that half of the envelope
-        # dead on every money route: a 140 aa target with a 300 aa max binder
-        # is 440 against proteina's 260 budget, refused by
+        # dead on every money route: a 400 aa target with a 300 aa max binder
+        # is 700 against proteina's 620 budget, refused by
         # /tools/proteina/submit and admitted here. Read through
         # _parse_preflight_size_params rather than off a key, because the
         # validated shape differs per tool -- {min,max} dict, [min,max] list,

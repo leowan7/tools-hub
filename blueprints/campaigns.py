@@ -448,8 +448,8 @@ def compute_campaign_create():
         # session wall for zero designs. Size only — see DesignTarget.size_error
         # for why the full preflight does not belong on this route.
         # binder_max_aa arms the COMBINED cap (target + binder). Without it
-        # only the target half of the envelope ran here, so a 140 aa target
-        # with a 300 aa max binder — 440 against proteina's 260 budget — was
+        # only the target half of the envelope ran here, so a 400 aa target
+        # with a 300 aa max binder — 700 against proteina's 620 budget — was
         # refused by /tools/proteina/submit and funded by this route. Read via
         # _parse_preflight_size_params because the validated binder shape is
         # per-tool ({min,max} dict, [min,max] list, bare int, or a separate

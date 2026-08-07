@@ -34,6 +34,7 @@ only build one of them cannot tell whether they are still apart.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -918,14 +919,15 @@ def test_a_shortlist_inside_the_cap_reports_no_truncation(client):
 # and read the result.
 # ---------------------------------------------------------------------------
 
-def _lab_project_page(client, query=""):
+def _lab_project_page(client, query="", refs=None):
     from shared.campaigns import Campaign
     campaign = Campaign.from_row({
         "id": "lab-9", "user_id": "u-1", "target_name": "HER2",
         "assay_type": "yeast_display", "budget_band": "pilot",
         "status": "submitted", "submission_source": "target",
         "source_target_id": _TID, "candidate_indices": [],
-        "candidate_refs": [{"job_id": "j-bc", "index": 0}],
+        "candidate_refs": ([{"job_id": "j-bc", "index": 0}]
+                           if refs is None else refs),
     })
     _login(client)
     with patch("blueprints.lab_projects.load_user_context", return_value=_ctx()), \
@@ -955,22 +957,68 @@ def test_the_confirmation_page_states_how_many_designs_were_over_the_limit(clien
         in html
 
 
-def test_the_over_the_limit_banner_gives_no_advice_that_duplicates_the_order(client):
-    """MEDIUM-4, as behaviour rather than as wording.
+def test_the_over_the_limit_page_states_the_fact_and_advises_beside_the_list(client):
+    """MEDIUM-4 and register item A89, as behaviour rather than as wording.
 
     The banner used to say "Star them again on the target page and submit a
     second request". Following it produced a SECOND lab project covering the
-    SAME designs: `static/js/candidate_table.js` never clears the shortlist, the
-    modal serialises it in stored order, so the second POST carries the
-    identical first `_MAX_CANDIDATE_REFS` refs -- and the ones over the limit are
-    still over it. Advice that cannot be followed and creates a duplicate paid
-    order when attempted is worse than no advice, so the page now says what a
-    resend would actually do.
+    SAME designs: nothing cleared the shortlist, the modal serialises it in
+    stored order, so the second POST carried the identical first
+    `_MAX_CANDIDATE_REFS` refs. `campaign_detail` now hands the browser the refs
+    THIS request covered, on `?submitted=1`, and the browser removes exactly
+    those and keeps every other star -- so what is left to send is the
+    remainder, which is what makes the advice followable.
+
+    NOT A WIPE OF THE SHORTLIST, and this docstring said it was for one round.
+    Removing the whole key destroyed the never-read remainder the advice is
+    ABOUT; removing named refs is also idempotent, which is what retired the
+    once-per-row marker the earlier text described (register item A89).
+
+    It happens in a browser the server never hears back from, so the advice
+    ships with a safety net rather than on trust: the designs this request
+    already covers are printed underneath it. That is why the SENTENCE lives
+    inside the list's own block while the FACT does not -- the disclosure that
+    120 designs never reached the lab is owed to a customer whether or not the
+    page can list what did arrive.
+
+    WHAT THE NAME USED TO CLAIM AND THE BODY COULD NOT SHOW. This rendered one
+    page whose fixture always carries a valid ref, so the list always rendered
+    and every assertion was a presence; hoisting the sentence out of the panel
+    left all four true. Both gaps are closed here: the ORDER of the three is
+    asserted on the response, which a hoist breaks, and a SECOND row whose
+    entries resolve to no designs is rendered, which a loosened list gate
+    breaks. The same absences are pinned from the other direction in
+    tests/test_lab_project_confirmation.py --
+    `test_the_advice_never_renders_without_the_list_it_points_at` and
+    `test_the_truncation_fact_survives_a_row_with_no_readable_designs`.
+
+    "Star them again" stays gone: it names the designs already covered.
     """
     html = _lab_project_page(client, "?submitted=1&truncated=120")
-    assert "submit a second request" not in html
-    assert "Star them again" not in html
-    assert "would repeat this request rather than add them" in html
+    flat = re.sub(r"\s+", " ", html)
+    assert "Star them again" not in flat
+    assert "Up to 120 further starred designs were over the per-request limit" \
+        in flat
+    assert "To include anything that was over the limit, star it on the " \
+        "source page and send a second request." in flat
+    # The list it points at, on the same page: the fixture row names one design.
+    assert "Designs in this request" in flat
+    assert "Candidate 1" in flat
+    # The fact is above the panel, the advice inside it, the designs below the
+    # advice. The advice says "below", and only its words were ever asserted.
+    assert flat.index("over the per-request limit") \
+        < flat.index("Designs in this request") \
+        < flat.index("To include anything") \
+        < flat.index("Candidate 1")
+    # THE ABSENCE, on the same route with the same query. A row whose stored
+    # entries resolve to no designs has no list, so the advice must not ship --
+    # and the FACT must, because this page is the only place the customer is
+    # told what did not reach the lab.
+    bare = re.sub(r"\s+", " ", _lab_project_page(
+        client, "?submitted=1&truncated=120", refs=["not-a-ref"]))
+    assert "To include anything" not in bare
+    assert "Up to 120 further starred designs were over the per-request limit" \
+        in bare
 
 
 def test_a_clean_confirmation_page_carries_neither_banner(client):
