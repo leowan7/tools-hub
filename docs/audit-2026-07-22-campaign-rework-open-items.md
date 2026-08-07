@@ -3385,10 +3385,11 @@ in-product handoff the plan prefers.
   and the banner named only the second; the template's own comment listed both
   causes while the copy it sat above described one. Nothing detected it because
   `_DISTINGUISHING` in `tests/test_target_handoff_banners.py` pinned the string,
-  not its truth. Both banner suites now assert that the sentence names NO
-  particular read, in both directions -- and their docstrings say what those
-  absence assertions ARE, which is regression guards against restoring either
-  dead wording on either page, not the cross-page copy check they were first
+  not its truth. All three banner suites now assert that the sentence names NO
+  particular read, in both directions -- two when this item shipped, three since
+  A91 added the job page -- and their docstrings say what those absence
+  assertions ARE, which is regression guards against restoring either dead
+  wording on any of those pages, not the cross-page copy check they were first
   described as. Both strings were deleted from both templates by this item.
   (d) `CampaignRead.unavailable`'s docstring was a verbatim copy of
   `JobRead`'s -- "True iff the lookup did not complete" -- and this class has a
@@ -3457,14 +3458,15 @@ in-product handoff the plan prefers.
   `_submit_target_shortlist` sends `?handoff=unverified` to this exact URL, so
   dropping the query string would drop the reason on the route's own output.
   The five banner sentences moved to `templates/components/lab_handoff_banner.html`
-  so the three templates that import them cannot drift into three variants; each
-  detail page keeps its own wrapper, whitelist and suite, and the partial takes
-  the arm's noun. `parent='run'` never reaches `unavailable.html` in production
+  so the templates that import them cannot drift into per-page variants -- three
+  at the time of A90, four once A91 added `templates/job_detail.html`. Each page
+  keeps its own wrapper, whitelist and suite, and the partial takes the arm's
+  noun. `parent='run'` never reaches `unavailable.html` in production
   after A94, and the macro still takes the noun on every call, because a partial
   that is only correct for the caller that happens to reach it is the
   duplication it replaced.
 
-- **A91 (NEW, filed with A88, not fixed). The LEGACY single-job shortlist arm
+- **A91 (NEW, filed with A88, FIXED). The LEGACY single-job shortlist arm
   has none of the refusal model, and cannot get the truncation half of it.**
   `campaigns_submit`'s third branch reads `candidate_indices` (a bare JSON
   array of ints), not `candidate_refs`, so it never touches
@@ -3482,6 +3484,67 @@ in-product handoff the plan prefers.
   *Next:* decide first whether this arm still needs to exist. If it does, the
   fix is to route it through the counted parser on a refs payload rather than
   to bolt a second parser onto `candidate_indices`.
+
+  **Fixed.** The arm stays -- it serves 13 of the 14 tool result pages -- and it
+  now has the sibling shape. `_submit_job_shortlist` computes `trunc_qs` above
+  its guards so the count rides the failure exits, splits the one collapsed
+  guard into `none` / `noname` / silent-no-parent, reads the parent through
+  `read_job` instead of `get_job`, dedupes on `(job_id, index)`, tests
+  parentage, range-checks against `candidate_count`, and routes every exit to
+  `/jobs/<id>` with a reason instead of to the jobs list in silence.
+  `_parse_candidate_indices_counted` replaces the bare-except comprehension and
+  returns the ref shape, capped and counted, so a malformed entry costs its own
+  entry rather than the whole shortlist. `/jobs/<id>` gained the five-reason
+  vocabulary in the sibling commit.
+
+  THE `read_job` SWAP IS A PRECONDITION, NOT AN EXTRA. `shared/email.py`
+  licenses the `dropped` sentence only because an arm refuses the WHOLE
+  submission when a rejection had an undecidable cause, and it named this arm as
+  one that "passes neither count and must not start". `get_job` cannot support
+  that gate -- it returns None for an absent row and an unreadable one alike --
+  so the disclosure was blocked behind the swap. That paragraph is updated.
+
+  ORDER IS LOAD-BEARING and pinned: the undecidable gate is decided above the
+  loop that rejects any individual design, because `rejected`'s banner promises
+  the same selection "will be refused the same way", which is false for a
+  transient fault. A mutation that reverses it reds three tests.
+
+  Persistence stays in `candidate_indices`; no migration. Writing
+  `candidate_refs` on the row as well would flip `_ref_shortlist_view` from the
+  plain index list to the rich designs view and break a pin whose docstring
+  calls this "the arm that must NOT change". Both payload formats are accepted
+  for one release: the job modal emits `candidate_refs` alongside
+  `candidate_indices`, refs preferred when they parse to anything. No JS change
+  was needed for the payload -- `openCampaignModal` already looks the two inputs
+  up independently -- but one WAS needed for the review list, because
+  `refsInput` had been standing in for "campaign or target scope" and stopped
+  identifying scope the moment job mode got a refs input; unfixed it would have
+  labelled a single-job candidate a sub-job of its own job on 13 pages.
+
+  **Four corrections to the filing above, established by reading the code.**
+  (a) "AFTER the row is written and both emails are sent" is backwards on the
+  emails: the order is row write, storage range check, emails. And the check
+  stops nothing a user can see -- it declines one upload each while the row
+  keeps the values, so both emails, the confirmation page and the admin
+  fulfilment view all count them. `[-1, 0, 99]` reads as three designs on every
+  surface. (b) "the one remaining request-amplification lever on this route"
+  imports the ref arms' cost model, which does not apply: this arm makes exactly
+  ONE database read whatever the list length, and the amplification is one
+  Storage download plus one upload per in-range index, duplicates included.
+  (c) the arm is live on **13** pages, not 14 -- `mpnn_results.html` deliberately
+  skips the macro. (d) "(d) one uncoercible entry" understates the parse: it
+  never checked the JSON was a list, so `{"1": 2, "3": 4}` was accepted as
+  `[1, 3]` (the object's keys) and `"012"` as `[0, 1, 2]` (the string's
+  characters), and `int()` silently truncated `2.7` to design index 2.
+
+  One thing the filing did not have and the fix needed: `loadShortlist` coerces
+  a legacy bare-int store entry to `{j: null, i}`, and the refs parser drops
+  those AND does not count them in `requested` -- so switching job scope to refs
+  naively would have lost them from the shortlist and from the truncation
+  disclosure at the same time. In job scope the job id is known, so an entry
+  naming none is credited to the source job. `_parse_candidate_refs_counted`
+  takes a keyword-only `default_job_id` for it, and the two ref arms and
+  `_starred_refs` are byte-unchanged.
 
 - **A92 (NEW, filed with A88, FIXED). The admin campaigns LIST prints "0"
   in the Cands column for every ref-based row.**
@@ -3766,6 +3829,75 @@ in-product handoff the plan prefers.
   the clearing, the confirmation email's link (no `submitted=1`) does not, and
   in a fresh tab the store is empty and "star it" is right. One string serves
   both, which is why the wording has to assert nothing about the store.
+
+- **A106 (NEW, filed with A91, filed not fixed). Three of the five banners on
+  `/jobs/<id>` can name controls the page is not rendering.** `rejected` says
+  "star designs from the table on this page", `none` says "try the button
+  again", `noname` says "reopen the form" -- and the table, the star/submit
+  button and the modal are all inside the one `candidate_table` macro, included
+  only under `job.status == 'succeeded' and job.result`
+  (`templates/job_detail.html:280-281`). They vanish together, so in any other
+  state those three sentences point at nothing.
+
+  **The first filing of this entry named a mechanism that does not exist**, and
+  the merge commit repeated it. It said a failed job "rejects every index"
+  because `candidate_records(None)` is empty. `_submit_job_shortlist` does not
+  range-check with `candidate_records`; it uses `candidate_count(job.result)`,
+  which answers **`None`** for a NULL result -- that distinction is the entire
+  purpose of the function -- and the check is `if n_records is not None and
+  idx >= n_records`. Measured: a submit against a `status='failed', result=None`
+  job returns `302 /lab-projects/<id>?submitted=1` and creates the campaign with
+  `candidate_indices = [5, 6, 99]` unvalidated. A failed job is ACCEPTED, not
+  rejected. That is A107 below.
+
+  So the reachable states for these three banners are a succeeded job whose
+  result carries an empty candidates list (`candidate_count == 0`, every index
+  refused, no table rendered), and any non-succeeded state arrived at by a
+  replayed or hand-pasted URL.
+
+  NOT fixed deliberately. Any fix is a page-state variant of copy now shared by
+  four templates, which is the cost register item **A95** declines for the same
+  three sentences on the 503 page: the point of moving them into one partial was
+  that per-caller variants are how one of them went stale unnoticed. Recorded in
+  the `templates/job_detail.html` comment naming A95 as the same class.
+
+  *Next:* fix it for A95 at the same time and in the same shape, or the partial
+  grows two page-state branches that do not know about each other. The upstream
+  alternative is to refuse earlier when the source job cannot have designs --
+  but route that to `rejected`, NOT to `failed`: `failed` renders "try again",
+  and a job permanently without designs cannot be retried into having them,
+  which is the advise-a-retry-that-cannot-work defect rounds 19 and 20 already
+  recorded. An earlier version of this line recommended `failed`.
+
+- **A107 (NEW, filed with A91 QC, filed not fixed). All three submit arms wave
+  every index through when the source job's result is NULL, and stage zero
+  PDBs.** `candidate_count` answers `None` for both "a result shape this app
+  cannot read" and "no result at all", and all three arms spell the check
+  `if n is not None and idx >= n` -- deliberately, so an unreadable shape is not
+  a reason to refuse a design. `_submit_campaign_shortlist` and
+  `_submit_target_shortlist` have read that way since A88; `_submit_job_shortlist`
+  matches them by construction.
+
+  For a NULL result that is the wrong call, and it lands on the exact failure
+  the check exists to prevent. Both ref arms say so in their own comments: an
+  unvalidated index is "persisted, counted on the staff email and on the
+  customer's page -- and then silently skipped by `stage_campaign_candidates`,
+  so the lab receives fewer PDBs than every number anyone can see." With a NULL
+  result, EVERY index is skipped: the customer is told N designs, ops is told N
+  designs, and the archive holds none. `result IS NULL` is "no designs", which
+  is a known length of zero, not "a length we cannot read".
+
+  Narrow to reach and not free to fix. The modal renders only for a succeeded
+  job carrying a result, so a NULL result at submit needs a replayed POST or a
+  result nulled between render and submit. But it is a PAID path and it is three
+  arms wide, so it is filed rather than patched on one of them.
+
+  *Next:* separate the two facts at the source rather than at three call sites
+  -- `candidate_count` could answer `0` for a NULL/absent result and keep `None`
+  for an unreadable non-null shape, which is what its own docstring already
+  argues the distinction is for. Check `shared/target_results.py` and the admin
+  fulfilment view before moving it; both read the same function.
+
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 

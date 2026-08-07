@@ -524,17 +524,27 @@ def send_campaign_submitted_emails(
     that came back short), so every design counted here was refused by a check
     that ran to completion. That is what makes "rejected", rather than "we could
     not confirm", an honest word for it. This function does not enforce that --
-    it is a property of the callers -- so a THIRD caller passing ``dropped``
-    without such a gate makes the sentence below false. The legacy single-job
-    arm passes neither count and must not start.
+    it is a property of the callers -- so a caller passing ``dropped`` without
+    such a gate makes the sentence below false. ALL THREE CALLERS NOW HAVE ONE:
+    A91 gave the legacy single-job arm the same shape, refusing the whole
+    submission with ``?handoff=unverified`` when its parent ``read_job`` comes
+    back UNAVAILABLE, decided above the loop that rejects any individual design.
+    Before that it read through ``get_job``, which cannot tell an unreadable row
+    from an absent one, so it could not have had the gate and correctly passed
+    no ``dropped`` count. ``truncated`` never needed the gate; that arm omitted
+    it because it never counted at all, which A91 fixed in the same change.
 
     WHAT THE COPY MAY CLAIM. Nothing here observes the Storage bucket, so no
     sentence below asserts that any PDB was written:
     ``stage_campaign_candidates`` silently skips a candidate that resolves to
     no bytes, and the caller swallows ``StorageError`` per source job. The
-    verified fact is what the ROW names -- ``candidate_refs``, deduped and
-    index-checked at the write path -- so the copy says the request "covers" N
-    designs rather than that N "were sent".
+    verified fact is what the ROW names -- ``candidate_refs`` on the two ref
+    arms, ``candidate_indices`` on the job arm, deduped at the write path on all
+    three -- so the copy says the request "covers" N designs rather than that N
+    "were sent". The index check behind that is CONDITIONAL rather than
+    universal: every arm skips it when ``candidate_count`` answers ``None``
+    (register item A107), which is a second reason "covers" is the strongest
+    word available here.
 
     Best-effort: failures are logged but not raised to the caller.
     """

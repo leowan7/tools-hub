@@ -152,11 +152,13 @@
    Say nothing in `rejected` that this gate does not guarantee, and change
    neither without the other.
 
-   THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, because
-   templates/unavailable.html renders the same five sentences: A90's refusal
-   redirects here, and if the fault is still live when the browser follows the
-   redirect, the parent read at the top of this route fails too and the user
-   gets that page instead. This template keeps its own wrapper, its own
+   THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, which has four
+   importers. templates/unavailable.html renders the same five sentences:
+   A90's refusal redirects here, and if the fault is still live when the browser
+   follows the redirect, the parent read at the top of this route fails too and
+   the user gets that page instead. templates/runs/detail.html and
+   templates/job_detail.html (register item A91) are the other two, each
+   supplying its own noun. This template keeps its own wrapper, its own
    `{% if handoff %}` and its own `?truncated=` read; only the words are shared.
    That is also where the reasoning for saying nothing about charges now lives:
    /lab-projects/submit has no wallet or Stripe code on any path, and the modal
