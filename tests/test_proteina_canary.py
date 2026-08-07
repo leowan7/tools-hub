@@ -63,6 +63,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -6535,12 +6536,16 @@ class TestTheNullMarginIsNotMadeOfCroppedHotspots:
 # VRAM INSTRUMENTATION PROVENANCE
 # ===========================================================================
 #
-# The only two VRAM numbers this tool has (67,546 MB and 67,570 MB) turned out
-# to be ~91% a JAX preallocation constant, because the design subprocess
-# inherited JAX's default PREALLOCATE=true and reserved 0.75 x 81,920 =
-# 61,440 MB on its first op whatever the target size. run_pipeline now builds an
-# allocator env for its children. The canaries are what TAKE the measurements,
-# so three properties of theirs decide whether the next reading means anything:
+# The FIRST two VRAM numbers this tool produced (67,546 MB and 67,570 MB)
+# turned out to be ~91% a JAX preallocation constant, because the design
+# subprocess inherited JAX's default PREALLOCATE=true and reserved
+# 0.75 x 81,920 = 61,440 MB on its first op whatever the target size.
+# run_pipeline now builds an allocator env for its children, and three further
+# readings have been taken under it — 8,943 MB at 130 aa, 15,541 at 260 and
+# 25,457 at 415 — which is the whole basis of _PROTEINA's size envelope. Five
+# readings, then, in two incomparable regimes, which is precisely why the
+# canaries matter: they are what TAKE the measurements, so three properties of
+# theirs decide whether the next reading means anything:
 #
 #   * the child actually gets that env (else the reading is the constant again);
 #   * the poller takes a sample even when the design outlives it by a hair
@@ -7489,3 +7494,149 @@ class TestTheNegativeNumberingGuardReachesTheCanaryToo:
         }
         assert "unrenderable_segments" in called, (
             "the canary must ASK run_pipeline whether a contig is renderable")
+
+
+# ===========================================================================
+# THE POST-RUN INSTRUCTION MUST DESCRIBE THE ENVELOPE THAT EXISTS
+# ===========================================================================
+#
+# The canary closed every run with "SET shared/pdb_preflight_rules.py::
+# _PROTEINA SizeEnvelope.hard_cap_target_aa FROM THIS RUN before flag-on."
+# That was right while the cap was a placeholder and no shard had ever sized
+# it. It has since been carried out: three completed shards at 130, 260 and
+# 415 aa (preallocation disabled) produced the scaling curve the envelope is
+# derived from.
+#
+# Left standing, the imperative would be worse than stale. It instructs an
+# operator to re-derive a money cap from ONE reading — the single-point
+# reasoning that produced the two discredited ~67.5 GB numbers — and doing it
+# would replace a three-point fit with something strictly weaker. The output
+# of a paid harness is the one place that instruction gets read, so it is
+# corrected here rather than removed.
+# ===========================================================================
+
+def _emit_literals() -> str:
+    """Every string literal the canary hands to ``_emit`` — i.e. its OUTPUT.
+
+    Used by ONE test in the class below, deliberately. The others read the
+    module as source text with ``#`` lines dropped, and for what they check
+    ("this retired imperative is not in the file any more") that is the right
+    artifact. It is NOT the right artifact for "the operator is shown these
+    three measurements": a module-level string literal that nothing prints
+    reads exactly the same in the source, so a footer could be gutted and the
+    rows parked somewhere dead with the assertion none the wiser. EXECUTED,
+    not reasoned: replace the footer ``_emit`` with ``"(table removed)"`` and
+    move the three rows into an unused module-level constant, and the
+    source-text reading passes this class 4/4 while the console the operator
+    reads after a ~$12 shard shows no measurements at all.
+
+    So this walks the AST and keeps only what reaches ``_emit``, the single
+    function every print in that module goes through. f-string interpolations
+    are dropped and their literal segments kept; the footer this pins is plain
+    adjacent literals, which the parser has already concatenated for us. One
+    line per emitted literal, so a match cannot be assembled across two
+    separate calls that merely print next to each other.
+    """
+    tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+    parts: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_emit"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                parts.append(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                parts.append("".join(
+                    p.value for p in arg.values
+                    if isinstance(p, ast.Constant)
+                    and isinstance(p.value, str)
+                ))
+    return "\n".join(" ".join(p.split()) for p in parts)
+
+
+class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
+
+    def test_the_retired_set_the_cap_from_this_run_imperative_is_gone(self):
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "FROM THIS RUN" not in emitted, (
+            "the canary still tells the operator to set the size cap from a "
+            "single run; the envelope is a three-point fit and one reading "
+            "cannot lawfully replace it"
+        )
+
+    def test_it_names_where_measurement_stops_and_what_would_extend_it(self):
+        """The replacement has to carry the two facts an operator acts on:
+        that 415 aa is the edge of measurement, and that only a COMPLETED
+        shard beyond it moves the envelope."""
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "415" in emitted
+        assert "does NOT raise the cap" in emitted
+        assert "ABOVE 415 aa is the only thing that" in emitted
+        # And the allocator caveat travels with it, because a reading taken
+        # with preallocation on is not a data point at all.
+        assert "prealloc_disabled must read True" in emitted
+
+    def test_the_quoted_envelope_matches_the_shipped_one(self):
+        """Two copies of a number drift, and the one in the paid harness is
+        the one an operator reads at 2 a.m. Pin them together."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+
+        env = TOOL_RULES["proteina"].size
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert f"hard_cap_target_aa={env.hard_cap_target_aa}" in emitted
+        assert f"soft_warn_target_aa={env.soft_warn_target_aa}" in emitted
+
+    def test_the_quoted_measurements_match_the_canonical_table(self):
+        """THE DATA, not only the caps it was derived into.
+
+        The test above pins the two CAPS this footer quotes, so a drifted cap
+        dies. The three MEASUREMENTS it quotes alongside them were pinned by
+        nothing at all: mutating 8,943 -> 9,943 MB, 25,457 -> 55,457 MB, or
+        576 -> 999 s in the footer left the entire suite green. That is the
+        worst place in the repo for an unguarded number. This text is what an
+        operator reads at 2 a.m. after a ~$12 shard, and its only job is to
+        let them decide whether the reading they just took extends the
+        envelope or merely re-confirms it — a drifted row here is a wrong cap
+        two commits later, argued from a table nobody re-checked.
+
+        Pinned against ``tests/test_pdb_preflight.py::_PROTEINA_CANARY``, the
+        same tuple the envelope's provenance test refits, so the harness copy,
+        the shipped caps and the provenance proof cannot disagree about what
+        was actually measured.
+
+        ASSERTED AGAINST WHAT THE CANARY PRINTS, via ``_emit_literals`` — see
+        that helper for why the source-text reading the rest of this class
+        uses is the wrong artifact for this particular claim, and for the
+        mutant that walks through it.
+        """
+        from tests.test_pdb_preflight import _PROTEINA_CANARY
+
+        printed = _emit_literals()
+        for aa, mb, secs in _PROTEINA_CANARY:
+            quoted = f"{aa} aa / {mb:,} MB / {secs} s"
+            assert quoted in printed, (
+                f"nothing this canary prints quotes {quoted!r}; the "
+                f"measurement table the operator is shown after a paid run "
+                f"has drifted from the one the size envelope is derived from"
+            )
+        # And it prints those three and no others, so an invented fourth row
+        # cannot be smuggled in beside them.
+        assert printed.count(" MB / ") == len(_PROTEINA_CANARY), (
+            f"the canary prints {printed.count(' MB / ')} measurement rows, "
+            f"not the {len(_PROTEINA_CANARY)} completed shards the envelope "
+            f"has"
+        )
