@@ -537,13 +537,22 @@ def test_no_comment_in_candidate_table_js_can_answer_for_a_hook():
     Counting is the assertion, not membership. One occurrence means the
     definition and nothing else; two means the comment is back in scope and
     every token this file searches for is soft again.
+
+    `dropShortlistRefs` is in the list for the same reason its three siblings
+    are, and its caller is off this macro entirely: templates/campaigns/
+    detail.html loads this file solely to call it (register item A89), so a
+    rename that the header comment answered for would leave a submitted
+    shortlist un-touched with nothing here red. Its own cross-boundary pin lives
+    in tests/test_lab_project_confirmation.py, which renders that page and, where
+    `node` is on PATH, executes the function.
     """
     assert "Exposes:" in _JS_SOURCE, (
         "fixture assumption: candidate_table.js still carries the header "
         "comment that made this necessary")
     assert "Exposes:" not in _JS, "the stripper did not strip"
 
-    for name in ("getShortlist", "openCampaignModal", "closeCampaignModal"):
+    for name in ("getShortlist", "openCampaignModal", "closeCampaignModal",
+                 "dropShortlistRefs"):
         raw = _JS_SOURCE.count("window." + name)
         assert raw == 2, (name, raw)          # once in prose, once in code
         assert _JS.count("window." + name) == 1, name

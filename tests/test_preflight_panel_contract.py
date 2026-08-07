@@ -26,8 +26,10 @@ nothing. The subject here is the SEAM: that the key the browser appends is the
 key the server parses, that the field the browser looks for is the field the
 form renders, and that a contig typed after the upload re-runs the panel.
 
-HOW THE JS HALF IS SEARCHED. There is no JS runtime in this repo or in CI
-(.github/workflows has no node), so the file is read as source — under the
+HOW THE JS HALF IS SEARCHED. This repo carries no JS test runner and
+.github/workflows installs no node -- though a hosted runner image may still put
+one on PATH, so "CI has none" is not established -- so the file is read as
+source — under the
 discipline tests/test_candidate_table_js_contract.py arrived at over its rounds
 20 and 21. Its ``_lex`` is imported rather than copied: a second lexer would
 drift, and this file needs it more than that one does, because the fix ships

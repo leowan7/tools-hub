@@ -2998,7 +2998,7 @@ in-product handoff the plan prefers.
   `get_job`, so it cannot tell a job that is absent from one it failed to read,
   and it has no refusal gate at all.
 
-- **A89 (NEW, round 21, not fixed). A shortlist over `_MAX_CANDIDATE_REFS`
+- **A89 (NEW, round 21, FIXED). A shortlist over `_MAX_CANDIDATE_REFS`
   has no remedy the user can carry out, so nothing may offer one.** The
   truncation copy on the confirmation page and in the customer email used to
   say "star them again on the target page and submit a second request".
@@ -3017,11 +3017,261 @@ in-product handoff the plan prefers.
   must never be described as one. Ops receives the shortfall on the staff email
   ("Over the limit: N starred ref(s) past the per-request cap"), which is what
   the new copy points at.
-  *Next:* the followable version needs (a) the submit handler clearing the
-  scope's `sessionStorage` shortlist on a successful redirect, or (b) the
-  confirmation page listing the refs that were ordered. Either makes a second
-  request deliver the remainder; neither is in `blueprints/lab_projects.py`,
-  which is why this is filed rather than fixed.
+  *Next (superseded):* the followable version needs (a) the submit handler
+  clearing the scope's `sessionStorage` shortlist on a successful redirect, or
+  (b) the confirmation page listing the refs that were ordered. Either makes a
+  second request deliver the remainder; neither is in
+  `blueprints/lab_projects.py`, which is why this is filed rather than fixed.
+  **Fixed:** all three of the numbered claims above were re-verified against
+  the code and all three held. Three parts, and the *Next:* line above is
+  wrong about them in two ways, which is the finding rather than a quibble.
+
+  1. **The stars this request used, removed by NAME.** `campaign_detail`
+     resolves the browser scope from the row it already loaded --
+     `source_target_id` then `source_campaign_id` then `source_job_id`, the same
+     most-specific-first order `campaigns_submit` dispatches in and
+     `templates/components/candidate_table.html` derives `scope` in -- and hands
+     it, with the `{job_id, index}` refs THIS request covered, to
+     `window.dropShortlistRefs` (new, in `static/js/candidate_table.js`, which
+     the page loads for that one call so `storageKey()` stays the single
+     definition of `shortlist_<scope>` and `refKey()` the single definition of
+     design identity). The browser filters those refs out of the stored list and
+     keeps everything else. Gated on `?submitted=1` IN PYTHON, in the same
+     expression that resolves the scope, so there is no template `and` to edit
+     away, and gated a second way on `_ordered_shortlist` having returned
+     something, so the page never names designs it is not printing -- which is
+     what excludes 'api'. A row naming no parent emits nothing rather than
+     reaching `shortlist_`. The payload is capped with the list, at
+     `_MAX_LISTED_DESIGNS`: up to 500 refs, 33KB of JSON with UUID job ids
+     (32,890 bytes measured), beside at most the 500 `<li>` the page already
+     renders.
+
+     **A REMOVAL BY NAME, BECAUSE THE FIRST VERSION WIPED THE KEY AND THAT WAS
+     WRONG IN TWO DIRECTIONS AT ONCE.**
+
+     It DESTROYED THE THING THE ADVICE IS ABOUT. `openCampaignModal` serialises
+     the entire stored list; `_parse_candidate_refs_counted` keeps the first 500
+     and counts the rest as `requested`; nothing rewrites the browser's list. So
+     a 620-star submit left the customer with ZERO stars -- including the 120
+     that were never read, which are exactly the designs the truncation banner
+     reports and the advice tells them to send in a second request. The page then
+     said "star the rest", and the rest could only be recovered by diffing 500
+     rows of `Candidate N · sub-job xxxxxxxx` by eye. Before that change the
+     selection was at least intact.
+
+     And its ONE-SHOT WAS PER TAB SESSION, NOT PER URL. The marker lived in
+     `sessionStorage`, which dies with the tab; `?submitted=1` is permanent --
+     history, omnibox, a bookmark, and both the page's own copy and the
+     confirmation email invite the customer back to it. Day 1 submit in tab A
+     writes the marker in tab A; tab A closes and the marker dies while the URL
+     survives; day 3 in a new tab the customer stars 300 designs, opens the
+     bookmark, and 300 fresh stars are wiped with no submit anywhere near it.
+     The stated reasoning was inverted: "the marker cannot outlive the thing it
+     guards" is TRUE and is the defect -- same-store residency guarantees the
+     marker dies FIRST. What was needed is a guard that outlives every shortlist
+     the URL can still reach, and one store is precisely what prevents that.
+
+     Naming the refs dissolves both. Removing refs that are already gone is a
+     no-op, so a reload, a bookmark, a history entry, a restored tab, a new tab
+     session and a cloned tab are all harmless -- unless the customer has
+     re-starred one of the covered designs in between, which is A102 below --
+     and there is no marker, no token and no `clearedKey` left to reason about. The remainder survives, so "send a
+     second request" stops meaning "re-identify 120 designs by eye" and starts
+     meaning "click submit again" -- AS A MECHANISM. The shipped copy does not
+     say that yet: it still says "star it on the source page", which is filed
+     as A105 below. `history.replaceState` is no longer worth
+     its complexity either: a repeat execution costs nothing EXCEPT in the one
+     case below, and a marker cannot be made to outlive a permanent URL anyway.
+
+     **THE ONE CASE THAT IS NOT A NO-OP** is filed as A102 rather than left to
+     be discovered: a customer who deliberately re-stars a design this request
+     already covered, and then returns to the confirmation URL, loses that star
+     again. Un-starring a design already sent to the lab is the defensible
+     reading, so it is accepted.
+
+     **AND THE RESULTS PAGE RE-SYNCS ON A bfcache RESTORE**, which it did not.
+     `static/js/candidate_table.js` booted on `DOMContentLoaded` only, and that
+     event does not fire when a page is restored from the back/forward cache --
+     so a results page restored after this feature pruned the store showed stars
+     for designs no longer in it. Before this item nothing outside the results
+     document ever wrote `shortlist_<scope>`, so DOM and store could not
+     diverge; this change is what made the divergence possible, and the fix ships
+     with it. A `pageshow` listener repaints from the store when `e.persisted`,
+     deliberately NOT re-running `initTable`, which would bind a second copy of
+     every click listener and make one star click toggle twice.
+  2. **The list.** `_ordered_shortlist` builds the per-design list from the
+     columns the page already read -- deliberately not
+     `blueprints/admin.py::_ref_shortlist_view`, whose per-job reads are
+     UNSCOPED because it is a staff view of another user's submission; calling
+     it from a customer page would be a cross-tenant read. The counting rules
+     for `candidate_refs` are reimplemented and now AGREE with that view entry
+     shape by entry shape, asserted by driving both functions over one row: a
+     bare int is a design out of `candidate_indices` and malformed out of
+     `candidate_refs`, which is the only column the staff view reads. `stored` =
+     `count` + `duplicates` + `malformed`, `count` is DISTINCT designs, and the
+     page prints the parts whenever they differ -- INCLUDING when `count` is 0,
+     which was the one case the panel's own gate suppressed, so a row of
+     unreadable entries printed "3 shortlisted" over an empty page with no
+     explanation. That is the A-4/A-6 failure this part cites, and it was
+     reproduced here before this round. The list is capped at
+     `_MAX_LISTED_DESIGNS`, which EQUALS `_MAX_CANDIDATE_REFS`, so no row either
+     ref arm can write is ever shown as a prefix. A `candidate_refs` that is not
+     a JSON array is treated as absent rather than handed to `list()`, which
+     raised TypeError -- the A-5 hazard one level out from the elements A-5
+     hardened.
+
+     NOT "no extra Supabase call" in absolute terms, which is what an earlier
+     draft of this line claimed. The page is not read-free and cannot be made
+     so: `app.py::inject_workspace_context` is a context processor, so a tier
+     lookup and the navbar wallet chip fire on every authenticated render. What
+     this part costs is ZERO, measured as a delta -- a 60-ref row across 60
+     sub-jobs, a 1-ref row and a row with no panel at all all issue the same
+     number of client acquisitions, and `_ordered_shortlist` itself runs under a
+     guard that makes every route to a client raise.
+  3. **The copy.** "This request covers the N designs below. To include
+     anything that was over the limit, star it on the source page and send a
+     second request", rendered INSIDE the list's own `{% if %}` block and
+     additionally gated on the list being complete. That nesting is the point:
+     the un-starring happens in a browser the server never hears back from, so
+     if it fails silently the customer sees the same designs listed back instead
+     of following advice into a duplicate paid request. The customer email
+     carries the same instruction but has no list, so it points at the page that
+     does -- and points WITHOUT asserting what that page renders, since the
+     panel's gates are not evaluable from `shared/email.py` and a second copy of
+     them would drift. The staff row keeps its exact ref count.
+
+     THE EMAIL'S OWN LINK NOW CARRIES THE COUNTS, and did not. `campaign_detail`
+     reads `dropped` and `truncated` off the query string and has no other
+     source for them, so `/lab-projects/<id>` with a bare path reached the
+     design list and NEITHER the truncation disclosure nor the advice: the
+     sentence sent the reader to a page that would not repeat the fact it was
+     sent to explain. `submitted=1` is deliberately NOT carried -- that flag is
+     what makes the page name refs for the browser to un-star, and an email
+     opened days later is not a submit (A102). Ampersand escaped in the HREF and
+     raw in the plain-text body.
+
+     `held N entries` NOW PLURALISES. It did not, while both clauses after the
+     colon did, so a one-entry row rendered "The submitted list held 1 entries:
+     0 designs, 1 entry this page could not read as a design." Reachable through
+     a LIVE write path rather than through corruption: the legacy arm of
+     `campaigns_submit` does `[int(i) for i in json.loads(raw_indices)]` with no
+     range check, so a POST carrying `candidate_indices=[-1]` stores `[-1]` and
+     every later view prints that sentence. The two tests that asserted this
+     string used `stored == 3` and `stored == 4`, where every noun in it is
+     plural anyway.
+
+     ONLY THE INSTRUCTION IS NESTED. The truncation FACT is disclosed above the
+     panel on `truncated_count` alone. Both used to be one `<p>` inside the
+     list's block, so the row with the least to go on was told nothing at all --
+     register item A-7, which is the reason these counts ride the query string,
+     reproduced by the change that cites it.
+
+     AND IT IS A REQUEST, NOT AN ORDER. The panel called it an order four
+     times ("Designs in this order", "This order covers", "To order the rest",
+     "on this order") while every other customer surface refuses the word:
+     `templates/campaigns/dashboard.html` "Scoping requests you have submitted",
+     the shortlist modal "No commitment -- this is a scoping request",
+     `shared/email.py` "Scoping request received". This page renders a Declined
+     badge, so the row can still be refused, and the project publishes no
+     pricing. "Order" asserted a commercial state the product denies.
+
+  **WHAT THE FILING GOT WRONG.** (a) "(a) OR (b) ... either makes a second
+  request deliver the remainder" -- they are not alternatives. (a) alone
+  delivers the remainder and gives the customer no way to see that it did, and
+  reproduces this exact defect the first time the un-starring fails silently;
+  (b) alone changes nothing about what a resend POSTs -- it only lets the
+  customer unstar 500 designs by hand. The list is what makes the advice safe to
+  give, which is why it is structurally impossible to render one without the
+  other. (b) Not "the submit handler clearing the shortlist": that handler
+  returns a redirect and never renders HTML, so it cannot touch `sessionStorage`
+  at all. It has to happen on the page the redirect lands on, which is also why
+  it can only ever be best-effort. (c) The filing names two arms; there are
+  three. The legacy `candidate_indices` arm is due to route through the counted
+  parser (A91), so all three parts here read whichever column the row carries
+  rather than branching on `submission_source`, and that arm inherits the list,
+  the un-starring and the advice with no copy work -- its bare integers are
+  resolved to `source_job_id`, which is the job the star buttons recorded them
+  under. 'api' is the one exclusion, and it is not a shortlist arm:
+  `create_api_campaign` generates its `candidate_indices` as
+  `range(len(sequences))`.
+
+  **What this does NOT claim.** The un-starring is best-effort and unobservable
+  from the server -- JavaScript off, the script failing to load,
+  `sessionStorage` throwing, and a tab CLONED before the submit, which is handed
+  its own copy of the stars and never visits the flagged URL (A99) -- so nothing
+  anywhere says the same shortlist can never be submitted twice, and
+  `@idempotent()` is still only a 60-second double-click guard. The safety net
+  is not that the duplicate is prevented: it is that the SECOND confirmation
+  page lists the same designs back, so the customer sees it after submitting
+  rather than before. Nor does it claim the shortlist is left empty: on the
+  uncapped `candidate_indices` shape (A91) the payload stops at
+  `_MAX_LISTED_DESIGNS`, so an un-listed tail keeps its stars -- the same
+  direction the page takes when it prints a prefix and withholds the advice.
+  Named rather than left implicit: on that row the surviving stars are ENTIRELY
+  designs the request already covered, and nothing distinguishes them from a
+  fresh selection. Safe against the old behaviour, which kept all of them, but
+  it is a state no copy on the page explains.
+
+  Pinned by `tests/test_lab_project_confirmation.py`, which asserts the payload
+  is exactly the covered set, that the SAME flagged URL twice emits a
+  byte-identical statement, and that a legacy `candidate_indices` row names
+  `source_job_id`; plus rewrites of the two tests that asserted the withdrawn
+  advice (`tests/test_target_lab_handoff.py`,
+  `tests/test_campaign_submitted_email.py`) and one renamed hook in
+  `tests/test_candidate_table_js_contract.py`'s comment-stripping guard.
+
+  THE JS HALF IS NOW EXECUTED, which it was not. `.github/workflows` installs no
+  node and this repo carries no JS test runner, but a hosted runner image can
+  still put one on PATH, so "there is no JS runtime in CI" -- asserted here and
+  in four docstrings before round 3 -- was an inference, not a fact. PART 4
+  runs the real `static/js/candidate_table.js` under `node` against a stubbed
+  `sessionStorage` and SKIPS where node is absent, and every remaining
+  source-only assertion says so in its own docstring. That gap is why this is
+  here: the round that reviewed the first version supplied two mutations to the
+  one-shot it predicted would go GREEN against the whole suite -- replacing the
+  marker read with a bare read, and `catch (_) { return; }` with `catch (_) {}`
+  -- and both did, because source-order assertions execute nothing. PART 4
+  covers the removal, its idempotence, the surviving remainder, the falsy-scope
+  guard, the wrong-scope case and the legacy bare-int shape, and carries a
+  fixture check that the harness can observe a removal at all.
+
+  Every behavioural change in this round was mutation-verified by editing the
+  shipped file, asserting the edited pattern matched EXACTLY ONCE, running the
+  suite and restoring from a byte copy. The evidence is the suite itself rather
+  than a number in this document: an earlier version of this paragraph claimed
+  "18 mutations ... all 18 red", which nothing in the tree can check.
+
+  ROUND 3 REVIEWED THE REDESIGN ITSELF, which until then only its author had
+  seen, and split two reviewers across the mechanism and the prose. **No
+  behavioural defect was found in either lens.** Idempotence held against every
+  identity attack the reviewer could construct -- numeric-string against int
+  index, number against string job id, whitespace, case, and the legacy
+  bare-int shape `loadShortlist` coerces -- and where a match fails the star
+  STANDS. Every
+  rendered sentence reconciled against the numbers beneath it, including the
+  zero-design and 501-design pages.
+
+  What it did find was the guard around the mechanism, in this round's own
+  signature form: **round 3's contribution was a test harness, and that harness
+  was the only thing pinning the two edits that matter.** Inverting the filter's
+  polarity -- `!== true` to `=== true`, which restores round 1's defect verbatim
+  by destroying the never-read remainder -- passed EVERY source-only assertion,
+  and all SIX tests that caught it were gated on `node` being present (measured
+  here after the fix: the same mutation now reds seven, the seventh being the
+  source-only assertion this round added). The
+  `pageshow` handler had no source-only cover at all. Both are now pinned in
+  PART 1 as well, and both mutations plus a re-bind via `initTable` were
+  re-verified red afterwards.
+
+  Four comments also claimed `refKey('', i)` "matches no stored star". It
+  matches one exactly -- `refKey` concatenates -- and the code is safe only
+  because `_covered_refs` drops a ref it cannot name a job for. Presenting that
+  guard as redundant noise is the sentence a future editor reads before deleting
+  it, so all four now say the guard is load-bearing. Alongside them: a comment
+  in `shared/email.py` that contradicted itself eight lines apart about whether
+  the body carries a count, an unhedged "untouched every time" in two shipped
+  comments that A102 exists to deny, and the same universal in this entry two
+  paragraphs above A102 itself.
 
 - **A90 (NEW, filed with A88, FIXED). The parent gate on BOTH ref arms
   cannot tell a missing parent from an unreadable one.**
@@ -3373,6 +3623,149 @@ in-product handoff the plan prefers.
   None, which every caller handles, but structural rather than guaranteed.
   Moving it inside the `try` in two of the three siblings would create exactly
   the asymmetry A97 is about.
+
+- **A99 (NEW, filed with the A89 remediation; NARROWED by the A89 redesign,
+  filed not fixed). A DUPLICATED TAB keeps its own copy of the shortlist and
+  never visits the URL that would prune it.** `sessionStorage` is copied into a
+  tab clone, not shared with it. Star 620 designs in tab A, duplicate the tab,
+  submit from A: A lands on `?submitted=1` and drops the 500 it covered, while B
+  still holds all 620. Follow the confirmation page's advice in B and the second
+  submit carries the same first 500 refs -- a second paid row for designs
+  already covered, which is the original A89 defect reached by the most ordinary
+  route in the set.
+  *What the redesign changed.* The DESTRUCTIVE half of this item is gone. It
+  used to read "B keeps its own stars and its own ABSENT marker", which mattered
+  because the clear was a whole-key wipe behind a per-tab marker. The clear now
+  removes NAMED refs, so if B ever loads that URL it removes the covered 500 and
+  keeps the 120 -- correct, not harmful, and no marker is involved. What remains
+  is only that B never loads it, because only the post-submit redirect produces
+  `?submitted=1` and the confirmation email's link deliberately does not (A102).
+  *Where the safety net actually sits, stated plainly:* it does not prevent
+  this. The second confirmation page lists the same designs back, so the
+  customer sees the duplicate AFTER submitting, not before. `@idempotent()`
+  does not help either: its 60-second TTL is far shorter than the interval
+  between two deliberate submits, and the two POSTs are separated by a
+  successful first request anyway.
+  *Next:* a cross-tab prune needs `localStorage` (a `storage` event fires in
+  every OTHER tab of the origin) or a `BroadcastChannel`, and the shortlist
+  itself would have to move with it, because a `storage` listener cannot reach
+  a `sessionStorage` key. That is a change to the star toggle's own persistence
+  and not to this page. It is now testable -- `tests/test_lab_project_confirmation.py`
+  PART 4 runs this file under `node` -- so the "no JS harness" reason no longer
+  applies; what remains is the blast radius of moving every results page's
+  persistence, which is why it is still filed rather than fixed.
+
+- **A100 (NEW, filed with the A89 remediation, filed not fixed).
+  `Campaign.from_row` calls `list()` on `candidate_indices` with no shape
+  check.** `shared/campaigns.py::from_row` does
+  `candidate_indices=list(row.get("candidate_indices") or [])`, so a JSON scalar
+  or object in that column raises TypeError before any caller sees the row. It
+  is the same hazard `_ordered_shortlist` was hardened against for
+  `candidate_refs` in the A89 remediation, one layer out and on the OTHER
+  column, and it takes down every surface that loads the row -- the customer
+  confirmation page, the customer dashboard, and
+  `blueprints/admin.py`'s fulfilment page -- rather than one panel. Unreachable
+  from any write path today: both ref arms write arrays and
+  `create_api_campaign` writes `range(len(sequences))`. Filed rather than fixed
+  because the fix belongs in the row decoder, whose blast radius is every
+  campaign surface, and this change set is a customer confirmation page.
+
+- **A101 (NEW, filed with the A89 remediation, filed not fixed). Every
+  authenticated render resolves the user context at least twice, and issues
+  four or five Supabase queries before the page body.**
+  `shared/credits.py::load_user_context` caches nothing and calls `get_tier`,
+  which is a Supabase read. `app.py::inject_workspace_context` is a template
+  context processor, so it calls `load_user_context()` on every render -- and
+  most routes have already called it themselves to authorise the request. It
+  then calls `shared/workspaces.py::active_workspaces_count`, reads
+  `user_wallets` for the navbar chip, and -- whenever that chip shows a positive
+  balance -- reads `tool_jobs` for the onboarding ribbon.
+  `blueprints/lab_projects.py::campaign_detail` is one of the routes that has
+  already resolved the context, so the page A89 is about costs two `user_tier`
+  reads plus two more queries before it renders a byte, and a fifth whenever
+  the wallet chip shows a positive balance. Measured by patching every client
+  factory with a recording fake and issuing one authenticated GET. An earlier
+  version of this entry said "two `user_tier` reads plus the navbar wallet
+  chip" and undercounted; the version after it disagreed with its own headline. Found while building the read guard for that page, which
+  could not be written as "this page issues no query" because of it. App-wide,
+  pre-existing, and orthogonal to this change set; a `g`-scoped per-request memo
+  on `load_user_context` is the obvious shape for the duplicate half.
+
+- **A102 (NEW, filed with the A89 round-2 remediation, accepted not fixed). A
+  design re-starred after the request that covered it is un-starred again on the
+  next visit to the confirmation URL.** This is the one case where
+  `window.dropShortlistRefs` is not a no-op. `?submitted=1` is permanent, so the
+  customer can return to it from history, a bookmark or the omnibox; the payload
+  still names the designs that request covered; and if one of them has been
+  re-starred since, it goes. The mechanism cannot see intent, so "deliberately"
+  is not a condition: the trigger is any overlap between the current selection
+  and the covered set, and a customer who re-stars a batch without knowing
+  which the first request already covered loses the overlap with no notice. Accepted rather than guarded, because the guard is
+  a marker and the marker is what round 2 removed: it lived in `sessionStorage`,
+  died with the tab, and left the permanent URL unguarded from day 3 onward
+  (see A89). Un-starring a design already sent to the lab is also the
+  defensible reading of the action. Pinned as a KNOWN outcome by
+  `test_a_covered_design_still_starred_is_dropped_again`, so it cannot change
+  silently.
+  *Related decision:* the confirmation email's link carries `dropped` and
+  `truncated` but deliberately NOT `submitted=1`, so opening that email days
+  later does not trigger this. Only the post-submit redirect does.
+
+- **A103 (NEW, filed with the A89 round-3 remediation, filed not fixed). The
+  no-extra-read guard's client sweep cannot see `scout`'s client factory.**
+  `tests/test_lab_project_confirmation.py::_client_sites` walks `sys.modules`
+  and replaces every binding of `get_service_client` or `get_supabase_client` in
+  a module loaded from this repo. Round 2 replaced its stale package list with a
+  file-path filter, which fixed the PATH half of the staleness and left the NAME
+  half: `scout/handoff.py` and `scout/quota.py` each define a private
+  `_get_service_client` that calls `supabase.create_client` directly, across
+  seven call sites, and the sweep sees neither. Bounded today -- `campaign_detail`
+  reaches no `scout` module, so A89's "no extra read" conclusion stands -- but
+  the guard would widen silently the day either is renamed to the public
+  spelling, which is the direction that makes it pass on code it never covered.
+  The docstring now names the gap; closing it means matching on what a binding
+  IS rather than what it is called.
+
+- **A104 (NEW, filed with the A89 round-3 remediation, accepted not fixed). A
+  bfcache restore now clears a star whose write `sessionStorage` refused.**
+  `saveShortlist` swallows a throwing store the way its neighbours do, so a
+  click paints a star the store never received. Before the `pageshow` handler
+  shipped with A89 that paint survived a back/forward restore; now the restore
+  repaints from the store and the star vanishes. This makes the UI HONEST --
+  the store is what `openCampaignModal` submits, so the painted star was
+  already a lie -- but it is a new visible loss with no message attached, and
+  the node harness does not model it, because its stub `setItem` never throws.
+  Reachable only under storage quota pressure. Fixing it properly means
+  surfacing the failed write at click time, which is a results-page change
+  rather than a confirmation-page one.
+
+- **A105 (NEW, filed with the A89 round-4 remediation, filed not fixed). The
+  truncation advice instructs the one action this feature made unnecessary, and
+  on the path where the clearing ran, following it literally un-stars the
+  remainder.** The copy says "To include anything that was over the limit, star
+  it on the source page and send a second request". After the post-submit
+  redirect the clearing HAS run, so the remainder is already starred and the
+  star control is a strict toggle (`static/js/candidate_table.js`, push when
+  absent / splice when present) -- clicking it removes the design the sentence
+  is trying to include. The register two paragraphs above this one already
+  states the correct outcome: a second request is "click submit again".
+
+  NOT A REGRESSION, and not fixed by simply saying so. The obvious replacement
+  -- "anything over the limit is still starred on the source page, send a
+  second request from there" -- asserts a STATE, and there are reachable states
+  where it is false: JavaScript off or blocked, the script failing to load, or
+  `sessionStorage` throwing all leave the covered refs still starred, and a
+  second request would then re-send the same 500 designs as a second PAID
+  request. That is the exact failure this whole item exists to close, and the
+  nesting of the advice under the list is the safety net for it. The current
+  string is wrong about a click; the replacement would be wrong about money.
+  A third phrasing that asserts no state and instructs no redundant click is
+  what this needs, and it is a product decision rather than a mechanical fix.
+
+  Reachable on both entry paths, and they differ: the post-submit redirect runs
+  the clearing, the confirmation email's link (no `submitted=1`) does not, and
+  in a fresh tab the store is empty and "star it" is right. One string serves
+  both, which is why the wording has to assert nothing about the store.
 
 ### Ops-visible consequence of A88 (announcement, no code change)
 
