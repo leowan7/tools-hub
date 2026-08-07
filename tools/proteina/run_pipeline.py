@@ -130,8 +130,13 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 #           PXDesign and BindCraft already emit, so a cross-generator consumer
 #           needs no per-tool special-casing.
 #
-# The two are additive, not exclusive: when an endpoint IS present the upload
-# happens exactly as before and `pdb_key` is still the pointer of record.
+# The two are EXCLUSIVE, and that is a deliberate correction rather than an
+# accident of the gate. Inlining alongside an upload would put a second copy of
+# every structure in the Modal return value for no gain — the uploaded one
+# already resolves by pdb_key — and reconcile_campaign_children pulls each
+# child's full return into web-tier memory from inside a user-facing request.
+# Exclusivity is what lets "the web path is unchanged" mean the whole payload
+# and not merely the upload calls.
 #
 # Modal imposes no hard ceiling on a return value — _utils/blob_utils.py
 # format_blob_data() blob-uploads anything over MAX_OBJECT_SIZE_BYTES (2 MiB)
@@ -141,9 +146,32 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # once base64'd, and nsamples*replicas of those runs to multiple MB. The cap
 # below bounds the total; designs past it keep their scores and lose only their
 # coordinates, which are still recoverable from the raw archive.
-INLINE_PDB_TOTAL_CAP_BYTES = int(
-    os.environ.get("PROTEINA_INLINE_PDB_CAP_BYTES") or 64 * 1024 * 1024
-)
+INLINE_PDB_DEFAULT_CAP_BYTES = 64 * 1024 * 1024
+
+
+def _inline_cap_bytes() -> int:
+    """Parse the cap defensively.
+
+    A bare ``int(os.environ[...])`` at module scope raises ValueError on a
+    typo like ``64MB`` BEFORE ``_fail`` can write /tmp/smoke_results.json, so
+    the container dies with no result file and the hub reports it as a webhook
+    delivery failure — a misleading error for a mistyped env var, on a GPU
+    container that is already allocated and billing.
+    """
+    raw = (os.environ.get("PROTEINA_INLINE_PDB_CAP_BYTES") or "").strip()
+    if not raw:
+        return INLINE_PDB_DEFAULT_CAP_BYTES
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "PROTEINA_INLINE_PDB_CAP_BYTES=%r is not an integer; using the "
+            "%d byte default", raw, INLINE_PDB_DEFAULT_CAP_BYTES,
+        )
+        return INLINE_PDB_DEFAULT_CAP_BYTES
+
+
+INLINE_PDB_TOTAL_CAP_BYTES = _inline_cap_bytes()
 # Escape hatch for a caller that wants the scores inline but not the atoms.
 _INLINE_OFF = {"off", "false", "0", "no"}
 
@@ -495,13 +523,25 @@ def normalize_hotspots(job_spec: dict) -> list[str]:
     what a caller who typed the chain list as a string tends to send for the
     hotspots too.
 
-    Bare integers are attributed to the FIRST target chain, per the shared
+    Bare integers are attributed to the single target chain, per the shared
     contract. Upstream matches hotspots as ``f"{chain_id}{res_id}"``, so a bare
     ``264`` addresses nothing at all; attributing it is what makes the
-    single-chain shorthand mean what its sender intended. When no chain is
-    known the token is passed through untouched rather than guessed at — the
-    pre-GPU ``missing_hotspots`` guard then refuses it, which is the behaviour
-    the hotspot canary exists to protect.
+    single-chain shorthand mean what its sender intended.
+
+    A BARE INTEGER IS REFUSED WHEN THE TARGET HAS MORE THAN ONE CHAIN, and that
+    refusal is the whole reason this function is allowed to rewrite a token at
+    all. "Attribute to the first chain" is only unambiguous for a single-chain
+    target. On a homodimer it is actively dangerous: ``264`` becomes ``A264``,
+    ``missing_hotspots`` is a set-membership test and a real dimer genuinely
+    contains ``A264``, so the guard passes, the log reports every hotspot
+    matched, and the run designs against protomer A with B completely
+    unconstrained — indistinguishable from a correct run, which is precisely
+    the failure this file exists to prevent. On a symmetric Fc set the two
+    protomers' numbers are identical, so 16 tokens silently collapse to 8.
+    ValueError here reaches ``main()`` as a pre-GPU ``_fail``.
+
+    When no chain is known at all the token is passed through untouched rather
+    than guessed at — the pre-GPU ``missing_hotspots`` guard then refuses it.
     """
     raw = job_spec.get("hotspot_spec")
     if raw is None or raw == []:
@@ -513,13 +553,21 @@ def normalize_hotspots(job_spec: dict) -> list[str]:
     else:
         items = [str(h).strip() for h in raw if str(h).strip()]
 
-    first_chain = normalize_target_chain(
-        str(job_spec.get("target_chain") or "")
-    ).split(" ")[0]
+    chains = normalize_target_chain(str(job_spec.get("target_chain") or "")).split()
+    bare = [t for t in items if re.fullmatch(r"-?\d+", t)]
+    if bare and len(chains) > 1:
+        raise ValueError(
+            f"hotspots {bare} carry no chain prefix, but this run targets "
+            f"{len(chains)} chains ({' '.join(chains)}). A bare residue number "
+            "cannot say which protomer it means, and guessing the first one "
+            "would leave every other chain unconstrained while still reporting "
+            "a full hotspot match. Prefix each hotspot with its chain, e.g. "
+            f"{chains[0]}{bare[0]} or {chains[1]}{bare[0]}."
+        )
     out: list[str] = []
     for tok in items:
-        if first_chain and re.fullmatch(r"-?\d+", tok):
-            out.append(f"{first_chain}{tok}")
+        if chains and re.fullmatch(r"-?\d+", tok):
+            out.append(f"{chains[0]}{tok}")
         else:
             out.append(tok)
     return out
@@ -2030,7 +2078,13 @@ def main() -> None:
     # one; see normalize_target_chain / normalize_hotspots.
     target_chain = normalize_target_chain(str(job_spec.get("target_chain") or ""))
     target_input = str(job_spec.get("target_input") or "")
-    hotspot_spec = normalize_hotspots(job_spec)
+    try:
+        hotspot_spec = normalize_hotspots(job_spec)
+    except ValueError as exc:
+        # Ambiguous bare-int hotspots on a multi-chain target. Pre-GPU, and it
+        # has to be: the guess it refuses to make would pass every downstream
+        # check and produce a run that looks correct.
+        _fail("input", "hotspot_chain_ambiguous", str(exc))
     binder_length = [int(v) for v in (job_spec.get("binder_length") or [60, 120])]
 
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -2075,15 +2129,36 @@ def main() -> None:
     # option — INLINE carries the atoms in the return value instead — so the
     # refusal is now only about the case where inlining was explicitly
     # disabled AND there is no endpoint, which really does deliver nothing.
-    inline_pdbs = _inline_enabled()
-    if not upload_endpoint and not inline_pdbs:
+    # Inline ONLY when there is no endpoint. Deliberately not "always, as a
+    # bonus": with an endpoint the atoms are already in Storage and resolve by
+    # pdb_key, so a second copy in the Modal return value buys nothing and is
+    # not free. shared/compute_campaigns.py reconcile_campaign_children pulls
+    # each finished child's FULL return into web-tier memory (max_poll=64)
+    # from inside a user-facing request; at 8 designs/shard an Fc-sized target
+    # is ~3.6 MB of base64 per child, so "harmless extra field" is ~230 MB
+    # through one worker. Gating here is what makes the claim that the web
+    # path is unchanged actually true, rather than true only of its upload
+    # mechanics.
+    inline_pdbs = _inline_enabled() and not upload_endpoint
+    cap_ok = INLINE_PDB_TOTAL_CAP_BYTES > 0
+    if not upload_endpoint and not (inline_pdbs and cap_ok):
+        # Every way a finished design could end up with nowhere to put its
+        # coordinates, refused before the GPU rather than after. A cap of 0 is
+        # the sharp edge here: "0" is truthy so it does not fall back to the
+        # default, _inline_enabled() is still True, and without this clause the
+        # run would spend an A100 and return COMPLETED with zero structures.
+        reason = (
+            "inline PDBs are disabled (PROTEINA_INLINE_PDBS=off)" if not _inline_enabled()
+            else f"the inline PDB cap is {INLINE_PDB_TOTAL_CAP_BYTES} bytes, "
+                 "which cannot admit a single design "
+                 "(PROTEINA_INLINE_PDB_CAP_BYTES)"
+        )
         _fail(
             "preflight",
             "upload_urls_endpoint",
-            "no upload_urls_endpoint in the payload and inline PDBs are "
-            "disabled (PROTEINA_INLINE_PDBS=off), so a completed design would "
-            "have nowhere to put its coordinates. Supply the endpoint or "
-            "re-enable inline delivery.",
+            f"no upload_urls_endpoint in the payload and {reason}, so a "
+            "completed design would have nowhere to put its coordinates. "
+            "Supply the endpoint, re-enable inline delivery, or raise the cap.",
         )
     logger.info(
         "design delivery: upload=%s inline=%s (cap %.0f MB)",
@@ -2261,7 +2336,18 @@ def main() -> None:
                 logger.warning("design rank %d: no PDB file matched — skipping", rank)
                 continue
             basename = f"design_{rank:03d}.pdb"
-            pdb_key = f"designs/{basename}"
+            # The `designs/` prefix is a claim that the bytes are in Storage —
+            # the web service's resolver reads it as {user}/{job}/designs/<name>
+            # and shared/jobs.py _slim_result_for_persist strips the inline copy
+            # from any candidate carrying it, on the stated grounds that the
+            # structure "resolves from Storage". Nothing was uploaded on the
+            # inline path, so claiming the prefix there would let slimming
+            # delete the ONLY copy and leave a pointer at an object that was
+            # never written — scores intact, every structure gone, no error
+            # (shared/storage.py skips a candidate that resolves via neither).
+            # A bare filename is the convention jobs.py already documents for
+            # candidates that are not Storage-backed.
+            pdb_key = f"designs/{basename}" if upload_endpoint else basename
             try:
                 pdb_bytes = pdb_path.read_bytes()
                 # Guarded, not removed. With an endpoint this is the original
@@ -2297,23 +2383,23 @@ def main() -> None:
             }
             # Coordinates inline, under the SAME key PXDesign and BindCraft
             # emit, so a cross-generator consumer reads one field for all four
-            # tools. Purely additive: `pdb_key` above is untouched and remains
-            # the pointer of record whenever an endpoint uploaded the bytes.
-            # The extension is already carried by pdb_key (".pdb"), which is
-            # how PXDesign records it too — no extra field is invented here.
+            # tools. The extension is already carried by pdb_key (".pdb"),
+            # which is how PXDesign records it too — no extra field is invented.
+            #
+            # Reached only when there is no upload endpoint (see the delivery
+            # gate above), so this is the design's ONLY copy, never a duplicate
+            # of something already in Storage.
             #
             # ON `candidates` ONLY, and that placement is load-bearing rather
             # than stylistic. /tmp/smoke_results.json IS the persisted
-            # job.result, and shared/jobs.py _slim_result_for_persist strips
-            # the redundant inline copy before the UPDATE — but it walks
+            # job.result, and shared/jobs.py _slim_result_for_persist walks
             # result["candidates"] and nothing else. A copy parked on
-            # result["designs"] would survive slimming and put multi-MB of
-            # base64 through the single PostgREST UPDATE in _cas_update, which
-            # is documented there to throw and strand the job in "running"
-            # after a webhook that already returned 200. The web path resolves
-            # structures from Storage by pdb_key and never needs the atoms
-            # here; shared/exports.py and shared/storage.py both read the
-            # inline copy off candidates too.
+            # result["designs"] would escape every size control the hub has and
+            # put multi-MB of base64 through the single PostgREST UPDATE in
+            # _cas_update, documented there to throw and strand the job in
+            # "running" after a webhook that already returned 200.
+            # shared/exports.py and shared/storage.py also read the inline copy
+            # off candidates only.
             if inline_pdbs:
                 if inline_bytes_used + len(pdb_bytes) <= INLINE_PDB_TOTAL_CAP_BYTES:
                     candidate_entry["pdb_content_b64"] = base64.b64encode(

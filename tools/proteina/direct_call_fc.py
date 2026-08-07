@@ -9,9 +9,20 @@ because its per-design loop called back out to tools-hub to mint a presigned
 PUT per PDB; it now inlines the coordinates as ``pdb_content_b64`` instead.
 
     python tools/proteina/direct_call_fc.py --dry-run   # payload only, free
-    python tools/proteina/direct_call_fc.py --validate  # free CPU preflight
+    python tools/proteina/direct_call_fc.py --validate  # free, but see below
     python tools/proteina/direct_call_fc.py --submit    # SPENDS GPU MONEY
     python tools/proteina/direct_call_fc.py --collect   # read the result back
+
+WHAT ``--validate`` DOES NOT DO. ``run_validate`` returns before the
+target-source invariant, before ``prepare_custom_target`` and before any
+hotspot matching: it checks package import, config files and checkpoint
+presence, and IGNORES ``target_chain``, the hotspots and the staged PDB
+entirely. It is an environment check, NOT a preflight of this job spec — it
+will report OK for a spec that would mis-aim on ``--submit``. The job-spec
+preflight that matters is offline and free: see
+``tests/test_proteina_delivery.py`` and the guards in
+``run_pipeline.prepare_custom_target`` (``missing_hotspots`` /
+``hotspots_outside_contig``).
 
 CONTRACT QUIRKS THIS SCRIPT ENCODES (Proteina's job_spec vocabulary differs
 from the other three tools, and every one of these is a silent-failure risk):
@@ -54,7 +65,13 @@ HOTSPOTS = [
     "A241", "A243", "A244", "A246", "A260", "A262", "A264", "A301",
     "B241", "B243", "B244", "B246", "B260", "B262", "B264", "B301",
 ]
-STATE = Path(__file__).resolve().parent / "_direct_call_state.json"
+# NOT inside the tracked tools/proteina/ tree: this is per-run scratch keyed to
+# one Modal call id, and dropping it next to the source makes it a candidate
+# for an accidental commit. Overridable for anyone who wants it elsewhere.
+STATE = Path(
+    os.environ.get("PROTEINA_DIRECT_STATE")
+    or Path(__file__).resolve().parents[2] / ".proteina_direct_call_state.json"
+)
 
 
 def _load_env_and_path() -> None:
