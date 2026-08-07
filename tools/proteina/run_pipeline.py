@@ -79,12 +79,14 @@ is re-checked here against the uploaded structure before the model loads
 
 from __future__ import annotations
 
+import base64
 import csv
 import glob
 import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,6 +111,41 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 # id; nothing about it travels through the job result. Fixed path == the wrapper
 # needs no coordination with this script beyond the constant.
 RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
+
+# --- delivery mode for design coordinates ----------------------------------
+# Two ways a design's atoms reach the caller, chosen by whether the payload
+# carries an upload endpoint. NOT a preference: it is a statement about what
+# the caller can actually receive.
+#
+#   UPLOAD  (upload_urls_endpoint present) — the tools-hub web path. Each PDB
+#           is PUT to a presigned URL and the entry carries a `pdb_key`
+#           pointer. Unchanged, and it stays the only behaviour a real job
+#           sees, because a real job always supplies the endpoint.
+#   INLINE  (endpoint absent) — a direct `modal.Function.from_name(...)` call,
+#           which is the only way to pass a multi-chain target and
+#           chain-prefixed hotspots (the web tier cannot express either). There
+#           is no tools-hub server to call back to and no job_token to
+#           authenticate with, so the atoms travel in the return value as
+#           base64 under `pdb_content_b64` — the same field name and encoding
+#           PXDesign and BindCraft already emit, so a cross-generator consumer
+#           needs no per-tool special-casing.
+#
+# The two are additive, not exclusive: when an endpoint IS present the upload
+# happens exactly as before and `pdb_key` is still the pointer of record.
+#
+# Modal imposes no hard ceiling on a return value — _utils/blob_utils.py
+# format_blob_data() blob-uploads anything over MAX_OBJECT_SIZE_BYTES (2 MiB)
+# transparently, and the container's return path (container_io_manager.py
+# package_output) goes through it. So inlining cannot fail on size. It can
+# still be WASTEFUL: a 419-residue target plus binder is ~340 KB of PDB, ~450 KB
+# once base64'd, and nsamples*replicas of those runs to multiple MB. The cap
+# below bounds the total; designs past it keep their scores and lose only their
+# coordinates, which are still recoverable from the raw archive.
+INLINE_PDB_TOTAL_CAP_BYTES = int(
+    os.environ.get("PROTEINA_INLINE_PDB_CAP_BYTES") or 64 * 1024 * 1024
+)
+# Escape hatch for a caller that wants the scores inline but not the atoms.
+_INLINE_OFF = {"off", "false", "0", "no"}
 
 PROTEINA_HOME = os.environ.get("PROTEINA_HOME", "/opt/proteina")
 CONFIG_DIR = os.environ.get("PROTEINA_CONFIG_DIR", f"{PROTEINA_HOME}/configs")
@@ -415,6 +452,77 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
             seen.add(key)
             residues.append(key)
     return residues, n_unparsable
+
+
+def normalize_target_chain(raw: str) -> str:
+    """Accept both chain separators, emit the whitespace form this file parses.
+
+    ``target_chain`` is consumed by ``derive_segments`` via a bare ``.split()``,
+    so only whitespace ever separated chains here. The campaign side and the
+    other three generators standardised on the comma form (see
+    llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md: ``"A,B"``, ``"A B"`` and
+    ``"A, B"`` are equivalent). Parsing only one of them is how a multi-chain
+    request gets accepted at the form and rejected — or worse, silently
+    narrowed — at every gate behind it.
+
+    ``"A,B"`` alone was already a LOUD failure: it splits to the single token
+    ``"A,B"``, no chain matches, ``derive_segments`` returns [] and the caller
+    is told the chain is absent. The quiet case is a mixed string like
+    ``"A B,C"``, which yields ``["A", "B,C"]`` — chain A resolves, ``B,C`` is
+    dropped by ``derive_segments``' ``continue``, and the run designs against
+    one protomer of a dimer while looking entirely successful.
+
+    Order is significant (it drives contig segment order) and duplicates are
+    removed, both per that contract.
+    """
+    tokens = [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for tok in tokens:
+        if tok not in seen:
+            seen.add(tok)
+            ordered.append(tok)
+    return " ".join(ordered)
+
+
+def normalize_hotspots(job_spec: dict) -> list[str]:
+    """Resolve hotspot tokens from either this tool's name or the shared one.
+
+    Proteina's native key is ``hotspot_spec``; the campaign side and the other
+    three generators send ``hotspot_residues``. Native wins when both are
+    present so nothing already in flight changes meaning. A plain string is
+    accepted for either key and split on commas/whitespace, because that is
+    what a caller who typed the chain list as a string tends to send for the
+    hotspots too.
+
+    Bare integers are attributed to the FIRST target chain, per the shared
+    contract. Upstream matches hotspots as ``f"{chain_id}{res_id}"``, so a bare
+    ``264`` addresses nothing at all; attributing it is what makes the
+    single-chain shorthand mean what its sender intended. When no chain is
+    known the token is passed through untouched rather than guessed at — the
+    pre-GPU ``missing_hotspots`` guard then refuses it, which is the behaviour
+    the hotspot canary exists to protect.
+    """
+    raw = job_spec.get("hotspot_spec")
+    if raw is None or raw == []:
+        raw = job_spec.get("hotspot_residues")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    else:
+        items = [str(h).strip() for h in raw if str(h).strip()]
+
+    first_chain = normalize_target_chain(
+        str(job_spec.get("target_chain") or "")
+    ).split(" ")[0]
+    out: list[str] = []
+    for tok in items:
+        if first_chain and re.fullmatch(r"-?\d+", tok):
+            out.append(f"{first_chain}{tok}")
+        else:
+            out.append(tok)
+    return out
 
 
 def parse_target_input(spec: str) -> list[tuple[str, Optional[int], Optional[int]]]:
@@ -1085,6 +1193,17 @@ def shard_seed(job_id: str) -> int:
 
 def _rf3_enabled() -> bool:
     return os.environ.get("PROTEINA_RF3", "on").strip().lower() not in _RF3_OFF
+
+
+def _inline_enabled() -> bool:
+    """Whether design coordinates may travel in the return value.
+
+    Defaults ON: a caller with no upload endpoint has no other way to receive
+    atoms, and that caller is the whole reason this exists. Turning it off is
+    for a caller who wants scores only and does not want to pay to move
+    multiple MB of base64 it will discard.
+    """
+    return os.environ.get("PROTEINA_INLINE_PDBS", "on").strip().lower() not in _INLINE_OFF
 
 
 # ===========================================================================
@@ -1907,9 +2026,11 @@ def main() -> None:
     # Custom-target fields. Defaults reproduce the curated behaviour exactly, so
     # a campaign created before these existed keeps draining unchanged.
     target_source = str(job_spec.get("target_source") or "curated")
-    target_chain = str(job_spec.get("target_chain") or "")
+    # Both accept the shared cross-tool spelling as well as this file's native
+    # one; see normalize_target_chain / normalize_hotspots.
+    target_chain = normalize_target_chain(str(job_spec.get("target_chain") or ""))
     target_input = str(job_spec.get("target_input") or "")
-    hotspot_spec = [str(h) for h in (job_spec.get("hotspot_spec") or [])]
+    hotspot_spec = normalize_hotspots(job_spec)
     binder_length = [int(v) for v in (job_spec.get("binder_length") or [60, 120])]
 
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -1946,8 +2067,30 @@ def main() -> None:
 
     if not config_name:
         _fail("preflight", "config", "job_spec.config_name is empty")
-    if not upload_endpoint:
-        _fail("preflight", "upload_urls_endpoint", "upload_urls_endpoint missing from payload")
+
+    # Delivery mode, decided pre-GPU so the choice is visible in the logs of a
+    # run that later returns no coordinates. This used to be a hard _fail:
+    # without an endpoint the per-design loop had nowhere to put a PDB, so
+    # refusing before spending money was correct. It is no longer the only
+    # option — INLINE carries the atoms in the return value instead — so the
+    # refusal is now only about the case where inlining was explicitly
+    # disabled AND there is no endpoint, which really does deliver nothing.
+    inline_pdbs = _inline_enabled()
+    if not upload_endpoint and not inline_pdbs:
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            "no upload_urls_endpoint in the payload and inline PDBs are "
+            "disabled (PROTEINA_INLINE_PDBS=off), so a completed design would "
+            "have nowhere to put its coordinates. Supply the endpoint or "
+            "re-enable inline delivery.",
+        )
+    logger.info(
+        "design delivery: upload=%s inline=%s (cap %.0f MB)",
+        "on" if upload_endpoint else "off",
+        "on" if inline_pdbs else "off",
+        INLINE_PDB_TOTAL_CAP_BYTES / 1e6,
+    )
 
     # Designs/shard is derived from the (overridden) generation profile so it
     # tracks the actual Hydra overrides, not a hardcoded 8.
@@ -2102,11 +2245,14 @@ def main() -> None:
             logger.info("shard produced 0 survivors in %ds", runtime)
             return
 
-        # --- upload + stream each design -------------------------------------
+        # --- upload and/or inline each design --------------------------------
         out_designs: list[dict] = []
         out_candidates: list[dict] = []
         n_failures = 0
         n_rows = len(designs)
+        inline_bytes_used = 0
+        n_inlined = 0
+        n_inline_capped = 0
         for d in designs:
             rank = d["rank"]
             pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
@@ -2118,11 +2264,19 @@ def main() -> None:
             pdb_key = f"designs/{basename}"
             try:
                 pdb_bytes = pdb_path.read_bytes()
-                urls = request_upload_urls(upload_endpoint, job_token, [basename])
-                upload_pdb(urls[basename], pdb_bytes)
+                # Guarded, not removed. With an endpoint this is the original
+                # call pair on the original bytes inside the original try, so
+                # the web path's behaviour — including counting an upload
+                # failure and skipping the design — is untouched.
+                if upload_endpoint:
+                    urls = request_upload_urls(upload_endpoint, job_token, [basename])
+                    upload_pdb(urls[basename], pdb_bytes)
             except Exception as exc:
                 n_failures += 1
-                logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
+                logger.warning(
+                    "design rank %d: %s failed (%s) — skipping",
+                    rank, "upload" if upload_endpoint else "PDB read", exc,
+                )
                 continue
 
             scores = d["scores"]
@@ -2138,10 +2292,44 @@ def main() -> None:
                 "binder_scrmsd": scores.get("binder_scrmsd"),
                 "cluster_id": scores.get("cluster_id"),
             }
+            candidate_entry = {
+                "rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores,
+            }
+            # Coordinates inline, under the SAME key PXDesign and BindCraft
+            # emit, so a cross-generator consumer reads one field for all four
+            # tools. Purely additive: `pdb_key` above is untouched and remains
+            # the pointer of record whenever an endpoint uploaded the bytes.
+            # The extension is already carried by pdb_key (".pdb"), which is
+            # how PXDesign records it too — no extra field is invented here.
+            #
+            # ON `candidates` ONLY, and that placement is load-bearing rather
+            # than stylistic. /tmp/smoke_results.json IS the persisted
+            # job.result, and shared/jobs.py _slim_result_for_persist strips
+            # the redundant inline copy before the UPDATE — but it walks
+            # result["candidates"] and nothing else. A copy parked on
+            # result["designs"] would survive slimming and put multi-MB of
+            # base64 through the single PostgREST UPDATE in _cas_update, which
+            # is documented there to throw and strand the job in "running"
+            # after a webhook that already returned 200. The web path resolves
+            # structures from Storage by pdb_key and never needs the atoms
+            # here; shared/exports.py and shared/storage.py both read the
+            # inline copy off candidates too.
+            if inline_pdbs:
+                if inline_bytes_used + len(pdb_bytes) <= INLINE_PDB_TOTAL_CAP_BYTES:
+                    candidate_entry["pdb_content_b64"] = base64.b64encode(
+                        pdb_bytes
+                    ).decode("ascii")
+                    inline_bytes_used += len(pdb_bytes)
+                    n_inlined += 1
+                else:
+                    # NOT a failure: the design is real and its scores are
+                    # delivered. It loses only its atoms, which are still in
+                    # the raw archive. Counted and logged below rather than
+                    # dropped quietly — a truncated result set that looks
+                    # complete is the failure mode this whole file guards.
+                    n_inline_capped += 1
             out_designs.append(design_entry)
-            out_candidates.append(
-                {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
-            )
+            out_candidates.append(candidate_entry)
             # Heartbeat new_candidate keys match webhook _sanitize_candidate.
             send_heartbeat(
                 webhook_url, job_id, stage="searching",
@@ -2178,9 +2366,18 @@ def main() -> None:
             webhook_url, job_id, stage="complete",
             designs_completed=len(out_designs), designs_total=designs_total,
         )
+        if n_inline_capped:
+            logger.warning(
+                "inline PDB cap reached: %d design(s) carry scores but NO "
+                "coordinates (cap %d bytes, used %d). Their atoms are in the "
+                "raw archive. Raise PROTEINA_INLINE_PDB_CAP_BYTES to inline them.",
+                n_inline_capped, INLINE_PDB_TOTAL_CAP_BYTES, inline_bytes_used,
+            )
         logger.info(
-            "shard complete — %d/%d designs, %d failures, runtime=%ds",
-            len(out_designs), designs_total, n_failures, runtime,
+            "shard complete — %d/%d designs, %d failures, %d inlined "
+            "(%.1f MB b64), %d over cap, runtime=%ds",
+            len(out_designs), designs_total, n_failures, n_inlined,
+            inline_bytes_used * 4 / 3 / 1e6, n_inline_capped, runtime,
         )
     finally:
         # NOT gated on rc, on survivors, or on what got uploaded. A shard whose
