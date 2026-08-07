@@ -1197,12 +1197,69 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     unconstrained, so "these tokens resolve to nothing" is never a warning; it
     is a refusal, and it must be issued where it costs nothing.
 
-    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads
-    a file and calls ``run_pipeline``'s own matcher, neither of which the
-    offline suite can do for a container; the two ``raise``s are in
-    ``_canary_scoring`` where the suite executes them. Both refusals previously
-    survived deletion — the tests could only see that a call existed — while
-    ``--hotspots A99999`` went on spawning three A100s.
+    THE NAME IS NARROWER THAN THE JOB, DELIBERATELY NOT RENAMED. This is where
+    every pre-spawn refusal that inspects the REQUEST goes, because "before a
+    shard exists" is the only property they share and having one such place is
+    what makes a missing guard visible. It now runs six, in
+    ``prepare_custom_target``'s order, so the canary USUALLY refuses for the
+    same reason production would rather than for whichever consequence it
+    noticed first: the
+    target has structure, the contig parses, the contig is renderable once bare
+    chain ids are expanded, every segment selects something, the selection is
+    big enough, the hotspots resolve.
+
+    SIX OF PRODUCTION'S EIGHT, AND THE COUNT IS THE POINT OF STATING IT.
+    ``prepare_custom_target`` issues eight input refusals before any GPU:
+    unreadable PDB, unparsable contig, absent bare chain, absent
+    ``target_chain``, negative numbering, dead segment, sub-floor selection,
+    missing hotspot. Two are not mirrored here and both are deliberate. The
+    absent bare chain is folded into the dead-segment refusal (a chain not in
+    the file selects nothing), which reports it with the file's chain list
+    instead of two messages that would say the same thing. The absent
+    ``target_chain`` is structurally unreachable: the canary has no
+    ``--target-chain`` flag and derives its default contig from the chains the
+    file actually contains, so there is no requested chain that could be
+    missing. Everything downstream of staging — the crop, the registry, the
+    key collision, the registration read-back — runs INSIDE the shard on this
+    path and cannot be mirrored before one exists.
+
+    TWO INPUTS WHERE THE VERDICTS AGREE AND THE REASONS DO NOT. Both were found
+    by a differential sweep of production against this function; neither costs
+    money, and stating them is cheaper than a future reader discovering the
+    "same reason" sentence above is absolute when it is not.
+
+    * ``--contig Z,A`` on a construct numbered from -5: production refuses the
+      absent chain Z (it checks that before renderability), this refuses the
+      negative numbering of A (the absent chain is folded into the dead-segment
+      refusal, which runs after). Both refuse pre-spawn. The folding is the
+      deliberate choice two paragraphs up; this is its one visible consequence.
+    * A file whose only chain id is a DIGIT, with no ``--contig``: production
+      goes through ``derive_segments`` and never re-parses, so it proceeds;
+      this derives ``11-30``, re-parses it, and refuses "cannot be parsed" —
+      an OVER-refusal, the only one the sweep found in 300 cases. The re-parse
+      predates this branch (before the refusal existed the same input died as a
+      bare ``ValueError``), so this is not a regression, but
+      ``refuse_unparsable_contig``'s "production converts the identical
+      failure" holds only when ``--contig`` was actually supplied.
+
+    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads a
+    file and calls ``run_pipeline``'s own parser, expansion, matcher, predicates
+    and threshold, none of which the offline suite can do for a container; every
+    REFUSAL raised by this function is raised in ``_canary_scoring``, where the
+    suite executes it. The one bare ``raise`` below is not a refusal and not an
+    exception to that: it re-raises the ``ValueError`` that ``cs.refuse_
+    unparsable_contig`` was just handed, and exists only so this function still
+    fails loudly if that helper ever stops raising. (An earlier wording said
+    "every ``raise`` in THIS function is in ``_canary_scoring``" — false the
+    moment that line was added, in the same commit, three paragraphs from the
+    comment acknowledging it.) That is a claim about this function and not about
+    the module:
+    ``main`` raises ``SystemExit`` locally in two places that are also pre-spawn
+    — a missing ``--target-pdb`` on phases 1 and 2, and a ``pick_far_patch``
+    that cannot build a negative control — and neither goes through ``cs``. Both
+    original refusals survived deletion once, because the tests could only see
+    that a call existed, while ``--hotspots A99999`` went on spawning three
+    A100s.
     """
     rp_local = _load_rp_local()
     residues, n_unparsable = rp_local.pdb_ca_residues(Path(target_pdb))
@@ -1210,18 +1267,49 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     chains = sorted({r[0] for r in residues})
     resolved = contig or rp_local.format_contig(
         rp_local.derive_segments(residues, chains))
-    segments = rp_local.parse_target_input(resolved)
+    # Production's parser, and production's answer to its failure: a refusal
+    # carrying "NO GPU TIME WAS USED", not a bare ValueError traceback.
+    # ``refuse_unparsable_contig`` always raises; the ``raise`` says so without
+    # a reader having to take it on faith.
+    try:
+        raw_segments = rp_local.parse_target_input(resolved)
+    except ValueError as exc:
+        cs.refuse_unparsable_contig(target_pdb, resolved, exc)
+        raise
+    # Production's bare-chain expansion, called rather than restated, and here
+    # rather than later because it is what makes every numeric check below apply
+    # to ``--contig A`` at all. The canary used to FILTER unexpanded segments
+    # out of the negative-numbering guard instead, so a tagged construct plus a
+    # bare chain id skipped it and spawned. Production does not refuse a bare
+    # chain either — it expands ``A`` to ``A-5-240`` and then refuses THAT — and
+    # refusing the id itself here would stop a run production accepts.
+    segments = rp_local.expand_bare_chains(residues, raw_segments)
     # Production's negative-numbering guard, called rather than restated. The
     # canary had no equivalent, so a tagged construct would have spawned an
     # A100 to discover what a regex knows for free. See
     # cs.refuse_unrenderable_contig.
     cs.refuse_unrenderable_contig(
-        target_pdb, resolved,
-        rp_local.unrenderable_segments(
-            [s for s in segments if s[1] is not None]))
+        target_pdb, resolved, rp_local.unrenderable_segments(segments))
+    # Production's per-segment emptiness check. The canary's non-EMPTY test was
+    # on the AGGREGATE, so ``A1-300,Z1-50`` hid a dead segment behind a healthy
+    # one and spawned. See cs.refuse_empty_segments.
+    cs.refuse_empty_segments(
+        target_pdb, resolved, rp_local.empty_segments(residues, segments),
+        rp_local.chain_span_summary(residues))
+    # Production's minimum-size floor, called rather than restated, and BEFORE
+    # the hotspot check because that is production's order: a sliver of a contig
+    # also makes most tokens "missing", and the operator who asked for
+    # ``--contig A10-20`` needs to be told the range is too small, not that the
+    # hotspots outside it do not resolve. The count is production's DISTINCT one
+    # — ``A10-20,A10-20`` names 11 residues twice and used to clear a floor of
+    # 20 on a count of 22. See cs.refuse_target_too_small.
+    cs.refuse_target_too_small(
+        target_pdb, resolved, rp_local.target_too_small(residues, segments),
+        rp_local.n_selected_residues(residues, segments),
+        rp_local.MIN_SELECTED_RESIDUES)
     selected = rp_local.select_residues(residues, segments)
     cs.refuse_unresolvable_hotspots(
-        target_pdb, resolved, len(selected),
+        target_pdb, resolved, rp_local.n_selected_residues(residues, segments),
         [(label, rp_local.missing_hotspots(selected, list(spec or [])))
          for label, spec in specs])
     return resolved
