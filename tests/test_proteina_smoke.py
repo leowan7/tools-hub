@@ -1572,6 +1572,383 @@ class TestStagedTargetIsCroppedToTheContig:
         assert calls == [], "nothing may run once the staged file is wrong"
 
 
+class TestContigEndpointsMustBeRealResidues:
+    """THE DEFECT THAT COST A SHARD, AND ITS SIBLING GUARD.
+
+    3S7G has chain A spanning 236-443 and chain B spanning 236-**442**. A run
+    was launched with ``A236-443,B236-443``. Upstream died::
+
+        ValueError('No atoms found for selection: B/*/443')
+
+    ~60 s of billed A100, zero designs.
+
+    EVERY EXISTING GUARD PASSED IT, and each for a defensible reason rather than
+    an oversight — which is why the count-based checks cannot be tightened into
+    covering this and a separate question has to be asked:
+
+    * ``select_residues`` filters ``lo <= resseq <= hi``, so chain B's segment
+      picked out the 207 residues that DO exist. The count is correct.
+    * step 4 ("every segment must select something") therefore saw 207, not 0.
+    * the 20-residue floor passed, the hotspots passed.
+    * ``unrenderable_segments`` passed — no negative numbers.
+    * ``stage_cropped_target``'s self-check passed at (415, 415): it compares
+      the staged file against the same selection, and both sides ignore the
+      residue that is not there identically.
+
+    Nothing asked whether ``lo`` and ``hi`` are themselves residues of that
+    chain. ``AtomSelectionStack.from_contig`` does, on a paid GPU.
+    """
+
+    # Borrowed rather than inherited, for the reason stated on the class above.
+    _drive = TestCustomTargetRegistration._drive
+    _spec = TestCustomTargetRegistration._spec
+
+    # The real spans, so the poison contig differs from the good one by ONE.
+    _POISON = "A236-443,B236-443"
+    _GOOD = "A236-443,B236-442"
+
+    @staticmethod
+    def _residues(tmp_path, text=None, spans=None):
+        p = tmp_path / "in.pdb"
+        p.write_text(text if text is not None
+                     else _make_pdb(spans or {"A": (236, 443), "B": (236, 442)}))
+        return rp.pdb_ca_residues(p)[0]
+
+    # ---- the predicate --------------------------------------------------
+
+    def test_the_real_failure_is_flagged_and_names_chain_b(self, tmp_path):
+        """The one that cost the shard: A is fine, B is over by one."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input(self._POISON)) == [("B", 443)]
+
+    def test_the_corrected_contig_is_accepted(self, tmp_path):
+        """The guard is worthless if it also refuses the fix it recommends."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input(self._GOOD)) == []
+
+    def test_the_premise_every_cheaper_check_passes_the_poison_contig(
+            self, tmp_path):
+        """SO THIS SUITE CANNOT PASS VACUOUSLY. If any of these ever starts
+        failing on its own, the new guard is no longer the thing catching it and
+        this class is measuring something else."""
+        residues = self._residues(tmp_path)
+        segments = rp.parse_target_input(self._POISON)
+        # step 4: every segment selects something
+        assert [len(rp.select_residues(residues, [s])) for s in segments] == [208, 207]
+        # the 20-residue floor
+        assert len(rp.select_residues(residues, segments)) == 415
+        # step 3b: nothing negative
+        assert rp.unrenderable_segments(segments) == []
+        # and the crop's own self-check balances
+        assert rp.stage_cropped_target(
+            tmp_path / "staged.pdb", (tmp_path / "in.pdb").read_text(),
+            residues, segments) == (415, 415)
+
+    def test_a_low_endpoint_is_checked_too(self, tmp_path):
+        """The failure was on ``hi``; ``lo`` has the identical exposure."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("B200-442")) == [("B", 200)]
+
+    def test_both_endpoints_of_one_segment_are_reported(self, tmp_path):
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("B200-999")) == [("B", 200), ("B", 999)]
+
+    def test_a_later_segment_is_checked_not_just_the_first(self, tmp_path):
+        """``A236-443`` is valid, so a guard that stopped at the first segment
+        would wave the run through — which is the shape of the real failure."""
+        residues = self._residues(tmp_path)
+        segments = rp.parse_target_input(self._POISON)
+        assert rp.missing_endpoints(residues, segments[:1]) == []
+        assert rp.missing_endpoints(residues, segments) == [("B", 443)]
+
+    def test_the_bound_is_membership_not_an_off_by_one(self, tmp_path):
+        """442 and 443 are one apart and must land on opposite sides; and the
+        test is MEMBERSHIP, so an endpoint inside a disordered gap fails too
+        even though it is well within the chain's min/max."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("B", 236, 442)]) == []
+        assert rp.missing_endpoints(residues, [("B", 236, 443)]) == [("B", 443)]
+        gapped = [r for r in residues if not (301 <= r[1] <= 349 and r[0] == "A")]
+        assert rp.missing_endpoints(gapped, [("A", 320, 443)]) == [("A", 320)]
+
+    def test_one_absent_residue_named_by_both_ends_is_reported_once(
+            self, tmp_path):
+        """``B443-443`` is lo AND hi, both absent. The docstring promises the
+        pair is deduped so the refusal names it once; without the dedup the
+        message reads "residue 443 on chain B, residue 443 on chain B". Pinned
+        because the docstring makes the claim — an unchecked promise about
+        output is the drift this file keeps finding."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("B", 443, 443)]) == [("B", 443)]
+        # Distinct absent endpoints are still both reported — dedup must not
+        # collapse them to the first.
+        assert rp.missing_endpoints(residues, [("B", 444, 445)]) == [
+            ("B", 444), ("B", 445)]
+
+    def test_a_bare_chain_id_has_no_endpoints_to_check(self, tmp_path):
+        """``(chain, None, None)`` is legal input and must not raise or refuse.
+        Skipped inside the helper, so a caller that forgets to filter gets the
+        right answer rather than a TypeError."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("A", None, None)]) == []
+        assert rp.missing_endpoints(
+            residues, [("A", None, None), ("B", 236, 443)]) == [("B", 443)]
+
+    def test_the_derived_path_is_safe_by_construction(self, tmp_path):
+        """``derive_segments`` builds spans from min/max of residues it just
+        read, so both ends exist by definition. Pinned so a future change to
+        derivation cannot quietly start producing endpoints that do not."""
+        residues = self._residues(tmp_path)
+        derived = rp.derive_segments(residues, ["A", "B"])
+        assert derived == [("A", 236, 443), ("B", 236, 442)]
+        assert rp.missing_endpoints(residues, derived) == []
+
+    # ---- insertion codes -------------------------------------------------
+
+    def test_an_endpoint_matching_any_insertion_code_counts_as_existing(
+            self, tmp_path):
+        """THE DELIBERATE CHOICE, PINNED. A contig endpoint is a bare number
+        with nowhere to put an insertion code, so existence is tested on the
+        residue number ALONE.
+
+        The load-bearing case is chain B: residue 200 exists ONLY as ``B200A``.
+        ``select_residues`` already selects it and the crop already keeps it —
+        both filter on ``lo <= resseq <= hi`` with the code ignored — so
+        refusing the endpoint that the selection then honours would make this
+        guard disagree with the code it guards. Upstream agrees: its own
+        failure names ``B/*/443``, a wildcard in the insertion-code field.
+        """
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 100, icode="A"),
+            _atom(3, "CA", "ALA", "A", 101),
+            _atom(4, "CA", "ALA", "B", 200, icode="A"),
+            _atom(5, "CA", "ALA", "B", 201),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text=text)
+        assert residues == [("A", 100, ""), ("A", 100, "A"), ("A", 101, ""),
+                            ("B", 200, "A"), ("B", 201, "")], "fixture check"
+        # A100 exists both bare and coded; B200 exists ONLY coded. Neither is
+        # missing.
+        assert rp.missing_endpoints(residues, [("A", 100, 101)]) == []
+        assert rp.missing_endpoints(residues, [("B", 200, 201)]) == []
+        # ...and the selection really does honour the coded-only endpoint, which
+        # is what makes accepting it the consistent answer rather than a lax one.
+        assert rp.select_residues(residues, [("B", 200, 201)]) == [
+            ("B", 200), ("B", 201)]
+        # The number still has to be present under SOME code.
+        assert rp.missing_endpoints(residues, [("B", 199, 201)]) == [("B", 199)]
+
+    # ---- residue 0 (#19) -------------------------------------------------
+
+    def test_residue_zero_is_refused_by_the_same_test_no_special_case(
+            self, tmp_path):
+        """ISSUE #19, CLOSED HERE. The adapter refuses ``lo < 0`` and 0 is not
+        < 0, so ``A0-100`` has always been accepted. On a chain numbered from 1
+        it selects residues 1-100 — non-empty and above the floor, so every
+        other guard passes — while upstream is recorded as resolving residue 0
+        by taking the WHOLE chain, silently designing against a different target
+        than the operator asked for.
+
+        Residue 0 simply does not exist, so it is already a missing endpoint.
+        There is no rule about zero in ``missing_endpoints`` and there must not
+        be one: the general test is what makes this free."""
+        residues = self._residues(tmp_path, spans={"A": (1, 115)})
+        segments = rp.parse_target_input("A0-100")
+        # The premise: everything cheaper waves it through.
+        assert px._parse_target_input("A0-100")[3] is None, (
+            "the adapter still accepts A0-100 — if this ever fails, #19 moved")
+        assert len(rp.select_residues(residues, segments)) == 100
+        assert rp.unrenderable_segments(segments) == []
+        # The guard.
+        assert rp.missing_endpoints(residues, segments) == [("A", 0)]
+
+    def test_a_chain_that_really_is_numbered_from_zero_is_not_refused(
+            self, tmp_path):
+        """The guard must key on the residue's absence, not on the number 0 —
+        ``A0-240`` is exactly what the negative-numbering refusal recommends,
+        and that advice has to keep working."""
+        residues = self._residues(tmp_path, spans={"A": (0, 240)})
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A0-240")) == []
+
+    # ---- end to end, through main() --------------------------------------
+
+    def test_the_poison_contig_is_refused_before_any_subprocess(
+            self, tmp_path, monkeypatch):
+        """THE MONEY ASSERTION. ``run_streaming`` is what spawns both the
+        registration and the design, and it must not be reached at all."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._POISON, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == [], (
+            "no subprocess may run once a range endpoint names no residue")
+
+    def test_the_refusal_names_the_chain_the_endpoint_and_the_real_span(
+            self, tmp_path, monkeypatch):
+        """The operator's next action is to retype the contig, so the message
+        has to carry the number. ``B236-442`` must be obvious from it."""
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._POISON, target_chain="A B"),
+            calls=[], pdb_text=_make_3s7g_like())
+        detail = data["error"]["detail"]
+        assert "chain B" in detail and "443" in detail
+        assert "A236-443, B236-442" in detail, "the real spans of the upload"
+        # ``e.g. `` prefix deliberately: the bare string "B236-442" is ALSO in
+        # the spans sentence, so asserting it alone passes with the suggestion
+        # stripped out entirely. The advice is the half an operator acts on.
+        assert "e.g. B236-442" in detail, "the corrected contig, spelled out"
+        # It must not misattribute the fault to chain A, which is correct.
+        assert "chain A" not in detail
+        # And it should say where this would otherwise have been discovered.
+        assert "B/*/443" in detail
+
+    def test_the_suggested_range_actually_works(self, tmp_path, monkeypatch):
+        """Companion to the test above, in the shape the negative-numbering
+        guard already uses: the contig the refusal recommends must register and
+        design cleanly on the same structure."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._GOOD, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._GOOD
+
+    def test_residue_zero_is_refused_end_to_end(self, tmp_path, monkeypatch):
+        """#19 through ``main()``, on a chain where ``A0-100`` selects 100
+        residues so nothing cheaper can be the thing that refuses it."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A0-100", target_chain="A"),
+            calls=calls, pdb_spans={"A": (1, 115)})
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == [], "A0-100 reached the GPU before this guard"
+        detail = data["error"]["detail"]
+        assert "residue 0 on chain A" in detail
+        assert "A1-100" in detail, "the corrected contig"
+
+    def test_a_low_endpoint_is_refused_end_to_end(self, tmp_path, monkeypatch):
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A236-443,B200-442", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == []
+        assert "residue 200 on chain B" in data["error"]["detail"]
+        assert "B236-442" in data["error"]["detail"]
+
+    def test_a_bare_chain_id_still_registers(self, tmp_path, monkeypatch):
+        """Unaffected path 1: the whole-chain form resolves through
+        min/max in step 3 and must not be refused."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A,B", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_a_derived_no_contig_run_still_registers(self, tmp_path, monkeypatch):
+        """Unaffected path 2: no ``target_input`` at all, so the contig comes
+        from ``derive_segments`` and both ends exist by construction."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_an_empty_range_still_reports_the_older_clearer_message(
+            self, tmp_path, monkeypatch):
+        """ORDERING, PINNED. A range that selects nothing at all keeps step 4's
+        message; the new guard is the narrower one for a range that selects
+        REAL residues either side of an end that does not exist. Both would fire
+        on ``Z1-99``, and step 4 says the more useful thing."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="Z1-99", target_chain="A"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+
+class TestNumericChainsAndUnboundedRangesAreAlreadyRefused:
+    """BACKLOG #21, VERIFIED BY EXECUTION RATHER THAN BY READING.
+
+    The item says "numeric chain ids and unbounded hi reach the GPU unchecked".
+    They do not, at either layer, and these tests exist so the item can be
+    closed against something that runs:
+
+    * the adapter's ``_SEGMENT_RE`` is ``^([A-Za-z])(-?\\d+)-(-?\\d+)$`` — a
+      numeric chain fails ``[A-Za-z]`` and a missing ``hi`` fails ``\\d+`` — and
+      a non-match returns an actionable error before a campaign exists;
+    * the container's ``parse_target_input`` re-checks independently, because it
+      must never trust a value it did not check itself: ``chain.isalpha()``
+      rejects the first and ``int('')`` the second, and ``prepare_custom_target``
+      turns the ValueError into a ``_fail`` before anything is spawned.
+
+    Pinned at both layers so the two cannot silently diverge and so the closure
+    stays true.
+    """
+
+    NUMERIC = ["1236-443", "1", "12-30", "A1-60,2-30", "1A-60"]
+    UNBOUNDED = ["A236-", "A236", "A-", "A236-443-", "A1-60,B12-"]
+
+    @pytest.mark.parametrize("raw", NUMERIC + UNBOUNDED)
+    def test_the_adapter_refuses_it(self, raw):
+        segs, canon, _chains, err = px._parse_target_input(raw)
+        assert err is not None, f"{raw!r} passed the adapter"
+        assert segs == [] and canon == ""
+        assert "not valid" in err and "A1-150" in err, "the error must be usable"
+
+    @pytest.mark.parametrize("raw", NUMERIC + UNBOUNDED)
+    def test_the_container_refuses_it_independently(self, raw):
+        with pytest.raises(ValueError, match="unparsable target_input segment"):
+            rp.parse_target_input(raw)
+
+    def test_a_numeric_chain_never_reaches_a_subprocess(self, tmp_path, monkeypatch):
+        """Through ``main()``, since the adapter is not the only entry point —
+        the container is what a replayed or hand-built payload hits."""
+        calls: list = []
+        data = TestCustomTargetRegistration._drive(
+            self, rp, tmp_path, monkeypatch,
+            TestCustomTargetRegistration._spec(self, target_input="1236-443"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+    def test_an_unbounded_hi_never_reaches_a_subprocess(self, tmp_path, monkeypatch):
+        calls: list = []
+        data = TestCustomTargetRegistration._drive(
+            self, rp, tmp_path, monkeypatch,
+            TestCustomTargetRegistration._spec(self, target_input="A236-"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # 8. Templates parse
 # ---------------------------------------------------------------------------

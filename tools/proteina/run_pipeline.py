@@ -934,6 +934,109 @@ def target_too_small(
     return n_selected_residues(residues, segments) < MIN_SELECTED_RESIDUES
 
 
+def missing_endpoints(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> list[tuple[str, int]]:
+    """Contig endpoints that name no residue of their chain, as (chain, number).
+
+    THE SIBLING OF ``unrenderable_segments``, for the same family of bug: our
+    selection logic accepts something upstream's selector rejects, and the
+    disagreement is only discovered on a paid GPU. That one is about the contig
+    TEXT; this one is about what the text RESOLVES to.
+
+    WHAT IT COST TO LEARN THIS. The Fc target 3S7G has chain A spanning 236-443
+    and chain B spanning 236-**442**. A campaign was launched with
+    ``A236-443,B236-443`` and upstream died::
+
+        ValueError('No atoms found for selection: B/*/443')
+
+    ~60 s of billed A100, zero designs. Every guard in ``prepare_custom_target``
+    passed it, and passed it for a good reason rather than an oversight:
+    ``select_residues`` filters with ``lo <= resseq <= hi``, so on chain B the
+    segment picked out the 207 residues that really are there. The COUNT was
+    correct. Step 4 ("every segment must select something") therefore saw 207,
+    not 0; the 20-residue floor passed; ``unrenderable_segments`` passed (no
+    negative numbers); the hotspots passed; and ``stage_cropped_target``'s
+    self-check passed too, at (415, 415) — it compares the staged file against
+    the same selection, and both sides simply ignore the residue that is not
+    there. Nothing anywhere asked whether ``lo`` and ``hi`` are THEMSELVES
+    residues on that chain. Upstream's ``AtomSelectionStack.from_contig`` does,
+    and it does it after the checkpoints are loaded.
+
+    BOTH ENDPOINTS ARE CHECKED. The failure was on ``hi``; ``lo`` has the
+    identical exposure and is the one that closes the residue-0 hole (see
+    below). An endpoint inside a DISORDERED GAP is caught by the same test —
+    ``A320-443`` on a chain missing 301-349 names a residue the file does not
+    contain just as surely as one past the end.
+
+    IT ALSO CLOSES THE RESIDUE-0 HOLE, for free rather than by special case.
+    The adapter's ``_parse_target_input`` refuses ``lo < 0``, and 0 is not < 0,
+    so ``A0-100`` has always been accepted. On a chain numbered from 1 that
+    selects residues 1-100 — a non-empty, above-floor selection that every
+    other guard waves through — while upstream is recorded as resolving residue
+    0 by selecting the whole chain, silently designing against a different
+    target than the operator asked for. Residue 0 does not exist, so it is
+    already a missing endpoint here; there is no rule about zero in this
+    function and there should not be one.
+
+    ONLY BOUNDED SEGMENTS ARE CHECKED. A bare chain id parses to
+    ``(chain, None, None)`` and has no endpoints to check, so it is skipped —
+    handled here rather than left to the caller, because a caller that forgets
+    would get a TypeError instead of the right answer. The derived path
+    (``derive_segments``) is safe by construction: it builds spans from
+    ``min(nums)``/``max(nums)`` of residues it just read out of the file, so
+    both endpoints exist by definition and this returns ``[]``.
+
+    INSERTION CODES: AN ENDPOINT MATCHING ANY INSERTION CODE COUNTS AS EXISTING.
+    ``pdb_ca_residues`` returns ``(chain, resseq, icode)``, and ``A100`` and
+    ``A100A`` are two residues with two CA atoms — but a contig endpoint is a
+    bare number with nowhere to put a code, so a choice is forced. Existence is
+    tested on ``resseq`` ALONE, for three reasons, in order of weight:
+
+    * It is what the rest of this file already does. ``select_residues`` and
+      ``selected_residue_keys`` both filter on ``lo <= resseq <= hi`` with the
+      code ignored, so on a chain whose residue 200 exists only as ``B200A``
+      the contig ``B200-201`` genuinely selects it and the crop genuinely keeps
+      it. Refusing an endpoint the selection then honours would make this
+      function disagree with the code it is guarding.
+    * It matches how the structure libraries model a residue. biotite keeps the
+      insertion code in a field of its own, separate from the number — the fact
+      ``ambiguous_insertion_codes`` already records — so a numeric endpoint is a
+      question about the number field alone.
+
+      THIS BULLET IS THE WEAK ONE, AND IT IS THE EXPENSIVE DIRECTION. It is not
+      verified against ``AtomSelectionStack.from_contig``: atomworks is not
+      vendored here and its contig grammar is unread. Do not read the failure
+      message ``No atoms found for selection: B/*/443`` as agreement — that
+      wildcard sits in the MIDDLE field, and a three-field selection puts the
+      residue number, and any code with it, in the third. If upstream does
+      discriminate on the code, this rule is a false negative and the run dies
+      on a billed A100, whereas the strict rule would only have cost a free
+      refusal. Revisit here first if a paid shard ever dies on an
+      insertion-coded endpoint.
+    * Antibody-numbered targets carry insertion codes as a matter of routine, so
+      treating ``A100A`` as failing to satisfy the endpoint ``100`` would refuse
+      runs THIS FILE'S OWN SELECTION accepts (see the first bullet — that part is
+      executed, not inferred). ``ambiguous_insertion_codes`` settles the same
+      trade-off the same way: warned about, never fatal.
+
+    Returned in segment order, ``lo`` before ``hi``, so a segment with two bad
+    endpoints contributes two entries and the message can name both. Deduped on
+    ``(chain, endpoint)``, so ``B443-443`` — both ends the same absent residue —
+    names it once rather than twice.
+    """
+    out: list[tuple[str, int]] = []
+    for chain, lo, hi in segments:
+        if lo is None or hi is None:
+            continue
+        present = {resseq for c, resseq, _icode in residues if c == chain}
+        for endpoint in (lo, hi):
+            if endpoint not in present and (chain, endpoint) not in out:
+                out.append((chain, endpoint))
+    return out
+
+
 def chain_span_summary(residues: list[tuple[str, int, str]]) -> str:
     """`A1-115, B3-97` — for failure messages, so a user whose hotspot missed
     can see what the file actually contains without re-uploading it."""
@@ -1291,6 +1394,49 @@ def prepare_custom_target(
             "input", "target_input",
             f"chain {chain} residues {lo}-{hi} select 0 residues in the "
             f"uploaded target. It contains: {spans}.",
+        )
+
+    # --- 4b. and both of its endpoints must be real residues --------------
+    # See missing_endpoints(). Step 4 asks whether a segment selects ANYTHING,
+    # which is a different question: on 3S7G, B236-443 selects the 207 residues
+    # of chain B that do exist and says nothing about the 443 that does not.
+    # Upstream resolves each endpoint and dies -- "No atoms found for
+    # selection: B/*/443" -- ~60 s into a billed A100. This is that question,
+    # asked while the answer is still free.
+    absent = missing_endpoints(residues, segments)
+    if absent:
+        bad_chains = {chain for chain, _endpoint in absent}
+        fixes = []
+        for chain, lo, hi in segments:
+            if chain not in bad_chains:
+                continue
+            nums = sorted({r[1] for r in residues if r[0] == chain})
+            if not nums:
+                # Unreachable via step 4 (a chain with no residues selects
+                # nothing and is refused above), but the hint must not index
+                # an empty list if that ever stops being true.
+                continue
+            # The nearest residue that EXISTS, moving inwards: the smallest at
+            # or above ``lo`` and the largest at or below ``hi``. Handles a
+            # disordered gap as well as an over-run bound, and always renders a
+            # range whose two endpoints are really in the file.
+            at_or_above = [n for n in nums if n >= lo] or [nums[-1]]
+            at_or_below = [n for n in nums if n <= hi] or [nums[0]]
+            fixes.append(f"{chain}{at_or_above[0]}-{at_or_below[-1]}")
+        named = ", ".join(f"residue {endpoint} on chain {chain}"
+                          for chain, endpoint in absent)
+        advice = f", e.g. {','.join(fixes)}" if fixes else ""
+        _fail(
+            "input", "target_input_endpoint",
+            f"the target chain range names {named}, which the uploaded target "
+            "does not contain. The design engine resolves each end of the "
+            "range against the structure and would have failed with "
+            f'"No atoms found for selection: {absent[0][0]}/*/{absent[0][1]}" '
+            "after the GPU work was already paid for. Set an explicit target "
+            f"chain range whose ends are real residues{advice}. "
+            f"The chains present run {spans} — a run is first-to-last and can "
+            "have gaps inside it, which is why the range suggested above is "
+            "built from residues that really exist rather than from those ends.",
         )
 
     selected = select_residues(residues, segments)

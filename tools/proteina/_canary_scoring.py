@@ -1665,6 +1665,48 @@ def refuse_empty_segments(target_pdb: Any, contig: Any, dead: Sequence[Any],
         "if the chain is not in the list above, widening will not help. "
         "NO GPU TIME WAS USED.")
 
+def refuse_missing_endpoints(target_pdb: Any, contig: Any,
+                             absent: Sequence[Any], spans: Any = "") -> None:
+    """Refuse a contig whose range ends name residues the structure lacks.
+
+    THE FOURTH INSTANCE OF THE SAME CLASS, and the third time it has been
+    written down. Production grows a pre-GPU refusal; the canary does not
+    follow; the canary can then spend $4-$12 on a target production would have
+    refused outright, or — worse — return PASS on one. It cost a paid shard to
+    discover with the staging crop, was found by audit for the negative-
+    numbering guard, and was caught again for the 20-residue floor.
+
+    The production guard is ``run_pipeline.missing_endpoints``: upstream
+    resolves each end of the contig against the structure and raises
+    ``ValueError('No atoms found for selection: B/*/443')`` once the
+    checkpoints are loaded. Every cheaper check passes first — the segment
+    selects the residues that DO exist, so the count is right, the crop's
+    self-check balances, and nothing notices the end that is missing. On 3S7G
+    (chain A 236-443, chain B 236-**442**) the contig ``A236-443,B236-443``
+    burned ~60 s of A100 for zero designs.
+
+    The predicate stays in ``run_pipeline`` and is CALLED, never restated; this
+    only turns its answer into the refusal. A canary that computes the right
+    answer in its own code is the drift these guards exist to remove.
+    """
+    if not absent:
+        return
+    shown = ", ".join(
+        f"residue {item[1]} on chain {item[0]}" if len(item) >= 2 else str(item)
+        for item in absent)
+    first = absent[0]
+    selection = (f"{first[0]}/*/{first[1]}" if len(first) >= 2 else str(first))
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} for {target_pdb} names {shown}, which "
+        f"the structure does not contain"
+        + (f" (it contains: {spans})" if spans else "")
+        + ". Upstream resolves each end of the range against the structure and "
+        f'would raise ValueError("No atoms found for selection: {selection}") '
+        "after the checkpoints are loaded. Every cheaper check passes on such "
+        "a contig — the range still selects the residues that do exist — so "
+        "without this the shard would boot and die. Pass --contig with ends "
+        "that are real residues. NO GPU TIME WAS USED.")
+
 
 def refuse_target_too_small(target_pdb: Any, contig: Any, too_small: bool,
                             n_selected: int, minimum: Any) -> None:
