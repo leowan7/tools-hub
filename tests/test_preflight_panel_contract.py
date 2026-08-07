@@ -594,3 +594,365 @@ def test_the_two_panels_agree_on_what_they_show():
         assert token in twin, f"the server-rendered twin no longer shows {token}"
     branch = _ready_branch()
     assert "residue_count" in branch and "hard_cap_target_aa" in branch
+
+
+# ---------------------------------------------------------------------------
+# The panel must score the SAME hotspot value the submit gate will read
+# ---------------------------------------------------------------------------
+#
+# blueprints/tools.py runs preflight twice: once for this panel, off the raw
+# form, and once as the submit hard gate, off adapter.validate()'s
+# inputs["hotspot_residues"]. Those two have to be the same value, or the panel
+# is previewing a different run than the one the Run button launches.
+#
+# They diverged twice. Before the chain-prefix fix the panel parsed with a bare
+# int() and silently dropped "A296", so it rendered a clean verdict for a field
+# the gate then rejected. The fix routed the panel through
+# tools.base.parse_hotspot_residues, which is right for the four binder tools
+# and wrong for proteina, whose validate() keeps hotspot_residues BARE and
+# carries the prefixed form separately under hotspot_spec — so the panel began
+# applying a per-chain rule proteina's own gate does not.
+
+_PANEL_HOTSPOT_FORMS = {
+    "bindcraft":   {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "boltzgen":    {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "pxdesign":    {"preset": "pilot", "binder_length": "80",
+                    "num_designs": "2"},
+    "rfdiffusion": {"preset": "pilot", "binder_length_min": "55",
+                    "binder_length_max": "65", "num_designs": "2"},
+    "rfantibody":  {"preset": "pilot", "num_designs": "2"},
+    "boltz2":      {"preset": "standalone",
+                    "binder_sequences": "M" * 40},
+    # proteina resolves its target chains from the CONTIG, not from
+    # target_chain (tools/proteina/__init__.py:494-505), and validates hotspot
+    # prefixes against that. Without target_input its chain set is empty and
+    # every prefixed hotspot is refused — which is the same asymmetry that
+    # made the panel block its own documented multi-chain flow, so the table
+    # carries the contig rather than papering over it.
+    "proteina":    {"preset": "protein_binder", "_has_custom_target": "1",
+                    "target_input": "A1-80,B1-80",
+                    "binder_length_min": "55", "binder_length_max": "65",
+                    "num_designs": "2"},
+}
+
+
+def test_every_preflight_tool_is_covered_by_the_shape_table():
+    """A new tool added to PREFLIGHT_TOOLS gets its panel/gate agreement
+    checked, instead of inheriting whichever branch it happens to fall into."""
+    from shared.pdb_preflight import PREFLIGHT_TOOLS
+
+    assert set(_PANEL_HOTSPOT_FORMS) == set(PREFLIGHT_TOOLS), (
+        "PREFLIGHT_TOOLS and the panel shape table have drifted: "
+        f"{set(PREFLIGHT_TOOLS) ^ set(_PANEL_HOTSPOT_FORMS)}"
+    )
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
+def test_single_chain_bare_hotspots_stay_bare_for_every_tool(slug):
+    """R1 across the whole table: the pre-multi-chain payload is bare ints for
+    every adapter, declared chain-prefixed or not."""
+    import importlib
+
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A", "hotspot_residues": "5,7"})
+
+    inputs, err = mod.validate(form, {})
+    assert err is None, f"{slug}: {err}"
+    assert inputs.get("hotspot_residues") == [5, 7], (
+        f"{slug} emitted {inputs.get('hotspot_residues')!r} for a bare "
+        f"single-chain field"
+    )
+
+
+def test_the_panel_does_not_block_proteinas_own_multichain_flow(client):
+    """THE REGRESSION THIS PINS. templates/tools/proteina_form.html tells the
+    user to leave target_chain at "A" and name several chains in the contig
+    field instead ("For several chains, use the target region field below"),
+    and gives "A113,C73" as the hotspot example.
+
+    A panel that reads its chain set from target_chain alone calls C73 a
+    hotspot on an untargeted chain, returns NEEDS_FIX, and
+    preflight.js:setSubmitEnabled(!!v.ok) disables the Run button — for a
+    submission the gate accepts. target_chain carries maxlength="4", so past
+    two chains there is not even a value the user could type to escape it.
+    """
+    _login(client)
+    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+    resp = _post_preflight(
+        client,
+        target_chain="A",
+        target_input="A12-80,C12-80",
+        hotspot_residues="A113,C73",
+        target_pdb=(io.BytesIO(pdb), "ac.pdb"),
+    )
+    body = resp.get_json()
+
+    # And the adapter itself accepts the very same field.
+    from tools import proteina as proteina_mod
+    inputs, err = proteina_mod.validate({
+        "preset": "protein_binder", "_has_custom_target": "1",
+        "target_chain": "A", "target_input": "A12-80,C12-80",
+        "hotspot_residues": "A113,C73",
+        "binder_length_min": "55", "binder_length_max": "65",
+        "num_designs": "2",
+    }, {})
+    assert err is None, err
+
+    assert body["ok"] is True, (
+        f"panel refused a submit the adapter accepts: {body.get('reason')!r}"
+    )
+    # `ok is True` alone pins neither half of the fix: without the contig
+    # chains C73 is skipped as unparseable and the panel is still green with
+    # one hotspot, and without the chain-set/gate agreement C73 resolves and
+    # is then dropped downstream. Both show up here and nowhere else, because
+    # preflight.js:143 and preflight_panel.html:63 render `surviving` only —
+    # so a dropped hotspot is invisible to the user by construction.
+    assert body["hotspots"]["dropped"] == [], body["hotspots"]
+    assert body["hotspots"]["surviving"] == ["A113", "C73"], (
+        f"panel kept {body['hotspots']['surviving']!r}; the user typed "
+        f"A113,C73 and would read 'all preserved' either way"
+    )
+    # The echoed chain set is what the refusal sentence and the cleanup list
+    # interpolate, so it must be the chains the run actually targets — not a
+    # union carrying the untyped default "A".
+    assert body["target_chain"] == "A C", body["target_chain"]
+
+
+def test_the_panel_verdict_does_not_change_with_the_hotspot_field(client):
+    """The chain set feeds cleanup, the size envelope and the gap analysis.
+    Computing it inside `if raw_hotspots:` made all three — and the sentence
+    the user reads — flip when they typed into an unrelated box."""
+    _login(client)
+    pdb = _pdb({"A": list(range(1, 161)), "C": list(range(1, 161))})
+
+    def _panel(hotspots):
+        return _post_preflight(
+            client, target_chain="A", target_input="A12-80,C12-80",
+            hotspot_residues=hotspots,
+            target_pdb=(io.BytesIO(pdb), "ac.pdb"),
+        ).get_json()
+
+    empty, filled = _panel(""), _panel("A113")
+    assert empty["target_chain"] == filled["target_chain"], (
+        f"chain set is {empty['target_chain']!r} with an empty hotspot field "
+        f"and {filled['target_chain']!r} with one filled in"
+    )
+    assert empty["cleanup_items"] == filled["cleanup_items"]
+
+
+_GATE_SLUGS = ["rfdiffusion", "bindcraft", "pxdesign"]
+
+
+@pytest.mark.parametrize("slug", _GATE_SLUGS)
+@pytest.mark.parametrize("hotspots", [
+    "A5,B7", "A5, B7", "A5;B7",
+    "A5 B7",        # whitespace: what tools/base.py:99 accepts
+    "5 7", "5,7",
+    "A5", "5",
+])
+def test_the_panel_is_never_stricter_than_the_gate(client, slug, hotspots):
+    """THE INVARIANT, and it has to be stated as "ok is True", not as the
+    absence of some sentence.
+
+    The first version of this test asserted that the reason did not contain
+    "does not name one of your target chains" — a string produced by
+    tools/base.py::parse_hotspot_residues, which the panel route stopped
+    calling in the same commit that added the assertion. It was born
+    unfalsifiable, and a mutation that hard-refused every unparseable token
+    (precisely the forbidden direction) passed the entire suite.
+
+    preflight.js does setSubmitEnabled(!!v.ok) with no re-enable path except
+    the network-error catch. So: whenever the adapter accepts a field, the
+    panel must not be what stops the user submitting it.
+    """
+    import importlib
+
+    _login(client)
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A,B", "hotspot_residues": hotspots})
+    inputs, adapter_err = mod.validate(dict(form), {})
+    if adapter_err is not None:
+        pytest.skip(f"{slug} rejects {hotspots!r} at the adapter: {adapter_err}")
+
+    pdb = _pdb({"A": list(range(1, 121)), "B": list(range(1, 121))})
+
+    # THE GATE, exactly as blueprints/tools.py runs it at submit: the
+    # adapter's own inputs, not the raw form. Comparing the panel against
+    # validate() alone is wrong — bindcraft's adapter accepts a multi-chain
+    # target while its container gate refuses one, and a red panel there is
+    # correct rather than a violation.
+    from shared.pdb_intake import _parse_preflight_size_params
+    from shared.pdb_preflight import preflight_for_tool
+    _binder_max, _num = _parse_preflight_size_params(inputs)
+    gate = preflight_for_tool(
+        slug, pdb,
+        target_chain=inputs["target_chain"],
+        hotspots=inputs.get("hotspot_residues") or [],
+        binder_max_aa=_binder_max, num_designs=_num,
+    )
+
+    data = dict(form)
+    data["target_pdb"] = (io.BytesIO(pdb), "ab.pdb")
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()):
+        body = client.post(
+            f"/tools/{slug}/preflight", data=data,
+            content_type="multipart/form-data",
+        ).get_json()
+
+    if not gate.ok:
+        return  # the gate refuses too; panel and gate agree.
+
+    assert body["ok"] is True, (
+        f"{slug} hotspots={hotspots!r}: the gate says READY but the panel "
+        f"disabled Run: {body.get('reason')!r}"
+    )
+    # NOT an equality assertion, and the difference is the point. On a
+    # multi-chain target the adapters attribute a BARE hotspot to the first
+    # chain (parse_hotspot_residues("5,7", ["A","B"]) -> ["A5","A7"]) while
+    # the panel keeps it unattributed, so "5" can survive here and be dropped
+    # by the gate. That is the panel being more permissive, which is the
+    # direction it is allowed to be wrong in; demanding equality would make
+    # this test fail for correct behaviour.
+    assert not (
+        set(map(str, body["hotspots"]["dropped"]))
+        - set(map(str, gate.hotspot_status["dropped"]))
+    ), (
+        f"{slug} hotspots={hotspots!r}: panel dropped "
+        f"{body['hotspots']['dropped']!r}, more than the gate's "
+        f"{gate.hotspot_status['dropped']!r}"
+    )
+
+
+@pytest.mark.parametrize("slug", _GATE_SLUGS)
+def test_the_panel_round_trips_the_chain_prefix_into_the_gate(client, slug):
+    """When the typed field is ALREADY chain-prefixed, panel and gate see the
+    same value, prefix and all.
+
+    Flattening "A5" to 5 in the panel passes the never-stricter invariant
+    above — a bare number is checked against the union, so it survives at
+    least as often — while scoring a different run than the one the Run
+    button launches, and on a homodimer a different protomer.
+    """
+    import importlib
+
+    _login(client)
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A,B", "hotspot_residues": "A5,B7"})
+    inputs, err = mod.validate(dict(form), {})
+    if err is not None:
+        pytest.skip(f"{slug} rejects the prefixed form: {err}")
+
+    pdb = _pdb({"A": list(range(1, 121)), "B": list(range(1, 121))})
+    from shared.pdb_intake import _parse_preflight_size_params
+    from shared.pdb_preflight import preflight_for_tool
+    _binder_max, _num = _parse_preflight_size_params(inputs)
+    gate = preflight_for_tool(
+        slug, pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs.get("hotspot_residues") or [],
+        binder_max_aa=_binder_max, num_designs=_num,
+    )
+    if not gate.ok:
+        pytest.skip(f"{slug}: gate refuses this target ({gate.reason})")
+
+    data = dict(form)
+    data["target_pdb"] = (io.BytesIO(pdb), "ab.pdb")
+    with patch("blueprints.tools.load_user_context", return_value=_ctx()):
+        body = client.post(
+            f"/tools/{slug}/preflight", data=data,
+            content_type="multipart/form-data",
+        ).get_json()
+
+    assert body["hotspots"]["surviving"] == gate.hotspot_status["surviving"], (
+        f"{slug}: panel forwarded {body['hotspots']['surviving']!r}, gate saw "
+        f"{gate.hotspot_status['surviving']!r} — the prefix must round-trip"
+    )
+    assert body["hotspots"]["surviving"] == ["A5", "B7"]
+
+
+@pytest.mark.parametrize("slug", sorted(_PANEL_HOTSPOT_FORMS))
+def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
+    """The landscape the panel has to live with, pinned so it cannot shift
+    silently underneath it.
+
+    Three behaviours, not two, which is why a single "parse it like the
+    adapters do" rule kept failing:
+      - the four binder tools accept the prefixed form and EMIT it
+      - proteina accepts it but emits bare ints, carrying the prefixed form
+        separately under hotspot_spec
+      - rfantibody and boltz2 reject it outright
+    """
+    import importlib
+
+    mod = importlib.import_module(f"tools.{slug}")
+    form = dict(_PANEL_HOTSPOT_FORMS[slug])
+    form.update({"target_chain": "A B", "hotspot_residues": "A5,B7"})
+    inputs, err = mod.validate(form, {})
+
+    if slug in {"rfantibody", "boltz2"}:
+        assert err is not None, (
+            f"{slug} now accepts chain-prefixed hotspots; the panel assumes "
+            f"it does not"
+        )
+        return
+
+    assert err is None, f"{slug}: {err}"
+    emitted = inputs.get("hotspot_residues") or []
+    if slug == "proteina":
+        assert emitted == [5, 7], emitted
+        assert inputs.get("hotspot_spec") == ["A5", "B7"], (
+            "proteina moved the prefixed form off hotspot_spec"
+        )
+    else:
+        assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
+
+
+def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client):
+    """REPLACE, not union — and the fixture has to be able to tell them apart.
+
+    test_the_panel_does_not_block_proteinas_own_multichain_flow uses
+    target_chain="A" with a contig that already names A, so both rules produce
+    {A, C} and re-introducing the union passes it. Here the typed chain is
+    proteina's shipped default "A" and the structure does not contain an A at
+    all — which is the real shape of the bug, since the form tells the user to
+    leave that field alone and name their chains in the contig.
+
+    Under the union the panel reported:
+
+        "Target chain 'A,H,L' isn't in this PDB. Found chain(s): H, L."
+
+    naming H and L as absent in the same sentence that lists them as present,
+    over a chain set the user never typed. proteina's own validate() replaces
+    (tools/proteina/__init__.py:495-497), so unioning also put the panel and
+    the gate on different chain sets.
+    """
+    _login(client)
+    pdb = _pdb({"H": list(range(1, 61)), "L": list(range(1, 61))})
+    body = _post_preflight(
+        client, target_chain="A", target_input="H1-60,L1-60",
+        hotspot_residues="H20", target_pdb=(io.BytesIO(pdb), "hl.pdb"),
+    ).get_json()
+
+    assert body["target_chain"] == "H L", body["target_chain"]
+    assert "A" not in body["target_chain"].split(), (
+        f"the untyped default leaked into the chain set: "
+        f"{body['target_chain']!r}"
+    )
+    reason = body.get("reason") or ""
+    assert "isn't in this PDB" not in reason, reason
+
+    # And the adapter agrees, which is the whole point of replacing.
+    from tools import proteina as proteina_mod
+    inputs, err = proteina_mod.validate({
+        "preset": "protein_binder", "_has_custom_target": "1",
+        "target_chain": "A", "target_input": "H1-60,L1-60",
+        "hotspot_residues": "H20",
+        "binder_length_min": "55", "binder_length_max": "65",
+        "num_designs": "2",
+    }, {})
+    assert err is None, err
+    assert inputs["target_chain"] == "H L", inputs["target_chain"]

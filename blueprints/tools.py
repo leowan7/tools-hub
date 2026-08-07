@@ -44,6 +44,7 @@ from shared.pdb_inspect import (
     convert_cif_to_pdb_bytes,
     hotspot_range_message,
     inspect_pdb_bytes,
+    split_hotspot,
     summarize_for_log,
     validate_hotspots,
     validate_target_chain,
@@ -748,19 +749,70 @@ def tool_preflight(tool: str):
 
     target_chain = (request.form.get("target_chain") or "A").strip()
     raw_hotspots = (request.form.get("hotspot_residues") or "").strip()
+    # THE PANEL PREVIEWS THE GATE. IT IS NOT THE GATE. Read the rule below
+    # before making it stricter — three attempts have now broken it.
+    #
+    # `static/js/preflight.js` does `setSubmitEnabled(!!v.ok)`, so a NEEDS_FIX
+    # here does not merely colour a box: it disables the Run button, and the
+    # only re-enable path is the network-error catch. The two failure
+    # directions are therefore not symmetric.
+    #
+    #   panel green, gate refuses -> the user clicks Run and gets the
+    #                                adapter's own message. Mildly annoying.
+    #   panel red,   gate accepts -> the user cannot submit AT ALL, and is
+    #                                told why by a sentence the panel guessed.
+    #
+    # So this parse is deliberately TOLERANT and never returns a verdict of
+    # its own. Trying to make it authoritative is what produced, in order: a
+    # panel that green-lit fields submit refused (int()-only, the original
+    # bug), then one that hard-blocked proteina's own documented multi-chain
+    # flow, then one that rendered READY for rfantibody hotspots its validate()
+    # rejects. Each fix moved the divergence rather than removing it, because
+    # the panel is re-implementing seven adapters' parsers from the outside.
+    # Closing it properly means the panel asking the adapter — a
+    # `hotspot_preview(form)` hook, or posting the whole form so validate()
+    # can run — and that is a change to every adapter, not to this function.
+
+    # The chain set, resolved BEFORE the hotspot branch. It feeds cleanup, the
+    # size envelope, the gap analysis and two user-facing sentences, so
+    # computing it only when the hotspot box happens to be non-empty made the
+    # verdict and its wording change with an unrelated field.
+    #
+    # proteina REPLACES target_chain with the contig's chains
+    # (tools/proteina/__init__.py:495-497) rather than adding to them, and its
+    # form tells the user to leave target_chain at "A" and name the chains in
+    # the contig. Reading target_chain alone called "C73" a hotspot on an
+    # untargeted chain for the exact input the template prints as its example;
+    # unioning instead of replacing then put the untyped "A" into the set, and
+    # that string is user-visible — it reaches "Target chain 'A,H,L' isn't in
+    # this PDB. Found chain(s): H, L.", a sentence that contradicts itself.
+    _contig_chains: list = []
+    for _seg in (preflight_target_segments(request.form) or []):
+        # Segments are (chain, lo, hi) tuples; see pdb_intake.
+        _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
+        if _seg_chain and _seg_chain not in _contig_chains:
+            _contig_chains.append(_seg_chain)
+    if _contig_chains:
+        target_chain = " ".join(_contig_chains)
+    _chains = list(tool_base.parse_target_chains(target_chain))
+
     hotspots: list = []
     if raw_hotspots:
-        for tok in raw_hotspots.split(","):
-            tok = tok.strip()
-            if not tok:
+        # Tokenize the way the adapters do — tools/base.py:99 and proteina's
+        # _parse_hotspots both fold separators into whitespace and split on
+        # it. Splitting on commas alone made "A54 B56" one unparseable token,
+        # so the panel saw zero hotspots, said "This tool needs at least one
+        # hotspot residue", and disabled Run for a field the gate accepts.
+        # That direction is the one the rule above forbids, and 8644c74 is
+        # what created it: before that commit the gate refused the same input,
+        # so panel and gate agreed by both being wrong.
+        for _tok in raw_hotspots.replace(";", ",").replace(",", " ").split():
+            _cid, _resnum = split_hotspot(_tok, _chains)
+            if _resnum is None:
+                # Skipped, not fatal — the adapter refuses it on submit, with
+                # wording this function has no business inventing.
                 continue
-            try:
-                hotspots.append(int(tok))
-            except ValueError:
-                # Non-integer hotspot entries are surfaced through the
-                # form validator on submit; for preflight purposes we
-                # ignore them so the panel renders something useful.
-                pass
+            hotspots.append(_resnum if _cid is None else f"{_cid}{_resnum}")
 
     # Source the bytes: file upload OR AlphaFold fetch.
     af_accession = (request.form.get("alphafold_accession") or "").strip()

@@ -338,3 +338,566 @@ def test_preflight_refuses_multichain_for_the_unverified_image(name, mod, typed)
         f"refused for the wrong reason: {reason!r}"
     )
     assert "GPU image" in reason, reason
+
+
+# ---------------------------------------------------------------------------
+# The OTHER half of the same seam: hotspot_residues
+# ---------------------------------------------------------------------------
+#
+# The two tests above pass ``hotspots=[]``. That is precisely why they went
+# green while the hotspot half of the contract was broken: fixing the
+# target_chain seam and then asserting it with an empty hotspot list proves
+# only that the field you happened to think about works.
+#
+# validate() emits ["A296", "B264"]; blueprints/tools.py hands that POST-
+# validate value to preflight_for_tool; and shared/pdb_inspect.py and
+# shared/pdb_preflight.py both coerced every token with a bare int(). So:
+#
+#   rfdiffusion / pxdesign  -> NEEDS_FIX, "backbone is incomplete in this
+#                              PDB" — a false claim about a complete file
+#   boltzgen                -> READY, every hotspot silently discarded, and
+#                              a paid A100 run with no epitope constraint
+#
+# Anything below that reaches for a hotspot must use the value validate()
+# actually produced, never a hand-written list.
+
+def _asymmetric_pdb(n_res: int = 40) -> bytes:
+    """Chain A numbered 1..n, chain B numbered 500..500+n.
+
+    Disjoint ranges, so "is this hotspot on the chain it names" and "is it on
+    any chain at all" give different answers — which is the only way to prove
+    the check is chain-aware rather than unioning.
+    """
+    lines = ["HEADER    SYNTHETIC ASYMMETRIC\n"]
+    serial = 0
+    for ci, (cid, first) in enumerate((("A", 1), ("B", 500))):
+        for i in range(n_res):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=first + i, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+@pytest.mark.parametrize("name,mod", GPU_VERIFIED)
+@pytest.mark.parametrize("typed", ["A,B", "A B"])
+def test_preflight_keeps_the_hotspots_validate_emits(name, mod, typed):
+    """form -> validate() -> preflight_for_tool, carrying the hotspots through.
+
+    Every emitted hotspot must survive. A dropped one is not cosmetic: for
+    these two tools ``hotspots_required=True`` turns it into a NEEDS_FIX that
+    blocks submit.
+    """
+    inputs, err = mod.validate(_form(name, typed, "A5,B7"), {})
+    assert err is None, err
+    emitted = inputs["hotspot_residues"]
+    assert emitted == ["A5", "B7"]
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"], hotspots=emitted,
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["dropped"] == [], (
+        f"{name}: preflight dropped {verdict.hotspot_status['dropped']!r} of "
+        f"the hotspots validate() emitted — the seam is broken"
+    )
+    assert verdict.hotspot_status["surviving"] == ["A5", "B7"]
+    assert verdict.ok, verdict.reason
+    assert "backbone" not in (verdict.reason or "").lower(), (
+        f"{name}: blamed the file's backbone for a parser failure: "
+        f"{verdict.reason!r}"
+    )
+
+
+def test_boltzgen_does_not_silently_discard_hotspots():
+    """boltzgen has hotspots_required=False, so a dropped hotspot does NOT
+    block submit — it returns READY and launches an A100 run with the epitope
+    constraint quietly removed. That is worse than the hard refusal the other
+    tools got, and it is why 'the verdict was ok' is not enough to assert.
+    """
+    from tools import boltzgen as boltzgen_mod
+
+    form = {
+        "preset": "pilot", "target_chain": "A,B",
+        "hotspot_residues": "A5,B7", "num_designs": "2",
+        "binder_length_min": "55", "binder_length_max": "65",
+    }
+    inputs, err = boltzgen_mod.validate(form, {})
+    assert err is None, err
+    # Pin the adapter's own output too. boltzgen is not in GPU_VERIFIED, so
+    # this is the ONLY place its hotspots reach preflight — and an adapter
+    # that quietly dropped the prefixed tokens would otherwise sail through
+    # every assertion below, which is exactly the PR #109 failure mode.
+    assert inputs["hotspot_residues"] == ["A5", "B7"]
+
+    verdict = preflight_for_tool(
+        "boltzgen", _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.ok, verdict.reason
+    assert verdict.hotspot_status["dropped"] == [], (
+        "boltzgen returned READY while discarding "
+        f"{verdict.hotspot_status['dropped']!r} — a paid run with no hotspots"
+    )
+    # "nothing was dropped" is satisfied by an empty list, so assert the
+    # positive as well: these specific hotspots reached the gate intact.
+    assert verdict.hotspot_status["surviving"] == ["A5", "B7"]
+
+
+@pytest.mark.parametrize("name,mod", GPU_VERIFIED)
+def test_single_chain_bare_int_hotspots_are_byte_identical(name, mod):
+    """The backward-compatibility floor. Every job submitted before the
+    multi-chain contract posts bare ints on one chain; those must round-trip
+    through preflight as ints, not as newly-prefixed strings.
+    """
+    inputs, err = mod.validate(_form(name, "A", "5,7"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == [5, 7]
+
+    verdict = preflight_for_tool(
+        name, _two_chain_pdb(),
+        target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+        binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == [5, 7]
+    assert verdict.hotspot_status["dropped"] == []
+
+
+def test_a_hotspot_is_checked_against_the_chain_it_names():
+    """``B5`` must not be accepted because chain A happens to have residue 5.
+
+    On a homodimer both protomers carry the same numbering, so a union check
+    passes every prefixed hotspot regardless of which protomer it names — it
+    would report a valid epitope on a chain the design never touches.
+    """
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    verdict = preflight_for_tool(
+        "rfdiffusion", pdb, target_chain="A,B",
+        hotspots=["A5", "B5"], binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == ["A5"]
+    assert verdict.hotspot_status["dropped"] == ["B5"], (
+        "B5 does not exist on chain B (which runs 500..539) and must not be "
+        "accepted just because chain A has a residue 5"
+    )
+
+
+def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
+    """The refusal suggests nearby clean residues. For a prefixed hotspot they
+    must come from that chain and come back prefixed, so they can be pasted
+    straight back into the field."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", ["B498"], [])
+    assert nearest, "expected suggestions near B498 on chain B"
+    assert all(str(r).startswith("B") for r in nearest), nearest
+    assert all(500 <= int(str(r)[1:]) <= 539 for r in nearest), nearest
+
+
+# --- split_hotspot, the one parser all of the above now share ---------------
+
+@pytest.mark.parametrize("token,chains,expected", [
+    (296,           ["A", "B"], (None, 296)),   # already an int
+    ("296",         ["A", "B"], (None, 296)),   # bare, unattributed
+    ("  296  ",     ["A", "B"], (None, 296)),
+    ("A296",        ["A", "B"], ("A", 296)),
+    ("B264",        ["A", "B"], ("B", 264)),
+    ("-5",          ["A"],      (None, -5)),    # author numbering allows it
+    ("C25",         ["A", "B"], (None, None)),  # names an untargeted chain
+    ("xyz",         ["A", "B"], (None, None)),
+    ("Axx",         ["A"],      (None, None)),
+    ("",            ["A"],      (None, None)),
+    ("A296",        None,       (None, None)),  # no chain list -> bare only
+    ("AB12",        ["A", "AB"], ("AB", 12)),   # longest match wins
+    (True,          ["A"],      (None, None)),  # bool is an int subclass
+    # int() truncated a float; a JSON body sending 296.0 for residue 296 is
+    # the shape that reaches this, and it was in range before the contract
+    # changed. R1 covers the wire types too, not just the happy one.
+    (296.0,         ["A", "B"], (None, 296)),
+    (296.7,         ["A"],      (None, 296)),
+])
+def test_split_hotspot(token, chains, expected):
+    from shared.pdb_inspect import split_hotspot
+
+    assert split_hotspot(token, chains) == expected
+
+
+def test_the_three_hotspot_validators_give_the_same_answer():
+    """There are three independent implementations of "is this hotspot on this
+    target": shared/targets.py for the campaign and target-launch routes,
+    shared/pdb_inspect.py::validate_hotspots for atomic submit and reuse, and
+    shared/pdb_preflight.py::_check_hotspots for the hard gate.
+
+    They have disagreed before — the A18 defect was validate_hotspots calling
+    every hotspot out of range on a multi-chain target while targets.py
+    accepted them, so the same job passed one route and failed another. Naming
+    one of them in a test and trusting the others to follow is how that
+    survived, so drive all three off the same inputs here.
+    """
+    import uuid
+
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+    from shared.targets import DesignTarget
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    target = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", kind="pdb",
+        chain_summary={"chains": [
+            {"chain_id": "A", "min_resnum": 1, "max_resnum": 40},
+            {"chain_id": "B", "min_resnum": 500, "max_resnum": 539},
+        ]},
+    )
+    report = inspect_pdb_bytes(pdb)
+
+    def _all_three(hotspots):
+        """(targets_ok, inspect_ok, preflight_ok) for one hotspot list."""
+        in_range, out_of_range = validate_hotspots(report, "A,B", hotspots)
+        verdict = preflight_for_tool(
+            "rfdiffusion", pdb, target_chain="A,B", hotspots=hotspots,
+            binder_max_aa=65, num_designs=2,
+        )
+        return (
+            target.hotspot_error("A,B", hotspots) is None,
+            not out_of_range,
+            not verdict.hotspot_status["dropped"],
+        )
+
+    # Valid on the chains they name.
+    assert _all_three(["A5", "B505"]) == (True, True, True)
+    # R2: B5 does not exist on chain B, and chain A having a residue 5 must
+    # not rescue it in ANY of the three.
+    assert _all_three(["B5"]) == (False, False, False)
+    # R1: the pre-multi-chain shape, unioned across both chains, unchanged.
+    assert _all_three([5, 505]) == (True, True, True)
+    # A bare number on neither chain still fails everywhere.
+    assert _all_three([9000]) == (False, False, False)
+
+
+def test_validate_hotspots_keeps_the_bare_int_contract():
+    """The R1 floor for validate_hotspots specifically: bare ints come back as
+    ints, in range against the union, exactly as before the contract changed.
+    A wholesale revert of this function to its int()-only body passes every
+    other test in this file, because everything else reaches it through
+    preflight rather than calling it.
+    """
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
+
+    in_range, out_of_range = validate_hotspots(report, "A,B", [5, 505, 9000])
+    assert in_range == [5, 505]
+    assert out_of_range == [9000]
+    assert all(isinstance(h, int) for h in in_range), in_range
+
+    # Single chain, the shape every pre-#109 caller posts.
+    in_range, out_of_range = validate_hotspots(report, "A", [5, 505])
+    assert in_range == [5]
+    assert out_of_range == [505]
+
+    # Prefixed tokens echo back as typed, so the message can name the chain.
+    in_range, out_of_range = validate_hotspots(report, "A,B", ["A5", "B5"])
+    assert in_range == ["A5"]
+    assert out_of_range == ["B5"]
+
+
+def test_a_gap_is_only_near_a_hotspot_on_its_own_chain():
+    """The gap-distance math decides whether an internal gap is a hard fail.
+
+    THE FIXTURE IS THE TEST. An earlier version of this used a heterodimer
+    with chain B numbered from 500, so even a chain-BLIND minimum measured
+    A5 against B's gap as ~506 and the "far" assertion (> 400) passed anyway:
+    the numbering offset, not the chain routing, was carrying it. A
+    homodimer is the only fixture that can tell them apart, and a homodimer
+    is the case that matters — both Fc protomers carry the same numbering,
+    so a chain-blind minimum reports a gap on B as sitting 4 residues from a
+    hotspot the user placed on A, and refuses the submit.
+    """
+    import math
+
+    from shared.pdb_preflight import _check_internal_gaps
+    from shared.pdb_preflight_rules import TOOL_RULES
+
+    # Identical numbering on both protomers. A is complete; B is missing
+    # 41..100. A45 falls INSIDE that range numerically, so a chain-blind
+    # minimum scores it 4 residues from the gap while the truth is that it
+    # sits on the other protomer entirely.
+    lines = ["HEADER    SYNTHETIC HOMODIMER\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 121))),
+        ("B", list(range(1, 41)) + list(range(101, 121))),
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    rules = TOOL_RULES["pxdesign"]
+    near = _check_internal_gaps(pdb, "A,B", ["B45"], rules)
+    far = _check_internal_gaps(pdb, "A,B", ["A45"], rules)
+
+    assert near.gaps and far.gaps, "both runs must see the same gap on B"
+    assert near.gaps[0].nearest_hotspot_distance == 4, (
+        f"B45 is 4 residues from the gap on its own chain, got "
+        f"{near.gaps[0].nearest_hotspot_distance}"
+    )
+    # inf, not "some large number" — a chain-blind union scores this 4, and
+    # any threshold-based assertion would pass for the wrong reason.
+    assert far.gaps[0].nearest_hotspot_distance == math.inf, (
+        "A45 is on the other protomer; a gap on chain B must not be measured "
+        f"against it at all, got {far.gaps[0].nearest_hotspot_distance}"
+    )
+    # And the verdict, not just the distance: this is a hard submit gate.
+    assert near.hard_fail_message and not far.hard_fail_message, (
+        f"near={near.hard_fail_message!r} far={far.hard_fail_message!r}"
+    )
+    # R1: a BARE hotspot keeps measuring against every chain, as it always did.
+    bare = _check_internal_gaps(pdb, "A,B", [45], rules)
+    assert bare.gaps[0].nearest_hotspot_distance == 4
+
+
+def test_nearest_clean_residues_keeps_the_bare_int_contract():
+    """R1 for the suggestion list: bare input returns bare ints, ordered by
+    distance then resnum. Callers render these straight into the refusal, so
+    both the type and the order are observable."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", [20], [])
+    assert nearest == [19, 21, 18, 22, 17, 23], nearest
+    assert all(isinstance(r, int) for r in nearest), nearest
+
+
+def test_suggestions_do_not_offer_the_same_residue_twice():
+    """A dropped list holding both forms reaches a residue by two routes and
+    used to render both labels — "19, A22, 18, A19, 22" is three residues
+    dressed as five, in two formats, inside a rejection message."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A", [20, "A21"], [])
+    resnums = [int(str(r).lstrip("A")) for r in nearest]
+    assert len(resnums) == len(set(resnums)), (
+        f"same residue offered twice under two labels: {nearest!r}"
+    )
+
+
+def test_every_dropped_chain_gets_at_least_one_suggestion():
+    """One global top-N starves a protomer.
+
+    THE FIXTURE IS THE TEST, again. An earlier version gave chain B a clean
+    residue at distance 1, which TIES chain A's best — so a global top-N
+    still surfaced it at index 2 and the mutation this test exists to kill
+    survived. Chain B's nearest must be strictly worse than chain A's sixth,
+    or ranking and round-robin produce the same chain set.
+
+    Here A offers six candidates at distances 1,1,2,2,3,3 and B's nearest is
+    5 away, so a global top-N fills every slot from A and the user is told
+    nothing at all about their chain B hotspot.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    lines = ["HEADER    SYNTHETIC STARVE\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 41))),          # dense around the dropped A20
+        ("B", list(range(510, 551))),       # nearest to dropped B505 is 5 away
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", ["A20", "B505"], [])
+    chains = {str(r)[0] for r in nearest}
+    assert chains == {"A", "B"}, (
+        f"only chain(s) {chains} got suggestions: {nearest!r} — the other "
+        f"dropped hotspot is unaddressed"
+    )
+
+
+def test_a_bare_suggestion_is_not_deleted_by_a_namesake_on_another_chain():
+    """The de-dup that stops "19, A19" being offered as two residues must not
+    fire across protomers, where 19 and B19 really are different residues.
+
+    Keyed on the number alone, a single dropped "B21" deleted A19, A18 and
+    A22 — the nearest clean neighbours of the bare hotspot 20 — leaving a
+    residue ten away as the closest thing the user was offered.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    # Homodimer, identical numbering, 20 and 21 broken on BOTH protomers.
+    lines = ["HEADER    SYNTHETIC HOMODIMER DEDUP\n"]
+    serial = 0
+    for ci, cid in enumerate(("A", "B")):
+        for i, resnum in enumerate(range(1, 61)):
+            atoms = ([("N", 0.0), ("CA", 1.0)] if resnum in (20, 21)
+                     else [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)])
+            for aname, off in atoms:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", [20, "B21"], [])
+    bare = [r for r in nearest if isinstance(r, int)]
+    assert bare, f"the bare hotspot 20 got no suggestions at all: {nearest!r}"
+    assert min(abs(r - 20) for r in bare) <= 2, (
+        f"nearest bare suggestion is {bare!r}, but 19/18/22 are clean on "
+        f"chain A — deleted because chain B happens to share the numbers"
+    )
+
+
+# --- the R1 type contract, on STRING input ------------------------------
+#
+# The three "bare hotspots stay ints" assertions above all pass ints IN, so
+# `.append(h)` and `.append(n)` are indistinguishable and an echo mutation
+# survives in every validator. The shapes that actually reach these functions
+# include strings — a reuse token, a JSON body, a form value — and echoing
+# them back puts "5" where an int was promised, into a serialised
+# hotspot_status the browser and the job row both read.
+
+@pytest.mark.parametrize("raw,expected_in,expected_out", [
+    (["5"], [5], []),
+    ([" 5 "], [5], []),
+    ([5], [5], []),
+    (["9000"], [], [9000]),
+    ([9000], [], [9000]),
+])
+def test_bare_hotspots_normalise_to_int_whatever_their_input_type(
+    raw, expected_in, expected_out,
+):
+    from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
+
+    report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
+    in_range, out_of_range = validate_hotspots(report, "A,B", raw)
+    assert in_range == expected_in
+    assert out_of_range == expected_out
+    assert all(isinstance(h, int) for h in in_range + out_of_range), (
+        f"{raw!r} echoed its input type back instead of normalising: "
+        f"{in_range!r} / {out_of_range!r}"
+    )
+
+
+@pytest.mark.parametrize("raw,surviving,dropped", [
+    (["5"], [5], []),
+    (["9000"], [], [9000]),
+])
+def test_preflight_hotspot_status_is_int_typed_for_bare_input(
+    raw, surviving, dropped,
+):
+    """hotspot_status is serialised into the panel JSON and stamped onto the
+    job row, so its element type is a wire contract, not an internal detail."""
+    verdict = preflight_for_tool(
+        "rfdiffusion", _asymmetric_pdb(), target_chain="A,B",
+        hotspots=raw, binder_max_aa=65, num_designs=2,
+    )
+    assert verdict.hotspot_status["surviving"] == surviving
+    assert verdict.hotspot_status["dropped"] == dropped
+    assert all(
+        isinstance(h, int)
+        for h in verdict.hotspot_status["surviving"]
+        + verdict.hotspot_status["dropped"]
+    ), verdict.hotspot_status
+
+
+def test_targets_hotspot_error_normalises_and_reports_unparseable_tokens():
+    """The third validator, including the arm the three-validator test does
+    not reach: a token that parses to nothing at all."""
+    import uuid
+
+    from shared.targets import DesignTarget
+
+    target = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", kind="pdb",
+        chain_summary={"chains": [
+            {"chain_id": "A", "min_resnum": 1, "max_resnum": 40},
+            {"chain_id": "B", "min_resnum": 500, "max_resnum": 539},
+        ]},
+    )
+    assert target.hotspot_error("A,B", ["5"]) is None
+    err = target.hotspot_error("A,B", ["xyz"])
+    assert err and "xyz" in err, err
+    # 9000 is on neither chain and must be echoed as a number, not as "9000".
+    err = target.hotspot_error("A,B", ["9000"])
+    assert err and "'9000'" not in err and "9000" in err, err
+
+
+def test_split_hotspot_prefers_the_longest_matching_chain_id():
+    """Documented as "longest match wins", and the AB12 row above cannot see
+    it: with chains ["A", "AB"] a first-match-wins parser reading "A" first
+    returns (None, None) because "B12" is not an int, so BOTH orderings
+    happen to agree there. Only a case where the short prefix leaves a valid
+    integer behind can tell them apart."""
+    from shared.pdb_inspect import split_hotspot
+
+    # "A12" is a valid parse under chain "A"; "AB12" must still win for AB.
+    assert split_hotspot("AB12", ["A", "AB"]) == ("AB", 12)
+    assert split_hotspot("AB12", ["AB", "A"]) == ("AB", 12)
+    # And the short id still resolves when it is the only match.
+    assert split_hotspot("A12", ["A", "AB"]) == ("A", 12)
+
+
+def test_nearest_suggestions_come_from_the_hotspots_own_chain():
+    """A prefixed dropped hotspot must not be offered neighbours that exist
+    only on the other protomer.
+
+    THE FIXTURE IS THE TEST. On a target whose second chain is numbered far
+    away, `pool = union` and the per-chain pool give the same answer, because
+    nothing on the other chain falls inside the window — so the assertion
+    passes for a parser that ignores the chain entirely. Chain B has to carry
+    residues NEAR the dropped number for the two to differ, and then the
+    union offers "A46".."A55": labels built from the hotspot's chain over
+    residues that exist only on B, i.e. suggestions the user cannot use.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    lines = ["HEADER    SYNTHETIC OVERLAP\n"]
+    serial = 0
+    for ci, (cid, resnums) in enumerate((
+        ("A", list(range(1, 41))),      # stops at 40
+        ("B", list(range(1, 121))),     # covers 41..55, right beside A45
+    )):
+        for i, resnum in enumerate(resnums):
+            for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+                serial += 1
+                lines.append(_atom_line(
+                    serial=serial, name=aname, resname="ALA", chain=cid,
+                    resnum=resnum, x=i * 4.0 + off,
+                    y=1.0 if aname != "O" else 2.0, z=1.0 + 50.0 * ci,
+                ))
+    lines.append("END\n")
+    pdb = "".join(lines).encode()
+
+    nearest = _nearest_clean_residues(pdb, "A,B", ["A45"], [])
+    assert nearest, "expected suggestions near A45 on chain A"
+    assert all(str(r).startswith("A") for r in nearest), nearest
+    assert all(int(str(r)[1:]) <= 40 for r in nearest), (
+        f"suggestions for A45 must exist on chain A, which stops at 40: "
+        f"{nearest!r}"
+    )
