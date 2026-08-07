@@ -1,6 +1,7 @@
 """ipTM must be marked not-comparable on a multi-chain target.
 
-``docs/MULTI-CHAIN-TARGETS.md`` states the defect precisely: ipTM is a MAX over
+``llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md`` (the SIBLING repo — this
+one has no such file) states the defect precisely: ipTM is a MAX over
 residues, so a real crystal dimer's own chain-chain interface scores ~0.9 and
 "dominates almost independently of binder quality". It is both the displayed
 value AND the ranking key (``shared/result_columns.py``), so a mediocre binder
@@ -196,15 +197,34 @@ def test_every_candidate_table_page_calls_the_notice(template, flask_app):
     )
 
 
-def test_the_boltzgen_legend_names_the_metric_it_now_reports(flask_app):
-    """After llm-proteinDesigner PR #18 the boltzgen number is design_iptm, the
-    binder-to-target pair. The tooltip said only "from the BoltzGen confidence
-    head", which does not say WHICH interface — the ambiguity that let the
-    wrong one ship."""
-    from shared.score_legends import get_legend
+def test_the_boltzgen_legend_does_not_outrun_the_deploy(flask_app):
+    """The tooltip must not claim a fix that has not shipped.
+
+    An earlier draft of this file asserted the opposite — that the legend
+    names ``design_iptm``, "the binder-to-target interface". That is true only
+    once llm-proteinDesigner#18 is merged AND DEPLOYED; until then the
+    container still emits the complex-wide value, which is precisely why
+    boltzgen is in MULTICHAIN_IPTM_UNRELIABLE_TOOLS. Asserting it early pinned
+    a tooltip that contradicted the banner rendered directly above the same
+    column on the same screen, and a test that pins a false claim is worse
+    than no test at all.
+
+    When the deploy lands, this test and the frozenset entry move together.
+    """
+    from shared.score_legends import (
+        MULTICHAIN_IPTM_UNRELIABLE_TOOLS, get_legend,
+    )
 
     legend = get_legend("boltzgen", "ipTM")
-    assert "design_iptm" in legend["explanation"]
+    assert "design_iptm" not in legend["explanation"], (
+        "the legend claims a value the deployed container does not emit"
+    )
+    assert "chain-chain" in legend["explanation"], (
+        "the legend must say the multi-chain number is not binder-only"
+    )
+    # The two must move together: while boltzgen is warned about, the legend
+    # must not describe its number as binder-to-target only.
+    assert "boltzgen" in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
     # Thresholds were calibrated on single-chain runs where the two keys nearly
     # coincide, so they remain the best available anchor and must not drift
     # silently alongside a wording change.

@@ -270,10 +270,20 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "good": 0.7,
         "excellent": 0.8,
         "direction": "higher_is_better",
+        # DO NOT promote this to "the binder-to-target interface" until
+        # llm-proteinDesigner#18 is MERGED AND DEPLOYED. An earlier draft did,
+        # and it made this tooltip contradict the banner rendered directly
+        # above the same column on the same screen: the deployed container
+        # still emits the complex-wide value, which is the entire reason
+        # boltzgen is in MULTICHAIN_IPTM_UNRELIABLE_TOOLS below. Both changes
+        # belong in the same follow-up commit, citing the deploy.
         "explanation": (
-            "Interface pTM for the binder-to-target interface "
-            "(design_iptm) from the BoltzGen confidence head. Above "
-            "0.7 is a credible binder; above 0.8 is strong."
+            "Interface pTM from the BoltzGen confidence head. On a "
+            "single-chain target this is the binder-to-target interface. "
+            "On a target with more than one chain it currently also "
+            "includes the target's own chain-chain interface — see the "
+            "note above the table. Above 0.7 is a credible binder; above "
+            "0.8 is strong."
         ),
     },
     ("boltzgen", "pLDDT"): {
@@ -378,7 +388,9 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # multi-chain target it is not: a real crystal dimer's own chain-chain
 # interface scores ~0.9 and dominates the number almost independently of
 # binder quality, so a mediocre binder can rank first carrying a
-# plausible-looking score. docs/MULTI-CHAIN-TARGETS.md states it precisely.
+# plausible-looking score. The sibling repo states it precisely, in
+# llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md — there is no such file in
+# THIS repo, and citing it unqualified sent readers looking for one.
 #
 # This matters more than a mis-rendered number because ipTM is also the
 # RANKING key (shared/result_columns.py) and the threshold that labels
