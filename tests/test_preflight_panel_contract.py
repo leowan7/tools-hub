@@ -15,9 +15,10 @@ so ``request.form`` carried no ``target_input``, ``preflight_target_segments``
 returned None, and the envelope fell back to counting whole chains. Uploading
 3S7G (830 aa) and typing ``A236-300,B236-300`` produced ``needs_fix`` at
 ``residue_count=415`` and ``setSubmitEnabled(!!v.ok)`` disabled the Run button,
-for a selection that is 130 residues and comfortably inside the 140 cap. The
-only way through was to hand-trim the PDB — the exact work the feature exists to
-remove. A route comment asserted the opposite in so many words.
+for a selection that is 130 residues and comfortably inside the cap (140 at the
+time, 500 today). The only way through was to hand-trim the PDB — the exact work
+the feature exists to remove. A route comment asserted the opposite in so many
+words.
 
 So the server half is NOT what these tests are about. Driving ``target_segments``
 straight into ``preflight_for_tool`` passes with or without the fix and pins
@@ -433,11 +434,15 @@ def _pdb(chains: dict) -> bytes:
 
 
 # 3S7G's shape in miniature: a big two-chain upload whose CH2+CH3-style window
-# is a small fraction of it. Whole = 400 aa (over proteina's 140 cap),
-# A236-300,B236-300 = 130 (inside it, and the size the one paid GPU run used).
+# is a small fraction of it. Whole = 600 aa (over proteina's 500 cap),
+# A100-164,B236-300 = 130 (inside it, and the smallest of the three paid GPU
+# runs). The chains were 200 residues each while the cap was 140; they grew
+# with the cap, because the whole subject here is an upload that does NOT fit
+# and a contig that makes it run. At 400 aa it would now fit unaided and the
+# admission below would prove nothing.
 _BIG_UPLOAD = _pdb({
-    "A": list(range(1, 201)),
-    "B": list(range(101, 301)),
+    "A": list(range(1, 301)),
+    "B": list(range(101, 401)),
 })
 _CONTIG = "A100-164,B236-300"
 
@@ -463,7 +468,7 @@ def test_the_whole_upload_is_refused_without_a_contig(client):
     body = _post_preflight(client).get_json()
     assert body["ok"] is False
     assert body["kind"] == "needs_fix"
-    assert body["size_envelope"]["residue_count"] == 400
+    assert body["size_envelope"]["residue_count"] == 600
 
 
 def test_the_contig_the_browser_posts_sizes_the_selection(client):
@@ -479,11 +484,11 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
     key = _FIELD_OF[_APPENDED_FROM["target_input"]][1]
     body = _post_preflight(client, **{key: _CONTIG}).get_json()
     assert body["ok"] is True, body.get("reason")
-    # 130, not 400: the number the panel reports is the SELECTION's. Asserted
+    # 130, not 600: the number the panel reports is the SELECTION's. Asserted
     # on the count rather than on a `size_basis` flag because the JSON block
     # ships neither `size_basis` nor `selection_label` (shared/pdb_intake.py
     # ::_verdict_to_json), and the count is the discriminator anyway — nothing
-    # but the contig can move it from 400 to 130.
+    # but the contig can move it from 600 to 130.
     assert body["size_envelope"]["residue_count"] == 130
 
 
@@ -495,16 +500,21 @@ def test_the_contig_the_browser_posts_sizes_the_selection(client):
 # always carried two different residue counts — ``residues_kept_on_target
 # _chain`` (the whole named chains, i.e. the file) and
 # ``size_envelope.residue_count`` (what the envelope actually judged) — and at
-# 352de0a they were also 400 and 130 for this upload. No user could see it:
-# without the contig in the request the verdict was needs_fix at 400 and the
-# ready arm never rendered.
+# 352de0a they were 400 and 130 for this upload, against a 140 cap. No user
+# could see it: without the contig in the request the verdict was needs_fix on
+# the whole file and the ready arm never rendered.
 #
 # With the contig posted, the sequence a real user walks is: upload -> refusal
-# naming 400 against the 140 cap -> type the contig -> "Ready to run — 400
-# residues." Nothing on screen reconciled those, and the ready arm rendered
-# neither the cap nor the envelope. Not a money bug — the gate was right
-# throughout — but it is collateral of this commit's own headline feature and
-# it undermines the single job the panel has.
+# naming the whole file against the cap -> type the contig -> "Ready to run —
+# <whole file> residues." Nothing on screen reconciled those, and the ready arm
+# rendered neither the cap nor the envelope. Not a money bug — the gate was
+# right throughout — but it is collateral of this commit's own headline feature
+# and it undermines the single job the panel has.
+#
+# The two counts are 600 and 130 today, because the fixture grew when the cap
+# was raised from 140 to 500. The DIVERGENCE is the subject, not the pair of
+# numbers, so the assertions below read them from the payload rather than
+# restating the arithmetic in prose.
 # ---------------------------------------------------------------------------
 
 def test_the_verdict_says_which_number_the_gate_counted(client):
@@ -523,7 +533,7 @@ def test_the_verdict_says_which_number_the_gate_counted(client):
     # The two numbers the payload carries, and the fact that they DIFFER —
     # which is the precondition that makes rendering the wrong one visible.
     assert env["residue_count"] == 130
-    assert body["residues_kept_on_target_chain"] == 400
+    assert body["residues_kept_on_target_chain"] == 600
 
 
 def test_a_whole_chain_run_still_reports_the_chain_basis(client):
