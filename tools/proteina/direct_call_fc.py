@@ -54,7 +54,10 @@ import sys
 from pathlib import Path
 
 TOOLS_HUB = Path(__file__).resolve().parents[2]
-TARGET = Path(
+# Overridable: the default is one operator's local campaign workspace, which
+# exists on no other machine and in no CI runner. --target / PROTEINA_TARGET_PDB
+# make this runnable elsewhere instead of silently FileNotFoundError-ing.
+DEFAULT_TARGET = (
     r"C:\Users\lab\Documents\Claude_projects\boltzgen-workspace"
     r"\aglyco-fc-vhh\inputs\3ave_target_AB.pdb"
 )
@@ -118,16 +121,27 @@ def build_payload(url: str, *, preset: str, nsamples: int, replicas: int,
     }
 
 
-def _stage_target(job_id: str) -> str:
+def _resolve_target(args) -> Path:
+    target = Path(
+        args.target or os.environ.get("PROTEINA_TARGET_PDB") or DEFAULT_TARGET)
+    if not target.is_file():
+        raise SystemExit(
+            f"target structure not found: {target}\n"
+            "Pass --target /path/to/target.pdb or set PROTEINA_TARGET_PDB."
+        )
+    return target
+
+
+def _stage_target(job_id: str, target: Path) -> str:
     from shared.storage import presigned_input_url, upload_input
-    data = TARGET.read_bytes()
+    data = target.read_bytes()
     path = upload_input(
         user_id="aglyco-fc-campaign", job_id=job_id,
-        filename="3ave_target_AB.pdb", data=data,
+        filename=target.name, data=data,
         content_type="chemical/x-pdb",
     )
     url = presigned_input_url(path, expires_seconds=7200)
-    print(f"[stage] {TARGET.name} ({len(data)} bytes) -> {path}")
+    print(f"[stage] {target.name} ({len(data)} bytes) -> {path}")
     return url
 
 
@@ -149,7 +163,7 @@ def cmd_validate(args) -> int:
     import modal
     job_id = "proteina-direct-validate"
     payload = build_payload(
-        _stage_target(job_id), preset="validate",
+        _stage_target(job_id, _resolve_target(args)), preset="validate",
         nsamples=args.nsamples, replicas=args.replicas, job_id=job_id)
     fn = modal.Function.from_name(APP, FN)
     print(f"[validate] calling {APP}/{FN} (free, CPU-only)")
@@ -163,7 +177,7 @@ def cmd_submit(args) -> int:
     import modal
     job_id = args.job_id
     payload = build_payload(
-        _stage_target(job_id), preset=args.preset,
+        _stage_target(job_id, _resolve_target(args)), preset=args.preset,
         nsamples=args.nsamples, replicas=args.replicas, job_id=job_id)
     fn = modal.Function.from_name(APP, FN)
     call = fn.spawn(payload)
@@ -226,6 +240,9 @@ def main() -> int:
     ap.add_argument("--job-id", default="proteina-direct-fc-01")
     ap.add_argument("--timeout", type=int, default=7200)
     ap.add_argument("--outdir", default="proteina_direct_out")
+    ap.add_argument("--target", default="",
+                    help="target PDB (default: PROTEINA_TARGET_PDB or the "
+                         "campaign Fc structure)")
     args = ap.parse_args()
 
     if args.dry_run:

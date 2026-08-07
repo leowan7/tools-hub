@@ -353,9 +353,11 @@ class TestInlineSizeCap:
     cap that silently truncated the result set would be worse than no cap."""
 
     def test_designs_over_the_cap_keep_scores_and_lose_only_atoms(self, tmp_path, monkeypatch):
+        # Cap must clear INLINE_PDB_MIN_USEFUL_CAP_BYTES or the run is refused
+        # pre-GPU instead: 2 designs fit in 13000, the 3rd and 4th do not.
         data, _ = _drive_design_loop(
             tmp_path, monkeypatch, endpoint="", designs=4,
-            pdb_body=b"X" * 1000, cap_bytes=2500)
+            pdb_body=b"X" * 6000, cap_bytes=13000)
         assert data["designs_completed"] == 4, "a capped design is still delivered"
         assert data["n_failures"] == 0, "over-cap is not a failure"
         inlined = [c for c in data["candidates"] if "pdb_content_b64" in c]
@@ -415,16 +417,45 @@ class TestInlineSizeCap:
         assert data["error"]["check"] == "upload_urls_endpoint"
         assert "cap" in data["error"]["detail"].lower()
 
-    def test_inline_can_be_turned_off_with_an_endpoint_present(self, tmp_path, monkeypatch):
-        """Opt-out for a caller that wants scores only and does not want to
-        move base64 it will discard. The upload still happens."""
-        data, calls = _drive_design_loop(
+    def test_the_off_switch_has_no_effect_when_an_endpoint_is_present(self, tmp_path, monkeypatch):
+        """Pins the flag's REAL semantics rather than implying a mode that no
+        longer exists. Inlining is exclusive with uploading, so with an
+        endpoint the result is the same either way — there is no "scores
+        inline but not the atoms" configuration. Asserted as an equality
+        between the two settings so it cannot pass vacuously."""
+        on, on_calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload", inline_env="on")
+        off, off_calls = _drive_design_loop(
             tmp_path, monkeypatch, endpoint="https://hub/upload", inline_env="off")
-        assert len([c for c in calls if c[0] == "put"]) == 2
-        assert data["candidates"], "guard must run against a populated list"
-        assert all("pdb_content_b64" not in c for c in data["candidates"])
-        # The upload pointers are still the delivery mechanism.
-        assert all(c["pdb_key"].startswith("designs/") for c in data["candidates"])
+        assert on == off, "the flag changed a web-path result"
+        assert len([c for c in on_calls if c[0] == "put"]) == 2
+        assert len([c for c in off_calls if c[0] == "put"]) == 2
+        assert all("pdb_content_b64" not in c for c in on["candidates"])
+
+    def test_a_cap_too_small_for_one_design_is_refused_pre_gpu(self, tmp_path, monkeypatch):
+        """`> 0` was too weak: a 1-byte cap passed it, admitted nothing, and
+        still spent the A100 to return COMPLETED with zero structures."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setattr(rp, "INLINE_PDB_TOTAL_CAP_BYTES", 1)
+        monkeypatch.delenv("PROTEINA_INLINE_PDBS", raising=False)
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps({
+            "job_spec": {
+                "config_name": "search_binder_local_pipeline",
+                "task_name": "02_PDL1", "rf3_required": False,
+                "nsamples": 4, "replicas": 2,
+            },
+            "input_presigned_url": "", "upload_urls_endpoint": "",
+            "job_token": "", "tier": "protein_binder"}))
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+        monkeypatch.setenv("JOB_ID", "job-tinycap")
+        monkeypatch.setenv("PROTEINA_RF3", "on")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        with pytest.raises(SystemExit):
+            rp.main()
+        data = json.loads(result_file.read_text())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "upload_urls_endpoint"
 
 
 class TestJobSpecAliases:
@@ -534,6 +565,34 @@ class TestJobSpecAliases:
         data = json.loads(result_file.read_text())
         assert data["status"] == "FAILED"
         assert data["error"]["check"] == "hotspot_chain_ambiguous"
+
+    def test_a_multi_chain_CONTIG_also_refuses_bare_ints(self):
+        """prepare_custom_target derives its segments from target_input when
+        present and ignores target_chain entirely, so counting target_chain
+        alone let a one-chain declaration hide a two-chain contig: bare
+        hotspots promoted to A, second protomer unconstrained, no error."""
+        with pytest.raises(ValueError):
+            rp.normalize_hotspots({
+                "target_chain": "A",
+                "target_input": "A1-200,B1-200",
+                "hotspot_residues": [264, 301],
+            })
+
+    def test_a_single_chain_contig_still_allows_bare_ints(self):
+        """The union must not over-refuse: one chain named twice is one chain."""
+        assert rp.normalize_hotspots({
+            "target_chain": "A", "target_input": "A1-200",
+            "hotspot_residues": [264],
+        }) == ["A264"]
+
+    def test_a_malformed_contig_defers_rather_than_crashing(self):
+        """parse_target_input has its own pre-GPU refusal with a better
+        message; this guard must not pre-empt it with a ValueError of its
+        own about hotspots."""
+        assert rp.normalize_hotspots({
+            "target_chain": "A", "target_input": "not-a-contig",
+            "hotspot_residues": ["A264"],
+        }) == ["A264"]
 
     def test_prefixed_hotspots_on_a_multi_chain_target_are_fine(self):
         """The refusal is about ambiguity, not about multi-chain."""

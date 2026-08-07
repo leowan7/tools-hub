@@ -172,7 +172,17 @@ def _inline_cap_bytes() -> int:
 
 
 INLINE_PDB_TOTAL_CAP_BYTES = _inline_cap_bytes()
-# Escape hatch for a caller that wants the scores inline but not the atoms.
+# Smallest cap worth starting a run for. `> 0` was too weak a test: a cap of 1
+# byte passes it, admits no design, and still spends the A100 to return
+# COMPLETED with zero structures — the same failure as a cap of 0, with a
+# narrower trigger. A single-design PDB is tens of KB at minimum.
+INLINE_PDB_MIN_USEFUL_CAP_BYTES = 10 * 1024
+
+# Hard off-switch for inline delivery. It is only observable when there is NO
+# upload endpoint, because inlining never happens when there is one — with an
+# endpoint the atoms are already in Storage and this flag changes nothing. Its
+# one real effect is to turn a direct, endpoint-less call into a pre-GPU
+# refusal, which is what you want if such a call was made by mistake.
 _INLINE_OFF = {"off", "false", "0", "no"}
 
 PROTEINA_HOME = os.environ.get("PROTEINA_HOME", "/opt/proteina")
@@ -553,7 +563,25 @@ def normalize_hotspots(job_spec: dict) -> list[str]:
     else:
         items = [str(h).strip() for h in raw if str(h).strip()]
 
+    # Chains come from the UNION of both fields that can name one, because
+    # either can be the one that actually decides. prepare_custom_target
+    # derives its segments from target_input when that is present and ignores
+    # target_chain entirely, so counting target_chain alone lets
+    # {"target_chain": "A", "target_input": "A1-200,B1-200"} through: one
+    # declared chain, two real ones, bare hotspots silently promoted to A and
+    # the second protomer unconstrained. Reachable by exactly the direct
+    # callers this delivery mode exists to serve.
     chains = normalize_target_chain(str(job_spec.get("target_chain") or "")).split()
+    target_input = str(job_spec.get("target_input") or "").strip()
+    if target_input:
+        try:
+            for chain, _lo, _hi in parse_target_input(target_input):
+                if chain not in chains:
+                    chains.append(chain)
+        except ValueError:
+            # Malformed contig: leave it to parse_target_input's own pre-GPU
+            # refusal in prepare_custom_target, which reports it properly.
+            pass
     bare = [t for t in items if re.fullmatch(r"-?\d+", t)]
     if bare and len(chains) > 1:
         raise ValueError(
@@ -1247,9 +1275,13 @@ def _inline_enabled() -> bool:
     """Whether design coordinates may travel in the return value.
 
     Defaults ON: a caller with no upload endpoint has no other way to receive
-    atoms, and that caller is the whole reason this exists. Turning it off is
-    for a caller who wants scores only and does not want to pay to move
-    multiple MB of base64 it will discard.
+    atoms, and that caller is the whole reason this exists.
+
+    Observable ONLY when there is no upload endpoint. Inlining is exclusive
+    with uploading, so with an endpoint this flag changes nothing — there is no
+    "scores inline but not the atoms" mode, because with an endpoint the atoms
+    were never inline to begin with. Turning it off makes an endpoint-less call
+    a pre-GPU refusal instead of an inline delivery.
     """
     return os.environ.get("PROTEINA_INLINE_PDBS", "on").strip().lower() not in _INLINE_OFF
 
@@ -2140,7 +2172,7 @@ def main() -> None:
     # path is unchanged actually true, rather than true only of its upload
     # mechanics.
     inline_pdbs = _inline_enabled() and not upload_endpoint
-    cap_ok = INLINE_PDB_TOTAL_CAP_BYTES > 0
+    cap_ok = INLINE_PDB_TOTAL_CAP_BYTES >= INLINE_PDB_MIN_USEFUL_CAP_BYTES
     if not upload_endpoint and not (inline_pdbs and cap_ok):
         # Every way a finished design could end up with nowhere to put its
         # coordinates, refused before the GPU rather than after. A cap of 0 is
@@ -2150,8 +2182,8 @@ def main() -> None:
         reason = (
             "inline PDBs are disabled (PROTEINA_INLINE_PDBS=off)" if not _inline_enabled()
             else f"the inline PDB cap is {INLINE_PDB_TOTAL_CAP_BYTES} bytes, "
-                 "which cannot admit a single design "
-                 "(PROTEINA_INLINE_PDB_CAP_BYTES)"
+                 f"below the {INLINE_PDB_MIN_USEFUL_CAP_BYTES} needed to admit "
+                 "even one design (PROTEINA_INLINE_PDB_CAP_BYTES)"
         )
         _fail(
             "preflight",
