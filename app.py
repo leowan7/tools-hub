@@ -394,6 +394,13 @@ def create_app() -> Flask:
         _metric_glossary.format_value
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    # Whether a results view should mark ipTM as not-comparable. Kept in Python
+    # rather than as a chain-splitting expression repeated across six results
+    # templates — the tool set and the "more than one chain" rule are one
+    # decision, and it is testable there.
+    flask_app.jinja_env.globals["multichain_iptm_unreliable"] = (
+        _score_legends.multichain_iptm_unreliable
+    )
     flask_app.jinja_env.globals["ordinal"] = _ranking.ordinal
     # Exposed so the target page can tell a PAUSED run from a still-running one
     # without a second copy of the status set in markup. It must stay

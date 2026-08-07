@@ -200,14 +200,21 @@
           </div>
 
           <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="32"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            One chain (<code>A</code>), or several for an oligomeric target
+            (<code>A,B</code>). Every named chain reaches the model; designing
+            against one protomer of a dimer aims at half the epitope.
+          </div>
 
           <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
           <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+            Residues the binder should contact, in original PDB numbering. A plain
+            number is read as your <strong>first</strong> target chain; prefix the chain to
+            name another (<code>A296,B264</code>).
             Click residues in the 3D viewer below to toggle them in and out of this list.
           </div>
 
@@ -315,6 +322,27 @@
         emptyMessageId: 'hotspot-empty',
         surfaceToggleId: 'hotspot-surface-toggle',
         clearBtnId: 'hotspot-clear-btn',
+        // chainPrefixed is HELD here, not declined — the one deviation from
+        // docs/HANDOFF-2026-08-07-multichain-finish.md item 1a, recorded
+        // rather than made quietly.
+        //
+        // Turning it on changes what reaches upstream BindCraft for every
+        // single-chain user who clicks, from "25,30" to "A25,A30":
+        // docker/bindcraft/run_pipeline.py:426 joins the tokens verbatim with
+        // no normalisation. BindCraft's documented format IS chain-specific
+        // ("target_hotspot_residues -> ... chain specific `A1-10,B1-20`", see
+        // tools/bindcraft/__init__.py), so prefixed is probably MORE correct
+        // than what we send today — but the image is the prebuilt
+        // kendrew-bindcraft:v7, its parser is not vendored in either repo, and
+        // bindcraft is the one binder tool with no smoke tier, so the only way
+        // to find out costs a full paid pilot. It is already gated
+        // multi_chain_container_ready=False, so the flag buys it the least of
+        // any tool.
+        //
+        // Unblock: one paid bindcraft pilot confirming the prefixed form is
+        // accepted, or vendored upstream source. Then move "bindcraft" from
+        // BARE_INT_FORMS to CHAIN_PREFIXED_FORMS in
+        // tests/test_hotspot_picker_runtime.py and add the flag here.
       });
     });
   </script>

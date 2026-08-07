@@ -47,12 +47,12 @@
                   prefilled=pre_fill) }}
 
     {{ field_text("target_chain", "Target chain",
-                  "The chain a binder should be designed against. Checked against the uploaded structure.",
-                  placeholder="e.g. A", max_length=4, max_width="120px",
+                  "The chain a binder should be designed against, checked against the uploaded structure. One chain (A), or several for an oligomeric target (A,B).",
+                  placeholder="e.g. A", max_length=32, max_width="120px",
                   prefilled=pre_fill) }}
 
     {{ field_text("hotspot_residues", "Hotspot residues",
-                  "Comma-separated residues in PDB numbering. Saved as the default for runs against this target.",
+                  "Comma-separated residues in PDB numbering, saved as the default for runs against this target. A plain number is read as the first target chain; prefix the chain to name another (A296, B264).",
                   placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
 
     {{ field_text("epitope_residues", "Epitope residues",

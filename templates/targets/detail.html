@@ -385,6 +385,7 @@
 
 {% if agg.tools %}
 {% from "components/candidate_table.html" import candidate_table %}
+{% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
 <div class="section" style="margin-top: 2rem;">
   <div class="section-head">
     <h2 class="section-title">Designs</h2>
@@ -554,6 +555,13 @@
      ?sort=tool. Passed unconditionally: the macro reads it only in that mode
      and gating it here would make the caller decide something the macro
      already decides. #}
+  {# Pooled table: agg.tools is every tool with rows here, and the caveat
+     applies if ANY of them ranks on a complex-wide ipTM. The chain comes from
+     the TARGET rather than per row — targets/launch.html can override it for
+     one launch, so this is the target's default, not a guarantee about every
+     pooled run. Over-warning is the safe direction for a non-blocking notice
+     about a number that is also the sort key. #}
+  {{ multichain_iptm_notice(agg.tools, target.target_chain) }}
   {{ candidate_table(
        agg.candidates, agg.columns, '', (agg.tools[0] if agg.tools|length == 1 else ''),
        '', '', target.id, agg.multi_tool, sort_mode, agg.split_tools, agg.per_tool) }}

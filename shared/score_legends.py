@@ -271,7 +271,8 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "excellent": 0.8,
         "direction": "higher_is_better",
         "explanation": (
-            "Interface pTM from the BoltzGen confidence head. Above "
+            "Interface pTM for the binder-to-target interface "
+            "(design_iptm) from the BoltzGen confidence head. Above "
             "0.7 is a credible binder; above 0.8 is strong."
         ),
     },
@@ -366,3 +367,83 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
         for (ts, col), legend in SCORE_LEGENDS.items()
         if ts == tool_slug
     }
+
+
+# ---------------------------------------------------------------------------
+# Multi-chain ipTM is not comparable
+# ---------------------------------------------------------------------------
+#
+# ipTM is a MAX over residues, not a mean. On a single-chain target that is
+# harmless — the only interface in the complex is the one you designed. On a
+# multi-chain target it is not: a real crystal dimer's own chain-chain
+# interface scores ~0.9 and dominates the number almost independently of
+# binder quality, so a mediocre binder can rank first carrying a
+# plausible-looking score. docs/MULTI-CHAIN-TARGETS.md states it precisely.
+#
+# This matters more than a mis-rendered number because ipTM is also the
+# RANKING key (shared/result_columns.py) and the threshold that labels
+# filter_status.
+#
+# BoltzGen is fixed at the source: llm-proteinDesigner PR #18 moves
+# `design_iptm` — the real binder-to-target pair — to the front of IPTM_KEYS.
+# It stays in this set until that PR is MERGED AND DEPLOYED, because until
+# then the deployed container still reports the complex-wide value. Removing
+# it is a one-line follow-up; cite the deploy in that commit.
+#
+# rfdiffusion and pxdesign have no equivalent fix available: the per-pair
+# value does not exist anywhere in their output and deriving it from the chain
+# layout is a separate piece of work. For them this notice is the remedy, not
+# a stopgap.
+#
+# bindcraft is included even though multi_chain_container_ready=False blocks
+# the tool-form path, because the campaign and target-launch routes may not
+# call preflight_for_tool at all (an open item in
+# docs/HANDOFF-2026-08-07-multichain-finish.md). The notice is non-blocking,
+# so a false positive costs a sentence and a false negative costs trust in a
+# number.
+#
+# PROTEINA IS DELIBERATELY ABSENT, and it is the exclusion worth arguing,
+# because proteina is the only tool that has actually run a multi-chain target
+# on a GPU here. It does surface an interface score — ``af2_iptm``, resolved
+# from ``rf3folding_ipTM`` first (tools/proteina/run_pipeline.py) — and that
+# number is open to the same inflation as everyone else's. But it is NOT what
+# proteina ranks on: its primary metric is ``total_reward``
+# (shared/result_columns.py), which proteina defines as ``-i_pae``, an
+# interface PAE. So the second half of this notice — "these designs are also
+# ranked by it", the half that makes it worth interrupting the user for —
+# would be FALSE on a proteina table. A caveat that overstates its own scope
+# is precisely the failure this notice exists to avoid.
+#
+# Open, and deliberately NOT resolved here: proteina's ``af2_iptm`` COLUMN may
+# still read high on a multi-chain target for the reasons above, and whether
+# i_pae is itself computed over the right chain pair has not been traced. That
+# needs its own copy and its own verification, not membership in this set.
+# Filed, not fixed.
+MULTICHAIN_IPTM_UNRELIABLE_TOOLS = frozenset(
+    {"rfdiffusion", "pxdesign", "bindcraft", "boltzgen"}
+)
+
+
+def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
+    """Should the results view warn that ipTM cannot be read at face value?
+
+    True only when the target names more than one chain AND at least one tool
+    in play ranks on a complex-wide ipTM. Registered as a Jinja global in
+    ``app.py`` so the decision stays here, in Python, where it is testable —
+    rather than as a string-splitting expression repeated across six templates.
+
+    ``tools`` is a single slug on a job or campaign page, or an iterable of
+    slugs on the pooled target page, where one table mixes several tools and
+    the caveat applies if ANY of them is affected.
+
+    Both chain separators are accepted, matching every other consumer of this
+    field (``"A,B"`` and ``"A B"``); see ``tools.base.parse_target_chains``.
+    """
+    chains = [c for c in str(target_chain or "").replace(",", " ").split() if c]
+    if len(set(chains)) <= 1:
+        return False
+    if not tools:
+        return False
+    if isinstance(tools, str):
+        tools = [tools]
+    return any(t in MULTICHAIN_IPTM_UNRELIABLE_TOOLS for t in tools)
