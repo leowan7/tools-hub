@@ -715,6 +715,159 @@ def chain_identity_hints(atoms: Iterable[Atom],
     return hints
 
 
+def chain_renumbering(observed_chain: list[tuple[int, str]],
+                      reference_chain: list[tuple[int, str]],
+                      *,
+                      min_identity: float = TARGET_MIN_SEQUENCE_IDENTITY,
+                      min_informative: int = TARGET_MIN_INFORMATIVE_RESIDUES,
+                      ) -> dict:
+    """Position-for-position map from one design chain's numbering to the input's.
+
+    Both lists are ``(resseq, resname)`` ASCENDING BY ``resseq``. The i-th
+    residue of the design chain is taken to be the i-th residue of the input
+    chain, and that correspondence is then CHECKED by sequence rather than
+    assumed — see ``restore_input_numbering`` for why anything weaker is a
+    fabricated PASS.
+
+    Returns ``{"ok": bool, "reason": str, "map": {design_resseq: input_resseq},
+    "n": int, "n_informative": int, "identity": float | None}``. ``ok`` is False
+    on ANY doubt and the map is then empty: this is the fail-closed half of a
+    guard whose other half is worth $12 a mistake.
+    """
+    n_obs, n_ref = len(observed_chain), len(reference_chain)
+    if n_obs != n_ref:
+        return {"ok": False, "n": n_obs, "n_informative": 0, "identity": None,
+                "map": {},
+                "reason": (f"length differs: {n_obs} residues in the design, "
+                           f"{n_ref} in the input chain — a positional map "
+                           f"needs one residue per residue")}
+    if not n_obs:
+        return {"ok": False, "n": 0, "n_informative": 0, "identity": None,
+                "map": {}, "reason": "the chain carries no CA residue"}
+
+    pairs = [(o[1], r[1]) for o, r in zip(observed_chain, reference_chain)]
+    informative = [(a, b) for a, b in pairs if is_informative_pair(a, b)]
+    identical = sum(1 for a, b in informative if same_residue(a, b))
+    identity = (identical / len(informative)) if informative else None
+    ref_informative = sum(1 for _, name in reference_chain
+                          if not is_unknown_resname(name))
+    floor = informative_floor(ref_informative, min_informative)
+
+    if len(informative) < floor:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"only {len(informative)} informative residue pair(s), "
+                           f"below the {floor} required — an all-unknown chain "
+                           f"matches anything and must not certify a map")}
+    if identity is None or identity < min_identity:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"sequence identity {identity!r} over "
+                           f"{len(informative)} informative pair(s) is below "
+                           f"{min_identity} — these are not the same chain in "
+                           f"the same order")}
+    return {"ok": True, "n": n_obs, "n_informative": len(informative),
+            "identity": round(identity, 4),
+            "map": {o[0]: r[0] for o, r in zip(observed_chain, reference_chain)},
+            "reason": ""}
+
+
+def restore_input_numbering(atoms: Iterable[Atom],
+                            target_chains: Iterable[str],
+                            reference: dict[Residue, str],
+                            *,
+                            min_identity: float = TARGET_MIN_SEQUENCE_IDENTITY,
+                            min_informative: int = TARGET_MIN_INFORMATIVE_RESIDUES,
+                            ) -> tuple[list[Atom], dict]:
+    """Put the design's target chains back into the INPUT's residue numbering.
+
+    THE DEFECT. Upstream renumbers every chain of a design to ``1..N``. Measured
+    on 8 of 8 designs from a completed Fc shard: input chains A 234-444 (211
+    residues) and B 237-444 (208) came back as A 1-211 and B 1-208, contiguous,
+    labels preserved, order preserved, at 100.0% positional sequence identity on
+    both chains. Nothing about the geometry changed — only the keys.
+
+    WHY THAT BREAKS EVERYTHING DOWNSTREAM. Hotspots are matched by
+    ``(chain, resseq)``. ``verify_target_identity`` therefore requires key
+    coverage against the input, and under renumbering that coverage is 0.0, so
+    every design is UNSCORABLE and phase 2 returns INCONCLUSIVE for ~$12.
+
+    WHY THIS IS THE FIX AND RELAXING THE GATE IS NOT. The gate's key-coverage
+    rule is load-bearing: it is what makes ``A241`` mean the residue the
+    operator asked for. Dropping or weakening it to accommodate renumbering
+    would let a renumbered chain score against tokens that no longer denote
+    anything — the exact fabricated result the gate exists to prevent. So this
+    runs BEFORE the gate, restores the keys the gate is entitled to expect, and
+    the gate then runs UNCHANGED and passes honestly. If this function cannot
+    prove the correspondence, it changes nothing and the gate refuses exactly as
+    it does today.
+
+    WHAT STOPS IT CERTIFYING A ROLE INVERSION. The map is only accepted when the
+    design chain has the SAME NUMBER of residues as the input chain AND matches
+    it position-for-position by sequence. A binder relabelled onto a target's
+    chain id fails on length; a binder that happens to match on length fails on
+    sequence, because a de-novo binder is not the target; a sequence-free
+    (all-UNK) chain fails the informative floor, because ``same_residue`` counts
+    UNK as a match and would otherwise score 1.0 against anything. Every target
+    chain must map, or none is applied — a partial remap would leave one chain
+    keyed to the input and another to ``1..N``, which is worse than not trying.
+
+    Returns ``(atoms, report)``. ``atoms`` is the rewritten list when
+    ``report["applied"]``, otherwise the input list unchanged.
+    """
+    atoms = list(atoms)
+    wanted = sorted(set(target_chains))
+    observed = ca_resnames(atoms)
+
+    obs_by_chain: dict[str, list[tuple[int, str]]] = {}
+    for (chain, resseq), name in observed.items():
+        obs_by_chain.setdefault(chain, []).append((resseq, name))
+    ref_by_chain: dict[str, list[tuple[int, str]]] = {}
+    for (chain, resseq), name in reference.items():
+        ref_by_chain.setdefault(chain, []).append((resseq, name))
+    for d in (obs_by_chain, ref_by_chain):
+        for chain in d:
+            d[chain].sort()
+
+    chains: dict[str, dict] = {}
+    for chain in wanted:
+        if chain not in obs_by_chain:
+            chains[chain] = {"ok": False, "n": 0, "n_informative": 0,
+                             "identity": None, "map": {},
+                             "reason": "chain absent from the design output"}
+            continue
+        if chain not in ref_by_chain:
+            chains[chain] = {"ok": False, "n": len(obs_by_chain[chain]),
+                             "n_informative": 0, "identity": None, "map": {},
+                             "reason": "chain absent from the input target"}
+            continue
+        chains[chain] = chain_renumbering(
+            obs_by_chain[chain], ref_by_chain[chain],
+            min_identity=min_identity, min_informative=min_informative)
+
+    already = all(
+        [k for k, _ in obs_by_chain.get(c, [])] == [k for k, _ in ref_by_chain.get(c, [])]
+        for c in wanted)
+    applied = bool(chains) and all(c["ok"] for c in chains.values()) and not already
+    report = {
+        "applied": applied,
+        "already_input_numbering": already,
+        "chains": chains,
+        "reason": "" if applied else "; ".join(
+            f"chain {c}: {v['reason']}" for c, v in sorted(chains.items())
+            if not v["ok"]) or ("the design already carries the input numbering"
+                                if already else ""),
+    }
+    if not applied:
+        return atoms, report
+
+    remap = {c: chains[c]["map"] for c in wanted}
+    out = [a._replace(resseq=remap[a.chain][a.resseq])
+           if a.chain in remap and a.resseq in remap[a.chain] else a
+           for a in atoms]
+    return out, report
+
+
 def verify_target_identity(
     atoms: Iterable[Atom],
     target_chains: Iterable[str],
@@ -1044,6 +1197,15 @@ def score_design_file(pdb_text: str, target_chains: Iterable[str],
     }
     if not entry["is_complex"]:
         return entry
+
+    # UPSTREAM RENUMBERS EVERY CHAIN TO 1..N, so the keys the gate below checks
+    # against are not the operator's. Restored FIRST, and only when a
+    # position-for-position sequence match proves the correspondence; the gate
+    # then runs unchanged on keys it is entitled to trust. When the proof fails
+    # this is a no-op and the gate refuses exactly as it did before, which is
+    # the direction that cannot fabricate a result. See restore_input_numbering.
+    atoms, renumbering = restore_input_numbering(atoms, wanted, reference)
+    entry["target_renumbering"] = renumbering
 
     check = verify_target_identity(atoms, wanted, reference)
     entry["target_verified"] = check["verified"]

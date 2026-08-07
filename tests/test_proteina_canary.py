@@ -1635,17 +1635,49 @@ class TestTargetChainIdentity:
         assert "hotspot_recall" not in entry
         assert "not the residues we uploaded" in entry["unscorable_reason"]
 
-    def test_a_renumbered_target_is_unscorable(self):
-        """Hotspot tokens are matched by NUMBER. A target renumbered from 1000
-        makes ``A1`` name a different residue, so every score computed against
-        it is meaningless even though the chain label and the sequence are both
-        right."""
+    def test_a_renumbered_target_is_restored_and_then_scorable(self):
+        """CONTRACT CHANGED, DELIBERATELY — this test used to assert the
+        opposite, and the old assertion was right for the code that existed.
+
+        Hotspot tokens are matched by NUMBER, so a target renumbered from 1000
+        makes ``A1`` name a different residue and every score computed against
+        it meaningless. That was measured on real hardware afterwards: upstream
+        renumbers EVERY chain to 1..N, so 8 of 8 designs of a completed Fc shard
+        were unscorable and phase 2 would have returned INCONCLUSIVE for ~$12.
+
+        The gate is unchanged. What changed is that ``restore_input_numbering``
+        now runs FIRST and puts the keys back, and only when a
+        position-for-position sequence match proves the correspondence — here
+        the chain label and the sequence are both right, which is exactly the
+        case it is entitled to repair. ``target_renumbering.applied`` is the
+        record that it did.
+        """
         entry = cs.score_design_file(
             RENUMBERED_DESIGN_PDB, {"A"}, self.SPEC, [], TARGET_REFERENCE)
+        assert entry["target_renumbering"]["applied"] is True
+        assert entry["target_renumbering"]["chains"]["A"]["identity"] == 1.0
+        assert entry["target_verified"] is True
+        assert entry["hotspot_recall"] is not None
+        assert "unscorable_reason" not in entry
+
+    def test_a_renumbering_the_sequence_cannot_prove_is_still_unscorable(self):
+        """The other half of the contract, and the one that costs money if it
+        ever stops holding.
+
+        Same renumbering from 1000, but the chain carries GLY — absent from
+        _TARGET_SEQ by construction — so no position matches. The restore
+        declines, the gate sees the untouched keys, and the design is refused
+        exactly as it was before the restore existed. A repair that cannot be
+        proved must change nothing."""
+        design = "\n".join(
+            _trace("A", ["GLY"] * len(_TARGET_SEQ), first_res=1000)
+            + _trace("B", ["GLY"] * 4, y=4.0, serial0=100)) + "\n"
+        entry = cs.score_design_file(design, {"A"}, self.SPEC, [],
+                                     TARGET_REFERENCE)
+        assert entry["target_renumbering"]["applied"] is False
         assert entry["target_verified"] is False
         assert "hotspot_recall" not in entry
         assert entry["target_identity"]["n_matched_keys"] == 0
-        assert "numbering" in entry["unscorable_reason"]
 
     def test_an_unverified_design_can_never_reach_a_verdict(self):
         """Belt and braces, and both are load-bearing: even if a metric were
@@ -3475,10 +3507,20 @@ class TestPerChainIdentity:
         # B1..B30 keep the input's numbering; B31..B60 are re-emitted as
         # B5031..B5060, which exist in the design and match no reference key.
         # (Their y is arbitrary: verification fails before any geometry runs.)
+        #
+        # THE RENUMBERED HALF CARRIES GLY, AND THAT IS WHAT KEEPS THIS TEST
+        # POINTED AT THE COVERAGE FLOOR. ``restore_input_numbering`` repairs an
+        # IN-ORDER renumbering before this gate ever sees it, and it would
+        # repair this one too — same length, same order — leaving coverage at
+        # 1.0 and this test measuring nothing. GLY is absent from _TARGET_SEQ by
+        # construction, so the positional sequence check fails, the restore
+        # declines, and chain B's 50% coverage is once again the only thing
+        # refusing this design. The repairable case is pinned separately by
+        # TestRenumberedTargetsAreRestored.
         design = "\n".join(
             _trace("A", big)
             + _trace("B", small[:30], y=60.0, serial0=2000)
-            + _trace("B", small[30:], y=100.0, first_res=5031, serial0=3000)
+            + _trace("B", ["GLY"] * 30, y=100.0, first_res=5031, serial0=3000)
             + _trace("C", ["GLY"] * 8, y=4.0, serial0=5000)) + "\n"
         entry = cs.score_design_file(design, {"A", "B"}, ["A1"], [], reference)
         identity = entry["target_identity"]
@@ -8604,3 +8646,171 @@ class TestTheEndpointGuardReachesTheCanaryToo:
         assert rp.missing_endpoints(
             residues, rp.parse_target_input("A236-443,B236-442")) == []
 
+
+
+# ===========================================================================
+# UPSTREAM RENUMBERS THE TARGET, AND THE RESTORE IS WHAT MAKES PHASE 2 LEGIBLE
+# ===========================================================================
+#
+# Measured on 8 of 8 designs of a completed Fc shard: input chains A 234-444
+# (211 residues) and B 237-444 (208) came back as A 1-211 and B 1-208 —
+# contiguous, labels preserved, order preserved, 100.0% positional sequence
+# identity on both chains. Hotspots are matched by (chain, resseq), so every
+# design was UNSCORABLE and phase 2 would have spent ~$12 to return
+# INCONCLUSIVE.
+#
+# The gate that refused them is correct and is NOT relaxed here. The restore
+# runs before it and puts the keys back, and only when sequence proves the
+# correspondence. Everything below is about the second half of that sentence:
+# what must NOT be repaired.
+
+
+def _repeat_seq(n):
+    """``n`` residues cycling _TARGET_SEQ — the module-level twin of the
+    ``_repeat`` helper the older identity classes carry as a method."""
+    return [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(n)]
+
+
+class TestRenumberedTargetsAreRestored:
+    """``restore_input_numbering`` — the repair, and everything it must refuse."""
+
+    @staticmethod
+    def _rows(chains):
+        rows = []
+        for i, (c, seq, first) in enumerate(chains):
+            rows += _trace(c, seq, y=40.0 * i, serial0=1 + 1000 * i,
+                           first_res=first)
+        return rows
+
+    def _ref(self, chains):
+        return cs.ca_resnames(cs.heavy_atoms("\n".join(self._rows(chains)) + "\n"))
+
+    def _design(self, chains, binder=("GLY",) * 8):
+        rows = self._rows(chains) + _trace("Z", list(binder), y=4.0,
+                                           serial0=9000)
+        return "\n".join(rows) + "\n"
+
+    def test_the_measured_shape_one_based_contiguous_is_repaired(self):
+        """The exact shape hardware produced: input numbered from 234, design
+        numbered from 1, same order, same sequence."""
+        seq = _repeat_seq(60)
+        reference = self._ref([("A", seq, 234)])
+        design = self._design([("A", seq, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["applied"] is True
+        assert rn["chains"]["A"]["identity"] == 1.0
+        assert rn["chains"]["A"]["map"][1] == 234, "design 1 IS input 234"
+        assert rn["chains"]["A"]["map"][60] == 293
+        assert entry["target_verified"] is True
+
+    def test_an_in_order_half_renumbering_is_repaired(self):
+        """The case TestPerChainIdentity's coverage test used to own. Half the
+        chain keeps the input numbering and half is thrown into the 5000s, but
+        the RESIDUES are the same ones in the same order, so the positional map
+        is right and repairing it is correct. That test now uses a sequence the
+        restore cannot prove, so it still measures the coverage floor."""
+        seq = _repeat_seq(60)
+        reference = self._ref([("A", seq, 1)])
+        rows = (_trace("A", seq[:30], first_res=1)
+                + _trace("A", seq[30:], first_res=5031, serial0=3000)
+                + _trace("Z", ["GLY"] * 8, y=4.0, serial0=9000))
+        entry = cs.score_design_file("\n".join(rows) + "\n", {"A"}, ["A1"], [],
+                                     reference)
+        assert entry["target_renumbering"]["applied"] is True
+        assert entry["target_renumbering"]["chains"]["A"]["map"][5031] == 31
+        assert entry["target_verified"] is True
+
+    def test_a_design_already_in_input_numbering_is_left_alone(self):
+        """No-op, and it must SAY no-op rather than silently rewriting: a
+        needless remap is a second place for the keys to go wrong."""
+        seq = _repeat_seq(40)
+        reference = self._ref([("A", seq, 7)])
+        entry = cs.score_design_file(self._design([("A", seq, 7)]), {"A"},
+                                     ["A7"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["applied"] is False
+        assert rn["already_input_numbering"] is True
+        assert entry["target_verified"] is True, (
+            "declining to remap must not make a correct design unscorable")
+
+    def test_a_length_mismatch_refuses_rather_than_aligning_a_prefix(self):
+        """THE ROLE INVERSION, and the reason the map is length-exact. A binder
+        relabelled onto the target's chain id is shorter; aligning it to the
+        first N residues of the target would hand back a perfect recall
+        measured on the binder's own contacts. Reproduced on real output: a
+        74-residue binder on chain A against a 211-residue input chain."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", _repeat_seq(20), 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "length differs" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+        assert entry.get("hotspot_recall") is None, "never a fabricated score"
+
+    def test_an_all_unknown_chain_cannot_certify_a_map(self):
+        """``same_residue`` counts UNK as a match, so an all-UNK chain scores
+        1.0 against any reference. The informative floor is what stops a
+        sequence-free backbone model certifying a map to anything."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", ["UNK"] * 60, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "informative" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+
+    def test_a_mostly_unknown_chain_with_a_few_lucky_matches_refuses(self):
+        """THE CASE THE INFORMATIVE FLOOR ACTUALLY OWNS, and the one that was
+        missing: deleting the floor left the suite green.
+
+        An all-UNK chain is already refused by the identity check, because zero
+        informative pairs makes ``identity`` None. The floor only bites when
+        there are a FEW informative pairs and they all match — 3 real residues
+        inside 57 unknowns scores a perfect 1.0 on a sample of 3, and without
+        the floor that certifies a map for the whole 60-residue chain. A
+        backbone model emitting mostly sequence-free output with a few residues
+        resolved is the realistic way to land here."""
+        seq = ["UNK"] * 60
+        ref_seq = _repeat_seq(60)
+        for i in (5, 20, 41):
+            seq[i] = ref_seq[i]
+        reference = self._ref([("A", ref_seq, 234)])
+        design = self._design([("A", seq, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["chains"]["A"]["n_informative"] == 3
+        assert rn["chains"]["A"]["identity"] == 1.0, (
+            "identity is PERFECT on its tiny sample — so identity is not what "
+            "refuses this, and if that ever changes this test has stopped "
+            "measuring the floor")
+        assert rn["applied"] is False
+        assert "informative" in rn["reason"]
+        assert entry["target_verified"] is False
+
+    def test_a_different_chain_of_the_same_length_refuses(self):
+        """Length alone is not evidence. GLY is absent from _TARGET_SEQ, so
+        every position mismatches and the identity floor refuses."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", ["GLY"] * 60, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "identity" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+
+    def test_all_target_chains_must_map_or_none_is_applied(self):
+        """A partial remap leaves one chain keyed to the input and another to
+        1..N — worse than not trying, because the gate would then see a mixture
+        and could still clear a pooled floor."""
+        seq_a, seq_b = _repeat_seq(60), _repeat_seq(40)
+        reference = self._ref([("A", seq_a, 234), ("B", seq_b, 300)])
+        # A is repairable; B is the wrong length and is not.
+        rows = (_trace("A", seq_a, first_res=1)
+                + _trace("B", _repeat_seq(25), y=40.0, first_res=1, serial0=1001)
+                + _trace("Z", ["GLY"] * 8, y=4.0, serial0=9000))
+        entry = cs.score_design_file("\n".join(rows) + "\n", {"A", "B"},
+                                     ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["chains"]["A"]["ok"] is True, "A alone would have mapped"
+        assert rn["chains"]["B"]["ok"] is False
+        assert rn["applied"] is False, "one bad chain vetoes the whole remap"
+        assert entry["target_verified"] is False
