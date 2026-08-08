@@ -28,6 +28,7 @@ containing the right words satisfies a grep and ships nothing.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 from html.parser import HTMLParser
@@ -95,20 +96,51 @@ class _Doc(HTMLParser):
         # three of four forms passed a check none of them actually met.
         self._after: dict = {}
         self._current: str = ""
+        # Everything inside the <form> a given field belongs to, INCLUDING the
+        # attributes a user can read (placeholder, title, data-tooltip,
+        # aria-label). ``help_after`` cannot see any of that: it starts at the
+        # field's own tag, so copy placed ABOVE the field, in a section intro,
+        # or in a tooltip is invisible to it — a "does the copy still say X?"
+        # check scoped that way keeps passing while X comes back somewhere
+        # else on the same screen.
+        #
+        # Scoped to the CONTAINING form rather than to the whole page on
+        # purpose. A page carries unrelated forms (nav, sign-out), and widening
+        # a check until unrelated copy can satisfy it is the failure the
+        # ``_after`` scoping was introduced to fix. The form is the unit that
+        # posts to the route whose parser is being checked.
+        self._form_seq = 0
+        self._form_stack: list = []
+        self._form_text: dict = {}
+        self._field_form: dict = {}
+
+    _READABLE_ATTRS = ("placeholder", "title", "data-tooltip", "aria-label")
 
     def handle_starttag(self, tag, attrs):
         d = dict(attrs)
+        if tag == "form":
+            self._form_seq += 1
+            self._form_stack.append(self._form_seq)
+            self._form_text.setdefault(self._form_seq, [])
         if tag == "input":
             self.inputs.append(d)
         if tag in self._FIELDS:
             self._current = d.get("name") or ""
             self._after.setdefault(self._current, [])
+            if self._form_stack:
+                self._field_form[self._current] = self._form_stack[-1]
+        if self._form_stack:
+            for key in self._READABLE_ATTRS:
+                if d.get(key):
+                    self._form_text[self._form_stack[-1]].append(f" {d[key]} ")
         if tag in ("script", "style"):
             self._skip += 1
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self._skip:
             self._skip -= 1
+        if tag == "form" and self._form_stack:
+            self._form_stack.pop()
 
     def handle_data(self, data):
         if self._skip:
@@ -116,6 +148,8 @@ class _Doc(HTMLParser):
         self._text.append(data)
         if self._current:
             self._after[self._current].append(data)
+        if self._form_stack:
+            self._form_text[self._form_stack[-1]].append(data)
 
     @property
     def text(self) -> str:
@@ -124,6 +158,15 @@ class _Doc(HTMLParser):
     def help_after(self, name: str) -> str:
         """Visible text between the named field and the next field."""
         return re.sub(r"\s+", " ", "".join(self._after.get(name, []))).strip()
+
+    def form_text_around(self, name: str) -> str:
+        """All readable copy in the ``<form>`` that carries the named field."""
+        form_id = self._field_form.get(name)
+        if form_id is None:
+            return ""
+        return re.sub(
+            r"\s+", " ", "".join(self._form_text.get(form_id, []))
+        ).strip()
 
     def input_named(self, name: str) -> dict:
         found = [i for i in self.inputs if i.get("name") == name]
@@ -321,6 +364,115 @@ def test_gated_forms_do_not_promise_a_multi_chain_target(slug, pages):
     )
 
 
+def _two_chain_pdb() -> bytes:
+    """Minimal-but-valid two-chain PDB with full N/CA/C/O backbones, so it
+    survives shared.pdb_inspect as well as the preflight evaluator."""
+    lines = ["HEADER    SYNTHETIC TEST"]
+    atom_id = 0
+    for chain in ("A", "B"):
+        for resnum in range(1, 81):
+            for atom_name, dx in (("N", 0), ("CA", 1), ("C", 2), ("O", 3)):
+                atom_id += 1
+                x = float(resnum + dx)
+                lines.append(
+                    f"ATOM  {atom_id:5d}  {atom_name:<3s} ALA {chain}{resnum:4d}"
+                    f"    {x:8.3f}{1.0:8.3f}{1.0:8.3f}  1.00 10.00           "
+                    f"{atom_name[0]}"
+                )
+    lines.append("END")
+    return "\n".join(lines).encode()
+
+
+@pytest.mark.parametrize("path", ["upload", "reuse-target"])
+def test_the_gated_forms_refusal_promise_holds_on_every_path_from_the_form(
+    flask_app, path,
+):
+    """bindcraft's help says a second chain "is refused when you submit". This
+    executes the submit, on BOTH ways a structure can reach it.
+
+    WHY BOTH. A review read the hard gate at blueprints/tools.py:1267 —
+    ``adapter.slug in PREFLIGHT_TOOLS and pdb_bytes is not None`` — noticed
+    that only a fresh upload and the AlphaFold fetch ever assign ``pdb_bytes``,
+    and concluded that picking a saved two-chain target and submitting would
+    sail past the refusal the copy promises. That trace is correct about that
+    gate and wrong about the route: a ``target:`` token stages bytes and then
+    meets the SECOND gate at blueprints/tools.py:1606, which re-inspects the
+    resolved bytes through shared/pdb_intake.py::_verify_reuse_pdb_bytes and
+    runs the same ``preflight_for_tool``. Two gates, one promise.
+
+    So this asserts the PROMISE (nothing reaches the GPU, and the user is told
+    why) rather than either gate, and it is parametrised so that closing one
+    path cannot be mistaken for closing both. The seams differ and that is
+    visible here: the upload path refuses before the job row exists, the reuse
+    path refuses after it and marks the row failed.
+    """
+    ctx = SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"
+    )
+    from shared.targets import DesignTarget
+
+    target = DesignTarget(
+        id="11111111-1111-4111-8111-111111111111",
+        user_id="u-1", name="Fc dimer", filename="fc.pdb",
+        storage_path="u-1/target-x/fc.pdb", target_chain="A,B",
+    )
+    job = SimpleNamespace(
+        id="job-stub", user_id="u-1", tool="bindcraft", preset="pilot",
+        job_token="t" * 64, inputs={},
+    )
+    data = {
+        "preset": "pilot",
+        "target_chain": "A,B",
+        "hotspot_residues": "35,52,62",
+        "binder_length_min": "50",
+        "binder_length_max": "100",
+        "num_designs": "2",
+    }
+    if path == "upload":
+        data["target_pdb"] = (io.BytesIO(_two_chain_pdb()), "fc.pdb")
+    else:
+        data["reuse_pdb_token"] = f"target:{target.id}"
+
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+    with patch("blueprints.tools.load_user_context", return_value=ctx), \
+            patch("blueprints.tools.tool_enabled", return_value=True), \
+            patch("blueprints.tools.get_or_create_wallet",
+                  return_value={"balance_usd": "100",
+                                "wallet_frozen": False}), \
+            patch("shared.targets.get_target", return_value=target), \
+            patch("blueprints.tools.create_job", return_value=job), \
+            patch("blueprints.tools.copy_input",
+                  return_value="u-1/job-stub/fc.pdb"), \
+            patch("blueprints.tools.upload_input",
+                  return_value="u-1/job-stub/fc.pdb"), \
+            patch("blueprints.tools.download_input",
+                  return_value=_two_chain_pdb()), \
+            patch("blueprints.tools.presigned_input_url",
+                  return_value="https://u/x.pdb"), \
+            patch("blueprints.tools.update_inputs"), \
+            patch("blueprints.tools.set_modal_call"), \
+            patch("blueprints.tools.mark_failed"), \
+            patch("gpu.modal_client.ModalClient.submit") as submitted:
+        resp = client.post(
+            "/tools/bindcraft/submit", data=data,
+            content_type="multipart/form-data",
+        )
+
+    assert resp.status_code == 200, resp.status_code
+    submitted.assert_not_called()
+    body = re.sub(r"\s+", " ", resp.get_data(as_text=True))
+    # The refusal must name the IMAGE, not the structure. "Target chain 'A,B'
+    # isn't in this PDB" is the wrong reason this gate was fixed to stop
+    # giving: it sends the user off to re-examine a perfectly good file.
+    assert "GPU image still handles one target chain at a time" in body, (
+        f"{path}: bindcraft accepted a two-chain target, or refused it for a "
+        f"reason that does not match the copy on the form"
+    )
+
+
 @pytest.mark.parametrize("slug", GATED_FORMS)
 def test_gated_forms_still_post_what_was_typed(slug, pages):
     """The cap stays wide even though the copy says one chain.
@@ -429,11 +581,25 @@ def test_targets_new_residue_examples_parse_on_its_own_route(
     Stated as the property rather than as "the copy does not say A296", so it
     keeps holding through a rewording: whatever example the field offers, the
     route it posts to has to accept it.
+
+    THE CORPUS IS THE WHOLE FORM, not the field's own help block. Scoped to
+    ``placeholder + help_after(field)`` this check could only see copy that
+    sits BETWEEN this field and the next one — so "A296" reintroduced above
+    the field, in a section intro, or in a ``title``/``data-tooltip`` would be
+    invisible and the check would go on passing while saying nothing. That is
+    the same shape of blind spot that let the contradiction ship in the first
+    place, one level out. ``form_text_around`` reads the containing <form>
+    including those attributes; it stops at the form so unrelated page copy
+    still cannot satisfy or trip it.
     """
     from blueprints.targets import _parse_residue_list
 
     inp = targets_new_page.input_named(field)
-    shown = f"{inp.get('placeholder') or ''} {targets_new_page.help_after(field)}"
+    shown = (
+        f"{inp.get('placeholder') or ''} "
+        f"{targets_new_page.help_after(field)} "
+        f"{targets_new_page.form_text_around(field)}"
+    )
     examples = _RESIDUE_EXAMPLE.findall(shown)
     assert examples, (
         f"{field}: no residue example anywhere in the placeholder or help, so "

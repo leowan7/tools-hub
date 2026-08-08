@@ -210,6 +210,30 @@
                 target chain at a time". Pinned by
                 tests/test_multichain_targets.py::
                 test_preflight_refuses_multichain_for_the_unverified_image.
+
+                "AT SUBMIT" MEANS BOTH PATHS OFF THIS FORM, and that was
+                checked by executing them, not by reading. A review traced the
+                hard gate at blueprints/tools.py:1267 — which is conditioned on
+                ``pdb_bytes is not None``, assigned only by a fresh upload or
+                the AlphaFold fetch — and concluded that submitting a SAVED
+                two-chain target (``reuse_pdb_token="target:<uuid>"``) would
+                skip the refusal this copy promises. It does not: a staged
+                reuse token meets the second gate at blueprints/tools.py:1606,
+                which re-inspects the copied bytes through
+                shared/pdb_intake.py::_verify_reuse_pdb_bytes and runs the same
+                preflight_for_tool. Both paths are now driven end to end by
+                tests/test_multichain_form_affordances.py::
+                test_the_gated_forms_refusal_promise_holds_on_every_path_from_the_form,
+                so this sentence cannot become an over-promise unnoticed.
+
+                What this copy does NOT speak for is /targets/<id>/launch,
+                which fans out to several tools and runs size checks only
+                (shared/targets.py::size_error) rather than preflight_for_tool.
+                That is a separate surface with its own open item — see the
+                bindcraft paragraph above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
+                shared/score_legends.py and
+                docs/HANDOFF-2026-08-07-multichain-finish.md — and it is why
+                bindcraft stays in the ipTM banner set.
              2. The hotspot picker below is NOT chainPrefixed for bindcraft
                 (see the held flag in the script block at the bottom of this
                 file). Type "A296", click once in the viewer, and the field is
