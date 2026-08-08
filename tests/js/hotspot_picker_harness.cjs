@@ -40,8 +40,10 @@
  * records representations. `loadFile` resolves SYNCHRONOUSLY (a thenable, not a
  * Promise) so the scenario stays a straight line and so a throw inside the
  * picker's resolve callback surfaces as a harness error instead of being eaten
- * by the picker's own `.catch`. ResizeObserver is left undefined on purpose, so
- * the picker takes its degrade-silently path there.
+ * by the picker's own `.catch`. It REJECTS synchronously instead when the
+ * scenario sets `loadFileRejects`, which is the only way anything here reaches
+ * the picker's parse-failure branch. ResizeObserver is left undefined on
+ * purpose, so the picker takes its degrade-silently path there.
  *
  * No jsdom, no npm, no package.json.
  *
@@ -52,7 +54,9 @@
  *     "formScript": "<the inline <script> body from that page>",
  *     "chain":      "A,B",            // value typed into #target_chain
  *     "hotspots":   "A296",           // pre-existing value in #hotspot_residues
- *     "clicks":     [{"resno": 264, "chain": "B"}]
+ *     "clicks":     [{"resno": 264, "chain": "B"}],
+ *     "loadFileRejects": false        // make NGL.loadFile REJECT, so the
+ *                                     // picker takes its degrade path
  *   }
  *
  * Result:
@@ -60,6 +64,7 @@
  *     "ok": true,
  *     "chainPrefixed": true,          // what the FORM actually asked for
  *     "field": "A296,B264",           // #hotspot_residues after the clicks
+ *     "viewerHtml": "",               // what the picker wrote into the viewer
  *     "chains": ["A", "B"],
  *     "chainSel": "(:A or :B)",       // NGL selection for the target
  *     "hotspotSel": "...",            // NGL selection for the highlights
@@ -130,6 +135,33 @@ function resolvedWith(value) {
     then: function (onFulfilled) {
       onFulfilled(value);
       return { catch: function () { return this; } };
+    },
+  };
+}
+
+/**
+ * A rejected thenable, for `scenario.loadFileRejects`.
+ *
+ * NGL rejects `loadFile` on a structure it cannot parse, and the picker answers
+ * that with a `.catch` that writes "Could not parse this structure. Typed
+ * hotspot entry still works." into the viewer (hotspot_picker.js). Until this
+ * existed nothing in the repo reached that branch — every scenario resolved —
+ * so the degrade path could be deleted or broken with the whole suite green,
+ * and the promise the copy makes (typed entry still works) was never checked.
+ *
+ * Symmetric with resolvedWith and synchronous for the same reason: `then` does
+ * NOT call its callback, `catch` does, and both stay on one stack so the result
+ * JSON is written after the picker has finished reacting.
+ */
+function rejectedWith(err) {
+  return {
+    then: function () {
+      return {
+        catch: function (onRejected) {
+          onRejected(err);
+          return this;
+        },
+      };
     },
   };
 }
@@ -207,7 +239,11 @@ function main() {
       };
       this.handleResize = function () {};
       this.removeComponent = function () {};
-      this.loadFile = function () { return resolvedWith(makeComponent()); };
+      this.loadFile = function () {
+        return scenario.loadFileRejects
+          ? rejectedWith(new Error('NGL: could not parse structure'))
+          : resolvedWith(makeComponent());
+      };
     },
   };
   // Deliberately NOT defined, so the picker takes its degrade-silently path:
@@ -293,10 +329,13 @@ function main() {
     if (hotspotEl.value === before) ignoredClicks.push(click);
   }
 
+  const viewerEl = global.document.getElementById(opts.viewerId);
+
   process.stdout.write(JSON.stringify({
     ok: true,
     chainPrefixed: !!picker.chainPrefixed,
     field: hotspotEl.value,
+    viewerHtml: viewerEl ? viewerEl.innerHTML : '',
     chains: picker._chains(),
     chainSel: picker._chainSel(),
     hotspotSel: picker._hotspotSel(),

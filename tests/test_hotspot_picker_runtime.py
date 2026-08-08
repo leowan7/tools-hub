@@ -124,7 +124,9 @@ def _form_page(app, slug: str) -> dict:
     return {"html": html, "script": blocks[0]}
 
 
-def _drive(page: dict, *, chain="", hotspots="", clicks=()) -> dict:
+def _drive(
+    page: dict, *, chain="", hotspots="", clicks=(), load_fails=False,
+) -> dict:
     scenario = {
         "pickerJs": str(PICKER_JS),
         "pageHtml": page["html"],
@@ -132,6 +134,7 @@ def _drive(page: dict, *, chain="", hotspots="", clicks=()) -> dict:
         "chain": chain,
         "hotspots": hotspots,
         "clicks": list(clicks),
+        "loadFileRejects": bool(load_fails),
     }
     proc = subprocess.run(
         ["node", str(HARNESS_JS)],
@@ -226,6 +229,56 @@ def test_every_form_mounts_a_picker_that_actually_comes_alive(slug, scripts):
         f"{slug}: the picker registered {out['clickHandlers']} click handlers; "
         f"with none, no pick can ever reach the hotspot field"
     )
+
+
+# ---------------------------------------------------------------------------
+# The structure NGL cannot parse
+# ---------------------------------------------------------------------------
+#
+# Every scenario above resolves ``loadFile``, so until this pair existed the
+# ``.catch`` in hotspot_picker.js was unreachable from any test: the whole
+# degrade path could be deleted and nothing here would notice. It is the branch
+# that carries a PROMISE to the user — "Typed hotspot entry still works" — and a
+# promise nothing executes is the shape of claim this round is about.
+
+
+@needs_node
+@pytest.mark.parametrize("slug", ALL_PICKER_FORMS)
+def test_an_unparseable_structure_says_so_and_keeps_typed_entry(slug, scripts):
+    """NGL rejects on a structure it cannot read. The picker must then say so
+    IN the viewer and leave what the user typed alone.
+
+    Both halves matter. Silently leaving an empty black box would read as "the
+    upload is still loading", and rewriting the hotspot field on the way out
+    would destroy the only input still available."""
+    out = _drive(
+        scripts[slug], chain="A", hotspots="54,56", load_fails=True,
+        clicks=[{"resno": 115, "chain": "A"}],
+    )
+    assert "Typed hotspot entry still works" in out["viewerHtml"], (
+        f"{slug}: a structure NGL could not parse left the viewer showing "
+        f"{out['viewerHtml']!r} — the user is given no way to know why"
+    )
+    assert out["field"] == "54,56", (
+        f"{slug}: the failed load rewrote the hotspot field to "
+        f"{out['field']!r}; typed entry is the only input left and it must "
+        f"survive"
+    )
+
+
+@needs_node
+def test_the_load_failure_switch_actually_changes_what_the_picker_sees(scripts):
+    """Guard the guard. If ``loadFileRejects`` were ignored, the test above
+    would be asserting against a picker that loaded normally — so the two
+    outcomes are compared directly here rather than assumed to differ."""
+    page = scripts["rfdiffusion"]
+    ok = _drive(page, chain="A")
+    bad = _drive(page, chain="A", load_fails=True)
+    assert ok["clickHandlers"] == 1 and bad["clickHandlers"] == 0, (
+        f"the reject path registered {bad['clickHandlers']} click handlers "
+        f"and the resolve path {ok['clickHandlers']}; the switch is inert"
+    )
+    assert "Typed hotspot entry still works" not in ok["viewerHtml"]
 
 
 # ---------------------------------------------------------------------------
