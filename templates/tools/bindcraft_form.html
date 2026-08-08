@@ -199,22 +199,53 @@
             Upload the target structure as .pdb, .cif, or .mmcif.
           </div>
 
+          {# BINDCRAFT'S COPY IS DELIBERATELY SINGLE-CHAIN, unlike the four
+             sibling binder forms. Two facts hold it here, and BOTH flip with
+             the same flag:
+
+             1. bindcraft is multi_chain_container_ready=False
+                (shared/pdb_preflight_rules.py), so preflight REFUSES a
+                multi-chain target at submit — "Bindcraft can't run a
+                multi-chain target yet ... its GPU image still handles one
+                target chain at a time". Pinned by
+                tests/test_multichain_targets.py::
+                test_preflight_refuses_multichain_for_the_unverified_image.
+             2. The hotspot picker below is NOT chainPrefixed for bindcraft
+                (see the held flag in the script block at the bottom of this
+                file). Type "A296", click once in the viewer, and the field is
+                rewritten as bare ints — the prefix is destroyed silently.
+
+             So the sibling forms' copy — "several for an oligomeric target
+             (A,B)", "prefix the chain (A296,B264)" — would advertise a target
+             this tool refuses and a token its own picker deletes. It was here
+             briefly and that is exactly what it did.
+
+             maxlength stays at the 32 the siblings use, on purpose. bindcraft's
+             validator caps chain ids PER TOKEN, so a 4-char field does not
+             prevent "A,B" (3 chars) — it only truncates "A,B,C" to "A,B," and
+             designs against two chains of the three the user named. A field
+             wide enough to post what was typed lets the submit-time refusal
+             say what is actually wrong.
+
+             WHEN THE FLAG FLIPS — one paid bindcraft pilot confirming the
+             prefixed form, or vendored upstream source — this copy moves to
+             match the sibling forms in the SAME commit, and bindcraft moves
+             back into MULTI_CHAIN_FORMS / REWRITTEN_COPY_FORMS in
+             tests/test_multichain_form_affordances.py. #}
           <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
           <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="32"
                  style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
-            One chain (<code>A</code>), or several for an oligomeric target
-            (<code>A,B</code>). Every named chain reaches the model; designing
-            against one protomer of a dimer aims at half the epitope.
+            One chain (<code>A</code>). BindCraft's GPU image has not been run
+            against an oligomeric target yet, so naming more than one chain is
+            refused when you submit.
           </div>
 
           <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
           <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                  style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
           <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-            Residues the binder should contact, in original PDB numbering. A plain
-            number is read as your <strong>first</strong> target chain; prefix the chain to
-            name another (<code>A296,B264</code>).
+            Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
             Click residues in the 3D viewer below to toggle them in and out of this list.
           </div>
 

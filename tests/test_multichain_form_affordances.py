@@ -13,6 +13,12 @@ Two defects from ``docs/HANDOFF-2026-08-07-multichain-finish.md`` items 1b/1c:
     form existed, so the one field that can express a multi-chain epitope read
     as if it could not.
 
+The forms are grouped by BEHAVIOUR, not by family resemblance. That is not
+bookkeeping: bindcraft sat in ``MULTI_CHAIN_FORMS`` while its preflight refuses
+a multi-chain target and its picker deletes a chain-prefixed hotspot on the
+first click, and the grouping alone is what put the sibling forms' copy on it.
+Each tuple below carries the behaviour that earns membership.
+
 Assertions are on PARSED ATTRIBUTES and RENDERED TEXT, never on template
 source. ``tests/test_candidate_table_js_contract.py:11-31`` is a catalogue of
 what source-substring assertions cost here: four of thirteen hooks were held
@@ -32,9 +38,16 @@ import pytest
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
-# Every tool whose target may be an oligomer. The chain field has to hold at
-# least "A,B,C"; 32 matches proteina's own server-side _MAX_CHAIN_FIELD.
-MULTI_CHAIN_FORMS = ("rfdiffusion", "pxdesign", "bindcraft", "boltzgen", "proteina")
+# Every tool whose target may be an oligomer AND whose image can run one. The
+# chain field has to hold at least "A,B,C"; 32 matches proteina's own
+# server-side _MAX_CHAIN_FIELD.
+#
+# bindcraft is NOT here, and the grouping is the point. It was, and that alone
+# is what put the sibling forms' multi-chain copy on a form whose preflight
+# refuses a multi-chain target and whose picker deletes a chain-prefixed
+# hotspot on the first click. A tool joins this tuple when its behaviour joins
+# it, not because its form looks like the others. See GATED_FORMS below.
+MULTI_CHAIN_FORMS = ("rfdiffusion", "pxdesign", "boltzgen", "proteina")
 
 # rfantibody builds a VHH against ONE chain (multi_chain_supported=False), and
 # tools/rfantibody/__init__.py caps the whole field at 4 characters. Raising
@@ -43,9 +56,16 @@ MULTI_CHAIN_FORMS = ("rfdiffusion", "pxdesign", "bindcraft", "boltzgen", "protei
 # builds "--hotspots A,B25". The 4 here is load-bearing, not an oversight.
 SINGLE_CHAIN_FORMS = ("rfantibody",)
 
+# Neither of the above. bindcraft's ADAPTER parses "A,B" and "A296,B264" fine,
+# so the field is not capped at 4 — but multi_chain_container_ready=False means
+# preflight refuses the run, and the picker is not chainPrefixed, so the COPY
+# must not advertise either form. Asserted explicitly, in both directions,
+# rather than by omission.
+GATED_FORMS = ("bindcraft",)
+
 # The forms whose hotspot copy this change rewrote. proteina already documented
 # both token forms in its own words and is asserted more loosely below.
-REWRITTEN_COPY_FORMS = ("rfdiffusion", "pxdesign", "bindcraft", "boltzgen")
+REWRITTEN_COPY_FORMS = ("rfdiffusion", "pxdesign", "boltzgen")
 
 WIDEST_TYPEABLE_TARGET = "A,B,C"
 
@@ -127,7 +147,7 @@ def pages(flask_app):
         user_id="u-1", tier="free", balance=100, email="u@example.com"
     )
     out = {}
-    for slug in MULTI_CHAIN_FORMS + SINGLE_CHAIN_FORMS:
+    for slug in MULTI_CHAIN_FORMS + SINGLE_CHAIN_FORMS + GATED_FORMS:
         client = flask_app.test_client()
         with client.session_transaction() as sess:
             sess["user_id"] = "u-1"
@@ -246,6 +266,76 @@ def test_single_chain_tools_do_not_advertise_the_prefixed_form(slug, pages):
     help_text = pages[slug].help_after("hotspot_residues")
     assert not _PREFIXED_EXAMPLE.search(help_text), (
         f"{slug}: advertises a hotspot form its own validator rejects"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The gated form: parses it, refuses to run it, must not advertise it
+# ---------------------------------------------------------------------------
+#
+# These are the negative half of 1b/1c, and they exist because the positive
+# half was applied to bindcraft by GROUPING rather than by behaviour. Both
+# assertions below failed against that copy.
+
+@pytest.mark.parametrize("slug", GATED_FORMS)
+def test_gated_forms_do_not_advertise_the_prefixed_hotspot_form(slug, pages):
+    """The picker destroys it, so the copy must not teach it.
+
+    bindcraft is in BARE_INT_FORMS in tests/test_hotspot_picker_runtime.py:
+    ``chainPrefixed`` is deliberately not set (the container forwards tokens
+    verbatim to a prebuilt image whose parser is vendored in neither repo, and
+    bindcraft has no smoke tier). So typing "A296" and then clicking once in
+    the 3D viewer rewrites the whole field as bare ints — the prefix is gone
+    with no message. Copy that teaches a form the page itself deletes is worse
+    than no copy.
+    """
+    help_text = pages[slug].help_after("hotspot_residues")
+    assert not _PREFIXED_EXAMPLE.search(help_text), (
+        f"{slug}: hotspot help shows a chain-prefixed example, but this "
+        f"form's picker is not chainPrefixed — one click in the viewer "
+        f"silently destroys it. help={help_text!r}"
+    )
+
+
+@pytest.mark.parametrize("slug", GATED_FORMS)
+def test_gated_forms_do_not_promise_a_multi_chain_target(slug, pages):
+    """The gate refuses it, so the copy must not offer it.
+
+    ``multi_chain_container_ready=False`` (shared/pdb_preflight_rules.py) makes
+    preflight_for_tool return needs_fix for any target naming more than one
+    chain — pinned end-to-end by tests/test_multichain_targets.py::
+    test_preflight_refuses_multichain_for_the_unverified_image. A field whose
+    help says "several for an oligomeric target (A,B)" walks the user into that
+    refusal.
+    """
+    help_text = pages[slug].help_after("target_chain").lower()
+    assert not re.search(r"a\s*,\s*b", help_text), (
+        f"{slug}: target chain help offers a multi-chain value that preflight "
+        f"refuses at submit. help={help_text!r}"
+    )
+    # Not vacuous: the field must still say what it DOES take, or removing the
+    # over-promise would pass by saying nothing at all.
+    assert "one chain" in help_text, (
+        f"{slug}: target chain help no longer states the single-chain "
+        f"requirement. help={help_text!r}"
+    )
+
+
+@pytest.mark.parametrize("slug", GATED_FORMS)
+def test_gated_forms_still_post_what_was_typed(slug, pages):
+    """The cap stays wide even though the copy says one chain.
+
+    A 4-char field does not enforce single-chain — "A,B" is 3 characters and
+    fits. All it does is truncate "A,B,C" to "A,B," so the server sees two of
+    the three chains the user named and the refusal describes the wrong input.
+    The tool's own validator caps chain ids per TOKEN, so the honest field is
+    one wide enough to post what was typed and let the submit-time refusal
+    speak.
+    """
+    from tools.proteina import _MAX_CHAIN_FIELD
+
+    assert pages[slug].input_named("target_chain")["maxlength"] == str(
+        _MAX_CHAIN_FIELD
     )
 
 
