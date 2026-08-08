@@ -369,6 +369,99 @@ def test_design_target_forms_are_not_capped_at_two_chains(template, flask_app):
     )
 
 
+# ---------------------------------------------------------------------------
+# The copy on a page must be parseable by THAT page's parser
+# ---------------------------------------------------------------------------
+#
+# The two target pages do NOT share a residue parser, and that is the whole
+# defect this section exists to hold shut:
+#
+#   POST /targets        (targets/new.html)     -> targets.py::_parse_residue_list
+#                                                  bare int() per token; answers
+#                                                  "'A296' is not a residue
+#                                                  number."
+#   POST /targets/<id>/launch (targets/launch.html)
+#                                               -> the TOOL ADAPTER's validate(),
+#                                                  i.e. tools/base.py::
+#                                                  parse_hotspot_residues, which
+#                                                  accepts "A45".
+#
+# So launch.html's "for a multi-chain Proteina target, prefix the chain
+# (A45, C73)" is true on its own route, and the same sentence on new.html was
+# not: it told users to type a token the create route rejects outright. It is
+# the COPY that moves, not the parser -- _parse_residue_list feeds the shared
+# target record, which is read back by every tool including iggm and
+# rfantibody, whose adapters must never see a prefixed token.
+
+# An example residue as it appears in copy: an optional chain prefix then
+# digits. Deliberately permissive about the prefix so a re-introduced "A296"
+# is SEEN by the extractor rather than skipped as prose.
+_RESIDUE_EXAMPLE = re.compile(r"\b([A-Za-z]{0,2}\d+)\b")
+
+# The two fields POST /targets parses with _parse_residue_list.
+_RESIDUE_FIELDS = ("hotspot_residues", "epitope_residues")
+
+
+@pytest.fixture(scope="module")
+def targets_new_page(flask_app):
+    """GET /targets/new through the real route."""
+    ctx = SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"
+    )
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+    with patch("blueprints.targets.load_user_context", return_value=ctx):
+        resp = client.get("/targets/new")
+    assert resp.status_code == 200, resp.status_code
+    doc = _Doc()
+    doc.feed(resp.get_data(as_text=True))
+    return doc
+
+
+@pytest.mark.parametrize("field", _RESIDUE_FIELDS)
+def test_targets_new_residue_examples_parse_on_its_own_route(
+    field, targets_new_page
+):
+    """Every residue example this page shows must survive this page's parser.
+
+    Stated as the property rather than as "the copy does not say A296", so it
+    keeps holding through a rewording: whatever example the field offers, the
+    route it posts to has to accept it.
+    """
+    from blueprints.targets import _parse_residue_list
+
+    inp = targets_new_page.input_named(field)
+    shown = f"{inp.get('placeholder') or ''} {targets_new_page.help_after(field)}"
+    examples = _RESIDUE_EXAMPLE.findall(shown)
+    assert examples, (
+        f"{field}: no residue example anywhere in the placeholder or help, so "
+        f"this check has nothing to compare against. shown={shown!r}"
+    )
+    for token in examples:
+        _, err = _parse_residue_list(token)
+        assert err is None, (
+            f"targets/new.html offers {token!r} for {field}, but the route it "
+            f"posts to answers {err!r}. Fix the COPY: this parser feeds the "
+            f"shared target record that iggm and rfantibody read back."
+        )
+
+
+def test_the_residue_example_extractor_can_see_a_chain_prefix():
+    """Guard the guard, and the only thing it pins is the EXTRACTOR.
+
+    The check above is worth exactly what its regex can see. If a prefixed
+    token were invisible to it, the copy could re-acquire "A296, B264" and the
+    check would go on passing while saying nothing -- which is how the
+    contradiction shipped in the first place.
+    """
+    assert _RESIDUE_EXAMPLE.findall(
+        "A plain number is read as the first target chain; prefix the chain "
+        "to name another (A296, B264)."
+    ) == ["A296", "B264"]
+
+
 def test_field_text_actually_renders_max_length_as_maxlength(flask_app):
     """Pins the indirection the previous test relies on: max_length is a macro
     KEYWORD, and the assertion above reads it from source rather than from a
