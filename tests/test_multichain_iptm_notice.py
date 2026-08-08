@@ -40,7 +40,14 @@ from shared.targets import TARGET_READ_OK, DesignTarget, TargetRead
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 NOTICE_MARKER = "data-multichain-iptm-notice"
-BANNER_TOOLS = ("rfdiffusion", "pxdesign", "bindcraft", "boltzgen")
+
+# boltzgen is deliberately not here any more: llm-proteinDesigner#18 deployed,
+# so its container reports the binder-to-target interface and the banner's
+# claim is false of any new run. The caveat its PRE-deploy runs still need
+# moved to the ipTM legend, which is per tool and per row. The reasoning, and
+# the two discriminators that were checked and do not exist, are in the
+# comment above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in shared/score_legends.py.
+BANNER_TOOLS = ("rfdiffusion", "pxdesign", "bindcraft")
 
 # The load-bearing half of the mechanism sentence: the number is computed over
 # interfaces that INCLUDE the target's own chain-chain contact. A shape, not a
@@ -89,11 +96,14 @@ def test_single_chain_targets_are_not_flagged(tool, chain):
     assert multichain_iptm_unreliable(tool, chain) is False
 
 
-@pytest.mark.parametrize("tool", ["proteina", "rfantibody", "boltz2", "", None])
+@pytest.mark.parametrize(
+    "tool", ["proteina", "rfantibody", "boltz2", "boltzgen", "", None]
+)
 def test_unaffected_tools_are_never_flagged(tool):
-    """proteina reports af2_iptm from a different scoring path and rfantibody
-    cannot take a multi-chain target at all. Warning on either would be noise,
-    and noise is what makes a real warning ignorable."""
+    """proteina reports af2_iptm from a different scoring path, rfantibody
+    cannot take a multi-chain target at all, and boltzgen's container now
+    reports the binder-to-target interface. Warning on any of them would be
+    noise, and noise is what makes a real warning ignorable."""
     assert multichain_iptm_unreliable(tool, "A,B") is False
 
 
@@ -104,15 +114,30 @@ def test_a_pooled_table_is_flagged_if_any_tool_is_affected():
     assert multichain_iptm_unreliable([], "A,B") is False
 
 
-def test_boltzgen_is_still_in_the_set_until_its_fix_deploys():
-    """boltzgen's real fix is llm-proteinDesigner PR #18 (design_iptm first in
-    IPTM_KEYS). Until that is MERGED AND DEPLOYED the running container still
-    reports the complex-wide value, so the notice has to stay.
+def test_boltzgen_left_the_banner_set_and_its_caveat_did_not_vanish():
+    """The two halves of the B11 decision, pinned together on purpose.
 
-    This test is the reminder. When the deploy lands, drop "boltzgen" from
-    MULTICHAIN_IPTM_UNRELIABLE_TOOLS and delete this test, citing the deploy.
+    llm-proteinDesigner#18 is merged (311c29f) and deployed, so the container
+    reports the binder-to-target interface and the banner would be telling
+    every new boltzgen user something untrue about their run. It is out.
+
+    What must NOT come with that is the silent loss of the caveat the
+    PRE-deploy runs still need: a results page renders whatever the job
+    stored, at least one multi-chain boltzgen run predates the deploy, and
+    neither a per-record marker nor a timestamp usable at all six call sites
+    exists to tell them apart (both checked; see the comment above
+    MULTICHAIN_IPTM_UNRELIABLE_TOOLS). So the caveat moved to the ipTM legend,
+    which renders per tool and per row, and this test refuses to let one half
+    of the trade happen without the other.
     """
-    assert "boltzgen" in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
+    from shared.score_legends import get_legend
+
+    assert "boltzgen" not in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
+    explanation = get_legend("boltzgen", "ipTM")["explanation"]
+    assert "chain-chain" in explanation, (
+        "boltzgen left the banner set without the legend picking up the "
+        "pre-deploy caveat — the old runs now carry no warning anywhere"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +560,11 @@ def test_every_candidate_table_page_calls_the_notice(template, flask_app):
     """A completeness check over the four job-result partials, whose rendered
     behaviour in both directions is pinned above.
 
+    boltzgen is still here although it no longer trips the notice. The call is
+    the page asking a shared decision function, not the page deciding; leaving
+    it means a future change to MULTICHAIN_IPTM_UNRELIABLE_TOOLS reaches every
+    results view at once instead of one that quietly lost its wiring.
+
     ``runs/detail.html`` and ``targets/detail.html`` used to be in this list and
     are deliberately no longer. A source grep was the ONLY thing covering them,
     and it could see neither argument; they are rendered through their real
@@ -546,36 +576,53 @@ def test_every_candidate_table_page_calls_the_notice(template, flask_app):
     )
 
 
-def test_the_boltzgen_legend_does_not_outrun_the_deploy(flask_app):
-    """The tooltip must not claim a fix that has not shipped.
+def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
+    """The tooltip is now the only place the era distinction is made, so it
+    has to make it — in both directions.
 
-    An earlier draft of this file asserted the opposite — that the legend
-    names ``design_iptm``, "the binder-to-target interface". That is true only
-    once llm-proteinDesigner#18 is merged AND DEPLOYED; until then the
-    container still emits the complex-wide value, which is precisely why
-    boltzgen is in MULTICHAIN_IPTM_UNRELIABLE_TOOLS. Asserting it early pinned
-    a tooltip that contradicted the banner rendered directly above the same
-    column on the same screen, and a test that pins a false claim is worse
-    than no test at all.
-
-    When the deploy lands, this test and the frozenset entry move together.
+    An earlier draft of this file asserted the legend must NOT say
+    binder-to-target, because the deploy had not happened. It has, so that
+    assertion would now pin a false claim, which is worse than no test. What
+    replaces it is not the mirror image: the legend has to say what the
+    number IS today AND what an older multi-chain run stored, because a
+    results page shows whatever the job saved and nothing in the record says
+    which container produced it.
     """
-    from shared.score_legends import (
-        MULTICHAIN_IPTM_UNRELIABLE_TOOLS, get_legend,
-    )
+    from shared.score_legends import get_legend
 
     legend = get_legend("boltzgen", "ipTM")
-    assert "design_iptm" not in legend["explanation"], (
-        "the legend claims a value the deployed container does not emit"
+    explanation = legend["explanation"]
+    assert "binder-to-target" in explanation, (
+        "the legend still describes a value the deployed container no longer "
+        "emits"
     )
-    assert "chain-chain" in legend["explanation"], (
-        "the legend must say the multi-chain number is not binder-only"
+    assert "chain-chain" in explanation, (
+        "the legend drops the caveat that a pre-deploy multi-chain run stored "
+        "the complex-wide number"
     )
-    # The two must move together: while boltzgen is warned about, the legend
-    # must not describe its number as binder-to-target only.
-    assert "boltzgen" in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
+    assert "older run" in explanation, (
+        "the legend states the current meaning without saying older runs "
+        "differ, which reads as if every stored value were binder-to-target"
+    )
     # Thresholds were calibrated on single-chain runs where the two keys nearly
     # coincide, so they remain the best available anchor and must not drift
     # silently alongside a wording change.
     assert legend["good"] == 0.7
     assert legend["excellent"] == 0.8
+
+
+def test_boltzgen_results_no_longer_carry_the_banner(flask_app):
+    """The decision, at the seam a user actually sees.
+
+    The frozenset test above is the unit; this is the page. boltzgen still
+    CALLS the macro — templates/tools/boltzgen_results.html is in the
+    completeness check below — so the wiring stays and only the shared
+    decision function changes. That is deliberate: the page asks, one place
+    answers.
+    """
+    html = _render_results(flask_app, "boltzgen", "A,B")
+    assert NOTICE_MARKER not in html, (
+        "a boltzgen run gets the banner again; its container reports the "
+        "binder-to-target interface, so the banner's mechanism sentence is "
+        "false about it"
+    )

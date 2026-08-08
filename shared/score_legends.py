@@ -270,20 +270,27 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         "good": 0.7,
         "excellent": 0.8,
         "direction": "higher_is_better",
-        # DO NOT promote this to "the binder-to-target interface" until
-        # llm-proteinDesigner#18 is MERGED AND DEPLOYED. An earlier draft did,
-        # and it made this tooltip contradict the banner rendered directly
-        # above the same column on the same screen: the deployed container
-        # still emits the complex-wide value, which is the entire reason
-        # boltzgen is in MULTICHAIN_IPTM_UNRELIABLE_TOOLS below. Both changes
-        # belong in the same follow-up commit, citing the deploy.
+        # llm-proteinDesigner#18 (squash-merged as 311c29f; the Modal deploy
+        # for that SHA is green) puts `design_to_target_iptm` first in
+        # IPTM_KEYS, so the deployed container reports the binder-to-target
+        # interface and this may finally say so.
+        #
+        # It carries the pre-deploy caveat because a results page renders
+        # whatever the JOB STORED, and multi-chain runs from before the deploy
+        # still hold the complex-wide value. THIS LEGEND IS WHERE THAT CAVEAT
+        # LIVES NOW — see MULTICHAIN_IPTM_UNRELIABLE_TOOLS below for why it is
+        # not the banner. The two move together: if boltzgen ever goes back
+        # into that set, this text must stop calling the number
+        # binder-to-target in the same commit, or the tooltip and the banner
+        # directly above the same column contradict each other on one screen.
         "explanation": (
-            "Interface pTM from the BoltzGen confidence head. On a "
-            "single-chain target this is the binder-to-target interface. "
-            "On a target with more than one chain it currently also "
-            "includes the target's own chain-chain interface — see the "
-            "note above the table. Above 0.7 is a credible binder; above "
-            "0.8 is strong."
+            "Interface pTM from the BoltzGen confidence head — the "
+            "binder-to-target interface. On a multi-chain target that "
+            "holds for runs after the August 2026 container update; an "
+            "older run stored a complex-wide value instead, inflated by "
+            "the target's own chain-chain interface, and the stored "
+            "result does not record which it is. Above 0.7 is a credible "
+            "binder; above 0.8 is strong."
         ),
     },
     ("boltzgen", "pLDDT"): {
@@ -408,11 +415,55 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # RANKING key (shared/result_columns.py) and the threshold that labels
 # filter_status.
 #
-# BoltzGen is fixed at the source: llm-proteinDesigner PR #18 moves
-# `design_iptm` — the real binder-to-target pair — to the front of IPTM_KEYS.
-# It stays in this set until that PR is MERGED AND DEPLOYED, because until
-# then the deployed container still reports the complex-wide value. Removing
-# it is a one-line follow-up; cite the deploy in that commit.
+# BOLTZGEN IS OUT, AND THE RUNS THAT PREDATE THE FIX ARE WHY IT TOOK AN
+# ARGUMENT. llm-proteinDesigner#18 (squash-merged as 311c29f, Modal deploy
+# green) moves `design_to_target_iptm` to the front of IPTM_KEYS, so the
+# deployed container reports the binder-to-target interface. For every
+# boltzgen run from here on, the banner's central claim — that the number is
+# computed over interfaces including the target's own chain-chain contact —
+# is FALSE.
+#
+# The wrinkle is that a results page renders whatever the job STORED, and
+# designs that ran before the deploy still carry the old complex-wide value.
+# At least one pre-deploy multi-chain boltzgen run exists (the 4ZQK GPU
+# verification). A blanket removal takes their caveat away.
+#
+# Neither way of telling the two apart exists here, and both were checked
+# rather than assumed:
+#
+#   * NO PER-RECORD MARKER. tools-hub stores the container's result verbatim
+#     and reads the number out of `scores["ipTM"]`; nothing in this repo
+#     reads, writes or requires a key saying WHICH IPTM_KEYS entry produced
+#     it. Grep `design_iptm` here and every hit is a comment. Gating on a key
+#     we merely hope the new container emits is a guess about another repo's
+#     output shape, which is exactly how design_iptm was lost in the first
+#     place.
+#   * NO USABLE TIMESTAMP. Jobs and campaigns carry created_at/completed_at,
+#     but the pooled target page is one of the six call sites and its
+#     candidates are tagged only with _source_tool / _source_preset /
+#     _source_campaign_id / _source_job_id / _source_index / _source_chunk
+#     (shared/target_results.py). A date gate would be right on five views and
+#     silently absent on the sixth — worse than either uniform answer, because
+#     it looks like a fix.
+#
+# So the choice is which error to make uniformly, and they are not symmetric.
+# KEEPING boltzgen shows every future user a mechanism sentence that is untrue
+# of their run — not an over-cautious warning but a wrong explanation of a
+# correct number, on the one tool where the fix actually landed. DROPPING it
+# leaves a shrinking set of historical runs without a BANNER.
+#
+# It is dropped, and the caveat moves to the boltzgen ipTM LEGEND above, which
+# is the only surface that can state it per tool and per era without lying to
+# anyone. That legend renders on the ipTM column of every boltzgen table, old
+# and new: the header tooltip in single-tool mode, and per row resolved from
+# that row's own tool in pooled mode (components/candidate_table.html) — which
+# is also the one view where a pre-deploy design sits beside a post-deploy
+# one. The banner cannot do that; it is handed a tool slug, not a run.
+#
+# This does not weaken the rule bindcraft is kept under below. That rule — a
+# false positive costs a sentence — holds only while the sentence would be
+# TRUE if the run happened. For post-deploy boltzgen it is not true, so the
+# cost is not a sentence.
 #
 # rfdiffusion and pxdesign have no equivalent fix available: the per-pair
 # value does not exist anywhere in their output and deriving it from the chain
@@ -444,7 +495,7 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # needs its own copy and its own verification, not membership in this set.
 # Filed, not fixed.
 MULTICHAIN_IPTM_UNRELIABLE_TOOLS = frozenset(
-    {"rfdiffusion", "pxdesign", "bindcraft", "boltzgen"}
+    {"rfdiffusion", "pxdesign", "bindcraft"}
 )
 
 
