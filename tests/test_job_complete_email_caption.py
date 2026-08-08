@@ -545,6 +545,38 @@ def test_no_legend_outgrows_the_email_caption_slot():
         f"'View results' link the mail already carries, not in the callout."
     )
 
+    # 3. The CONDITIONAL part, on its own.
+    #
+    # Without this, ``_CAVEAT_LIMIT`` binds nothing: it appears only in the
+    # arithmetic above and in that failure message, so the two parts were
+    # bounded solely as a SUM. With the shipped 134-character explanation a
+    # caveat could reach 526 — 86 over its stated ceiling and 1.96x the line
+    # it hangs off — while the caption check stayed green, and the comment at
+    # the top of this file would have kept saying _CAVEAT_LIMIT "bounds the
+    # part that is CONDITIONAL" the whole time. An independent pass caught it
+    # by growing the caveat to 441 and watching this test pass.
+    #
+    # That is the failure this whole effort kept hitting: a justification that
+    # reads correctly and was never executed. The ratio is the rule, so assert
+    # the ratio.
+    caveats = {
+        key: len(legend["caveat"])
+        for key, legend in SCORE_LEGENDS.items()
+        if legend.get("caveat")
+    }
+    assert caveats, (
+        "no legend carries a caveat, so this check bounds nothing. Either the "
+        "key was renamed or the era note was dropped; re-point this rather "
+        "than leave it passing."
+    )
+    over_caveat = {k: n for k, n in caveats.items() if n > _CAVEAT_LIMIT}
+    assert not over_caveat, (
+        f"legend caveat(s) longer than twice the line they qualify "
+        f"({_CAVEAT_LIMIT} chars): {over_caveat!r}. The caption ceiling above "
+        f"would still pass this, because it bounds the SUM — which is how a "
+        f"caveat can grow without any rule noticing."
+    )
+
 
 def test_no_legend_text_describes_a_table():
     """The email has no table, so nothing that can land in it may name one.
