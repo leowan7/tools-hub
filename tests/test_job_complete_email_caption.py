@@ -280,6 +280,32 @@ def test_the_boltzgen_caption_is_in_the_mail_and_describes_only_the_mail(chain):
             f"ordering to point at: {caption!r}"
         )
 
+    # RANKING WORDS, ON THE UNCONDITIONAL HALF ONLY. ``ordering`` and
+    # ``ranked`` were on the list above until the caveat needed them, and both
+    # came off — which is what lets the caveat's closing sentence ("Designs are
+    # ranked on this number, so … treat any ordering derived from it as
+    # indicative too") into a mail whose own summary reads "1 candidate
+    # returned". That sentence is NOT false: it is generic English about the
+    # tool, the same page-independent construction the banner uses on purpose,
+    # and it is true of the results page the mail links to. So the caveat keeps
+    # them.
+    #
+    # ``explanation`` is a different matter and has no such tension: it goes
+    # out on EVERY completion mail for its tool and column, one design and one
+    # number, where there is nothing to rank. It carries neither word today, so
+    # this costs nothing now and fails for the next legend that puts ranking
+    # advice in the half that cannot be gated.
+    for legend_key, legend in SCORE_LEGENDS.items():
+        for banned in ("ordering", "ranked", "the order"):
+            assert banned not in legend["explanation"].lower(), (
+                f"legend {legend_key!r}'s explanation says {banned!r}. It "
+                f"reaches every completion email for that tool and column — "
+                f"one design, one number, nothing to rank. Ranking advice "
+                f"belongs in ``caveat``, which reaches the mail only on a "
+                f"multi-chain job and reaches the results table always: "
+                f"{legend['explanation']!r}"
+            )
+
 
 def test_the_era_caveat_reaches_the_mail_when_the_target_is_multi_chain():
     """The round-4 regression, in both directions.

@@ -21,8 +21,10 @@ single-chain run — the far more common case — and train users to ignore it.
 """
 from __future__ import annotations
 
+import atexit
 import os
 import re
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -1591,14 +1593,44 @@ def _sweep_rules(flask_app) -> list:
 _REPO_TMP = Path(__file__).resolve().parents[1] / "tmp"
 
 
-def _tmp_entries() -> set:
-    """What is directly under the repo's ``tmp/`` right now."""
-    return {p.name for p in _REPO_TMP.iterdir()} if _REPO_TMP.exists() else set()
+def _tmp_entries() -> dict:
+    """Every path under the repo's ``tmp/``, recursively, with file sizes.
+
+    NAMES AT ONE LEVEL WAS HALF A CHECK, and the missing half is where the
+    incident actually is. ``tmp/calibration/dispatched.json`` and
+    ``results.json`` are TRACKED files, one level DOWN. ``cleanup_old_jobs``
+    happened to rmtree the whole directory, so the name vanished and a
+    one-level name set caught it — but a route that deleted, truncated or
+    rewrote either file while leaving ``tmp/calibration/`` standing left that
+    set byte-identical, and the test below claimed to close the class.
+    Recursive, and with sizes, so a rewrite in place fails here too.
+
+    Cheap: the repo's ``tmp/`` holds two files in one directory.
+    """
+    if not _REPO_TMP.exists():
+        return {}
+    return {
+        str(p.relative_to(_REPO_TMP)):
+            (p.stat().st_size if p.is_file() else "dir")
+        for p in _REPO_TMP.rglob("*")
+    }
+
+
+# ONE scratch job dir for the whole process, removed at exit. It used to be a
+# fresh ``mkdtemp`` per swept scout route with no cleanup, and
+# ``_reachable_pages`` is a plain function called by two tests, so a full run
+# left several behind in the system temp dir. Outside the repo, so
+# ``git status`` never saw them — litter rather than a defect, but free to stop.
+_SCRATCH_JOB_DIR: list = []
 
 
 def _scratch_job_dir():
     """A job dir OUTSIDE the repo, for the one swept route that creates one."""
-    path = Path(tempfile.mkdtemp(prefix="iptm-sweep-"))
+    if not _SCRATCH_JOB_DIR:
+        made = Path(tempfile.mkdtemp(prefix="iptm-sweep-"))
+        _SCRATCH_JOB_DIR.append(made)
+        atexit.register(shutil.rmtree, made, True)
+    path = _SCRATCH_JOB_DIR[0]
     return path.name, path
 
 
@@ -1703,17 +1735,29 @@ def test_the_sweep_leaves_the_repo_alone(flask_app):
     tracked, and the first run deleted both files in it.
 
     The stubs in ``_reachable_pages`` close that one. This closes the class:
-    the next swept route that writes or deletes under ``tmp/`` fails here
-    rather than showing up as an unexplained deletion in someone's
-    ``git status``.
+    the next swept route that writes, deletes or rewrites anything under
+    ``tmp/`` fails here rather than showing up as an unexplained deletion in
+    someone's ``git status``.
+
+    "The class" is a claim that was half true until ``_tmp_entries`` went
+    recursive — it compared directory NAMES one level down, and the two files
+    the incident destroyed live one level below that. See its docstring.
+
+    AND ``_reachable_pages`` MUST NOT BE CACHED, although a module-scoped
+    fixture would halve the suite's 166 requests: this test measures the
+    sweep's SIDE EFFECTS, so it has to be the sweep that runs between the two
+    snapshots. Memoise it and the second caller gets a dict back without
+    touching a route, and this test passes while checking nothing.
     """
     before = _tmp_entries()
     _reachable_pages(flask_app)
     after = _tmp_entries()
     assert after == before, (
-        f"the sweep changed the repo's tmp/: created {sorted(after - before)!r}, "
-        f"deleted {sorted(before - after)!r}. A swept route has a filesystem "
-        f"side effect; stub it in _reachable_pages the way the scout reaper is"
+        f"the sweep changed the repo's tmp/. Added or changed: "
+        f"{sorted(set(after.items()) - set(before.items()))!r}. Removed or "
+        f"changed: {sorted(set(before.items()) - set(after.items()))!r}. A "
+        f"swept route has a filesystem side effect; stub it in "
+        f"_reachable_pages the way the scout reaper is"
     )
 
 
