@@ -118,15 +118,27 @@ run; pxdesign is worth a separate decision about cost, not a default.
 
 The results page will carry the amber **"ipTM is not reliable for this
 multi-chain target"** banner. That is correct and expected — it is item 4,
-landed in this pass. On a real crystal dimer the target's own chain–chain
-interface scores ~0.9 and dominates ipTM, which is both the displayed number
-and the ranking key. Judge these designs on pLDDT, i_pAE and the interface
-geometry, or re-fold the top few with Boltz-2 from the buttons under the table.
+landed in this pass. ipTM here is computed across the interfaces of the whole
+complex, including the target's own chain–chain contact, and on a dimer that
+internal interface is large and well formed whatever the binder does — so it
+holds up a number that is both the displayed value and the ranking key. Judge
+these designs on pLDDT, i_pAE and the interface geometry, or re-fold the top
+few with Boltz-2 from the buttons under the table.
 
-BoltzGen is the one tool where this is fixable at the source, and that fix is
-sitting in `leowan7/llm-proteinDesigner#18` (`design_iptm` first in
-`IPTM_KEYS`). rfdiffusion and pxdesign need a per-pair value derived from the
-chain layout, which nobody has built.
+(An earlier version of this section said ipTM is "a maximum over residues" and
+quoted ~0.9 for a crystal dimer. Four pipeline files in this repo describe it
+as interface-pTM *averaged over every chain pair* instead —
+`tools/af2/run_pipeline.py:202` and three siblings. The conclusion holds under
+either reduction; the figure does not.)
+
+BoltzGen is the one tool where this was fixable at the source, and that fix
+has since MERGED AND DEPLOYED (`leowan7/llm-proteinDesigner#18`,
+`design_to_target_iptm` first in `IPTM_KEYS`), so boltzgen no longer carries
+this banner — a boltzgen run started now reports the binder-to-target
+interface. Its ipTM column tooltip carries the caveat that runs from *before*
+the deploy stored the complex-wide value. rfdiffusion and pxdesign need a
+per-pair value derived from the chain layout, which nobody has built, so for
+this run the banner is the remedy.
 
 ## What this run is actually testing
 
