@@ -1028,8 +1028,74 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
 # past.
 _CLAIMS_THE_BINDER_PAIR = re.compile(r"binder.to.target interface", re.I)
 
-# The qualifier that makes the sentence honest.
+# The qualifier that makes it honest, IN TWO PARTS, because one part is what
+# the round-3 review walked through. The old check asked only for the string
+# "multi-chain" within 400 characters of the claim, so restoring the banned
+# sentence verbatim and adding "Multi-chain targets are supported by most
+# tools here." beside it turned the test green with the defect back on the
+# page. Proximity to the WORD is not qualification.
+#
+# A real qualifier states the condition AND the consequence: on a multi-chain
+# target, the number covers something other than the binder pair. Either half
+# alone is satisfiable by copy that qualifies nothing.
 _QUALIFIES_MULTI_CHAIN = re.compile(r"multi.chain", re.I)
+_NAMES_THE_CONSEQUENCE = re.compile(
+    r"chain.chain|whole complex|complex.wide|target'?s own|"
+    r"more than the binder|not (?:only|just) the binder",
+    re.I,
+)
+
+# Tags that end a run of visible text. The check runs per BLOCK rather than
+# over a character window: a `<dd>` is the unit in which a definition either
+# is or is not qualified, and a window is a guess about layout.
+_BLOCK_TAGS = frozenset(
+    "address article aside blockquote br dd details div dl dt fieldset "
+    "figcaption figure footer form h1 h2 h3 h4 h5 h6 header hr legend li "
+    "main nav ol option p pre script section style table tbody td tfoot th "
+    "thead tr ul".split()
+)
+
+
+class _TextBlocks(HTMLParser):
+    """Visible text, split at every block boundary.
+
+    Inline markup (``<strong>``, ``<a>``) does NOT split, so a sentence
+    wrapped in emphasis stays with its neighbours; a new ``<dd>`` or ``<p>``
+    does, so an unrelated paragraph cannot qualify the one before it.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._current: list = []
+        self.blocks: list = []
+
+    def _flush(self):
+        text = " ".join("".join(self._current).split())
+        if text:
+            self.blocks.append(text)
+        self._current = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag in _BLOCK_TAGS:
+            self._flush()
+
+    def handle_data(self, data):
+        self._current.append(data)
+
+    def close(self):
+        super().close()
+        self._flush()
+
+
+def _blocks(html: str) -> list:
+    parser = _TextBlocks()
+    parser.feed(html)
+    parser.close()
+    return parser.blocks
 
 
 def _visible(html: str) -> str:
@@ -1038,44 +1104,97 @@ def _visible(html: str) -> str:
     return parser.text
 
 
-@pytest.mark.parametrize("path", ["/help/tools/rfdiffusion", "/tools/rfdiffusion"])
-def test_the_general_pages_do_not_state_iptm_as_the_binder_pair(
-    flask_app, path,
-):
+def _reachable_pages(flask_app) -> dict:
+    """Every page a logged-out visitor can GET, rendered.
+
+    NOT A LIST OF PATHS. The check this feeds used to name
+    ``/help/tools/rfdiffusion`` and ``/tools/rfdiffusion``, and the commit that
+    wrote that list had just learned the lesson against it — an independent
+    review found two surfaces carrying the claim and there were three. A
+    fourth is found the same way: not at all.
+
+    So the routes come from ``url_map``. Every GET rule with no arguments,
+    plus the two per-tool families, for every adapter in the registry rather
+    than for a slug someone remembered. Non-200s are skipped: most are the
+    login redirect, and a page a signed-out visitor cannot reach is not a page
+    this check is about. The floor assertion in the test is what stops that
+    skip from quietly emptying the sweep.
+    """
+    from tools import base as tool_base
+
+    client = flask_app.test_client()
+    slugs = sorted(a.slug for a in tool_base.all_adapters())
+    rules = sorted({
+        rule.rule
+        for rule in flask_app.url_map.iter_rules()
+        if "GET" in (rule.methods or set())
+        and not rule.arguments
+        and not rule.rule.startswith("/static")
+    })
+    rules += [f"/help/tools/{s}" for s in slugs]
+    # Requested with NO session, which is what selects the preview shell
+    # rather than the form. ``tool_enabled`` is patched because the flag is
+    # off in a bare test env and the route answers 404 — the flag is not what
+    # is under test here.
+    rules += [f"/tools/{s}" for s in slugs]
+
+    pages = {}
+    with patch("blueprints.tools.tool_enabled", return_value=True):
+        for rule in rules:
+            try:
+                resp = client.get(rule)
+            except Exception:  # noqa: BLE001, S110
+                continue  # a route that errors is a different test's business
+            if resp.status_code == 200:
+                pages[rule] = resp.get_data(as_text=True)
+    return pages
+
+
+def test_no_general_page_states_iptm_as_the_binder_pair(flask_app):
     """A page that cannot know the tool must not make the per-tool claim.
 
-    Both of these describe ipTM once, for every tool at once —
-    templates/help/tool_guide.html and the logged-out shell
-    templates/tools/_preview.html — and both said "Predicted confidence in the
-    binder to target interface." The per-tool legend and the multi-chain banner
-    exist because that is not true everywhere; a general page repeating it as
-    fact undoes them one click away.
+    ipTM's INTENT is the binder-to-target pair. Stating it as fact is false
+    today for rfdiffusion, pxdesign and bindcraft on a multi-chain target, and
+    for any boltzgen run predating the August 2026 container update. The
+    per-tool legend and the multi-chain banner exist because of that; a
+    general page repeating it as fact undoes them one click away.
 
-    ASSERTED ON RENDERED TEXT, NOT SOURCE. The fix left explanatory comments in
-    both templates that quote the banned phrase in order to ban it, so a source
-    grep would fail on the fix itself. HTMLParser routes comments to
+    SWEPT, NOT LISTED, and QUALIFIED, NOT MERELY NEARBY — the two things the
+    round-3 review took off this check. It is applied to every page a
+    logged-out visitor can reach, and the qualifier has to name the
+    consequence and not only the words "multi-chain".
+
+    ASSERTED ON RENDERED TEXT, NOT SOURCE. The fix left explanatory comments
+    in both templates that quote the banned phrase in order to ban it, so a
+    source grep would fail on the fix itself. HTMLParser routes comments to
     handle_comment, which _Text ignores.
-
-    ``/tools/rfdiffusion`` is requested with NO session, which is what selects
-    the preview shell rather than the form. ``tool_enabled`` is patched because
-    the flag is off in a bare test env and the route answers 404 — the flag is
-    not what is under test here.
     """
-    client = flask_app.test_client()
-    with patch("blueprints.tools.tool_enabled", return_value=True):
-        resp = client.get(path)
-    assert resp.status_code == 200, f"{path} -> {resp.status_code}"
-    body = _visible(resp.get_data(as_text=True))
-    assert "ipTM" in body, (
-        f"{path} no longer describes ipTM at all; this check has nothing to "
-        f"look at and should be re-pointed rather than left passing"
+    pages = _reachable_pages(flask_app)
+    describes_iptm = {
+        path for path, html in pages.items() if "ipTM" in _visible(html)
+    }
+    # THE FLOOR. Skipping non-200s could otherwise empty this sweep without a
+    # failure, and these two are the surfaces the claim was actually found on.
+    assert {"/help/tools/rfdiffusion", "/tools/rfdiffusion"} <= describes_iptm, (
+        f"the sweep no longer reaches the two pages this check was written "
+        f"for; it is covering something other than what it claims. reached "
+        f"{len(pages)} pages, {sorted(describes_iptm)!r} mention ipTM"
     )
-    for match in _CLAIMS_THE_BINDER_PAIR.finditer(body):
-        window = body[max(0, match.start() - 400):match.end() + 400]
-        assert _QUALIFIES_MULTI_CHAIN.search(window), (
-            f"{path} states ipTM as the binder-to-target interface with no "
-            f"multi-chain qualifier near it: ...{window}..."
-        )
+
+    offenders = {}
+    for path, html in pages.items():
+        for block in _blocks(html):
+            if not _CLAIMS_THE_BINDER_PAIR.search(block):
+                continue
+            if _QUALIFIES_MULTI_CHAIN.search(block) and \
+                    _NAMES_THE_CONSEQUENCE.search(block):
+                continue
+            offenders[path] = block
+    assert not offenders, (
+        "page(s) state ipTM as the binder-to-target interface without saying, "
+        "in the same block, that on a MULTI-CHAIN target the number covers "
+        f"the target's own chain-chain interface too: {offenders!r}"
+    )
 
 
 class _Tooltips(HTMLParser):
