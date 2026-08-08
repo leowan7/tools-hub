@@ -285,17 +285,110 @@ _PDB_NAME_COLUMNS = ("sample", "name", "sample_name", "design_id", "sample_id", 
 # /tmp/smoke_results.json between jobs, so a stale file from the previous shard
 # would read as "this run already reported" and suppress the only diagnosis
 # this run was going to produce. Reset at the top of ``main()``.
+#
+# THAT IS ONLY THE IN-PROCESS HALF, and the comment above used to read as
+# though it were the whole thing. The flag stops a stale file being MISREAD by
+# this process; it cannot stop the stale file itself being handed to the caller
+# when this process dies without writing. ``_reset_result_file`` below closes
+# that half, and is why only a REAL report may set this flag.
 _RESULT_WRITTEN = False
 
 
-def _write_result(payload: dict[str, Any]) -> None:
-    global _RESULT_WRITTEN
+def _dump_result(payload: dict[str, Any]) -> bool:
+    """Serialise ``payload`` over SMOKE_RESULTS_PATH; return whether it landed.
+
+    The file write on its own, with NO ``_RESULT_WRITTEN`` bookkeeping, so the
+    startup placeholder can reuse the same OSError handling without claiming
+    that this run has reported anything.
+    """
     try:
         with open(SMOKE_RESULTS_PATH, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)
-        _RESULT_WRITTEN = True
+        return True
     except OSError as exc:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
+        return False
+
+
+def _write_result(payload: dict[str, Any]) -> None:
+    """Write THIS run's result and record that it reported."""
+    global _RESULT_WRITTEN
+    if _dump_result(payload):
+        _RESULT_WRITTEN = True
+
+
+def _reset_result_file() -> None:
+    """Clear any result file a PREVIOUS shard left, then leave a placeholder.
+
+    Proteina was the only one of the six generators that never did this, and
+    /tmp/smoke_results.json is its ONLY reporting channel — this script posts
+    no terminal webhook. Modal reuses containers warm and
+    ``modal_app.run_tool`` reads the path unconditionally; it clears the raw
+    archive and the staged-target dir for exactly this reason but not this
+    path. So a shard that died without writing handed the caller the PREVIOUS
+    shard's COMPLETED result — its provider_job_id, its candidates, its atoms —
+    and the hub scored it ``succeeded``. Reproduced by driving this ``main()``
+    with ``_run_shard`` replaced by ``os._exit(137)``.
+
+    WHAT IS ACTUALLY REACHABLE, so this is not sold as more than it is. The
+    container-level timeout does NOT leak: ``modal_app.py`` passes ``timeout=``
+    to ``subprocess.run``, so that kill raises ``TimeoutExpired`` out of
+    ``run_tool`` and the results file is never read. The leak needs
+    ``subprocess.run`` to RETURN with the child dead — an OOM-kill or fatal
+    signal, which skips every ``except`` and ``finally`` and so also skips
+    ``main()``'s catch-all — or the OSError arm of ``_dump_result`` swallowing
+    the write and a later ``sys.exit(1)`` leaving no file. Inline delivery
+    makes the OOM arm likelier on this path specifically: up to
+    ``INLINE_PDB_TOTAL_CAP_BYTES`` of raw PDB, its ~4/3 base64 expansion and
+    the ``json.dump`` buffer are all live in this process at once.
+
+    THE UNLINK IS THE LOAD-BEARING HALF; the placeholder is the courtesy.
+    ``open(..., "w")`` truncates, but only once it has opened — remove first
+    and a placeholder write that FAILS leaves no file at all, which the hub
+    reports as a failure, instead of the previous shard's designs.
+
+    IT DELIBERATELY DOES NOT GO THROUGH ``_write_result``. That would set
+    ``_RESULT_WRITTEN`` before the shard had reported anything, and
+    ``main()``'s catch-all — whose whole job is to guarantee a structured
+    failure — would then decline to write the real diagnosis because it
+    believed this run had already reported. That trades a rare stale-result
+    leak for losing EVERY crash diagnosis, which is strictly worse than the bug
+    being fixed. Pinned by
+    ``test_the_startup_placeholder_does_not_suppress_the_catch_all``.
+    """
+    try:
+        os.remove(SMOKE_RESULTS_PATH)
+    except OSError:
+        pass
+    _dump_result(
+        {
+            "status": "FAILED",
+            "error": {
+                "bucket": "internal",
+                "check": "did_not_complete",
+                # Says what is KNOWN — this text survived, so no later write
+                # replaced it — and lists the causes rather than asserting one.
+                # Two different things produce it: the process died without
+                # running any `except` or `finally` (OOM-kill, fatal signal), or
+                # the run finished and BOTH its result write and the catch-all's
+                # hit the OSError arm of _dump_result, which /tmp filling up
+                # mid-run would do and which co-occurs with the first cause.
+                # Naming only the kill would misreport the second as a crash.
+                "detail": (
+                    "run_pipeline.py left no result of its own, so this "
+                    "placeholder from container startup is what survived. "
+                    "Either the process was killed without running any "
+                    "`except` or `finally` — the kernel OOM-killer or a fatal "
+                    "signal, and there is no traceback in that case — or it "
+                    "could not write to /tmp. Check the Modal function logs "
+                    "for this job id; anything the run produced is in the raw "
+                    "archive."
+                ),
+            },
+            "tier": os.environ.get("JOB_TIER", ""),
+            "provider_job_id": os.environ.get("JOB_ID", ""),
+        }
+    )
 
 
 def _fail(bucket: str, check: str, detail: str) -> None:
@@ -3466,6 +3559,13 @@ def main() -> None:
     the ``[lo, hi]`` pair — raises TypeError out of the list comprehension near
     the top and produced exactly that, silently.
 
+    It also guarantees the result file belongs to THIS run: the first thing it
+    does is unlink whatever a previous shard left on this warm container and
+    drop a ``did_not_complete`` placeholder in its place, so a kill that skips
+    every ``except`` cannot hand the caller someone else's designs. See
+    ``_reset_result_file``, including why that placeholder must not go through
+    ``_write_result``.
+
     BindCraft guarantees a structured failure on every path and this mirrors it.
     Three things it deliberately does NOT do:
 
@@ -3487,6 +3587,10 @@ def main() -> None:
     # interpreter, and a flag left True by an earlier run would suppress the
     # very write this function exists to guarantee.
     _RESULT_WRITTEN = False
+    # The on-disk half the flag cannot reach: a result file left by a PREVIOUS
+    # shard on this warm container. Must run before _run_shard, and must not
+    # set _RESULT_WRITTEN — see _reset_result_file.
+    _reset_result_file()
     try:
         _run_shard()
     except SystemExit:

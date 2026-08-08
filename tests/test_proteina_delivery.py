@@ -3555,6 +3555,445 @@ class TestMainWritesAResultOnEVERYPath:
         assert data["output_census"]["exists"] is True
 
 
+# --- the stale-result leak -------------------------------------------------
+# What a PREVIOUS shard leaves behind on a warm container: a full COMPLETED
+# delivery, atoms and all. Shaped this way because the leak's damage is not
+# that a file is present, it is that the hub accepts THIS one as the current
+# job's success and hands eight of another job's designs to the caller.
+_PRIOR_SHARD_RESULT = {
+    "status": "COMPLETED",
+    "tier": "protein_binder",
+    "provider_job_id": "SHARD-A",
+    "designs_total": 8,
+    "designs_completed": 8,
+    "n_failures": 0,
+    "runtime_seconds": 1234,
+    "designs": [{"rank": i + 1, "name": f"a_design_{i}"} for i in range(8)],
+    "candidates": [
+        {
+            "rank": i + 1,
+            "name": f"a_design_{i}",
+            "pdb_content_b64": base64.b64encode(
+                b"ATOM      1  CA  ALA A   1       0.000   0.000   0.000\nEND\n"
+            ).decode(),
+            "scores": {"total_reward": -1.0 * (i + 1)},
+        }
+        for i in range(8)
+    ],
+}
+
+# Driven in a SUBPROCESS because the kill has to be a real one. ``os._exit``
+# skips every ``except`` and every ``finally``, which is what makes it a
+# faithful stand-in for SIGKILL / the OOM-killer and is the whole point:
+# ``main()``'s catch-all cannot fire, so nothing but the startup handling
+# stands between the caller and the previous shard's result. Monkeypatching an
+# exception instead would be caught by that catch-all — which writes a result —
+# and would therefore prove nothing about this defect.
+_HARD_KILL_DRIVER = """\
+import os, sys
+import tools.proteina.run_pipeline as rp
+
+rp.SMOKE_RESULTS_PATH = sys.argv[1]
+rp._run_shard = lambda: os._exit(137)
+rp.main()
+"""
+
+
+def _main_hard_killed(tmp_path, prior_result):
+    """Run the REAL ``main()`` in a subprocess and kill it mid-shard.
+
+    ``prior_result`` is written to the results path first — pass ``None`` for a
+    cold container with no file at all. Returns ``(returncode, on_disk)`` where
+    ``on_disk`` is ``None`` when no file survives, which is exactly what
+    ``modal_app.run_tool`` turns into ``smoke_result: None``.
+    """
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    results = tmp_path / "smoke_results.json"
+    if prior_result is not None:
+        results.write_text(json.dumps(prior_result))
+
+    # ``-c`` rather than a script file: a script run by path puts its OWN
+    # directory on sys.path, and the driver has to import ``tools.proteina``
+    # out of the repo root that ``cwd`` points at.
+    proc = subprocess.run(
+        [_sys.executable, "-c", _HARD_KILL_DRIVER, str(results)],
+        cwd=str(_Path(__file__).resolve().parents[1]),
+        env=dict(os.environ, JOB_ID="SHARD-B", JOB_TIER="protein_binder"),
+        capture_output=True, text=True,
+    )
+    assert "Traceback" not in proc.stderr, (
+        "the hard-kill driver died before it could kill anything:\n"
+        f"{proc.stderr}")
+    on_disk = json.loads(results.read_text()) if results.exists() else None
+    return proc.returncode, on_disk
+
+
+class TestAHardKillCannotLeakThePreviousShardsResult:
+    """PROTEINA WAS THE ONLY ONE OF THE SIX GENERATORS THAT NEVER CLEARED
+    /tmp/smoke_results.json AT STARTUP, and it is the one with no webhook — the
+    file is its ONLY reporting channel. BindCraft removes it as the first
+    statement of ``main()`` and then writes a ``did_not_complete`` placeholder;
+    PXDesign, RFantibody, BoltzGen and RFdiffusion all clear it too. Modal
+    reuses containers warm and ``modal_app.run_tool`` opens the path
+    unconditionally, so a shard that died without writing returned the PREVIOUS
+    shard's COMPLETED result — its provider_job_id, its candidates, its atoms —
+    and ``_interpret_pipeline_return`` scored it ``succeeded``.
+
+    ``_RESULT_WRITTEN`` closed only the in-process half: it stops a stale file
+    being MISREAD by this process, and cannot touch the file when the process
+    dies without running any handler.
+
+    NOT REACHABLE VIA THE CONTAINER TIMEOUT, and these tests do not claim it
+    is: ``modal_app.py`` passes ``timeout=`` to ``subprocess.run``, so that kill
+    raises ``TimeoutExpired`` and the file is never read. The reachable arms are
+    ``subprocess.run`` RETURNING with the child dead (OOM-kill / fatal signal,
+    modelled here) and the OSError arm of ``_dump_result`` (the sibling class
+    below).
+    """
+
+    def test_a_hard_KILL_cannot_hand_the_caller_the_PREVIOUS_shards_designs(
+            self, tmp_path):
+        """The defect itself, through the real ``main()``."""
+        rc, on_disk = _main_hard_killed(tmp_path, _PRIOR_SHARD_RESULT)
+        assert rc == 137, (
+            f"the driver exited {rc}, not 137 — something handled the kill, so "
+            "this test is no longer exercising a hard kill at all")
+        assert on_disk is None or on_disk.get("provider_job_id") != "SHARD-A", (
+            "the wrapper was handed the PREVIOUS shard's result as this job's")
+        assert on_disk is None or on_disk.get("status") != "COMPLETED", (
+            "a killed shard reported COMPLETED")
+        assert not any(
+            "pdb_content_b64" in c
+            for c in (on_disk or {}).get("candidates", [])), (
+            "another job's coordinates travelled out in this job's result")
+
+    def test_the_HUB_scores_that_kill_as_a_failure_not_a_success(self, tmp_path):
+        """The verdict the caller actually receives, not just the bytes on
+        disk. This is the assertion that would have caught the defect: before
+        the fix ``_interpret_pipeline_return`` returned ``succeeded`` with
+        shard A's eight designs in ``result``."""
+        from gpu.modal_client import _interpret_pipeline_return
+
+        rc, on_disk = _main_hard_killed(tmp_path, _PRIOR_SHARD_RESULT)
+        verdict = _interpret_pipeline_return({
+            "exit_code": rc,
+            "smoke_result": on_disk,
+            "provider_job_id": "SHARD-B",
+        })
+        assert verdict["status"] == "failed", (
+            f"the hub scored a hard-killed shard {verdict['status']!r}")
+        assert verdict["result"] is None
+
+    def test_the_placeholder_NAMES_the_kill_instead_of_blaming_the_webhook(
+            self, tmp_path):
+        """Why the placeholder is worth writing at all, given that removing the
+        stale file alone already closes the leak. With no file the hub falls
+        through to its webhook branch and reports ``exited 137 with no
+        smoke_result; webhook detail: no webhook_outcome reported`` — this
+        pipeline posts no webhook, so that diagnosis is not merely thin, it
+        points at the wrong subsystem. BindCraft writes a placeholder for the
+        same reason."""
+        from gpu.modal_client import _interpret_pipeline_return
+
+        rc, on_disk = _main_hard_killed(tmp_path, _PRIOR_SHARD_RESULT)
+        assert on_disk is not None, (
+            "no result file survived the kill; the placeholder is gone")
+        assert on_disk["status"] == "FAILED"
+        assert on_disk["error"]["check"] == "did_not_complete"
+        assert on_disk["provider_job_id"] == "SHARD-B", (
+            "the placeholder must carry THIS job's id, or it is just a "
+            "differently-shaped attribution bug")
+        assert on_disk["tier"] == "protein_binder"
+        verdict = _interpret_pipeline_return({"exit_code": rc,
+                                              "smoke_result": on_disk})
+        assert "did_not_complete" in verdict["error"]
+        assert "webhook" not in verdict["error"], (
+            f"the hub still blames the webhook: {verdict['error']!r}")
+
+    def test_a_COLD_container_with_no_prior_file_is_unaffected(self, tmp_path):
+        """THE CONTROL. The unlink runs before anything else in ``main()``, so
+        an unguarded ``os.remove`` on a cold container would turn every first
+        run in a fresh container into a FileNotFoundError crash."""
+        rc, on_disk = _main_hard_killed(tmp_path, None)
+        assert rc == 137, (
+            f"a cold container did not even reach the shard (exit {rc})")
+        assert on_disk is not None
+        assert on_disk["error"]["check"] == "did_not_complete"
+
+
+class TestTheUNLINKIsTheLoadBearingHalf:
+    """``open(..., "w")`` truncates, so on the happy path the placeholder write
+    alone already overwrites the stale file and the ``os.remove`` looks
+    redundant. It is not — and the case where it is not is one of the two ways
+    this leak is reachable at all.
+    """
+
+    def test_a_placeholder_write_that_FAILS_still_leaves_no_stale_result(
+            self, tmp_path, monkeypatch):
+        """The OSError arm of ``_dump_result``: it logs and returns, so if the
+        write were the only thing standing between the caller and the previous
+        shard's designs, a write that fails hands them over. Removing first
+        means the worst case is NO file — reported as a failure — instead of
+        another job's success.
+
+        The failure is injected rather than provoked because a portable way to
+        make ``open(path, "w")`` fail on a path that is still removable does
+        not exist across POSIX and Windows. The injection is checked below, so
+        a refactor that stops routing through ``_dump_result`` fails loudly
+        rather than passing vacuously.
+        """
+        results = tmp_path / "smoke_results.json"
+        results.write_text(json.dumps(_PRIOR_SHARD_RESULT))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+
+        attempted = []
+
+        def failing_dump(payload):
+            attempted.append(payload)
+            return False
+
+        monkeypatch.setattr(rp, "_dump_result", failing_dump)
+        rp._reset_result_file()
+
+        assert attempted, (
+            "_reset_result_file no longer writes through _dump_result, so the "
+            "stand-in for the OSError arm did nothing — re-point this test at "
+            "whatever writes the placeholder now")
+        assert not results.exists(), (
+            "the previous shard's COMPLETED result survived a failed "
+            "placeholder write — the unlink is missing, and the file write is "
+            "carrying the whole fix")
+
+
+class TestTheStartupPlaceholderDoesNotBreakTheCatchAll:
+    """THE TRAP IN THIS FIX, pinned so it cannot be walked back into.
+
+    ``_write_result`` sets ``_RESULT_WRITTEN``. Writing the startup placeholder
+    THROUGH it would set the flag before the shard had reported anything, and
+    ``main()``'s catch-all only writes ``if not _RESULT_WRITTEN`` — so every
+    unhandled crash would keep its placeholder and lose its traceback. That
+    trades a rare stale-result leak for routinely losing the diagnosis of every
+    crash, which is strictly worse than the bug being fixed.
+    """
+
+    def test_the_startup_placeholder_does_not_suppress_the_catch_all(
+            self, tmp_path, monkeypatch):
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setenv("JOB_ID", "job-trap")
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+
+        def boom():
+            raise KeyError("some_column")
+
+        monkeypatch.setattr(rp, "_run_shard", boom)
+        with pytest.raises(SystemExit) as exc:
+            rp.main()
+        assert exc.value.code == 1
+        data = json.loads(result_file.read_text())
+        assert data["error"]["check"] == "unhandled_exception", (
+            f"the catch-all declined to write and the caller is left with "
+            f"{data['error']['check']!r} — the startup placeholder is setting "
+            "_RESULT_WRITTEN")
+        assert "KeyError" in data["error"]["detail"]
+        assert "some_column" in data["error"]["traceback"], (
+            "the real diagnosis was replaced by the generic placeholder")
+
+    def test_the_placeholder_leaves_RESULT_WRITTEN_False(
+            self, tmp_path, monkeypatch):
+        """The mechanism itself, so the test above passing is not left to
+        inference about which of several things kept the catch-all alive."""
+        results = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_RESULT_WRITTEN", False)
+
+        rp._reset_result_file()
+
+        assert rp._RESULT_WRITTEN is False, (
+            "the startup placeholder claimed this run had reported; the "
+            "catch-all will now decline to diagnose any crash")
+        assert json.loads(results.read_text())["error"]["check"] == (
+            "did_not_complete"), "the placeholder was not written at all"
+
+    def test_a_REAL_result_still_sets_the_flag(self, tmp_path, monkeypatch):
+        """THE CONTROL for the split between ``_dump_result`` and
+        ``_write_result``: only a real report may set the flag, and it must
+        still do so, or the catch-all goes back to overwriting COMPLETED
+        results with traceback stubs."""
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(tmp_path / "s.json"))
+        monkeypatch.setattr(rp, "_RESULT_WRITTEN", False)
+        rp._write_result({"status": "COMPLETED"})
+        assert rp._RESULT_WRITTEN is True
+
+    def test_a_result_that_could_not_be_WRITTEN_does_not_set_the_flag(
+            self, tmp_path, monkeypatch):
+        """The OSError arm again, from the other side. ``_write_result`` used
+        to set the flag inside the ``try`` after ``json.dump`` returned, which
+        is the same behaviour, but the split makes it easy to set it
+        unconditionally by accident — and a flag set without a file on disk
+        silences the catch-all AND leaves nothing for the wrapper to read."""
+        missing_dir = tmp_path / "no_such_dir" / "s.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(missing_dir))
+        monkeypatch.setattr(rp, "_RESULT_WRITTEN", False)
+        rp._write_result({"status": "COMPLETED"})
+        assert rp._RESULT_WRITTEN is False, (
+            "nothing reached disk, but the run is marked as having reported")
+
+
+def _drive_validate(tmp_path, monkeypatch, *, make_it_pass, prior_result=None):
+    """Drive the REAL ``main()`` down the ``preset == "validate"`` branch.
+
+    That branch returns early out of ``_run_shard``, which is exactly the shape
+    a startup placeholder can be left stranded in, so it is checked rather than
+    assumed. ``make_it_pass`` satisfies ``run_validate``'s three checks (the
+    two package imports, the three variant configs, one checkpoint) so the
+    COMPLETED arm is reachable offline.
+    """
+    results = tmp_path / "smoke.json"
+    if prior_result is not None:
+        results.write_text(json.dumps(prior_result))
+    monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+
+    if make_it_pass:
+        import sys as _sys
+        import types as _types
+
+        pkg = _types.ModuleType("proteinfoundation")
+        pkg.__path__ = []
+        monkeypatch.setitem(_sys.modules, "proteinfoundation", pkg)
+        for sub in ("generate", "filter"):
+            monkeypatch.setitem(
+                _sys.modules, f"proteinfoundation.{sub}",
+                _types.ModuleType(f"proteinfoundation.{sub}"))
+        cfg = tmp_path / "configs"
+        cfg.mkdir()
+        for name in rp._ALL_CONFIGS:
+            (cfg / f"{name}.yaml").write_text("{}\n")
+        ckpts = tmp_path / "ckpts"
+        ckpts.mkdir()
+        (ckpts / "model.ckpt").write_bytes(b"\x00")
+        monkeypatch.setattr(rp, "CONFIG_DIR", str(cfg))
+        monkeypatch.setattr(rp, "WEIGHTS_DIR", str(ckpts))
+
+    payload = {
+        "job_spec": {"config_name": "search_binder_local_pipeline",
+                     "task_name": ""},
+        "input_presigned_url": "",
+        "upload_urls_endpoint": "",
+        "job_token": "",
+        "tier": "validate",
+    }
+    monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+    monkeypatch.setenv("JOB_TIER", "validate")
+    monkeypatch.setenv("JOB_ID", "job-validate")
+    monkeypatch.setenv("PROTEINA_RF3", "on")
+    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("JOB_TOKEN", raising=False)
+    try:
+        rp.main()
+    except SystemExit as exc:
+        assert exc.code == 1, f"validate exited {exc.code!r}, not 1"
+    return json.loads(results.read_text())
+
+
+class TestTheValidatePresetStillReportsItsOwnResult:
+    """``run_validate`` writes and then ``_run_shard`` RETURNS — the one path
+    that leaves ``main()`` normally without going through the design loop. A
+    startup placeholder that survived it would turn a passing staging gate into
+    a reported failure, on the tier whose entire job is to be trusted before a
+    paid run.
+    """
+
+    def test_a_PASSING_validate_is_reported_as_COMPLETED(
+            self, tmp_path, monkeypatch):
+        data = _drive_validate(tmp_path, monkeypatch, make_it_pass=True)
+        assert data["status"] == "COMPLETED", (
+            f"the placeholder outlived a passing validate: {data}")
+        assert data["validate_ok"] is True
+        assert data["tier"] == "validate"
+
+    def test_a_FAILING_validate_keeps_its_OWN_diagnosis(
+            self, tmp_path, monkeypatch):
+        """Not the placeholder's. Both are FAILED, so only the error identifies
+        which one the caller got — and ``validate:preflight`` names the missing
+        config or checkpoint while ``did_not_complete`` says the process was
+        killed, which it was not."""
+        data = _drive_validate(tmp_path, monkeypatch, make_it_pass=False)
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "validate"
+        assert data["error"]["check"] == "preflight"
+
+    def test_validate_also_clears_a_PRIOR_shards_result(
+            self, tmp_path, monkeypatch):
+        """The warm-container case for this tier: a passing validate on a
+        container whose previous job left eight designs must not return them."""
+        data = _drive_validate(tmp_path, monkeypatch, make_it_pass=True,
+                               prior_result=_PRIOR_SHARD_RESULT)
+        assert data["provider_job_id"] == "job-validate"
+        assert data["candidates"] == []
+        assert data["designs_completed"] == 0
+
+
+class TestTheResultFileIsPerRunNotPerContainer:
+    """``test_the_written_flag_is_PER_RUN_not_per_process`` covers the in-memory
+    flag. This is the same claim for the file, which is the half a hard kill
+    actually leaves behind.
+    """
+
+    def test_a_SECOND_run_does_not_inherit_the_FIRST_runs_result(
+            self, tmp_path, monkeypatch):
+        """One container runs one shard, but this file drives ``main()`` dozens
+        of times in one interpreter against one tmp path, and the container the
+        defect lives on is warm by definition. A run that reaches its end
+        without reporting must leave the placeholder, never the previous run's
+        designs."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setenv("JOB_ID", "job-second")
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+
+        monkeypatch.setattr(
+            rp, "_run_shard",
+            lambda: rp._write_result({"status": "COMPLETED", "run": 1,
+                                      "candidates": [{"rank": 1}]}))
+        rp.main()
+        assert json.loads(result_file.read_text())["run"] == 1
+
+        # A shard that returns having reported nothing. No path does that
+        # today; the point is that if one ever does, the caller gets a
+        # placeholder rather than run 1's designs.
+        monkeypatch.setattr(rp, "_run_shard", lambda: None)
+        rp.main()
+        data = json.loads(result_file.read_text())
+        assert data.get("run") != 1, (
+            "the second run returned the first run's result")
+        assert data["error"]["check"] == "did_not_complete"
+
+    def test_the_reset_runs_BEFORE_the_shard_not_after(
+            self, tmp_path, monkeypatch):
+        """Ordering, isolated. A reset placed after ``_run_shard`` would pass
+        every cold-start test in this file and destroy every real result."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        seen = []
+
+        def record_then_report():
+            seen.append(result_file.exists()
+                        and json.loads(result_file.read_text())["error"]["check"])
+            rp._write_result({"status": "COMPLETED", "candidates": []})
+
+        result_file.write_text(json.dumps(_PRIOR_SHARD_RESULT))
+        monkeypatch.setattr(rp, "_run_shard", record_then_report)
+        rp.main()
+        assert seen == ["did_not_complete"], (
+            f"the shard started with {seen!r} on disk, not the placeholder")
+        assert json.loads(result_file.read_text())["status"] == "COMPLETED", (
+            "the reset ran after the shard and destroyed its result")
+
+
 def _drive_registration(tmp_path, monkeypatch, *, target_chain,
                         target_input="", spans=(("A", 1, 200),)):
     """Run the REAL ``prepare_custom_target`` far enough to capture the argv it
