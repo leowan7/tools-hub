@@ -1,41 +1,71 @@
-"""Chain-prefixed hotspot tokens must survive the two shared gates.
+"""The hotspot repair hint, at the seam trunk never checks: the VERDICT.
 
-This is a REGRESSION suite over behaviour PR #120 already shipped, not a test
-of a new fix. It is worth being explicit about that, because this file was
-originally written the other way round and the story it told was wrong.
+This file started as a full regression suite over the chain-prefixed hotspot
+behaviour PR #120 shipped. Most of that was already pinned in
+``tests/test_multichain_targets.py``, and duplicated coverage is not free: it
+is one more place to update, and it dilutes the signal when something does go
+red. What is left is what no trunk test reaches.
 
-PR #120 taught both gates the chain-prefixed hotspot TOKEN (``"A296"``), not
-just the multi-chain ``target_chain`` FIELD (``"A,B"``). What it did NOT do is
-leave much of that behaviour pinned from the outside: the one end-to-end
-preflight test in ``tests/test_multichain_targets.py`` still passed
-``hotspots=[]``, so the prefixed token had never been driven through
-``preflight_for_tool`` with a non-empty list at all. That gap is what this file
-closes, and it is why the suite is worth its weight even though nothing here
-was broken when it was written.
+WHAT IS ACTUALLY UNPINNED IN TRUNK. Not the chain-attribution logic — trunk
+covers that thoroughly, including the chain-blind suggestion pool, which
+``test_multichain_targets::test_nearest_suggestions_come_from_the_hotspots_own_chain``
+catches with a purpose-built overlapping fixture of its own. What no trunk
+test asserts is ``PreflightVerdict.nearest_clean_residues``. Every trunk
+suggestion test calls ``shared.pdb_preflight._nearest_clean_residues``
+DIRECTLY; grep the suite for the attribute and this file is the only hit. So
+the helper could be correct while ``preflight_for_tool`` passed it the wrong
+arguments, dropped the result, or returned it in a form nobody can paste back
+into the field, and nothing would go red. Both suggestion tests below go
+through ``preflight_for_tool``.
 
-Two load-bearing properties are asserted:
+THE FIXTURE. Chain A is numbered 1..40 and chain B 101..140, and the offset is
+NEAR on purpose. Trunk's two shared two-chain fixtures are not substitutes:
+``_two_chain_pdb`` numbers both chains 1..40, so a chain-blind implementation
+and a correct one agree on every input; ``_asymmetric_pdb`` numbers chain B
+from 500, far enough that a chain-blind ±10 search around a chain-A hotspot
+finds nothing on chain B either — it returns the same empty answer for the
+right and the wrong reason. Here ``B101..B115`` sit inside the ±10 window of a
+dropped ``"A105"``, so a union pool produces suggestions labelled ``"A101"``
+and up: residues that do not exist.
 
-1. **The prefixed path works, and is chain-attributed.** Not merely "is
-   accepted": ``"A105"`` must be REJECTED on a file where residue 105 exists
-   only on chain B, and a repair suggestion for a chain-A hotspot must never be
-   drawn from chain B.
-2. **The bare-int path is unchanged.** Not merely "still passes": the element
-   *types* are compared, because ``25`` becoming ``"25"`` is exactly the
-   regression class PR #120 chased through ~2352 differential cases.
+WHAT WAS REMOVED, AND WHAT COVERS IT NOW (verified test by test):
 
-Every assertion here has been mutation-checked against the shipped
-implementation — five mutations (bare suggestion labels; a chain-blind
-suggestion pool; preflight attributing a prefixed token to the first named
-chain; ``validate_hotspots`` unioning instead of honouring the prefix;
-``split_hotspot`` ignoring the chain list) each turn this file red. An earlier
-draft of the suggestion test could NOT see the chain-blind mutation, because
-its dropped hotspot's neighbours were on the right chain anyway; that is what
-``test_repair_suggestions_never_leak_in_from_another_chain`` exists to catch.
+  prefixed tokens in range on a multi-chain target
+      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract
+  whitespace chain field with prefixed tokens
+      -> test_targets::test_validate_hotspots_accepts_a_multi_chain_target
+         (the chain field is split once, before any per-token work, so the
+         separator is not a per-token-kind property)
+  a prefixed token checked against its own chain only
+      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract
+         and ::test_a_hotspot_is_checked_against_the_chain_it_names
+  suggestions drawn from the hotspot's own chain, prefixed
+      -> test_multichain_targets::test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain
+         and ::test_nearest_suggestions_come_from_the_hotspots_own_chain
+         (both at the ``_nearest_clean_residues`` seam, not the verdict)
+  a token naming an untargeted chain
+      -> test_multichain_targets::test_split_hotspot ("C25", ["A","B"])
+  mixed bare and prefixed in one list
+      -> test_multichain_targets::test_mixed_bare_and_prefixed (adapter parser)
+         plus ::test_validate_hotspots_keeps_the_bare_int_contract (both token
+         kinds through this function)
+  preflight accepts prefixed hotspots end to end
+      -> test_multichain_targets::test_preflight_keeps_the_hotspots_validate_emits
+         (rfdiffusion, pxdesign) and ::test_boltzgen_does_not_silently_discard_hotspots
+  preflight drops a prefixed hotspot on the wrong chain
+      -> test_multichain_targets::test_a_hotspot_is_checked_against_the_chain_it_names
+  bare ints keep their values and types
+      -> test_multichain_targets::test_validate_hotspots_keeps_the_bare_int_contract,
+         test_pdb_inspect::test_hotspots_in_range /
+         ::test_hotspots_out_of_range_caught /
+         ::test_hotspots_against_missing_chain_all_rejected
+  bare-int preflight verdict unchanged
+      -> test_multichain_targets::test_single_chain_bare_int_hotspots_are_byte_identical
 
-The fixture is deliberately ASYMMETRIC (chain A 1..40, chain B 101..140).
-``tests/test_multichain_targets._two_chain_pdb`` numbers both chains 1..40, so
-against it a chain-blind implementation and a correct one return the same
-answer for every input — a fixture that cannot tell the bug from the fix.
+Every assertion below has been mutation-checked against the shipped
+implementation: a chain-blind suggestion pool, bare suggestion labels, a
+prefix matched only when more than one chain is named, and ``repr`` in the
+dropped-hotspot message each turn this file red.
 """
 from __future__ import annotations
 
@@ -49,9 +79,15 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 
 # Chains whose numbering does not overlap, so "which chain is this residue on?"
-# has a different answer from "does any chain have this residue?".
+# has a different answer from "does any chain have this residue?" — and whose
+# offset is small enough that the two chains fall inside each other's
+# suggestion window.
 CHAIN_A_RANGE = (1, 40)
 CHAIN_B_RANGE = (101, 140)
+
+# The residue the leak test drops as "A105": present on chain B, absent from
+# chain A, and with chain-B neighbours inside the ±10 suggestion window.
+LEAK_PROBE = 105
 
 
 def _asymmetric_two_chain_pdb() -> bytes:
@@ -97,99 +133,32 @@ def test_the_fixture_is_actually_asymmetric(report):
     a_lo, a_hi = CHAIN_A_RANGE
     b_lo, b_hi = CHAIN_B_RANGE
     assert a_hi < b_lo, "ranges must not overlap or the tests prove nothing"
+    # The probe has to be OFF chain A (so "A105" is dropped) and ON chain B
+    # (so a union pool has something to leak). Widen the gap and the leak test
+    # starts passing against a chain-blind pool, exactly as trunk's
+    # _asymmetric_pdb does.
+    assert not (a_lo <= LEAK_PROBE <= a_hi), "A105 must be droppable"
+    assert b_lo <= LEAK_PROBE <= b_hi, "B105 must exist"
 
-
-# ---------------------------------------------------------------------------
-# The prefixed path — every test here fails against the pre-fix code
-# ---------------------------------------------------------------------------
 
 def test_prefixed_hotspot_on_a_single_chain_target_is_in_range(report):
+    """A prefixed token against a ONE-element chain list.
+
+    Kept because nothing in trunk exercises it. ``split_hotspot`` matches a
+    prefix against the list of chains the target names, and every trunk case
+    with a valid prefixed token passes a TWO-element list. tools/base.py has
+    its own separate parser loop (``parse_hotspot_residues``), so
+    test_multichain_targets::test_single_chain_prefixed_tokens_normalize_to_strings
+    covers that implementation and not this one — an "only prefix-match when
+    more than one chain is named" regression would pass the whole suite.
+    """
     in_range, out_of_range = validate_hotspots(report, "A", ["A25"])
     assert out_of_range == []
     assert in_range == ["A25"]
 
 
-def test_prefixed_hotspots_on_a_multi_chain_target_are_in_range(report):
-    in_range, out_of_range = validate_hotspots(report, "A,B", ["A25", "B125"])
-    assert out_of_range == []
-    assert in_range == ["A25", "B125"]
-
-
-def test_whitespace_chain_form_also_resolves_prefixed_tokens(report):
-    """``validate_target_chain`` has always accepted "A B"; the hotspot checker
-    must read the same field the same way."""
-    in_range, out_of_range = validate_hotspots(report, "A B", ["A25", "B125"])
-    assert out_of_range == []
-    assert in_range == ["A25", "B125"]
-
-
-def test_a_prefixed_token_is_checked_against_its_own_chain_only(report):
-    """The chain-attribution assertion. Residue 105 exists in this file — on
-    chain B. ``A105`` must still be refused, and a checker that unions the two
-    ranges cannot tell the difference."""
-    in_range, out_of_range = validate_hotspots(report, "A,B", ["A105"])
-    assert in_range == []
-    assert out_of_range == ["A105"]
-
-
-def test_the_mirror_case_passes_so_the_previous_test_is_not_vacuous(report):
-    in_range, out_of_range = validate_hotspots(report, "A,B", ["B105"])
-    assert out_of_range == []
-    assert in_range == ["B105"]
-
-
-def test_a_token_naming_an_untargeted_chain_is_refused(report):
-    """Chain C is not in the file at all, and chain B is not a target here."""
-    _, out_of_range = validate_hotspots(report, "A", ["C25"])
-    assert out_of_range == ["C25"]
-    _, out_of_range = validate_hotspots(report, "A", ["B125"])
-    assert out_of_range == ["B125"]
-
-
-def test_mixed_bare_and_prefixed_tokens_resolve_independently(report):
-    """A bare int keeps its historical meaning — checked against the union —
-    while the prefixed token beside it is pinned to its own chain."""
-    in_range, out_of_range = validate_hotspots(report, "A,B", [25, "B125"])
-    assert out_of_range == []
-    assert in_range == [25, "B125"]
-
-
-@pytest.mark.parametrize("tool", ["rfdiffusion", "pxdesign", "boltzgen"])
-def test_preflight_accepts_prefixed_hotspots_end_to_end(tool, pdb):
-    """The gate that actually blocks submit.
-
-    The two failure modes this pins are the ones a bare ``int()`` parser
-    produces, and they are asymmetric in cost: rfdiffusion and pxdesign refuse
-    the submit citing an incomplete backbone — a claim about the FILE, which is
-    in fact complete — while boltzgen (``hotspots_required=False``) returns
-    READY and runs a PAID GPU job with every hotspot silently discarded. The
-    second is the expensive one, which is why boltzgen is parametrised here
-    rather than left to the two tools that fail loudly.
-    """
-    verdict = preflight_for_tool(
-        tool, pdb, target_chain="A,B", hotspots=["A25", "B125"],
-        binder_max_aa=65, num_designs=2,
-    )
-    assert verdict.hotspot_status["dropped"] == [], verdict.reason
-    assert verdict.hotspot_status["surviving"] == ["A25", "B125"]
-    assert "backbone is incomplete" not in (verdict.reason or "")
-
-
-@pytest.mark.parametrize("tool", ["rfdiffusion", "pxdesign", "boltzgen"])
-def test_preflight_drops_a_prefixed_hotspot_on_the_wrong_chain(tool, pdb):
-    """Chain attribution at the preflight gate, not just the inspect gate.
-    Residue 105 is present in the file but not on chain A."""
-    verdict = preflight_for_tool(
-        tool, pdb, target_chain="A,B", hotspots=["A105"],
-        binder_max_aa=65, num_designs=2,
-    )
-    assert verdict.hotspot_status["surviving"] == []
-    assert verdict.hotspot_status["dropped"] == ["A105"]
-
-
 def test_repair_suggestions_never_leak_in_from_another_chain(pdb):
-    """The companion to the test below, and the one that can actually catch a
-    chain-blind suggestion pool.
+    """A chain-blind suggestion pool, seen through the VERDICT.
 
     ``"A105"`` is dropped because residue 105 is not on chain A — but it IS on
     chain B, and 101..115 all sit within the ±10 suggestion window of 105. So
@@ -198,9 +167,18 @@ def test_repair_suggestions_never_leak_in_from_another_chain(pdb):
     and up: residues that do not exist. A pool confined to chain A finds
     nothing within ±10 of 105 and correctly offers nothing.
 
-    The sibling test below uses ``"A45"``, whose neighbours are all on chain A
-    anyway — which is exactly why it CANNOT see this mutation, and why this
-    test exists separately rather than as one more assertion there.
+    Be precise about what this adds. trunk's test_multichain_targets::
+    test_nearest_suggestions_come_from_the_hotspots_own_chain already catches
+    the chain-blind pool, with its own overlapping fixture — a mutation to
+    ``pool = union`` turns BOTH red, which is how that was established rather
+    than assumed. What it does not do, and no trunk test does, is read the
+    suggestions off the VERDICT: it calls ``_nearest_clean_residues`` directly.
+    The sibling test below covers the same seam for the happy path; this one
+    covers it for the case where the correct answer is "offer nothing", which
+    a verdict that silently substituted an unfiltered pool would get wrong.
+
+    The sibling's ``"A45"`` cannot stand in for this: its neighbours are all on
+    chain A anyway, so the union and the per-chain pool agree.
     """
     verdict = preflight_for_tool(
         "rfdiffusion", pdb, target_chain="A,B", hotspots=["A105"],
@@ -226,6 +204,10 @@ def test_a_dropped_prefixed_hotspot_still_gets_nearest_residue_suggestions(pdb):
     form the user typed, because a bare suggestion cannot be pasted back into
     a multi-chain field: on an Fc homodimer both protomers carry residue 264,
     so ``264`` alone does not say which protomer the fix means.
+
+    Reached through ``preflight_for_tool`` rather than ``_nearest_clean_residues``
+    directly, which is the seam trunk's sibling test uses — the verdict has to
+    carry the suggestions out, not just compute them.
     """
     verdict = preflight_for_tool(
         "rfdiffusion", pdb, target_chain="A,B", hotspots=["A45"],
@@ -248,69 +230,30 @@ def test_a_dropped_prefixed_hotspot_still_gets_nearest_residue_suggestions(pdb):
         )
 
 
-# ---------------------------------------------------------------------------
-# The bare-int path — byte-identical, element types included
-# ---------------------------------------------------------------------------
-
-BARE_CASES = [
-    ("A", [25]),
-    ("A", [25, 30]),
-    ("A", [1, 40]),
-    ("A", [999]),           # out of range
-    ("A", [25, 999]),       # one of each
-    ("A", []),
-    ("A,B", [25]),
-    ("A,B", [125]),         # union semantics: on chain B, bare, still in range
-    ("A,B", [25, 125]),
-    ("A,B", [999]),
-    ("A B", [25]),
-]
-
-
-@pytest.mark.parametrize("target_chain,hotspots", BARE_CASES)
-def test_bare_ints_keep_their_exact_values_and_types(
-    target_chain, hotspots, report
+@pytest.mark.parametrize("chain,hotspot,shown", [
+    ("A", 999, "999"),
+    ("A,B", "A105", "A105"),
+])
+def test_a_dropped_hotspot_is_named_in_the_message_exactly_as_typed(
+    pdb, chain, hotspot, shown
 ):
-    in_range, out_of_range = validate_hotspots(report, target_chain, hotspots)
-    for bucket in (in_range, out_of_range):
-        assert all(type(v) is int for v in bucket), (
-            f"{target_chain!r}/{hotspots!r} -> in_range={in_range!r} "
-            f"out_of_range={out_of_range!r}: a bare int must stay an int, "
-            f"not become a string"
-        )
-    # Union semantics for bare ints, unchanged: in range on ANY named chain.
-    expected_in = [
-        h for h in hotspots
-        if (CHAIN_A_RANGE[0] <= h <= CHAIN_A_RANGE[1] and "A" in target_chain)
-        or (CHAIN_B_RANGE[0] <= h <= CHAIN_B_RANGE[1] and "B" in target_chain)
-    ]
-    assert in_range == expected_in
-    assert out_of_range == [h for h in hotspots if h not in expected_in]
+    """The refusal has to echo the token the user can find in their own field.
 
-
-@pytest.mark.parametrize("target_chain,hotspots", BARE_CASES)
-@pytest.mark.parametrize("tool", ["rfdiffusion", "pxdesign", "boltzgen"])
-def test_bare_int_preflight_verdict_is_unchanged(
-    tool, target_chain, hotspots, pdb
-):
-    """Differential guard on the full verdict, including ``hotspot_status``
-    element types — the shape PR #120 verified across ~2352 cases."""
+    Kept because no trunk test asserts on the dropped-hotspot message at all.
+    ``shared/pdb_preflight.py`` builds it with ``str(h)``; the prefixed row is
+    what makes that checkable, because ``repr`` of an int is unquoted and only
+    the string token would start rendering as ``'A105'`` — a value the user
+    never typed, in a message they are reading to recover from a rejection.
+    The bare row is here so the historical shape is pinned in the same place.
+    """
     verdict = preflight_for_tool(
-        tool, pdb, target_chain=target_chain, hotspots=hotspots,
+        "rfdiffusion", pdb, target_chain=chain, hotspots=[hotspot],
         binder_max_aa=65, num_designs=2,
     )
-    for key in ("surviving", "dropped"):
-        assert all(
-            type(v) is int for v in verdict.hotspot_status[key]
-        ), f"{tool}/{target_chain}/{hotspots}: {key}={verdict.hotspot_status[key]!r}"
-
-
-def test_a_bare_int_out_of_range_still_reads_as_a_plain_number(pdb):
-    """The user-facing message for the historical case must not start
-    rendering quotes or chain letters that were never typed."""
-    verdict = preflight_for_tool(
-        "rfdiffusion", pdb, target_chain="A", hotspots=[999],
-        binder_max_aa=65, num_designs=2,
+    assert verdict.hotspot_status["dropped"] == [hotspot]
+    reason = verdict.reason or ""
+    assert shown in reason, reason
+    assert f"'{shown}'" not in reason, (
+        f"the refusal quotes the hotspot where the user typed {shown}: "
+        f"{reason!r}"
     )
-    assert verdict.hotspot_status["dropped"] == [999]
-    assert "'999'" not in (verdict.reason or "")
