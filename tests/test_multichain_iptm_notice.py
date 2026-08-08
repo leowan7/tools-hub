@@ -69,14 +69,25 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # So the column/control half is now read OFF THE RENDERED PAGES (see
 # ``_column_labels`` and ``_page_labels`` below): the banner may not quote a
 # label that any surface it renders on does not have. That is the actual
-# property, it needs no maintenance when a column is added, and "beneath"
-# buys a mutation nothing, because what it catches is the LABEL, not the
-# preposition.
+# property and it needs no maintenance when a column is added.
 #
-# What a cross-check cannot catch is copy that names a KIND of furniture
-# without quoting a label -- "the order of this table", "these designs". No
-# page has a `<th>` reading "table". Those two regexes are what is left, and
-# they are grammars rather than synonym lists:
+# THE VERSION OF THAT CLAIM THAT SAID "beneath buys a mutation nothing,
+# because what it catches is the LABEL, not the preposition" WAS TOO STRONG,
+# and an independent review defeated the cross-check with one punctuation
+# character: the panel is labelled "Second-opinion fold", the copy
+# "the second opinion fold" restored the original round-1 defect verbatim, and
+# a byte-exact matcher never saw it. Same for "shape-complementarity" against
+# the `<th>` "Shape complementarity (SC)". So the match is now on a NORMALISED
+# form (``_norm``): case, hyphens, underscores, slashes, dashes and runs of
+# whitespace are all one thing on both sides, and a trailing parenthetical is
+# stripped as an extra variant.
+#
+# What a cross-check cannot catch is copy that quotes NO label at all: "the
+# order of this table", "these designs", "Only the top 300 designs are shown
+# here", "Star the ones you want". No page has a `<th>` reading "table", and
+# nothing on any page is labelled "the designs you are comparing" -- yet each
+# of those is false on the zero-candidate page. Three regexes are what is left,
+# and they are grammars rather than synonym lists:
 
 # A deictic pointed at page furniture: a determiner, up to two modifiers, and
 # a noun naming something that is either on the page or not. "these designs"
@@ -90,15 +101,71 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # is generic English and honest copy, while "the table" and "the column" have
 # no non-page meaning here. Banning ``the design`` would be the round-3 NIT-7
 # mistake -- a guard that rejects true copy -- committed by this fix instead.
+#
+# THE NOUN LIST GREW IN ROUND 5, and the additions are the ones an independent
+# review walked through: "with the re-fold FORM" and "the SHORTLIST you
+# starred" both named a piece of page that two surfaces do not have, and
+# neither ``fold``, ``form`` nor ``shortlist`` was here. It is still a list,
+# which is a real weakness -- but it is a list of KINDS of page part, not of
+# phrasings, so a synonym for "below" or a missing hyphen does not defeat it.
 _FURNITURE_NOUN = (
     r"table|tables|column|columns|row|rows|panel|panels|list|lists|"
-    r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets"
+    r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets|"
+    r"fold|folds|form|forms|field|fields|link|links|tab|tabs|"
+    r"section|sections|selector|selectors|toggle|toggles|chart|charts|"
+    r"graph|graphs|badge|badges|banner|banners|notice|notices|box|boxes|"
+    r"card|cards|view|views|screen|screens|shortlist|shortlists|"
+    r"checkbox|checkboxes|dropdown|dropdowns|tooltip|tooltips|"
+    r"header|headers|footer|footers|star|stars"
 )
 _DEICTIC_FURNITURE = re.compile(
     r"\b(?:this|these|that|those)\s+(?:\w[\w-]*[\s-]+){0,2}"
     r"(?:" + _FURNITURE_NOUN + r"|design|designs|candidate|candidates|"
     r"result|results)\b"
     r"|\bthe\s+(?:\w[\w-]*[\s-]+){0,2}(?:" + _FURNITURE_NOUN + r")\b",
+    re.I,
+)
+
+# THE CLASS THE LABEL CROSS-REFERENCE STRUCTURALLY CANNOT CATCH: a claim that
+# the page HAS content, or that the reader has already done something to it.
+# Six mutations in the round-4 review quoted no label and named no furniture,
+# and every one of them was false on the zero-candidate job page --
+# "The designs you are comparing…", "Scroll down to the ranked designs",
+# "Only the top 300 designs are shown here", "Star the ones you want",
+# "re-fold the shortlist you starred".
+#
+# THREE GRAMMARS, and the first is the one worth reading twice:
+#
+#   * A DEFINITE PLURAL presupposes a particular set. "Designs are ranked by
+#     it" is generic English about the tool and is the banner's own copy; "the
+#     designs", "the ranked designs", "the top 300 designs" all assert that a
+#     set of them is in front of the reader. The bare plural stays writable and
+#     so does the singular "the design with the highest ipTM" -- banning either
+#     would be the round-3 NIT-7 mistake (a guard that rejects true copy).
+#   * CONTENT THE READER ACTED ON -- "designs you are comparing", "the ones you
+#     want", "the shortlist you starred". The macro takes a tool slug and a
+#     chain; it cannot see the reader's history with the page.
+#   * PRESENCE ADVERBS -- shown / listed / displayed / visible / here. Same
+#     family as the locatives below, but about existence rather than position.
+_ASSERTS_PAGE_CONTENT = re.compile(
+    r"\bthe\s+(?:\w[\w-]*[\s-]+){0,2}"
+    r"(?:designs|candidates|results|rows|entries|hits|ones)\b"
+    r"|\b(?:designs?|candidates?|results?|rows?|ones|shortlists?|list)\b"
+    r"[^.]{0,24}\byou\b"
+    r"|\b(?:shown|listed|displayed|visible)\b|\bhere\b",
+    re.I,
+)
+
+# An instruction to OPERATE the page. Deliberately not a list of every verb:
+# these are the ones that only make sense if a particular control or a
+# particular row is present. "Do not choose between designs on ipTM alone" and
+# "confirm a shortlist with an independent re-fold" are judgements about the
+# metric and stay writable; "Scroll down to…" and "Star the ones you want" are
+# not.
+_PAGE_ACTION = re.compile(
+    r"\b(?:scroll|click|tap|hover|drag|expand|collapse|re-?sort|"
+    r"star|starred|unstar|tick|untick)\b"
+    r"|\bsort by\b|\bopen the\b|\bswitch to\b|\bselect the\b",
     re.I,
 )
 
@@ -411,16 +478,120 @@ def _column_labels(html: str) -> set:
     return out
 
 
+def _norm(text: str) -> str:
+    """Case-folded, with every separator reduced to one space.
+
+    Hyphen, en/em dash, underscore, slash and runs of whitespace all become
+    the same thing, so "Second-opinion fold", "second opinion fold" and
+    "second_opinion  fold" are ONE string. That is not cosmetic: the byte-exact
+    version of this matcher was defeated by dropping a single hyphen, which put
+    the round-1 defect back verbatim with the suite green, and again by
+    "shape-complementarity" against the `<th>` "Shape complementarity (SC)".
+    """
+    return " ".join(re.sub(r"[-_/‐-―]+", " ", text.lower()).split())
+
+
+def _label_forms(label: str) -> list:
+    """The normalised strings copy might write ``label`` as.
+
+    The label itself, plus the same label with a trailing parenthetical
+    dropped -- "Re-fold with Boltz-2 (cofold)" is written "the re-fold with
+    Boltz-2" as often as not. ``_column_labels`` does the equivalent split for
+    `<th>` text; this covers the labels that come from anywhere else.
+    """
+    forms = [_norm(label)]
+    stripped = _norm(re.sub(r"\s*\([^)]*\)\s*$", "", label))
+    if stripped and stripped != forms[0] and len(stripped) >= 3:
+        forms.append(stripped)
+    return forms
+
+
 def _quoted_in(text: str, phrases) -> list:
-    """Which of ``phrases`` the copy quotes, matched on whole words."""
-    low = text.lower()
-    return sorted(
-        p for p in phrases
-        if re.search(
-            r"(?<![0-9A-Za-z])" + re.escape(p.lower()) + r"(?![0-9A-Za-z])",
-            low,
-        )
-    )
+    """Which of ``phrases`` the copy quotes, matched on whole words.
+
+    Both sides go through ``_norm`` first, so punctuation and case cannot
+    hide a quote.
+    """
+    hay = _norm(text)
+    out = []
+    for phrase in phrases:
+        for form in _label_forms(phrase):
+            if re.search(
+                r"(?<![0-9a-z])" + re.escape(form) + r"(?![0-9a-z])", hay,
+            ):
+                out.append(phrase)
+                break
+    return sorted(out)
+
+
+def _metrics_no_surface_displays(surfaces) -> set:
+    """Metric names that appear on NO page the banner renders on.
+
+    The `<th>` cross-check can only forbid what some surface actually draws,
+    and the seven surfaces between them draw the columns of three tools. A
+    banner that named ``ipAE`` (rfantibody's spelling) or ``total_reward``
+    (proteina's ranking key) would be false on ALL SEVEN, and the cross-check
+    would not notice — those two were covered by the old denylist and the
+    rewrite dropped them.
+
+    DERIVED, from the two registries that define what a metric is called:
+    ``shared.score_legends.SCORE_LEGENDS`` keys and
+    ``shared.result_columns.columns_for`` for every adapter in the registry.
+    So a new tool's metrics join the forbidden set without an edit here.
+
+    ipTM is exempt for the same reason it is exempt from the column half: it is
+    what the banner is about. Anything a surface DOES display is removed, since
+    the column half already forbids it in the form the page writes it in.
+    """
+    from shared.result_columns import columns_for
+    from shared.score_legends import SCORE_LEGENDS
+    from tools import base as tool_base
+
+    names = {col for (_tool, col) in SCORE_LEGENDS}
+    for adapter in tool_base.all_adapters():
+        names |= set(columns_for(adapter.slug))
+
+    displayed = set()
+    for html in surfaces.values():
+        displayed |= {_norm(c) for c in _column_labels(html)}
+    return {
+        n for n in names
+        if _norm(n) not in displayed and _norm(n) != "iptm"
+    }
+
+
+@pytest.mark.parametrize("copy,label", [
+    # The exact walk-around an independent review used: the panel is labelled
+    # "Second-opinion fold" and dropping the hyphen restored the round-1 defect
+    # verbatim with the whole suite green.
+    ("confirm a shortlist with the second opinion fold against the same "
+     "target", "Second-opinion fold"),
+    ("confirm a shortlist with the Second-Opinion  Fold", "Second-opinion fold"),
+    # Same hole on the column half: the `<th>` reads "Shape complementarity
+    # (SC)" and "shape-complementarity" sailed past.
+    ("Rank designs by their shape-complementarity instead",
+     "Shape complementarity (SC)"),
+    ("Rank designs by their shape complementarity instead",
+     "Shape complementarity"),
+])
+def test_the_label_cross_check_is_not_defeated_by_punctuation(copy, label):
+    """The guard's own unit, so a byte-exact matcher fails HERE.
+
+    Without it the only thing pinning the normalisation is a template mutation
+    nobody runs, and a return to ``re.escape(label.lower())`` would show up as
+    a survivor rather than as a failure.
+    """
+    assert _quoted_in(copy, {label}) == [label]
+
+
+def test_a_label_is_not_matched_inside_a_longer_word():
+    """The other direction: normalising separators must not make the matcher
+    fire on a substring. ``_norm`` collapses "-" to " ", so a word boundary is
+    still a boundary."""
+    assert _quoted_in("the shape complementarity index", {"Complementarity"}) \
+        == ["Complementarity"]
+    assert _quoted_in("supercomplementarity is not a word", {"Complementarity"}) \
+        == []
 
 
 def _render_results(flask_app, tool: str, target_chain: str) -> str:
@@ -843,13 +1014,29 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
         f"the header extractor stopped seeing known columns, so this check "
         f"is guarding nothing: {sorted(columns)!r}"
     )
-    forbidden_columns = {c for c in columns if c.lower() != "iptm"}
+    forbidden_columns = {c for c in columns if _norm(c) != "iptm"}
     named = _quoted_in(banner, forbidden_columns)
     assert not named, (
         f"the banner names column(s) {named!r}. A column is furniture: the "
         f"multi-cohort pooled table has only Tool/Score/Pctile and the "
         f"zero-candidate page has no columns at all, so naming one is false "
         f"somewhere. banner={banner!r}"
+    )
+
+    # AND THE METRICS NO SURFACE DRAWS AT ALL. The `<th>` half can only forbid
+    # what some page displays; ``ipAE`` and ``total_reward`` belong to tools
+    # that never draw this banner, so naming either is false on all seven.
+    off_surface = _metrics_no_surface_displays(banner_surfaces)
+    assert {"ipAE", "total_reward"} <= off_surface, (
+        f"the derived off-surface metric set no longer holds the two names "
+        f"this check was added for; it is deriving something else: "
+        f"{sorted(off_surface)!r}"
+    )
+    named = _quoted_in(banner, off_surface)
+    assert not named, (
+        f"the banner names metric(s) {named!r}, which no page it renders on "
+        f"displays — they belong to tools that never draw this banner. "
+        f"banner={banner!r}"
     )
 
     # CONTROLS AND EVERYTHING ELSE THE PAGES LABEL. Any multi-word label that
@@ -859,6 +1046,20 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
     per_surface = {n: _page_labels(h) for n, h in banner_surfaces.items()}
     everywhere = set.intersection(*per_surface.values())
     somewhere = set().union(*per_surface.values())
+    # THE DEGENERACY, STATED. Measured, the intersection is EMPTY: the four job
+    # pages are rendered as their results PARTIAL (no shell) while the campaign
+    # and target pages are full routes, so no label survives all seven. That
+    # makes the rule below "quote no multi-word label at all" — strict, and
+    # deliberately so, but only by accident of the render set. Asserted so it
+    # is a stated property: if a future change gives all seven a common shell,
+    # ``everywhere`` becomes non-empty, the forbidden set silently shrinks, and
+    # nothing else here would fail.
+    assert everywhere == set(), (
+        f"the banner surfaces now share label(s) {sorted(everywhere)!r}. That "
+        f"is not a failure in itself — it means the copy may name them — but "
+        f"it shrinks the forbidden set below, so decide it on purpose rather "
+        f"than discovering it"
+    )
     not_universal = {
         lab for lab in somewhere - everywhere if len(lab.split()) >= 2
     }
@@ -873,7 +1074,7 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
         f"the difference. banner={banner!r}"
     )
 
-    # --- and the two things a cross-reference cannot see --------------------
+    # --- and the things a cross-reference cannot see ------------------------
     assert not _POINTS_AT_FURNITURE.search(banner), (
         f"the banner uses a locative, so it promises something at a place on "
         f"the page: {banner!r}"
@@ -883,6 +1084,18 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
         f"the banner says {deictic.group(0)!r} — a deictic pointed at page "
         f"furniture. On the zero-candidate page there is no table, no column "
         f"and no design for it to point at. banner={banner!r}"
+    )
+    content = _ASSERTS_PAGE_CONTENT.search(banner)
+    assert not content, (
+        f"the banner says {content.group(0)!r} — a claim that content is on "
+        f"the page, or that the reader has already acted on it. The macro "
+        f"cannot see either, and on the zero-candidate page both are false. "
+        f"banner={banner!r}"
+    )
+    action = _PAGE_ACTION.search(banner)
+    assert not action, (
+        f"the banner says {action.group(0)!r} — an instruction to operate a "
+        f"control it cannot know is there. banner={banner!r}"
     )
 
 
@@ -930,6 +1143,14 @@ def test_the_banner_is_true_on_a_job_page_with_zero_candidates(
         f"{banner!r}"
     )
     assert not _POINTS_AT_FURNITURE.search(banner), banner
+    assert not _ASSERTS_PAGE_CONTENT.search(banner), (
+        f"the banner claims content is on a page whose run returned none, or "
+        f"that the reader has acted on it: {banner!r}"
+    )
+    assert not _PAGE_ACTION.search(banner), (
+        f"the banner tells the reader to operate a control on a page that has "
+        f"none: {banner!r}"
+    )
     # The specific three clauses the round-3 review caught here, named so a
     # revert reads as a revert rather than as an anonymous regex failure.
     for clause in ("this table", "these designs", "second-opinion fold"):
