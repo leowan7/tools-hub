@@ -394,6 +394,15 @@ def create_app() -> Flask:
         _metric_glossary.format_value
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:
+    # explanation plus the optional ``caveat``, the half that is about what an
+    # old stored result may hold rather than about the metric. A global rather
+    # than three inline concatenations in candidate_table.html, so a caveat
+    # cannot land on the header tooltip and miss the per-row one — and so the
+    # deliberate exception stays visible: shared/email.py reads ``explanation``
+    # alone, because a completion email is always about a run that just
+    # finished on the container running now.
+    flask_app.jinja_env.globals["legend_text"] = _score_legends.legend_text
     # Whether a results view should mark ipTM as not-comparable. Kept in Python
     # rather than as a chain-splitting expression repeated across six results
     # templates — the tool set and the "more than one chain" rule are one

@@ -238,6 +238,15 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
     caption = ""
     legend = legends.get(chosen_col)
     if isinstance(legend, dict):
+        # ``explanation`` ONLY — deliberately not shared.score_legends
+        # .legend_text, which is what components/candidate_table.html calls.
+        # A legend's optional ``caveat`` says what an OLD STORED result may
+        # hold; this email is sent by shared/jobs.complete_job at the terminal
+        # transition, so its number always comes from the container running
+        # now and the caveat's antecedent can never be satisfied here. It also
+        # would not fit: job_complete.html renders this as a 13px line under a
+        # single score and documents it as a "1-line interpretation".
+        # tests/test_job_complete_email_caption.py holds both ends of that.
         explanation = legend.get("explanation")
         if isinstance(explanation, str):
             caption = explanation

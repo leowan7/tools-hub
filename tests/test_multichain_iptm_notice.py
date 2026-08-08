@@ -172,11 +172,15 @@ def test_boltzgen_left_the_banner_set_and_its_caveat_did_not_vanish():
     which renders per tool and per row, and this test refuses to let one half
     of the trade happen without the other.
     """
-    from shared.score_legends import get_legend
+    from shared.score_legends import get_legend, legend_text
 
     assert "boltzgen" not in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
-    explanation = get_legend("boltzgen", "ipTM")["explanation"]
-    assert "chain-chain" in explanation, (
+    # ``legend_text``, not ``["explanation"]``: the caveat lives in the
+    # legend's optional ``caveat`` field, because ``explanation`` is also the
+    # job-completion email's one-line caption and the caveat is false there.
+    # What has to survive is what a READER OF THE TABLE sees, which is both.
+    shown = legend_text(get_legend("boltzgen", "ipTM"))
+    assert "chain-chain" in shown, (
         "boltzgen left the banner set without the legend picking up the "
         "pre-deploy caveat — the old runs now carry no warning anywhere"
     )
@@ -962,10 +966,20 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     results page shows whatever the job saved and nothing in the record says
     which container produced it.
     """
-    from shared.score_legends import get_legend
+    from shared.score_legends import get_legend, legend_text
 
     legend = get_legend("boltzgen", "ipTM")
-    explanation = legend["explanation"]
+    # ASSERTED ON WHAT THE TABLE SHOWS, which is ``explanation`` plus the
+    # optional ``caveat``. The era distinction sits in ``caveat`` and not in
+    # ``explanation`` because ``explanation`` has a second consumer that is
+    # NOT a table — shared/email.py hands it to the job-completion email
+    # verbatim, where there is one design, no ordering, and no older run
+    # (the mail is sent by complete_job at the terminal transition). The
+    # tooltip half of that split is pinned in
+    # tests/test_target_table_render.py, the email half in
+    # tests/test_job_complete_email_caption.py; this asserts the CONTENT, so
+    # that neither half can be satisfied by a legend that says less.
+    explanation = legend_text(legend)
     assert "binder-to-target" in explanation, (
         "the legend still describes a value the deployed container no longer "
         "emits"

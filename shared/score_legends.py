@@ -18,14 +18,31 @@ registered in ``app.py``; templates do not import this module directly.
 
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import NotRequired, Optional, TypedDict
 
 
 class Legend(TypedDict):
     good: float
     excellent: float
     direction: str  # "higher_is_better" or "lower_is_better"
+
+    # ONE LINE. It is not only the column tooltip: shared/email.py puts it
+    # verbatim into the job-completion email as ``top_score_caption``, a slot
+    # templates/email/job_complete.html documents as "1-line interpretation of
+    # the top score" and renders as a 13px line under a single number. See
+    # ``caveat`` for what belongs elsewhere, and
+    # tests/test_job_complete_email_caption.py, which holds every entry here to
+    # the length of the slot.
     explanation: str
+
+    # Optional, and NOT part of the one line. A note that is true of a stored
+    # result rather than of the metric — "an older run recorded this
+    # differently". Only a view that renders whatever a job SAVED needs it, so
+    # only components/candidate_table.html renders it, via ``legend_text``.
+    # The completion email does not, and cannot: it is sent by
+    # shared/jobs.complete_job at the terminal transition, so its number always
+    # comes from the container running now.
+    caveat: NotRequired[str]
 
 
 # (tool_slug, column_key) -> Legend.
@@ -296,16 +313,41 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # order decides which designs are visible at all. Saying the number may
         # be wrong while saying nothing about the order it produced is the
         # half-measure the banner existed to avoid.
+        #
+        # IT GOES IN ``caveat``, NOT IN ``explanation``, and that split is the
+        # correction of a defect the second attempt shipped. Written into
+        # ``explanation`` it took the string from 161 characters (the longest
+        # of the other 31 legends) to 496, and shared/email.py:243 hands
+        # ``explanation`` verbatim to the job-completion email — so every
+        # BoltzGen completion mail said "treat the order of the table as
+        # indicative", in a message that shows ONE number for ONE design and
+        # contains no table, and said it on single-chain runs too. The seam is
+        # the legend rather than the email because the difference is not
+        # formatting: this text is about what an OLD STORED RESULT may hold,
+        # and the email is sent from shared/jobs.complete_job at the terminal
+        # transition, so its number cannot be from an older container. A
+        # results page renders whatever the job saved and can be.
+        #
+        # Truncating in the email instead was considered and rejected: every
+        # other legend is "definition. threshold.", so "first sentence only"
+        # would drop the actionable half from all 31 of them to fix one.
         "explanation": (
             "Interface pTM from the BoltzGen confidence head — the "
-            "binder-to-target interface. On a multi-chain target that "
-            "holds for runs after the August 2026 container update; an "
-            "older run stored a complex-wide value instead, inflated by "
-            "the target's own chain-chain interface, and the stored "
-            "result does not record which it is. These designs are also "
-            "ranked on this number, so on an older multi-chain run treat "
-            "the order of the table as indicative too. Above 0.7 is a "
-            "credible binder; above 0.8 is strong."
+            "binder-to-target interface. Above 0.7 is a credible binder; "
+            "above 0.8 is strong."
+        ),
+        # Deixis-free for the same reason the banner is
+        # (components/multichain_iptm_notice.html): this renders in a column
+        # header tooltip AND in a pooled per-row tooltip, and in the pooled
+        # table the visible order is by percentile, not by this number.
+        "caveat": (
+            "On a multi-chain target the binder-to-target reading holds "
+            "for runs after the August 2026 container update; an older run "
+            "stored a complex-wide value instead, inflated by the target's "
+            "own chain-chain interface, and the stored result does not "
+            "record which it is. Designs are ranked on this number, so for "
+            "an older multi-chain run treat any ordering derived from it "
+            "as indicative too."
         ),
     },
     ("boltzgen", "pLDDT"): {
@@ -383,6 +425,24 @@ def get_legend(tool_slug: str, column_key: str) -> Optional[Legend]:
     if not tool_slug or not column_key:
         return None
     return SCORE_LEGENDS.get((tool_slug, column_key))
+
+
+def legend_text(legend: Optional[Legend]) -> str:
+    """The whole legend, as a reader of a STORED results table needs it.
+
+    ``explanation`` plus ``caveat``. Registered as a Jinja global in app.py
+    and called from components/candidate_table.html in all three places a
+    legend is shown — the column header's ``data-tooltip`` and ``title``, and
+    the per-row Score cell in multi-tool mode — so a caveat cannot arrive on
+    two surfaces out of three.
+
+    Callers that want ONLY the one-line half read ``legend["explanation"]``
+    directly and say why; shared/email.py is the one that does.
+    """
+    if not isinstance(legend, dict):
+        return ""
+    parts = [str(legend.get("explanation") or ""), str(legend.get("caveat") or "")]
+    return " ".join(p for p in (part.strip() for part in parts) if p)
 
 
 def score_legends_for(tool_slug: str) -> dict[str, Legend]:
