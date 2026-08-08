@@ -4605,6 +4605,34 @@ class TestRestoreDesignNumberingUnmappedRecords:
         assert "240" in rep["reason"], rep["reason"]
         assert "not in the map" in rep["reason"], rep["reason"]
 
+    def test_a_destination_id_on_another_chain_is_not_a_collision(self):
+        """THE PER-CHAIN SCOPING OF THAT TEST, PINNED — and it was pinned by
+        nothing at all.
+
+        The two reference chains here occupy DISJOINT ranges, 234-253 and
+        300-319. ``A305`` is therefore not a destination on chain A: it is one
+        on chain B, and chain B is a different chain, so no residue is being
+        renumbered onto the zinc and it can stay where it is exactly as
+        ``A9000`` does.
+
+        Pooling both chains' destinations into one set is FAIL-CLOSED, so every
+        refusal test in this class still passes under it and the full 870-test
+        proteina suite stayed green when it was tried. What it actually does is
+        bring back the over-refusal this class exists to remove. On the real Fc
+        target the two chains overlap (234-444 and 237-444) so the pooled set
+        is almost the same set and the bug barely shows; on a target whose
+        chains sit in disjoint ranges it silently costs the whole shard its
+        numbering again.
+        """
+        zn = _atom(997, "ZN", "ZN", "A", 305, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(
+            range(234, 254))
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["B"]] == list(
+            range(300, 320))
+        assert [l for l in out.split("\n") if l[:6] == "HETATM"] == [zn]
+        assert "A241" in _keys(out)
+
     def test_a_resseq_this_rewrite_cannot_read_does_not_cost_the_numbering(self):
         """A residue number that is not a number cannot be a destination
         either: every id this rewrite writes comes out of ``f"{n:4d}"``, and
@@ -4696,6 +4724,32 @@ class TestRestoreDesignNumberingUnmappedRecords:
             lines.append(_atom(900 + i, name, "TRP", "A", 240))
             lines.append(_atom(900 + i, name, "TRP", "A", 240, record="ANISOU"))
         assert _duplicate_residue_ids("\n".join(lines) + "\n") == []
+
+    @pytest.mark.parametrize(
+        "record", ["ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ"])
+    def test_the_property_check_looks_at_every_coordinate_record(self, record):
+        """...and it has to see the duplicate in ALL FIVE of them, or the
+        property it checks is narrower than the rewrite it is checking.
+
+        ``_COORD_RECORDS`` is written out rather than read off
+        ``rp._RESSEQ_COORD_RECORDS`` so it cannot shrink WITH the code. Nothing
+        caught it shrinking ON ITS OWN: cutting it to ``("ATOM  ", "HETATM")``
+        survived the entire proteina suite. The test above looks like it would
+        catch that and does not — drop ``ANISOU`` and the remaining ``ATOM``
+        lines simply become contiguous, so the helper still returns ``[]`` and
+        the assertion still holds.
+
+        The record types are SPELLED OUT here too, for the reason they are
+        spelled out there: parametrising on the tuple under test would delete a
+        case along with its entry and leave the file green.
+
+        This is about the DETECTOR's breadth only. Whether production renumbers
+        each of these record types is pinned separately, by
+        ``TestRestoreDesignNumberingRecordCoverage``.
+        """
+        bad = (_atom(997, "ZN", "ZN", "A", 238, record=record) + "\n"
+               + _atom(998, "CA", "TRP", "A", 238, record=record) + "\n")
+        assert _duplicate_residue_ids(bad) == [("A", "238", "")]
 
 
 class TestRestoreDesignNumberingRecordCoverage:
@@ -5007,7 +5061,12 @@ class TestTheStagedReferenceEncoding:
     are the two measurements the note is now written from.
     """
 
-    _NAMES = ["ALA", "GLY", "SER", "THR", "VAL", "LEU", "ILE", "PRO", "PHE",
+    # Residue 4 is MSE, a MODIFIED RESIDUE, and it is written as a ``HETATM``
+    # exactly as a real deposit writes selenomethionine. Without it this whole
+    # class describes a file no real target looks like, and the record-set
+    # assertion below silently became a claim about the fixture rather than
+    # about the crop.
+    _NAMES = ["ALA", "GLY", "SER", "MSE", "VAL", "LEU", "ILE", "PRO", "PHE",
               "TYR", "TRP", "HIS"]
 
     def _upload(self, mangle=()):
@@ -5020,7 +5079,8 @@ class TestTheStagedReferenceEncoding:
         lines = ["HEADER    TEST", "REMARK   1 AUTH   J. M\xe9LLER",
                  "SEQRES   1 A   12  ALA GLY SER"]
         for i, name in enumerate(self._NAMES):
-            atom = _atom(i + 1, "CA", name, "A", i + 1)
+            record = "HETATM" if name in rp._MODRES_EQUIV else "ATOM  "
+            atom = _atom(i + 1, "CA", name, "A", i + 1, record=record)
             if i in mangle:
                 atom = atom[:17] + name[:2] + "\xe9" + atom[20:]
             lines.append(atom)
@@ -5040,17 +5100,28 @@ class TestTheStagedReferenceEncoding:
 
     def test_the_crop_emits_no_remark_for_a_byte_to_hide_in(self, tmp_path):
         """The note named a REMARK as the exposure. ``crop_pdb_to_contig``
-        emits ``ATOM`` / ``TER`` / ``END`` and nothing else, so no REMARK — and
-        no HEADER, and no SEQRES — is ever in the file the restore reads."""
+        emits COORDINATE lines — ``ATOM``, and ``HETATM`` for a modified
+        residue in ``_MODRES_EQUIV`` — plus one ``TER`` per chain and a final
+        ``END``, and no annotation record at all, so no REMARK, no HEADER and
+        no SEQRES is ever in the file the restore reads.
+
+        THE COUNTS ARE ASSERTED, NOT JUST THE RECORD SET. This test used to
+        assert ``{"ATOM", "TER", "END"}`` and passed only because its fixture
+        contained no modified residue — so it stood behind a production comment
+        that was false about every deposit containing one. A record set alone
+        goes quiet again the moment the fixture loses its ``HETATM``; the
+        counts do not.
+        """
         raw = tmp_path / "in.pdb"
         raw.write_bytes(self._upload().encode("latin-1"))
         residues, _ = rp.pdb_ca_residues(raw)
         staged = tmp_path / "staged.pdb"
         rp.stage_cropped_target(staged, raw.read_text(errors="replace"),
                                 residues, [("A", 1, 12)])
-        records = {l[:6].strip()
-                   for l in staged.read_text(encoding="latin-1").split("\n") if l}
-        assert records == {"ATOM", "TER", "END"}, records
+        records = [l[:6].strip()
+                   for l in staged.read_text(encoding="latin-1").split("\n") if l]
+        counts = {r: records.count(r) for r in set(records)}
+        assert counts == {"ATOM": 11, "HETATM": 1, "TER": 1, "END": 1}, counts
 
     def test_a_non_ascii_byte_in_a_kept_coordinate_line_does_move_the_reference(
             self, tmp_path):

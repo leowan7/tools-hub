@@ -2732,9 +2732,11 @@ def main() -> None:
             # ASCII a coordinate section is made of, which is every real target.
             #
             # A non-ASCII byte does NOT reach here through an annotation
-            # record: ``crop_pdb_to_contig`` emits ``ATOM`` / ``TER`` / ``END``
-            # and nothing else, so no REMARK, HEADER or SEQRES survives to
-            # carry one. Where it CAN land is a coordinate line the crop keeps,
+            # record: ``crop_pdb_to_contig`` emits COORDINATE lines — ``ATOM``,
+            # and ``HETATM`` for a modified residue in ``_MODRES_EQUIV`` — plus
+            # one ``TER`` per chain and a final ``END``, and no annotation
+            # record at all, so no REMARK, HEADER or SEQRES survives to carry
+            # one. Where it CAN land is a coordinate line the crop keeps,
             # and there it moves both of the things an earlier version of this
             # note said it moved neither of. Under a UTF-8 default — what the
             # container runs — ``errors="replace"`` destroys the byte before
