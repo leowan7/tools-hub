@@ -383,12 +383,24 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 # Multi-chain ipTM is not comparable
 # ---------------------------------------------------------------------------
 #
-# ipTM is a MAX over residues, not a mean. On a single-chain target that is
-# harmless — the only interface in the complex is the one you designed. On a
-# multi-chain target it is not: a real crystal dimer's own chain-chain
-# interface scores ~0.9 and dominates the number almost independently of
-# binder quality, so a mediocre binder can rank first carrying a
-# plausible-looking score. The sibling repo states it precisely, in
+# ipTM is computed over the interfaces of the WHOLE COMPLEX, not the
+# binder-to-target pair alone. On a single-chain target that is harmless — the
+# only interface in the complex is the one you designed. On a multi-chain
+# target it is not: the target's own chain-chain interface is large and well
+# formed whatever the binder does, so it holds the number up almost
+# independently of binder quality, and a mediocre binder can rank first
+# carrying a plausible-looking score.
+#
+# DO NOT state the reduction more precisely than this repo can support. This
+# comment used to open "a MAX over residues, not a mean", and four pipeline
+# files here say the opposite in as many words — interface-pTM "averaged over
+# EVERY chain pair" (tools/af2/run_pipeline.py:202,
+# tools/colabfold/run_pipeline.py:149, tools/esmfold2_design/run_pipeline.py:440,
+# tools/proteina/run_pipeline.py:1787), all of them describing the incident
+# where 460 boltzgen designs were scored on it. The conclusion above survives
+# either reduction. The "~0.9 for a real crystal dimer" figure that travelled
+# with the max does not, so it is gone from here and from the banner. The
+# sibling repo states the mechanism in
 # llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md — there is no such file in
 # THIS repo, and citing it unqualified sent readers looking for one.
 #

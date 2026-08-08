@@ -1,11 +1,19 @@
 """ipTM must be marked not-comparable on a multi-chain target.
 
-``llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md`` (the SIBLING repo — this
-one has no such file) states the defect precisely: ipTM is a MAX over
-residues, so a real crystal dimer's own chain-chain interface scores ~0.9 and
-"dominates almost independently of binder quality". It is both the displayed
-value AND the ranking key (``shared/result_columns.py``), so a mediocre binder
-can rank first carrying a plausible-looking number.
+The defect: ipTM is computed over the interfaces of the whole complex, not the
+binder-to-target pair alone, so on a multi-chain target the target's own
+chain-chain interface holds the number up almost independently of binder
+quality. It is both the displayed value AND the ranking key
+(``shared/result_columns.py``), so a mediocre binder can rank first carrying a
+plausible-looking number.
+
+Stated at that level on purpose. An earlier version of this docstring, and of
+the banner, said "a MAX over residues" and quoted "~0.9 for a real crystal
+dimer" — and four pipeline files in this repo describe ipTM as interface-pTM
+"averaged over EVERY chain pair" instead (tools/af2/run_pipeline.py:202 and
+three siblings). The conclusion holds under either reduction; the figure does
+not. See the comment above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
+shared/score_legends.py.
 
 Every test here asserts BOTH directions. A presence-only test passes against a
 banner that renders unconditionally, which would put a scary caveat on every
@@ -14,6 +22,7 @@ single-chain run — the far more common case — and train users to ignore it.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from decimal import Decimal
 from html.parser import HTMLParser
@@ -32,6 +41,23 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 NOTICE_MARKER = "data-multichain-iptm-notice"
 BANNER_TOOLS = ("rfdiffusion", "pxdesign", "bindcraft", "boltzgen")
+
+# The load-bearing half of the mechanism sentence: the number is computed over
+# interfaces that INCLUDE the target's own chain-chain contact. A shape, not a
+# phrasing, and dash-agnostic — the copy uses an en dash and the extracted text
+# carries it through convert_charrefs.
+_INCLUDES_TARGET_INTERFACE = re.compile(
+    r"includ\w+ the target'?s own chain.chain", re.I
+)
+
+# Anything that points at page furniture. The macro takes no parameter that
+# could tell it which page it is on, and two of its six call sites have no
+# re-fold control, so a locative promise cannot be true everywhere.
+_POINTS_AT_FURNITURE = re.compile(
+    r"\bbelow\b|\babove\b|\bon this page\b|\bat the bottom\b|"
+    r"\bre-?fold\b[^.]{0,40}\bBoltz",
+    re.I,
+)
 
 
 @pytest.fixture(scope="module")
@@ -106,6 +132,46 @@ class _Text(HTMLParser):
         return " ".join("".join(self.chunks).split())
 
 
+class _BannerText(HTMLParser):
+    """Visible text INSIDE the notice element only.
+
+    Scoped deliberately. Asserting on the whole page would let
+    components/results_shell.html's own "Re-fold with Boltz-2 (cofold)" copy
+    satisfy — or trip — a check about what the BANNER says, which is the
+    unrelated-copy failure mode tests/test_multichain_form_affordances.py
+    already paid for once.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self.chunks: list = []
+
+    def handle_starttag(self, tag, attrs):
+        if self._depth:
+            self._depth += 1
+        elif any(k == "data-multichain-iptm-notice" for k, _ in attrs):
+            self._depth = 1
+
+    def handle_endtag(self, tag):
+        if self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._depth:
+            self.chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        return " ".join("".join(self.chunks).split())
+
+
+def _banner_text(html: str) -> str:
+    parser = _BannerText()
+    parser.feed(html)
+    return parser.text
+
+
 def _render_results(flask_app, tool: str, target_chain: str) -> str:
     job = SimpleNamespace(
         id="job-1",
@@ -142,7 +208,17 @@ def test_banner_appears_on_a_multi_chain_job(tool, flask_app):
     # disclaims only the VALUES while the ORDER silently persists is the
     # half-measure this exists to avoid.
     assert "ranked by it" in body, f"{tool}: notice never mentions ranking"
-    assert "maximum over residues" in body
+    # And the mechanism, at the level this repo can stand behind. This used to
+    # assert "maximum over residues"; four pipeline files here call ipTM
+    # interface-pTM "averaged over EVERY chain pair", so that assertion pinned
+    # a claim the repo contradicts. What has to survive is WHY the number is
+    # not about the binder: it is computed over interfaces that include the
+    # target's own chain-chain contact. True under either reduction, and the
+    # reason the warning exists at all.
+    assert _INCLUDES_TARGET_INTERFACE.search(body), (
+        f"{tool}: the notice no longer says the number includes the target's "
+        f"own chain-chain interface, which is the whole claim. body={body!r}"
+    )
 
 
 @pytest.mark.parametrize("tool", BANNER_TOOLS)
@@ -381,6 +457,68 @@ def test_the_pooled_target_page_notice_follows_the_target_it_describes(
         f"target page, tools={tools} chain={chain!r}: "
         f"notice {'missing' if expected else 'rendered'}"
     )
+
+
+def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(flask_app):
+    """The copy is page-independent, so it may not describe a page's controls.
+
+    The macro takes ``(tool_slug, target_chain)`` and nothing that says which
+    of its six call sites it is on. It used to end "re-fold the top candidates
+    with Boltz-2 below", which describes the Second-opinion fold panel
+    components/results_shell.html draws — a panel two of the six call sites
+    never draw:
+
+      * templates/targets/detail.html calls candidate_table directly and has
+        no re-fold control anywhere on the page;
+      * a job page whose run returned zero candidates renders the notice (it
+        is called OUTSIDE results_shell) while results_shell draws the panel
+        only inside its non-empty branch.
+
+    Both are checked below, because the second is what makes a per-caller
+    parameter the wrong fix: the caller would have to recompute a condition
+    that lives inside another macro, from a different value each time.
+    """
+    target_html = _render_target_page(flask_app, ["rfdiffusion"], "A,B")
+    assert NOTICE_MARKER in target_html, "no banner to check"
+    assert 'name="dest_tool"' not in target_html, (
+        "the pooled target page has grown a re-fold control; this test's "
+        "premise no longer holds and the copy decision should be revisited"
+    )
+
+    # A page that DOES have the control, so the assertion above is not passing
+    # because re-folding exists nowhere.
+    job_html = _render_results(flask_app, "rfdiffusion", "A,B")
+    assert 'name="dest_tool"' in job_html, (
+        "the job results page lost its re-fold control"
+    )
+
+    # And the zero-candidate job page: banner yes, panel no.
+    job = SimpleNamespace(
+        id="job-1", tool="rfdiffusion", status="succeeded",
+        inputs={"target_chain": "A,B"},
+        result={"candidates": [], "tier": "pilot"},
+    )
+    from flask import render_template
+
+    with flask_app.test_request_context("/jobs/job-1"):
+        empty_html = render_template(
+            "tools/rfdiffusion_results.html", job=job, send_target_tools=None,
+        )
+    assert NOTICE_MARKER in empty_html
+    assert 'name="dest_tool"' not in empty_html, (
+        "results_shell now draws the re-fold panel with no candidates; the "
+        "second half of this test's premise no longer holds"
+    )
+
+    banner = _banner_text(target_html)
+    assert banner, "the notice rendered with no text in it"
+    assert not _POINTS_AT_FURNITURE.search(banner), (
+        f"the banner points at a control that is not on every page it "
+        f"renders on: {banner!r}"
+    )
+    # Same copy everywhere, which is the property that makes one check enough.
+    assert _banner_text(job_html) == banner
+    assert _banner_text(empty_html) == banner
 
 
 # ---------------------------------------------------------------------------

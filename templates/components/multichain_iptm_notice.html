@@ -14,14 +14,27 @@
    and tests/test_candidate_table_js_contract.py is a standing record of what
    changes to that macro cost.
 
-   THE SORT DELIBERATELY DOES NOT CHANGE. For rfdiffusion and pxdesign the
-   per-pair value does not exist anywhere in the record — the UI cannot sort by
-   a number nobody computed. The selection also already happened upstream: the
-   container sorts by ipTM and THEN truncates to num_designs, so re-ordering
-   the survivors here would look like a fix and change nothing about which
-   designs the user can download. Silently substituting pLDDT would repeat the
-   original sin — a number quietly deciding something. Making the key visibly
-   untrustworthy is the honest move.
+   THE SORT DELIBERATELY DOES NOT CHANGE, AND THAT IS NOT FREE. An earlier
+   version of this comment said re-ordering "would change nothing about which
+   designs the user can download". That is false, and a false justification is
+   worse than none: shared/compute_campaigns.aggregate_campaign_candidates
+   returns ONE globally-ranked list bounded by ``limit``, and
+   blueprints/campaigns.py passes limit=300 for the campaign page —
+   shared/target_results.aggregate_target_candidates caps the pooled target
+   page the same way. Past 300 candidates the ipTM order decides which designs
+   appear at all, and so which are one click from a download.
+
+   What it does NOT cost: the full ranked set stays reachable. The campaign
+   CSV and FASTA exports aggregate with limit=None (blueprints/campaigns.py,
+   _CAMPAIGN_ZIP_EXPORT_LIMIT documents why the ZIP is the exception). So a
+   suspect order changes what is IN FRONT of the user, not what exists.
+
+   The decision stands on the data rather than on that cost. For rfdiffusion
+   and pxdesign the per-pair value does not exist anywhere in the record, so
+   there is no key to re-sort BY — the UI cannot rank on a number nobody
+   computed. Substituting pLDDT would repeat the original sin, a number
+   quietly deciding something. Making the key visibly untrustworthy is what is
+   left, which is why the copy names the ORDER as well as the values.
 
    Usage — anywhere a candidate table is about to be rendered:
 
@@ -30,21 +43,49 @@
 
    Renders NOTHING unless the tool ranks on a complex-wide ipTM and the target
    names more than one chain; that decision lives in
-   shared/score_legends.multichain_iptm_unreliable. #}
+   shared/score_legends.multichain_iptm_unreliable.
+
+   THE COPY MUST BE TRUE ON ALL SIX CALL SITES, and it takes no parameters
+   that would let it be tailored per page — so it may not describe page
+   furniture. It used to end "re-fold the top candidates with Boltz-2 below",
+   which is a fair description of the Second-opinion fold panel that
+   components/results_shell.html draws on the four job pages and the campaign
+   page. templates/targets/detail.html calls candidate_table directly and has
+   no such control, so the sentence was simply false there; it is also false
+   on a job page whose run returned zero candidates, because results_shell
+   only draws that panel inside its non-empty branch while this macro is
+   called outside it. A parameter could track the first of those and would
+   have to track the second too, from a different value at every caller. The
+   copy names the REMEDY instead of the widget, which is true everywhere and
+   cannot drift. Pinned by tests/test_multichain_iptm_notice.py::
+   test_the_banner_does_not_point_at_page_furniture_it_cannot_see. #}
 
 {% macro multichain_iptm_notice(tool_slug, target_chain) %}
 {% if multichain_iptm_unreliable(tool_slug, target_chain) %}
   <div data-multichain-iptm-notice
        style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.3);border-radius:var(--radius-md);padding:.9rem 1rem;margin-bottom:1rem;">
     <p class="subtitle" style="margin:0;">
+      {# The mechanism sentence says only what this repo can stand behind.
+         "a maximum over residues" was too specific and this repo contradicts
+         it: four pipeline files here describe ipTM as interface-pTM AVERAGED
+         over every chain pair (tools/af2/run_pipeline.py:202,
+         tools/colabfold:149, tools/esmfold2_design:440, tools/proteina:1787).
+         Under a mean the "~0.9 for a real crystal dimer" figure does not hold
+         either, so it is gone. What holds under BOTH constructions — and is
+         the whole load-bearing claim — is that the number is computed over
+         interfaces that include the target's own chain-chain contact instead
+         of the binder-to-target interface alone. #}
       <strong>ipTM is not reliable for this multi-chain target.</strong>
-      ipTM is a maximum over residues, so on a target with more than one chain
-      the target's own chain&ndash;chain interface &mdash; around 0.9 for a real
-      crystal dimer &mdash; dominates the number almost independently of binder
-      quality. <strong>These designs are also ranked by it</strong>, so both the
+      This ipTM is computed across the interfaces of the whole complex,
+      including the target's own chain&ndash;chain contact &mdash; not the
+      binder-to-target interface alone. That internal interface is large and
+      well formed whatever the binder does, so it holds the number up almost
+      independently of binder quality.
+      <strong>These designs are also ranked by it</strong>, so both the
       values and the order of this table should be treated as indicative only.
-      Compare designs on pLDDT and the interface geometry columns, or re-fold
-      the top candidates with Boltz-2 below for an independent score.
+      Compare designs on pLDDT and the other columns in this table, and
+      confirm any shortlist with a second-opinion fold against the same target
+      before committing to it.
     </p>
   </div>
 {% endif %}
