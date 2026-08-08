@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import tempfile
+import textwrap
 import uuid
 from contextlib import ExitStack
 from decimal import Decimal
@@ -92,6 +93,26 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # nothing on any page is labelled "the designs you are comparing" -- yet each
 # of those is false on the zero-candidate page. Three regexes are what is left,
 # and they are grammars rather than synonym lists:
+#
+# WHAT THESE REGEXES ARE, STATED SO NOBODY READS THEM AS MORE. They are a
+# HEURISTIC BACKSTOP, not a proof. They do not decide whether copy is true;
+# they catch the handful of English constructions that have made it false here
+# before. Five review rounds have each closed the previous round's survivors
+# and found new ones, and the last round's survivors were defeated by a
+# two-letter prefix ("second-opinion REfold"), a possessive determiner ("YOUR
+# top designs"), a noun outside a seven-item list ("the top ten"), a verb
+# outside a verb list ("Download the best few") and a metric's long name. That
+# is an arms race against English and it does not terminate. It also has a
+# cost that is not hypothetical: twice now a term added to close a survivor
+# has gone on to refuse honest copy, and the second time the word was "fold",
+# in a protein-design app.
+#
+# So the rule for anyone tempted to add a word here: DON'T. The defence that
+# actually scales is
+# ``test_the_banner_is_true_on_a_job_page_with_zero_candidates``, which PRINTS
+# the rendered banner against the emptiest surface the macro has. Ten seconds
+# of reading it catches the whole class these regexes chase, including every
+# survivor listed above. Run the suite with ``-s`` and read the copy.
 
 # A deictic pointed at page furniture: a determiner, up to two modifiers, and
 # a noun naming something that is either on the page or not. "these designs"
@@ -109,13 +130,30 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # THE NOUN LIST GREW IN ROUND 5, and the additions are the ones an independent
 # review walked through: "with the re-fold FORM" and "the SHORTLIST you
 # starred" both named a piece of page that two surfaces do not have, and
-# neither ``fold``, ``form`` nor ``shortlist`` was here. It is still a list,
-# which is a real weakness -- but it is a list of KINDS of page part, not of
-# phrasings, so a synonym for "below" or a missing hyphen does not defeat it.
+# neither ``form`` nor ``shortlist`` was here. It is still a list, which is a
+# real weakness -- but it is a list of KINDS of page part, not of phrasings, so
+# a synonym for "below" or a missing hyphen does not defeat it.
+#
+# ``fold|folds`` WAS ALSO ADDED, AND IS NOW REMOVED, because it carried no
+# coverage and cost honest copy. It was added for the re-fold panel, whose
+# label is "Second-opinion fold" -- and the LABEL CROSS-CHECK already catches
+# that, from the rendered page rather than from a list. Measured: with
+# ``fold`` deleted, both walk-arounds an independent review used ("the second
+# opinion fold", "the second-opinion fold") stay REFUSED, by
+# ``label:['Second-opinion fold']``; "the re-fold form" stays refused by
+# ``form``; and all eight of round 4's survivors stay refused. What changes is
+# that "Designs that share the same fold can still differ at the interface"
+# becomes writable again. In a protein-design app "fold" is the central noun
+# of the domain -- "the same fold", "the native fold", "the correct fold" --
+# and none of them names anything on a page. This is the round-3 NIT-7 mistake
+# (a guard that rejects true copy) on a new axis, and the cheapest correct fix
+# for a denylist term that is also ordinary domain vocabulary is to delete it
+# and let the check that reads the actual page do the work.
+# ``test_the_guard_permits_honest_copy_about_the_metric`` pins it.
 _FURNITURE_NOUN = (
     r"table|tables|column|columns|row|rows|panel|panels|list|lists|"
     r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets|"
-    r"fold|folds|form|forms|field|fields|link|links|tab|tabs|"
+    r"form|forms|field|fields|link|links|tab|tabs|"
     r"section|sections|selector|selectors|toggle|toggles|chart|charts|"
     r"graph|graphs|badge|badges|banner|banners|notice|notices|box|boxes|"
     r"card|cards|view|views|screen|screens|shortlist|shortlists|"
@@ -149,14 +187,35 @@ _DEICTIC_FURNITURE = re.compile(
 #   * CONTENT THE READER ACTED ON -- "designs you are comparing", "the ones you
 #     want", "the shortlist you starred". The macro takes a tool slug and a
 #     chain; it cannot see the reader's history with the page.
-#   * PRESENCE ADVERBS -- shown / listed / displayed / visible / here. Same
-#     family as the locatives below, but about existence rather than position.
+#   * PRESENCE ADVERBS -- shown / listed / displayed / visible -- ANCHORED to
+#     a place, plus a bare ``here``.
+#
+#     THE ANCHOR IS NEW AND IT IS A NARROWING. These four were banned
+#     unconditionally, which refused "A value SHOWN for a multi-chain target is
+#     not comparable to one for a single-chain target" and "The inflation is
+#     not VISIBLE in the number itself" -- two sentences that describe the
+#     metric, name no page part, and are exactly what this banner is for.
+#     A bare passive is not a claim about the page; what makes it one is an
+#     anchor, and the anchor is a place. Measured against all eight of round
+#     4's survivors, the unanchored form carried ZERO coverage: "Only the top
+#     300 designs are shown here" is refused by the definite plural "the top
+#     300 designs" AND by ``here``, and every other survivor is refused by a
+#     different grammar entirely. So the anchor loses nothing that was ever
+#     caught and buys back copy a careful writer wants.
+#
+#     ``here`` stays bare and is now load-bearing: with the adverbs anchored
+#     it is the only thing left that refuses "shown here" in the absence of a
+#     plural. What DOES become writable is a claim with neither -- "Only the
+#     top 300 are shown." Named rather than papered over; see the note above
+#     these regexes about why the answer to that is the printed banner and not
+#     a ninth alternation.
 _ASSERTS_PAGE_CONTENT = re.compile(
     r"\bthe\s+(?:\w[\w-]*[\s-]+){0,2}"
     r"(?:designs|candidates|results|rows|entries|hits|ones)\b"
     r"|\b(?:designs?|candidates?|results?|rows?|ones|shortlists?|list)\b"
     r"[^.]{0,24}\byou\b"
-    r"|\b(?:shown|listed|displayed|visible)\b|\bhere\b",
+    r"|\b(?:shown|listed|displayed|visible)\s+(?:here|below|above|on this)\b"
+    r"|\bhere\b",
     re.I,
 )
 
@@ -596,6 +655,93 @@ def test_a_label_is_not_matched_inside_a_longer_word():
         == ["Complementarity"]
     assert _quoted_in("supercomplementarity is not a word", {"Complementarity"}) \
         == []
+
+
+def _guard_hits(copy: str) -> list[str]:
+    """Which of the four grammars refuse ``copy``, and on what.
+
+    The shipped regex objects, not a replication of them, so this cannot drift
+    from what the two banner tests run.
+    """
+    hits = []
+    for name, rx in (
+        ("deictic", _DEICTIC_FURNITURE),
+        ("page-content", _ASSERTS_PAGE_CONTENT),
+        ("page-action", _PAGE_ACTION),
+        ("locative", _POINTS_AT_FURNITURE),
+    ):
+        found = rx.search(copy)
+        if found:
+            hits.append(f"{name}:{found.group(0)!r}")
+    return hits
+
+
+# Copy a careful writer would want, which the guard must NOT refuse. Every
+# entry describes the METRIC or the REMEDY and names no page part, so it is
+# true on all seven surfaces including the zero-candidate one.
+#
+# THIS TEST EXISTS BECAUSE THE GUARD HAS TWICE STARTED REFUSING TRUE COPY, and
+# each time the term added to close a survivor was also ordinary vocabulary.
+# A denylist that only gets checked in the false direction ratchets in one
+# direction forever; this is the ratchet's other pawl.
+_HONEST_COPY = [
+    # Round 5 put ``fold`` in _FURNITURE_NOUN, in an app whose entire subject
+    # is protein folds. Refused as "deictic 'the same fold'".
+    "Do not choose between designs on ipTM alone. Designs that share the same "
+    "fold can still differ at the interface.",
+    # ...and banned ``shown`` unconditionally. Refused as "page-content
+    # 'shown'", although the sentence is about a NUMBER, not about the page.
+    "A value shown for a multi-chain target is not comparable to one for a "
+    "single-chain target.",
+    # Same construction, same cause, on ``visible``.
+    "The inflation is not visible in the number itself.",
+    # Round 3's NIT-7 controls. Kept here so this test also pins THAT fix: an
+    # unanchored ``above`` refused the first, and banning ``the design`` would
+    # have refused the second.
+    "Treat a value above 0.8 with the same suspicion.",
+    "Do not pick the design with the highest ipTM.",
+    # The banner's own generic-English constructions, which round 4 blessed
+    # deliberately: a BARE plural is about the tool, not about this page.
+    "Designs are ranked by it, so a mediocre binder can rank first.",
+]
+
+
+@pytest.mark.parametrize("copy", _HONEST_COPY, ids=range(len(_HONEST_COPY)))
+def test_the_guard_permits_honest_copy_about_the_metric(copy):
+    assert _guard_hits(copy) == [], (
+        f"the guard refuses copy that names no page furniture and is true on "
+        f"every surface, including the zero-candidate one: {copy!r}. A "
+        f"denylist term that is also ordinary domain vocabulary costs more "
+        f"than it catches -- narrow or delete it rather than reword the copy."
+    )
+
+
+# The other direction, so the narrowing above is pinned as a narrowing and not
+# as a hole. Every one of these is a round-4 survivor that round 5 closed, and
+# each must still be refused by a GRAMMAR here.
+#
+# "the second opinion fold" is deliberately NOT in this list: it is refused by
+# the LABEL cross-check reading "Second-opinion fold" off the rendered page,
+# which is unit-tested two tests above, and that is precisely why ``fold``
+# could come out of _FURNITURE_NOUN.
+_PAGE_SHAPED_COPY = [
+    "The designs you are comparing were ranked on it.",
+    "Scroll down to the ranked designs.",
+    "Only the top 300 designs are shown here.",
+    "Re-run the top designs with the re-fold form.",
+    "Star the ones you want and re-fold them.",
+    "Re-fold the shortlist you starred.",
+    "The value is shown below.",
+]
+
+
+@pytest.mark.parametrize("copy", _PAGE_SHAPED_COPY,
+                         ids=range(len(_PAGE_SHAPED_COPY)))
+def test_the_guard_still_refuses_page_shaped_copy(copy):
+    assert _guard_hits(copy), (
+        f"the guard permits copy that claims page content the macro cannot "
+        f"see, and which is false on the zero-candidate page: {copy!r}"
+    )
 
 
 def _render_results(flask_app, tool: str, target_chain: str) -> str:
@@ -1117,6 +1263,20 @@ def test_the_banner_is_true_on_a_job_page_with_zero_candidates(
     rather than only membership in the set above: everything the banner could
     point at is absent here, which makes it the one page where a page-shaped
     claim cannot hide.
+
+    AND IT PRINTS THE COPY, EVERY RUN. That is the point of this test, more
+    than the four regexes below it. Five review rounds of regexes have each
+    closed the previous round's survivors and found new ones, because the
+    class is "a sentence in English that is false on an empty page" and no
+    denylist enumerates it. A human reading the actual rendered banner against
+    the emptiest surface the macro has catches all of them in about ten
+    seconds — including every survivor those rounds turned up, none of which
+    quotes a label or names a noun any list could hold.
+
+    So: ``pytest -s tests/test_multichain_iptm_notice.py -k zero_candidates``
+    prints the banner and the emptiness facts. If you are changing this copy,
+    that is the review. pytest also shows the block on failure without ``-s``,
+    which is when it is needed most.
     """
     empty = banner_surfaces["job rfdiffusion, ZERO candidates"]
     assert NOTICE_MARKER in empty, (
@@ -1125,17 +1285,45 @@ def test_the_banner_is_true_on_a_job_page_with_zero_candidates(
         "of point 3 in the macro's comment"
     )
 
-    # What is actually on the page — asserted, not assumed.
+    # What is actually on the page — measured first so the block below can
+    # print it, then asserted. Same facts, same assertions; the difference is
+    # that they are now legible rather than only checked.
     body = _Text()
     body.feed(empty)
     visible = body.text
-    assert "Zero candidates returned" in visible
-    assert empty.count("<table") == 0, "there is a table after all"
-    assert _table_headers(empty) == [], "there are columns after all"
-    assert 'name="dest_tool"' not in empty, "there is a re-fold control"
-    assert "Second-opinion" not in visible, "the re-fold panel is on the page"
-
     banner = _banner_text(empty)
+    facts = [
+        ('page says "Zero candidates returned"',
+         "Zero candidates returned" in visible),
+        ("<table> elements on the page", empty.count("<table")),
+        ("column headers on the page", _table_headers(empty)),
+        ("re-fold control (name=\"dest_tool\")", 'name="dest_tool"' in empty),
+        ('"Second-opinion" anywhere in the visible text',
+         "Second-opinion" in visible),
+        ("multi-word labels the page does carry",
+         sorted(_page_labels(empty))[:6] or "none"),
+    ]
+    print("\n" + "=" * 72)
+    print("THE MULTI-CHAIN ipTM BANNER, RENDERED ON THE EMPTIEST PAGE IT HAS")
+    print("(job rfdiffusion, zero candidates — read this against the facts "
+          "below it)")
+    print("=" * 72)
+    for line in textwrap.wrap(banner or "<EMPTY>", width=72):
+        print("  " + line)
+    print("-" * 72)
+    for label, value in facts:
+        print(f"  {label:<45} {value!r}")
+    print("=" * 72)
+    print("  Every claim the banner makes must be true with all of that "
+          "absent.")
+    print("=" * 72)
+
+    assert facts[0][1]
+    assert facts[1][1] == 0, "there is a table after all"
+    assert facts[2][1] == [], "there are columns after all"
+    assert not facts[3][1], "there is a re-fold control"
+    assert not facts[4][1], "the re-fold panel is on the page"
+
     assert banner, "the notice rendered with no text in it"
 
     # So the banner may not claim any of them. Same checks as the guard test,
