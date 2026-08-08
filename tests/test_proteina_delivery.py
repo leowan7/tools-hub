@@ -38,7 +38,7 @@ from tools.proteina import run_pipeline as rp
 def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
                        pdb_body=b"ATOM  fake\nEND\n", inline_env=None,
                        cap_bytes=None, break_upload=False, break_read=False,
-                       expect_exit=False):
+                       expect_exit=False, job_token=None, webhook_url=None):
     """Run ``main()`` through to the design loop with the GPU stages stubbed.
 
     Returns ``(result_dict, calls)`` where ``calls`` records every
@@ -49,7 +49,20 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
     ``request_upload_urls``, which the inline path never calls. ``break_read``
     breaks the one thing the inline path does inside the same try, the
     ``pdb_path.read_bytes()``, so the failure accounting on that branch can be
-    pinned too. ``expect_exit`` requires the SystemExit a delivery failure
+    pinned too.
+
+    ``job_token`` and ``webhook_url`` override the two fields that make a
+    payload HUB-SHAPED. Left at ``None`` they follow the endpoint — a token
+    when there is one, no webhook ever — which is the direct-call shape every
+    endpoint-less test in this file needs. Setting either WITHOUT an endpoint
+    is the tools-hub-submission-that-lost-its-endpoint case, and it must be
+    refused before any GPU work.
+
+    ``calls`` records a ``("search", cmd)`` entry when the stubbed
+    ``run_streaming`` is reached, so "refused pre-GPU" is an assertion about
+    what did not happen rather than an inference from the result dict.
+
+    ``expect_exit`` requires the SystemExit a delivery failure
     raises after writing its result, AND requires its code to be 1 — bare
     ``pytest.raises(SystemExit)`` would accept ``sys.exit(0)``, and the exit
     code is not decoration: ``modal_app.run_tool`` puts ``result.returncode``
@@ -103,7 +116,9 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
         # The bytes themselves, so a test can assert on content.
         calls.append(("put", url, data))
 
-    monkeypatch.setattr(rp, "run_streaming", lambda cmd, wd: 0)
+    monkeypatch.setattr(
+        rp, "run_streaming",
+        lambda cmd, wd: (calls.append(("search", tuple(cmd))) or 0))
     monkeypatch.setattr(rp, "parse_designs", lambda run_dir: rows)
     # break_read points at a path that was never written, so read_bytes raises
     # inside the same try the upload pair lives in — the inline path's only
@@ -133,14 +148,23 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
         },
         "input_presigned_url": "",
         "upload_urls_endpoint": endpoint,
-        "job_token": "tok" if endpoint else "",
+        "job_token": ("tok" if endpoint else "") if job_token is None
+                     else job_token,
         "tier": "protein_binder",
     }
     monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
     monkeypatch.setenv("JOB_TIER", "protein_binder")
     monkeypatch.setenv("JOB_ID", "job-deliver")
     monkeypatch.setenv("PROTEINA_RF3", "on")
-    monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    if webhook_url:
+        monkeypatch.setenv("WEBHOOK_URL", webhook_url)
+    else:
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    # See the same two lines in _drive_real_parser: a job_token or a
+    # WEBHOOK_URL without an upload endpoint is now a pre-GPU refusal, so an
+    # inherited JOB_TOKEN would turn every ``endpoint=""`` case in this file
+    # into a preflight failure instead of the inline delivery it is testing.
+    monkeypatch.delenv("JOB_TOKEN", raising=False)
     if inline_env is None:
         monkeypatch.delenv("PROTEINA_INLINE_PDBS", raising=False)
     else:
@@ -158,7 +182,9 @@ def _drive_design_loop(tmp_path, monkeypatch, *, endpoint, designs=2,
 
 
 def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
-                       break_upload_for=()):
+                       break_upload_for=(), search_rc=0, write_outputs=True,
+                       extra_files=None, expect_exit=False, cap_bytes=None,
+                       job_spec_extra=None, search_raises=None):
     """Drive ``main()`` with the REAL ``parse_designs`` and ``find_pdb_for``.
 
     ``_drive_design_loop`` above stubs both, which is right for the delivery
@@ -178,6 +204,32 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
     derived from the rank this helper exists to test — keying on it would let
     a wrong rank silently break a different design than the test asked for.
 
+    ``search_rc`` is the exit code ``run_streaming`` returns. Non-zero with a
+    complete reward CSV already on disk is the shape the P-3 canary actually
+    produced (8 designs fully scored, then exit 1), so it is reachable here
+    rather than only in theory. ``write_outputs=False`` makes the stubbed
+    search write NOTHING — no CSV, no PDBs — which is the other zero-design
+    shape the result has to be able to tell apart from a culled run.
+    ``extra_files`` is ``{relative_path: bytes}`` written under the run dir,
+    which is how the ``filtered_out_samples`` bucket — the evidence that the
+    filter ran and rejected — gets onto disk for a census to find.
+
+    ``expect_exit`` requires the SystemExit a delivery failure raises AFTER
+    writing its result, and requires code 1: ``modal_app.run_tool`` puts
+    ``result.returncode`` straight into what the caller receives, so a
+    delivery failure exiting 0 is a failed run reported as a clean one.
+
+    ``cap_bytes`` overrides ``INLINE_PDB_TOTAL_CAP_BYTES``. On the UPLOAD path
+    that budget is what bounds the inline rescue of a failed PUT, so setting it
+    below one design is how the upload-failure DROP path — the one that must
+    still not burn a rank number — stays reachable.
+
+    ``job_spec_extra`` is merged into ``job_spec``, so a test can send the
+    malformed field a caller really sends. ``search_raises`` is an exception
+    instance ``run_streaming`` raises instead of returning, which is how
+    ``subprocess.TimeoutExpired`` reaches main() without waiting for a real
+    subprocess.
+
     Returns ``(result_dict, calls)``.
     """
     home = tmp_path / "proteina"
@@ -192,6 +244,14 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
         # What `complexa design` leaves behind: the per-design PDBs and the
         # reward CSV. Written from inside run_streaming because main() wipes
         # and recreates ./inference immediately before calling it.
+        for rel, blob in (extra_files or {}).items():
+            dest = run_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(blob)
+        if not write_outputs:
+            if search_raises is not None:
+                raise search_raises
+            return search_rc
         header = ("pdb_path,total_reward,af2folding_i_ptm_log,"
                   "af2folding_plddt,af2folding_rmsd,metadata_tag")
         lines = [header]
@@ -202,7 +262,12 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
             lines.append(f"{pdb},{reward},0.7,0.8,1.2,{name}")
         (run_dir / "rewards_search_binder_local_pipeline_0.csv").write_text(
             "\n".join(lines) + "\n")
-        return 0
+        if search_raises is not None:
+            # AFTER the outputs are on disk, deliberately: a search that hangs
+            # in a late stage has already written its reward CSV, which is the
+            # whole reason banking partial work is worth doing.
+            raise search_raises
+        return search_rc
 
     broken_bodies = [body for name, _reward, body in rows
                      if body is not None and name in break_upload_for]
@@ -226,13 +291,17 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
     monkeypatch.setattr(rp, "upload_pdb", fake_upload_pdb)
     monkeypatch.setattr(rp, "build_design_cmd", lambda **k: ["true"])
     monkeypatch.setattr(rp, "shard_seed", lambda job_id: 1)
+    if cap_bytes is not None:
+        monkeypatch.setattr(rp, "INLINE_PDB_TOTAL_CAP_BYTES", cap_bytes)
 
+    job_spec = {
+        "config_name": "search_binder_local_pipeline",
+        "task_name": "02_PDL1", "rf3_required": False,
+        "nsamples": 4, "replicas": 2,
+    }
+    job_spec.update(job_spec_extra or {})
     monkeypatch.setenv("JOB_PAYLOAD", json.dumps({
-        "job_spec": {
-            "config_name": "search_binder_local_pipeline",
-            "task_name": "02_PDL1", "rf3_required": False,
-            "nsamples": 4, "replicas": 2,
-        },
+        "job_spec": job_spec,
         "input_presigned_url": "",
         "upload_urls_endpoint": endpoint,
         "job_token": "tok" if endpoint else "",
@@ -242,9 +311,23 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
     monkeypatch.setenv("JOB_ID", "job-realparse")
     monkeypatch.setenv("PROTEINA_RF3", "on")
     monkeypatch.delenv("WEBHOOK_URL", raising=False)
+    # A DIRECT-SHAPED PAYLOAD CARRIES NEITHER. main() now refuses pre-GPU when
+    # a job_token or a WEBHOOK_URL is present without an upload endpoint (that
+    # combination is a tools-hub submission that lost its endpoint, never a
+    # direct call), so an inherited JOB_TOKEN in the runner's environment would
+    # silently turn every endpoint-less case here into a preflight refusal.
+    monkeypatch.delenv("JOB_TOKEN", raising=False)
     monkeypatch.delenv("PROTEINA_INLINE_PDBS", raising=False)
+    monkeypatch.delenv("PROTEINA_DESIGN_TIMEOUT_S", raising=False)
 
-    rp.main()
+    if expect_exit:
+        with pytest.raises(SystemExit) as exc:
+            rp.main()
+        assert exc.value.code == 1, (
+            f"a delivery failure exited {exc.value.code!r}; modal_app reports "
+            "exit_code to the caller, so it must match _fail's 1")
+    else:
+        rp.main()
     return json.loads(result_file.read_text()), calls
 
 
@@ -638,16 +721,86 @@ class TestUploadPathUnchanged:
             pdb_body=b"ATOM  x" * 200 + b"\nEND\n")
         assert _slim_result_for_persist(data) == data
 
-    def test_upload_failure_still_skips_and_counts(self, tmp_path, monkeypatch):
-        """Pre-existing behaviour, preserved: a design whose upload raises is
-        dropped and counted, never delivered with a pdb_key pointing at
-        nothing."""
+    def test_a_failed_upload_now_falls_back_to_INLINE_instead_of_vanishing(
+            self, tmp_path, monkeypatch):
+        """DELIBERATELY CHANGED BEHAVIOUR, and the only behaviour in this class
+        that is not what it was. It used to read
+        ``test_upload_failure_still_skips_and_counts`` and assert 0 designs, 0
+        candidates, 2 failures, FAILED — i.e. it pinned the defect.
+
+        A broken-but-present endpoint (HTTP 401/404, a revoked presigned URL,
+        an empty job_token) made every PUT raise, and the design was dropped
+        with its scores even though the atoms were already in this process's
+        memory. Nothing came back: a billed A100 returned an empty candidate
+        list. Every sibling ships them anyway — rfdiffusion keeps the
+        candidate, appends the filename to ``failed_uploads`` and inlines
+        ``pdb_content_b64`` — and the hub is already built for that shape.
+
+        Read the CONTROLS next to this one before concluding the web path
+        moved: ``test_a_HEALTHY_upload_path_is_untouched_by_the_rescue`` shows
+        a clean job returns exactly what it always did, key for key."""
         data, _ = _drive_design_loop(
             tmp_path, monkeypatch, endpoint="https://hub/upload",
             break_upload=True)
+        assert data["status"] == "COMPLETED"
+        assert data["designs_completed"] == 2
+        assert data["n_failures"] == 0, (
+            "nothing was lost — the coordinates came back inline")
+        assert data["failed_uploads"] == ["design_001.pdb", "design_002.pdb"]
+        for cand in data["candidates"]:
+            assert base64.b64decode(cand["pdb_content_b64"]) == b"ATOM  fake\nEND\n"
+            # The Storage-shaped key SURVIVES, unlike the inline size cap's
+            # branch: it is what _slim_result_for_persist matches
+            # ``failed_uploads`` against, and what the PDB route's basename
+            # fallback resolves.
+            assert cand["pdb_key"] == f"designs/design_{cand['rank']:03d}.pdb"
+
+    def test_the_rescued_atoms_SURVIVE_the_hub_s_slimming(
+            self, tmp_path, monkeypatch):
+        """The rescue is worthless if persistence throws it away, and slimming
+        drops the inline copy from every ``designs/``-prefixed candidate BY
+        DEFAULT — on the stated grounds that Storage has it. Here Storage does
+        not. ``shared/jobs.py`` already carves out exactly this case by
+        basename against ``failed_uploads``; driven through the REAL function
+        rather than restated."""
+        from shared.jobs import _slim_result_for_persist
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload",
+            break_upload=True)
+        slimmed = _slim_result_for_persist(data)
+        assert [c.get("pdb_content_b64") for c in slimmed["candidates"]] == [
+            c["pdb_content_b64"] for c in data["candidates"]], (
+            "the ONLY copy of these structures was slimmed away")
+
+    def test_a_HEALTHY_upload_path_is_untouched_by_the_rescue(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL for the two tests above, and the whole reason the
+        rescue is allowed to exist. On a job where every PUT succeeds — which
+        is every real job — nothing about the result changes: no candidate
+        grows a base64 field, and the ``failed_uploads`` key is absent, not
+        empty. An empty list would still be a new key in a shape the hub
+        persists."""
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload")
+        assert "failed_uploads" not in data
+        assert all("pdb_content_b64" not in c for c in data["candidates"])
+        assert len([c for c in calls if c[0] == "put"]) == 2
+
+    def test_an_upload_failure_the_budget_CANNOT_rescue_still_drops_and_counts(
+            self, tmp_path, monkeypatch):
+        """The rescue is bounded, so the original drop-and-count is still
+        reachable and still correct. With a budget below one design nothing can
+        be rescued, and the shard is back to delivering no coordinates — which
+        is a FAILED run, not a COMPLETED one."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload",
+            break_upload=True, cap_bytes=4, expect_exit=True)
         assert data["designs_completed"] == 0
         assert data["n_failures"] == 2
-        assert data["status"] == "COMPLETED"
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_coordinates_delivered"
+        assert "failed_uploads" not in data, (
+            "nothing was rescued, so nothing is being kept from slimming")
 
     def test_an_unreadable_pdb_is_counted_on_the_INLINE_path_too(self, tmp_path, monkeypatch):
         """The mirror of test_upload_failure_still_skips_and_counts, for the
@@ -658,26 +811,36 @@ class TestUploadPathUnchanged:
         ``n_failures`` and simply disappear from the result, leaving
         ``designs_completed`` under-reporting against a clean ``n_failures``
         of 0. That is the truncated-result-that-looks-complete failure this
-        file exists to prevent, and it must be counted, not swallowed."""
+        file exists to prevent, and it must be counted, not swallowed.
+
+        And then it must be REPORTED. This test used to name that failure mode
+        in its own docstring and close with ``assert data["status"] ==
+        "COMPLETED"`` — the counters were right and the verdict on top of them
+        was a lie."""
         data, _ = _drive_design_loop(
-            tmp_path, monkeypatch, endpoint="", break_read=True)
+            tmp_path, monkeypatch, endpoint="", break_read=True,
+            expect_exit=True)
         assert data["designs_completed"] == 0
         assert data["n_failures"] == 2, (
             "an unreadable PDB must be COUNTED on the inline path, not "
             "silently dropped")
         assert data["candidates"] == []
-        assert data["status"] == "COMPLETED"
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_coordinates_delivered"
 
     def test_a_read_failure_is_counted_the_same_way_on_both_paths(self, tmp_path, monkeypatch):
-        """Delivery mode may not change the failure ARITHMETIC either. Pins the
-        two branches against each other so neither can drift alone."""
+        """Delivery mode may not change the failure ARITHMETIC either — nor the
+        verdict. Pins the two branches against each other so neither can drift
+        alone."""
         web, _ = _drive_design_loop(
             tmp_path, monkeypatch, endpoint="https://hub/upload",
-            break_read=True)
+            break_read=True, expect_exit=True)
         direct, _ = _drive_design_loop(
-            tmp_path, monkeypatch, endpoint="", break_read=True)
+            tmp_path, monkeypatch, endpoint="", break_read=True,
+            expect_exit=True)
         for key in ("status", "designs_completed", "n_failures"):
             assert web[key] == direct[key], f"{key} differs between modes"
+        assert web["error"]["check"] == direct["error"]["check"]
 
     def test_scores_and_ranking_are_identical_between_the_two_modes(self, tmp_path, monkeypatch):
         """Delivery mode may change only HOW the atoms travel — never the
@@ -800,21 +963,50 @@ class TestDeliveredRankIsDenseAndOneBased:
         assert [c["pdb_key"] for c in data["candidates"]] == [
             "design_001.pdb", "design_002.pdb", "design_003.pdb"]
 
-    def test_an_upload_FAILURE_does_not_burn_a_rank_number(self, tmp_path, monkeypatch):
+    def test_an_UNRESCUABLE_upload_failure_does_not_burn_a_rank_number(
+            self, tmp_path, monkeypatch):
         """The drop path the siblings do not have. Proteina uploads inside the
-        loop and skips the design when the PUT raises, so a rank committed
-        before the upload would be spent on a candidate that never shipped —
-        moving the gap rather than closing it. The best design's PUT fails
-        here; the survivors must still be 1 and 2."""
+        loop, so a rank committed before the PUT would be spent on a candidate
+        that never shipped — moving the gap rather than closing it.
+
+        A failed PUT alone no longer drops the design (its atoms come back
+        inline instead — see ``TestUploadPathUnchanged``), so the drop is
+        reached the only way that is left: a rescue budget too small to hold
+        it. The best design is the one that fails; the survivors must still be
+        1 and 2, with no hole where the third would have been."""
         rows = self._rows("alfa", "bravo", "charlie")
         data, _ = _drive_real_parser(
             tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
-            break_upload_for=("charlie",))
+            break_upload_for=("charlie",), cap_bytes=4)
         assert data["n_failures"] == 1
+        assert "failed_uploads" not in data, (
+            "guard: the budget must really have blocked the rescue, or this "
+            "test is asserting rank density over a path that no longer drops")
         assert [c["name"] for c in data["candidates"]] == ["bravo", "alfa"]
         assert [c["rank"] for c in data["candidates"]] == [1, 2]
         assert [c["pdb_key"] for c in data["candidates"]] == [
             "designs/design_001.pdb", "designs/design_002.pdb"]
+
+    def test_a_RESCUED_upload_failure_keeps_its_rank_and_the_set_stays_dense(
+            self, tmp_path, monkeypatch):
+        """The other side of the same branch: when the rescue DOES fire the
+        design is delivered, so it must consume its number like any other
+        survivor. The best design's PUT fails and it is still rank 1, carrying
+        its own atoms — a renumbering that pushed it down would hand the
+        operator ``design_001.pdb`` containing the second-best molecule."""
+        rows = self._rows("alfa", "bravo", "charlie")
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
+            break_upload_for=("charlie",))
+        assert data["n_failures"] == 0
+        assert data["failed_uploads"] == ["design_001.pdb"]
+        assert [c["name"] for c in data["candidates"]] == [
+            "charlie", "bravo", "alfa"]
+        assert [c["rank"] for c in data["candidates"]] == [1, 2, 3]
+        assert base64.b64decode(
+            data["candidates"][0]["pdb_content_b64"]) == self._body("charlie")
+        assert all("pdb_content_b64" not in c for c in data["candidates"][1:]), (
+            "only the design whose upload failed may carry a second copy")
 
     def test_a_ZERO_BYTE_pdb_does_not_burn_a_rank_number(self, tmp_path, monkeypatch):
         """The third drop path, inline-only: a file that reads as b"" is a
@@ -1025,9 +1217,16 @@ class TestInlineSizeCap:
         it fires only when the CAP dropped designs, and here it dropped none.
 
         ``n_inlined == 8`` beside ``inline_bytes_used == 0`` is an impossible
-        pair, which is the shape of the lie."""
+        pair, which is the shape of the lie.
+
+        The closing status assertion used to be the double negative ``not
+        (COMPLETED and designs_completed)``, which a shard reporting COMPLETED
+        with zero designs satisfies — i.e. it passed on the very outcome this
+        docstring calls a delivery of nothing. The verdict now covers it, so
+        the assertion can be the direct one."""
         data, _ = _drive_design_loop(
-            tmp_path, monkeypatch, endpoint="", designs=8, pdb_body=b"")
+            tmp_path, monkeypatch, endpoint="", designs=8, pdb_body=b"",
+            expect_exit=True)
 
         assert data["inline_delivery"]["n_inlined"] == 0, (
             "a design with no atoms was counted as inlined: "
@@ -1036,10 +1235,9 @@ class TestInlineSizeCap:
             "an empty PDB is a failed design, the same as one that could not "
             "be read at all")
         assert data["designs_completed"] == 0
-        assert not (data["status"] == "COMPLETED"
-                    and data["designs_completed"]), (
-            "the shard reported completed designs while delivering no "
-            "coordinates at all")
+        assert data["status"] == "FAILED", (
+            "the shard delivered no coordinates at all and said COMPLETED")
+        assert data["error"]["check"] == "no_coordinates_delivered"
         assert data["candidates"] == [], (
             "a candidate carrying an empty pdb_content_b64 is a pointer at "
             "nothing — cmd_collect filters it out and rc=1, but any consumer "
@@ -1156,6 +1354,299 @@ class TestInlineSizeCap:
         data = json.loads(result_file.read_text())
         assert data["status"] == "FAILED"
         assert data["error"]["check"] == "upload_urls_endpoint"
+
+
+class TestTheDeliveryVerdictTellsTheTruth:
+    """``status`` must describe what the caller actually received.
+
+    The predecessor verdict asked one narrow question — "did the inline size
+    cap drop every design?" — and every OTHER way this shard can deliver
+    nothing returned ``status: COMPLETED``, exit 0 and no ``error`` key: PDBs
+    that never matched a reward row, files that could not be read, files that
+    read as zero bytes, a ``complexa design`` that crashed after scoring two of
+    eight, a reward CSV that parsed into rows carrying no score at all. Those
+    are not four bugs; they are one question asked in one place instead of
+    none. BindCraft returns a structured FAILED with an output-tree census on
+    all of them, which is the shape mirrored here.
+
+    EVERY test in this class drives the REAL ``parse_designs`` /
+    ``find_pdb_for`` through ``_drive_real_parser``, so a row without a
+    structure on disk gets there through the parser's own fallbacks rather
+    than by a stub agreeing with the assertion.
+    """
+
+    _BODY = b"ATOM      1  CA  GLY A   1       1.000   2.000   3.000\nEND\n"
+
+    @classmethod
+    def _body(cls, name):
+        return b"REMARK   1 " + name.encode() + b"\n" + cls._BODY
+
+    def _rows(self, *names, missing=(), reward=None):
+        """``(name, total_reward, bytes|None)`` in CSV order, worst-first.
+
+        ``missing`` names designs written to no file at all — the real "the
+        design has no structure on disk" case. ``reward=""`` blanks the CSV's
+        total_reward column for every row, which is how a reward CSV that
+        parsed but scored nothing reaches the delivered candidates.
+        """
+        n = len(names)
+        return [
+            (name,
+             reward if reward is not None else -1.0 * (n - i),
+             None if name in missing else self._body(name))
+            for i, name in enumerate(names)
+        ]
+
+    # --- a shard that delivered no coordinates ------------------------------
+
+    def test_a_shard_THAT_DELIVERED_NOTHING_is_FAILED_not_COMPLETED(
+            self, tmp_path, monkeypatch):
+        """The headline case. Three designs were scored, none of their PDBs is
+        on disk, so the caller receives an empty candidate list — and used to
+        receive ``status: COMPLETED`` and exit 0 with it. A billed A100 that
+        returned no structure is a failed run whichever way it got there."""
+        rows = self._rows("alfa", "bravo", "charlie",
+                          missing=("alfa", "bravo", "charlie"))
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "delivery"
+        assert data["error"]["check"] == "no_coordinates_delivered"
+        assert data["designs_completed"] == 0
+        assert data["n_failures"] == 3
+        assert data["candidates"] == []
+
+    def test_the_UPLOAD_path_reaches_the_SAME_verdict(self, tmp_path, monkeypatch):
+        """The web tier is not exempt. With zero delivered structures both
+        ``designs`` and ``candidates`` are empty, so a FAILED verdict destroys
+        nothing that a COMPLETED one would have preserved — it only stops the
+        hub from recording a shard that shipped nothing as a success."""
+        rows = self._rows("alfa", "bravo", "charlie",
+                          missing=("alfa", "bravo", "charlie"))
+        data, calls = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
+            expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_coordinates_delivered"
+        assert data["designs"] == [] and data["candidates"] == []
+        assert [c for c in calls if c[0] == "put"] == [], (
+            "nothing reached Storage either, so no pointer is being orphaned")
+
+    def test_EVERY_upload_failing_is_a_delivery_failure_too(
+            self, tmp_path, monkeypatch):
+        """The same verdict through a different drop path: the files exist,
+        every PUT raises, and the inline rescue budget is too small to catch
+        any of them, so nothing at all comes back. ``n_failures`` already
+        counted this correctly; the verdict on top of the counters is what was
+        wrong.
+
+        The ``cap_bytes`` is not decoration. Without it a failed PUT now
+        returns the design's atoms inline and this shard DELIVERS, which is the
+        point of the rescue — see
+        ``test_EVERY_upload_failing_is_NOT_a_failure_when_the_atoms_come_back``
+        immediately below, the control that keeps this test honest about which
+        branch it is on."""
+        rows = self._rows("alfa", "bravo")
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
+            break_upload_for=("alfa", "bravo"), cap_bytes=4, expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_coordinates_delivered"
+        assert data["n_failures"] == 2
+        assert data["candidates"] == []
+
+    def test_EVERY_upload_failing_is_NOT_a_failure_when_the_atoms_come_back(
+            self, tmp_path, monkeypatch):
+        """The control. Identical run, default budget: every PUT still raises,
+        but each design's coordinates are delivered inline, so the caller has
+        exactly what a working endpoint would have given them and the verdict
+        must say COMPLETED. A FAILED here would be the mirror-image lie of the
+        one this class exists to stop — reporting a delivery that happened as a
+        failure."""
+        rows = self._rows("alfa", "bravo")
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload",
+            break_upload_for=("alfa", "bravo"))
+        assert data["status"] == "COMPLETED"
+        assert "error" not in data
+        assert data["n_failures"] == 0
+        assert sorted(data["failed_uploads"]) == [
+            "design_001.pdb", "design_002.pdb"]
+        assert [base64.b64decode(c["pdb_content_b64"])
+                for c in data["candidates"]] == [
+            self._body("bravo"), self._body("alfa")]
+
+    def test_ONE_surviving_structure_keeps_the_shard_COMPLETED(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL that stops the verdict passing by failing everything. A
+        partial loss is reported through ``n_failures``, not by throwing away
+        the designs that did come back."""
+        rows = self._rows("alfa", "bravo", "charlie",
+                          missing=("alfa", "bravo"))
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+        assert data["status"] == "COMPLETED"
+        assert "error" not in data
+        assert data["designs_completed"] == 1
+        assert data["n_failures"] == 2
+        assert base64.b64decode(
+            data["candidates"][0]["pdb_content_b64"]) == self._body("charlie")
+
+    # --- a search that exited non-zero --------------------------------------
+
+    def test_a_NONZERO_search_exit_is_IN_THE_RESULT_not_only_the_log(
+            self, tmp_path, monkeypatch):
+        """`complexa design` can die after a complete reward CSV is written —
+        the P-3 canary did exactly that — and delivering the scored designs is
+        right. But the crash was recorded in a ``logger.warning`` only, and no
+        caller receives container logs, so a shard that crashed halfway was
+        byte-identical to one the filter had legitimately culled."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=self._rows("alfa", "bravo"),
+            search_rc=3)
+        assert data["status"] == "COMPLETED", (
+            "fully scored designs are still delivered after a late crash")
+        assert data["designs_completed"] == 2
+        assert data["partial"] is True, (
+            "the caller cannot tell a crashed shard from a culled one")
+        assert data["search"]["exit_code"] == 3
+        assert data["output_census"]["reward_csv"], (
+            "a partial run must say what the search actually wrote")
+
+    def test_a_CLEAN_run_carries_no_partial_flag_in_EITHER_mode(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL, and the web-path invariant. ``partial`` / ``search`` /
+        ``output_census`` appear ONLY when something is wrong, so a healthy
+        result — the shape real jobs return — is exactly what it was."""
+        for endpoint in ("", "https://hub/upload"):
+            data, _ = _drive_real_parser(
+                tmp_path / f"clean{bool(endpoint)}", monkeypatch,
+                rows=self._rows("alfa", "bravo"), endpoint=endpoint)
+            assert data["status"] == "COMPLETED"
+            assert "partial" not in data
+            assert "search" not in data
+            assert "output_census" not in data, (
+                f"a clean run grew a diagnostic key (endpoint={endpoint!r})")
+
+    # --- designs delivered with no scores -----------------------------------
+
+    def test_UNSCORED_designs_are_a_delivery_FAILURE_on_a_CLEAN_exit_too(
+            self, tmp_path, monkeypatch):
+        """The score-presence gate used to be nested inside ``if rc != 0:``, so
+        the parity promise of "coordinates AND scores" held only when
+        ``complexa`` also happened to crash. On a clean exit the identical
+        result — candidates carrying atoms and a ``total_reward`` of None
+        apiece — came back COMPLETED. Nothing in it can be ranked or triaged,
+        and the rank order it presents is arbitrary."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch,
+            rows=self._rows("alfa", "bravo", "charlie", reward=""),
+            expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_scores_delivered"
+        assert all(c["scores"]["total_reward"] is None
+                   for c in data["candidates"])
+        # The atoms survive the verdict, exactly as they do on the cap path.
+        assert len(data["candidates"]) == 3
+        assert all(c["pdb_content_b64"] for c in data["candidates"])
+
+    def test_the_scores_that_count_are_the_DELIVERED_ones(
+            self, tmp_path, monkeypatch):
+        """The subtle half. ``n_scored`` above is counted over the PARSED rows,
+        and the only scored row here is the one whose PDB is missing — so it is
+        dropped and the caller receives, from a run whose parsed rows were not
+        all unscored, a candidate list in which nothing is scored. Counting
+        parsed rows would call that a success."""
+        rows = [("alfa", "", self._body("alfa")),      # delivered, unscored
+                ("bravo", -1.0, None)]                 # scored, but no PDB
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "no_scores_delivered"
+        assert [c["name"] for c in data["candidates"]] == ["alfa"]
+        assert data["n_failures"] == 1
+
+    def test_ONE_scored_design_is_enough_to_stay_COMPLETED(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL. A partly-scored set is not a delivery failure — the
+        scored designs are usable and throwing them away would cost more than
+        the diagnosis is worth."""
+        rows = self._rows("alfa", "bravo", reward="")
+        rows[0] = ("alfa", -2.5, self._body("alfa"))
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+        assert data["status"] == "COMPLETED"
+        assert "error" not in data
+        assert [c["scores"]["total_reward"] for c in data["candidates"]] == [
+            -2.5, None]
+
+    # --- a shard that produced nothing --------------------------------------
+
+    def test_a_zero_design_shard_says_WHAT_THE_RUN_WROTE(
+            self, tmp_path, monkeypatch):
+        """A culled shard stays COMPLETED — the campaign pools survivors across
+        shards — but it may not stay silent. ``filtered_out_samples`` is the
+        bucket ``find_pdb_for`` deliberately skips, so those structures are
+        invisible everywhere else in the result; the census is the only place
+        a reader learns the filter ran at all."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=[],
+            extra_files={"filtered_out_samples/s0.pdb": self._BODY,
+                         "filtered_out_samples/s1.pdb": self._BODY})
+        assert data["status"] == "COMPLETED"
+        assert data["designs_completed"] == 0
+        census = data["output_census"]
+        assert census["reward_csv"], "the search DID write a reward CSV"
+        assert census["filtered_out_pdbs"] == 2, (
+            "the filter rejected 2 samples and the result never said so")
+        assert census["design_pdbs"] == 0
+
+    def test_a_search_that_wrote_NOTHING_is_DISTINGUISHABLE_from_a_culled_one(
+            self, tmp_path, monkeypatch):
+        """The pair this census exists for. Both runs return COMPLETED, 0
+        designs, 0 failures, empty lists — one because the filter did its job,
+        one because ``complexa design`` produced no reward CSV at all while
+        still exiting 0. Asserted as an INEQUALITY against the culled run
+        above, so a census that degenerated to a constant fails here."""
+        broken, _ = _drive_real_parser(
+            tmp_path / "broken", monkeypatch, rows=[], write_outputs=False)
+        culled, _ = _drive_real_parser(
+            tmp_path / "culled", monkeypatch, rows=[],
+            extra_files={"filtered_out_samples/s0.pdb": self._BODY})
+
+        assert broken["status"] == culled["status"] == "COMPLETED"
+        assert broken["designs"] == culled["designs"] == []
+        assert broken["output_census"]["reward_csv"] is None
+        assert broken["output_census"]["csvs"] == []
+        assert broken["output_census"]["filtered_out_pdbs"] == 0
+        assert culled["output_census"]["reward_csv"]
+        assert broken["output_census"] != culled["output_census"], (
+            "the two zero-design outcomes are still byte-identical")
+
+    def test_NOTHING_PRODUCED_is_not_the_same_as_NOTHING_DELIVERED(self):
+        """The carve-out, asserted against the verdict function directly.
+
+        ``main()`` returns before reaching the verdict when the parser found no
+        rows, so this branch is unreachable from the drives above — but it is
+        the invariant the whole verdict rests on, and a future refactor that
+        folds the zero-design branch back in must not turn a legitimately
+        culled shard into a FAILED one. A shard that produced nothing has
+        nothing undelivered."""
+        assert rp.delivery_verdict(
+            n_parsed=0, n_delivered=0, n_structures=0, n_scored_delivered=0,
+            n_inline_capped=0, n_failures=0, inline_pdbs=True) is None
+        # ... and the same numbers with one design produced ARE a failure, so
+        # the assertion above cannot pass by the function returning None.
+        assert rp.delivery_verdict(
+            n_parsed=1, n_delivered=0, n_structures=0, n_scored_delivered=0,
+            n_inline_capped=0, n_failures=1, inline_pdbs=True) is not None
+
+    def test_the_census_never_raises_on_a_run_dir_that_is_gone(self, tmp_path):
+        """A diagnostic is called on the paths where something already went
+        wrong, so it must degrade rather than replace the real failure with a
+        traceback out of ``main()``'s try — which would be reported to the hub
+        as a webhook delivery failure on an already-billing GPU."""
+        census = rp.census_output_tree(tmp_path / "never_created")
+        assert census["exists"] is False
+        assert census["reward_csv"] is None
 
 
 class TestJobSpecAliases:
@@ -2239,3 +2730,965 @@ class TestDirectCallDriver:
         assert "not free" in doc or "cheap, not free" in doc, (
             "cmd_validate's docstring must state the cost plainly; it is the "
             "text an operator reads before deciding to 'just validate first'")
+
+
+class TestADroppedDesignSScoresStillReachTheCaller:
+    """The reward an A100 already computed is not wrong because a file is
+    missing, and it is the expensive half of what the shard produced.
+
+    Three ``continue``s in the design loop drop a row: no PDB matched the
+    reward-CSV entry, the read/upload raised, or the file read as zero bytes.
+    Each one used to take the row's scores with it — nothing in the returned
+    result recorded that the row existed, let alone what it scored — so a shard
+    that scored 8 and matched 6 PDBs handed back six designs and no way to
+    learn that the best-scoring row was one of the two that went missing. The
+    raw tarball in a Modal Volume is not an answer: neither ``--collect`` nor
+    the hub ever opens it.
+
+    BindCraft keeps the entry and omits only ``pdb_content_b64``. This pipeline
+    banks the scores in a separate ``undelivered`` list instead — see that
+    local's declaration in run_pipeline for the two file-specific reasons
+    (``candidates`` here means "delivered, WITH atoms", which
+    ``delivery_verdict`` is built on; and the upload path's failure arithmetic
+    is pinned by ``test_a_read_failure_is_counted_the_same_way_on_both_paths``).
+    Either way the caller has to end up holding them.
+
+    INLINE ONLY, for the same reason ``inline_delivery`` is: the web tier's
+    result shape is load-bearing and does not change.
+    """
+
+    @classmethod
+    def _body(cls, name):
+        return f"ATOM  {name}\nEND\n".encode()
+
+    def _rows(self, *names):
+        # Descending rewards in CSV order, so the parser's sort is doing
+        # something and the LAST name is the worst design.
+        return [(n, -1.0 * (i + 1), self._body(n)) for i, n in enumerate(names)]
+
+    def test_the_scores_of_a_design_with_no_PDB_are_handed_back(
+            self, tmp_path, monkeypatch):
+        """Driven through the REAL parser and the REAL ``find_pdb_for``: the
+        row is in the reward CSV with a full score set and the file it names
+        was never written, which is the shape that actually occurs."""
+        rows = self._rows("alfa", "bravo", "charlie")
+        rows[0] = (rows[0][0], rows[0][1], None)      # the BEST design vanishes
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+
+        assert [c["name"] for c in data["candidates"]] == ["bravo", "charlie"]
+        assert data["n_failures"] == 1
+        assert data["undelivered"] == [{
+            "name": "alfa",
+            "reason": "no_pdb_matched",
+            "scores": {
+                "total_reward": -1.0, "af2_iptm": 0.7, "af2_plddt": 0.8,
+                "rf3_score": None, "binder_scrmsd": 1.2, "cluster_id": None,
+            },
+        }], "the dropped design's A100-computed scores never reached the caller"
+
+    def test_a_ZERO_BYTE_pdb_banks_its_scores_too(self, tmp_path, monkeypatch):
+        """The third drop path. A truncated file reads as ``b""`` and raises
+        nothing, so it is routed to its own count-and-skip rather than the
+        except above — and it has to bank its scores there too, or the newest
+        drop path is the one that silently loses them."""
+        rows = self._rows("alfa", "bravo")
+        rows[1] = (rows[1][0], rows[1][1], b"")
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+
+        assert [c["name"] for c in data["candidates"]] == ["alfa"]
+        assert [(u["name"], u["reason"]) for u in data["undelivered"]] == [
+            ("bravo", "pdb_empty")]
+        assert data["undelivered"][0]["scores"]["total_reward"] == -2.0
+
+    def test_an_UNREADABLE_pdb_banks_its_scores_too(self, tmp_path, monkeypatch):
+        """The second drop path — the inline half of the try the upload pair
+        shares. Every design is lost here, so this is also the case where the
+        banked scores are the ONLY science in the result: the run is a FAILED
+        delivery with an empty candidate list, and without ``undelivered`` a
+        billed shard hands back nothing at all."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", break_read=True,
+            expect_exit=True)
+
+        assert data["status"] == "FAILED"
+        assert data["candidates"] == []
+        assert [u["reason"] for u in data["undelivered"]] == [
+            "pdb_read_failed", "pdb_read_failed"]
+        assert all(u["scores"]["total_reward"] is not None
+                   for u in data["undelivered"]), (
+            "a delivery failure must still hand back what the GPU computed")
+
+    def test_the_banked_score_SET_matches_a_delivered_one(
+            self, tmp_path, monkeypatch):
+        """Not a re-derived subset. Pinned against a DELIVERED candidate from
+        the same run so a future divergence in which keys survive the drop —
+        the cluster id, say, which only the analyze stage writes — shows up
+        here instead of being discovered by an operator comparing two shards."""
+        rows = self._rows("alfa", "bravo")
+        rows[1] = (rows[1][0], rows[1][1], None)
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+
+        delivered = data["candidates"][0]["scores"]
+        banked = data["undelivered"][0]["scores"]
+        assert set(banked) == set(delivered), (
+            "a dropped design carries a different score set than a delivered "
+            "one, so the two cannot be compared")
+
+    def test_a_CLEAN_inline_run_still_carries_an_empty_list(
+            self, tmp_path, monkeypatch):
+        """Present on EVERY inline result, like ``inline_delivery``: an empty
+        list is the readable statement that nothing was dropped, where a
+        missing key is indistinguishable from a shard built before this
+        existed."""
+        data, _ = _drive_design_loop(tmp_path, monkeypatch, endpoint="")
+        assert data["undelivered"] == []
+        assert data["n_failures"] == 0
+
+    def test_a_ZERO_DESIGN_shard_carries_it_too(self, tmp_path, monkeypatch):
+        """The early return has its own result dict and its own copy of the
+        inline keys, so it is the one that silently drifts."""
+        monkeypatch.setattr(rp, "parse_designs", lambda run_dir: [])
+        data, _ = _drive_design_loop(tmp_path, monkeypatch, endpoint="",
+                                     designs=0)
+        assert data["undelivered"] == []
+
+    def test_the_WEB_path_result_grows_no_undelivered_key(
+            self, tmp_path, monkeypatch):
+        """The production tier's result shape is unchanged, drops included.
+        Same gate as ``inline_delivery``, same reason."""
+        rows = self._rows("alfa", "bravo", "charlie")
+        rows[0] = (rows[0][0], rows[0][1], None)
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows, endpoint="https://hub/upload")
+
+        assert data["n_failures"] == 1, "the drop must still happen and count"
+        assert "undelivered" not in data
+        assert "inline_delivery" not in data
+
+    def test_the_two_lists_never_double_count_a_design(
+            self, tmp_path, monkeypatch):
+        """A design is delivered or it is banked, never both — the arithmetic
+        a caller does on top of these (``designs_completed`` and
+        ``n_failures`` against what the search parsed) has to hold."""
+        rows = self._rows("alfa", "bravo", "charlie", "delta")
+        rows[0] = (rows[0][0], rows[0][1], None)
+        rows[2] = (rows[2][0], rows[2][1], b"")
+        data, _ = _drive_real_parser(tmp_path, monkeypatch, rows=rows)
+
+        delivered = {c["name"] for c in data["candidates"]}
+        banked = {u["name"] for u in data["undelivered"]}
+        assert delivered & banked == set()
+        assert delivered | banked == {"alfa", "bravo", "charlie", "delta"}
+        assert len(data["undelivered"]) == data["n_failures"]
+
+
+class TestACappedCandidateAdvertisesNoStructure:
+    """A ``pdb_key`` is a promise that bytes exist somewhere. In INLINE mode
+    nothing was uploaded, so the only place they can be is
+    ``pdb_content_b64`` — and a candidate the size cap dropped has neither.
+
+    ``templates/components/candidate_table.html`` asks ``pdb_key or
+    pdb_content_b64`` and, whenever a ``pdb_key`` is present, takes the URL
+    branch: a live "View 3D" button and a ``.pdb`` download link aimed at
+    ``/api/jobs/<job>/pdb/<key>``. For a capped inline candidate that route's
+    Storage lookup misses (nothing was written) and its inline fallback finds
+    an empty field, so both controls resolve to a 404 — a row that looks
+    exactly like a delivered one until the operator clicks it.
+
+    On the UPLOAD path the key IS backed by an object the PUT already wrote,
+    the cap branch is unreachable (``inline_pdbs`` is False whenever an
+    endpoint exists), and nothing here may change it.
+    """
+
+    # 2 of 4 designs fit; the cap clears INLINE_PDB_MIN_USEFUL_CAP_BYTES so the
+    # run is not refused pre-GPU instead.
+    BODY = b"X" * 6000
+    CAP = 13000
+
+    def _capped_run(self, tmp_path, monkeypatch, endpoint=""):
+        return _drive_design_loop(
+            tmp_path, monkeypatch, endpoint=endpoint, designs=4,
+            pdb_body=self.BODY, cap_bytes=self.CAP)
+
+    def test_a_capped_candidate_carries_NEITHER_a_key_NOR_atoms(
+            self, tmp_path, monkeypatch):
+        data, _ = self._capped_run(tmp_path, monkeypatch)
+        assert data["inline_delivery"]["n_inline_capped"] == 2, (
+            "guard: the cap must actually have dropped designs here")
+
+        capped = [c for c in data["candidates"] if "pdb_content_b64" not in c]
+        assert len(capped) == 2
+        for c in capped:
+            assert "pdb_key" not in c, (
+                "a capped inline candidate still advertises a structure the "
+                "UI will render a View-3D button for and then 404 on")
+
+    def test_an_INLINED_candidate_keeps_both(self, tmp_path, monkeypatch):
+        """The other half of the same run, so the fix cannot be "drop the key
+        from everything"."""
+        data, _ = self._capped_run(tmp_path, monkeypatch)
+        inlined = [c for c in data["candidates"] if "pdb_content_b64" in c]
+        assert len(inlined) == 2
+        for c in inlined:
+            assert c["pdb_key"] == f"design_{c['rank']:03d}.pdb"
+
+    def test_the_DESIGNS_row_loses_the_key_too(self, tmp_path, monkeypatch):
+        """``designs`` and ``candidates`` are built in the same iteration and
+        every consumer reads one or the other, so a pointer left behind in the
+        flat list is the same lie in a second place."""
+        data, _ = self._capped_run(tmp_path, monkeypatch)
+        for design, cand in zip(data["designs"], data["candidates"]):
+            assert design["rank"] == cand["rank"]
+            assert design.get("pdb_key") == cand.get("pdb_key")
+        assert sum("pdb_key" not in d for d in data["designs"]) == 2
+
+    def test_the_capped_design_keeps_its_RANK_and_its_SCORES(
+            self, tmp_path, monkeypatch):
+        """Dropping the key must not turn a delivered design into a dropped
+        one: it is still real, still ranked, and its scores are still the
+        point. The ranks stay dense and 1-based across the cap boundary."""
+        data, _ = self._capped_run(tmp_path, monkeypatch)
+        assert [c["rank"] for c in data["candidates"]] == [1, 2, 3, 4]
+        assert data["designs_completed"] == 4
+        assert data["n_failures"] == 0
+        assert data["undelivered"] == [], "over-cap is not a drop"
+        assert all(c["scores"]["total_reward"] is not None
+                   for c in data["candidates"])
+
+    def test_the_HEARTBEAT_does_not_announce_a_key_the_result_drops(
+            self, tmp_path, monkeypatch):
+        """The live status page renders its View-3D control off the heartbeat,
+        before any result exists, so announcing the key there just moves the
+        dead control earlier in the run."""
+        data, calls = self._capped_run(tmp_path, monkeypatch)
+        beats = [c[2] for c in calls if c[0] == "heartbeat" and c[2]]
+        assert [b["rank"] for b in beats] == [1, 2, 3, 4]
+        assert [b["pdb_key"] for b in beats] == [
+            c.get("pdb_key") for c in data["candidates"]]
+        assert beats[2]["pdb_key"] is None and beats[3]["pdb_key"] is None
+
+    def test_the_UPLOAD_path_keeps_EVERY_pdb_key_at_the_SAME_cap(
+            self, tmp_path, monkeypatch):
+        """The cap is inline-only and so is this. With an endpoint the object
+        exists in Storage regardless of any inline budget, and stripping the
+        pointer would orphan a structure that was successfully uploaded."""
+        data, calls = self._capped_run(
+            tmp_path, monkeypatch, endpoint="https://hub/upload")
+        assert len(data["candidates"]) == 4
+        for c in data["candidates"]:
+            assert c["pdb_key"] == f"designs/design_{c['rank']:03d}.pdb"
+            assert "pdb_content_b64" not in c
+        assert "inline_delivery" not in data
+        assert len([c for c in calls if c[0] == "put"]) == 4
+
+    def test_a_capped_row_renders_NO_structure_control(
+            self, tmp_path, monkeypatch):
+        """The template's own predicate, run against a REAL result.
+
+        ``candidate_table.html`` decides with ``has_pdb = (pdb_key or
+        pdb_content_b64)``; anything else prints an em-dash. Restating it here
+        is the cheapest way to pin the thing the operator actually sees without
+        editing a template another session owns."""
+        data, _ = self._capped_run(tmp_path, monkeypatch)
+        has_pdb = [bool(c.get("pdb_key") or c.get("pdb_content_b64"))
+                   for c in data["candidates"]]
+        assert has_pdb == [True, True, False, False]
+
+
+class TestTheBrowserReallyGetsTheInlineAtoms:
+    """END TO END through the REAL Flask route, because the whole point of
+    ``pdb_content_b64`` is that something eventually renders it.
+
+    The candidate table never emits a ``data-pdb64`` attribute for a proteina
+    row — it sets ``use_url`` from ``pdb_key``, which proteina always has on a
+    delivered design — so the inline copy reaches Mol* only if
+    ``/api/jobs/<id>/pdb/<file>`` falls back to it server-side. It does
+    (``blueprints/jobs.py`` path 2, matched on BASENAME), but that fallback
+    depends on two things proteina controls and could regress alone: the
+    bare-filename ``pdb_key`` must survive ``_slim_result_for_persist``, and
+    its basename must equal the filename the table asks for. Both are driven
+    against the real implementations rather than restated.
+    """
+
+    @pytest.fixture
+    def client(self, monkeypatch):
+        import app as app_mod
+        monkeypatch.setattr(app_mod, "get_service_client", lambda: None,
+                            raising=False)
+        application = app_mod.create_app()
+        application.config["TESTING"] = True
+        return application.test_client()
+
+    def _serve(self, client, monkeypatch, result, filename):
+        import uuid
+        from unittest.mock import MagicMock
+
+        import blueprints.jobs as jobs_mod
+
+        user_id = str(uuid.uuid4())
+        with client.session_transaction() as sess:
+            sess["user_id"] = user_id
+            sess["user_email"] = "test@example.com"
+            sess["access_token"] = "fake-token"
+        ctx = MagicMock()
+        ctx.user_id = user_id
+        monkeypatch.setattr(jobs_mod, "load_user_context", lambda: ctx)
+        job = MagicMock()
+        job.id = str(uuid.uuid4())
+        job.user_id = user_id
+        job.result = result
+        job.tool = "proteina"
+        monkeypatch.setattr(jobs_mod, "get_job", lambda _id, user_id=None: job)
+        # INLINE MODE MEANS NOTHING WAS UPLOADED. Storage must miss, or the
+        # test would pass on a path that does not exist for this result.
+        monkeypatch.setattr(jobs_mod, "output_exists", lambda **_kw: False)
+        return client.get(f"/api/jobs/{job.id}/pdb/{filename}")
+
+    def test_the_atoms_come_back_through_the_URL_the_table_builds(
+            self, tmp_path, monkeypatch, client):
+        from shared.jobs import _slim_result_for_persist
+
+        body = b"ATOM      1  N   ALA A   1\nEND\n"
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=2, pdb_body=body)
+        persisted = _slim_result_for_persist(data)
+
+        # The filename is taken from the candidate, exactly as the template
+        # does (``pdb_url = '/api/jobs/' ~ src_job ~ '/pdb/' ~ pdb_key``).
+        cand = persisted["candidates"][0]
+        resp = self._serve(client, monkeypatch, persisted, cand["pdb_key"])
+
+        assert resp.status_code == 200, (
+            "the inline copy never reaches the viewer: the table routes "
+            "through /api/jobs/<id>/pdb/<key> whenever a pdb_key is present, "
+            "so a key whose basename the route cannot match — or an inline "
+            "copy slimming stripped — renders a dead button")
+        assert resp.data == body
+        assert resp.mimetype == "chemical/x-pdb"
+
+    def test_a_CAPPED_row_has_no_url_to_offer_in_the_first_place(
+            self, tmp_path, monkeypatch, client):
+        """The complement: with the key gone the table renders an em-dash and
+        never builds a URL. Asserted by showing that the URL a table WOULD
+        have built (from the rank, the only thing left) 404s — so leaving the
+        key on would have shipped a live control over a 404."""
+        from shared.jobs import _slim_result_for_persist
+
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", designs=4,
+            pdb_body=b"X" * 6000, cap_bytes=13000)
+        persisted = _slim_result_for_persist(data)
+        capped = persisted["candidates"][3]
+        assert "pdb_key" not in capped and "pdb_content_b64" not in capped
+
+        resp = self._serve(client, monkeypatch, persisted,
+                           f"design_{capped['rank']:03d}.pdb")
+        assert resp.status_code == 404
+
+
+class TestThePlddtScaleIsStated:
+    """``--collect`` is the operator-facing surface of the inline path, and
+    ``plddt=0.86`` there is a trap.
+
+    Proteina's reward CSV carries ``af2folding_plddt`` on [0,1] and
+    ``parse_designs`` stores it unchanged. Every sibling generator rescales
+    pLDDT to the field-standard AlphaFold2 0-100 range in the container before
+    it reaches a candidate's ``scores`` (pxdesign, rfantibody and boltzgen all
+    do, each with its own guard), so an operator moving between tools applies
+    the universal "pLDDT > 80 is confidently folded" gate and reads proteina's
+    0.86 as catastrophically unfolded — the exact inversion of the truth.
+
+    THE STORED VALUE IS DELIBERATELY NOT RESCALED; see ``_plddt_text`` for why
+    (one ``scores`` dict serves both delivery modes, and the web tier already
+    stores and renders that number today). The print states both readings
+    instead.
+    """
+
+    def test_the_printed_line_states_the_AF2_scale(
+            self, tmp_path, monkeypatch, capsys):
+        """Driven through the REAL ``cmd_collect`` over a REAL shard result."""
+        rows = [("alfa", -1.0, b"ATOM  alfa\nEND\n")]
+        smoke, _ = _drive_real_parser(tmp_path / "shard", monkeypatch, rows=rows)
+        assert smoke["candidates"][0]["scores"]["af2_plddt"] == 0.8, (
+            "guard: the fixture CSV must carry pLDDT on the 0-1 scale")
+
+        capsys.readouterr()
+        rc, _, _ = _drive_collect(tmp_path / "op", monkeypatch, smoke)
+        assert rc == 0
+        out = capsys.readouterr().out
+        line = [ln for ln in out.splitlines() if "plddt=" in ln]
+        assert line, "the per-design summary line vanished"
+        assert "80.0/100" in line[0], (
+            "plddt=0.8 is printed with nothing to say which scale it is on; "
+            f"an operator gating on pLDDT>80 reads it as unfolded: {line[0]!r}")
+
+    def test_the_DELIVERED_score_is_untouched_on_BOTH_paths(
+            self, tmp_path, monkeypatch):
+        """The annotation is presentation only. Rescaling the stored value
+        would move every number the web tier has already persisted, and
+        rescaling it in inline mode ALONE would make a score depend on the
+        delivery mode — mixing two scales inside one campaign's pooled shards.
+
+        THROUGH THE REAL PARSER, because ``parse_designs`` is where such a
+        rescale would be written and ``_drive_design_loop`` stubs it out: the
+        first draft of this test used that helper, and inserting the very
+        ``scores["af2_plddt"] *= 100`` it forbids left it green. Here the
+        number comes off an ``af2folding_plddt`` column in a reward CSV the
+        pipeline parses itself."""
+        rows = [("alfa", -1.0, b"ATOM  alfa\nEND\n"),
+                ("bravo", -2.0, b"ATOM  bravo\nEND\n")]
+        for endpoint in ("", "https://hub/upload"):
+            data, _ = _drive_real_parser(
+                tmp_path / f"m{bool(endpoint)}", monkeypatch, rows=rows,
+                endpoint=endpoint)
+            assert [c["scores"]["af2_plddt"] for c in data["candidates"]] == [
+                0.8, 0.8], (
+                "the CSV's af2folding_plddt reached the caller on a different "
+                f"scale than it was written on (endpoint={endpoint!r})")
+            assert [d["af2_plddt"] for d in data["designs"]] == [0.8, 0.8]
+
+    def test_a_value_ALREADY_on_the_0_100_scale_is_not_annotated(self):
+        """``_SCORE_COLUMNS`` aliases a plain ``plddt`` column, which some CSVs
+        write on 0-100 already. Annotating that would manufacture the error the
+        helper exists to prevent — pxdesign's rescale carries the same guard."""
+        from tools.proteina.direct_call_fc import _plddt_text
+        assert _plddt_text(86.0) == "86.0"
+        assert "/100" in _plddt_text(0.86)
+
+    def test_a_MISSING_plddt_does_not_crash_the_collect(self):
+        """``af2_plddt`` is None for any variant AF2 did not score, and
+        ``--collect`` is the last thing standing between a paid run and a
+        report."""
+        from tools.proteina.direct_call_fc import _plddt_text
+        assert _plddt_text(None) == "None"
+
+
+class TestAHubShapedPayloadIsNotADirectCall:
+    """Going INLINE when there is no upload endpoint is the PARITY behaviour —
+    all five siblings do a bare ``payload.get("upload_urls_endpoint", "")`` and
+    none of them refuses — but it must not silently absorb a tools-hub
+    submission that LOST its endpoint.
+
+    Those two populations do not overlap, and the discriminator is exact rather
+    than heuristic. ``ModalClient.submit`` takes ``job_token`` as a REQUIRED
+    keyword argument (gpu/modal_client.py) and ``modal_app._build_run_env``
+    copies it, plus ``webhook_url``, into JOB_TOKEN / WEBHOOK_URL for this
+    process. A direct ``modal.Function.from_name`` call carries neither:
+    ``direct_call_fc.py`` documents the deliberate absence of the endpoint AND
+    the token, and sets no webhook. So a payload with a token or a webhook and
+    no endpoint is a bug in the web tier — and it used to cost nothing, because
+    the pre-GPU refusal caught it. It has to keep costing nothing.
+    """
+
+    def test_a_job_token_with_no_endpoint_is_refused_BEFORE_the_gpu(
+            self, tmp_path, monkeypatch):
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", job_token="tok",
+            expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "preflight"
+        assert data["error"]["check"] == "upload_urls_endpoint", (
+            "the original check name is what anything branching on this "
+            "refusal already looks for")
+        assert [c for c in calls if c[0] == "search"] == [], (
+            "the refusal has to land before `complexa design` runs — after it "
+            "the A100 is already paid for")
+
+    def test_a_WEBHOOK_URL_with_no_endpoint_is_refused_TOO(
+            self, tmp_path, monkeypatch):
+        """The other half of the discriminator, on its own. ``webhook_url``
+        carries a default of "" in ``ModalClient.submit`` while ``job_token``
+        does not, so a submission could in principle arrive with only one of
+        them; either is proof this is not a direct call."""
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", job_token="",
+            webhook_url="https://hub.example/webhooks/tool-complete",
+            expect_exit=True)
+        assert data["error"]["check"] == "upload_urls_endpoint"
+        assert [c for c in calls if c[0] == "search"] == []
+
+    def test_the_detail_blames_the_WEB_TIER_not_the_operator(
+            self, tmp_path, monkeypatch):
+        """The old message told whoever read it to supply an endpoint, which is
+        not something the operator of a web job can do. This case is a
+        submission bug, and the detail has to say so or the wrong person spends
+        the afternoon on it."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", job_token="tok",
+            expect_exit=True)
+        detail = data["error"]["detail"]
+        assert "job_token" in detail
+        assert "web tier" in detail
+        assert "upload_urls_endpoint" in detail
+
+    def test_a_DIRECT_shaped_call_with_no_endpoint_STILL_DELIVERS(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL, and the entire point of the parity work. No endpoint,
+        no token, no webhook — the shape ``direct_call_fc`` sends — runs to
+        completion and returns coordinates inline. A refusal here would undo
+        the change this branch exists to make."""
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", job_token="")
+        assert data["status"] == "COMPLETED"
+        assert [c for c in calls if c[0] == "search"], "the GPU stage ran"
+        assert all(base64.b64decode(c["pdb_content_b64"])
+                   for c in data["candidates"])
+
+    def test_a_hub_shaped_payload_WITH_its_endpoint_is_untouched(
+            self, tmp_path, monkeypatch):
+        """THE OTHER CONTROL. A real web job carries token, webhook AND
+        endpoint, and the new guard must be invisible to it."""
+        data, calls = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="https://hub/upload",
+            job_token="tok", webhook_url="https://hub.example/webhooks/x")
+        assert data["status"] == "COMPLETED"
+        assert len([c for c in calls if c[0] == "put"]) == 2
+        assert all("pdb_content_b64" not in c for c in data["candidates"])
+
+    def test_the_web_tier_really_does_always_send_a_job_token(self):
+        """The discriminator is only sound while ``job_token`` is mandatory on
+        every web submission. Read off the REAL signature: giving it a default
+        would let a hub-shaped payload arrive with an empty token, fall through
+        this guard, and go inline — the exact outcome the guard exists to stop,
+        reintroduced somewhere else entirely."""
+        import inspect
+
+        from gpu.modal_client import ModalClient
+        sig = inspect.signature(ModalClient.submit)
+        token = sig.parameters["job_token"]
+        assert token.kind is inspect.Parameter.KEYWORD_ONLY
+        assert token.default is inspect.Parameter.empty, (
+            "job_token gained a default; every tools-hub submission must "
+            "carry one or run_pipeline cannot tell a web job from a direct "
+            "call")
+
+    def test_the_container_really_reads_the_token_and_webhook_it_is_sent(self):
+        """The other end of the same wire. ``_build_run_env`` is what turns the
+        two payload fields into the JOB_TOKEN / WEBHOOK_URL this file reads; if
+        it stopped forwarding either, the guard would go quiet rather than
+        loud. Parsed rather than imported — importing modal_app builds an App,
+        an Image and three Volumes."""
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(rp.__file__).resolve().parent
+               / "modal_app.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "_build_run_env")
+        body = ast.unparse(fn)
+        assert "'WEBHOOK_URL': str(payload.get('webhook_url'" in body
+        assert "'JOB_TOKEN': str(payload.get('job_token'" in body
+
+    def test_the_DIRECT_driver_really_sends_NEITHER(self):
+        """The last link in the discriminator, from the other end. If
+        ``build_payload`` ever grew a ``job_token`` or a ``webhook_url`` —
+        copied in from a sibling driver, say — every direct call would start
+        hitting the refusal above, and the whole parity change would be undone
+        by one field in a different file."""
+        from tools.proteina import direct_call_fc as dc
+        payload = dc.build_payload(
+            "https://example.invalid/t.pdb", preset="protein_binder",
+            nsamples=4, replicas=2, job_id="fc-x")
+        assert not payload.get("job_token")
+        assert not payload.get("webhook_url")
+        assert not payload.get("upload_urls_endpoint")
+
+
+class TestTheDesignSubprocessHasItsOwnDeadline:
+    """``run_streaming`` used to call ``subprocess.run`` with no timeout, so a
+    hung ``complexa design`` ran until Modal or ``run_tool`` killed the whole
+    container — and both of those land on run_pipeline.py, not on the child.
+    main() never reaches ``_write_result``, ``/tmp/smoke_results.json`` is never
+    written, and the caller gets ``smoke_result: None`` with an empty
+    ``stdout_tail``: no scores, no coordinates, no diagnosis, on a 2 h A100.
+
+    BindCraft owns the identical deadline (``run_command(cmd, timeout=...)``,
+    then a ``timeout`` status recorded beside the designs it banked) and that is
+    the only reason it can hand back partial work.
+    """
+
+    def test_run_streaming_actually_passes_a_timeout(self, monkeypatch):
+        """Asserted on the call ``subprocess.run`` receives, because that is
+        the only place the timeout can have an effect."""
+        from pathlib import Path
+        seen = {}
+
+        class _Done:
+            returncode = 0
+
+        def fake_run(cmd, **kw):
+            seen.update(kw)
+            return _Done()
+
+        monkeypatch.setattr(rp.subprocess, "run", fake_run)
+        rp.run_streaming(["true"], Path("."))
+        assert seen["timeout"] == rp.DESIGN_SUBPROCESS_TIMEOUT_S
+        assert seen["timeout"] > 0
+
+    def test_an_explicit_timeout_overrides_the_default(self, monkeypatch):
+        from pathlib import Path
+        seen = {}
+
+        class _Done:
+            returncode = 0
+
+        monkeypatch.setattr(
+            rp.subprocess, "run",
+            lambda cmd, **kw: (seen.update(kw) or _Done()))
+        rp.run_streaming(["true"], Path("."), timeout=5)
+        assert seen["timeout"] == 5
+
+    def test_the_deadline_leaves_the_shard_time_to_report(self):
+        """It has to fire BEFORE the two kills above it or it changes nothing.
+        ``run_tool`` gives run_pipeline.py ``max(60, _MAX_SESSION_S - 120)``
+        seconds; the design subprocess must finish inside that with room left
+        to parse, upload/inline, write the result and tar the raw tree. Read
+        off modal_app.py rather than restated, so raising the container ceiling
+        cannot silently invert the ordering."""
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(rp.__file__).resolve().parent
+               / "modal_app.py").read_text(encoding="utf-8")
+        consts = {
+            t.id: n.value.value
+            for n in ast.parse(src).body
+            if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+            for t in n.targets if isinstance(t, ast.Name)
+        }
+        wrapper_budget = max(60, consts["_MAX_SESSION_S"] - 120)
+        assert rp.DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S < wrapper_budget
+        assert wrapper_budget - rp.DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S >= 300, (
+            "under five minutes of headroom is not enough to parse, deliver, "
+            "write the result and tar the output tree")
+
+    def test_a_TIMED_OUT_search_still_delivers_what_it_banked(
+            self, tmp_path, monkeypatch):
+        """The whole reason to own the deadline. The reward CSV is already on
+        disk when the hang starts — the P-3 canary's shape — so those designs
+        are parsed, ranked and returned instead of dying with the container."""
+        import subprocess
+
+        rows = [("alfa", -2.0, b"ATOM alfa\nEND\n"),
+                ("bravo", -1.0, b"ATOM bravo\nEND\n")]
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=rows,
+            search_raises=subprocess.TimeoutExpired(
+                cmd=["complexa"], timeout=6600))
+        assert data["status"] == "COMPLETED"
+        assert data["designs_completed"] == 2
+        assert [c["rank"] for c in data["candidates"]] == [1, 2]
+        assert data["partial"] is True
+        assert data["search"]["status"] == "timeout"
+        assert data["search"]["timeout_s"] == 6600
+        assert data["search"]["exit_code"] == rp.SEARCH_TIMEOUT_RC
+
+    def test_a_timeout_with_NOTHING_banked_is_a_STRUCTURED_failure(
+            self, tmp_path, monkeypatch):
+        """The other shape: the hang came first, so there is no CSV and nothing
+        to deliver. It must still be a result FILE with a check name that says
+        what happened, not a bare traceback and a missing file."""
+        import subprocess
+
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=[("alfa", -1.0, b"x")],
+            write_outputs=False, expect_exit=True,
+            search_raises=subprocess.TimeoutExpired(
+                cmd=["complexa"], timeout=6600))
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "search"
+        assert data["error"]["check"] == "timeout", (
+            "'exited 124' is a number nobody can act on")
+        assert "6600" in data["error"]["detail"]
+        assert "PROTEINA_DESIGN_TIMEOUT_S" in data["error"]["detail"]
+
+    def test_a_NON_timeout_crash_keeps_its_OWN_check_name(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL. A search that really did exit non-zero with nothing
+        scored is a different failure and must not be relabelled a timeout."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=[("alfa", -1.0, b"x")],
+            write_outputs=False, search_rc=3, expect_exit=True)
+        assert data["error"]["check"] == "complexa"
+        assert "exited 3" in data["error"]["detail"]
+
+    @pytest.mark.parametrize("raw", ["2h", "-1", "0", "abc"])
+    def test_a_MALFORMED_timeout_env_falls_back_instead_of_crashing(
+            self, monkeypatch, raw):
+        """Parsed defensively for the same reason as the inline cap: a
+        ValueError at module scope kills the container before ``_fail`` can
+        write anything, which is precisely the outcome the timeout exists to
+        prevent."""
+        monkeypatch.setenv("PROTEINA_DESIGN_TIMEOUT_S", raw)
+        assert rp._design_timeout_s() == float(
+            rp.DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+
+    def test_a_VALID_override_is_honoured(self, monkeypatch):
+        """THE CONTROL for the fallback above — otherwise ``return default``
+        would pass every case in it."""
+        monkeypatch.setenv("PROTEINA_DESIGN_TIMEOUT_S", "1800")
+        assert rp._design_timeout_s() == 1800.0
+
+
+class TestMainWritesAResultOnEVERYPath:
+    """``_run_shard`` has no catch-all of its own, so anything it did not
+    anticipate left the interpreter with a traceback on stderr and NO
+    /tmp/smoke_results.json. ``modal_app.run_tool`` then hits FileNotFoundError,
+    passes, and returns ``smoke_result: None`` with an empty ``stdout_tail`` and
+    an empty ``stderr_tail`` — the complete diagnosis a direct caller receives
+    for a fully billed A100.
+
+    BindCraft guarantees a structured failure on every path; ``main()`` is now
+    the wrapper that guarantees the same thing here.
+    """
+
+    def test_a_SCALAR_binder_length_writes_a_result_instead_of_a_traceback(
+            self, tmp_path, monkeypatch):
+        """The real reproduction, driven through the real main().
+        ``direct_call_fc`` documents ``binder_length`` as the ``[lo, hi]``
+        pair; a caller who sends ``90`` hits ``[int(v) for v in 90]``, which
+        raises TypeError out of main() near the top and used to write nothing
+        at all."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch, rows=[("alfa", -1.0, b"ATOM\nEND\n")],
+            job_spec_extra={"binder_length": 90}, expect_exit=True)
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "internal"
+        assert data["error"]["check"] == "unhandled_exception"
+        assert "TypeError" in data["error"]["detail"]
+        assert "binder_length" in data["error"]["traceback"], (
+            "the traceback has to name the failing line or the result is no "
+            "more useful than the missing file it replaced")
+
+    def test_a_crash_before_any_result_produces_ONE(self, tmp_path, monkeypatch):
+        """The guarantee itself, isolated from any particular bug: whatever
+        ``_run_shard`` raises, a result file exists afterwards and the process
+        exits 1 (``run_tool`` copies ``returncode`` straight to the caller, so
+        exiting 0 would report a crashed run as a clean one)."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setenv("JOB_ID", "job-crash")
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+
+        def boom():
+            raise KeyError("some_column")
+
+        monkeypatch.setattr(rp, "_run_shard", boom)
+        with pytest.raises(SystemExit) as exc:
+            rp.main()
+        assert exc.value.code == 1
+        data = json.loads(result_file.read_text())
+        assert data["error"]["check"] == "unhandled_exception"
+        assert data["provider_job_id"] == "job-crash"
+        assert data["tier"] == "protein_binder"
+
+    def test_the_catch_all_never_OVERWRITES_a_result_already_written(
+            self, tmp_path, monkeypatch):
+        """A crash in the TAIL of a successful shard — after ``_write_result``,
+        in a heartbeat or a log line — must not replace a COMPLETED result
+        carrying every design with a traceback stub. That would destroy the run
+        instead of diagnosing it."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        good = {"status": "COMPLETED", "designs_completed": 3, "candidates": []}
+
+        def crash_after_writing():
+            rp._write_result(good)
+            raise RuntimeError("boom in the tail")
+
+        monkeypatch.setattr(rp, "_run_shard", crash_after_writing)
+        with pytest.raises(SystemExit) as exc:
+            rp.main()
+        assert exc.value.code == 1
+        assert json.loads(result_file.read_text()) == good
+
+    def test_the_written_flag_is_PER_RUN_not_per_process(
+            self, tmp_path, monkeypatch):
+        """``_RESULT_WRITTEN`` is module state, so a run that wrote a result
+        would suppress the catch-all for every LATER run in the same
+        interpreter. One container runs one shard, but this whole test file
+        drives main() dozens of times in one process — and a guarantee that
+        only holds the first time is not a guarantee."""
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+
+        monkeypatch.setattr(
+            rp, "_run_shard",
+            lambda: rp._write_result({"status": "COMPLETED", "run": 1}))
+        rp.main()
+        assert json.loads(result_file.read_text())["run"] == 1
+
+        def boom():
+            raise ValueError("second run")
+
+        monkeypatch.setattr(rp, "_run_shard", boom)
+        with pytest.raises(SystemExit):
+            rp.main()
+        assert json.loads(result_file.read_text())["error"]["check"] == (
+            "unhandled_exception")
+
+    def test_a_preflight_FAIL_passes_straight_through_unchanged(
+            self, tmp_path, monkeypatch):
+        """``_fail`` has already written its result and chosen exit code 1.
+        Wrapping that in the catch-all would relabel every deliberate refusal
+        in this file as an internal crash."""
+        data, _ = _drive_design_loop(
+            tmp_path, monkeypatch, endpoint="", inline_env="off",
+            expect_exit=True)
+        assert data["error"]["bucket"] == "preflight"
+        assert data["error"]["check"] == "upload_urls_endpoint"
+        assert "traceback" not in data["error"]
+
+    def test_a_DELIVERY_failure_also_passes_through_unchanged(
+            self, tmp_path, monkeypatch):
+        """The other SystemExit: a delivery verdict writes its full result —
+        scores, ranks, census — and then exits 1. The catch-all must leave all
+        of it alone."""
+        data, _ = _drive_real_parser(
+            tmp_path, monkeypatch,
+            rows=[("alfa", -1.0, None), ("bravo", -2.0, None)],
+            expect_exit=True)
+        assert data["error"]["bucket"] == "delivery"
+        assert "traceback" not in data["error"]
+        assert data["output_census"]["exists"] is True
+
+
+def _drive_registration(tmp_path, monkeypatch, *, target_chain,
+                        target_input="", spans=(("A", 1, 200),)):
+    """Run the REAL ``prepare_custom_target`` far enough to capture the argv it
+    hands ``complexa target add``.
+
+    ``_drive_prepare_custom_target`` above stops one step earlier — its registry
+    path does not exist, so it fails at ``target_registry`` — which is right for
+    the refusal tests but cannot see the contig that actually gets REGISTERED.
+    Here the registry is a real (empty) file, so the function reaches
+    ``build_target_add_cmd``; ``run_streaming`` is stubbed to record the command,
+    and the run then stops at ``target_registration`` because the stub wrote
+    nothing back. The captured argv is what upstream would have been told.
+
+    Returns the recorded argv list.
+    """
+    hub = tmp_path / "hub"
+    registry = tmp_path / "targets_dict.yaml"
+    registry.write_text("target_dict_cfg: {}\n")
+    monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+    monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(tmp_path / "smoke.json"))
+    monkeypatch.setattr(rp, "_TARGETS_DICT", str(registry))
+    monkeypatch.setattr(
+        rp, "download_target",
+        lambda url, dest: dest.write_text(_pdb_with_chains(spans)))
+    recorded: list[list[str]] = []
+    monkeypatch.setattr(
+        rp, "run_streaming",
+        lambda cmd, cwd: (recorded.append(list(cmd)) or 0))
+    with pytest.raises(SystemExit):
+        rp.prepare_custom_target(
+            input_url="https://example.invalid/target.pdb", job_id="j1",
+            target_chain=rp.normalize_target_chain(target_chain),
+            target_input=target_input, hotspot_spec=[],
+            binder_length=[60, 120], run_dir=tmp_path / "run")
+    assert recorded, (
+        "prepare_custom_target never reached `complexa target add`, so this "
+        "helper is observing nothing")
+    return recorded[0]
+
+
+class TestAcceptedWebPathChanges:
+    """The two places this branch DOES change what a web submission does.
+
+    Both were reviewed and accepted, and both are pinned here rather than left
+    to a comment, because an accepted change that nothing asserts is
+    indistinguishable from a regression the next reader will "fix".
+    """
+
+    def _contig(self, argv):
+        return argv[argv.index("--target-input") + 1]
+
+    def test_a_DUPLICATED_chain_registers_ONE_segment_not_two(
+            self, tmp_path, monkeypatch):
+        """ACCEPTED CHANGE 1. ``main()`` now routes ``target_chain`` through
+        ``normalize_target_chain``, which de-duplicates; the web adapter
+        (tools/proteina/__init__.py) only splits on whitespace and does not. So
+        a form entry of ``"A A"`` — which ``validate()`` accepts — used to
+        register ``--target-input A1-200,A1-200`` and now registers ``A1-200``.
+        Measured across the adapter's whole accepted input space, this is the
+        ONLY divergence the change introduces on the web path.
+
+        It is accepted because the de-duplicated form is the one whose meaning
+        is known: atomworks is not vendored here, so what
+        ``AtomSelectionStack.from_contig`` does with the same range named twice
+        is not something this file may assume, and a repeated segment has
+        already been the mechanism of one real bug (``A10-20,A10-20`` counting
+        22 residues for 11 and walking through the minimum-size floor)."""
+        argv = _drive_registration(tmp_path, monkeypatch, target_chain="A A")
+        assert self._contig(argv) == "A1-200"
+
+    def test_the_COMMA_spelling_deduplicates_the_same_way(
+            self, tmp_path, monkeypatch):
+        """``normalize_target_chain`` accepts both separators and the adapter
+        can emit either, so the divergence must not depend on which one the
+        form produced."""
+        argv = _drive_registration(tmp_path, monkeypatch, target_chain="A,A")
+        assert self._contig(argv) == "A1-200"
+
+    def test_a_GENUINE_two_chain_request_still_registers_BOTH(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL. De-duplication must remove repeats, never distinct
+        chains — collapsing a real dimer request to one protomer would design
+        binders against half the target on a billed A100."""
+        argv = _drive_registration(
+            tmp_path, monkeypatch, target_chain="A B",
+            spans=(("A", 1, 200), ("B", 1, 200)))
+        assert self._contig(argv) == "A1-200,B1-200"
+
+    def test_ORDER_survives_the_de_duplication(self, tmp_path, monkeypatch):
+        """The contig is positional — it is what upstream crops and numbers
+        against — so ``"B A"`` must not come back as ``"A B"``."""
+        argv = _drive_registration(
+            tmp_path, monkeypatch, target_chain="B A B",
+            spans=(("A", 1, 200), ("B", 1, 200)))
+        assert self._contig(argv) == "B1-200,A1-200"
+
+    def test_a_MISSING_chain_is_now_refused_PER_CHAIN(self, tmp_path, monkeypatch):
+        """ACCEPTED CHANGE 2 (the no-contig branch of
+        ``prepare_custom_target``). ``derive_segments`` ``continue``s past a
+        chain it finds no residues for, so ``target_chain="A B"`` against an
+        upload holding only chain A produced a healthy one-chain ``segments``
+        and every later guard read the already-pruned list. The run was billed
+        and the binders were designed against a MONOMER, in a result
+        indistinguishable from a correct one.
+
+        This converts a previously-ACCEPTED request into a pre-GPU refusal.
+        That is the change, and it is worth it: the accepted version was
+        accepted into the wrong science."""
+        error, _ = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="A B",
+            spans=(("A", 1, 200),))
+        assert error["check"] == "target_chain"
+        assert error["detail"].startswith("chain B is not present")
+
+    def test_the_SINGLE_chain_refusal_s_detail_string_is_the_NEW_one(
+            self, tmp_path, monkeypatch):
+        """The same accepted change also rewrote the message the one-chain case
+        emits. It used to quote the whole request with ``repr`` — ``chain 'Z'
+        is not present ...`` — and now names the absent chain bare, because the
+        request and the absence are no longer the same thing. Pinned so the two
+        branches cannot silently swap back."""
+        error, _ = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="Z", spans=(("A", 1, 200),))
+        assert error["check"] == "target_chain"
+        assert error["detail"].startswith("chain Z is not present")
+        assert "'Z'" not in error["detail"]
+        assert "It contains: A1-200" in error["detail"]
+
+    def test_a_request_whose_chains_are_ALL_present_is_still_accepted(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL for the refusal: it must fire on absence only. Reaching
+        a LATER check name is how "not refused here" is observable."""
+        error, _ = _drive_prepare_custom_target(
+            tmp_path, monkeypatch, target_chain="A B",
+            spans=(("A", 1, 200), ("B", 1, 200)))
+        assert error["check"] == "target_registry", (
+            f"a fully-present request was refused at {error['check']}")

@@ -92,6 +92,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
@@ -274,10 +275,25 @@ _PDB_NAME_COLUMNS = ("sample", "name", "sample_name", "design_id", "sample_id", 
 # ===========================================================================
 
 
+# Has this process already written a result file? ``main()``'s catch-all reads
+# it so a crash AFTER the shard wrote its result cannot REPLACE that result
+# with a traceback stub. The window is small but real — everything from
+# ``send_heartbeat`` to the final log line runs after ``_write_result`` — and
+# overwriting a COMPLETED result carrying every design would destroy the run
+# rather than diagnose it. A flag rather than ``os.path.isfile`` on purpose:
+# containers are reused warm and ``modal_app.run_tool`` does NOT delete
+# /tmp/smoke_results.json between jobs, so a stale file from the previous shard
+# would read as "this run already reported" and suppress the only diagnosis
+# this run was going to produce. Reset at the top of ``main()``.
+_RESULT_WRITTEN = False
+
+
 def _write_result(payload: dict[str, Any]) -> None:
+    global _RESULT_WRITTEN
     try:
         with open(SMOKE_RESULTS_PATH, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)
+        _RESULT_WRITTEN = True
     except OSError as exc:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
 
@@ -2039,13 +2055,76 @@ def design_subprocess_env() -> dict:
     return env
 
 
-def run_streaming(cmd: list[str], cwd: Path) -> int:
+# THE DESIGN SUBPROCESS OWNS ITS OWN DEADLINE.
+#
+# ``modal_app.py`` caps the container at ``_MAX_SESSION_S = 7200`` and gives
+# run_pipeline.py itself ``max(60, 7200 - 120) = 7080`` s. Without a timeout of
+# our own, a hung ``complexa design`` runs until ONE of those two fires — and
+# both land on run_pipeline.py, not on the child: subprocess.run is killed with
+# the parent, main() never reaches _write_result, /tmp/smoke_results.json is
+# never written, and ``run_tool`` hands the caller ``smoke_result: None`` with
+# an empty ``stdout_tail``. A 2 h A100 is billed for a result that says nothing
+# at all, and any design the search had ALREADY scored and written to the reward
+# CSV dies with it.
+#
+# BindCraft owns the same deadline for the same reason (``run_command(cmd,
+# timeout=timeout_s)``, then a ``timeout`` run_status recorded beside the
+# designs it banked) and returns a structured result on the timeout path. This
+# is that, sized to leave the shard time to parse, upload/inline, write its
+# result and tar the raw tree inside the wrapper's 7080 s.
+DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6600
+# The exit code a timed-out search reports into ``result["search"]``. 124 is
+# what coreutils `timeout(1)` uses, so it does not collide with a real
+# `complexa design` exit status, and ``rc != 0`` already routes it through the
+# existing partial-delivery arithmetic.
+SEARCH_TIMEOUT_RC = 124
+
+
+def _design_timeout_s() -> float:
+    """Parse the override defensively, exactly as ``_inline_cap_bytes`` does.
+
+    Module scope again: a typo like ``2h`` raising ValueError here would kill
+    the container before ``_fail`` can write a result file, which is the very
+    outcome the timeout exists to prevent.
+    """
+    raw = (os.environ.get("PROTEINA_DESIGN_TIMEOUT_S") or "").strip()
+    if not raw:
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "PROTEINA_DESIGN_TIMEOUT_S=%r is not a number; using the %d s "
+            "default", raw, DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S,
+        )
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    if value <= 0:
+        logger.warning(
+            "PROTEINA_DESIGN_TIMEOUT_S=%r is not positive; using the %d s "
+            "default", raw, DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S,
+        )
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    return value
+
+
+DESIGN_SUBPROCESS_TIMEOUT_S = _design_timeout_s()
+
+
+def run_streaming(cmd: list[str], cwd: Path, timeout: float | None = None) -> int:
     """Run a subprocess, live-streaming stdout/stderr to Modal logs (never
-    capture_output for long GPU work, per the Modal-subprocess memory)."""
-    logger.info("cmd (cwd=%s): %s", cwd, " ".join(cmd))
+    capture_output for long GPU work, per the Modal-subprocess memory).
+
+    Raises ``subprocess.TimeoutExpired`` when the child outlives ``timeout``
+    (default ``DESIGN_SUBPROCESS_TIMEOUT_S``). Deliberately not swallowed here:
+    the caller is the only place that knows whether anything was banked before
+    the hang, and main() turns it into a structured result either way.
+    """
+    if timeout is None:
+        timeout = DESIGN_SUBPROCESS_TIMEOUT_S
+    logger.info("cmd (cwd=%s, timeout=%ss): %s", cwd, timeout, " ".join(cmd))
     result = subprocess.run(
         cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False,
-        env=design_subprocess_env(),
+        env=design_subprocess_env(), timeout=timeout,
     )
     return result.returncode
 
@@ -2154,6 +2233,151 @@ def parse_designs(run_dir: Path) -> list[dict]:
     for sort_position, d in enumerate(parsed):
         d["rank"] = sort_position
     return parsed
+
+
+# ===========================================================================
+# What the shard actually delivered: census + ONE verdict
+# ===========================================================================
+
+
+def census_output_tree(run_dir: Path) -> dict:
+    """Count what ``complexa design`` actually wrote under the shard run dir.
+
+    A zero-design result is only interpretable next to this. "The search never
+    produced a reward CSV" (the tool broke, exit code notwithstanding) and "the
+    filter culled every sample" (the search worked, nothing survived) are the
+    same three lines of JSON without it — empty ``designs``, empty
+    ``candidates``, status COMPLETED — and they call for opposite responses:
+    the first is a bug to fix, the second is a campaign to widen. BindCraft
+    carries the identical thing as ``diagnostics["output_tree"]`` and puts it
+    in the failure detail for exactly this reason.
+
+    ``filtered_out_pdbs`` is the discriminator that matters most: it is the
+    bucket ``find_pdb_for`` deliberately skips, so those structures are
+    invisible everywhere else in the result, and a run with 8 of them and 0
+    design PDBs is a filter outcome, not a broken tool.
+
+    A DIAGNOSTIC MUST NOT FAIL A RUN. Everything here is best-effort and every
+    exception is captured into the census itself, because this is called on
+    the paths where something has already gone wrong.
+    """
+    census: dict[str, Any] = {"run_dir": str(run_dir)}
+    try:
+        census["exists"] = os.path.isdir(str(run_dir))
+        pdbs = glob.glob(str(run_dir / "**/*.pdb"), recursive=True)
+        census["design_pdbs"] = len(
+            [p for p in pdbs if "filtered_out_samples" not in p])
+        census["filtered_out_pdbs"] = len(
+            [p for p in pdbs if "filtered_out_samples" in p])
+        csvs = sorted(glob.glob(str(run_dir / "**/*.csv"), recursive=True))
+        census["csvs"] = [os.path.basename(p) for p in csvs][:40]
+        reward_csv = find_reward_csv(run_dir)
+        census["reward_csv"] = (
+            os.path.basename(str(reward_csv)) if reward_csv else None)
+        census["subdirs"] = sorted(
+            p.name for p in run_dir.iterdir() if p.is_dir()
+        )[:40] if os.path.isdir(str(run_dir)) else []
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never raise
+        census["error"] = f"{type(exc).__name__}: {exc}"
+    return census
+
+
+def delivery_verdict(
+    *,
+    n_parsed: int,
+    n_delivered: int,
+    n_structures: int,
+    n_scored_delivered: int,
+    n_inline_capped: int,
+    n_failures: int,
+    inline_pdbs: bool,
+    census: dict | None = None,
+) -> dict | None:
+    """ONE verdict on what this shard actually delivered. ``None`` == honest.
+
+    Written once and consulted once, because the four ways this shard could
+    return ``status: COMPLETED``, exit 0 and no ``error`` key while having
+    delivered nothing usable are not four different bugs — they are one
+    missing question, asked in four places or nowhere:
+
+        did the caller end up with coordinates AND scores?
+
+    The predecessor asked a narrower one — "did the inline size cap drop
+    every design?" — which is true on exactly one of the paths. A shard whose
+    PDBs never matched a reward row, whose files could not be read, or whose
+    files read as zero bytes reaches the identical outcome (candidates with no
+    atoms behind them, or no candidates at all) and used to certify it as a
+    clean run: the exact spend-then-look-fine failure the delivery accounting
+    exists to prevent. BindCraft returns a structured FAILED for all of them.
+
+    ``n_structures`` is the honest count of DELIVERED COORDINATES and it is
+    mode-dependent on purpose: inline, a candidate carries atoms only if it
+    was actually inlined (``n_inlined``), because a cap-dropped candidate has
+    scores and a pdb_key and no bytes; on the upload path a candidate exists
+    only after its PUT returned, so the candidate itself is the evidence.
+
+    NOT a failure, deliberately:
+      * ``n_parsed == 0`` — nothing was produced, so nothing was undelivered.
+        The campaign pools survivors across shards and delivered-only billing
+        releases the hold; a legitimately culled shard is a COMPLETED shard.
+        It gets a census instead, so it can be told apart from a broken one.
+      * a PARTIAL loss — some designs delivered, some dropped. That is what
+        ``n_failures`` and ``inline_delivery`` report, and throwing away the
+        survivors would cost more than the diagnosis is worth.
+
+    The ``check`` is reason-specific while the code path is single: a caller
+    branching on ``error.check`` gets told which of the four it hit, and
+    ``inline_cap_admitted_nothing`` keeps its original spelling because the
+    cap is a distinct, operator-fixable cause (raise the env var) rather than
+    a symptom of a broken search.
+    """
+    if n_parsed <= 0:
+        return None
+    note = f" Output tree: {census}." if census else ""
+
+    if n_structures == 0:
+        if inline_pdbs and n_inline_capped > 0:
+            return {
+                "bucket": "delivery",
+                "check": "inline_cap_admitted_nothing",
+                "detail": (
+                    f"the inline PDB cap ({INLINE_PDB_TOTAL_CAP_BYTES} bytes) "
+                    f"admitted none of the {n_inline_capped} design(s) this "
+                    "shard produced, so the run delivered no coordinates at "
+                    "all. Scores and ranks are in this result and the atoms "
+                    "are in the raw archive. Raise "
+                    "PROTEINA_INLINE_PDB_CAP_BYTES above one design's PDB and "
+                    "re-run." + note
+                ),
+            }
+        return {
+            "bucket": "delivery",
+            "check": "no_coordinates_delivered",
+            "detail": (
+                f"the search scored {n_parsed} design(s) but this shard "
+                f"delivered no coordinates at all ({n_delivered} candidate(s) "
+                f"survived, {n_failures} dropped: no PDB matched the "
+                "reward-CSV row, the file could not be read, or it read as "
+                "zero bytes). An A100 was billed and no structure came back. "
+                "Whatever the search did write is in the raw archive." + note
+            ),
+        }
+
+    if n_delivered > 0 and n_scored_delivered == 0:
+        return {
+            "bucket": "delivery",
+            "check": "no_scores_delivered",
+            "detail": (
+                f"all {n_delivered} delivered design(s) carry coordinates but "
+                "not one carries a total_reward, so nothing in this result can "
+                "be ranked or triaged and the rank order is arbitrary. The "
+                "reward CSV was found and read, so this is a column/scoring "
+                "failure rather than a missing file. The structures are in "
+                "this result and the full output tree is in the raw "
+                "archive." + note
+            ),
+        }
+    return None
 
 
 # ===========================================================================
@@ -2289,7 +2513,9 @@ def run_validate(config_dir: str, preset: str, task_name: str) -> None:
 # ===========================================================================
 
 
-def main() -> None:
+def _run_shard() -> None:
+    """The shard itself. Always entered through ``main()``, never directly —
+    ``main()`` is what guarantees a result file exists on every exit path."""
     start = time.time()
     payload = parse_payload()
 
@@ -2401,6 +2627,52 @@ def main() -> None:
     # mechanics.
     inline_pdbs = _inline_enabled() and not upload_endpoint
     cap_ok = INLINE_PDB_TOTAL_CAP_BYTES >= INLINE_PDB_MIN_USEFUL_CAP_BYTES
+
+    # A HUB-SHAPED PAYLOAD THAT LOST ITS ENDPOINT STILL FAILS FREE.
+    #
+    # Dropping the unconditional pre-GPU refusal is what buys parity with the
+    # five siblings — every one of them does a bare
+    # ``payload.get("upload_urls_endpoint", "")`` and never refuses, so an
+    # endpoint-less DIRECT call must run and deliver inline. But the same
+    # deletion also un-refused a case that is not a direct call at all: a
+    # tools-hub web submission whose endpoint went missing. That is a bug in
+    # the web tier, and it used to cost nothing (FAILED, pre-GPU, before the
+    # container did any work). Silently running it INLINE instead spends a full
+    # A100 shard and then persists multi-MB of base64 into job.result, where
+    # the caller that was supposed to receive presigned-upload pointers has no
+    # idea what to do with it.
+    #
+    # ``job_token`` / ``WEBHOOK_URL`` is the discriminator, and it is exact
+    # rather than heuristic. ``ModalClient.submit`` (gpu/modal_client.py) takes
+    # ``job_token`` and ``webhook_url`` as REQUIRED keyword arguments, so every
+    # web submission carries both; ``modal_app._build_run_env`` copies them
+    # straight into JOB_TOKEN / WEBHOOK_URL for this process. A direct call
+    # sets neither — ``direct_call_fc.py`` documents the deliberate absence of
+    # both the endpoint and the token, and passes no webhook — so the two
+    # populations do not overlap.
+    #
+    # Same ``check`` name the original refusal used (``upload_urls_endpoint``),
+    # because anything already branching on it is looking for exactly this;
+    # only the detail changes, to name the real cause instead of implying the
+    # operator forgot a field.
+    if (job_token or webhook_url) and not upload_endpoint:
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            "this payload carries "
+            + " and ".join(
+                [n for n, v in (("a job_token", job_token),
+                                ("a WEBHOOK_URL", webhook_url)) if v])
+            + ", so it was submitted by the tools-hub web tier, but it has no "
+            "upload_urls_endpoint. The endpoint is required on that path: the "
+            "hub expects each design in Storage behind a pdb_key and there is "
+            "no direct caller here to hand inline coordinates to. Refusing "
+            "before any GPU spend — this is a submission bug in the web tier, "
+            "not a bad request. (A genuine direct "
+            "`modal.Function.from_name(...)` call carries neither a job_token "
+            "nor a webhook and is delivered inline instead.)",
+        )
+
     if not upload_endpoint and not (inline_pdbs and cap_ok):
         # Every way a finished design could end up with nowhere to put its
         # coordinates, refused before the GPU rather than after. A cap of 0 is
@@ -2536,10 +2808,27 @@ def main() -> None:
         )
         send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
 
+        # A HUNG SEARCH IS A RESULT, NOT A DEAD CONTAINER. See
+        # DESIGN_SUBPROCESS_TIMEOUT_S: without this except the kill arrives
+        # from Modal or from the wrapper, lands on THIS process, and the shard
+        # returns no result file at all — no scores, no coordinates, no
+        # diagnosis, on a fully billed A100. Catching it here keeps the rest of
+        # the function running, so anything ``complexa design`` had already
+        # written to the reward CSV before it hung is still parsed, still
+        # delivered, and still ranked. That is BindCraft's behaviour on its own
+        # timeout, and the only reason it can bank partial work.
+        search_timeout_s: float | None = None
         try:
             rc = run_streaming(cmd, work_dir)
         except FileNotFoundError:
             _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
+        except subprocess.TimeoutExpired as exc:
+            rc = SEARCH_TIMEOUT_RC
+            search_timeout_s = float(exc.timeout or DESIGN_SUBPROCESS_TIMEOUT_S)
+            logger.error(
+                "`complexa design` exceeded its %.0fs timeout and was killed; "
+                "delivering whatever it had already written", search_timeout_s,
+            )
 
         designs = parse_designs(run_dir)
         # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
@@ -2550,6 +2839,21 @@ def main() -> None:
         # exit left nothing scored to deliver (a genuine early failure).
         n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
         if rc != 0:
+            if n_scored == 0 and search_timeout_s is not None:
+                # Its OWN check name. "exited 124" is a number nobody can act
+                # on; "the search ran out of time" says which knob moves
+                # (PROTEINA_DESIGN_TIMEOUT_S, or a smaller target) and rules
+                # out the crash reading entirely.
+                _fail(
+                    "search", "timeout",
+                    f"`complexa design` exceeded its {search_timeout_s:.0f}s "
+                    "timeout and was killed before it scored a single design. "
+                    "Nothing was banked, so there is nothing to deliver. The "
+                    "partial output tree is in the raw archive. Raise "
+                    "PROTEINA_DESIGN_TIMEOUT_S (it must stay under the "
+                    "container's own ceiling) or reduce the target size / "
+                    "nsamples.",
+                )
             if n_scored == 0:
                 _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
             logger.warning(
@@ -2566,6 +2870,14 @@ def main() -> None:
             # undelivered. The counters ride along at zero purely so
             # `inline_delivery` is present on EVERY inline result and a caller
             # can read it without first testing for its existence.
+            #
+            # WITH A CENSUS, THOUGH. "COMPLETED, 0 designs, 0 failures" is the
+            # same three lines whether the filter culled every sample or
+            # `complexa design` never wrote a reward CSV at all, and those call
+            # for opposite responses. Note this branch is reachable only with
+            # rc == 0: the guard above already _fail()s on a nonzero exit with
+            # nothing scored, which is what a zero-design shard always is. So a
+            # census here is describing a run that claims to have succeeded.
             runtime = int(time.time() - start)
             empty_result = {
                 "status": "COMPLETED",
@@ -2575,6 +2887,7 @@ def main() -> None:
                 "n_failures": 0,
                 "designs": [],
                 "candidates": [],
+                "output_census": census_output_tree(run_dir),
                 "runtime_seconds": runtime,
                 "provider_job_id": job_id,
             }
@@ -2585,6 +2898,11 @@ def main() -> None:
                     "inline_bytes_used": 0,
                     "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
                 }
+                # Empty for the same reason the counters are zero: present on
+                # EVERY inline result so a caller can read it without first
+                # testing for its existence. Nothing was parsed here, so
+                # nothing could have been dropped.
+                empty_result["undelivered"] = []
             _write_result(empty_result)
             send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
             logger.info("shard produced 0 survivors in %ds", runtime)
@@ -2598,6 +2916,51 @@ def main() -> None:
         inline_bytes_used = 0
         n_inlined = 0
         n_inline_capped = 0
+        # THE SCORES OF A DROPPED DESIGN SURVIVE THE DROP. INLINE ONLY.
+        #
+        # Each of the three ``continue``s below throws away a row that an A100
+        # already scored: the reward, the AF2/RF3 confidences and the cluster
+        # id are computed BEFORE this loop runs, and losing the PDB does not
+        # make them wrong. They used to vanish with the design — nothing in the
+        # returned result recorded that the row existed, let alone what it
+        # scored — and the raw archive is a tarball in a Modal Volume that
+        # neither ``--collect`` nor the hub ever opens, so "it is in the
+        # archive" is not the same as "the caller has it". A shard that scored
+        # 8 and matched 6 PDBs handed back six designs and no way to learn that
+        # the best-scoring row was one of the two that went missing.
+        #
+        # WHY NOT AS A CANDIDATE, which is what BindCraft does (it keeps the
+        # entry and just omits ``pdb_content_b64`` when the read raises). Two
+        # reasons, both specific to this file rather than to taste:
+        #
+        #   * The upload path MUST keep dropping — it is the production web
+        #     tier and its failure arithmetic is fixed. Keeping the design on
+        #     the inline path only would make ``designs_completed`` and
+        #     ``n_failures`` depend on the delivery mode, which is exactly what
+        #     ``test_a_read_failure_is_counted_the_same_way_on_both_paths``
+        #     exists to forbid.
+        #   * ``delivery_verdict`` reads ``n_scored_delivered`` off the
+        #     candidate list to answer "did the caller get coordinates AND
+        #     scores?". Admitting score-only candidates would let a run in
+        #     which no single candidate has both pass as COMPLETED — the
+        #     no_scores_delivered check would see a scored candidate and stop
+        #     asking. ``candidates`` means "delivered, with atoms" here, and
+        #     the verdict is built on that meaning.
+        #
+        # So the scores ride in their own list, clearly marked as NOT
+        # delivered, and every consumer that resolves structures
+        # (shared/storage.py, shared/exports.py, the candidate table) keeps
+        # reading ``candidates`` and sees exactly what it saw.
+        undelivered: list[dict] = []
+        # Basenames whose PUT raised and whose atoms therefore travel inline
+        # instead. UPLOAD PATH ONLY, and only ever non-empty on a run where
+        # something was already broken. The name is not local shorthand: it is
+        # the key ``shared/jobs.py::_slim_result_for_persist`` reads to decide
+        # that a ``designs/``-prefixed candidate's inline copy is the ONLY copy
+        # and must survive persistence, and rfdiffusion already emits it with
+        # exactly this meaning. Added to the result only when non-empty, so a
+        # healthy web result grows no key.
+        failed_uploads: list[str] = []
         # THE DELIVERED RANK IS COUNTED HERE, not read off the parsed row.
         #
         # ``parse_designs`` numbers rows by reward-sort position, 0-based, over
@@ -2630,10 +2993,27 @@ def main() -> None:
         # correct as well as dense: the drop means nothing of that design was
         # delivered, so no candidate points at the object it would have written.
         emitted_rank = 0
+
+        def keep_scores(design: dict, reason: str) -> None:
+            """Bank a dropped design's scores. INLINE ONLY — see ``undelivered``.
+
+            Gated on ``inline_pdbs`` rather than on "there is no endpoint" so a
+            web-path result can never grow this key, which is the same gate
+            ``inline_delivery`` uses and the same reason.
+            """
+            if not inline_pdbs:
+                return
+            undelivered.append({
+                "name": design["name"],
+                "reason": reason,
+                "scores": design["scores"],
+            })
+
         for d in designs:
             pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
             if pdb_path is None:
                 n_failures += 1
+                keep_scores(d, "no_pdb_matched")
                 logger.warning(
                     "design %s (reward CSV row %d): no PDB file matched — skipping",
                     d["name"], d["_row_index"],
@@ -2653,25 +3033,87 @@ def main() -> None:
             # A bare filename is the convention jobs.py already documents for
             # candidates that are not Storage-backed.
             pdb_key = f"designs/{basename}" if upload_endpoint else basename
+            # THE READ AND THE UPLOAD ARE NOW TWO DIFFERENT FAILURES, because
+            # they leave the shard in two different states. A read that raises
+            # leaves NO BYTES — there is nothing to deliver by any route, so it
+            # drops and counts, identically on both paths (that symmetry is
+            # what ``test_a_read_failure_is_counted_the_same_way_on_both_paths``
+            # forbids drifting). An upload that raises leaves the bytes sitting
+            # right here, already read, already correct.
             try:
                 pdb_bytes = pdb_path.read_bytes()
-                # Guarded, not removed. With an endpoint this is the original
-                # call pair on the original bytes inside the original try, so
-                # the web path's behaviour — including counting an upload
-                # failure and skipping the design — is untouched.
-                if upload_endpoint:
-                    urls = request_upload_urls(upload_endpoint, job_token, [basename])
-                    upload_pdb(urls[basename], pdb_bytes)
             except Exception as exc:
                 n_failures += 1
+                keep_scores(d, "pdb_read_failed")
                 # Named by DESIGN, not by rank: this one is being dropped, so
                 # it never gets a delivered rank and the number it was about to
                 # take goes to the next survivor instead.
                 logger.warning(
-                    "design %s: %s failed (%s) — skipping",
-                    d["name"], "upload" if upload_endpoint else "PDB read", exc,
-                )
+                    "design %s: PDB read failed (%s) — skipping", d["name"], exc)
                 continue
+
+            upload_failed = False
+            if upload_endpoint:
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [basename])
+                    upload_pdb(urls[basename], pdb_bytes)
+                except Exception as exc:
+                    upload_failed = True
+                    logger.warning(
+                        "design %s: upload failed (%s) — falling back to "
+                        "inline delivery", d["name"], exc,
+                    )
+
+            # AN UPLOAD FAILURE NO LONGER DESTROYS THE DESIGN.
+            #
+            # It used to share the read's ``except`` and take the same
+            # count-and-skip, so a present-but-BROKEN endpoint — HTTP 401/404,
+            # a revoked presigned URL, or an empty ``job_token`` (rfdiffusion
+            # guards that explicitly; this file never did) — returned nothing
+            # at all: every PUT raised, every design was dropped, and the
+            # billed shard handed back an empty candidate list. The atoms were
+            # in this process's memory the entire time.
+            #
+            # Every sibling ships them anyway. rfdiffusion keeps the candidate
+            # when its PUT raises, appends the filename to ``failed_uploads``
+            # and inlines ``pdb_content_b64``; the hub is already built for it,
+            # and this is the ONE case where a ``designs/`` pdb_key and an
+            # inline copy are both correct at once —
+            # ``shared/jobs.py::_slim_result_for_persist`` strips the inline
+            # copy from a Storage-backed candidate EXCEPT when its basename is
+            # listed in ``failed_uploads``, precisely because then Storage does
+            # not have it. Keeping the key is what makes the rescue reach the
+            # browser: ``candidate_table.html`` takes the URL branch whenever a
+            # pdb_key exists, and ``/api/jobs/<id>/pdb/<file>`` misses in
+            # Storage and then falls back to the inline copy by basename.
+            #
+            # It is NOT "inline as a bonus". Nothing changes on a healthy web
+            # job: no upload raised, so ``upload_failed`` is never True, no
+            # candidate grows a b64 field, and ``failed_uploads`` is absent
+            # from the result. The ~3.6 MB/child that reconcile_campaign_children
+            # would pull is only ever paid by a run that would otherwise have
+            # returned zero structures.
+            #
+            # The rescue is bounded by the SAME total budget inline mode uses,
+            # so a broken endpoint cannot turn into an unbounded return value;
+            # a design the budget cannot fit (or one that read as zero bytes)
+            # falls back to the original drop-and-count, which is also what
+            # keeps the delivered ranks dense across it.
+            rescue_inline = False
+            if upload_failed:
+                if pdb_bytes and (inline_bytes_used + len(pdb_bytes)
+                                  <= INLINE_PDB_TOTAL_CAP_BYTES):
+                    rescue_inline = True
+                else:
+                    n_failures += 1
+                    keep_scores(d, "upload_failed")
+                    logger.warning(
+                        "design %s: upload failed and its %d bytes do not fit "
+                        "the inline rescue budget (used %d of %d) — skipping",
+                        d["name"], len(pdb_bytes), inline_bytes_used,
+                        INLINE_PDB_TOTAL_CAP_BYTES,
+                    )
+                    continue
 
             # A PDB THAT READS AS ZERO BYTES IS A FAILED DESIGN, not a delivered
             # one. ``read_bytes()`` on a truncated or not-yet-written file
@@ -2695,6 +3137,7 @@ def main() -> None:
             # change, deliberately made, not as a side effect of this one.
             if inline_pdbs and not pdb_bytes:
                 n_failures += 1
+                keep_scores(d, "pdb_empty")
                 logger.warning(
                     "design %s: %s is empty (0 bytes), so there are no "
                     "coordinates to inline — skipping", d["name"], pdb_path,
@@ -2750,23 +3193,78 @@ def main() -> None:
                     # dropped quietly — a truncated result set that looks
                     # complete is the failure mode this whole file guards.
                     n_inline_capped += 1
+                    # AND IT LOSES ITS pdb_key WITH THEM. INLINE ONLY.
+                    #
+                    # The candidate table's "does this row have a structure?"
+                    # test is ``pdb_key or pdb_content_b64``
+                    # (templates/components/candidate_table.html), and with a
+                    # pdb_key present it takes the URL branch: a live View-3D
+                    # button and a .pdb download link pointing at
+                    # /api/jobs/<job>/pdb/<key>. In INLINE mode there is no
+                    # Storage object behind that key — nothing was uploaded —
+                    # and this candidate has no inline copy either, so the
+                    # route's Storage lookup misses, its b64 fallback finds an
+                    # empty field, and both controls resolve to a 404. The key
+                    # is a promise nothing can keep, and an em-dash ("no
+                    # structure for this design") is the honest rendering.
+                    #
+                    # Dropped from the designs row too so the pair cannot
+                    # disagree: every other consumer of a proteina result
+                    # reads one list or the other, and a dangling pointer left
+                    # in ``designs`` would be the same lie in a second place.
+                    #
+                    # The upload path never reaches here (``inline_pdbs`` is
+                    # False whenever an endpoint exists), and there the key IS
+                    # backed by a real object that the PUT already wrote — so
+                    # it must keep it, untouched.
+                    candidate_entry.pop("pdb_key", None)
+                    design_entry.pop("pdb_key", None)
+            elif rescue_inline:
+                # ``elif``, and it can only ever be the other branch: the
+                # rescue needs an upload endpoint and ``inline_pdbs`` is False
+                # whenever one exists.
+                #
+                # The ``designs/`` pdb_key STAYS, unlike the cap branch above.
+                # There the key promised bytes that exist nowhere; here it is
+                # the key ``failed_uploads`` is matched on, and dropping it
+                # would make _slim_result_for_persist treat the candidate as
+                # not-Storage-backed, the basename lookup in the PDB route miss
+                # its target, and the export lose the pointer — for a
+                # candidate that IS carrying its atoms.
+                candidate_entry["pdb_content_b64"] = base64.b64encode(
+                    pdb_bytes
+                ).decode("ascii")
+                inline_bytes_used += len(pdb_bytes)
+                failed_uploads.append(basename)
             # The design survived every drop, so the number it was assigned is
             # now spent. Committing here rather than at the top of the loop is
             # what keeps the delivered ranks contiguous no matter WHICH drop
             # fired — a design that lost its atoms to the cap is still
-            # delivered (scores, rank and pdb_key are all present), so it
+            # delivered (it keeps its rank, its name and its full scores; only
+            # the atoms and the pointer that promised them are gone), so it
             # rightly consumes a rank; the three ``continue``s above do not.
             emitted_rank = rank
             out_designs.append(design_entry)
             out_candidates.append(candidate_entry)
             # Heartbeat new_candidate keys match webhook _sanitize_candidate.
+            #
+            # pdb_key is read off the CANDIDATE, not off the local, so a design
+            # the inline cap stripped it from cannot announce it here either:
+            # the live status page renders its View-3D control straight from
+            # the heartbeat, before any result exists, so announcing a key the
+            # result will not carry just moves the dead control earlier in the
+            # run. ``_sanitize_candidate`` already does ``cand.get("pdb_key")``
+            # and stores None, which the results renderer hides.
+            #
+            # A no-op on the upload path: ``inline_pdbs`` is False there, the
+            # pop never fires, and this reads back exactly ``pdb_key``.
             send_heartbeat(
                 webhook_url, job_id, stage="searching",
                 designs_completed=len(out_designs), designs_total=designs_total,
                 new_candidate={
                     "rank": rank,
                     "name": d["name"],
-                    "pdb_key": pdb_key,
+                    "pdb_key": candidate_entry.get("pdb_key"),
                     "total_reward": scores.get("total_reward"),
                     "af2_iptm": scores.get("af2_iptm"),
                     "af2_plddt": scores.get("af2_plddt"),
@@ -2775,7 +3273,8 @@ def main() -> None:
                     "cluster_id": scores.get("cluster_id"),
                 },
             )
-            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
+            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"),
+                        candidate_entry.get("pdb_key") or "(capped, no atoms)")
 
         runtime = int(time.time() - start)
         result = {
@@ -2789,8 +3288,13 @@ def main() -> None:
             "runtime_seconds": runtime,
             "provider_job_id": job_id,
         }
+        # Present only when a PUT actually raised. Its absence is the normal
+        # web result and the only shape a healthy job has ever returned; its
+        # presence is what tells the hub not to slim the rescued atoms away.
+        if failed_uploads:
+            result["failed_uploads"] = failed_uploads
 
-        # --- inline delivery verdict (post-loop, sizes finally known) --------
+        # --- inline accounting (post-loop, sizes finally known) --------------
         # ADDED ONLY IN INLINE MODE, so the web path's result dict is exactly
         # what it was: same keys, same values, no `pdb_content_b64`, candidates
         # still {rank, name, pdb_key, scores}. Inline mode is unreachable when
@@ -2804,14 +3308,6 @@ def main() -> None:
         # all. That is the billed-and-empty outcome
         # INLINE_PDB_MIN_USEFUL_CAP_BYTES claims to prevent and demonstrably
         # cannot: any cap between that floor and one real PDB clears it.
-        #
-        # n_inline_capped > 0 is what distinguishes this from an honest
-        # zero-design shard (nothing produced, nothing to deliver, still
-        # COMPLETED). Scores, ranks and the candidate list are all kept on the
-        # failed result — the science survives, and the atoms are in the raw
-        # archive — so this reports a delivery failure without destroying what
-        # the run did produce.
-        delivery_failed = False
         if inline_pdbs:
             result["inline_delivery"] = {
                 "n_inlined": n_inlined,
@@ -2819,27 +3315,102 @@ def main() -> None:
                 "inline_bytes_used": inline_bytes_used,
                 "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
             }
-            delivery_failed = n_inlined == 0 and n_inline_capped > 0
-            if delivery_failed:
-                detail = (
-                    f"the inline PDB cap ({INLINE_PDB_TOTAL_CAP_BYTES} bytes) "
-                    f"admitted none of the {n_inline_capped} design(s) this "
-                    "shard produced, so the run delivered no coordinates at "
-                    "all. Scores and ranks are in this result and the atoms "
-                    "are in the raw archive. Raise "
-                    "PROTEINA_INLINE_PDB_CAP_BYTES above one design's PDB and "
-                    "re-run."
-                )
-                logger.error(
-                    "pipeline FAILED at delivery/inline_cap_admitted_nothing: %s",
-                    detail,
-                )
-                result["status"] = "FAILED"
-                result["error"] = {
-                    "bucket": "delivery",
-                    "check": "inline_cap_admitted_nothing",
-                    "detail": detail,
-                }
+            # THE BANKED SCORES, ACTUALLY HANDED BACK. ``keep_scores`` above
+            # collects every dropped design's A100-computed scores, and until
+            # this line that list was built and then discarded when main()
+            # returned — the local went out of scope, the result never grew a
+            # key, and the drop destroyed the scores exactly as before. A
+            # shard that scored 8 and matched 6 PDBs still handed back six
+            # designs and no way to learn that the best-scoring row was one of
+            # the two that went missing, which is the whole defect the helper
+            # was written for.
+            #
+            # It is its own list rather than score-only candidates on purpose;
+            # see ``undelivered``'s declaration for why (the upload path's
+            # failure arithmetic, and delivery_verdict's reading of
+            # ``candidates`` as "delivered, WITH atoms").
+            #
+            # Always present in inline mode, like ``inline_delivery``: an
+            # empty list is the readable statement that nothing was dropped,
+            # where a missing key is indistinguishable from an older shard.
+            result["undelivered"] = undelivered
+
+        # --- THE DELIVERY VERDICT (one question, asked once) -----------------
+        # This used to live inline above and ask only "did the size cap drop
+        # every design?", which is one of at least four ways this shard can
+        # deliver nothing and say COMPLETED. See ``delivery_verdict`` for the
+        # question it asks instead and for what is deliberately NOT a failure.
+        #
+        # ``n_structures`` is the count of coordinates that actually left the
+        # container, and it is mode-dependent because the evidence is: inline,
+        # only an INLINED candidate carries atoms (a cap-dropped one has scores
+        # and a pdb_key and no bytes); on the upload path a candidate exists
+        # only after its PUT returned, so the candidate is the evidence.
+        #
+        # ``n_scored_delivered`` counts the DELIVERED candidates, not the
+        # parsed rows, because this is a verdict on delivery: a run whose only
+        # scored rows were all dropped hands the caller an unrankable set even
+        # though ``n_scored`` above is nonzero.
+        n_structures = n_inlined if inline_pdbs else len(out_candidates)
+        n_scored_delivered = sum(
+            1 for c in out_candidates
+            if c["scores"].get("total_reward") is not None
+        )
+        census = census_output_tree(run_dir)
+        error = delivery_verdict(
+            n_parsed=len(designs),
+            n_delivered=len(out_candidates),
+            n_structures=n_structures,
+            n_scored_delivered=n_scored_delivered,
+            n_inline_capped=n_inline_capped,
+            n_failures=n_failures,
+            inline_pdbs=inline_pdbs,
+            census=census,
+        )
+
+        # THE SEARCH'S EXIT CODE BELONGS IN THE RESULT, not only in a log line.
+        # `complexa design` chains generate -> filter -> evaluate -> analyze and
+        # a late stage can die AFTER a complete reward CSV is written (P-3
+        # canary: 8 designs fully RF3-scored, then exit 1). Delivering those is
+        # right — see the guard above — but the crash was then recorded in a
+        # logger.warning only, and container logs are not part of what a direct
+        # caller or the hub receives. A half-length shard was therefore
+        # indistinguishable from one the filter had legitimately culled down.
+        # BindCraft states the same thing as ``partial`` beside a subprocess
+        # status block; this mirrors it. Both keys appear ONLY when rc != 0, so
+        # a clean run's result — on either path — is unchanged.
+        if rc != 0:
+            result["partial"] = True
+            result["search"] = {
+                "exit_code": rc,
+                "n_parsed": len(designs),
+                "n_scored": n_scored,
+            }
+            if search_timeout_s is not None:
+                # BindCraft records the same pair (``status: "timeout"`` beside
+                # ``timeout_s``). A bare exit code of 124 is indistinguishable
+                # from a search that genuinely exited 124, and the two call for
+                # different responses.
+                result["search"]["status"] = "timeout"
+                result["search"]["timeout_s"] = search_timeout_s
+
+        # The census rides along whenever something is off — a nonzero exit or
+        # a failed verdict — and never on a clean run, which has nothing to
+        # diagnose and whose result shape is load-bearing on the web path.
+        delivery_failed = error is not None
+        if delivery_failed or rc != 0:
+            result["output_census"] = census
+        if delivery_failed:
+            # Scores, ranks and the candidate list are all KEPT on the failed
+            # result — the science survives, and the atoms are in the raw
+            # archive — so this reports a delivery failure without destroying
+            # what the run did produce.
+            logger.error(
+                "pipeline FAILED at %s/%s: %s",
+                error["bucket"], error["check"], error["detail"],
+            )
+            result["status"] = "FAILED"
+            result["error"] = error
 
         _write_result(result)
         send_heartbeat(
@@ -2852,6 +3423,14 @@ def main() -> None:
                 "coordinates (cap %d bytes, used %d). Their atoms are in the "
                 "raw archive. Raise PROTEINA_INLINE_PDB_CAP_BYTES to inline them.",
                 n_inline_capped, INLINE_PDB_TOTAL_CAP_BYTES, inline_bytes_used,
+            )
+        if failed_uploads:
+            logger.warning(
+                "%d design(s) could not be uploaded to Storage and are being "
+                "returned INLINE instead (%s). The upload endpoint or the "
+                "job_token is broken; the coordinates are still in this "
+                "result and _slim_result_for_persist will keep them.",
+                len(failed_uploads), " ".join(failed_uploads),
             )
         logger.info(
             "shard complete — %d/%d designs, %d failures, %d inlined "
@@ -2871,6 +3450,72 @@ def main() -> None:
         # silent zero-candidate "success" having shipped nothing — that is
         # precisely the run whose tree you need to read afterwards.
         archive_raw_outputs(run_dir)
+
+
+def main() -> None:
+    """EVERY EXIT PATH WRITES A RESULT FILE. That is this function's whole job.
+
+    ``_run_shard`` had no ``except`` arm of its own, so anything it did not
+    anticipate — the wrong TYPE in a job_spec field, an OSError from the run
+    dir, a KeyError in a parser — left the interpreter with a bare traceback on
+    stderr and NO /tmp/smoke_results.json. ``modal_app.run_tool`` then hits
+    FileNotFoundError, passes, and returns ``smoke_result: None`` with an empty
+    ``stdout_tail`` and an empty ``stderr_tail``, which is the entire diagnosis
+    a direct caller receives for a fully billed A100. It is not hypothetical:
+    ``job_spec.binder_length = 90`` — a scalar where ``direct_call_fc`` documents
+    the ``[lo, hi]`` pair — raises TypeError out of the list comprehension near
+    the top and produced exactly that, silently.
+
+    BindCraft guarantees a structured failure on every path and this mirrors it.
+    Three things it deliberately does NOT do:
+
+      * It does not swallow ``SystemExit``. ``_fail`` and the delivery-failure
+        exit have already written their result and chosen exit code 1;
+        re-wrapping them would only lose that.
+      * It does not overwrite a result that was already written. The tail of a
+        successful shard (heartbeat, log lines) runs after ``_write_result``,
+        and replacing a COMPLETED result carrying every design with an
+        ``unhandled_exception`` stub would destroy the run rather than report
+        it. ``_RESULT_WRITTEN`` is what makes that decidable.
+      * It does not exit 0. ``run_tool`` copies ``result.returncode`` straight
+        into what the caller receives, so a crash that exited 0 would be a
+        failed run reported as a clean one to anything branching on it.
+    """
+    global _RESULT_WRITTEN
+    # Reset rather than relying on the module default: one process runs one
+    # shard, but the test suite drives main() many times in a single
+    # interpreter, and a flag left True by an earlier run would suppress the
+    # very write this function exists to guarantee.
+    _RESULT_WRITTEN = False
+    try:
+        _run_shard()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — the point is that it is total
+        logger.exception("UNHANDLED exception in the proteina shard")
+        if not _RESULT_WRITTEN:
+            _write_result({
+                "status": "FAILED",
+                "error": {
+                    "bucket": "internal",
+                    "check": "unhandled_exception",
+                    "detail": (
+                        f"the shard crashed with an unhandled "
+                        f"{type(exc).__name__}: {exc}. This is a bug in "
+                        "run_pipeline.py, not a bad request — check the "
+                        "traceback below and the container logs. Any output "
+                        "the run produced before the crash is in the raw "
+                        "archive."
+                    ),
+                    # Tail, not head: the frames nearest the raise are the ones
+                    # that name the failing line, and the result is persisted
+                    # into a JSONB column that must not grow without bound.
+                    "traceback": traceback.format_exc()[-4000:],
+                },
+                "tier": os.environ.get("JOB_TIER", ""),
+                "provider_job_id": os.environ.get("JOB_ID", ""),
+            })
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

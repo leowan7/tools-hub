@@ -340,6 +340,44 @@ def cmd_submit(args) -> int:
     return 0
 
 
+def _plddt_text(value) -> str:
+    """Render ``af2_plddt`` so the number cannot be read on the wrong scale.
+
+    Proteina's reward CSV carries ``af2folding_plddt`` on [0,1] and
+    ``parse_designs`` stores it unchanged, so this line prints ``0.86`` where
+    every sibling generator prints ``86``: pxdesign, rfantibody and boltzgen
+    each rescale pLDDT to the field-standard AlphaFold2 0-100 range inside the
+    container, before it ever reaches a candidate's ``scores``
+    (``pxdesign/run_pipeline.py`` ``if "pLDDT" in scores and 0.0 <=
+    scores["pLDDT"] <= 1.0: ... * 100.0``, and the same in the other two).
+    ``plddt=0.86`` next to the universal "pLDDT > 80 is confidently folded"
+    gate reads as a catastrophically unfolded design, which is the opposite of
+    what it says.
+
+    THE VALUE ITSELF IS NOT RESCALED, and the annotation goes here rather than
+    in ``run_pipeline.parse_designs`` for one specific reason: that ``scores``
+    dict is built ONCE, by the parser, for both delivery modes. Rescaling
+    there would silently move every number the production web tier has already
+    stored and renders today — ``templates/tools/proteina_results.html`` reads
+    ``candidates[*].scores.af2_plddt`` straight into its column — so the same
+    design would report 0.86 in one job row and 86.0 in the next with nothing
+    recording which scale a given row is on. Rescaling only when inlining is
+    worse still: it would make a SCORE depend on the delivery mode, the thing
+    ``test_scores_and_ranking_are_identical_between_the_two_modes`` exists to
+    forbid, and would mix scales inside one campaign's pooled shards.
+
+    So the printed line states both readings and the JSON keeps the one scale
+    it has always had. The [0,1] guard mirrors pxdesign's: the column aliases
+    in ``_SCORE_COLUMNS`` include plain ``plddt``, which some CSVs write on
+    0-100 already, and annotating THAT would create the error it prevents.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    if 0.0 <= value <= 1.0:
+        return f"{value} (AF2 scale: {value * 100:.1f}/100)"
+    return str(value)
+
+
 def cmd_collect(args) -> int:
     _load_env_and_path()
     import modal
@@ -398,7 +436,8 @@ def cmd_collect(args) -> int:
         dest.write_bytes(pdb)
         scores = c.get("scores") or {}
         print(f"  rank {c['rank']:>3}  reward={scores.get('total_reward')}  "
-              f"plddt={scores.get('af2_plddt')}  {len(pdb)} bytes -> {dest}")
+              f"plddt={_plddt_text(scores.get('af2_plddt'))}  "
+              f"{len(pdb)} bytes -> {dest}")
     # smoke_result.json was written above, on the path EVERY outcome takes —
     # not repeated here. `smoke` is not mutated in between, so a second write
     # would only produce identical bytes and a second place to keep in sync.
