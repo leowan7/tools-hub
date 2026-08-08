@@ -438,25 +438,22 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
 # using it, and when it cannot, the design is uploaded byte-for-byte as upstream
 # wrote it — today's behaviour. A design is never lost to this step.
 
-# THE THREE ANSWERS TO "WHICH NUMBERING DOES THE DELIVERED FILE CARRY?", and
-# the third one is not decoration.
+# The three answers to "which numbering does the delivered file carry?":
+# ``input`` (the operator's uploaded numbering was restored, so their own
+# hotspot labels resolve against the download), ``upstream`` (they gave us a
+# numbering and the file carries 1..N instead), ``n/a`` (there was no operator
+# numbering at all — a curated benchmark run uploads no file). Where each is
+# chosen, and why the third is not a synonym for the second, is at
+# ``not_restored`` in main().
 #
-# ``input``    — the operator's uploaded numbering was restored; their own
-#                hotspot labels resolve against the download.
-# ``upstream`` — there WAS an operator numbering and it could not be restored,
-#                so the file carries 1..N and those labels will not resolve.
-# ``n/a``      — there was never an operator numbering. A curated benchmark run
-#                designs against a bundled target this wrapper never staged and
-#                the operator uploaded no file at all.
-#
-# The first version of this field had two values and initialised to
-# ``upstream``, so every curated run reported the middle answer — and the
-# results page renders that as "not the numbering in the file you uploaded ...
-# hotspot labels such as A241 will not resolve", which is a false sentence
-# about a run with no uploaded file in it. Both values describe a file numbered
-# 1..N; they are answers to different questions, and only one of them is a
-# warning. ``webhooks/modal.py::_sanitize_candidate`` allowlists these same
-# three and tests/test_proteina_smoke.py pins the two lists together.
+# NOTHING READS THIS TUPLE AT RUNTIME, which is worth saying rather than
+# leaving it to look like a gate: the pipeline emits the strings as literals
+# and ``webhooks/modal.py::_sanitize_candidate`` allowlists the same three a
+# third time. What it is for is giving those two lists one place to be
+# compared — tests/test_proteina_smoke.py reads this tuple and the webhook's
+# own allowlist and fails when they drift, which is the drift that would make
+# one design report one numbering while it streams and another once it
+# finalised.
 _TARGET_NUMBERING_VALUES = ("input", "upstream", "n/a")
 
 _UNKNOWN_RESNAMES = frozenset({"UNK", "UNX", "XAA", "X"})
@@ -749,20 +746,37 @@ def restore_design_numbering(pdb_text: str,
     target chain keyed to the operator's input and another to upstream's 1..N,
     which is harder to reason about than either alone.
 
-    AND ALL THEIR COORDINATE RECORDS, not just the ones the map has keys for.
-    The map is built from CA atoms, so a residue modelled without a CA, a
-    HETATM ion or ligand on a target chain, or a second MODEL numbered
-    differently from the first yields coordinate records that are not keys.
-    Passing those through unchanged is the same partial rewrite one record at a
-    time, and it can put two different residues on one residue id — so they are
-    counted and the whole file is refused instead.
+    AND THEIR COORDINATE RECORDS THAT THE MAP HAS NO KEY FOR — but only where
+    leaving one where it is would actually collide. The map is built from CA
+    atoms, so a residue modelled without a CA, a HETATM ion or ligand on a
+    target chain, or a second MODEL numbered differently from the first yields
+    coordinate records that are not keys. Such a record keeps the number it
+    has, and that is a problem in exactly one case: when some OTHER residue is
+    being renumbered ONTO that number, so the delivered file would carry two
+    different residues on one residue id. Those are counted and the whole file
+    is refused. A record nothing is moving onto stays where it is and the
+    restore still applies — refusing it would cost the shard its numbering for
+    a file that is fine.
 
     ONLY MODEL 1 DEFINES THE MAP, WHILE THE REWRITE WALKS THE WHOLE FILE.
     ``pdb_ca_sequence`` stops at the first ``ENDMDL``, so a multi-model file's
     later models are rewritten with model 1's map. That is correct exactly when
     the models share a numbering, which is the normal case and the only one
-    upstream emits (the 8 archived designs are single-model). When they do not,
-    the unmapped-record refusal above catches it rather than mixing numberings.
+    upstream emits (the 8 archived designs are single-model). A later model
+    numbered DIFFERENTLY is caught only where its numbers land on ids model 1
+    is being renumbered onto; where they do not, that model keeps its own
+    numbers and the file goes out with two models in two numberings. Nothing
+    upstream writes reaches that state — it is named here rather than claimed
+    closed.
+
+    WHAT IS GUARANTEED ABOUT DUPLICATE RESIDUE IDS, PRECISELY: this rewrite
+    never CREATES one. It cannot do so through the map, which is checked
+    one-to-one, so two records reach one destination only if they already
+    shared a source id; the unmapped-record refusal covers the only other way.
+    It does not REMOVE one either — a design that arrives with a ligand sitting
+    on a real residue's number is delivered with both moved together, because
+    refusing hands the operator the same two residues on the same id and takes
+    their numbering away as well.
 
     BOTH THE resSeq COLUMNS AND THE iCode COLUMN ARE WRITTEN. A residue id in
     PDB is ``(chain, resSeq, iCode)``, and an earlier version of this function
@@ -881,31 +895,42 @@ def restore_design_numbering(pdb_text: str,
 
         out: list[str] = []
         last_seen: dict[str, tuple[int, str]] = {}
-        # EVERY COORDINATE RECORD ON A REMAPPED CHAIN NEEDS A DESTINATION, and
-        # the injectivity refusal above does not give it one. That check proves
-        # the MAP is one-to-one; it says nothing about records the map has no
-        # key for. ``pdb_ca_sequence`` builds the map from CA atoms only, so a
-        # residue modelled without a CA, a HETATM ligand or ion sitting on a
-        # target chain, or a second model whose numbering differs from the
-        # first all produce coordinate records that are not keys — and this
-        # loop used to hand them straight through, keeping upstream's number
-        # while every neighbour moved. Measured, twice, independently: a
-        # delivered file with one residue id carrying two different residue
-        # names, and ``[A100..A109, A105 ZN]`` against a 100..109 reference —
-        # duplicate residue ids, with ``applied`` True and the payload claiming
+        # A COORDINATE RECORD THE MAP HAS NO KEY FOR IS ONLY A PROBLEM WHEN
+        # SOMETHING IS MOVING ONTO IT. The injectivity refusal above proves the
+        # MAP is one-to-one and says nothing about such records.
+        # ``pdb_ca_sequence`` builds the map from CA atoms only, so a residue
+        # modelled without a CA, a HETATM ligand or ion sitting on a target
+        # chain, or a second model whose numbering differs from the first all
+        # produce them — and this loop used to hand them straight through,
+        # keeping upstream's number while every neighbour moved. Measured:
+        # ``[A100..A109, A105 ZN]`` against a 100..109 reference delivered
+        # duplicate residue ids with ``applied`` True and the payload claiming
         # the operator's numbering was restored. That is the exact outcome the
         # one-to-one refusal exists to prevent, reached around the side.
         #
-        # So they are COUNTED and the whole file is refused, which ships
-        # upstream's bytes unchanged — the same fail-closed direction as every
-        # other refusal here. Counting rather than returning on the first one
-        # is what lets the reason say how many; an operator told about one
-        # record would go looking for one.
+        # THE FIRST VERSION OF THIS GUARD REFUSED ON ALL OF THEM, and gave that
+        # collision as its reason for every one. Measured false: a ``HETATM ZN``
+        # at ``A9000`` against a 234-253 reference collides with nothing, and
+        # refusing it shipped the WHOLE shard in upstream's 1..N — both target
+        # chains, every design, the operator's hotspot labels no longer
+        # resolving and the results page raising its warning banner. One benign
+        # heteroatom for the entire feature, on a stated reason that was false
+        # about that file. The test is therefore the collision itself: the
+        # record's own ``(resseq, icode)`` being a value of the map, i.e. an id
+        # this rewrite is renumbering some other residue onto.
+        #
+        # COUNTED BY RESIDUE, NOT BY RECORD. One CA-less tryptophan is 8 atoms
+        # plus their 8 ``ANISOU`` lines; "16 coordinate record(s)" with the same
+        # residue named three times in the sample sends an operator looking for
+        # sixteen problems. Keying on the residue id is also what bounds this:
+        # the keys are a subset of the map's values, so it cannot outgrow the
+        # map however many records a pathological file piles onto one residue.
         #
         # No archived design can trigger this: all 8 are ATOM-only, one model,
         # every residue has a CA, and ``crop_pdb_to_contig`` strips ligands,
         # ions and waters out of the staged input. Verified 8/8 still applied.
-        unmapped: list[str] = []
+        destinations = {c: set(m.values()) for c, m in remap.items()}
+        collisions: dict[tuple[str, int, str], None] = {}
         for line in lines:
             record = line[:6]
             chain = line[21:22].strip() if len(line) > 21 else ""
@@ -914,12 +939,17 @@ def restore_design_numbering(pdb_text: str,
                 try:
                     old = int(line[22:26])
                 except ValueError:
-                    unmapped.append(f"chain {chain}: resSeq {line[22:26]!r}")
+                    # A residue number that is not a number cannot be a
+                    # destination either: every id this rewrite writes comes
+                    # out of ``f"{n:4d}"`` and ``int`` reads every one of those
+                    # back, so nothing can be renumbered onto this record. It
+                    # keeps its own field, exactly as it arrived.
                     out.append(line)
                     continue
                 new = remap[chain].get((old, icode))
                 if new is None:
-                    unmapped.append(f"chain {chain} residue {old}{icode}")
+                    if (old, icode) in destinations[chain]:
+                        collisions[(chain, old, icode)] = None
                     out.append(line)
                     continue
                 spliced = _splice_resid(line, new)
@@ -945,13 +975,16 @@ def restore_design_numbering(pdb_text: str,
                 continue
             out.append(line)
 
-        if unmapped:
+        if collisions:
+            shown = ", ".join(f"chain {c} residue {r}{i}"
+                              for c, r, i in list(collisions)[:3])
             report["reason"] = (
-                f"{len(unmapped)} coordinate record(s) on a chain being "
-                f"renumbered are not in the map ({', '.join(unmapped[:3])}"
-                f"{', ...' if len(unmapped) > 3 else ''}) — leaving them on "
-                f"upstream's numbers while their neighbours move would emit a "
-                f"file with two different residues sharing one residue id")
+                f"{len(collisions)} residue(s) on a chain being renumbered are "
+                f"not in the map and sit on residue ids this rewrite is moving "
+                f"other residues onto ({shown}"
+                f"{', ...' if len(collisions) > 3 else ''}) — leaving them "
+                f"there would emit a file with two different residues sharing "
+                f"one residue id")
             return pdb_text, report
 
         report["applied"] = True
@@ -2689,13 +2722,32 @@ def main() -> None:
             # utf-8 sequence would shift every column after it. latin-1 maps one
             # byte to one character for all 256 values, so column 23 is byte 23.
             #
-            # KNOWN ASYMMETRY, NOT FIXED: ``stage_cropped_target`` WRITES this
-            # file with ``dest.write_text(...)``, i.e. the platform default
-            # encoding, and it is read back here as latin-1. Both are
-            # byte-exact for the ASCII a coordinate section is made of, so the
-            # numbering is unaffected; a non-ASCII byte in a REMARK could
-            # decode differently on the two sides, which would move residue
-            # NAMES not at all and identity not at all.
+            # KNOWN ASYMMETRY, NOT FIXED, and measured rather than reasoned
+            # about. Three reads of one upload disagree about encoding:
+            # ``prepare_custom_target`` reads it with
+            # ``incoming.read_text(errors="replace")`` (platform default),
+            # ``stage_cropped_target`` WRITES the crop with
+            # ``dest.write_text(...)`` (platform default again), and this line
+            # reads that back as latin-1. All three agree byte for byte on the
+            # ASCII a coordinate section is made of, which is every real target.
+            #
+            # A non-ASCII byte does NOT reach here through an annotation
+            # record: ``crop_pdb_to_contig`` emits ``ATOM`` / ``TER`` / ``END``
+            # and nothing else, so no REMARK, HEADER or SEQRES survives to
+            # carry one. Where it CAN land is a coordinate line the crop keeps,
+            # and there it moves both of the things an earlier version of this
+            # note said it moved neither of. Under a UTF-8 default — what the
+            # container runs — ``errors="replace"`` destroys the byte before
+            # anything is written, the U+FFFD goes out as three bytes, this
+            # latin-1 read finds that line two columns wider, its resSeq field
+            # no longer parses and the residue drops out of the reference
+            # entirely: a chain one residue short, refused as "length differs".
+            # Under a single-byte default the widths hold and the residue NAME
+            # changes instead, refused as "sequence identity". Fail-closed both
+            # ways — a clean apply becomes a refusal, never a wrong file — and
+            # ``stage_cropped_target``'s own count self-check cannot see either,
+            # because it reads the file back with the same default encoding it
+            # was written with. See TestTheStagedReferenceEncoding.
             try:
                 renumber_reference = pdb_ca_sequence(
                     (Path(_HUB_TARGET_DIR) / f"{task_name}.pdb")

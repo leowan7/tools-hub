@@ -2755,6 +2755,18 @@ def test_the_webhook_allowlist_covers_every_numbering_the_pipeline_emits():
     Both directions are pinned: the pipeline may not emit a value the webhook
     would drop, and the webhook may not silently accept one the pipeline never
     emits (this endpoint's body is unauthenticated).
+
+    G2: THE REVERSE HALF WAS A CLAIM IN THIS DOCSTRING AND NOTHING IN THE BODY.
+    Widening the webhook's tuple to ``("input", "upstream", "n/a", "foo")``
+    passed all 384 tests in this file — it was the only mutation of thirty to
+    survive. ``test_sanitize_candidate_rejects_an_unrecognised_numbering``
+    looks like the missing half and is not: it catches ``"curated"`` only
+    because that string is in its own hard-coded list, and a hard-coded list
+    cannot contain the value someone will add next.
+
+    So the allowlist is READ rather than probed. A probe pins the property in
+    the readable direction; only reading the gate itself can fail on a value
+    nobody thought to write down.
     """
     from webhooks.modal import _sanitize_candidate
 
@@ -2762,6 +2774,28 @@ def test_the_webhook_allowlist_covers_every_numbering_the_pipeline_emits():
     for value in _TARGET_NUMBERING_VALUES:
         got = _sanitize_candidate({"rank": 0, "target_numbering": value})
         assert got["target_numbering"] == value, value
+
+    # The gate is ``raw_numbering in (...)`` and the compiler folds that tuple
+    # into a constant of the function, so this is the ACTUAL allowlist rather
+    # than a copy of it. If the gate ever stops being an inline literal this
+    # assertion fails loudly and says where to look, which is the right
+    # outcome: a test that cannot find the allowlist must not report on it.
+    gate = [c for c in _sanitize_candidate.__code__.co_consts
+            if isinstance(c, (tuple, frozenset)) and "input" in c]
+    assert len(gate) == 1, (
+        "the numbering allowlist is no longer a single inline tuple inside "
+        f"_sanitize_candidate (found {gate!r}) — point this test at wherever "
+        "it now lives rather than deleting it")
+    assert set(gate[0]) == set(rp._TARGET_NUMBERING_VALUES), (
+        f"the webhook accepts {sorted(set(gate[0]))} but the pipeline can only "
+        f"emit {sorted(set(rp._TARGET_NUMBERING_VALUES))}")
+
+    # ...and the same statement behaviourally, so the failure above is not the
+    # only thing standing between this endpoint and an echoed string.
+    probe = "not-a-numbering"
+    assert probe not in rp._TARGET_NUMBERING_VALUES
+    assert _sanitize_candidate(
+        {"rank": 0, "target_numbering": probe})["target_numbering"] is None
 
 
 
@@ -3957,6 +3991,46 @@ def _keys(text):
             for c, v in rp.pdb_ca_sequence(text).items() for r, i, _ in v}
 
 
+# The five coordinate records WRITTEN OUT rather than read off
+# ``rp._RESSEQ_COORD_RECORDS``. This helper is what checks the rewrite's
+# headline promise, and a helper that shrinks whenever the code under test
+# shrinks would stop looking at exactly the records that stopped being
+# rewritten.
+_COORD_RECORDS = ("ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ")
+
+
+def _residues_in_file(text):
+    """The distinct residues in ``text``, in file order.
+
+    A residue is a MAXIMAL RUN of consecutive coordinate records sharing
+    ``(chain, resSeq, iCode, resName)`` — how any PDB reader groups atoms into
+    residues, and why ``ANISOU`` interleaved with its own ``ATOM`` is one
+    residue rather than two.
+    """
+    runs, prev = [], None
+    for line in str(text).split("\n"):
+        if line[:6] not in _COORD_RECORDS:
+            continue
+        key = (line[21:22], line[22:26].strip(), line[26:27].strip(),
+               line[17:20].strip())
+        if key != prev:
+            runs.append(key)
+        prev = key
+    return runs
+
+
+def _duplicate_residue_ids(text):
+    """``(chain, resSeq, iCode)`` ids carried by more than one residue.
+
+    THE PROPERTY THE RESTORE PROMISES, stated over the delivered bytes instead
+    of over a refusal message. A refusal test proves the code declines the
+    inputs the test thought of; this proves the file that actually ships does
+    not contain two different residues wearing one residue id.
+    """
+    ids = [k[:3] for k in _residues_in_file(text)]
+    return sorted({i for i in ids if ids.count(i) > 1})
+
+
 class TestPdbCaSequence:
     def test_it_agrees_with_pdb_ca_residues_about_what_a_residue_is(self, tmp_path):
         path = tmp_path / "f.pdb"
@@ -4369,17 +4443,38 @@ class TestRestoreDesignNumberingRefuses:
         design = _design() + _atom(997, "ZN", "ZN", "A", 240, record="HETATM") + "\n"
         rep = self._unchanged(design, ["A", "B"], _reference())
         assert "not in the map" in rep["reason"], rep["reason"]
+        assert "240" in rep["reason"], rep["reason"]
 
-    def test_the_refusal_counts_every_record_it_could_not_place(self):
+    def test_the_refusal_counts_every_residue_it_could_not_place(self):
         """One reason line for a whole file, with the count in it — a per-line
         refusal would say "a coordinate record" and leave the operator to
-        discover the other forty by hand."""
+        discover the other forty by hand. Every id here is one the rewrite is
+        moving another residue ONTO, which is what makes leaving them in place
+        a collision rather than a coexistence."""
         design = (_design()
-                  + _atom(996, "N", "TRP", "A", 500) + "\n"
-                  + _atom(995, "C", "TRP", "A", 501) + "\n"
-                  + _atom(994, "O", "TRP", "B", 502) + "\n")
+                  + _atom(996, "N", "TRP", "A", 240) + "\n"
+                  + _atom(995, "C", "TRP", "A", 241) + "\n"
+                  + _atom(994, "O", "TRP", "B", 305) + "\n")
         rep = self._unchanged(design, ["A", "B"], _reference())
-        assert "3 coordinate record" in rep["reason"], rep["reason"]
+        assert "3 residue" in rep["reason"], rep["reason"]
+
+    def test_the_refusal_counts_residues_rather_than_coordinate_records(self):
+        """G4. The count and the sample are the only parts of this an operator
+        can act on, and they described RECORDS. ONE tryptophan modelled without
+        a CA, with 8 atoms and their 8 ``ANISOU`` lines, reported ``16
+        coordinate record(s)`` with the sample ``(chain A residue 240, chain A
+        residue 240, chain A residue 240, ...)`` — the same residue three times,
+        and an ellipsis promising thirteen more when there is one.
+        """
+        atoms = []
+        for i, name in enumerate(("N", "C", "O", "CB", "CG", "CD1", "CD2", "CE2")):
+            atoms.append(_atom(900 + i, name, "TRP", "A", 240))
+            atoms.append(_atom(900 + i, name, "TRP", "A", 240, record="ANISOU"))
+        design = _design() + "\n".join(atoms) + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "1 residue" in rep["reason"], rep["reason"]
+        assert rep["reason"].count("chain A residue 240") == 1, rep["reason"]
+        assert "..." not in rep["reason"], rep["reason"]
 
     def test_a_ter_too_short_to_carry_the_residue_id_refuses(self):
         """F5, from the caller. ``_splice_resid`` promises to be
@@ -4434,6 +4529,173 @@ class TestRestoreDesignNumberingRefuses:
             assert out is bad
             assert rep["applied"] is False
             assert rep["reason"]
+
+
+class TestRestoreDesignNumberingUnmappedRecords:
+    """G1. WHICH unmapped records cost the shard its numbering, and which do not.
+
+    The refusal above is right about the case it was built from and wrong about
+    the general one. It fired on EVERY coordinate record the map has no key
+    for, and gave as its reason that leaving such a record where it is "would
+    emit a file with two different residues sharing one residue id" — which is
+    true only when some OTHER residue is being renumbered ONTO the id that
+    record already occupies.
+
+    A ``HETATM ZN`` at ``A9000``, against a reference of 234-253, collides with
+    nothing. Refusing it ships the whole shard in upstream's 1..N: chain A
+    delivered as 1..20 instead of 234..253, the operator's own hotspot labels
+    stop resolving, and the results page raises a warning banner. One benign
+    heteroatom for the entire feature, on a stated reason that is false about
+    that input.
+
+    So the test of the guarantee has to be the guarantee itself — no two
+    different residues on one residue id in the DELIVERED bytes — rather than
+    the count of records the map happened not to know about.
+    """
+
+    def _applied(self, design, chains=("A", "B"), reference=None):
+        out, rep = rp.restore_design_numbering(
+            design, list(chains), _reference() if reference is None else reference)
+        assert rep["applied"] is True, rep["reason"]
+        assert not _duplicate_residue_ids(out), _duplicate_residue_ids(out)
+        return out, rep
+
+    def _refused(self, design, chains=("A", "B"), reference=None):
+        out, rep = rp.restore_design_numbering(
+            design, list(chains), _reference() if reference is None else reference)
+        assert rep["applied"] is False, "expected a refusal"
+        assert out == design
+        return rep
+
+    # -- the benign record --------------------------------------------------
+
+    def test_a_heteroatom_that_collides_with_nothing_still_applies(self):
+        """``A9000`` is outside 234-253, so no residue is being renumbered onto
+        it and it can simply stay where it is while its neighbours move."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        design = _design() + zn + "\n"
+        out, _rep = self._applied(design)
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _i, _n in got["A"]] == list(range(234, 254))
+        assert [r for r, _i, _n in got["B"]] == list(range(300, 320))
+
+    def test_the_benign_heteroatom_keeps_its_own_number(self):
+        """It is not a key in the map, so there is nothing to move it to — and
+        inventing one would be the corruption the refusal was guarding
+        against."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        kept = [l for l in out.split("\n") if l[:6] == "HETATM"]
+        assert kept == [zn], kept
+
+    def test_the_operators_hotspots_still_resolve_beside_a_benign_heteroatom(self):
+        """The cost of over-refusing, stated the way the operator meets it."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        assert "A241" in _keys(out)
+        assert "B305" in _keys(out)
+
+    # -- the record that really does collide --------------------------------
+
+    def test_a_heteroatom_sitting_on_a_destination_id_still_refuses(self):
+        """``A240`` IS in 234-253, so design residue 7 is being renumbered onto
+        the id the zinc already holds. Leaving it there is the duplicate."""
+        design = _design() + _atom(997, "ZN", "ZN", "A", 240, record="HETATM") + "\n"
+        rep = self._refused(design)
+        assert "240" in rep["reason"], rep["reason"]
+        assert "not in the map" in rep["reason"], rep["reason"]
+
+    def test_a_resseq_this_rewrite_cannot_read_does_not_cost_the_numbering(self):
+        """A residue number that is not a number cannot be a destination
+        either: every id this rewrite writes comes out of ``f"{n:4d}"``, and
+        ``int`` reads every one of those back. So no residue can be renumbered
+        onto such a record, it collides with nothing, and it keeps its own
+        field while the rest of the chain moves."""
+        broken = _atom(993, "N", "TRP", "A", 1)
+        broken = broken[:22] + "**** " + broken[27:]
+        out, _rep = self._applied(_design() + broken + "\n")
+        assert broken in out.split("\n"), "the unreadable field was rewritten"
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(
+            range(234, 254))
+
+    # -- the guarantee itself, over the delivered bytes ---------------------
+
+    def test_the_rewrite_never_creates_a_shared_residue_id(self):
+        """THE PROPERTY, ASSERTED DIRECTLY OVER THE DELIVERED BYTES. Every
+        refusal in this file is a means to this end, and a means can be wrong
+        about its end — this one was wrong in both directions at once, refusing
+        inputs that were fine on a stated reason that was false about them.
+
+        Each design here is free of duplicate ids BEFORE the rewrite and each
+        one must be genuinely rewritten, so a duplicate afterwards is one the
+        rewrite created. ``applied`` is asserted for exactly that reason: a
+        version that refuses everything satisfies "no duplicates" trivially,
+        which is how the over-refusal this test was written for would have
+        passed it.
+        """
+        icode_ref = _reference()
+        icode_ref["A"] = _ref_chain(_SEQ_A[:3], 100, icodes=["", "A", "B"]) + \
+            _ref_chain(_SEQ_A[3:], 101)
+        cases = {
+            "plain": (_design(), _reference()),
+            "benign heteroatom": (
+                _design() + _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+                + "\n", _reference()),
+            "ordinary REMARK": (
+                _design() + "REMARK   2 RESOLUTION.    1.90 ANGSTROMS.\n",
+                _reference()),
+            "insertion codes": (_design(), icode_ref),
+            # Destinations that OVERLAP the design's own numbers: 1..20 -> 15..34
+            # shares eleven ids with itself, so a rewrite that walked the file
+            # twice, or spliced in place, would land residues on each other.
+            "destinations overlapping the source": (_design(),
+                                                    _reference(a_first=15)),
+        }
+        for label, (design, reference) in cases.items():
+            assert not _duplicate_residue_ids(design), label
+            out, rep = rp.restore_design_numbering(design, ["A", "B"], reference)
+            assert rep["applied"] is True, f"{label}: {rep['reason']}"
+            assert not _duplicate_residue_ids(out), (
+                f"{label}: {_duplicate_residue_ids(out)}")
+
+    def test_a_duplicate_upstream_already_emitted_is_carried_not_created(self):
+        """THE LIMIT OF THAT PROPERTY, STATED RATHER THAN IMPLIED, because it
+        looks at first like a hole in it.
+
+        A zinc numbered ``A5`` IS a key in the map, so it is renumbered to 238
+        along with design residue 5 and the delivered file carries ``ATOM ...
+        VAL A 238`` beside ``HETATM ... ZN A 238``. That is a shared residue id
+        in an ``applied`` file — but it is one the design ARRIVED with, at
+        ``A5``, and refusing would hand the operator the same two residues on
+        the same id with their hotspots no longer resolving. Strictly worse.
+
+        The mapped path cannot create a duplicate: the map is injective, so two
+        records reach one destination only if they already shared a source id.
+        Only the UNMAPPED path can, and that is what the refusal above is for.
+        """
+        design = _design() + _atom(997, "ZN", "ZN", "A", 5, record="HETATM") + "\n"
+        assert _duplicate_residue_ids(design) == [("A", "5", "")]
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert _duplicate_residue_ids(out) == [("A", "238", "")]
+        assert "A241" in _keys(out)
+
+    def test_the_property_check_can_actually_see_a_duplicate(self):
+        """The helper above proves nothing unless it FAILS on a file that has
+        the defect. This is one: two different residues, both ``A238``."""
+        bad = (_design()
+               + _atom(997, "ZN", "ZN", "A", 238, record="HETATM") + "\n"
+               + _atom(998, "CA", "TRP", "A", 238) + "\n")
+        assert _duplicate_residue_ids(bad) == [("A", "238", "")]
+
+    def test_the_property_check_does_not_call_one_residue_two(self):
+        """...and it must not fire on an ordinary residue whose atoms and
+        ``ANISOU`` lines share an id, or it would refuse every real file."""
+        lines = []
+        for i, name in enumerate(("N", "CA", "C", "O")):
+            lines.append(_atom(900 + i, name, "TRP", "A", 240))
+            lines.append(_atom(900 + i, name, "TRP", "A", 240, record="ANISOU"))
+        assert _duplicate_residue_ids("\n".join(lines) + "\n") == []
 
 
 class TestRestoreDesignNumberingRecordCoverage:
@@ -4730,6 +4992,113 @@ class TestSpliceResid:
         assert got[22:26] == " 234"
         assert got[26:27] == "B"
         assert got[27:] == line[27:]
+
+
+class TestTheStagedReferenceEncoding:
+    """G3. What a non-ASCII byte in the uploaded target actually does.
+
+    ``stage_cropped_target`` WRITES the staged crop with ``dest.write_text``,
+    i.e. the platform default encoding, and the upload loop READS it back as
+    latin-1. The note that documented that asymmetry named the wrong exposure
+    and drew the wrong conclusion from it, and a false comment is worse than
+    no comment — this is what the replacement has to be true about.
+
+    Behaviour is fail-closed either way, so nothing here is a code fix; these
+    are the two measurements the note is now written from.
+    """
+
+    _NAMES = ["ALA", "GLY", "SER", "THR", "VAL", "LEU", "ILE", "PRO", "PHE",
+              "TYR", "TRP", "HIS"]
+
+    def _upload(self, mangle=()):
+        """A 12-residue chain A, plus the annotation records a real deposit has.
+
+        ``mangle`` indexes residues whose NAME field gets byte 0xE9 in its last
+        column — the one place a non-ASCII byte can both survive the crop and
+        land inside the fixed-width columns the restore reads.
+        """
+        lines = ["HEADER    TEST", "REMARK   1 AUTH   J. M\xe9LLER",
+                 "SEQRES   1 A   12  ALA GLY SER"]
+        for i, name in enumerate(self._NAMES):
+            atom = _atom(i + 1, "CA", name, "A", i + 1)
+            if i in mangle:
+                atom = atom[:17] + name[:2] + "\xe9" + atom[20:]
+            lines.append(atom)
+        return "\n".join(lines) + "\nEND\n"
+
+    def _stage(self, tmp_path, text, name):
+        raw = tmp_path / f"{name}.pdb"
+        raw.write_bytes(text.encode("latin-1"))
+        residues, _ = rp.pdb_ca_residues(raw)
+        staged = tmp_path / f"{name}_staged.pdb"
+        # EXACTLY the two calls production makes, in order: the upload is read
+        # with the platform default and ``errors="replace"``, and the staged
+        # file is read back as latin-1.
+        rp.stage_cropped_target(staged, raw.read_text(errors="replace"),
+                                residues, [("A", 1, 12)])
+        return rp.pdb_ca_sequence(staged.read_text(encoding="latin-1"))
+
+    def test_the_crop_emits_no_remark_for_a_byte_to_hide_in(self, tmp_path):
+        """The note named a REMARK as the exposure. ``crop_pdb_to_contig``
+        emits ``ATOM`` / ``TER`` / ``END`` and nothing else, so no REMARK — and
+        no HEADER, and no SEQRES — is ever in the file the restore reads."""
+        raw = tmp_path / "in.pdb"
+        raw.write_bytes(self._upload().encode("latin-1"))
+        residues, _ = rp.pdb_ca_residues(raw)
+        staged = tmp_path / "staged.pdb"
+        rp.stage_cropped_target(staged, raw.read_text(errors="replace"),
+                                residues, [("A", 1, 12)])
+        records = {l[:6].strip()
+                   for l in staged.read_text(encoding="latin-1").split("\n") if l}
+        assert records == {"ATOM", "TER", "END"}, records
+
+    def test_a_non_ascii_byte_in_a_kept_coordinate_line_does_move_the_reference(
+            self, tmp_path):
+        """...and where it CAN land, it moves exactly what the note said it
+        moved "not at all". Which way depends on the platform default: under
+        UTF-8 (what the container runs) the replacement character is written
+        back as three bytes, so the latin-1 read finds that line two columns
+        wide and the residue drops out of the reference entirely; under a
+        single-byte default the widths hold and the residue NAME changes."""
+        clean = self._stage(tmp_path, self._upload(), "clean")
+        dirty = self._stage(tmp_path, self._upload(mangle=(1, 4)), "dirty")
+        assert clean["A"] == [(i + 1, "", n) for i, n in enumerate(self._NAMES)]
+        assert dirty["A"] != clean["A"], (
+            "the byte reached neither the residue names nor the residue count")
+
+    def test_and_the_restore_declines_rather_than_renumbering_against_it(
+            self, tmp_path):
+        """The direction that makes this a documentation defect rather than a
+        live one. A design that matches the CLEAN target is refused against the
+        mangled reference — on length under UTF-8, on sequence identity under a
+        single-byte default. Neither renumbers, so a clean apply becomes a
+        refusal and never a wrong file."""
+        dirty = self._stage(tmp_path, self._upload(mangle=(1, 4)), "dirty")
+        design = "\n".join(
+            _atom(i + 1, "CA", n, "A", i + 1)
+            for i, n in enumerate(self._NAMES)) + "\nEND\n"
+        out, rep = rp.restore_design_numbering(design, ["A"], dirty)
+        assert rep["applied"] is False, rep
+        assert out == design
+        assert ("length differs" in rep["reason"]
+                or "sequence identity" in rep["reason"]), rep["reason"]
+
+
+def test_the_staged_crop_encoding_note_describes_the_code_that_exists():
+    """G3, as text. The note claimed the exposure was "a non-ASCII byte in a
+    REMARK" — a record the crop does not emit — and concluded that it "would
+    move residue NAMES not at all and identity not at all", which the class
+    above measures as false for the line where such a byte can actually land.
+
+    A comment cannot be tested for truth, only for the specific false sentences
+    it was caught making. These two are the ones."""
+    src = (_PROTEINA_DIR / "run_pipeline.py").read_text(encoding="utf-8")
+    assert "non-ASCII byte in a REMARK" not in src, (
+        "the note still names a REMARK as the exposure; crop_pdb_to_contig "
+        "emits only ATOM/TER/END")
+    assert "NAMES not at all and identity not at all" not in src, (
+        "the note still says a non-ASCII byte moves neither, measured false "
+        "by TestTheStagedReferenceEncoding")
 
 
 class TestUploadLoopNumbering:
@@ -5029,6 +5398,65 @@ class TestUploadLoopNumbering:
         assert b"\xfc" in blob
         assert b"\xef\xbf\xbd" not in blob
         assert len(blob) == len(design.encode("latin-1"))
+
+    # -- one heteroatom, and what it costs the whole shard ------------------
+
+    def _with_heteroatom(self, resseq):
+        """The design, plus a ``HETATM ZN`` on target chain A at ``resseq``.
+
+        The crop is 11-30, so 9000 is a number no residue is being renumbered
+        onto and 25 is one that is. Both are records the map has no key for
+        (its keys are the design's own 1..20), which is what makes them the two
+        sides of the same question.
+        """
+        text = self._design_text()
+        return text + _atom(997, "ZN", "ZN", "A", resseq, record="HETATM") + "\n"
+
+    def test_a_benign_heteroatom_does_not_cost_the_shard_its_numbering(
+            self, tmp_path, monkeypatch):
+        """G1, through the real loop. The refusal this replaces fired on ANY
+        coordinate record the map had no key for, so one structural zinc
+        outside the reference range flipped the whole shard back to upstream's
+        1..N — every design, both chains, on a stated reason ("two different
+        residues sharing one residue id") that is false about this file.
+        """
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=self._with_heteroatom(9000))
+        assert data["status"] == "COMPLETED", data.get("error")
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == list(range(11, 31))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"])
+        assert "A25" in _keys(blob)
+        assert not _duplicate_residue_ids(blob), _duplicate_residue_ids(blob)
+
+    def test_the_benign_heteroatom_shard_renders_the_reassuring_banner(
+            self, tmp_path, monkeypatch):
+        """...and the operator is not warned about a file that is fine. This is
+        the half a pipeline assertion cannot see: the cost of over-refusing is
+        a sentence on the results page, not a field in a payload."""
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom(),
+                                      design_text=self._with_heteroatom(9000))
+        html = _render_results(data["candidates"])
+        assert "residue numbers from the file you uploaded" in html
+        assert "will not resolve" not in html
+
+    def test_a_colliding_heteroatom_still_costs_the_shard_its_numbering(
+            self, tmp_path, monkeypatch):
+        """The other side, which must NOT be relaxed. ``A25`` is inside the
+        crop's 11-30, so design residue 15 is being renumbered onto the id the
+        zinc already holds; delivering that file would put two different
+        residues on ``A25``. The shard ships in 1..N and says so."""
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=self._with_heteroatom(25))
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+        assert next(iter(uploaded.values())) == self._with_heteroatom(25).encode(
+            "latin-1")
+        html = _render_results(data["candidates"])
+        assert "will not resolve" in html
 
     # -- the design that was already in the operator's numbering ------------
 
