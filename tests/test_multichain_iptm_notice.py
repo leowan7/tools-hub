@@ -23,9 +23,13 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import tempfile
 import uuid
+from contextlib import ExitStack
 from decimal import Decimal
 from html.parser import HTMLParser
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1277,10 +1281,24 @@ _CLAIMS_THE_BINDER_PAIR = re.compile(r"binder.to.target interface", re.I)
 # A real qualifier states the condition AND the consequence: on a multi-chain
 # target, the number covers something other than the binder pair. Either half
 # alone is satisfiable by copy that qualifies nothing.
+#
+# ``target'?s own`` USED TO BE ONE OF THE CONSEQUENCE ALTERNATIVES AND IS GONE,
+# because it is not a consequence -- it is two ordinary words that this app
+# says constantly. The round-4 review restored the banned flat claim and put
+#
+#   "Multi-chain targets are supported by most tools here, and hotspots are
+#    always given in the target's own numbering."
+#
+# in the same `<dd>`: "Multi-chain" satisfied one half, "the target's own
+# numbering" the other, and the defect was back on the page with the suite
+# green. Hotspots in the target's own numbering is REAL COPY here (see
+# templates/tools/*_form.html), so the phrase had to go, not the sentence. What
+# is left names the mechanism itself.
 _QUALIFIES_MULTI_CHAIN = re.compile(r"multi.chain", re.I)
 _NAMES_THE_CONSEQUENCE = re.compile(
-    r"chain.chain|whole complex|complex.wide|target'?s own|"
-    r"more than the binder|not (?:only|just) the binder",
+    r"chain.chain|whole complex|complex.wide|"
+    r"more than the binder|not (?:only|just) the binder|"
+    r"as well as the binder",
     re.I,
 )
 
@@ -1337,14 +1355,26 @@ def _blocks(html: str) -> list:
     return parser.blocks
 
 
+def _sentences(block: str) -> list:
+    """A block split at sentence ends.
+
+    A `<dd>` was the unit until the round-4 review showed that is far too
+    coarse: two unrelated true sentences elsewhere in the same definition
+    qualified a flat claim at the top of it. A decimal threshold ("above
+    roughly 0.7 on a tractable target") is safe because the split needs
+    whitespace after the stop.
+    """
+    return [s for s in re.split(r"(?<=[.!?])\s+", block) if s.strip()]
+
+
 def _visible(html: str) -> str:
     parser = _Text()
     parser.feed(html)
     return parser.text
 
 
-def _reachable_pages(flask_app) -> dict:
-    """Every page a logged-out visitor can GET, rendered.
+def _sweep_rules(flask_app) -> list:
+    """The paths the sweep requests, from ``url_map`` rather than from memory.
 
     NOT A LIST OF PATHS. The check this feeds used to name
     ``/help/tools/rfdiffusion`` and ``/tools/rfdiffusion``, and the commit that
@@ -1352,16 +1382,11 @@ def _reachable_pages(flask_app) -> dict:
     review found two surfaces carrying the claim and there were three. A
     fourth is found the same way: not at all.
 
-    So the routes come from ``url_map``. Every GET rule with no arguments,
-    plus the two per-tool families, for every adapter in the registry rather
-    than for a slug someone remembered. Non-200s are skipped: most are the
-    login redirect, and a page a signed-out visitor cannot reach is not a page
-    this check is about. The floor assertion in the test is what stops that
-    skip from quietly emptying the sweep.
+    Every GET rule with no arguments, plus the two per-tool families for every
+    adapter in the registry rather than for a slug someone remembered.
     """
     from tools import base as tool_base
 
-    client = flask_app.test_client()
     slugs = sorted(a.slug for a in tool_base.all_adapters())
     rules = sorted({
         rule.rule
@@ -1371,22 +1396,137 @@ def _reachable_pages(flask_app) -> dict:
         and not rule.rule.startswith("/static")
     })
     rules += [f"/help/tools/{s}" for s in slugs]
-    # Requested with NO session, which is what selects the preview shell
-    # rather than the form. ``tool_enabled`` is patched because the flag is
-    # off in a bare test env and the route answers 404 — the flag is not what
-    # is under test here.
     rules += [f"/tools/{s}" for s in slugs]
+    return rules
 
+
+_REPO_TMP = Path(__file__).resolve().parents[1] / "tmp"
+
+
+def _tmp_entries() -> set:
+    """What is directly under the repo's ``tmp/`` right now."""
+    return {p.name for p in _REPO_TMP.iterdir()} if _REPO_TMP.exists() else set()
+
+
+def _scratch_job_dir():
+    """A job dir OUTSIDE the repo, for the one swept route that creates one."""
+    path = Path(tempfile.mkdtemp(prefix="iptm-sweep-"))
+    return path.name, path
+
+
+def _reachable_pages(flask_app) -> dict:
+    """Every page the sweep can render, SIGNED OUT AND SIGNED IN.
+
+    THE SIGNED-IN PASS IS NOT AN EXTRA: being signed out is precisely what
+    selects ``templates/tools/_preview.html`` over
+    ``templates/tools/<slug>_form.html`` (blueprints/tools.tool_form branches
+    on ``session["user_email"]``), so a signed-out-only sweep structurally
+    cannot see the FORM — the surface a user reads immediately before spending
+    money. Measured, the signed-out pass reaches 46 pages and the signed-in
+    pass 65 of the same 83 rules, including 37 that answer a login redirect
+    when signed out.
+
+    ``load_user_context`` is patched in every ``blueprints.*`` module that
+    imported it, discovered by walking ``sys.modules`` rather than listed, so a
+    new blueprint joins the sweep without an edit here — which is the same
+    reason the routes come from ``url_map``. ``tool_enabled`` is patched
+    because the flag is off in a bare test env and the route would answer 404,
+    and ``get_or_create_wallet`` because the form's first-paint balance reads
+    it; neither flag is what is under test.
+
+    WHAT THIS STILL DOES NOT COVER, stated so nobody reads it as total:
+
+      * PARAMETRISED ROUTES, excluded by ``not rule.arguments`` — ``/jobs/<id>``,
+        ``/campaigns/<id>``, ``/targets/<id>``. Those are the RESULTS surfaces,
+        and they are rendered through their real routes by ``_render_run_page``
+        and ``_render_target_page`` and directly by ``_render_results``
+        elsewhere in this file; what is not covered is a parametrised route
+        carrying general ipTM prose that is not a results view.
+      * The ~18 rules that answer non-200 even signed in (admin pages, billing
+        redirects, ``/healthz``). Skipped rather than asserted, which is what
+        the floor assertion in the test exists to stop from emptying the sweep.
+      * POST-only surfaces, and anything behind a role the patched context does
+        not carry.
+
+    AND THE SCOUT REAPER IS STUBBED, which was found by doing rather than by
+    anticipating. ``/scout/example`` is a no-arg GET behind ``@login_required``,
+    so the signed-in pass reached it for the first time — and it calls
+    ``scout.jobs.cleanup_old_jobs``, which deletes EVERY subdirectory of
+    ``tmp/`` older than an hour. ``tmp/calibration/`` is two files this repo
+    TRACKS; the first signed-in run deleted them both. A sweep that asks pages
+    what they SAY has no business running a directory reaper, so the reaper and
+    the job-dir creation it precedes are stubbed here, and
+    ``test_the_sweep_leaves_the_repo_alone`` fails on the next route that
+    mutates the tree instead of a reviewer noticing files missing from
+    ``git status``.
+    """
+    ctx = SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com",
+    )
+    rules = _sweep_rules(flask_app)
     pages = {}
-    with patch("blueprints.tools.tool_enabled", return_value=True):
-        for rule in rules:
-            try:
-                resp = client.get(rule)
-            except Exception:  # noqa: BLE001, S110
-                continue  # a route that errors is a different test's business
-            if resp.status_code == 200:
-                pages[rule] = resp.get_data(as_text=True)
+    for signed_in in (False, True):
+        client = flask_app.test_client()
+        if signed_in:
+            with client.session_transaction() as sess:
+                sess["user_id"] = "u-1"
+                sess["user_email"] = "u@example.com"
+        tag = "signed in" if signed_in else "signed out"
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("blueprints.tools.tool_enabled", return_value=True)
+            )
+            stack.enter_context(
+                patch("scout.routes.cleanup_old_jobs", return_value=0)
+            )
+            stack.enter_context(patch(
+                "scout.routes.create_job_dir",
+                side_effect=lambda *a, **k: _scratch_job_dir(),
+            ))
+            if signed_in:
+                for name, module in list(sys.modules.items()):
+                    if name.startswith("blueprints.") and hasattr(
+                        module, "load_user_context"
+                    ):
+                        stack.enter_context(
+                            patch(f"{name}.load_user_context", return_value=ctx)
+                        )
+                stack.enter_context(patch(
+                    "blueprints.tools.get_or_create_wallet",
+                    return_value={"balance_usd": 10},
+                ))
+            for rule in rules:
+                try:
+                    resp = client.get(rule)
+                except Exception:  # noqa: BLE001, S110
+                    continue  # a route that errors is another test's business
+                if resp.status_code == 200:
+                    pages[f"{rule} [{tag}]"] = resp.get_data(as_text=True)
     return pages
+
+
+def test_the_sweep_leaves_the_repo_alone(flask_app):
+    """A sweep that asks pages what they SAY may not change the tree.
+
+    Not hypothetical. Signing the sweep in reached ``/scout/example`` — a
+    no-arg GET behind ``@login_required``, invisible to the signed-out sweep —
+    which calls ``scout.jobs.cleanup_old_jobs``, which rmtrees every
+    subdirectory of ``tmp/`` older than an hour. ``tmp/calibration/`` is
+    tracked, and the first run deleted both files in it.
+
+    The stubs in ``_reachable_pages`` close that one. This closes the class:
+    the next swept route that writes or deletes under ``tmp/`` fails here
+    rather than showing up as an unexplained deletion in someone's
+    ``git status``.
+    """
+    before = _tmp_entries()
+    _reachable_pages(flask_app)
+    after = _tmp_entries()
+    assert after == before, (
+        f"the sweep changed the repo's tmp/: created {sorted(after - before)!r}, "
+        f"deleted {sorted(before - after)!r}. A swept route has a filesystem "
+        f"side effect; stub it in _reachable_pages the way the scout reaper is"
+    )
 
 
 def test_no_general_page_states_iptm_as_the_binder_pair(flask_app):
@@ -1413,11 +1553,28 @@ def test_no_general_page_states_iptm_as_the_binder_pair(flask_app):
         path for path, html in pages.items() if "ipTM" in _visible(html)
     }
     # THE FLOOR. Skipping non-200s could otherwise empty this sweep without a
-    # failure, and these two are the surfaces the claim was actually found on.
-    assert {"/help/tools/rfdiffusion", "/tools/rfdiffusion"} <= describes_iptm, (
-        f"the sweep no longer reaches the two pages this check was written "
-        f"for; it is covering something other than what it claims. reached "
-        f"{len(pages)} pages, {sorted(describes_iptm)!r} mention ipTM"
+    # failure. The first two are the surfaces the claim was actually found on;
+    # the third is the one a signed-out sweep structurally cannot reach.
+    floor = {
+        "/help/tools/rfdiffusion [signed out]",
+        "/tools/rfdiffusion [signed out]",
+        "/tools/rfdiffusion [signed in]",
+    }
+    assert floor <= describes_iptm, (
+        f"the sweep no longer reaches the pages this check was written for; "
+        f"it is covering something other than what it claims. reached "
+        f"{len(pages)} pages, missing {sorted(floor - describes_iptm)!r}"
+    )
+    # AND THE TWO VARIANTS ARE DIFFERENT PAGES. Without this the signed-in
+    # pass could silently be serving the preview shell again — which is the
+    # whole defect it was added for — and the floor above would still pass.
+    assert 'name="target_chain"' in pages["/tools/rfdiffusion [signed in]"], (
+        "the signed-in sweep is not reaching the tool FORM; it is covering "
+        "the same preview shell twice"
+    )
+    assert 'name="target_chain"' not in pages["/tools/rfdiffusion [signed out]"], (
+        "the signed-out sweep now renders the form, so the two passes are the "
+        "same page and one of them is redundant"
     )
 
     offenders = {}
@@ -1425,14 +1582,37 @@ def test_no_general_page_states_iptm_as_the_binder_pair(flask_app):
         for block in _blocks(html):
             if not _CLAIMS_THE_BINDER_PAIR.search(block):
                 continue
-            if _QUALIFIES_MULTI_CHAIN.search(block) and \
-                    _NAMES_THE_CONSEQUENCE.search(block):
-                continue
-            offenders[path] = block
+            sentences = _sentences(block)
+            for i, sentence in enumerate(sentences):
+                if not _CLAIMS_THE_BINDER_PAIR.search(sentence):
+                    continue
+                # SCOPED TO THE SENTENCE AND ITS NEIGHBOURS, not to the block.
+                # The block was the unit until an independent review put two
+                # decoy clauses at the far end of the same `<dd>` and turned
+                # this green with the flat claim restored. A window of one
+                # sentence either side is what honest copy needs -- "…the
+                # binder-to-target interface. On a multi-chain target the
+                # number may cover the target's own chain–chain interface as
+                # well." qualifies from the NEXT sentence, and rejecting that
+                # would be the round-3 NIT-7 mistake.
+                #
+                # BOTH HALVES IN ONE SENTENCE, not merely both in the window: a
+                # real qualification states the condition and the consequence
+                # together. Split across two sentences they are two unrelated
+                # true statements, which is exactly what the decoy was.
+                window = sentences[max(0, i - 1):i + 2]
+                if any(
+                    _QUALIFIES_MULTI_CHAIN.search(s)
+                    and _NAMES_THE_CONSEQUENCE.search(s)
+                    for s in window
+                ):
+                    continue
+                offenders[path] = sentence
     assert not offenders, (
         "page(s) state ipTM as the binder-to-target interface without saying, "
-        "in the same block, that on a MULTI-CHAIN target the number covers "
-        f"the target's own chain-chain interface too: {offenders!r}"
+        "in that sentence or the one on either side of it, that on a "
+        "MULTI-CHAIN target the number covers the target's own chain-chain "
+        f"interface too: {offenders!r}"
     )
 
 

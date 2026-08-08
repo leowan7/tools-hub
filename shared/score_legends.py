@@ -374,6 +374,24 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # (components/multichain_iptm_notice.html): this renders in a column
         # header tooltip AND in a pooled per-row tooltip, and in the pooled
         # table the visible order is by percentile, not by this number.
+        #
+        # AND IT IS NOT CHAIN-GATED IN THE TABLE, deliberately, although the
+        # EMAIL gates it (``email_caption``). The tooltip therefore shows on
+        # single-chain BoltzGen tables too, where the antecedent is false —
+        # over-warning, which this repo's own rule ("a caveat shown to everyone
+        # is a caveat nobody reads") argues against. It stays because the gate
+        # would have to come from a chain the table does not have. A job page
+        # and a campaign page know the chain THEIR run used
+        # (job.inputs / campaign.params), but the pooled target page — the one
+        # view where a pre-deploy row sits beside a post-deploy one, and so the
+        # one that most needs the caveat — has only ``target.target_chain``,
+        # which is a default the launch form overrides per run
+        # ("Overrides the target default for these runs only",
+        # templates/targets/launch.html) and which shared/target_results.py
+        # does not record per row. Gating on it would HIDE the caveat from rows
+        # that need it, to remove hover-only noise from rows that do not. The
+        # email has no such problem: it is about exactly one job and reads that
+        # job's own inputs.
         "caveat": (
             "On a multi-chain target the binder-to-target reading holds "
             "for runs after the August 2026 container update; an older run "
