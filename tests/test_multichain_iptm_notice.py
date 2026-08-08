@@ -14,8 +14,11 @@ single-chain run — the far more common case — and train users to ignore it.
 from __future__ import annotations
 
 import os
+import uuid
+from decimal import Decimal
 from html.parser import HTMLParser
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -23,6 +26,7 @@ from shared.score_legends import (
     MULTICHAIN_IPTM_UNRELIABLE_TOOLS,
     multichain_iptm_unreliable,
 )
+from shared.targets import TARGET_READ_OK, DesignTarget, TargetRead
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
@@ -175,6 +179,211 @@ def test_proteina_results_never_carry_the_banner(flask_app):
 
 
 # ---------------------------------------------------------------------------
+# The other two call sites: the campaign page and the pooled target page
+# ---------------------------------------------------------------------------
+#
+# WHY THESE ARE RENDERED AND NOT GREPPED. Both used to be "covered" by opening
+# the template and asserting the source contains ``multichain_iptm_notice(``.
+# That says the call is WRITTEN, and nothing about what it is called WITH or
+# whether the branch it sits in is ever taken. Both arguments were mutated with
+# the call text left intact --
+#
+#   runs/detail.html     ``.get('target_chain')``  -> ``.get('target_chains')``
+#   targets/detail.html  ``target.target_chain``   -> ``target.chain``
+#
+# -- and the entire suite stayed byte-identical, while the banner became
+# permanently dead on the two views a user actually compares runs in. Both
+# mutations resolve to None/Undefined, the macro's guard reads that as "not
+# known to be multi-chain", and it renders nothing at all: a silent failure
+# with no error to notice.
+#
+# So these go through the REAL routes, against records shaped like the ones
+# production stores, and assert on the rendered ``data-multichain-iptm-notice``
+# in BOTH directions -- the same shape as the four job-page call sites above.
+
+_CAMPAIGN_ID = str(uuid.uuid4())
+_TARGET_ID = str(uuid.uuid4())
+
+
+def _ctx():
+    return SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com",
+    )
+
+
+def _candidates():
+    """One design, because the notice on BOTH pages sits inside the block that
+    draws the candidate table. With an empty pooled read neither page renders a
+    banner in either direction, and the absent half of each pair would pass for
+    a reason that has nothing to do with the chain."""
+    return [{
+        "pdb_key": "designs/design_0.pdb",
+        "sequence": "MKTAY",
+        "scores": {"ipTM": 0.91, "pLDDT": 88.0, "filter_status": "pass"},
+        "_source_tool": "rfdiffusion",
+        "_source_job_id": "job-aaaaaaaa",
+        "_source_campaign_id": _CAMPAIGN_ID,
+        "_source_chunk": 0,
+        "_source_index": 0,
+    }]
+
+
+_COLUMNS = ["ipTM", "pLDDT", "filter_status"]
+
+
+def _campaign(tool: str, target_chain: str):
+    """The minimal campaign ``runs/detail.html`` reads.
+
+    ``params`` is the sanitized submit payload the row actually carries:
+    ``shared/compute_campaigns.create_campaign`` stores
+    ``sanitize_shared_params(tool, params)``, which drops only
+    underscore-prefixed wiring keys, so ``target_chain`` reaches the template
+    under the name the form posted it under. That is the fact the grepped
+    version could not check and the mutation above exploited.
+    """
+    return SimpleNamespace(
+        id=_CAMPAIGN_ID,
+        name="Fc dimer",
+        tool=tool,
+        status="completed",
+        requested_designs=24,
+        total_subjobs=6,
+        target_name="Fc dimer",
+        budget_usd=Decimal("12.00"),
+        params={
+            "target_chain": target_chain,
+            "hotspot_residues": "A296",
+            "num_designs": 24,
+        },
+    )
+
+
+def _render_run_page(flask_app, tool: str, target_chain: str) -> str:
+    """GET /campaigns/<id> — the real route, the real template."""
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+    counts = {
+        "pending": 0, "running": 0, "succeeded": 6, "failed": 0,
+        "timeout": 0, "cancelled": 0, "total": 6,
+    }
+    agg = {
+        "candidates": _candidates(), "columns": _COLUMNS,
+        "total": 1, "capped": False,
+    }
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
+            patch("shared.compute_campaigns.get_campaign",
+                  return_value=_campaign(tool, target_chain)), \
+            patch("shared.compute_campaigns.get_progress_counts",
+                  return_value=counts), \
+            patch("shared.compute_campaigns.aggregate_campaign_candidates",
+                  return_value=agg):
+        resp = client.get(f"/campaigns/{_CAMPAIGN_ID}")
+    assert resp.status_code == 200, resp.status_code
+    return resp.get_data(as_text=True)
+
+
+def _target(target_chain: str):
+    return DesignTarget(
+        id=_TARGET_ID,
+        user_id="u-1",
+        name="Fc dimer",
+        filename="fc.pdb",
+        storage_path="u-1/target-x/fc.pdb",
+        target_chain=target_chain,
+        chain_summary={
+            "total_standard_residues": 440,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 220,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 220},
+                {"chain_id": "B", "standard_residue_count": 220,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 220},
+            ],
+        },
+    )
+
+
+def _render_target_page(flask_app, tools, target_chain: str) -> str:
+    """GET /targets/<id> — the real route, the real template.
+
+    ``list_campaigns_for_target`` is patched explicitly rather than left to the
+    blanked Supabase env: the route calls it on the empty-runs path this
+    envelope produces, and a test whose isolation depends on a client happening
+    to be unavailable is not isolated.
+    """
+    client = flask_app.test_client()
+    with client.session_transaction() as sess:
+        sess["user_id"] = "u-1"
+        sess["user_email"] = "u@example.com"
+    agg = {
+        "ok": True, "partial": False, "candidates": _candidates(), "total": 1,
+        "shown": 1, "unranked": 0, "capped": False, "columns": _COLUMNS,
+        "tools": list(tools), "per_tool": {}, "campaigns": [],
+        "standalone_jobs": 0, "refold_jobs": 0, "passed_total": 1,
+        "provisional": False, "sort_mode": "percentile",
+        "multi_tool": len(tools) > 1, "limit": 300, "split_tools": [],
+    }
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(_target(target_chain),
+                                          TARGET_READ_OK)), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=agg), \
+            patch("shared.compute_campaigns.list_campaigns_for_target",
+                  return_value=[]):
+        resp = client.get(f"/targets/{_TARGET_ID}")
+    assert resp.status_code == 200, resp.status_code
+    return resp.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("tool,chain,expected", [
+    ("rfdiffusion", "A,B", True),
+    ("rfdiffusion", "A", False),
+    # The tool half of the same call, so the page cannot be "fixed" into
+    # warning about every run.
+    ("proteina", "A,B", False),
+])
+def test_the_campaign_page_notice_follows_the_run_it_describes(
+    flask_app, tool, chain, expected
+):
+    """``runs/detail.html`` reads the chain out of ``campaign.params``, which is
+    a dict on the row rather than a column, so a wrong key is not an error —
+    it is silence."""
+    html = _render_run_page(flask_app, tool, chain)
+    assert (NOTICE_MARKER in html) is expected, (
+        f"campaign page, tool={tool} chain={chain!r}: "
+        f"notice {'missing' if expected else 'rendered'}"
+    )
+
+
+@pytest.mark.parametrize("tools,chain,expected", [
+    (["rfdiffusion"], "A,B", True),
+    (["rfdiffusion"], "A", False),
+    # ``agg.tools`` is a LIST of slugs on this page, and the macro's contract is
+    # that the caveat applies if ANY pooled tool ranks on a complex-wide ipTM.
+    # Both halves are asserted, so neither the pooling nor the chain can be
+    # broken without a failure here.
+    (["proteina", "rfdiffusion"], "A,B", True),
+    (["proteina"], "A,B", False),
+])
+def test_the_pooled_target_page_notice_follows_the_target_it_describes(
+    flask_app, tools, chain, expected
+):
+    """``targets/detail.html`` reads ``target.target_chain`` off the row. A
+    misspelled attribute is a Jinja ``Undefined``, which the macro's guard
+    reads as "not known to be multi-chain" — so the banner disappears with no
+    error anywhere."""
+    html = _render_target_page(flask_app, tools, chain)
+    assert (NOTICE_MARKER in html) is expected, (
+        f"target page, tools={tools} chain={chain!r}: "
+        f"notice {'missing' if expected else 'rendered'}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # The macro is wired everywhere a candidate table is drawn
 # ---------------------------------------------------------------------------
 
@@ -183,13 +392,15 @@ def test_proteina_results_never_carry_the_banner(flask_app):
     "tools/pxdesign_results.html",
     "tools/bindcraft_results.html",
     "tools/boltzgen_results.html",
-    "runs/detail.html",
-    "targets/detail.html",
 ])
 def test_every_candidate_table_page_calls_the_notice(template, flask_app):
-    """A completeness check. The campaign page and the pooled target page draw
-    the same ipTM column from the same tools; a notice on the job page alone
-    would leave the two views a user actually compares runs in uncovered."""
+    """A completeness check over the four job-result partials, whose rendered
+    behaviour in both directions is pinned above.
+
+    ``runs/detail.html`` and ``targets/detail.html`` used to be in this list and
+    are deliberately no longer. A source grep was the ONLY thing covering them,
+    and it could see neither argument; they are rendered through their real
+    routes above instead."""
     path = flask_app.jinja_env.get_or_select_template(template).filename
     body = open(path, encoding="utf-8").read()
     assert "multichain_iptm_notice(" in body, (
