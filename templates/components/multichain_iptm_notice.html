@@ -47,8 +47,9 @@
 
    THE COPY MUST BE TRUE ON ALL SIX CALL SITES, and it takes no parameters
    that would let it be tailored per page — so it may not describe page
-   furniture. FURNITURE IS NOT ONLY A WIDGET; A COLUMN IS FURNITURE TOO, and
-   this comment has now been paid for twice:
+   furniture, and it may not assert that anything is ON the page. FURNITURE IS
+   NOT ONLY A WIDGET; A COLUMN IS FURNITURE TOO, AND SO IS A DESIGN. This
+   comment has now been paid for three times:
 
      1. It used to end "re-fold the top candidates with Boltz-2 below", which
         is a fair description of the Second-opinion fold panel that
@@ -73,12 +74,32 @@
         presets reaches it, which is the most ordinary multi-chain case there
         is.
 
-   The copy names the REMEDY instead of the furniture, which is true
-   everywhere and cannot drift. Pinned by tests/test_multichain_iptm_notice.py
+     3. The fix for (2) removed "columns in this table" and then argued, in
+        the guard's own comment, that "the order OF THIS TABLE" was fine
+        "because every call site draws a candidate table directly beneath it".
+        That premise is refuted four paragraphs up, by this same comment: on
+        the zero-candidate job page there is no table. Rendered, that page
+        carries the banner with `<table>` count 0, zero `<th>`, no re-fold
+        control — and the copy said the order of the table, "these designs",
+        and "a second-opinion fold" (the verbatim panel label). Three
+        sentences, three things that were not there. The lesson is not "add
+        one more word to the regex": it is that a DEICTIC is a claim about the
+        page, and this macro cannot see the page.
+
+   So the copy now (a) names the REMEDY generically instead of the panel that
+   delivers it, (b) uses no deictic for anything it does not itself contain —
+   "Designs are ranked by it" is a fact about the tool, "these designs" would
+   be a claim about the page — and (c) disclaims "any ordering DERIVED FROM"
+   the values rather than the order of a particular table, which is also the
+   only form that is true on the pooled target page, where the visible order
+   is by percentile and can be re-sorted by tool.
+
+   Pinned by tests/test_multichain_iptm_notice.py
    ::test_the_banner_does_not_point_at_page_furniture_it_cannot_see, which
-   renders BOTH target-page modes and whose _POINTS_AT_FURNITURE now rejects
-   column references as well as locatives — the extractor could not see
-   defect 2 at all, which is why it shipped. #}
+   renders all seven surfaces INCLUDING the zero-candidate page and checks the
+   copy against labels read off those renders rather than against a list of
+   banned words — the word list missed defect 2 entirely and, per the round-3
+   review, could be walked around with one synonym ("beneath" for "below"). #}
 
 {% macro multichain_iptm_notice(tool_slug, target_chain) %}
 {% if multichain_iptm_unreliable(tool_slug, target_chain) %}
@@ -96,16 +117,21 @@
          interfaces that include the target's own chain-chain contact instead
          of the binder-to-target interface alone. #}
       <strong>ipTM is not reliable for this multi-chain target.</strong>
-      This ipTM is computed across the interfaces of the whole complex,
+      It is computed across the interfaces of the whole complex,
       including the target's own chain&ndash;chain contact &mdash; not the
       binder-to-target interface alone. That internal interface is large and
       well formed whatever the binder does, so it holds the number up almost
       independently of binder quality.
-      <strong>These designs are also ranked by it</strong>, so both the
-      values and the order of this table should be treated as indicative only.
-      Do not choose between these designs on ipTM alone, and confirm any
-      shortlist with a second-opinion fold against the same target before
-      committing to it.
+      {# "Designs are also ranked by it", not "THESE designs": a statement
+         about how the tool ranks, which is true on a page with no designs on
+         it, instead of a statement about designs that may not exist. Same
+         reason for "any ordering derived from them" rather than "the order of
+         this table" — see point 3 in the comment above. #}
+      <strong>Designs are also ranked by it</strong>, so treat the values,
+      and any ordering derived from them, as indicative only.
+      Do not choose between designs on ipTM alone, and confirm a shortlist
+      with an independent re-fold against the same target before committing
+      to it.
     </p>
   </div>
 {% endif %}

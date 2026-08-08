@@ -58,29 +58,50 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
     r"includ\w+ the target'?s own chain.chain", re.I
 )
 
-# Anything that points at page furniture. The macro takes no parameter that
-# could tell it which page it is on, and two of its six call sites have no
-# re-fold control, so a locative promise cannot be true everywhere.
+# --- the two halves of "the banner may not describe the page" -------------
 #
-# A COLUMN IS FURNITURE TOO, and the second group below is the half that was
-# missing. This regex used to match locatives only, so the copy that replaced
-# the re-fold promise -- "Compare designs on pLDDT and the other columns in
-# this table" -- was invisible to it and shipped false: in multi-cohort mode
-# the pooled target page has NO metric columns, only Tool / Score / Pctile
-# (components/candidate_table.html), so there is no pLDDT to compare on.
+# WHY THIS IS NO LONGER A WORD LIST. Every previous version of this guard was
+# a denylist of banned words, and a denylist has now been walked around twice:
+# once by a phrase it had never heard of ("columns in this table"), and once,
+# in an independent review, by swapping "below" for "beneath" -- which put the
+# ORIGINAL defect back, verbatim, with the whole suite green.
 #
-# ``\bof this table\b`` is deliberately NOT matched. The banner still says the
-# ORDER "of this table" is indicative, and that is true wherever the macro
-# renders, because every call site draws a candidate table directly beneath
-# it. What cannot be promised is a particular COLUMN inside it.
+# So the column/control half is now read OFF THE RENDERED PAGES (see
+# ``_column_labels`` and ``_page_labels`` below): the banner may not quote a
+# label that any surface it renders on does not have. That is the actual
+# property, it needs no maintenance when a column is added, and "beneath"
+# buys a mutation nothing, because what it catches is the LABEL, not the
+# preposition.
+#
+# What a cross-check cannot catch is copy that names a KIND of furniture
+# without quoting a label -- "the order of this table", "these designs". No
+# page has a `<th>` reading "table". Those two regexes are what is left, and
+# they are grammars rather than synonym lists:
+
+# A deictic pointed at page furniture: a determiner, up to two modifiers, and
+# a noun naming something that is either on the page or not. "these designs"
+# and "this table" are claims about what the reader is looking at; the macro
+# has no parameter that could tell it, and on a zero-candidate job page both
+# are false.
+_DEICTIC_FURNITURE = re.compile(
+    r"\b(?:this|these|that|those|the)\s+(?:\w[\w-]*[\s-]+){0,2}"
+    r"(?:table|tables|column|columns|row|rows|panel|panels|list|lists|"
+    r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets|"
+    r"design|designs|candidate|candidates|result|results)\b",
+    re.I,
+)
+
+# A locative. ANCHORED, not banned outright: the previous version rejected
+# ``\babove\b`` unconditionally, so a threshold sentence -- "treat a value
+# above 0.8 with the same suspicion" -- could not be written even though it
+# names no furniture at all. A locative "above"/"below" is not followed by a
+# number; a threshold one always is.
 _POINTS_AT_FURNITURE = re.compile(
-    # locatives
-    r"\bbelow\b|\babove\b|\bon this page\b|\bat the bottom\b|"
-    r"\bre-?fold\b[^.]{0,40}\bBoltz|"
-    # columns: the word itself, "in this table", and the metric names that
-    # exist as columns on some call sites and not others
-    r"\bcolumns?\b|\bin this table\b|"
-    r"\bpLDDT\b|\bipAE\b|\bi_pAE\b|\bpAE\b|\bRMSD\b|\btotal_reward\b",
+    r"\b(?:below|above|beneath|underneath|overleaf)\b"
+    r"(?!\s+(?:roughly|about|around|approximately|only|just)?\s*\d)"
+    r"|\bopposite\b|\bfurther (?:up|down)\b|\bon this page\b"
+    r"|\bat the (?:top|bottom|side)\b|\bto the (?:left|right)\b"
+    r"|\bnext to (?:this|it)\b|\bre-?fold\b[^.]{0,40}\bBoltz",
     re.I,
 )
 
@@ -257,6 +278,130 @@ def _table_headers(html: str) -> list:
     parser = _Headers()
     parser.feed(html)
     return parser.headers
+
+
+# --- labels, read off the render, for the positive cross-check ------------
+
+_VOID_TAGS = frozenset(
+    "area base br col embed hr img input link meta source track wbr".split()
+)
+
+
+class _Labels(HTMLParser):
+    """Every multi-word LABEL on the page, from outside the banner.
+
+    A label is the complete visible text of an element that has no child
+    element contributing text of its own -- a button, a table header, a panel
+    title, a nav link -- plus ``title``/``aria-label``/``placeholder``
+    attribute values, which is how several of this app's controls name
+    themselves. Capped at eight words, because past that it is prose.
+
+    MULTI-WORD ONLY, and that is a real limitation rather than a convenience:
+    single-word labels ("Score", "Filter", "Designs") collide with ordinary
+    English, so banning them here would reject honest copy. The single-word
+    case that actually matters is the column, and ``_column_labels`` covers it
+    exactly, from the `<th>` elements themselves.
+
+    The banner's own text is excluded -- otherwise the banner would name
+    furniture "present on the page" by the act of naming it.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._skip = 0
+        self._stack: list = []
+        self.labels: set = set()
+
+    def _add(self, raw: str) -> None:
+        norm = " ".join(raw.split())
+        if (
+            len(norm) >= 3
+            and 2 <= len(norm.split()) <= 8
+            and re.search(r"[A-Za-z]", norm)
+        ):
+            self.labels.add(norm)
+
+    def _attr_labels(self, attrs) -> None:
+        for key, value in attrs:
+            if key in ("title", "aria-label", "placeholder") and value:
+                self._add(value)
+
+    def handle_starttag(self, tag, attrs):
+        if self._skip:
+            if tag not in _VOID_TAGS:
+                self._skip += 1
+            return
+        if any(k == "data-multichain-iptm-notice" for k, _ in attrs):
+            self._skip = 1
+            return
+        self._attr_labels(attrs)
+        if tag not in _VOID_TAGS:
+            self._stack.append([tag, [], False])
+
+    def handle_startendtag(self, tag, attrs):
+        if not self._skip:
+            self._attr_labels(attrs)
+
+    def handle_endtag(self, tag):
+        if self._skip:
+            self._skip -= 1
+            return
+        for i in range(len(self._stack) - 1, -1, -1):
+            if self._stack[i][0] == tag:
+                frame = self._stack.pop(i)
+                del self._stack[i:]  # discard anything left unclosed inside
+                break
+        else:
+            return
+        text = "".join(frame[1])
+        if not frame[2] and frame[0] not in ("script", "style"):
+            self._add(text)
+        if self._stack:
+            self._stack[-1][1].append(text)
+            if text.strip():
+                self._stack[-1][2] = True
+
+    def handle_data(self, data):
+        if not self._skip and self._stack:
+            self._stack[-1][1].append(data)
+
+
+def _page_labels(html: str) -> set:
+    parser = _Labels()
+    parser.feed(html)
+    return parser.labels
+
+
+def _column_labels(html: str) -> set:
+    """The `<th>` labels of a page, in the forms copy might write them in.
+
+    ``_table_headers`` returns the header cell's whole visible text, which
+    includes the "?" of the tooltip affordance and any unit parenthetical --
+    "RMSD (Å) ?". Copy would write "RMSD", so the parenthetical is split off
+    and both halves are registered. Without that, a banner naming "i_pAE"
+    would sail past a forbidden set holding only "i_pAE (Å)".
+    """
+    out: set = set()
+    for raw in _table_headers(html):
+        label = re.sub(r"\s*\?\s*$", "", raw).strip()
+        head, sep, tail = label.partition("(")
+        for part in (label, head, tail.rstrip(") ")) if sep else (label,):
+            part = part.strip()
+            if len(part) >= 2 and re.search(r"[A-Za-z]", part):
+                out.add(part)
+    return out
+
+
+def _quoted_in(text: str, phrases) -> list:
+    """Which of ``phrases`` the copy quotes, matched on whole words."""
+    low = text.lower()
+    return sorted(
+        p for p in phrases
+        if re.search(
+            r"(?<![0-9A-Za-z])" + re.escape(p.lower()) + r"(?![0-9A-Za-z])",
+            low,
+        )
+    )
 
 
 def _render_results(flask_app, tool: str, target_chain: str) -> str:
@@ -546,98 +691,233 @@ def test_the_pooled_target_page_notice_follows_the_target_it_describes(
     )
 
 
-def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(flask_app):
-    """The copy is page-independent, so it may not describe a page's controls.
+def _render_empty_job(flask_app, tool: str = "rfdiffusion") -> str:
+    """A succeeded run that returned nothing.
 
-    The macro takes ``(tool_slug, target_chain)`` and nothing that says which
-    of its six call sites it is on. FURNITURE HERE IS BOTH A WIDGET AND A
-    COLUMN, and this test has been through one of each:
-
-      * it used to end "re-fold the top candidates with Boltz-2 below", which
-        describes the Second-opinion fold panel components/results_shell.html
-        draws — a panel two of the six call sites never draw:
-        templates/targets/detail.html calls candidate_table directly and has
-        no re-fold control anywhere on the page, and a job page whose run
-        returned zero candidates renders the notice (it is called OUTSIDE
-        results_shell) while results_shell draws the panel only inside its
-        non-empty branch. Both are checked below, because the second is what
-        makes a per-caller parameter the wrong fix: the caller would have to
-        recompute a condition that lives inside another macro, from a
-        different value each time;
-      * its replacement then said "Compare designs on pLDDT and the other
-        columns in this table", and in MULTI-COHORT mode the pooled target
-        page has no metric columns at all. That variant is rendered below and
-        its headers are asserted, so the premise is read off the page rather
-        than restated. The old version of this test rendered only the
-        single-tool page, where pLDDT IS a column — which is why it passed.
+    Not a corner case: it is where every failed-filter RFdiffusion / PXDesign
+    / BindCraft run lands, common enough that
+    ``templates/tools/rfdiffusion_results.html`` carries bespoke copy for it
+    ("Zero candidates returned."). The notice is called OUTSIDE
+    ``results_shell``, so it renders here while the table, the columns and the
+    re-fold panel -- all of which live inside ``{% if candidates %}`` -- do
+    not.
     """
-    target_html = _render_target_page(flask_app, ["rfdiffusion"], "A,B")
-    assert NOTICE_MARKER in target_html, "no banner to check"
-    assert 'name="dest_tool"' not in target_html, (
-        "the pooled target page has grown a re-fold control; this test's "
-        "premise no longer holds and the copy decision should be revisited"
-    )
+    from flask import render_template
 
-    # The multi-cohort pooled table: same banner, no metric columns.
-    #
+    job = SimpleNamespace(
+        id="job-1", tool=tool, status="succeeded",
+        inputs={"target_chain": "A,B"},
+        result={"candidates": [], "tier": "pilot"},
+    )
+    with flask_app.test_request_context("/jobs/job-1"):
+        return render_template(
+            f"tools/{tool}_results.html", job=job, send_target_tools=None,
+        )
+
+
+@pytest.fixture(scope="module")
+def banner_surfaces(flask_app) -> dict:
+    """EVERY page the banner renders on, rendered.
+
+    Round 3's regression came from checking the copy against a subset: the
+    guard ran on the single-tool target page only, so a sentence that was
+    false on the zero-candidate page passed. The fix is not another remembered
+    surface, it is a named set that the checks iterate over, so adding a
+    surface to it extends every check at once.
+    """
+    surfaces = {
+        f"job {tool}, one candidate": _render_results(flask_app, tool, "A,B")
+        for tool in BANNER_TOOLS
+    }
+    surfaces["job rfdiffusion, ZERO candidates"] = _render_empty_job(flask_app)
+    surfaces["campaign"] = _render_run_page(flask_app, "rfdiffusion", "A,B")
+    surfaces["target, single-tool"] = _render_target_page(
+        flask_app, ["rfdiffusion"], "A,B",
+    )
     # Reached by a SINGLE tool at two presets as well as by two tools
     # (shared/target_results.py sets multi_cohort on either), so this is the
     # ordinary multi-chain case and not a corner.
-    pooled_html = _render_target_page(
+    surfaces["target, multi-cohort"] = _render_target_page(
         flask_app, ["proteina", "rfdiffusion"], "A,B",
     )
-    assert NOTICE_MARKER in pooled_html, (
-        "the multi-cohort pooled table lost the banner"
+    return surfaces
+
+
+def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(
+    banner_surfaces,
+):
+    """The copy is page-independent, so it may not describe a page.
+
+    The macro takes ``(tool_slug, target_chain)`` and nothing that says which
+    of its call sites it is on. FURNITURE IS A WIDGET, A COLUMN, AND A DESIGN,
+    and this test has now been through one of each:
+
+      * it used to end "re-fold the top candidates with Boltz-2 below", which
+        describes the Second-opinion fold panel components/results_shell.html
+        draws — a panel two call sites never draw:
+        templates/targets/detail.html calls candidate_table directly and has
+        no re-fold control anywhere on the page, and a job page whose run
+        returned zero candidates renders the notice while results_shell draws
+        the panel only inside its non-empty branch;
+      * its replacement then said "Compare designs on pLDDT and the other
+        columns in this table", and in MULTI-COHORT mode the pooled target
+        page has no metric columns at all;
+      * and the fix for THAT kept "the order of this table" and "these
+        designs", on a written premise that "every call site draws a candidate
+        table directly beneath it". The zero-candidate page refutes it: banner
+        present, ``<table>`` count 0, zero ``<th>``.
+
+    THE CHECK IS NOW A CROSS-REFERENCE, NOT A WORD LIST. Every surface is
+    rendered; the labels are read off those renders; the banner may not quote
+    one. A denylist was defeated twice — once by a phrase it had not heard of,
+    once by "beneath" for "below" — and both times the copy shipped false.
+    """
+    banners = {
+        name: _banner_text(html) for name, html in banner_surfaces.items()
+    }
+    for name, banner in banners.items():
+        assert NOTICE_MARKER in banner_surfaces[name], f"{name}: no banner"
+        assert banner, f"{name}: the notice rendered with no text in it"
+    # One copy everywhere is the property that makes a single set of checks
+    # enough. If it ever stops holding, every check below is checking one page.
+    assert len(set(banners.values())) == 1, (
+        f"the banner is no longer one string across its call sites: "
+        f"{ {n: b[:60] for n, b in banners.items()} }"
     )
-    pooled_headers = _table_headers(pooled_html)
+    banner = next(iter(banners.values()))
+
+    # --- premises, read off the renders rather than restated ---------------
+    #
+    # These are what make the cross-checks below mean something: if the
+    # surfaces stopped differing, "the banner names nothing absent" would be
+    # trivially true.
+    with_control = {
+        n for n, h in banner_surfaces.items() if 'name="dest_tool"' in h
+    }
+    assert with_control, "no surface has a re-fold control; premise gone"
+    assert with_control != set(banner_surfaces), (
+        "every surface now has a re-fold control, so the banner could name "
+        "it; this test's premise no longer holds and the copy decision "
+        "should be revisited"
+    )
+    empty = banner_surfaces["job rfdiffusion, ZERO candidates"]
+    assert _table_headers(empty) == [], (
+        "the zero-candidate page has grown a table; the premise that the "
+        "banner renders where there is no table no longer holds"
+    )
+    pooled_headers = _table_headers(banner_surfaces["target, multi-cohort"])
     assert "Score" in pooled_headers and "Pctile" in pooled_headers, (
         f"the multi-cohort table is not in pooled mode; this test is then "
         f"checking the same page twice. headers={pooled_headers!r}"
     )
-    assert not [h for h in pooled_headers if "pLDDT" in h], (
-        f"the multi-cohort table has grown metric columns back; the banner "
-        f"may name one again, and this premise should be revisited. "
-        f"headers={pooled_headers!r}"
+
+    # --- the cross-check, in two halves ------------------------------------
+    #
+    # COLUMNS, from the `<th>` elements. ipTM is exempt: it is the metric the
+    # banner is ABOUT, and a warning that cannot name its own subject is
+    # useless. Everything else a page calls a column is off limits, and the
+    # set updates itself when a column is added or renamed.
+    columns = set()
+    for html in banner_surfaces.values():
+        columns |= _column_labels(html)
+    assert {"pLDDT", "Filter"} <= columns, (
+        f"the header extractor stopped seeing known columns, so this check "
+        f"is guarding nothing: {sorted(columns)!r}"
+    )
+    forbidden_columns = {c for c in columns if c.lower() != "iptm"}
+    named = _quoted_in(banner, forbidden_columns)
+    assert not named, (
+        f"the banner names column(s) {named!r}. A column is furniture: the "
+        f"multi-cohort pooled table has only Tool/Score/Pctile and the "
+        f"zero-candidate page has no columns at all, so naming one is false "
+        f"somewhere. banner={banner!r}"
     )
 
-    # A page that DOES have the control, so the assertion above is not passing
-    # because re-folding exists nowhere.
-    job_html = _render_results(flask_app, "rfdiffusion", "A,B")
-    assert 'name="dest_tool"' in job_html, (
-        "the job results page lost its re-fold control"
+    # CONTROLS AND EVERYTHING ELSE THE PAGES LABEL. Any multi-word label that
+    # is not on EVERY surface is off limits. In practice that is nearly all of
+    # them, because the zero-candidate page is almost bare — which is the
+    # correct conclusion for a macro that cannot tell which page it is on.
+    per_surface = {n: _page_labels(h) for n, h in banner_surfaces.items()}
+    everywhere = set.intersection(*per_surface.values())
+    somewhere = set().union(*per_surface.values())
+    not_universal = {
+        lab for lab in somewhere - everywhere if len(lab.split()) >= 2
+    }
+    assert "Second-opinion fold" in not_universal, (
+        "the re-fold panel's own label is no longer extracted as a label, so "
+        "this check would not catch the defect it exists for"
+    )
+    named = _quoted_in(banner, not_universal)
+    assert not named, (
+        f"the banner names {named!r}, which is on some of the pages it "
+        f"renders on and not others. It takes no parameter that could tell "
+        f"the difference. banner={banner!r}"
     )
 
-    # And the zero-candidate job page: banner yes, panel no.
-    job = SimpleNamespace(
-        id="job-1", tool="rfdiffusion", status="succeeded",
-        inputs={"target_chain": "A,B"},
-        result={"candidates": [], "tier": "pilot"},
-    )
-    from flask import render_template
-
-    with flask_app.test_request_context("/jobs/job-1"):
-        empty_html = render_template(
-            "tools/rfdiffusion_results.html", job=job, send_target_tools=None,
-        )
-    assert NOTICE_MARKER in empty_html
-    assert 'name="dest_tool"' not in empty_html, (
-        "results_shell now draws the re-fold panel with no candidates; the "
-        "second half of this test's premise no longer holds"
-    )
-
-    banner = _banner_text(target_html)
-    assert banner, "the notice rendered with no text in it"
+    # --- and the two things a cross-reference cannot see --------------------
     assert not _POINTS_AT_FURNITURE.search(banner), (
-        f"the banner points at furniture — a control or a column — that is "
-        f"not on every page it renders on: {banner!r}"
+        f"the banner uses a locative, so it promises something at a place on "
+        f"the page: {banner!r}"
     )
-    # Same copy everywhere, which is the property that makes one check enough.
-    # The multi-cohort page is in this list because it is the one whose
-    # furniture differs MOST from the job pages the copy tends to be written
-    # against.
-    assert _banner_text(job_html) == banner
-    assert _banner_text(empty_html) == banner
-    assert _banner_text(pooled_html) == banner
+    deictic = _DEICTIC_FURNITURE.search(banner)
+    assert not deictic, (
+        f"the banner says {deictic.group(0)!r} — a deictic pointed at page "
+        f"furniture. On the zero-candidate page there is no table, no column "
+        f"and no design for it to point at. banner={banner!r}"
+    )
+
+
+def test_the_banner_is_true_on_a_job_page_with_zero_candidates(
+    flask_app, banner_surfaces,
+):
+    """The surface round 3 wrote a comment excusing instead of rendering.
+
+    The comment said "``of this table`` is deliberately NOT matched … because
+    every call site draws a candidate table directly beneath it". Rendered,
+    this page carries the banner with no table, no columns, no designs and no
+    re-fold panel — and the copy at the time claimed all four.
+
+    This is the strictest surface the macro has, so it gets its own test
+    rather than only membership in the set above: everything the banner could
+    point at is absent here, which makes it the one page where a page-shaped
+    claim cannot hide.
+    """
+    empty = banner_surfaces["job rfdiffusion, ZERO candidates"]
+    assert NOTICE_MARKER in empty, (
+        "the notice no longer renders with zero candidates. That is a "
+        "defensible product change, but it is the premise of this test and "
+        "of point 3 in the macro's comment"
+    )
+
+    # What is actually on the page — asserted, not assumed.
+    body = _Text()
+    body.feed(empty)
+    visible = body.text
+    assert "Zero candidates returned" in visible
+    assert empty.count("<table") == 0, "there is a table after all"
+    assert _table_headers(empty) == [], "there are columns after all"
+    assert 'name="dest_tool"' not in empty, "there is a re-fold control"
+    assert "Second-opinion" not in visible, "the re-fold panel is on the page"
+
+    banner = _banner_text(empty)
+    assert banner, "the notice rendered with no text in it"
+
+    # So the banner may not claim any of them. Same checks as the guard test,
+    # but scoped to THIS page's furniture, which is empty — so the only copy
+    # that passes is copy that describes the metric and the remedy.
+    assert not _quoted_in(banner, _page_labels(empty) | _column_labels(empty))
+    assert not _DEICTIC_FURNITURE.search(banner), (
+        f"the banner points at page furniture on a page that has none: "
+        f"{banner!r}"
+    )
+    assert not _POINTS_AT_FURNITURE.search(banner), banner
+    # The specific three clauses the round-3 review caught here, named so a
+    # revert reads as a revert rather than as an anonymous regex failure.
+    for clause in ("this table", "these designs", "second-opinion fold"):
+        assert clause not in banner.lower(), (
+            f"the banner says {clause!r} on a page with no table, no designs "
+            f"and no Second-opinion fold panel: {banner!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
