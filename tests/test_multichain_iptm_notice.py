@@ -83,11 +83,22 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # and "this table" are claims about what the reader is looking at; the macro
 # has no parameter that could tell it, and on a zero-candidate job page both
 # are false.
+#
+# TWO ALTERNATIONS, and the split is deliberate. A POINTING word (this, these,
+# that, those) makes anything it points at a claim about the page, including
+# the designs. A definite article does not: "the design with the highest ipTM"
+# is generic English and honest copy, while "the table" and "the column" have
+# no non-page meaning here. Banning ``the design`` would be the round-3 NIT-7
+# mistake -- a guard that rejects true copy -- committed by this fix instead.
+_FURNITURE_NOUN = (
+    r"table|tables|column|columns|row|rows|panel|panels|list|lists|"
+    r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets"
+)
 _DEICTIC_FURNITURE = re.compile(
-    r"\b(?:this|these|that|those|the)\s+(?:\w[\w-]*[\s-]+){0,2}"
-    r"(?:table|tables|column|columns|row|rows|panel|panels|list|lists|"
-    r"page|pages|button|buttons|control|controls|menu|menus|widget|widgets|"
-    r"design|designs|candidate|candidates|result|results)\b",
+    r"\b(?:this|these|that|those)\s+(?:\w[\w-]*[\s-]+){0,2}"
+    r"(?:" + _FURNITURE_NOUN + r"|design|designs|candidate|candidates|"
+    r"result|results)\b"
+    r"|\bthe\s+(?:\w[\w-]*[\s-]+){0,2}(?:" + _FURNITURE_NOUN + r")\b",
     re.I,
 )
 
