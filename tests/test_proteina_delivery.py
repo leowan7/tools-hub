@@ -669,14 +669,27 @@ class TestUploadPathUnchanged:
                 "an uploaded design must not also ride inline")
 
     def test_the_web_result_is_byte_identical_to_the_old_shape(self, tmp_path, monkeypatch):
-        """No new key anywhere in a web-path result. The strongest statement
-        available offline that the tools-hub product sees what it always saw."""
+        """No key THIS BRANCH adds appears in a web-path result. The strongest
+        statement available offline that the tools-hub product sees what it
+        always saw.
+
+        ``target_numbering`` is in the expected sets because #123 put it there
+        deliberately and shipped it to main — every candidate and every design
+        carries it, on both paths, and the results page renders a sentence from
+        it. Widening the set for it is not a weakening: the assertion is still
+        EXACT, so the fields inline delivery introduces — ``pdb_content_b64``
+        on a candidate, ``inline_delivery`` / ``undelivered`` /
+        ``failed_uploads`` on the result — still fail it if they ever reach a
+        web-path result. What the test forbids is this branch's keys leaking
+        onto the paid path, not main growing keys of its own.
+        """
         data, _ = _drive_design_loop(
             tmp_path, monkeypatch, endpoint="https://hub/upload")
-        assert set(data["candidates"][0]) == {"rank", "name", "pdb_key", "scores"}
+        assert set(data["candidates"][0]) == {
+            "rank", "name", "pdb_key", "scores", "target_numbering"}
         assert set(data["designs"][0]) == {
-            "rank", "name", "pdb_key", "total_reward", "af2_iptm",
-            "af2_plddt", "rf3_score", "binder_scrmsd", "cluster_id"}
+            "rank", "name", "pdb_key", "target_numbering", "total_reward",
+            "af2_iptm", "af2_plddt", "rf3_score", "binder_scrmsd", "cluster_id"}
 
     def test_the_designs_list_never_carries_base64(self, tmp_path, monkeypatch):
         """PLACEMENT REGRESSION. /tmp/smoke_results.json IS the persisted

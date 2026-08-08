@@ -511,6 +511,37 @@ class TestGeometry:
         the canary computes a patch upstream then refuses."""
         assert cs.MODRES_EQUIV == rp._MODRES_EQUIV
 
+    def test_the_modres_parent_table_matches_run_pipeline(self):
+        """F11. ``run_pipeline._MODRES_PARENT`` is a hand-maintained copy of
+        this one, and the comment above it says so: ``modal_app.py`` copies
+        ``run_pipeline.py`` into the production image and nothing else, so
+        ``_canary_scoring`` does not exist in production and cannot be
+        imported. "Keep the two in step by hand" was the entire mechanism.
+
+        Drift here is not cosmetic in either direction: the canary decides
+        whether ~$4-$12 of A100 time is spent, and the production copy decides
+        whether the delivered design carries the operator's residue numbers.
+        The same table answering the two questions differently is how a run the
+        canary blessed comes back in 1..N.
+        """
+        assert cs.MODRES_PARENT == rp._MODRES_PARENT
+
+    def test_the_renumber_floors_match_run_pipeline(self):
+        """The other half of the same hand-maintained duplication: the identity
+        floor and both informative floors. This repo has already paid for an
+        A100 on exactly this drift class, and a comment is not a mechanism."""
+        assert cs.TARGET_MIN_SEQUENCE_IDENTITY == rp._RENUMBER_MIN_IDENTITY
+        assert cs.TARGET_MIN_INFORMATIVE_RESIDUES == rp._RENUMBER_MIN_INFORMATIVE
+        assert (cs.TARGET_MIN_INFORMATIVE_FRACTION
+                == rp._RENUMBER_MIN_INFORMATIVE_FRACTION)
+
+    def test_the_unknown_resnames_match_run_pipeline(self):
+        """"I do not know what this is" has to mean the same thing on both
+        sides. A name treated as unknown by one and as evidence by the other
+        moves the informative COUNT and the informative FRACTION, which are the
+        two floors the test above pins the values of."""
+        assert cs.UNKNOWN_RESNAMES == rp._UNKNOWN_RESNAMES
+
     def test_ca_centroid_uses_ca_only_not_whole_residues(self):
         """A1 is CA(0,0,0) plus a sidechain at (0,0,20). Averaging every heavy
         atom gives (0,0,10); the CA centroid is (0,0,0)."""
