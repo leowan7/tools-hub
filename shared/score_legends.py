@@ -27,12 +27,15 @@ class Legend(TypedDict):
     direction: str  # "higher_is_better" or "lower_is_better"
 
     # ONE LINE. It is not only the column tooltip: shared/email.py puts it
-    # verbatim into the job-completion email as ``top_score_caption``, a slot
-    # templates/email/job_complete.html documents as "1-line interpretation of
-    # the top score" and renders as a 13px line under a single number. See
-    # ``caveat`` for what belongs elsewhere, and
-    # tests/test_job_complete_email_caption.py, which holds every entry here to
-    # the length of the slot.
+    # verbatim into the job-completion email as ``top_score_caption``, which
+    # templates/email/job_complete.html renders as a 13px line under a single
+    # number. That template used to describe the whole slot as a "1-line
+    # interpretation of the top score" and this comment repeated it; the slot
+    # is one line about the metric PLUS, on a multi-chain job, the ``caveat``
+    # below. It is ``explanation`` that is the one line, which is why the
+    # tight ceiling is on this field. See ``caveat`` for what belongs
+    # elsewhere, and tests/test_job_complete_email_caption.py, which bounds
+    # this field AND the rendered caption, separately.
     explanation: str
 
     # Optional, and NOT part of the one line. A note that is true of a stored

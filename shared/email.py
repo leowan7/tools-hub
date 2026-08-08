@@ -137,8 +137,10 @@ def _job_complete_template_context(
 ) -> dict:
     """Build the variable dict for ``templates/email/job_complete.{html,txt}``.
 
-    Extracts top-candidate score plus a 1-line interpretation from the
-    score-legends table (C7), and resolves the natural next-step tool
+    Extracts top-candidate score plus an interpretation from the
+    score-legends table (C7) via ``score_legends.email_caption`` — one line
+    about the metric, plus that metric's caveat when THIS job's target names
+    more than one chain — and resolves the natural next-step tool
     via the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in shared.refold.
     Robust against partial result payloads: every optional field falls
     back to "" so the templates render cleanly with no missing-data

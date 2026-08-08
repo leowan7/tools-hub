@@ -38,8 +38,16 @@ with the transport captured, and hold four things:
     stored result;
   * neither half ever describes page furniture, because there is no table in
     an email and exactly one design;
-  * no legend's explanation outgrows the slot. That is the generic half: it
-    fails for the next legend that tries this, not only for BoltzGen's.
+  * no legend outgrows the slot — measured on ``email_caption``, the string
+    the template interpolates, and not on ``explanation``, which it does not.
+    That is the generic half: it fails for the next legend that tries this,
+    not only for BoltzGen's.
+
+The template used to document that slot as a "1-line interpretation of the top
+score". It never was one, for any of the 32 legends, and with the caveat
+appended it renders 516 characters — so the description was corrected rather
+than the copy. The reasoning, and the two measurements that decided it, are
+with the constants below.
 """
 from __future__ import annotations
 
@@ -53,39 +61,87 @@ import pytest
 
 from shared import email as email_mod
 from shared.jobs import ToolJob
-from shared.score_legends import SCORE_LEGENDS, get_legend, legend_text
+from shared.score_legends import (
+    SCORE_LEGENDS,
+    email_caption,
+    get_legend,
+    legend_text,
+)
 
 # The email path never touches Supabase, but ``shared.jobs`` imports the
 # client module; blanking the env keeps that honest for the same reason every
 # other suite here does.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
-# A PICKED ceiling, and the comment here used to claim otherwise — "deliberately
-# derived rather than picked … the number moves with the corpus". It never
-# moved with anything: it is a literal, the corpus maximum is 161 characters
-# (``('mpnn','score')``) and BoltzGen's is 134, so 220 sat 36% above the real
-# maximum while describing itself as tracking it.
+# TWO CEILINGS, BECAUSE THE SLOT HAS TWO PARTS WITH DIFFERENT EXPOSURE, and
+# the single ceiling that used to be here measured a string the template never
+# interpolates. It capped ``legend["explanation"]``; the template renders
+# ``email_caption(legend, target_chain)``. Measured: explanation 134, caveat
+# 381, rendered caption 516 — so the constant that exists to stop a second
+# paragraph landing in this slot was reading a string that had already stopped
+# being the one in it, and a review grew the caveat to ~1700 characters with
+# this whole file green.
 #
-# It cannot honestly be derived from the corpus, either, and that is the point
-# worth writing down rather than the number: a limit computed as
-# ``max(len(explanation) …)`` is satisfied by every corpus including one whose
-# longest entry has just grown to 496, which is the mutation this constant
-# exists to catch. A ceiling has to come from the SLOT, not from what is
-# currently in it.
+# A CEILING HAS TO COME FROM THE SLOT, not from what is currently in it — a
+# limit computed as ``max(len(explanation) …)`` is satisfied by every corpus,
+# including one whose longest entry has just grown to 496. That argument was
+# already written here and it is right. What was missing is that the slot is
+# not one thing:
 #
-# So: 220 characters ≈ 1.4× the longest honest explanation today, roughly three
-# rendered lines in the 13px caption block of a 560px-wide email body. Room to
-# reword an entry, not room for a second paragraph.
-# ``test_no_legend_outgrows_the_one_line_slot`` reports the measured corpus
-# maximum in its failure message, so the slack stays visible instead of
-# becoming a claim.
+#   _SLOT_LIMIT bounds ``explanation``, which is UNCONDITIONAL. It goes out in
+#   every completion mail for its tool and column, on every job, and no legend
+#   can gate it because a legend is keyed on ``(tool, column)`` and never sees
+#   one. 220 characters ≈ 1.4× the longest honest explanation today (161,
+#   ``('mpnn','score')``), roughly three rendered lines in the 13px caption
+#   block of a 560px-wide email body. Room to reword an entry, not room for a
+#   second paragraph. Unchanged, and it is the tight one on purpose.
+#
+#   _CAVEAT_LIMIT bounds the part that is CONDITIONAL — appended only when the
+#   job's own target names more than one chain, which is the case its first
+#   clause is about. The rule is that a caveat is subordinate to what it
+#   qualifies: at most twice the line it hangs off. Past that it is not a note
+#   on a one-line reading, it is the body of a different message and it belongs
+#   behind the "View results" link the mail already carries.
+#
+# IS 516 HONEST IN THAT BOX? Two measurements, and the second argues against
+# the first, so both are here.
+#
+#   FOR: it is not new exposure. ``email_caption(legend, "A,B")`` is character
+#   for character ``legend_text(legend)`` — the string that ALREADY ships as
+#   the ipTM ``<th>``'s ``title`` and as the ``title`` of every per-row Score
+#   cell (components/candidate_table.html:436,579), where the column header's
+#   ``data-tooltip`` stacks the glossary definition on top for 851 characters.
+#   A 560px callout is a roomier surface than either. The sentence is not too
+#   long for the slot; the slot was mis-described, and the description is what
+#   this round changed.
+#
+#   AGAINST: rendered through ``send_job_complete_email`` with the transport
+#   captured, the whole plain-text body MINUS the caption is 502 characters.
+#   So on a multi-chain BoltzGen run the caveat-bearing caption is over half
+#   the message. That is the real cost, and it is why _CAVEAT_LIMIT is 2× and
+#   not open. It is not a reason to cut the caveat: shortening it to fit a
+#   ratio would take a true statement off the one surface a user of a
+#   pre-deploy multi-chain run opens, which is the defect the previous round
+#   fixed.
 _SLOT_LIMIT = 220
+_CAVEAT_LIMIT = 2 * _SLOT_LIMIT
+# +1 for the single space ``email_caption`` joins the two parts with.
+_CAPTION_LIMIT = _SLOT_LIMIT + 1 + _CAVEAT_LIMIT
 
-# The template's own description of the slot — the premise this limit rests on.
-# Asserted rather than quoted, so a template that grows the caption into a
-# paragraph makes the constant's justification fail instead of silently
-# outliving it.
-_SLOT_CONTRACT = "1-line interpretation of the top score"
+# A chain field that names two chains, so the caption below is measured in its
+# LONGEST form. Both ceilings are worst-case or they bound nothing.
+_MULTI_CHAIN = "A,B"
+
+# The template's own description of the slot — the premise these limits rest
+# on, one phrase per ceiling. Asserted rather than quoted, so a template that
+# re-describes the slot makes the constants' justification fail instead of
+# silently outliving it.
+#
+# The old value was "1-line interpretation of the top score" and it was never
+# true — not of the caveat-bearing legend, and not of the other 31 either, whose
+# 134-161 characters are two rendered lines. The template now says what the
+# slot is; see templates/email/job_complete.html.
+_SLOT_CONTRACT = ("one line about the metric", "a short second paragraph")
 
 
 def _job(*, target_chain: str = "A,B", tool: str = "boltzgen") -> ToolJob:
@@ -386,34 +442,81 @@ def test_no_legend_explanation_is_chain_conditional():
     )
 
 
-def test_no_legend_outgrows_the_one_line_slot():
+def test_no_legend_outgrows_the_email_caption_slot():
     """The generic half: this fails for the NEXT legend, not just BoltzGen's.
 
-    ``templates/email/job_complete.html`` documents the field as a "1-line
-    interpretation of the top score" and renders it as a 13px line under a
-    single number. Any legend can land there — the email picks the first
-    scored column with a registered legend — so the constraint belongs to the
-    table, not to one entry.
-    """
-    # The premise the constant rests on, read off the template rather than
-    # quoted in a comment.
-    tpl = (Path(__file__).resolve().parents[1]
-           / "templates" / "email" / "job_complete.html").read_text("utf-8")
-    assert _SLOT_CONTRACT in tpl, (
-        f"templates/email/job_complete.html no longer documents "
-        f"top_score_caption as a {_SLOT_CONTRACT!r}; the ceiling below is "
-        f"justified by that description and needs re-deriving without it"
-    )
+    Any legend can land in this slot — the email picks the first scored column
+    with a registered legend — so the constraint belongs to the table, not to
+    one entry.
 
+    IT MEASURES ``email_caption``, WHICH IS WHAT THE TEMPLATE INTERPOLATES.
+    The previous version measured ``legend["explanation"]``, and the template
+    has never rendered that: ``shared/email.py::_top_candidate_summary`` calls
+    ``email_caption(legend, target_chain)``. So the one constant that existed
+    to keep a second paragraph out of this slot was watching a different
+    string, and the caveat it was supposed to bound could grow without limit —
+    a review grew it to ~1700 characters and this file stayed green.
+
+    Both parts are bounded, because they are exposed differently: see the
+    constants at the top of this file.
+    """
+    # The premise the constants rest on, read off the template rather than
+    # quoted in a comment.
+    # Whitespace-normalised, because the description is a wrapped comment and
+    # a phrase that straddles a line break is still the description.
+    tpl = " ".join((Path(__file__).resolve().parents[1] / "templates" / "email"
+                    / "job_complete.html").read_text("utf-8").split())
+    for phrase in _SLOT_CONTRACT:
+        assert phrase in tpl, (
+            f"templates/email/job_complete.html no longer describes "
+            f"top_score_caption as {phrase!r}; the ceilings below are "
+            f"justified by that description and need re-deriving without it"
+        )
+
+    # 1. The UNCONDITIONAL part. Every completion mail for this tool and
+    #    column carries it, single-chain or not, and no legend can gate it.
     lengths = {k: len(v["explanation"]) for k, v in SCORE_LEGENDS.items()}
     over = {key: n for key, n in lengths.items() if n > _SLOT_LIMIT}
     assert not over, (
-        f"legend explanation(s) too long for the completion email's one-line "
-        f"caption slot ({_SLOT_LIMIT} chars): {over!r}. The rest of the corpus "
-        f"peaks at {max(n for k, n in lengths.items() if k not in over)}. "
-        f"Long-form context belongs in the optional ``caveat``, which "
+        f"legend explanation(s) too long for the completion email's caption "
+        f"slot ({_SLOT_LIMIT} chars): {over!r}. The rest of the corpus peaks "
+        f"at {max(n for k, n in lengths.items() if k not in over)}. Long-form "
+        f"context belongs in the optional ``caveat``, which "
         f"components/candidate_table.html renders and which reaches the email "
-        f"only on a job whose target names more than one chain."
+        f"only on a job whose target names more than one chain — and which is "
+        f"bounded below rather than unbounded."
+    )
+
+    # 2. WHAT THE TEMPLATE ACTUALLY PUTS IN THE BOX, at its longest.
+    captions = {
+        key: len(email_caption(legend, _MULTI_CHAIN))
+        for key, legend in SCORE_LEGENDS.items()
+    }
+    # The premise: ``_MULTI_CHAIN`` really does open the gate, so this loop is
+    # measuring the APPENDED form. Without it the check degenerates into a
+    # second copy of the explanation check the moment the gate moves, and it
+    # would degenerate silently — which is exactly how the version this
+    # replaces came to measure the wrong string.
+    appended = {
+        key for key, legend in SCORE_LEGENDS.items()
+        if captions[key] > len(legend["explanation"])
+    }
+    assert appended, (
+        f"no legend's caption grows on a {_MULTI_CHAIN!r} target, so this "
+        f"check is measuring the same string as the one above. Either the "
+        f"chain gate in shared/score_legends.email_caption no longer opens "
+        f"for {_MULTI_CHAIN!r}, or no legend carries a caveat any more; "
+        f"re-point this rather than leave it passing."
+    )
+    over_caption = {k: n for k, n in captions.items() if n > _CAPTION_LIMIT}
+    assert not over_caption, (
+        f"rendered email caption(s) too long for the slot "
+        f"({_CAPTION_LIMIT} chars = a {_SLOT_LIMIT}-char line plus a caveat "
+        f"of at most {_CAVEAT_LIMIT}): {over_caption!r}. This is the string "
+        f"templates/email/job_complete.html interpolates, in a 13px block "
+        f"under a single number. A caveat that outgrows twice the line it "
+        f"qualifies is the body of a different message: put it behind the "
+        f"'View results' link the mail already carries, not in the callout."
     )
 
 
