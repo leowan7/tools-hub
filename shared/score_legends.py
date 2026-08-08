@@ -283,14 +283,29 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # into that set, this text must stop calling the number
         # binder-to-target in the same commit, or the tooltip and the banner
         # directly above the same column contradict each other on one screen.
+        #
+        # BOTH HALVES OF THE BANNER'S CAVEAT HAVE TO BE HERE, and the first
+        # attempt moved only one. The banner said, in bold, "these designs are
+        # ALSO RANKED BY IT, so both the values and the ORDER of this table
+        # should be treated as indicative only". Only the value half arrived,
+        # and the words "rank" and "order" then appeared nowhere on a
+        # pre-deploy boltzgen results page. boltzgen ranks on ipTM
+        # (shared/result_columns.py), and the order is load-bearing rather than
+        # cosmetic: aggregate_campaign_candidates / aggregate_target_candidates
+        # sort and then truncate at limit=300, so past 300 candidates the ipTM
+        # order decides which designs are visible at all. Saying the number may
+        # be wrong while saying nothing about the order it produced is the
+        # half-measure the banner existed to avoid.
         "explanation": (
             "Interface pTM from the BoltzGen confidence head — the "
             "binder-to-target interface. On a multi-chain target that "
             "holds for runs after the August 2026 container update; an "
             "older run stored a complex-wide value instead, inflated by "
             "the target's own chain-chain interface, and the stored "
-            "result does not record which it is. Above 0.7 is a credible "
-            "binder; above 0.8 is strong."
+            "result does not record which it is. These designs are also "
+            "ranked on this number, so on an older multi-chain run treat "
+            "the order of the table as indicative too. Above 0.7 is a "
+            "credible binder; above 0.8 is strong."
         ),
     },
     ("boltzgen", "pLDDT"): {
@@ -438,13 +453,22 @@ def score_legends_for(tool_slug: str) -> dict[str, Legend]:
 #     we merely hope the new container emits is a guess about another repo's
 #     output shape, which is exactly how design_iptm was lost in the first
 #     place.
-#   * NO USABLE TIMESTAMP. Jobs and campaigns carry created_at/completed_at,
-#     but the pooled target page is one of the six call sites and its
-#     candidates are tagged only with _source_tool / _source_preset /
-#     _source_campaign_id / _source_job_id / _source_index / _source_chunk
-#     (shared/target_results.py). A date gate would be right on five views and
-#     silently absent on the sixth — worse than either uniform answer, because
-#     it looks like a fix.
+#   * NO TIMESTAMP AT THE SEAM THAT NEEDS IT — but say this precisely, because
+#     an earlier version of this comment said "no usable timestamp" and that
+#     is stronger than what was checked. Jobs and campaigns DO carry
+#     created_at/completed_at. The pooled target page is one of the six call
+#     sites and its candidates are tagged only with _source_tool /
+#     _source_preset / _source_campaign_id / _source_job_id / _source_index /
+#     _source_chunk (shared/target_results.py), so the row a legend renders
+#     against has no date on it. That is a PROJECTION, not an absence: neither
+#     _STANDALONE_COLUMNS ("id,tool,preset,status,inputs,result") nor
+#     _CHILD_COLUMNS ("id,user_id,chunk_index,attempt,result") selects
+#     created_at, and both would have to, plus a new _source_created_at tag,
+#     plus a deploy boundary to compare it against. The cost is real and the
+#     boundary is fuzzy — the container SHA a job ran under is not recorded
+#     either, so a date is a proxy for the thing that actually changed — which
+#     is why the answer below is still the right one. It is not right because
+#     the data does not exist.
 #
 # So the choice is which error to make uniformly, and they are not symmetric.
 # KEEPING boltzgen shows every future user a mechanism sentence that is untrue

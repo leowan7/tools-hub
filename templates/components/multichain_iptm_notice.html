@@ -47,18 +47,38 @@
 
    THE COPY MUST BE TRUE ON ALL SIX CALL SITES, and it takes no parameters
    that would let it be tailored per page — so it may not describe page
-   furniture. It used to end "re-fold the top candidates with Boltz-2 below",
-   which is a fair description of the Second-opinion fold panel that
-   components/results_shell.html draws on the four job pages and the campaign
-   page. templates/targets/detail.html calls candidate_table directly and has
-   no such control, so the sentence was simply false there; it is also false
-   on a job page whose run returned zero candidates, because results_shell
-   only draws that panel inside its non-empty branch while this macro is
-   called outside it. A parameter could track the first of those and would
-   have to track the second too, from a different value at every caller. The
-   copy names the REMEDY instead of the widget, which is true everywhere and
-   cannot drift. Pinned by tests/test_multichain_iptm_notice.py::
-   test_the_banner_does_not_point_at_page_furniture_it_cannot_see. #}
+   furniture. FURNITURE IS NOT ONLY A WIDGET; A COLUMN IS FURNITURE TOO, and
+   this comment has now been paid for twice:
+
+     1. It used to end "re-fold the top candidates with Boltz-2 below", which
+        is a fair description of the Second-opinion fold panel that
+        components/results_shell.html draws on the four job pages and the
+        campaign page. templates/targets/detail.html calls candidate_table
+        directly and has no such control, so the sentence was simply false
+        there; it is also false on a job page whose run returned zero
+        candidates, because results_shell only draws that panel inside its
+        non-empty branch while this macro is called outside it. A parameter
+        could track the first of those and would have to track the second too,
+        from a different value at every caller.
+
+     2. Its replacement then said "Compare designs on pLDDT and the other
+        columns in this table" — which broke the same rule one line after
+        stating it. In MULTI-COHORT mode the pooled target page has no metric
+        columns at all: components/candidate_table.html swaps the per-column
+        headers for Tool / Score / Pctile, so the headers are
+        ['#','★','Tool','Score','Pctile','3D','PDB'] and there is no pLDDT to
+        compare on. That mode is NOT the two-tool corner case it sounds like —
+        shared/target_results.py sets multi_cohort when len(tools) > 1 OR any
+        tool has more than one preset, so one rfdiffusion target run at two
+        presets reaches it, which is the most ordinary multi-chain case there
+        is.
+
+   The copy names the REMEDY instead of the furniture, which is true
+   everywhere and cannot drift. Pinned by tests/test_multichain_iptm_notice.py
+   ::test_the_banner_does_not_point_at_page_furniture_it_cannot_see, which
+   renders BOTH target-page modes and whose _POINTS_AT_FURNITURE now rejects
+   column references as well as locatives — the extractor could not see
+   defect 2 at all, which is why it shipped. #}
 
 {% macro multichain_iptm_notice(tool_slug, target_chain) %}
 {% if multichain_iptm_unreliable(tool_slug, target_chain) %}
@@ -83,9 +103,9 @@
       independently of binder quality.
       <strong>These designs are also ranked by it</strong>, so both the
       values and the order of this table should be treated as indicative only.
-      Compare designs on pLDDT and the other columns in this table, and
-      confirm any shortlist with a second-opinion fold against the same target
-      before committing to it.
+      Do not choose between these designs on ipTM alone, and confirm any
+      shortlist with a second-opinion fold against the same target before
+      committing to it.
     </p>
   </div>
 {% endif %}

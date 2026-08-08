@@ -45,8 +45,9 @@ NOTICE_MARKER = "data-multichain-iptm-notice"
 # so its container reports the binder-to-target interface and the banner's
 # claim is false of any new run. The caveat its PRE-deploy runs still need
 # moved to the ipTM legend, which is per tool and per row. The reasoning, and
-# the two discriminators that were checked and do not exist, are in the
-# comment above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in shared/score_legends.py.
+# the two discriminators that were checked — one absent, one merely not
+# projected — are in the comment above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
+# shared/score_legends.py.
 BANNER_TOOLS = ("rfdiffusion", "pxdesign", "bindcraft")
 
 # The load-bearing half of the mechanism sentence: the number is computed over
@@ -60,9 +61,26 @@ _INCLUDES_TARGET_INTERFACE = re.compile(
 # Anything that points at page furniture. The macro takes no parameter that
 # could tell it which page it is on, and two of its six call sites have no
 # re-fold control, so a locative promise cannot be true everywhere.
+#
+# A COLUMN IS FURNITURE TOO, and the second group below is the half that was
+# missing. This regex used to match locatives only, so the copy that replaced
+# the re-fold promise -- "Compare designs on pLDDT and the other columns in
+# this table" -- was invisible to it and shipped false: in multi-cohort mode
+# the pooled target page has NO metric columns, only Tool / Score / Pctile
+# (components/candidate_table.html), so there is no pLDDT to compare on.
+#
+# ``\bof this table\b`` is deliberately NOT matched. The banner still says the
+# ORDER "of this table" is indicative, and that is true wherever the macro
+# renders, because every call site draws a candidate table directly beneath
+# it. What cannot be promised is a particular COLUMN inside it.
 _POINTS_AT_FURNITURE = re.compile(
+    # locatives
     r"\bbelow\b|\babove\b|\bon this page\b|\bat the bottom\b|"
-    r"\bre-?fold\b[^.]{0,40}\bBoltz",
+    r"\bre-?fold\b[^.]{0,40}\bBoltz|"
+    # columns: the word itself, "in this table", and the metric names that
+    # exist as columns on some call sites and not others
+    r"\bcolumns?\b|\bin this table\b|"
+    r"\bpLDDT\b|\bipAE\b|\bi_pAE\b|\bpAE\b|\bRMSD\b|\btotal_reward\b",
     re.I,
 )
 
@@ -123,10 +141,13 @@ def test_boltzgen_left_the_banner_set_and_its_caveat_did_not_vanish():
 
     What must NOT come with that is the silent loss of the caveat the
     PRE-deploy runs still need: a results page renders whatever the job
-    stored, at least one multi-chain boltzgen run predates the deploy, and
-    neither a per-record marker nor a timestamp usable at all six call sites
-    exists to tell them apart (both checked; see the comment above
-    MULTICHAIN_IPTM_UNRELIABLE_TOOLS). So the caveat moved to the ipTM legend,
+    stored, at least one multi-chain boltzgen run predates the deploy, there
+    is no per-record marker saying which IPTM_KEYS entry produced the number,
+    and the pooled rows the sixth call site renders carry no date because
+    neither pooled read projects created_at (both checked; see the comment
+    above MULTICHAIN_IPTM_UNRELIABLE_TOOLS, which is careful about the
+    difference between absent and unprojected). So the caveat moved to the
+    ipTM legend,
     which renders per tool and per row, and this test refuses to let one half
     of the trade happen without the other.
     """
@@ -195,6 +216,47 @@ def _banner_text(html: str) -> str:
     parser = _BannerText()
     parser.feed(html)
     return parser.text
+
+
+class _Headers(HTMLParser):
+    """The visible label of every ``<th>`` on the page, in order.
+
+    Used to pin the PREMISE of the furniture check rather than restating it:
+    the copy may not name a column, and this is what says which columns the
+    page has. Reading them off the rendered page means the premise fails
+    loudly if candidate_table ever grows the metric columns back in
+    multi-cohort mode, instead of the check quietly guarding nothing.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._depth = 0
+        self._chunks: list = []
+        self.headers: list = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "th":
+            self._depth = 1
+            self._chunks = []
+        elif self._depth:
+            self._depth += 1
+
+    def handle_endtag(self, tag):
+        if not self._depth:
+            return
+        self._depth -= 1
+        if self._depth == 0:
+            self.headers.append(" ".join("".join(self._chunks).split()))
+
+    def handle_data(self, data):
+        if self._depth:
+            self._chunks.append(data)
+
+
+def _table_headers(html: str) -> list:
+    parser = _Headers()
+    parser.feed(html)
+    return parser.headers
 
 
 def _render_results(flask_app, tool: str, target_chain: str) -> str:
@@ -488,26 +550,54 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(flask_app):
     """The copy is page-independent, so it may not describe a page's controls.
 
     The macro takes ``(tool_slug, target_chain)`` and nothing that says which
-    of its six call sites it is on. It used to end "re-fold the top candidates
-    with Boltz-2 below", which describes the Second-opinion fold panel
-    components/results_shell.html draws — a panel two of the six call sites
-    never draw:
+    of its six call sites it is on. FURNITURE HERE IS BOTH A WIDGET AND A
+    COLUMN, and this test has been through one of each:
 
-      * templates/targets/detail.html calls candidate_table directly and has
-        no re-fold control anywhere on the page;
-      * a job page whose run returned zero candidates renders the notice (it
-        is called OUTSIDE results_shell) while results_shell draws the panel
-        only inside its non-empty branch.
-
-    Both are checked below, because the second is what makes a per-caller
-    parameter the wrong fix: the caller would have to recompute a condition
-    that lives inside another macro, from a different value each time.
+      * it used to end "re-fold the top candidates with Boltz-2 below", which
+        describes the Second-opinion fold panel components/results_shell.html
+        draws — a panel two of the six call sites never draw:
+        templates/targets/detail.html calls candidate_table directly and has
+        no re-fold control anywhere on the page, and a job page whose run
+        returned zero candidates renders the notice (it is called OUTSIDE
+        results_shell) while results_shell draws the panel only inside its
+        non-empty branch. Both are checked below, because the second is what
+        makes a per-caller parameter the wrong fix: the caller would have to
+        recompute a condition that lives inside another macro, from a
+        different value each time;
+      * its replacement then said "Compare designs on pLDDT and the other
+        columns in this table", and in MULTI-COHORT mode the pooled target
+        page has no metric columns at all. That variant is rendered below and
+        its headers are asserted, so the premise is read off the page rather
+        than restated. The old version of this test rendered only the
+        single-tool page, where pLDDT IS a column — which is why it passed.
     """
     target_html = _render_target_page(flask_app, ["rfdiffusion"], "A,B")
     assert NOTICE_MARKER in target_html, "no banner to check"
     assert 'name="dest_tool"' not in target_html, (
         "the pooled target page has grown a re-fold control; this test's "
         "premise no longer holds and the copy decision should be revisited"
+    )
+
+    # The multi-cohort pooled table: same banner, no metric columns.
+    #
+    # Reached by a SINGLE tool at two presets as well as by two tools
+    # (shared/target_results.py sets multi_cohort on either), so this is the
+    # ordinary multi-chain case and not a corner.
+    pooled_html = _render_target_page(
+        flask_app, ["proteina", "rfdiffusion"], "A,B",
+    )
+    assert NOTICE_MARKER in pooled_html, (
+        "the multi-cohort pooled table lost the banner"
+    )
+    pooled_headers = _table_headers(pooled_html)
+    assert "Score" in pooled_headers and "Pctile" in pooled_headers, (
+        f"the multi-cohort table is not in pooled mode; this test is then "
+        f"checking the same page twice. headers={pooled_headers!r}"
+    )
+    assert not [h for h in pooled_headers if "pLDDT" in h], (
+        f"the multi-cohort table has grown metric columns back; the banner "
+        f"may name one again, and this premise should be revisited. "
+        f"headers={pooled_headers!r}"
     )
 
     # A page that DOES have the control, so the assertion above is not passing
@@ -538,12 +628,16 @@ def test_the_banner_does_not_point_at_page_furniture_it_cannot_see(flask_app):
     banner = _banner_text(target_html)
     assert banner, "the notice rendered with no text in it"
     assert not _POINTS_AT_FURNITURE.search(banner), (
-        f"the banner points at a control that is not on every page it "
-        f"renders on: {banner!r}"
+        f"the banner points at furniture — a control or a column — that is "
+        f"not on every page it renders on: {banner!r}"
     )
     # Same copy everywhere, which is the property that makes one check enough.
+    # The multi-cohort page is in this list because it is the one whose
+    # furniture differs MOST from the job pages the copy tends to be written
+    # against.
     assert _banner_text(job_html) == banner
     assert _banner_text(empty_html) == banner
+    assert _banner_text(pooled_html) == banner
 
 
 # ---------------------------------------------------------------------------
@@ -604,11 +698,148 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
         "the legend states the current meaning without saying older runs "
         "differ, which reads as if every stored value were binder-to-target"
     )
+    # BOTH HALVES OF THE MOVED CAVEAT, pinned together so they cannot separate
+    # again. The banner said "these designs are ALSO RANKED BY IT, so both the
+    # values and the ORDER of this table should be treated as indicative only",
+    # and the first move brought the value half only — the words "rank" and
+    # "order" then appeared nowhere on a pre-deploy boltzgen results page.
+    # boltzgen ranks on ipTM (shared/result_columns.py) and the pooled reads
+    # sort then truncate at limit=300, so the order decides which designs are
+    # visible at all. Asserted as two words rather than a phrase so the
+    # sentence can be reworded.
+    assert "ranked" in explanation, (
+        "the legend disclaims the VALUE but never says the designs are "
+        "ranked on it, which is the half that decides what the user sees"
+    )
+    assert "order" in explanation, (
+        "the legend never says the ORDER is affected; past limit=300 the "
+        "ipTM order decides which designs appear at all"
+    )
     # Thresholds were calibrated on single-chain runs where the two keys nearly
     # coincide, so they remain the best available anchor and must not drift
     # silently alongside a wording change.
     assert legend["good"] == 0.7
     assert legend["excellent"] == 0.8
+
+
+# ---------------------------------------------------------------------------
+# The general pages that describe ipTM for every tool at once
+# ---------------------------------------------------------------------------
+
+# The claim no page may make unqualified. ipTM's INTENT is the binder-to-target
+# pair, and stating it as fact is false today for rfdiffusion, pxdesign and
+# bindcraft on a multi-chain target, and for any boltzgen run predating the
+# August 2026 container update. Dash-agnostic and space-tolerant, so a
+# rewording between "binder to target" and "binder-to-target" does not slip
+# past.
+_CLAIMS_THE_BINDER_PAIR = re.compile(r"binder.to.target interface", re.I)
+
+# The qualifier that makes the sentence honest.
+_QUALIFIES_MULTI_CHAIN = re.compile(r"multi.chain", re.I)
+
+
+def _visible(html: str) -> str:
+    parser = _Text()
+    parser.feed(html)
+    return parser.text
+
+
+@pytest.mark.parametrize("path", ["/help/tools/rfdiffusion", "/tools/rfdiffusion"])
+def test_the_general_pages_do_not_state_iptm_as_the_binder_pair(
+    flask_app, path,
+):
+    """A page that cannot know the tool must not make the per-tool claim.
+
+    Both of these describe ipTM once, for every tool at once —
+    templates/help/tool_guide.html and the logged-out shell
+    templates/tools/_preview.html — and both said "Predicted confidence in the
+    binder to target interface." The per-tool legend and the multi-chain banner
+    exist because that is not true everywhere; a general page repeating it as
+    fact undoes them one click away.
+
+    ASSERTED ON RENDERED TEXT, NOT SOURCE. The fix left explanatory comments in
+    both templates that quote the banned phrase in order to ban it, so a source
+    grep would fail on the fix itself. HTMLParser routes comments to
+    handle_comment, which _Text ignores.
+
+    ``/tools/rfdiffusion`` is requested with NO session, which is what selects
+    the preview shell rather than the form. ``tool_enabled`` is patched because
+    the flag is off in a bare test env and the route answers 404 — the flag is
+    not what is under test here.
+    """
+    client = flask_app.test_client()
+    with patch("blueprints.tools.tool_enabled", return_value=True):
+        resp = client.get(path)
+    assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+    body = _visible(resp.get_data(as_text=True))
+    assert "ipTM" in body, (
+        f"{path} no longer describes ipTM at all; this check has nothing to "
+        f"look at and should be re-pointed rather than left passing"
+    )
+    for match in _CLAIMS_THE_BINDER_PAIR.finditer(body):
+        window = body[max(0, match.start() - 400):match.end() + 400]
+        assert _QUALIFIES_MULTI_CHAIN.search(window), (
+            f"{path} states ipTM as the binder-to-target interface with no "
+            f"multi-chain qualifier near it: ...{window}..."
+        )
+
+
+class _Tooltips(HTMLParser):
+    """Every ``data-tooltip`` on the page. HTMLParser unescapes attribute
+    values, so the assertions see the string the user's browser shows."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tooltips: list = []
+
+    def handle_starttag(self, tag, attrs):
+        for key, value in attrs:
+            if key == "data-tooltip" and value:
+                self.tooltips.append(value)
+
+
+def _iptm_tooltip(html: str) -> str:
+    parser = _Tooltips()
+    parser.feed(html)
+    hits = [t for t in parser.tooltips if "Interface pTM" in t]
+    assert len(hits) == 1, (
+        f"expected exactly one ipTM tooltip, got {len(hits)}: {hits!r}"
+    )
+    return hits[0]
+
+
+def test_the_boltzgen_iptm_tooltip_does_not_contradict_itself(flask_app):
+    """One string, one meaning.
+
+    components/candidate_table.html CONCATENATES the per-tool legend with the
+    global metric_glossary entry into a single ``data-tooltip``. The legend now
+    carries the pre-deploy caveat — "an older run stored a complex-wide value
+    instead" — and the glossary used to end four words later with "Measures
+    structural confidence at the binder–target interface SPECIFICALLY". Two
+    statements on one screen, one of them false, is exactly the failure the
+    legend rewrite existed to fix; putting them inside a single tooltip is that
+    failure at its smallest possible scale.
+
+    The glossary is global — it is shown for every tool's ipTM column — so it
+    cannot be the surface that says which interface the number covers. The
+    legend can, and does.
+
+    Both halves are asserted present first, because a tooltip that stopped
+    stacking them would satisfy the contradiction check by saying nothing.
+    """
+    tooltip = _iptm_tooltip(_render_results(flask_app, "boltzgen", "A,B"))
+    assert "complex-wide" in tooltip, (
+        f"the legend half is gone from the tooltip: {tooltip!r}"
+    )
+    assert "Template Modeling" in tooltip, (
+        f"the glossary half is gone from the tooltip: {tooltip!r}"
+    )
+    assert not re.search(
+        r"binder.target interface\s+(specifically|alone|only)", tooltip, re.I,
+    ), (
+        f"the tooltip disclaims the value as possibly complex-wide and then "
+        f"asserts it is the binder-target pair and nothing else: {tooltip!r}"
+    )
 
 
 def test_boltzgen_results_no_longer_carry_the_banner(flask_app):

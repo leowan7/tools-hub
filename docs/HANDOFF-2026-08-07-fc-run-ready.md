@@ -125,6 +125,14 @@ holds up a number that is both the displayed value and the ranking key. Judge
 these designs on pLDDT, i_pAE and the interface geometry, or re-fold the top
 few with Boltz-2 from the buttons under the table.
 
+That last sentence is advice this document can give and the BANNER cannot. The
+banner renders on six pages with no parameter telling it which one it is on,
+and the pooled target page in multi-cohort mode has neither those columns nor
+a re-fold control — so its copy names the remedy ("do not choose on ipTM
+alone; confirm with a second-opinion fold") rather than the furniture. This
+handoff is about one campaign page, where the columns and the buttons are
+really there.
+
 (An earlier version of this section said ipTM is "a maximum over residues" and
 quoted ~0.9 for a crystal dimer. Four pipeline files in this repo describe it
 as interface-pTM *averaged over every chain pair* instead —
@@ -136,7 +144,10 @@ has since MERGED AND DEPLOYED (`leowan7/llm-proteinDesigner#18`,
 `design_to_target_iptm` first in `IPTM_KEYS`), so boltzgen no longer carries
 this banner — a boltzgen run started now reports the binder-to-target
 interface. Its ipTM column tooltip carries the caveat that runs from *before*
-the deploy stored the complex-wide value. rfdiffusion and pxdesign need a
+the deploy stored the complex-wide value — **both halves of it**: the value and
+the ORDER, because boltzgen ranks on ipTM and the pooled reads sort then
+truncate at 300, so on a pre-deploy multi-chain run the order of the table is
+as indicative as the numbers in it. rfdiffusion and pxdesign need a
 per-pair value derived from the chain layout, which nobody has built, so for
 this run the banner is the remedy.
 
