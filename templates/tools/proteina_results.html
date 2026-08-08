@@ -7,7 +7,13 @@
 {% from "components/results_shell.html" import results_panel %}
 
 {% set output     = job.result or {} %}
-{% set candidates = output.get('candidates', []) %}
+{# ``or []``, not ``get(..., [])``: the default applies only when the key is
+   ABSENT, so a stored ``"candidates": null`` returns None — and the numbering
+   loop below sits outside the ``{% if candidates %}`` the panel is guarded by,
+   so a null there stopped rendering the whole page with "'NoneType' object is
+   not iterable". Both writers emit a list today; this is the guard, not a
+   report of a live failure. #}
+{% set candidates = output.get('candidates') or [] %}
 {% set columns    = ['total_reward', 'af2_iptm', 'af2_plddt', 'rf3_score', 'binder_scrmsd', 'cluster_id'] %}
 
 {# WHICH RESIDUE NUMBERING THE DOWNLOADED FILES CARRY. Upstream renumbers every
@@ -18,13 +24,27 @@
    list resolves against the file. It was recorded per candidate and rendered
    nowhere, which is the same as not recording it.
 
-   Not a table column: candidate_table pushes every column through `| float`,
-   so a string one renders as an error. It is also a per-FILE property rather
-   than a score, and identical across the shard in every observed run, so one
-   line above the table says it once instead of eight times. `upstream` wins a
+   Not a table column, and the reason first written here was wrong on both of
+   its claims — measured, not argued. `candidate_table` reads each column out
+   of `cand.scores`, and `target_numbering` lives at the candidate ROOT, so a
+   column named for it resolves to none and renders "—" on every row; it never
+   reaches a filter at all. And Jinja's `float` does not raise on a string:
+   `do_float` catches TypeError/ValueError and returns 0.0, so had it been in
+   `scores` the column would read a confident "0.00" — silently wrong rather
+   than visibly broken, which is worse.
+
+   The real argument for a line is that this is a per-FILE property rather than
+   a score, and identical across the shard in every observed run, so one line
+   above the table says it once instead of eight times. `upstream` wins a
    mixed shard, because the honest headline is the weaker guarantee.
-   Candidates from before this field existed carry neither value and print
-   nothing at all rather than guessing. #}
+
+   THREE VALUES, AND ONLY ONE OF THEM IS A WARNING. `upstream` means the
+   operator gave us a numbering and we could not restore it. `n/a` means there
+   was never one — a curated benchmark run uploads no file — and prints
+   nothing, because telling that operator their upload's numbering was not
+   preserved names a file that does not exist. Candidates from before this
+   field existed carry no value and likewise print nothing rather than
+   guessing. #}
 {# A namespace loop over `.get`, NOT `map(attribute=...)`: Jinja's attribute
    filter yields Undefined for a candidate that predates this field, and
    Undefined is not None, so `reject('none')` would let it through and a shard

@@ -438,6 +438,27 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
 # using it, and when it cannot, the design is uploaded byte-for-byte as upstream
 # wrote it — today's behaviour. A design is never lost to this step.
 
+# THE THREE ANSWERS TO "WHICH NUMBERING DOES THE DELIVERED FILE CARRY?", and
+# the third one is not decoration.
+#
+# ``input``    — the operator's uploaded numbering was restored; their own
+#                hotspot labels resolve against the download.
+# ``upstream`` — there WAS an operator numbering and it could not be restored,
+#                so the file carries 1..N and those labels will not resolve.
+# ``n/a``      — there was never an operator numbering. A curated benchmark run
+#                designs against a bundled target this wrapper never staged and
+#                the operator uploaded no file at all.
+#
+# The first version of this field had two values and initialised to
+# ``upstream``, so every curated run reported the middle answer — and the
+# results page renders that as "not the numbering in the file you uploaded ...
+# hotspot labels such as A241 will not resolve", which is a false sentence
+# about a run with no uploaded file in it. Both values describe a file numbered
+# 1..N; they are answers to different questions, and only one of them is a
+# warning. ``webhooks/modal.py::_sanitize_candidate`` allowlists these same
+# three and tests/test_proteina_smoke.py pins the two lists together.
+_TARGET_NUMBERING_VALUES = ("input", "upstream", "n/a")
+
 _UNKNOWN_RESNAMES = frozenset({"UNK", "UNX", "XAA", "X"})
 
 # The parent amino acid of each modified residue in ``_MODRES_EQUIV``. Used ONLY
@@ -520,6 +541,17 @@ def pdb_ca_sequence(pdb_text: str) -> dict[str, list[tuple[int, str, str]]]:
     order TRP(100) / ALA(100A) / GLY(100B) parsed back as ALA / GLY / TRP,
     scrambling the positional correspondence before anything could check it.
     Blank icode sorts first because ``"" < "A"``, which is the PDB convention.
+
+    KNOWN LIMIT, NOT FIXED: FIVE-DIGIT RESIDUE NUMBERS. PDB gives resSeq four
+    columns, and writers that exceed it spill the fifth digit into the iCode
+    column, so ``10000`` parses as ``(1000, "0")``. A target numbered ENTIRELY
+    at or above 10000 still round-trips — the misparse is identical on both
+    sides and preserves order, measured ``10000..10004 -> (1000,"0")..
+    (1000,"4")`` and applied. A target that CROSSES the boundary does not:
+    ``9998, 9999, 10000`` parse as ``(9998,""), (9999,""), (1000,"0")`` and
+    sort with the last one FIRST, which scrambles the positional
+    correspondence. That is fail-closed — measured identity 0.0, refused — but
+    the refusal blames chain order rather than naming the real cause.
     """
     by_chain: dict[str, list[tuple[int, str, str]]] = {}
     seen: set[tuple[str, int, str]] = set()
@@ -717,6 +749,21 @@ def restore_design_numbering(pdb_text: str,
     target chain keyed to the operator's input and another to upstream's 1..N,
     which is harder to reason about than either alone.
 
+    AND ALL THEIR COORDINATE RECORDS, not just the ones the map has keys for.
+    The map is built from CA atoms, so a residue modelled without a CA, a
+    HETATM ion or ligand on a target chain, or a second MODEL numbered
+    differently from the first yields coordinate records that are not keys.
+    Passing those through unchanged is the same partial rewrite one record at a
+    time, and it can put two different residues on one residue id — so they are
+    counted and the whole file is refused instead.
+
+    ONLY MODEL 1 DEFINES THE MAP, WHILE THE REWRITE WALKS THE WHOLE FILE.
+    ``pdb_ca_sequence`` stops at the first ``ENDMDL``, so a multi-model file's
+    later models are rewritten with model 1's map. That is correct exactly when
+    the models share a numbering, which is the normal case and the only one
+    upstream emits (the 8 archived designs are single-model). When they do not,
+    the unmapped-record refusal above catches it rather than mixing numberings.
+
     BOTH THE resSeq COLUMNS AND THE iCode COLUMN ARE WRITTEN. A residue id in
     PDB is ``(chain, resSeq, iCode)``, and an earlier version of this function
     wrote only ``resSeq`` — which mapped ``A100 / A100A / A100B`` onto three
@@ -740,6 +787,14 @@ def restore_design_numbering(pdb_text: str,
     NEVER RAISES. A design that reaches this function has already been paid for;
     losing it over a numbering nicety would be a far worse outcome than shipping
     upstream's keys. Any failure returns the input text with a reason.
+
+    KNOWN LIMIT, NOT FIXED: a BARE three-character ``TER`` refuses the whole
+    restore when a target chain has a BLANK chain id. ``line[21:22]`` is ``""``
+    on such a line, a blank chain id is a legal key in ``remap``, and
+    ``_splice_resid`` cannot write a residue id into a 3-character line — so it
+    returns None and the file is declined. Fail-closed and rare (upstream pads
+    its TER records to 80 columns), and over-refusing costs only the numbering,
+    never the design.
     """
     report: dict = {"applied": False, "already_input_numbering": False,
                     "chains": {}, "reason": ""}
@@ -826,17 +881,45 @@ def restore_design_numbering(pdb_text: str,
 
         out: list[str] = []
         last_seen: dict[str, tuple[int, str]] = {}
+        # EVERY COORDINATE RECORD ON A REMAPPED CHAIN NEEDS A DESTINATION, and
+        # the injectivity refusal above does not give it one. That check proves
+        # the MAP is one-to-one; it says nothing about records the map has no
+        # key for. ``pdb_ca_sequence`` builds the map from CA atoms only, so a
+        # residue modelled without a CA, a HETATM ligand or ion sitting on a
+        # target chain, or a second model whose numbering differs from the
+        # first all produce coordinate records that are not keys — and this
+        # loop used to hand them straight through, keeping upstream's number
+        # while every neighbour moved. Measured, twice, independently: a
+        # delivered file with one residue id carrying two different residue
+        # names, and ``[A100..A109, A105 ZN]`` against a 100..109 reference —
+        # duplicate residue ids, with ``applied`` True and the payload claiming
+        # the operator's numbering was restored. That is the exact outcome the
+        # one-to-one refusal exists to prevent, reached around the side.
+        #
+        # So they are COUNTED and the whole file is refused, which ships
+        # upstream's bytes unchanged — the same fail-closed direction as every
+        # other refusal here. Counting rather than returning on the first one
+        # is what lets the reason say how many; an operator told about one
+        # record would go looking for one.
+        #
+        # No archived design can trigger this: all 8 are ATOM-only, one model,
+        # every residue has a CA, and ``crop_pdb_to_contig`` strips ligands,
+        # ions and waters out of the staged input. Verified 8/8 still applied.
+        unmapped: list[str] = []
         for line in lines:
             record = line[:6]
             chain = line[21:22].strip() if len(line) > 21 else ""
             if record in _RESSEQ_COORD_RECORDS and chain in remap:
+                icode = line[26:27].strip()
                 try:
                     old = int(line[22:26])
                 except ValueError:
+                    unmapped.append(f"chain {chain}: resSeq {line[22:26]!r}")
                     out.append(line)
                     continue
-                new = remap[chain].get((old, line[26:27].strip()))
+                new = remap[chain].get((old, icode))
                 if new is None:
+                    unmapped.append(f"chain {chain} residue {old}{icode}")
                     out.append(line)
                     continue
                 spliced = _splice_resid(line, new)
@@ -861,6 +944,15 @@ def restore_design_numbering(pdb_text: str,
                 out.append(spliced)
                 continue
             out.append(line)
+
+        if unmapped:
+            report["reason"] = (
+                f"{len(unmapped)} coordinate record(s) on a chain being "
+                f"renumbered are not in the map ({', '.join(unmapped[:3])}"
+                f"{', ...' if len(unmapped) > 3 else ''}) — leaving them on "
+                f"upstream's numbers while their neighbours move would emit a "
+                f"file with two different residues sharing one residue id")
+            return pdb_text, report
 
         report["applied"] = True
         return "\n".join(out), report
@@ -2596,6 +2688,14 @@ def main() -> None:
             # latin-1, not utf-8: PDB is a fixed-COLUMN format, and a multi-byte
             # utf-8 sequence would shift every column after it. latin-1 maps one
             # byte to one character for all 256 values, so column 23 is byte 23.
+            #
+            # KNOWN ASYMMETRY, NOT FIXED: ``stage_cropped_target`` WRITES this
+            # file with ``dest.write_text(...)``, i.e. the platform default
+            # encoding, and it is read back here as latin-1. Both are
+            # byte-exact for the ASCII a coordinate section is made of, so the
+            # numbering is unaffected; a non-ASCII byte in a REMARK could
+            # decode differently on the two sides, which would move residue
+            # NAMES not at all and identity not at all.
             try:
                 renumber_reference = pdb_ca_sequence(
                     (Path(_HUB_TARGET_DIR) / f"{task_name}.pdb")
@@ -2605,10 +2705,25 @@ def main() -> None:
                     "renumbering: staged target unreadable (%s) — designs ship "
                     "in upstream's 1..N numbering", exc)
         renumber_chains = sorted(renumber_reference)
+        # WHAT GETS RECORDED WHEN NOTHING WAS RESTORED, and why it is not always
+        # "upstream". Every value here reaches the results page, which turns
+        # "upstream" into a WARNING: "not the numbering in the file you
+        # uploaded ... hotspot labels such as A241 will not resolve". That is
+        # true of a custom run whose restore declined and false of a curated
+        # benchmark run, where there is no uploaded file to be at odds with.
+        # Computed once, outside the loop, because it is a property of the RUN
+        # and not of any design.
+        not_restored = "upstream" if target_source == "custom" else "n/a"
         # Warn once per shard, not once per design. A flag rather than a test on
         # ``rank``: rank comes from ``enumerate(parsed)`` and therefore starts at
         # ZERO, so "rank == 1" would announce the second design and stay silent
-        # on a one-design shard — losing the only signal the operator gets.
+        # on a one-design shard.
+        #
+        # LOG-ONLY, and that is a limit rather than a design: this line reaches
+        # whoever reads the container log, not the operator. What the OPERATOR
+        # gets is ``target_numbering`` on every candidate and the sentence the
+        # results page renders from it. The log line carries the ``reason``,
+        # which the page does not.
         renumber_warned = False
 
         out_designs: list[dict] = []
@@ -2624,7 +2739,7 @@ def main() -> None:
                 continue
             basename = f"design_{rank:03d}.pdb"
             pdb_key = f"designs/{basename}"
-            numbering = "upstream"
+            numbering = not_restored
             try:
                 pdb_bytes = pdb_path.read_bytes()
             except Exception as exc:  # noqa: BLE001
@@ -2659,7 +2774,12 @@ def main() -> None:
                             "renumbering: designs ship in upstream's 1..N "
                             "numbering — %s", rep["reason"])
                 except Exception as exc:  # noqa: BLE001 — never lose a design
-                    numbering = "upstream"
+                    # ``not_restored``, not the literal "upstream": this branch
+                    # is inside ``if renumber_chains:`` and a reference only
+                    # exists on a custom run, so the two are provably the same
+                    # value here — spelling it once is what stops them drifting
+                    # if that ever stops being true.
+                    numbering = not_restored
                     if not renumber_warned:
                         renumber_warned = True
                         logger.warning(
@@ -2679,10 +2799,12 @@ def main() -> None:
                 "rank": rank,
                 "name": d["name"],
                 "pdb_key": pdb_key,
-                # "input" when the delivered file carries the residue numbers the
-                # operator typed, "upstream" when it carries 1..N. Recorded per
-                # design so the answer is in the result rather than in a log line
-                # nobody reads.
+                # "input" when the delivered file carries the residue numbers
+                # the operator typed, "upstream" when they gave us a numbering
+                # and it carries 1..N instead, "n/a" when there was no operator
+                # numbering at all (a curated benchmark run). Recorded per
+                # design so the answer is in the result rather than in a log
+                # line nobody reads. See _TARGET_NUMBERING_VALUES.
                 "target_numbering": numbering,
                 # flat copies for the results template + classifiers
                 "total_reward": scores.get("total_reward"),
@@ -2704,6 +2826,14 @@ def main() -> None:
                  "scores": scores}
             )
             # Heartbeat new_candidate keys match webhook _sanitize_candidate.
+            #
+            # KNOWN GAP, NOT FIXED: the streamed copy of ``target_numbering``
+            # has no reader today. ``_sanitize_candidate`` preserves it, but
+            # ``shared/job_recovery.py::_candidate_from_partial`` — the path a
+            # job finalised from streamed heartbeats goes through — does not
+            # carry it, so such a job renders NO numbering line rather than a
+            # wrong one. Silent, not false, which is the right failure
+            # direction; it costs the operator a sentence, never a guarantee.
             send_heartbeat(
                 webhook_url, job_id, stage="searching",
                 designs_completed=len(out_designs), designs_total=designs_total,

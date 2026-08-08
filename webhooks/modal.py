@@ -494,14 +494,22 @@ def _sanitize_candidate(cand: dict) -> dict | None:
 
     metadata_tag = cand.get("metadata_tag")
 
-    # Proteina: which residue numbering the delivered PDB carries. Only the two
+    # Proteina: which residue numbering the delivered PDB carries. Only the
     # values the pipeline emits survive; anything else becomes None rather than
     # being echoed back onto the status page, because this endpoint's body is
     # unauthenticated telemetry and every other string field here is bounded the
     # same way.
+    #
+    # "n/a" is the third of them and means "there was no operator numbering" —
+    # a curated benchmark run, which uploads no file. It is NOT the same as
+    # "upstream", which the results page renders as a warning that the
+    # operator's own hotspot labels will not resolve. Dropping it here would
+    # make a curated design report nothing while it streams and "n/a" once it
+    # finalises. Kept in step with run_pipeline._TARGET_NUMBERING_VALUES by
+    # test_the_webhook_allowlist_covers_every_numbering_the_pipeline_emits.
     raw_numbering = cand.get("target_numbering")
     target_numbering = (
-        raw_numbering if raw_numbering in ("input", "upstream") else None)
+        raw_numbering if raw_numbering in ("input", "upstream", "n/a") else None)
 
     return {
         "rank": rank,

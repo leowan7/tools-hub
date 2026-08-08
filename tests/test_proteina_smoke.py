@@ -2621,6 +2621,37 @@ class TestTemplatesParse:
         assert "takes no hotspots" not in src
 
 
+def _render_results(candidates):
+    """The real proteina results partial, rendered over ``candidates``.
+
+    ``results_panel`` is stubbed: these tests are about the banner the partial
+    adds, not about the shared shell (which needs url_for, csrf_input and the
+    metric glossary to render at all).
+
+    MODULE LEVEL, not a method, because ``TestUploadLoopNumbering`` renders the
+    candidates a real ``main()`` run produced through it. That composition is
+    the only thing that can catch a banner which is false for a whole class of
+    runs: a template test alone asserts whatever value the test itself passes
+    in, and a pipeline test alone never looks at the words the operator reads.
+    """
+    from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+    templates = Path(__file__).resolve().parents[1] / "templates"
+    env = Environment(loader=ChoiceLoader([
+        # ``caller()`` has to be referenced or Jinja refuses the {% call %}
+        # with "two values for the special caller argument".
+        DictLoader({"components/results_shell.html": (
+            "{% macro results_panel(candidates, columns, tool_slug, job_id,"
+            " clone_url='', tier='', gpu_seconds=None,"
+            " send_target_tools=None, campaign_id='') %}"
+            "PANEL{% if not candidates %}{{ caller() }}{% endif %}"
+            "{% endmacro %}")}),
+        FileSystemLoader(str(templates)),
+    ]))
+    return env.get_template("tools/proteina_results.html").render(
+        job=SimpleNamespace(result={"candidates": candidates}, id="j1"),
+        send_target_tools=[])
+
+
 class TestResultsTemplateSurfacesTheNumbering:
     """B6. ``target_numbering`` was written into the result and rendered nowhere.
 
@@ -2628,29 +2659,10 @@ class TestResultsTemplateSurfacesTheNumbering:
     prefers ``candidates`` and this partial reads ``candidates``, so the operator
     had no way at all to learn whether the file they downloaded is keyed to the
     numbers they typed. A field nobody can see is not a record of anything.
-
-    ``results_panel`` is stubbed: these tests are about the banner the partial
-    adds, not about the shared shell (which needs url_for, csrf_input and the
-    metric glossary to render at all).
     """
 
     def _render(self, candidates):
-        from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
-        templates = Path(__file__).resolve().parents[1] / "templates"
-        env = Environment(loader=ChoiceLoader([
-            # ``caller()`` has to be referenced or Jinja refuses the {% call %}
-            # with "two values for the special caller argument".
-            DictLoader({"components/results_shell.html": (
-                "{% macro results_panel(candidates, columns, tool_slug, job_id,"
-                " clone_url='', tier='', gpu_seconds=None,"
-                " send_target_tools=None, campaign_id='') %}"
-                "PANEL{% if not candidates %}{{ caller() }}{% endif %}"
-                "{% endmacro %}")}),
-            FileSystemLoader(str(templates)),
-        ]))
-        return env.get_template("tools/proteina_results.html").render(
-            job=SimpleNamespace(result={"candidates": candidates}, id="j1"),
-            send_target_tools=[])
+        return _render_results(candidates)
 
     def _cand(self, rank, **kw):
         return dict({"rank": rank, "pdb_key": f"design_{rank}.pdb",
@@ -2687,6 +2699,20 @@ class TestResultsTemplateSurfacesTheNumbering:
     def test_no_candidates_at_all_claims_nothing(self):
         assert "Residue numbering" not in self._render([])
 
+    def test_a_null_candidate_list_renders_instead_of_raising(self):
+        """F10. ``output.get('candidates', [])`` returns the DEFAULT only when
+        the key is absent; a stored ``"candidates": null`` returns None, and the
+        counting loop this delta added sits OUTSIDE the ``{% if candidates %}``
+        the old panel was guarded by. So a null there stopped rendering the
+        whole results page with ``TypeError: 'NoneType' object is not
+        iterable`` where it used to render fine.
+
+        Unreachable from either writer today — both emit a list — so this is a
+        robustness regression rather than a live defect, which is why it is
+        pinned rather than merely fixed.
+        """
+        assert "Residue numbering" not in self._render(None)
+
 
 def test_sanitize_candidate_keeps_the_target_numbering():
     """The streamed half of the same path. ``_sanitize_candidate`` drops every
@@ -2705,12 +2731,37 @@ def test_sanitize_candidate_keeps_the_target_numbering():
 def test_sanitize_candidate_rejects_an_unrecognised_numbering():
     """The heartbeat body is unauthenticated telemetry that gets rendered back
     to the user, so every string field here is bounded. This one is bounded to
-    the two values the pipeline can emit rather than by a length cap."""
+    the values the pipeline can emit rather than by a length cap."""
     from webhooks.modal import _sanitize_candidate
 
-    for bogus in ("<script>", "INPUT", "", 7, None):
+    for bogus in ("<script>", "INPUT", "", 7, None, "curated", "n/a ", "N/A"):
         out = _sanitize_candidate({"rank": 0, "target_numbering": bogus})
         assert out["target_numbering"] is None, bogus
+
+
+# The three answers to "which residue numbering does the delivered file
+# carry?", written out HERE rather than read off the pipeline, so that deleting
+# one from either side fails this file rather than silently shrinking it.
+_TARGET_NUMBERING_VALUES = ("input", "upstream", "n/a")
+
+
+def test_the_webhook_allowlist_covers_every_numbering_the_pipeline_emits():
+    """F1's other half. ``_sanitize_candidate`` drops any value it does not
+    name, and the STREAMED candidate is what the live status page renders. A
+    third value added to the pipeline and not to the allowlist would make the
+    same design report one numbering while it is running and another once it
+    finalised — the drift is invisible until an operator compares the two.
+
+    Both directions are pinned: the pipeline may not emit a value the webhook
+    would drop, and the webhook may not silently accept one the pipeline never
+    emits (this endpoint's body is unauthenticated).
+    """
+    from webhooks.modal import _sanitize_candidate
+
+    assert tuple(rp._TARGET_NUMBERING_VALUES) == _TARGET_NUMBERING_VALUES
+    for value in _TARGET_NUMBERING_VALUES:
+        got = _sanitize_candidate({"rank": 0, "target_numbering": value})
+        assert got["target_numbering"] == value, value
 
 
 
@@ -3837,6 +3888,15 @@ def _chain(chain, resnames, first_res, serial0=1, icodes=None):
             for i, nm in enumerate(resnames)]
 
 
+def _with_altloc(line, code):
+    """``line`` with the altLoc column (col 17, 0-indexed 16) set to ``code``.
+
+    ``_atom`` writes a blank there. Two lines that differ ONLY in this column
+    are the two conformations of one residue, not two residues.
+    """
+    return line[:16] + code + line[17:]
+
+
 def _ter(serial, resname, chain, resseq):
     """A TER record padded to 80 columns, as upstream really writes them.
 
@@ -3944,6 +4004,31 @@ class TestPdbCaSequence:
         text = _design() + "ENDMDL\n" + "\n".join(_chain("Z", ["ALA"] * 5, 1))
         assert "Z" not in rp.pdb_ca_sequence(text)
 
+    def test_an_altloc_pair_is_one_residue_not_two(self):
+        """F4. Deleting the ``if key in seen: continue`` de-dupe left the whole
+        file green, and it is load-bearing: a side chain modelled in two
+        conformations writes TWO ``CA`` lines for one residue, so without the
+        de-dupe the chain comes back one residue longer than it is. Alternate
+        conformations are ordinary in any crystal structure.
+        """
+        lines = _chain("A", ["ALA", "GLY", "SER"], 5)
+        lines.insert(2, _with_altloc(lines[1], "B"))
+        lines[1] = _with_altloc(lines[1], "A")
+        got = rp.pdb_ca_sequence("\n".join(lines))["A"]
+        assert [r for r, _i, _n in got] == [5, 6, 7]
+
+    def test_an_altloc_pair_keeps_the_first_conformation_it_saw(self):
+        """The de-dupe must KEEP one, not drop both, and it must be the first
+        in file order — the same rule ``pdb_ca_residues`` follows, so the two
+        parsers cannot disagree about which residue is at that id."""
+        lines = _chain("A", ["ALA", "GLY", "SER"], 5)
+        alt = _with_altloc(lines[1], "B")
+        alt = alt[:17] + "TRP" + alt[20:]        # a DIFFERENT name, altloc B
+        lines[1] = _with_altloc(lines[1], "A")
+        lines.insert(2, alt)
+        got = rp.pdb_ca_sequence("\n".join(lines))["A"]
+        assert got == [(5, "", "ALA"), (6, "", "GLY"), (7, "", "SER")]
+
 
 class TestRestoreDesignNumbering:
     def test_a_renumbered_design_is_put_back_into_the_input_numbering(self):
@@ -3965,6 +4050,49 @@ class TestRestoreDesignNumbering:
         design = _design()
         out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
         assert rp.pdb_ca_sequence(out)["C"] == rp.pdb_ca_sequence(design)["C"]
+
+    def test_a_chain_the_caller_did_not_name_is_left_alone_even_when_mappable(self):
+        """F9. The test above does not discriminate its own property: chain C is
+        absent from the reference, so ANY code that ignored ``target_chains``
+        would refuse the whole file on C and leave C untouched by accident.
+        "Untouched because nothing happened" and "untouched because it was not
+        named" are different guarantees and only one of them is the binder's.
+
+        Here the reference DOES carry a chain C that would map cleanly, so the
+        only thing keeping it at 1..8 is that the caller did not name it. Code
+        that renumbered every chain the reference knows about would move C to
+        700..707 and fail this while still passing the test above.
+        """
+        ref = _reference()
+        ref["C"] = _ref_chain(_SEQ_C, 700)
+        design = _design()
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], ref)
+        assert rep["applied"] is True, rep["reason"]
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(range(234, 254))
+        assert rp.pdb_ca_sequence(out)["C"] == rp.pdb_ca_sequence(design)["C"]
+
+    def test_alternate_conformations_do_not_defeat_the_length_check(self):
+        """F4, end to end. A residue modelled in two conformations writes two
+        ``CA`` lines; without ``pdb_ca_sequence``'s de-dupe the design chain
+        parses one residue LONGER than the input, the length check refuses, and
+        the operator silently receives 1..N — the exact outcome the restore
+        exists to prevent, triggered by an ordinary crystal structure.
+
+        Both conformation lines must also be rewritten: leaving one behind on
+        upstream's number is a delivered file whose two conformers disagree
+        about which residue they are.
+        """
+        lines = _chain("A", _SEQ_A, 1, 1)
+        lines[4] = _with_altloc(lines[4], "A")
+        lines.insert(5, _with_altloc(lines[4], "B"))
+        design = ("\n".join(lines + _chain("B", _SEQ_B, 1, 100)
+                            + _chain("C", _SEQ_C, 1, 200)) + "\n")
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(range(234, 254))
+        at_238 = [l[16:17] for l in out.split("\n")
+                  if l[:6] == "ATOM  " and l[21:22] == "A" and l[22:26] == " 238"]
+        assert at_238 == ["A", "B"], "one conformation kept upstream's number"
 
     def test_coordinates_and_residue_names_are_untouched(self):
         design = _design()
@@ -4207,6 +4335,64 @@ class TestRestoreDesignNumberingRefuses:
         rep = self._unchanged(_design(), ["A", "B"], ref)
         assert "one-to-one" in rep["reason"]
 
+    def test_a_residue_with_no_ca_is_not_left_behind_on_upstreams_number(self):
+        """F2. The injectivity refusal guards the MAP; nothing guarded the
+        OUTPUT. ``pdb_ca_sequence`` only sees residues that have a ``CA``, so a
+        residue modelled without one is not a key in the map — and the rewrite
+        loop used to hand any such coordinate record straight through, keeping
+        upstream's number while every neighbour moved, with ``applied`` still
+        True and the payload still claiming ``target_numbering: "input"``.
+
+        Here the CA-less residue is numbered 234, which is what design residue
+        1 becomes. The delivered file then carries TWO different residues at
+        ``A234`` — a duplicate residue id, which is precisely the outcome the
+        one-to-one refusal exists to prevent, reached around the side.
+        """
+        stray = _atom(998, "N", "TRP", "A", 234)
+        design = _design() + stray + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "not in the map" in rep["reason"], rep["reason"]
+        assert "chain A" in rep["reason"]
+
+    def test_a_hetatm_on_a_target_chain_is_not_left_behind(self):
+        """F2, the second way in. A structural zinc, a ligand or an ion sits on
+        a target chain as a ``HETATM`` whose residue name is not a modified
+        amino acid, so ``pdb_ca_sequence`` skips it and it is not a map key.
+        Numbered 240 it survives the rewrite unchanged and collides with what
+        design residue 7 becomes.
+
+        Production stages a cropped target that has no ligands in it, so this
+        is a correctness hole rather than a live incident — but a rewrite that
+        can emit duplicate residue ids must not report that it restored the
+        operator's numbering.
+        """
+        design = _design() + _atom(997, "ZN", "ZN", "A", 240, record="HETATM") + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "not in the map" in rep["reason"], rep["reason"]
+
+    def test_the_refusal_counts_every_record_it_could_not_place(self):
+        """One reason line for a whole file, with the count in it — a per-line
+        refusal would say "a coordinate record" and leave the operator to
+        discover the other forty by hand."""
+        design = (_design()
+                  + _atom(996, "N", "TRP", "A", 500) + "\n"
+                  + _atom(995, "C", "TRP", "A", 501) + "\n"
+                  + _atom(994, "O", "TRP", "B", 502) + "\n")
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "3 coordinate record" in rep["reason"], rep["reason"]
+
+    def test_a_ter_too_short_to_carry_the_residue_id_refuses(self):
+        """F5, from the caller. ``_splice_resid`` promises to be
+        length-preserving or to return None, and the caller refuses the whole
+        file on None. A 22-character chain-bearing TER is the discriminator:
+        correct code refuses it, while a bounds check one column out returns a
+        26-character line and the caller accepts a file that grew.
+        """
+        lines = _design(ter=False).rstrip("\n").split("\n")
+        design = "\n".join(lines + ["TER      61      VAL A"]) + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "too short at 22 characters" in rep["reason"], rep["reason"]
+
     def test_annotation_records_carrying_residue_numbers_make_it_decline(self):
         design = _design() + "HELIX    1   1 ALA A    1  GLY A   10  1\n"
         rep = self._unchanged(design, ["A", "B"], _reference())
@@ -4277,6 +4463,37 @@ class TestRestoreDesignNumberingRecordCoverage:
         out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
         assert rep["applied"] is True, rep["reason"]
         assert "CONECT    1    2" in out
+
+    # WRITTEN OUT, not read off ``_RESSEQ_ANNOTATION_RECORDS``. Parametrising on
+    # the tuple under test would mean deleting an entry deletes its own test
+    # case and the file stays green — which is exactly the state this replaces:
+    # 8 of these 10 were droppable without a single failure.
+    _ANNOTATION_RECORDS = [
+        ("HELIX ", "HELIX    1   1 ALA A    1  GLY A   10  1"),
+        ("SHEET ", "SHEET    1   A 2 ALA A   1  GLY A  10  0"),
+        ("SSBOND", "SSBOND   1 CYS A    6    CYS A  127"),
+        ("LINK  ", "LINK         O   GLY A   1                 NA    NA A 100"),
+        ("CISPEP", "CISPEP   1 SER A    1    PRO A    2          0        0.00"),
+        ("SITE  ", "SITE     1 AC1  3 HIS A   5  ASP A   7  SER A   9"),
+        ("MODRES", "MODRES 1ABC MSE A    1  MET  SELENOMETHIONINE"),
+        ("SEQADV", "SEQADV 1ABC GLY A    1  UNP  P00001    ALA     1 CONFLICT"),
+        ("DBREF ", "DBREF  1ABC A    1    20  UNP    P00001   TEST     1    20"),
+        ("HET   ", "HET     NAG  A 401      14"),
+    ]
+
+    @pytest.mark.parametrize("record,line", _ANNOTATION_RECORDS,
+                             ids=[r.strip() for r, _ in _ANNOTATION_RECORDS])
+    def test_every_annotation_record_type_makes_it_decline(self, record, line):
+        """F7. Each of these tabulates residue numbers somewhere other than
+        columns 23-26, so renumbering only the coordinate section leaves the
+        file disagreeing with itself about which residue is which. The restore
+        declines instead — the direction that ships upstream's file untouched.
+        """
+        design = _design() + line + "\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is False, rep["reason"]
+        assert out == design
+        assert record.strip() in rep["reason"], rep["reason"]
 
 
 class TestChainRenumberMap:
@@ -4378,13 +4595,49 @@ class TestChainRenumberMap:
         assert folded["ok"] is True, folded["reason"]
         assert folded["identity"] == 1.0
 
-    def test_the_whole_modified_residue_table_folds(self):
-        """Not just MSE. Every entry in the parent table is a residue an
-        upstream refold may rewrite, and a table with one entry silently
-        missing fails a real target the same way."""
-        for child, parent in rp._MODRES_PARENT.items():
-            assert rp._same_resname(child, parent), f"{child} does not fold to {parent}"
-            assert rp._same_resname(parent, child)
+    # F6. THE TABLE'S CONTENT, WRITTEN OUT INDEPENDENTLY. The test this replaces
+    # iterated ``rp._MODRES_PARENT`` and asserted ``_same_resname(child,
+    # parent)`` for each entry — but ``_same_resname`` IS that table, so the
+    # assertion was ``table[x] == table[x]``. Deleting PTR, KCX, HYP, LLP and
+    # CSD survived it; so did changing CSO's parent from CYS to TRP. Its
+    # docstring claimed it would catch a missing entry, which is the one thing
+    # it could not do.
+    #
+    # Each parent below is the amino acid the modification is made FROM, which
+    # is what an upstream refold writes back: MSE is methionine with selenium,
+    # SEP/TPO/PTR are phosphoserine/threonine/tyrosine, KCX is carboxylated
+    # lysine, HYP is hydroxyproline, LLP is the lysine-PLP Schiff base, PCA is
+    # pyroglutamate (from GLU), and the CYS block is the oxidised / alkylated
+    # cysteines.
+    _EXPECTED_MODRES_PARENT = {
+        "MSE": "MET", "CME": "CYS", "CSO": "CYS", "SEP": "SER", "TPO": "THR",
+        "PTR": "TYR", "KCX": "LYS", "HYP": "PRO", "LLP": "LYS", "CSD": "CYS",
+        "OCS": "CYS", "MLY": "LYS", "M3L": "LYS", "CAS": "CYS", "CSS": "CYS",
+        "CSX": "CYS", "PCA": "GLU", "SAC": "SER",
+    }
+
+    def test_the_modified_residue_table_has_the_entries_it_claims_to(self):
+        """Pins the CONTENT, so a deletion or a wrong parent fails here. An
+        entry silently missing is not a cosmetic loss: an upstream refold that
+        writes the modification back as its parent then scores every one of
+        those a mismatch, and a target with enough of them drops below the 0.9
+        floor and ships in 1..N with nothing said."""
+        assert rp._MODRES_PARENT == self._EXPECTED_MODRES_PARENT
+
+    def test_every_modified_residue_upstream_accepts_has_a_parent(self):
+        """The two structures live in different places and neither imports the
+        other. ``_MODRES_EQUIV`` decides what counts as a protein residue at
+        parse time; ``_MODRES_PARENT`` decides what it compares equal to. A
+        name in the first and not the second is a residue that is counted and
+        then always scored a mismatch."""
+        assert set(rp._MODRES_PARENT) == set(rp._MODRES_EQUIV)
+
+    @pytest.mark.parametrize("child,parent", sorted(_EXPECTED_MODRES_PARENT.items()))
+    def test_each_modified_residue_folds_to_its_parent(self, child, parent):
+        """The behavioural half, driven from the written-out expectation rather
+        than from the table it is testing."""
+        assert rp._same_resname(child, parent), f"{child} does not fold to {parent}"
+        assert rp._same_resname(parent, child)
 
     def test_two_different_residues_still_do_not_compare_equal(self):
         """The folding must not become a wildcard: it is what stops a false
@@ -4420,6 +4673,63 @@ class TestChainRenumberMap:
         assert got["ok"] is False
         assert got["map"] == {}
         assert "one-to-one" in got["reason"]
+
+
+class TestSpliceResid:
+    """F5. The two SHORT-LINE branches, which no test ever reached.
+
+    ``_splice_resid`` promises to be length-preserving or to return ``None``,
+    and the caller refuses the whole file on ``None`` rather than emit a record
+    whose fields have all shifted right. Every fixture in this file is 80
+    columns wide, so both short-line branches were dead in every test and two
+    mutations survived the suite — ``len(line) < 26`` weakened to ``< 22``, and
+    the 26-character branch made to splice unconditionally. Both make the
+    function GROW a line, which in a fixed-column format is a corrupted file.
+
+    26 and 22 characters are not invented widths: the archived input target's
+    own TER records are 26 characters plus a trailing space.
+    """
+
+    # cols: TER(0-2) serial(7-10) resName(17-19) chainID(21) resSeq(22-25)
+    _TER26 = "TER    1234      VAL A 211"
+    # The same record with the resSeq field itself truncated away.
+    _TER22 = "TER      61      VAL A"
+
+    def test_the_fixtures_are_the_widths_this_class_is_named_for(self):
+        assert len(self._TER26) == 26
+        assert len(self._TER22) == 22
+
+    def test_a_line_too_short_for_the_resseq_field_is_refused(self):
+        """Nothing can be written into a field that is not there. A bounds
+        check one column out would return ``line[:22] + "%4d"`` — a 26-character
+        line built out of a 22-character one."""
+        assert rp._splice_resid(self._TER22, (234, "")) is None
+        assert rp._splice_resid(self._TER22, (234, "A")) is None
+
+    def test_a_twenty_six_character_line_is_rewritten_without_growing(self):
+        """resSeq is complete but the file ends before the iCode column.
+        Writing a BLANK icode into a column that does not exist is a no-op, so
+        the line is rewritten without one — and stays 26 characters."""
+        got = rp._splice_resid(self._TER26, (234, ""))
+        assert got is not None
+        assert len(got) == 26
+        assert got == "TER    1234      VAL A 234"
+
+    def test_a_twenty_six_character_line_cannot_carry_an_insertion_code(self):
+        """A REAL icode has nowhere to go here. Splicing it anyway appends a
+        27th column, which is how a rewrite that "only touches columns 23-27"
+        moves every field of the record it did not touch."""
+        assert rp._splice_resid(self._TER26, (234, "A")) is None
+
+    def test_a_full_width_line_keeps_both_fields_and_its_width(self):
+        """The ordinary branch, stated next to the other two so the contract
+        reads as one thing: 27 columns or more and both fields are written."""
+        line = _atom(1, "CA", "ALA", "A", 5)
+        got = rp._splice_resid(line, (234, "B"))
+        assert len(got) == len(line)
+        assert got[22:26] == " 234"
+        assert got[26:27] == "B"
+        assert got[27:] == line[27:]
 
 
 class TestUploadLoopNumbering:
@@ -4630,16 +4940,28 @@ class TestUploadLoopNumbering:
         assert "A25" in _keys(blob)
         assert "A25" not in _keys(self._design_text())
 
-    def test_the_binder_chain_is_never_renumbered(self, tmp_path, monkeypatch):
-        """Kills "pass the binder chain into renumber_chains". Chain C is not in
-        the staged target, so including it would make every chain fail the
-        all-or-none rule and nothing would be renumbered at all -- which the
-        first assertion catches -- while this one states the property directly."""
+    def test_the_target_chains_move_and_the_binder_chain_does_not(
+            self, tmp_path, monkeypatch):
+        """Kills "pass the binder chain into renumber_chains".
+
+        F9: this test used to assert ONLY that chain C came back unchanged, and
+        claimed in its docstring that it "states the property directly". It did
+        not. Chain C is absent from the staged target, so adding it to
+        ``renumber_chains`` makes every chain fail the all-or-none rule and
+        NOTHING is rewritten — under which chain C is trivially unchanged and
+        the old assertion passed. The kill came entirely from the neighbouring
+        test noticing that chain A had not moved.
+
+        The property is a conjunction and has to be asserted as one: the target
+        chains carry the operator's numbers AND the binder still carries 1..N.
+        """
         _data, uploaded = self._drive(tmp_path, monkeypatch,
                                       job_spec=self._custom())
         blob = next(iter(uploaded.values())).decode("latin-1")
-        assert (rp.pdb_ca_sequence(blob)["C"]
-                == rp.pdb_ca_sequence(self._design_text())["C"])
+        got = rp.pdb_ca_sequence(blob)
+        assert [r for r, _i, _n in got["A"]] == list(range(11, 31))
+        assert [r for r, _i, _n in got["B"]] == list(range(11, 31))
+        assert got["C"] == rp.pdb_ca_sequence(self._design_text())["C"]
 
     def test_the_reference_is_the_staged_crop_not_the_raw_upload(
             self, tmp_path, monkeypatch):
@@ -4708,7 +5030,69 @@ class TestUploadLoopNumbering:
         assert b"\xef\xbf\xbd" not in blob
         assert len(blob) == len(design.encode("latin-1"))
 
+    # -- the design that was already in the operator's numbering ------------
+
+    def _already_correct(self, tmp_path, monkeypatch):
+        """A run whose crop and whose design carry the SAME residue numbers.
+
+        Contig ``A1-20,B1-20`` crops the 40-residue upload to 1..20, which is
+        exactly what upstream renumbers the design's target chains to. Nothing
+        needs rewriting and nothing is rewritten — but the operator's numbering
+        is what the delivered file carries, so the payload must say ``input``.
+        """
+        return self._drive(
+            tmp_path, monkeypatch,
+            job_spec=self._custom(target_input="A1-20,B1-20"),
+            design_text=self._design_text(seq_a=_SEQ_A, seq_b=_SEQ_B))
+
+    def test_a_design_already_in_the_operators_numbering_reports_input(
+            self, tmp_path, monkeypatch):
+        """F3. ``elif rep["already_input_numbering"]:`` -> ``elif False:`` left
+        the whole file green, and this is not an exotic input: any target
+        already numbered from 1 lands here. An AlphaFold or ESMFold model is
+        ALWAYS 1..N, so upstream's numbering already equals the operator's.
+
+        Break this branch and exactly those operators are told their file
+        carries the design tool's numbering and their hotspot labels will not
+        resolve — while holding a file in which they do.
+        """
+        data, uploaded = self._already_correct(tmp_path, monkeypatch)
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded
+        assert [c["target_numbering"] for c in data["candidates"]] == ["input"] * 2
+        assert [d["target_numbering"] for d in data["designs"]] == ["input"] * 2
+
+    def test_the_already_correct_design_is_shipped_byte_for_byte(
+            self, tmp_path, monkeypatch):
+        """The other half, and what tells this path apart from the applied one:
+        "already correct" must mean UNTOUCHED, not "rewritten to the same
+        numbers". A rewrite that happened to land on the same ids would still
+        have re-spliced every coordinate record."""
+        _data, uploaded = self._already_correct(tmp_path, monkeypatch)
+        expected = self._design_text(seq_a=_SEQ_A, seq_b=_SEQ_B).encode("latin-1")
+        for name, blob in uploaded.items():
+            assert blob == expected, name
+
+    def test_the_already_correct_design_renders_the_reassuring_banner(
+            self, tmp_path, monkeypatch):
+        """...and the operator is told so. This is the sentence the branch
+        exists to earn."""
+        data, _uploaded = self._already_correct(tmp_path, monkeypatch)
+        html = _render_results(data["candidates"])
+        assert "residue numbers from the file you uploaded" in html
+        assert "will not resolve" not in html
+
     # -- curated runs -------------------------------------------------------
+
+    def _curated(self, tmp_path, monkeypatch):
+        """A curated benchmark run, with a staged file PLANTED under the curated
+        task name that would map cleanly if anything ever read it."""
+        return self._drive(
+            tmp_path, monkeypatch,
+            job_spec={"config_name": "search_binder_local_pipeline",
+                      "task_name": "02_PDL1", "rf3_required": False,
+                      "nsamples": 4, "replicas": 2},
+            plant_staged="02_PDL1")
 
     def test_a_curated_run_is_never_renumbered(self, tmp_path, monkeypatch):
         """Kills "run the restore on curated runs too".
@@ -4718,19 +5102,52 @@ class TestUploadLoopNumbering:
         nothing may be rewritten. The mutation is inert unless a file happens to
         exist at the staged path for the curated task name -- so this test
         PLANTS one that would map cleanly. Correct code never looks at it.
+
+        F1: the recorded value is ``n/a``, not ``upstream``. Both describe a
+        file in 1..N, but they are answers to different questions.
+        ``upstream`` means "you gave us a numbering and we could not restore
+        it", and the results page says so in those words. On a curated run
+        there was no uploaded file and no numbering to restore, so that
+        sentence is false about an entire class of runs.
         """
-        data, uploaded = self._drive(
-            tmp_path, monkeypatch,
-            job_spec={"config_name": "search_binder_local_pipeline",
-                      "task_name": "02_PDL1", "rf3_required": False,
-                      "nsamples": 4, "replicas": 2},
-            plant_staged="02_PDL1")
+        data, uploaded = self._curated(tmp_path, monkeypatch)
         assert data["status"] == "COMPLETED", data.get("error")
         assert uploaded
         for blob in uploaded.values():
             assert blob == self._design_text().encode("latin-1")
-        assert all(c["target_numbering"] == "upstream"
-                   for c in data["candidates"])
+        assert all(c["target_numbering"] == "n/a" for c in data["candidates"])
+        assert all(d["target_numbering"] == "n/a" for d in data["designs"])
+
+    def test_a_curated_shard_renders_no_numbering_banner_at_all(
+            self, tmp_path, monkeypatch):
+        """F1, as the operator meets it: the REAL candidates a curated run
+        produces, through the REAL results partial.
+
+        Neither half can catch this alone. The pipeline test asserts a string
+        without knowing what the page does with it, and a template test asserts
+        whatever value the test itself passes in. Composing them is what
+        showed that every curated run was rendering "not the numbering in the
+        file you uploaded" to an operator who uploaded nothing.
+        """
+        data, _uploaded = self._curated(tmp_path, monkeypatch)
+        html = _render_results(data["candidates"])
+        assert "Residue numbering" not in html, html
+        assert "will not resolve" not in html
+        assert "file you uploaded" not in html
+
+    def test_a_custom_run_that_could_not_be_restored_still_says_upstream(
+            self, tmp_path, monkeypatch):
+        """The boundary the new third value must not swallow. When the operator
+        DID upload a file and the restore declined, the warning is true and has
+        to keep firing — silence there would be the opposite defect."""
+        scrambled = self._design_text(
+            seq_a=list(reversed(self._cropped_names(_SEQ_A))))
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom(),
+                                      design_text=scrambled)
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+        html = _render_results(data["candidates"])
+        assert "will not resolve" in html
 
     # -- the paid-design guarantee -----------------------------------------
 
