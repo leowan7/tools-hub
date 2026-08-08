@@ -187,9 +187,13 @@ def test_boltzgen_left_the_banner_set_and_its_caveat_did_not_vanish():
 
     assert "boltzgen" not in MULTICHAIN_IPTM_UNRELIABLE_TOOLS
     # ``legend_text``, not ``["explanation"]``: the caveat lives in the
-    # legend's optional ``caveat`` field, because ``explanation`` is also the
-    # job-completion email's one-line caption and the caveat is false there.
-    # What has to survive is what a READER OF THE TABLE sees, which is both.
+    # legend's optional ``caveat`` field, because ``explanation`` is a
+    # one-line slot shared by 32 legends and the era note is 380 characters
+    # that only one of them needs. NOT because the caveat is false in the
+    # email — that reasoning shipped for a round and was wrong; the mail is
+    # sent about stored results too, and shared/score_legends.email_caption
+    # now carries the caveat there on a multi-chain job. What has to survive
+    # is what a READER OF THE TABLE sees, which is both halves.
     shown = legend_text(get_legend("boltzgen", "ipTM"))
     assert "chain-chain" in shown, (
         "boltzgen left the banner set without the legend picking up the "
@@ -982,14 +986,17 @@ def test_the_boltzgen_legend_describes_both_sides_of_the_deploy(flask_app):
     legend = get_legend("boltzgen", "ipTM")
     # ASSERTED ON WHAT THE TABLE SHOWS, which is ``explanation`` plus the
     # optional ``caveat``. The era distinction sits in ``caveat`` and not in
-    # ``explanation`` because ``explanation`` has a second consumer that is
-    # NOT a table — shared/email.py hands it to the job-completion email
-    # verbatim, where there is one design, no ordering, and no older run
-    # (the mail is sent by complete_job at the terminal transition). The
-    # tooltip half of that split is pinned in
-    # tests/test_target_table_render.py, the email half in
-    # tests/test_job_complete_email_caption.py; this asserts the CONTENT, so
-    # that neither half can be satisfied by a legend that says less.
+    # ``explanation`` because ``explanation`` is a one-line slot shared by 32
+    # legends and is handed to the job-completion email for every tool — NOT
+    # because the email is exempt from caveats. It is not: complete_job also
+    # runs from the stuck-job sweeper, the inline poll and
+    # scripts/finalize_stuck_job.py, so that mail can be about a result read
+    # back out of Storage, and shared/score_legends.email_caption gives it the
+    # caveat when the job's target names more than one chain. The tooltip half
+    # of the split is pinned in tests/test_target_table_render.py, the email
+    # half in tests/test_job_complete_email_caption.py; this asserts the
+    # CONTENT, so that neither half can be satisfied by a legend that says
+    # less.
     explanation = legend_text(legend)
     assert "binder-to-target" in explanation, (
         "the legend still describes a value the deployed container no longer "

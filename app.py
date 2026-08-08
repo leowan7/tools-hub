@@ -398,10 +398,13 @@ def create_app() -> Flask:
     # explanation plus the optional ``caveat``, the half that is about what an
     # old stored result may hold rather than about the metric. A global rather
     # than three inline concatenations in candidate_table.html, so a caveat
-    # cannot land on the header tooltip and miss the per-row one — and so the
-    # deliberate exception stays visible: shared/email.py reads ``explanation``
-    # alone, because a completion email is always about a run that just
-    # finished on the container running now.
+    # cannot land on the header tooltip and miss the per-row one. The email is
+    # the OTHER consumer of a stored result and calls
+    # shared/score_legends.email_caption instead — same two halves, gated on
+    # the chain count of the job it is about, which a table cannot see. It is
+    # not exempt from caveats: complete_job also runs from the stuck-job
+    # sweeper, the inline poll and scripts/finalize_stuck_job.py, so that mail
+    # can be about a result the app read back out of Storage.
     flask_app.jinja_env.globals["legend_text"] = _score_legends.legend_text
     # Whether a results view should mark ipTM as not-comparable. Kept in Python
     # rather than as a chain-splitting expression repeated across six results

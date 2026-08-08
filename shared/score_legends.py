@@ -37,11 +37,28 @@ class Legend(TypedDict):
 
     # Optional, and NOT part of the one line. A note that is true of a stored
     # result rather than of the metric — "an older run recorded this
-    # differently". Only a view that renders whatever a job SAVED needs it, so
-    # only components/candidate_table.html renders it, via ``legend_text``.
-    # The completion email does not, and cannot: it is sent by
+    # differently". Every view that renders whatever a job SAVED needs it:
+    # components/candidate_table.html via ``legend_text``, and the
+    # job-completion email via ``email_caption``.
+    #
+    # THE EMAIL IS NOT EXEMPT, AND THE COMMENT THAT SAID IT WAS COST A ROUND.
+    # It read "the completion email does not, and cannot: it is sent by
     # shared/jobs.complete_job at the terminal transition, so its number always
-    # comes from the container running now.
+    # comes from the container running now". complete_job is not only the
+    # webhook's caller. THREE paths finalize a job — and send this mail — about
+    # a result the app read back out of storage long after the run:
+    # shared/jobs.timeout_stuck_job (via shared/job_recovery, which rebuilds
+    # result.candidates from a Storage listing), the inline poll in
+    # blueprints/jobs.job_status (fires whenever the user next opens the page),
+    # and scripts/finalize_stuck_job.py (an operator, days later). All three
+    # were driven with the transport captured; each mailed
+    # "the binder-to-target interface", uncaveated, for a job submitted before
+    # the deploy that made that true.
+    #
+    # What is real is the LENGTH: ``explanation`` is a one-line slot for 32
+    # legends, and 380 characters of era note in it would be wrong on the 31
+    # that do not need one. So the split stays and the email opts in per job —
+    # see ``email_caption``.
     caveat: NotRequired[str]
 
 
@@ -314,23 +331,40 @@ SCORE_LEGENDS: dict[tuple[str, str], Legend] = {
         # be wrong while saying nothing about the order it produced is the
         # half-measure the banner existed to avoid.
         #
-        # IT GOES IN ``caveat``, NOT IN ``explanation``, and that split is the
-        # correction of a defect the second attempt shipped. Written into
+        # IT GOES IN ``caveat``, NOT IN ``explanation``, AND THE REASON IS
+        # LENGTH AND SCOPE — NOT THAT THE EMAIL IS SAFE FROM IT. Written into
         # ``explanation`` it took the string from 161 characters (the longest
-        # of the other 31 legends) to 496, and shared/email.py:243 hands
-        # ``explanation`` verbatim to the job-completion email — so every
-        # BoltzGen completion mail said "treat the order of the table as
-        # indicative", in a message that shows ONE number for ONE design and
-        # contains no table, and said it on single-chain runs too. The seam is
-        # the legend rather than the email because the difference is not
-        # formatting: this text is about what an OLD STORED RESULT may hold,
-        # and the email is sent from shared/jobs.complete_job at the terminal
-        # transition, so its number cannot be from an older container. A
-        # results page renders whatever the job saved and can be.
+        # of the other 31 legends) to 496, shared/email.py hands ``explanation``
+        # to the job-completion email, and every BoltzGen completion mail then
+        # said "treat the order of the table as indicative" — in a message that
+        # shows ONE number for ONE design and contains no table — including on
+        # single-chain runs, because a legend keyed on (tool, column) cannot
+        # see the chains. Those are two real defects: furniture the message
+        # does not have, and a multi-chain note on a single-chain run.
+        #
+        # THE FIX FOR THEM WAS NOT "the email never shows a caveat", AND THAT
+        # WRONG COMMENT IS WHAT ROUND 4 SHIPPED. It claimed the mail can only
+        # describe a run that just finished, so the caveat's antecedent could
+        # never hold there. False: shared/jobs.timeout_stuck_job,
+        # blueprints/jobs.job_status's inline poll and
+        # scripts/finalize_stuck_job.py all call complete_job with a result the
+        # app read back out of Storage, and complete_job sends this mail. I
+        # drove all three with the transport captured; each one mailed
+        # "the binder-to-target interface" with no caveat about a job submitted
+        # 2026-08-01. The email needs the caveat for exactly the same reason
+        # the results page does.
+        #
+        # So the caveat is opt-in per job rather than absent: ``email_caption``
+        # appends it when THAT JOB's target names more than one chain, which is
+        # the condition the caveat's own first clause states and which the
+        # email — unlike the legend — can evaluate, because it has the job.
         #
         # Truncating in the email instead was considered and rejected: every
         # other legend is "definition. threshold.", so "first sentence only"
-        # would drop the actionable half from all 31 of them to fix one.
+        # would drop the actionable half from all 31 of them to fix one. So was
+        # paraphrasing the caveat into a shorter email-only clause — that is a
+        # second string saying the same thing, and every regression in this
+        # area so far has been two copies of one claim drifting apart.
         "explanation": (
             "Interface pTM from the BoltzGen confidence head — the "
             "binder-to-target interface. Above 0.7 is a credible binder; "
@@ -436,13 +470,70 @@ def legend_text(legend: Optional[Legend]) -> str:
     the per-row Score cell in multi-tool mode — so a caveat cannot arrive on
     two surfaces out of three.
 
-    Callers that want ONLY the one-line half read ``legend["explanation"]``
-    directly and say why; shared/email.py is the one that does.
+    The other consumer of a stored result is the job-completion email, and it
+    calls ``email_caption`` rather than this, because it knows which job it is
+    about and a table does not.
     """
     if not isinstance(legend, dict):
         return ""
     parts = [str(legend.get("explanation") or ""), str(legend.get("caveat") or "")]
     return " ".join(p for p in (part.strip() for part in parts) if p)
+
+
+def names_multiple_chains(target_chain) -> bool:  # noqa: ANN001
+    """Does this ``target_chain`` field name more than one distinct chain?
+
+    Both separators are accepted and the value is de-duplicated, matching
+    ``tools.base.parse_target_chains`` and every other consumer of the field:
+    ``"A,B"`` and ``"A B"`` are two chains, ``"A,A"`` is one. Lives here rather
+    than in ``tools.base`` so ``shared.email`` — which is sent from workers
+    that have not imported the tool adapters — can ask the question without
+    importing the registry.
+    """
+    if isinstance(target_chain, (list, tuple, set)):
+        target_chain = ",".join(str(c) for c in target_chain)
+    chains = [c for c in str(target_chain or "").replace(",", " ").split() if c]
+    return len(set(chains)) > 1
+
+
+def email_caption(legend: Optional[Legend], target_chain) -> str:  # noqa: ANN001
+    """The legend as the JOB-COMPLETION EMAIL needs it, for one job.
+
+    ``explanation`` always; plus ``caveat`` when this job's target names more
+    than one chain.
+
+    WHY THE EMAIL GETS THE CAVEAT AT ALL. The mail is not only sent about a run
+    that just finished. ``shared/jobs.complete_job`` — which sends it — is
+    called by ``timeout_stuck_job`` (whose ``shared/job_recovery`` rebuilds
+    ``result.candidates`` from a Storage listing), by the inline poll in
+    ``blueprints/jobs.job_status`` (whenever the user next opens the page), and
+    by ``scripts/finalize_stuck_job.py`` (by hand, days later). All three were
+    driven with the transport captured before this function existed, and all
+    three mailed a pre-deploy BoltzGen result described as
+    "the binder-to-target interface" with no caveat. A caveat is about what a
+    STORED result may hold, and these mails are about stored results.
+
+    WHY THE CHAIN GATE. The caveat's own first clause is "On a multi-chain
+    target …", so on a single-chain run it is a conditional with a false
+    antecedent: true, but noise — and a caveat shown to everyone is a caveat
+    nobody reads (the rule this repo pins at
+    tests/test_multichain_iptm_notice.py). The LEGEND cannot apply that gate,
+    because it is keyed on ``(tool, column)`` and never sees a job; the email
+    can, because ``job.inputs`` carries the chain the run was submitted with.
+    That is the whole difference between the two consumers, and it is why this
+    is a second function rather than an argument to ``legend_text``.
+
+    The caveat is appended VERBATIM rather than paraphrased into something
+    shorter. A shorter email-only wording is a second copy of one claim, and
+    two copies drifting apart is what produced the last three defects here.
+    """
+    if not isinstance(legend, dict):
+        return ""
+    caption = str(legend.get("explanation") or "").strip()
+    caveat = str(legend.get("caveat") or "").strip()
+    if caveat and names_multiple_chains(target_chain):
+        caption = f"{caption} {caveat}".strip()
+    return caption
 
 
 def score_legends_for(tool_slug: str) -> dict[str, Legend]:
@@ -598,8 +689,7 @@ def multichain_iptm_unreliable(tools, target_chain: str) -> bool:
     Both chain separators are accepted, matching every other consumer of this
     field (``"A,B"`` and ``"A B"``); see ``tools.base.parse_target_chains``.
     """
-    chains = [c for c in str(target_chain or "").replace(",", " ").split() if c]
-    if len(set(chains)) <= 1:
+    if not names_multiple_chains(target_chain):
         return False
     if not tools:
         return False
