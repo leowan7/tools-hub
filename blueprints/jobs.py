@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from flask import (
     Blueprint,
@@ -352,6 +353,53 @@ def job_status(job_id: str):
         }
     )
 
+def _refold_hotspot_ints(raw) -> list:
+    """Coerce a source job's ``hotspot_residues`` to ``list[int]``, never raising.
+
+    Boltz-2 hotspots are 1-indexed SEQUENCE positions, so the chain a source
+    hotspot named cannot be carried across anyway — the number is all that
+    survives the hop, and dropping the prefix here is a conversion, not a loss
+    this function is hiding.
+
+    The comment this replaces said "SOURCE_TOOLS all persist hotspot_residues
+    as list[int]" and then did ``[int(x) for x in raw]``. That claim is FALSE:
+    rfdiffusion, bindcraft, pxdesign and boltzgen are all in SOURCE_TOOLS, all
+    four parse their hotspots through ``tools/base.py::parse_hotspot_residues``,
+    and that function returns ``["A296", "B264"]`` for any multi-chain target.
+    ``int("A296")`` raises ValueError, which here is a 500 on a Refold click.
+    Proteina is not in SOURCE_TOOLS, so proteina's chain-qualified
+    hotspot_residues cannot reach this today — but the four that can already do.
+
+    Unparseable entries are dropped rather than raised on: the alternative is
+    failing a refold the user asked for over a field boltz2 treats as optional.
+    """
+    if isinstance(raw, str):
+        items = [t for t in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    elif raw is None:
+        items = []
+    else:
+        items = [raw]
+
+    out: list = []
+    for item in items:
+        if item is None or not str(item).strip():
+            continue
+        try:
+            out.append(int(item))
+            continue
+        except (TypeError, ValueError):
+            pass
+        # Chain-prefixed ("A296"): keep the number. split_hotspot needs a chain
+        # list to recognise a prefix, and this path has no target to read one
+        # from, so match the token shape directly.
+        m = re.match(r"^[A-Za-z]{1,4}(-?\d+)$", str(item).strip())
+        if m:
+            out.append(int(m.group(1)))
+    return out
+
+
 def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
                       antigen_storage_path=None):
     """Spawn one orthogonal second-opinion fold of ``seq`` (a CandidateSeq from
@@ -421,20 +469,8 @@ def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
             )
             return None
         src_chain = str(src_inputs.get("target_chain") or "A").strip() or "A"
-        # SOURCE_TOOLS all persist hotspot_residues as list[int]; tolerate a
-        # string from any future adapter that drops the parsing.
-        raw_hotspots = src_inputs.get("hotspot_residues") or []
-        if isinstance(raw_hotspots, str):
-            parsed: list[int] = []
-            for tok in raw_hotspots.replace(";", ",").split(","):
-                tok = tok.strip()
-                if tok:
-                    try:
-                        parsed.append(int(tok))
-                    except ValueError:
-                        pass
-            raw_hotspots = parsed
-        hotspot_list = [int(x) for x in raw_hotspots if str(x).strip()]
+        hotspot_list = _refold_hotspot_ints(
+            src_inputs.get("hotspot_residues"))
         inputs = {
             "preset": "standalone",
             "target_chain": src_chain,

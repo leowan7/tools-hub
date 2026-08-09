@@ -314,6 +314,31 @@ def test_the_existing_column_is_still_integer_array_in_0039():
 
 
 # ---------------------------------------------------------------------------
+# Defensive -- blueprints/jobs.py must not raise on a chain-prefixed hotspot
+# ---------------------------------------------------------------------------
+
+
+def test_the_refold_hotspot_coercion_survives_chain_prefixed_tokens():
+    """``int("A241")`` raises ValueError. Proteina is not in SOURCE_TOOLS so
+    this path cannot see a proteina job -- but rfdiffusion, bindcraft, pxdesign
+    and boltzgen ALL are, and tools/base.py::parse_hotspot_residues already
+    emits ``["A296", "B264"]`` for every one of them on a multi-chain target.
+    The comment claiming SOURCE_TOOLS "all persist hotspot_residues as
+    list[int]" is false today, so this is a live crash, not a hypothetical."""
+    from blueprints.jobs import _refold_hotspot_ints
+
+    assert _refold_hotspot_ints(["A296", "B264"]) == [296, 264]
+    assert _refold_hotspot_ints([296, 264]) == [296, 264]
+    assert _refold_hotspot_ints("A296, B264") == [296, 264]
+    assert _refold_hotspot_ints("296,264") == [296, 264]
+    assert _refold_hotspot_ints([]) == []
+    assert _refold_hotspot_ints(None) == []
+    # Junk is dropped, not raised on: this runs while a refold job is being
+    # spawned, and a ValueError there is a 500 on a button click.
+    assert _refold_hotspot_ints(["A296", "zzz", None, "  "]) == [296]
+
+
+# ---------------------------------------------------------------------------
 # Decision 3 -- the plain-text fields have to state the rule
 # ---------------------------------------------------------------------------
 
