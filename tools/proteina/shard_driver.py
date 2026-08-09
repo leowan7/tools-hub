@@ -57,6 +57,7 @@ import argparse
 import base64
 import csv
 import json
+import math
 import os
 import socket
 import statistics
@@ -974,13 +975,31 @@ def campaign_status(outdir: Path, plan: list[dict]) -> dict:
     measured = (sum(durations.values()) / len(durations)) if durations else None
     per_shard = measured if measured is not None else shard_seconds()
     remaining = len(plan) - len(done)
+
+    # WIDTH IS OBSERVED, not assumed. Multiplying remaining x per-shard was
+    # right only while the driver was sequential; with a window open it
+    # over-states the finish time by the width factor. The number of shards
+    # currently `submitted` IS the width in use, and falls back to 1 when
+    # nothing is running, which is the correct sequential estimate.
+    in_flight = sum(1 for r in state.values() if r.get("state") == "submitted")
+    width = max(1, in_flight)
+    waves = math.ceil(remaining / width) if remaining else 0
+
+    # Shards already spawned are counted in spent_usd (they are `submitted` in
+    # the ledger), so projecting from `remaining` double-counted every
+    # in-flight shard — at width 10 that inflated the tier by ~$23.
+    never_spawned = sum(
+        1 for item in plan
+        if state.get(item["index"], {}).get("state") not in BILLED_STATES)
     return {
         "shards_done": len(done), "shards_total": len(plan),
         "shards_delivered": len(delivered), "remaining": remaining,
+        "in_flight": in_flight, "waves": waves,
         "measured_shard_s": measured, "modelled_shard_s": shard_seconds(),
-        "eta_s": remaining * per_shard,
+        "eta_s": waves * per_shard,
         "spent_usd": _spent_usd(state),
-        "projected_usd": _spent_usd(state) + remaining * per_shard * USD_PER_SECOND,
+        "projected_usd": (_spent_usd(state)
+                          + never_spawned * per_shard * USD_PER_SECOND),
         "mismatches": [i for i, r in state.items() if r.get("length_mismatch")],
     }
 
@@ -1028,7 +1047,8 @@ def cmd_status(args) -> int:
         print(f"per shard   : {st['measured_shard_s'] / 60:.1f} min measured "
               f"vs {st['modelled_shard_s'] / 60:.0f} min modelled "
               f"({drift:+.0%})")
-    print(f"remaining   : {st['remaining']} shards, "
+    print(f"in flight   : {st['in_flight']} concurrent A100(s)")
+    print(f"remaining   : {st['remaining']} shards in {st['waves']} wave(s), "
           f"{st['eta_s'] / 3600:.1f} h ({st['eta_s'] / 86400:.2f} d)")
     if st["remaining"]:
         finish = datetime.now() + timedelta(seconds=st["eta_s"])
