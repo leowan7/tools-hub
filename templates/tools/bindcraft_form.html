@@ -199,9 +199,71 @@
             Upload the target structure as .pdb, .cif, or .mmcif.
           </div>
 
+          {# BINDCRAFT'S COPY IS DELIBERATELY SINGLE-CHAIN, unlike the four
+             sibling binder forms. Two facts hold it here, and BOTH flip with
+             the same flag:
+
+             1. bindcraft is multi_chain_container_ready=False
+                (shared/pdb_preflight_rules.py), so preflight REFUSES a
+                multi-chain target at submit — "Bindcraft can't run a
+                multi-chain target yet ... its GPU image still handles one
+                target chain at a time". Pinned by
+                tests/test_multichain_targets.py::
+                test_preflight_refuses_multichain_for_the_unverified_image.
+
+                "AT SUBMIT" MEANS BOTH PATHS OFF THIS FORM, and that was
+                checked by executing them, not by reading. A review traced the
+                hard gate at blueprints/tools.py:1267 — which is conditioned on
+                ``pdb_bytes is not None``, assigned only by a fresh upload or
+                the AlphaFold fetch — and concluded that submitting a SAVED
+                two-chain target (``reuse_pdb_token="target:<uuid>"``) would
+                skip the refusal this copy promises. It does not: a staged
+                reuse token meets the second gate at blueprints/tools.py:1606,
+                which re-inspects the copied bytes through
+                shared/pdb_intake.py::_verify_reuse_pdb_bytes and runs the same
+                preflight_for_tool. Both paths are now driven end to end by
+                tests/test_multichain_form_affordances.py::
+                test_the_gated_forms_refusal_promise_holds_on_every_path_from_the_form,
+                so this sentence cannot become an over-promise unnoticed.
+
+                What this copy does NOT speak for is /targets/<id>/launch,
+                which fans out to several tools and runs size checks only
+                (shared/targets.py::size_error) rather than preflight_for_tool.
+                That is a separate surface with its own open item — see the
+                bindcraft paragraph above MULTICHAIN_IPTM_UNRELIABLE_TOOLS in
+                shared/score_legends.py and
+                docs/HANDOFF-2026-08-07-multichain-finish.md — and it is why
+                bindcraft stays in the ipTM banner set.
+             2. The hotspot picker below is NOT chainPrefixed for bindcraft
+                (see the held flag in the script block at the bottom of this
+                file). Type "A296", click once in the viewer, and the field is
+                rewritten as bare ints — the prefix is destroyed silently.
+
+             So the sibling forms' copy — "several for an oligomeric target
+             (A,B)", "prefix the chain (A296,B264)" — would advertise a target
+             this tool refuses and a token its own picker deletes. It was here
+             briefly and that is exactly what it did.
+
+             maxlength stays at the 32 the siblings use, on purpose. bindcraft's
+             validator caps chain ids PER TOKEN, so a 4-char field does not
+             prevent "A,B" (3 chars) — it only truncates "A,B,C" to "A,B," and
+             designs against two chains of the three the user named. A field
+             wide enough to post what was typed lets the submit-time refusal
+             say what is actually wrong.
+
+             WHEN THE FLAG FLIPS — one paid bindcraft pilot confirming the
+             prefixed form, or vendored upstream source — this copy moves to
+             match the sibling forms in the SAME commit, and bindcraft moves
+             back into MULTI_CHAIN_FORMS / REWRITTEN_COPY_FORMS in
+             tests/test_multichain_form_affordances.py. #}
           <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+          <input type="text" name="target_chain" id="target_chain" required {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="32"
+                 style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+          <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+            One chain (<code>A</code>). BindCraft's GPU image has not been run
+            against an oligomeric target yet, so naming more than one chain is
+            refused when you submit.
+          </div>
 
           <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
           <input type="text" name="hotspot_residues" id="hotspot_residues" required placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
@@ -315,6 +377,27 @@
         emptyMessageId: 'hotspot-empty',
         surfaceToggleId: 'hotspot-surface-toggle',
         clearBtnId: 'hotspot-clear-btn',
+        // chainPrefixed is HELD here, not declined — the one deviation from
+        // docs/HANDOFF-2026-08-07-multichain-finish.md item 1a, recorded
+        // rather than made quietly.
+        //
+        // Turning it on changes what reaches upstream BindCraft for every
+        // single-chain user who clicks, from "25,30" to "A25,A30":
+        // docker/bindcraft/run_pipeline.py:426 joins the tokens verbatim with
+        // no normalisation. BindCraft's documented format IS chain-specific
+        // ("target_hotspot_residues -> ... chain specific `A1-10,B1-20`", see
+        // tools/bindcraft/__init__.py), so prefixed is probably MORE correct
+        // than what we send today — but the image is the prebuilt
+        // kendrew-bindcraft:v7, its parser is not vendored in either repo, and
+        // bindcraft is the one binder tool with no smoke tier, so the only way
+        // to find out costs a full paid pilot. It is already gated
+        // multi_chain_container_ready=False, so the flag buys it the least of
+        // any tool.
+        //
+        // Unblock: one paid bindcraft pilot confirming the prefixed form is
+        // accepted, or vendored upstream source. Then move "bindcraft" from
+        // BARE_INT_FORMS to CHAIN_PREFIXED_FORMS in
+        // tests/test_hotspot_picker_runtime.py and add the flag here.
       });
     });
   </script>

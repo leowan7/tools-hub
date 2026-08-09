@@ -17,7 +17,22 @@
      tone                 "success" | "empty" | "failed"
      top_score_label      Score label string (e.g. "ipTM"); empty when no top score
      top_score_value      Score value string (e.g. "0.74"); empty when no top score
-     top_score_caption    1-line interpretation of the top score; empty if none
+     top_score_caption    Interpretation of the top score, built by
+                          shared.score_legends.email_caption: one line about
+                          the metric, plus -- only when this job's target
+                          names more than one chain -- that metric's caveat,
+                          a short second paragraph. Empty if none.
+
+                          This said "1-line interpretation of the top score"
+                          until a review measured it. It was never true: the
+                          longest legend explanation is 161 characters and the
+                          test that guards this slot justifies its own ceiling
+                          as "roughly three rendered lines". With the caveat
+                          appended it renders 516. The description was the
+                          wrong half; both parts are bounded by
+                          tests/test_job_complete_email_caption.py, which
+                          reads the two phrases above off this comment as the
+                          premise for its two ceilings.
      top_pdb_key          PDB filename of top design; empty if none
      next_step_url        URL of /tools/<dest_tool>; empty if no handoff
      next_step_label      Tool label, e.g. "ColabFold"; empty if no handoff

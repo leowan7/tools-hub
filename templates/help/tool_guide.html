@@ -154,8 +154,21 @@
         <dl style="margin: 0;">
           <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.75rem;">ipTM</dt>
           <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">
-            Predicted confidence in the binder to target interface. Higher is
-            better. Aim above roughly 0.7 on a tractable target.
+            {# NOT "the binder to target interface", flat. That is the metric's
+               INTENT, and it is false today for rfdiffusion, pxdesign and
+               bindcraft on a multi-chain target, and for any boltzgen run
+               predating the August 2026 container update: those numbers cover
+               the target's own chain-chain contact as well.
+               shared/metric_glossary.py carries the same correction, and
+               shared/score_legends.py plus
+               components/multichain_iptm_notice.html are the surfaces that
+               know the tool and can be specific. A general page cannot, so it
+               states the general truth and points at the specific one. #}
+            Predicted confidence at an interface. Higher is better; aim above
+            roughly 0.7 on a tractable target. On a multi-chain target the
+            number may cover the target's own chain&ndash;chain interface as
+            well as the binder's, so read the per-tool note on the results
+            table before comparing designs on it.
           </dd>
           <dt style="font-weight: 600; color: var(--text-primary); margin-top: 0.75rem;">pLDDT</dt>
           <dd style="margin: 0.2rem 0 0 0; color: var(--text-secondary); line-height: 1.6;">

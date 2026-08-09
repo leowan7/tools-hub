@@ -154,6 +154,7 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")
