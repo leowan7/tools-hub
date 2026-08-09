@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -235,6 +236,76 @@ def test_the_launch_screens_shared_field_no_longer_teaches_the_prefix():
     helper = _squash(body[i:body.find("placeholder=", i)])
     assert "Plain numbers only" in helper
     assert "prefix the chain instead" not in helper
+
+
+class _Inputs(HTMLParser):
+    """Every ``<input>`` on a rendered page, by name, as parsed attributes.
+
+    Attributes, not substrings: ``disabled`` is a boolean attribute, so
+    ``"disabled" in html`` is satisfied by any other control on the page and by
+    a comment mentioning the word. HTMLParser routes ``<!-- ... -->`` to
+    handle_comment, which this ignores.
+    """
+
+    def __init__(self, html: str):
+        super().__init__(convert_charrefs=True)
+        self.by_name: dict = {}
+        self.feed(html)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "input":
+            d = dict(attrs)
+            if d.get("name"):
+                self.by_name.setdefault(d["name"], []).append(d)
+
+    def one(self, name: str) -> dict:
+        found = self.by_name.get(name, [])
+        assert len(found) == 1, f"expected 1 input[name={name}], got {len(found)}"
+        return found[0]
+
+
+def test_the_campaign_form_renders_proteinas_field_disabled_too(client):
+    """THE SAME CONVENTION AS THE LAUNCH SCREEN, on the screen that asserted it
+    nowhere. The markup already does this; what was missing was the pin.
+
+    Claimed narrowly, and DEFENCE IN DEPTH rather than a live hole — say so
+    here so the next reader does not have to re-derive it. ``_tool_form`` and
+    the adapter whitelist are the security boundary; and on this screen
+    #rp-submit is itself server-rendered ``disabled`` with only
+    ``syncSubmit()`` to enable it, so a page whose JS never ran has no enabled
+    submit control, and a page whose JS did run has already called
+    ``refreshTool()``. There is no submission today that this attribute
+    rescues.
+
+    What it is worth is that the field is never simultaneously hidden,
+    prefilled and live — ``?target_id=`` fills it from the target while the
+    tool select still reads rfdiffusion — because proteina PREFERS
+    ``chain_hotspots`` over the shared field, so a live hidden one out-votes
+    the visible one. Holding that as markup rather than as an ordering
+    argument about two other controls is the difference between a convention
+    and a coincidence, and the convention is stated on both screens (the
+    comment above targets/launch.html's tool loop) but asserted on only one.
+
+    Asserted on the RENDERED page through the real GET, so a value moved into
+    a macro still counts. The flag is on so this is the page a proteina-capable
+    user gets; without it ``visible_campaign_tools()`` omits proteina entirely.
+    The complement — that the field still posts when it should — is executed
+    below.
+    """
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
+            patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp = client.get("/campaigns/new")
+    assert resp.status_code == 200, resp.status_code
+    inputs = _Inputs(resp.get_data(as_text=True))
+    assert "disabled" in inputs.one("chain_hotspots"), (
+        "runs/new.html ships proteina's hotspot field live; the template's own "
+        "claim is that the `disabled` makes it inert with no JS at all"
+    )
+    # The other half of "at most one live": the SHARED field starts live. The
+    # select opens on the first visible tool -- `target_defaults_for_form`
+    # never prefills `tool`, so nothing else can be selected here -- and
+    # `visible_campaign_tools()` leads with rfdiffusion.
+    assert "disabled" not in inputs.one("hotspot_residues")
 
 
 def test_the_campaign_form_carries_both_fields_and_swaps_them():
@@ -647,3 +718,81 @@ def test_the_campaign_route_enriches_too(client):
         resp = client.post("/campaigns", data=_campaign_form(target))
     assert resp.status_code == 302, resp.get_data(as_text=True)[-400:]
     assert store.get("fields") == {"hotspot_spec": ["A241", "B241"]}
+
+
+def test_the_campaign_forms_disabled_field_still_posts_when_it_should(client):
+    """THE COMPLEMENT OF THE SERVER-RENDERED ``disabled``, and the reason that
+    convention is safe to hold on this screen at all.
+
+    ``disabled`` is a DEFAULT that ``refreshTool()`` lifts, not a lock. If it
+    were a lock the feature would be silently dead — proteina prefers
+    ``chain_hotspots``, so an unreachable field means every campaign falls back
+    to the shared one, and this branch exists because the shared one cannot say
+    which protomer it means. Executed against the real route: the value the
+    browser posts arrives in ``params["hotspot_spec"]``, which is what
+    ``create_campaign`` stores and what ``build_payload`` ships.
+
+    The discriminator is the multi-chain contig. The shared field carries the
+    bare ``241,241``, which on ``A234-444,B234-444`` is REFUSED — so a route
+    that had dropped ``chain_hotspots`` would answer 400 here, not 302 with the
+    right answer. Green before the ``disabled`` pin above as well as after: it
+    is the backward-compatibility half of that decision, not new coverage for a
+    defect.
+    """
+    target = _fc()
+    created: dict = {}
+
+    def _record(**kw):
+        created.update(kw)
+        return SimpleNamespace(id="c-1")
+
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
+            patch("shared.targets.get_target", return_value=target), \
+            patch("shared.targets.touch_target"), \
+            patch("shared.targets.get_service_client", return_value=None), \
+            patch("shared.compute_campaigns.campaign_preauth",
+                  return_value=_preauth_ok()), \
+            patch("shared.compute_campaigns.create_campaign",
+                  side_effect=_record), \
+            patch("shared.compute_campaigns.fund_campaign", return_value=True), \
+            patch("shared.compute_campaigns.drive_campaign_async"), \
+            patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp = client.post("/campaigns", data=_campaign_form(target))
+
+    assert resp.status_code == 302, resp.get_data(as_text=True)[-400:]
+    params = created["params"]
+    assert params["hotspot_spec"] == ["A241", "B241"], (
+        "the campaign form's `chain_hotspots` did not reach the adapter"
+    )
+    # The bare copy is the same either way, so it cannot be what proves this.
+    assert params["hotspot_residues"] == [241, 241]
+    # And what the container string-matches on is the qualified pair.
+    from tools import proteina
+    assert proteina.build_payload(
+        params, "https://example.invalid/t.pdb"
+    )["hotspot_spec"] == ["A241", "B241"]
+
+
+def test_a_campaign_that_omits_the_field_entirely_is_refused_not_promoted(client):
+    """The precondition the test above rests on, stated rather than assumed: a
+    two-chain proteina campaign driven only from the shared field is REFUSED.
+    That is what makes 302 above evidence that ``chain_hotspots`` arrived,
+    instead of evidence that a bare ``241`` got promoted onto chain A again.
+    """
+    target = _fc()
+    form = _campaign_form(target)
+    del form["chain_hotspots"]
+    with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
+            patch("shared.targets.get_target", return_value=target), \
+            patch("shared.targets.touch_target"), \
+            patch("shared.targets.get_service_client", return_value=None), \
+            patch("shared.compute_campaigns.campaign_preauth",
+                  return_value=_preauth_ok()), \
+            patch("shared.compute_campaigns.create_campaign") as mk, \
+            patch("shared.compute_campaigns.fund_campaign", return_value=True), \
+            patch("shared.compute_campaigns.drive_campaign_async"), \
+            patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp = client.post("/campaigns", data=form)
+    assert resp.status_code == 400, resp.status_code
+    assert "chain prefix" in resp.get_data(as_text=True)
+    mk.assert_not_called()

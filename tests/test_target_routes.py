@@ -310,19 +310,22 @@ def test_create_target_honours_allow_duplicate(client):
     dupe.assert_not_called()
 
 
-def test_the_new_target_form_does_not_teach_a_token_this_route_rejects(client):
-    """The copy and the parser have to agree, and they did not: the form told
-    users to type "A241, B241" while ``_parse_residue_list`` answered "'A241'
-    is not a residue number.". Asserted on the RENDERED page, so a helper
-    rewritten in the macro rather than the template still counts."""
-    _login(client)
-    with patch("blueprints.targets.load_user_context", return_value=_ctx()):
-        body = _flat(client.get("/targets/new").get_data(as_text=True))
-    i = body.find("Hotspot residues")
-    assert i != -1, "the hotspot field is gone from /targets/new"
-    helper = body[i:i + 600]
-    assert "Prefix the chain" not in helper
-    assert "A241" not in helper
+# The "/targets/new must not teach a token this route rejects" guard lives in
+# tests/test_multichain_form_affordances.py::
+# test_targets_new_residue_examples_parse_on_its_own_route, and only there.
+#
+# A second check used to sit here, asserting `"Prefix the chain" not in ...`
+# and `"A241" not in ...` inside a 600-char window after the field label. It
+# was deleted rather than reworded because it was measured and found vacuous:
+# with the exact copy that shipped the defect restored into
+# templates/targets/new.html ("... prefix the chain to name another (A296,
+# B264).", removed by d398782, which is on main), it went on PASSING while the
+# property test FAILED. Its two literals cannot match that copy -- lowercase
+# "prefix", and the token was A296/B264, never A241 -- so it could not fail for
+# the reason its own docstring gave. The property test extracts every residue
+# example from the whole containing <form>, including placeholder/title/
+# data-tooltip/aria-label, and feeds each to `_parse_residue_list`, the parser
+# this route really uses; `input_named` fails there too if the field is gone.
 
 
 def test_target_detail_404s_for_another_users_target(client):

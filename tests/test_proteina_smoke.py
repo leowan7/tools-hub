@@ -334,11 +334,15 @@ class TestHotspotParse:
         """``hotspot_spec`` keeps the prefix; ``hotspot_residues`` is the
         stripped copy.
 
-        The stripped copy is LOSSY on purpose-free grounds — it is simply the
-        shape the shared launch field carries fleet-wide. Nothing that spends
-        money reads it: every paid gate calls
-        ``shared.pdb_preflight.shipped_hotspots``, which prefers the spec (see
-        tests/test_multichain_targets.py).
+        The stripped copy is LOSSY ON PURPOSE: it is the shape the shared
+        ``hotspot_residues`` key carries fleet-wide — the one launch field
+        posted to every selected tool (``_SHARED_LAUNCH_FIELDS`` in
+        blueprints/targets.py), which holds plain integers and nothing else.
+        Dropping the chain here is safe only because nothing that spends money
+        reads it: all four paid gates call
+        ``shared.pdb_preflight.shipped_hotspots``, which prefers the spec. See
+        tests/test_multichain_targets.py::
+        test_shipped_hotspots_prefers_the_spec_and_is_a_no_op_without_one.
         """
         inp, err = px.validate(_custom(target_input="A1-150", hotspot_residues="A45 A67 A89"), {})
         assert err is None

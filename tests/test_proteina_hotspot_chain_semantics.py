@@ -103,6 +103,49 @@ def test_the_refusal_names_the_chains_and_shows_both_prefixed_forms():
     )
 
 
+def test_the_refusal_lists_EVERY_chain_on_a_three_chain_run():
+    """THREE CHAINS, and the middle one is the one that can vanish.
+
+    ``_english_list`` renders two items as "A and B" and three or more as
+    "A, B and C". A collapsing join — first plus last, which is the obvious way
+    to write "and the rest" wrong — reads perfectly well as "A and C" and
+    "A241 or C241", and nothing else on the page names B. This message is the
+    ONLY thing telling an operator which protomers are on offer, so dropping
+    one is the same class of defect the module exists to close: the run is
+    refused and the operator is steered to a chain that is not the one they
+    need. Pinned as the whole rendered string, both lists at once.
+    """
+    _inp, err = adapter.validate(
+        _form(target_input="A12-157,B12-157,C12-157",
+              hotspot_residues="241"), {})
+    assert err == (
+        'Hotspot "241" needs a chain prefix — this run targets chains A, B '
+        'and C, so write A241, B241 or C241.'
+    )
+
+
+@pytest.mark.parametrize("items,conj,expected", [
+    ([], "and", ""),
+    (["A"], "and", "A"),
+    (["A"], "or", "A"),
+    (["A", "B"], "and", "A and B"),
+    (["A241", "B241"], "or", "A241 or B241"),
+    (["A", "B", "C"], "and", "A, B and C"),
+    (["A241", "B241", "C241"], "or", "A241, B241 or C241"),
+    (["A", "B", "C", "D"], "and", "A, B, C and D"),
+    (["A241", "B241", "C241", "D241"], "or", "A241, B241, C241 or D241"),
+])
+def test_the_chain_list_renderer_keeps_every_item(items, conj, expected):
+    """The renderer itself, at 0 through 4 items and on both conjunctions.
+
+    The refusal above only exercises three, which needs one separator comma.
+    Four needs two, so a join that mishandles "the rest" drops more than a
+    single item there. Four is reachable — ``_MAX_SEGMENTS`` is 8, so a contig
+    may name up to eight chains and this list may be eight items long.
+    """
+    assert adapter._english_list(items, conj) == expected
+
+
 def test_the_homodimer_case_is_refused_even_though_the_residue_is_real():
     """THE ONE THAT MATTERS. Both Fc protomers are numbered 234-444, so the
     promoted ``A241`` resolves against a real atom and every downstream check
@@ -134,6 +177,38 @@ def test_an_explicitly_named_chain_is_accepted_without_a_contig():
         _form(target_chain="A B", hotspot_residues="B264"), {})
     assert err is None, err
     assert inp["hotspot_spec"] == ["B264"]
+
+
+def test_a_named_chain_is_taken_as_typed_when_the_run_declares_no_chains():
+    """PINS THE ``allowed and`` IN ``_parse_hotspots``'s membership check, which
+    is a reachable guard and not a redundant truth.
+
+    ``elif allowed and chain not in allowed:`` refuses a token naming a chain
+    the run does not target. Deleting ``allowed and`` looks equivalent —
+    ``chain not in []`` and "no chains to disagree with" feel like the same
+    thing — but they are opposites: an empty ``allowed`` makes ``not in`` true
+    for EVERY token, so every chain-qualified hotspot is refused, with a
+    message whose chain list renders as "()".
+
+    Reached by the free ``validate`` pre-flight tier. ``validate`` is not in
+    ``_CHAIN_PRESETS``, so ``target_chain`` is never derived — not even from a
+    posted one — and with no contig either, ``run_chains`` is empty and
+    ``allowed`` arrives as ``[]``. There is nothing to check membership
+    against, so what the operator typed is what ships.
+    """
+    inp, err = adapter.validate(
+        _form(preset="validate", target_chain="A", hotspot_residues="A45 B67"),
+        {},
+    )
+    assert err is None, err
+    assert inp["target_chain"] == "", (
+        "precondition: the validate tier declares no chains, so `allowed` is "
+        "empty inside _parse_hotspots — if this ever stops being true, this "
+        "test is no longer measuring the guard it names"
+    )
+    assert inp["hotspot_spec"] == ["A45", "B67"]
+    # And the same thing one level down, naming the function whose line this is.
+    assert adapter._parse_hotspots("A45", [], "") == (["A45"], [45], None)
 
 
 def test_a_single_chain_run_still_promotes_a_bare_hotspot():

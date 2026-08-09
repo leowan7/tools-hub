@@ -150,14 +150,19 @@
             <input type="text" id="target_chain" name="target_chain" maxlength="4" value="{{ pre_fill.get('target_chain','A') }}">
           </div>
         </div>
-        {# TWO HOTSPOT FIELDS, ONE VISIBLE AT A TIME, and refreshTool() swaps
-           them. This field carries PLAIN NUMBERS and belongs to the five tools
-           that will not take a chain-qualified token from a target's saved
-           default — four refuse a chain the run does not target, and
+        {# TWO HOTSPOT FIELDS, AT MOST ONE LIVE AT A TIME, and refreshTool()
+           swaps them. This field carries PLAIN NUMBERS and belongs to the five
+           tools that will not take a chain-qualified token from a target's
+           saved default — four refuse a chain the run does not target, and
            rfantibody's parser is a bare int() per token. The one below is
            proteina's and is the only one that takes a protomer.
-           refreshTool() disables the
-           hidden one, so exactly one hotspot value is ever posted — hiding
+
+           refreshTool() disables whichever one is hidden, so TWO hotspot
+           values are never posted at once. NEVER TWO, not "exactly one": both
+           are disabled and ZERO post whenever neither field applies — for
+           iggm, which takes an epitope instead (#iggm-epitope-field), and for
+           proteina on a curated task, whose benchmark target carries its own
+           hotspots and whose adapter refuses any typed alongside it. Hiding
            without disabling would let a prefilled shared value silently supply
            hotspots to a proteina run whose own field the user had cleared. #}
         <div class="runs-field" id="hotspot-field">
