@@ -331,9 +331,13 @@
     // reads `chain_hotspots` first and falls back to `hotspot_residues`, so a
     // merely-hidden shared field would still post its prefilled value and
     // supply hotspots to a proteina run whose own field the user had emptied.
-    // In the other direction a merely-hidden `chain_hotspots` would post a
-    // chain-prefixed token to a tool that refuses one — rfantibody parses
-    // hotspots with a bare int() per token, so it refuses a prefix outright.
+    // The other direction is the SAME hazard mirrored, not a different one: a
+    // merely-hidden `chain_hotspots` still posts, and because proteina prefers
+    // it, a user who cleared the visible shared field would be silently
+    // overruled by one they cannot see. It is NOT a cross-tool hazard —
+    // `chain_hotspots` is read by `tools/proteina` alone (grep: no other
+    // adapter names it), and this form runs one tool at a time, so a stray
+    // value simply goes unread by the other five.
     var sharedHotspots = !isIggm && !isProteina;
     show('hotspot-field', sharedHotspots);
     hotspotInput.disabled = !sharedHotspots;
