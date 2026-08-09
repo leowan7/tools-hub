@@ -137,23 +137,48 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # justification for INLINE; multi-chain has nothing to do with it.
 #
 # That false premise is why `normalize_hotspots`' bare-integer refusal below
-# was placed on the container's direct-call entry ONLY. THE WEB TIER IS A
-# FIRST-CLASS MULTI-CHAIN PATH AND IT IS STILL UNGUARDED: _parse_hotspots in
-# tools/proteina/__init__.py promotes a bare `264` onto contig_chains[0] before
-# dispatch, so those tokens reach here already chain-prefixed and the refusal
-# cannot fire. The two payloads are byte-identical here — a promoted `A264` and
-# a deliberately typed `A264` differ in NOTHING that crosses the container
-# boundary (hotspot_residues carries the bare number either way) — so this file
-# cannot close the hole and must not pretend to. The fix belongs in
-# _parse_hotspots: refuse a bare token when len(chain_ids) > 1 instead of
-# promoting it. Do not "fix" it here by refusing when the hotspots address
-# fewer chains than the contig names — designing against one epitope of a
-# multi-chain complex, with the other chains present as steric context, is
-# ordinary and correct, and both this file and the adapter accept it today.
-# That guard would refuse legitimate campaigns to catch a case it cannot even
-# see. Pinned by test_hotspots_on_a_SUBSET_of_the_contig_chains_are_legitimate
-# in tests/test_proteina_delivery.py, so the reasoning is checkable rather than
-# asserted — no smoke test covers a STRICT subset of the contig's chains.
+# was placed on the container's direct-call entry ONLY. The web tier is a
+# first-class multi-chain path, and IT IS NOW GUARDED IN ITS OWN TIER:
+# `_parse_hotspots` in tools/proteina/__init__.py REFUSES a bare token when the
+# run names more than one chain — named by the contig (`A236-443,B236-443`) or
+# by target_chain alone (`A B`); both refuse — instead of promoting it onto the
+# first chain. So the refusal below still cannot fire on a web payload, but for
+# the opposite reason to the one this comment used to give: not because the
+# ambiguous token arrives pre-promoted, but because it never becomes a job_spec
+# at all. What the guard below still covers is the direct
+# `modal.Function.from_name(...)` call, which has no adapter in front of it:
+# `{"target_chain": "A B", "hotspot_residues": [264]}` raises here today.
+#
+# Also no longer true, and it was the load-bearing half of the old claim:
+# "hotspot_residues carries the bare number either way". A multi-chain run now
+# emits the chain-qualified token in BOTH keys (`hotspot_residues` ==
+# `hotspot_spec` == `["A264", "B264"]`); only a single-chain run whose tokens
+# were ALL bare still emits plain ints (`[45, 67]`, beside `["A45", "A67"]` in
+# hotspot_spec), which is what keeps the pre-existing single-chain payload
+# byte-identical. Those two single-chain shapes — a promoted `A45` and a typed
+# `A45` — do still normalize to the same list HERE (`["A45", "A67"]` either
+# way), so this file cannot tell them apart and must not try.
+#
+# Do not "fix" it here by refusing when the hotspots address fewer chains than
+# the contig names — designing against one epitope of a multi-chain complex,
+# with the other chains present as steric context, is ordinary and correct, and
+# both this file and the adapter accept it today. That guard would refuse
+# legitimate campaigns to catch a case it cannot even see. Pinned by
+# test_hotspots_on_a_SUBSET_of_the_contig_chains_are_legitimate in
+# tests/test_proteina_delivery.py, so the reasoning is checkable rather than
+# asserted.
+#
+# Nothing here is executable, which is exactly how the paragraph this replaced
+# survived the change that falsified it. So the claims above about the web
+# tier's refusal (from either chain source) and about the two hotspot_residues
+# shapes are each pinned by a test that runs:
+# test_a_bare_hotspot_is_refused_when_target_chain_
+# names_two_chains, test_the_homodimer_case_is_refused_even_though_the_residue_
+# is_real, test_hotspot_residues_is_chain_qualified_on_a_multi_chain_run and
+# test_hotspot_residues_stays_bare_ints_on_a_single_chain_all_bare_run, all in
+# tests/test_proteina_hotspot_chain_semantics.py. The direct-call refusal below:
+# TestJobSpecAliases::test_bare_ints_on_a_MULTI_chain_target_are_refused in
+# tests/test_proteina_delivery.py.
 #
 # The two are EXCLUSIVE, and that is a deliberate correction rather than an
 # accident of the gate. Inlining alongside an upload would put a second copy of
