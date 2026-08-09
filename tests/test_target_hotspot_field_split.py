@@ -1,14 +1,16 @@
-"""ONE shared hotspot field cannot carry a chain prefix, so proteina has its own.
+"""The ONE shared hotspot field carries plain integers, so proteina has its own.
 
 The shape being pinned here:
 
     hotspot_residues   the SHARED launch field, posted to every selected tool.
-                       PLAIN INTEGERS ONLY, forever. rfdiffusion, bindcraft,
-                       boltzgen and pxdesign refuse a token naming a chain the
-                       run does not target; tools/rfantibody parses it with a
-                       bare ``int(tok)`` and refuses a prefix on ANY chain. The
-                       launch route is all-or-nothing, so one prefixed token in
-                       this field kills the whole launch.
+                       PLAIN INTEGERS ONLY. rfdiffusion, bindcraft, boltzgen
+                       and pxdesign refuse a token naming a chain the run does
+                       not target; tools/rfantibody parses it with a bare
+                       ``int(tok)`` and refuses a prefix on ANY chain. So a
+                       target's SAVED hotspots cannot be chain-qualified here —
+                       they are prefilled into this field for every tool at
+                       once, and the launch route is all-or-nothing, so one
+                       prefixed token kills the whole launch.
 
     chain_hotspots     proteina's OWN field (``proteina__chain_hotspots`` on the
                        multi-tool launch screen, ``chain_hotspots`` on the

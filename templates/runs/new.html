@@ -152,8 +152,11 @@
         </div>
         {# TWO HOTSPOT FIELDS, ONE VISIBLE AT A TIME, and refreshTool() swaps
            them. This field carries PLAIN NUMBERS and belongs to the five tools
-           that cannot read a chain prefix at all; the one below is proteina's
-           and is the only one that takes a protomer. refreshTool() disables the
+           that will not take a chain-qualified token from a target's saved
+           default — four refuse a chain the run does not target, and
+           rfantibody's parser is a bare int() per token. The one below is
+           proteina's and is the only one that takes a protomer.
+           refreshTool() disables the
            hidden one, so exactly one hotspot value is ever posted — hiding
            without disabling would let a prefilled shared value silently supply
            hotspots to a proteina run whose own field the user had cleared. #}
@@ -324,8 +327,8 @@
     // merely-hidden shared field would still post its prefilled value and
     // supply hotspots to a proteina run whose own field the user had emptied.
     // In the other direction a merely-hidden `chain_hotspots` would post a
-    // chain-prefixed token to a tool that cannot parse one at all
-    // (tools/rfantibody is a bare int() per token).
+    // chain-prefixed token to a tool that refuses one — rfantibody parses
+    // hotspots with a bare int() per token, so it refuses a prefix outright.
     var sharedHotspots = !isIggm && !isProteina;
     show('hotspot-field', sharedHotspots);
     hotspotInput.disabled = !sharedHotspots;

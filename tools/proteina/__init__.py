@@ -55,9 +55,12 @@ native form; a bare number is promoted onto the single target chain so one
 shared launch field can still drive proteina alongside the other tools, and is
 REFUSED when the run names more than one chain, where "the target chain" does
 not identify a residue. The shared field is why the split exists: it is posted
-to EVERY tool on the launch screen, and five of the six cannot read a chain
-prefix at all, so anything chain-qualified has to come in on proteina's own
-key. See :func:`validate`.
+to EVERY tool on the launch screen, and none of the other five will accept a
+chain-qualified token arriving there from a target's saved default. rfdiffusion,
+bindcraft, boltzgen and pxdesign refuse any token naming a chain the RUN does
+not target (``tools/base.py::parse_hotspot_residues``); rfantibody parses it
+with a bare ``int(tok)`` and refuses a prefix on any chain at all. So anything
+chain-qualified has to come in on proteina's own key. See :func:`validate`.
 
 RF3 dependency (product decision): ``ligand_binder`` and ``motif_ame`` score
 on RF3 only — AF2RewardModel has no ligand protocol, so there is no AF2

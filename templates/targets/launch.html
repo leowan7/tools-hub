@@ -211,8 +211,10 @@
               </div>
             </div>
             {# PROTEINA'S OWN HOTSPOT FIELD. The shared field above is posted to
-               every selected tool and five of the six cannot read a chain
-               prefix, so a protomer-specific hotspot has to come in here. The
+               every selected tool, and none of the other five will take a
+               chain-qualified token there — four refuse a chain the run does
+               not target, and rfantibody's parser is a bare int() per token —
+               so a protomer-specific hotspot has to come in here. The
                adapter prefers this key and falls back to the shared one when it
                is blank, so a single-chain co-launch driven entirely from the
                shared field is unchanged. Rendered `disabled` like every other
