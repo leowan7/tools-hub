@@ -658,6 +658,16 @@ def test_single_chain_bare_hotspots_stay_bare_for_every_tool(slug):
     mod = importlib.import_module(f"tools.{slug}")
     form = dict(_PANEL_HOTSPOT_FORMS[slug])
     form.update({"target_chain": "A", "hotspot_residues": "5,7"})
+    # The table's proteina entry carries a TWO-chain contig, because the other
+    # three tests that read it need a chain set that accepts a prefix. This
+    # test is the single-chain one — its own name says so — and proteina reads
+    # its chain set from the contig, so "target_chain": "A" does not make the
+    # run single-chain the way it does for every other adapter. Narrow the
+    # contig instead of asserting single-chain behaviour against a dimer: a
+    # bare hotspot on two chains cannot say which protomer it means and is now
+    # refused (tools/proteina/__init__.py::_parse_hotspots).
+    if form.get("target_input"):
+        form["target_input"] = form["target_input"].split(",")[0]
 
     inputs, err = mod.validate(form, {})
     assert err is None, f"{slug}: {err}"
@@ -879,12 +889,17 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
     """The landscape the panel has to live with, pinned so it cannot shift
     silently underneath it.
 
-    Three behaviours, not two, which is why a single "parse it like the
-    adapters do" rule kept failing:
-      - the four binder tools accept the prefixed form and EMIT it
-      - proteina accepts it but emits bare ints, carrying the prefixed form
-        separately under hotspot_spec
+    TWO behaviours now, and this docstring used to say three:
+      - the five binder tools accept the prefixed form and EMIT it
       - rfantibody and boltz2 reject it outright
+
+    proteina was the third. It accepted the prefixed form and emitted bare
+    ints, carrying the prefix separately under hotspot_spec — and that split is
+    exactly what let the routes range-check "is 600 on any named chain" while
+    upstream string-matched "A600" and found nothing. hotspot_residues now
+    carries the same chain-qualified tokens hotspot_spec does, which is the
+    rule tools/base.py::parse_hotspot_residues already applied for the other
+    four. hotspot_spec stays, as proteina's native key name for the same list.
     """
     import importlib
 
@@ -902,13 +917,11 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
 
     assert err is None, f"{slug}: {err}"
     emitted = inputs.get("hotspot_residues") or []
+    assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
     if slug == "proteina":
-        assert emitted == [5, 7], emitted
         assert inputs.get("hotspot_spec") == ["A5", "B7"], (
             "proteina moved the prefixed form off hotspot_spec"
         )
-    else:
-        assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
 
 
 def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client):
