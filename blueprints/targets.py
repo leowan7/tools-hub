@@ -209,6 +209,7 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
     route performs has to happen here too.
     """
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.pdb_preflight import multi_chain_refusal  # noqa: PLC0415
     from shared.target_launch import ToolLaunchSpec  # noqa: PLC0415
 
     tools = [t.strip() for t in form.getlist("tools") if t.strip()]
@@ -288,6 +289,30 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return None, f"{label}: {chain_err}"
+        # Can this tool's MODEL, and the IMAGE we actually dispatch to, take
+        # the number of chains just named? Nothing on this path asked before.
+        # `preflight_for_tool` owns that gate and this blueprint has never
+        # called it -- its only callers are the atomic submit route, that
+        # route's AJAX panel, and the reuse-token path -- so the check that
+        # decides whether a container can even parse the target guarded the
+        # route that spends the LEAST. Executed against a two-chain stored
+        # target, bindcraft, rfdiffusion, pxdesign and rfantibody all reached
+        # create -> fund -> drive from here; rfantibody declares
+        # multi_chain_supported=False, so its model cannot do it at all.
+        #
+        # Only this one check moves here, not the whole preflight. The rest of
+        # it (normalizer dry-run, min-residue floor, gap rules, hotspot
+        # survival) all read the STRUCTURE, and a target-bound launch never
+        # downloads one -- switching them on would cost a download per tool per
+        # launch and newly refuse campaigns that have always been allowed. This
+        # one reads TOOL_RULES and the chain string, so it is free and cannot
+        # refuse a run that would have worked. Same line size_error draws.
+        #
+        # Ordered AFTER chain_error on purpose: "chain Z is not in this target"
+        # is the more useful sentence when both are true.
+        capability_err = multi_chain_refusal(tool, run_chain)
+        if capability_err:
+            return None, f"{label}: {capability_err}"
         # Both keys are original PDB author numbering. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its hotspots
         # ``hotspot_residues``.

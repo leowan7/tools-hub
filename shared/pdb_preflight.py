@@ -492,42 +492,9 @@ def preflight_for_tool(
     # llm-proteinDesigner and rebuild those images; then flip
     # multi_chain_container_ready and this gate opens on its own.
     chain_ids = _chain_tokens(target_chain)
-    multi_chain_ok = (
-        rules.multi_chain_supported and rules.multi_chain_container_ready
-    )
-    if len(chain_ids) > 1 and not multi_chain_ok:
-        # Say which of the two is missing, because the answer changes what the
-        # user should do. An IMAGE limit is temporary ("not yet"); a MODEL
-        # limit is permanent. Telling an rfantibody user their "GPU image"
-        # is the blocker invites them to wait for a capability that is never
-        # coming — rfantibody builds a VHH against one chain by construction.
-        if rules.multi_chain_supported:
-            reason = (
-                f"{rules.slug.title()} can't run a multi-chain target yet — "
-                f"{len(chain_ids)} chains were named "
-                f"({', '.join(chain_ids)}), and its GPU image still handles "
-                f"one target chain at a time."
-            )
-        else:
-            reason = (
-                f"{rules.slug.title()} designs against a single target chain, "
-                f"but {len(chain_ids)} were named "
-                f"({', '.join(chain_ids)})."
-            )
-        fix = f"Enter one chain — {' or '.join(chain_ids)} — and re-run."
-        # Only point at proteina when this deployment actually exposes it.
-        # It is flag-gated (compute_campaigns.FLAG_GATED_CAMPAIGN_TOOLS), and
-        # recommending a tool the user cannot see is worse than saying
-        # nothing. tool_enabled is fail-closed, so any doubt drops the line.
-        try:
-            from shared.feature_flags import tool_enabled  # noqa: PLC0415
-            if tool_slug != "proteina" and tool_enabled("proteina"):
-                fix += (
-                    " To design against several chains at once, use Proteina, "
-                    "which takes multi-chain targets today."
-                )
-        except Exception:  # noqa: BLE001 - advisory copy only, never fatal
-            logger.debug("proteina flag lookup failed", exc_info=True)
+    blocked = _multi_chain_block(rules, chain_ids, tool_slug)
+    if blocked is not None:
+        reason, fix = blocked
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -867,6 +834,91 @@ def _chain_tokens(target_chain: str) -> list[str]:
         if tok not in out:
             out.append(tok)
     return out
+
+
+def _multi_chain_block(
+    rules: ToolRules, chain_ids: list, tool_slug: str,
+) -> Optional[tuple[str, str]]:
+    """``(reason, fix)`` when this tool cannot take these chains, else None.
+
+    Extracted so the submit-time gate and the two campaign money routes cannot
+    drift apart on either the RULE or its wording. It was inline in
+    :func:`preflight_for_tool` and therefore reachable from exactly one route.
+    """
+    if len(chain_ids) <= 1:
+        return None
+    if rules.multi_chain_supported and rules.multi_chain_container_ready:
+        return None
+    # Say which of the two is missing, because the answer changes what the
+    # user should do. An IMAGE limit is temporary ("not yet"); a MODEL
+    # limit is permanent. Telling an rfantibody user their "GPU image"
+    # is the blocker invites them to wait for a capability that is never
+    # coming — rfantibody builds a VHH against one chain by construction.
+    if rules.multi_chain_supported:
+        reason = (
+            f"{rules.slug.title()} can't run a multi-chain target yet — "
+            f"{len(chain_ids)} chains were named "
+            f"({', '.join(chain_ids)}), and its GPU image still handles "
+            f"one target chain at a time."
+        )
+    else:
+        reason = (
+            f"{rules.slug.title()} designs against a single target chain, "
+            f"but {len(chain_ids)} were named "
+            f"({', '.join(chain_ids)})."
+        )
+    fix = f"Enter one chain — {' or '.join(chain_ids)} — and re-run."
+    # Only point at proteina when this deployment actually exposes it.
+    # It is flag-gated (compute_campaigns.FLAG_GATED_CAMPAIGN_TOOLS), and
+    # recommending a tool the user cannot see is worse than saying
+    # nothing. tool_enabled is fail-closed, so any doubt drops the line.
+    try:
+        from shared.feature_flags import tool_enabled  # noqa: PLC0415
+        if tool_slug != "proteina" and tool_enabled("proteina"):
+            fix += (
+                " To design against several chains at once, use Proteina, "
+                "which takes multi-chain targets today."
+            )
+    except Exception:  # noqa: BLE001 - advisory copy only, never fatal
+        logger.debug("proteina flag lookup failed", exc_info=True)
+    return reason, fix
+
+
+def multi_chain_refusal(tool_slug: str, target_chain: str) -> Optional[str]:
+    """Capability verdict alone, as a user-facing string, or None when allowed.
+
+    FOR THE CAMPAIGN MONEY ROUTES, and a sibling of :func:`size_only_refusal`
+    in every respect — same shape, same fail-open on an unknown tool, same
+    reason for existing. ``POST /targets/<id>/launch`` and ``POST /campaigns``
+    fund and drive runs without ever calling :func:`preflight_for_tool`; the
+    only callers are ``blueprints/tools.py`` (the atomic submit + its AJAX
+    panel) and ``shared/pdb_intake`` (the reuse-token path). So the gate that
+    decides whether the IMAGE WE RUN can take a multi-chain target guarded the
+    one route that spends the least. Executed against a two-chain stored
+    target, bindcraft, rfdiffusion, pxdesign AND rfantibody all reached
+    create -> fund -> drive; rfantibody is ``multi_chain_supported=False``,
+    i.e. the model itself cannot do it, and it launched anyway.
+
+    THIS CHECK ONLY, deliberately. The full preflight also runs a normalizer
+    dry-run, a min-residue floor, gap rules and hotspot-survival rules, and
+    every one of those needs the structure — which a target-bound launch never
+    downloads. Turning them on here would both cost a download per tool per
+    launch and newly refuse campaigns that have always been allowed. This one
+    is free: it reads ``TOOL_RULES`` and the chain string, nothing else. Same
+    line ``DesignTarget.size_error`` already draws for the size cap.
+
+    Returns None for a tool with no rules entry (iggm, mpnn, boltz2's
+    sequence-position semantics), matching ``size_only_refusal``: a route must
+    not start refusing tools this module has no opinion about.
+    """
+    rules = TOOL_RULES.get(tool_slug)
+    if rules is None:
+        return None
+    blocked = _multi_chain_block(rules, _chain_tokens(target_chain), tool_slug)
+    if blocked is None:
+        return None
+    reason, fix = blocked
+    return f"{reason} {fix}"
 
 
 def _maybe_alphafold(pdb_bytes: bytes, target_chain: str) -> Optional[AlphaFoldSuggestion]:
