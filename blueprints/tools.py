@@ -1281,9 +1281,24 @@ def tool_submit(tool: str):
         # verdicts for those. ``shipped_hotspots`` prefers the prefixed
         # ``hotspot_spec`` exactly as the container does, and is a no-op for
         # every other tool, whose ``hotspot_residues`` is already the shipped
-        # token. The AJAX panel that previews this verdict has always sent the
-        # prefixed form (see ``tool_preflight`` above), so this also stops the
-        # panel and the gate disagreeing on the same field.
+        # token.
+        #
+        # THE AJAX PANEL THAT PREVIEWS THIS VERDICT DOES NOT SEND THE SAME
+        # FORM, and the comment here used to claim it always had.
+        # ``tool_preflight`` above only re-attaches a prefix the user already
+        # typed — ``_resnum if _cid is None else f"{_cid}{_resnum}"`` — so a
+        # bare token stays a bare int on that path while ``hotspot_spec``
+        # prefixes it.
+        #
+        # The two still agree, and NOT by luck: preflight attributes a bare
+        # token to the FIRST named chain, which is the same rule the adapter
+        # applied when it built the prefix, so the bare token and the
+        # ``hotspot_spec`` token derived from it name the same residue by
+        # construction. Executed panel-vs-gate over 9 cases — bare and
+        # prefixed, in range and out, single- and multi-chain: 0 disagreements
+        # on verdict kind. What can still differ is the token ECHOED back in
+        # the refusal text (``520`` vs ``A520``), which is cosmetic and, on the
+        # gate's side, the more useful of the two.
         preflight_hotspots = shipped_hotspots(inputs)
         preflight_binder_max, preflight_num_designs = (
             _parse_preflight_size_params(inputs)

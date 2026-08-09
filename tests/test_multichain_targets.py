@@ -1294,6 +1294,64 @@ def test_shipped_hotspots_prefers_the_spec_and_is_a_no_op_without_one():
     assert shipped_hotspots(None) == []
 
 
+def test_shipped_hotspots_reads_a_string_field_the_way_the_container_does():
+    """A plain string is ONE field, not a list of characters.
+
+    `list("B520")` is `["B", "5", "2", "0"]` -- four tokens, none of which
+    parses as a residue, so the range gate would refuse an input the container
+    accepts. Unreachable from the sole producer today (proteina's
+    `_parse_hotspots` emits a list) and fail-CLOSED if it were reached, so this
+    is parity work rather than a live refusal -- but the gate exists to judge
+    the token that ships, and it cannot do that while reading the field in a
+    shape the container never would.
+    """
+    from shared.pdb_preflight import shipped_hotspots
+
+    assert shipped_hotspots({"hotspot_spec": "B520"}) == ["B520"]
+    # Commas and whitespace both separate, the container's rule exactly.
+    assert shipped_hotspots({"hotspot_spec": "B520, A12 A13"}) == [
+        "B520", "A12", "A13",
+    ]
+    # The sibling fields go through the same reader -- the character-explosion
+    # was never specific to the spec.
+    assert shipped_hotspots({"hotspot_residues": "A5,B7"}) == ["A5", "B7"]
+    assert shipped_hotspots({"epitope_pdb_resnums": "32 45"}) == ["32", "45"]
+    # An empty / whitespace-only string is still "no spec", so precedence is
+    # unchanged and the bare list behind it is still consulted.
+    assert shipped_hotspots(
+        {"hotspot_spec": "  ", "hotspot_residues": [520]}
+    ) == [520]
+    # The list shape every producer actually emits is untouched.
+    assert shipped_hotspots({"hotspot_spec": ["B520"]}) == ["B520"]
+    assert shipped_hotspots({"hotspot_residues": [42, 88]}) == [42, 88]
+
+
+def test_the_container_tokenises_a_string_hotspot_field_the_same_way():
+    """The parity claim above, executed rather than cited.
+
+    If proteina's own `_hotspot_tokens` ever stops splitting a string on
+    commas-and-whitespace, this is the test that should go red -- before the
+    gate starts judging tokens the container will not produce.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from shared.pdb_preflight import shipped_hotspots
+
+    spec = importlib.util.spec_from_file_location(
+        "_proteina_run_pipeline_tokens",
+        str(Path(__file__).resolve().parents[1]
+            / "tools" / "proteina" / "run_pipeline.py"),
+    )
+    rp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rp)
+
+    for raw in ("B520", "B520, A12 A13", "  ", "", "5,7,39"):
+        assert shipped_hotspots({"hotspot_spec": raw}) == rp._hotspot_tokens(
+            raw, "hotspot_spec"
+        ), raw
+
+
 @pytest.mark.parametrize("name,mod", [
     ("bindcraft", bindcraft_mod),
     ("pxdesign", pxdesign_mod),
@@ -1651,7 +1709,7 @@ def _origin_placeholder_pdb(n_res: int = 40, at: int = 30) -> bytes:
     return "".join(lines).encode()
 
 
-def test_a_residue_parked_at_the_origin_is_absent_not_merely_incomplete():
+def test_a_residue_parked_at_the_origin_is_refused_but_not_called_absent():
     """The two probes PARTITION the dropped list, so every rule except the
     backbone one has to match between them.
 
@@ -1661,9 +1719,18 @@ def test_a_residue_parked_at_the_origin_is_absent_not_merely_incomplete():
     the coordinate origin. `_clean_resnums_by_chain` already rejects it; the
     presence probe must reject it the same way, even though proteina's own
     container (`pdb_ca_residues`) does not filter coordinates at all.
+
+    THE REFUSAL IS UNCHANGED AND THE SENTENCE IS NOT. This used to be reported
+    with the ABSENT wording -- "the chain each one names has no residue with
+    that number, so it is outside that chain's numbering" -- about a residue
+    the file plainly numbers, and the fix line then told the user to "pick a
+    hotspot that exists". Both are false here: the number is fine, the
+    coordinates are not, and re-picking a number in the same unresolved stretch
+    fails identically.
     """
     from shared.pdb_preflight import (
-        _clean_resnums_by_chain, _present_resnums_by_chain,
+        _clean_resnums_by_chain, _origin_only_resnums_by_chain,
+        _present_resnums_by_chain,
     )
 
     pdb = _origin_placeholder_pdb()
@@ -1672,17 +1739,103 @@ def test_a_residue_parked_at_the_origin_is_absent_not_merely_incomplete():
         "the presence probe kept a residue its sibling dropped for a reason "
         "that has nothing to do with backbone completeness"
     )
+    # ...and the residue IS numbered on the chain, which is the whole reason
+    # the absent wording was wrong. If this is empty the fixture has stopped
+    # exercising the case and every assertion below passes for free.
+    assert 30 in _origin_only_resnums_by_chain(pdb, "A")["A"]
+
     verdict = preflight_for_tool(
         "proteina", pdb, target_chain="A", hotspots=[30],
         binder_max_aa=80, num_designs=2,
     )
     assert not verdict.ok, "funded a design aimed at the coordinate origin"
-    assert "outside that chain's numbering" in (verdict.reason or ""), (
-        verdict.reason
-    )
     assert "backbone is incomplete" not in (verdict.reason or ""), (
         f"called a complete backbone incomplete: {verdict.reason!r}"
     )
+    assert "outside that chain's numbering" not in (verdict.reason or ""), (
+        f"still blaming the numbering for a residue that is numbered: "
+        f"{verdict.reason!r}"
+    )
+    assert "0,0,0" in (verdict.reason or ""), verdict.reason
+    assert "never resolved" in (verdict.reason or ""), verdict.reason
+    assert "Pick a hotspot that exists" not in (verdict.suggested_fix or ""), (
+        f"sent the user to re-pick a number that was never wrong: "
+        f"{verdict.suggested_fix!r}"
+    )
+
+
+def test_an_absent_hotspot_and_an_at_origin_one_do_not_read_the_same():
+    """ONE FILE, TWO CAUSES, TWO SENTENCES -- the assertion the wording fix
+    exists for.
+
+    Residue 999 is not on chain A at all; residue 30 is numbered there and
+    parked at 0,0,0. Both are hard-failed and both always were, so this test
+    says nothing about the verdict -- it says the user can tell which of two
+    different problems they have, and is sent to the right remedy for it.
+
+    Deliberately asserts the DIFFERENCE first: collapsing the two branches back
+    into one string is the regression, and a test that only checked each branch
+    against its own substrings would survive a merge that made both emit the
+    absent text.
+    """
+    pdb = _origin_placeholder_pdb()
+
+    absent = preflight_for_tool(
+        "proteina", pdb, target_chain="A", hotspots=[999],
+        binder_max_aa=80, num_designs=2,
+    )
+    at_origin = preflight_for_tool(
+        "proteina", pdb, target_chain="A", hotspots=[30],
+        binder_max_aa=80, num_designs=2,
+    )
+
+    # Preconditions: same verdict, so the difference below is about text only.
+    assert not absent.ok and not at_origin.ok, (
+        "a refusal DECISION moved; this test only governs the wording"
+    )
+    assert absent.hotspot_status["dropped"] == [999]
+    assert at_origin.hotspot_status["dropped"] == [30]
+
+    assert absent.reason != at_origin.reason, (
+        "an at-origin hotspot is still reported with the absent wording"
+    )
+    assert absent.suggested_fix != at_origin.suggested_fix, (
+        "both causes are still routed to the same remedy"
+    )
+
+    # Each names its own cause, rather than merely differing by the residue
+    # number interpolated into one shared sentence.
+    assert "outside that chain's numbering" in (absent.reason or "")
+    assert "outside that chain's numbering" not in (at_origin.reason or "")
+    assert "0,0,0" in (at_origin.reason or "")
+    assert "0,0,0" not in (absent.reason or "")
+
+    # And each points somewhere useful: re-pick for a number that isn't there,
+    # a different structure for one that is there and unresolved.
+    assert "Pick a hotspot that exists" in (absent.suggested_fix or "")
+    assert "Pick a hotspot that exists" not in (at_origin.suggested_fix or "")
+    assert "resolves them" in (at_origin.suggested_fix or "")
+
+
+def test_an_at_origin_hotspot_beside_an_absent_one_keeps_both_sentences():
+    """The two causes in one request. Each clause is built independently, so
+    neither may swallow the other -- a user who typed both gets told about
+    both, and the fix line carries both remedies.
+    """
+    verdict = preflight_for_tool(
+        "proteina", _origin_placeholder_pdb(), target_chain="A",
+        hotspots=[30, 999], binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok
+    reason = verdict.reason or ""
+    assert "outside that chain's numbering" in reason, reason
+    assert "0,0,0" in reason, reason
+    # Attributed to the right residue on each side, not merged into one list.
+    assert "residue(s) 999 can't be used" in reason, reason
+    assert "residue(s) 30 can't be used" in reason, reason
+    fix = verdict.suggested_fix or ""
+    assert "Pick a hotspot that exists" in fix, fix
+    assert "Residue(s) 30 are numbered in this file" in fix, fix
 
 
 # --- BACKWARD COMPATIBILITY, across every PDB-target tool -------------------

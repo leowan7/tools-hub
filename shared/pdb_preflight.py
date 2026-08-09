@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
@@ -719,15 +720,29 @@ def preflight_for_tool(
     #               trunk ran successfully — and a false refusal on a design
     #               path costs more than the failure it would prevent.
     #
+    #   AT-ORIGIN   the residue IS numbered on the chain, and every CA record
+    #               for it sits at 0,0,0 — the placeholder for a residue the
+    #               structure names but never resolved. Same HARD FAIL as
+    #               ABSENT (nothing is designed against the coordinate origin;
+    #               such a run completes, scores, and looks successful while
+    #               aimed at nothing), and it was filed under ABSENT until the
+    #               third bucket existed. That was a lying sentence: it told
+    #               the user their number was outside the chain's numbering
+    #               about a residue plainly numbered there, and sent them off
+    #               to re-pick a number that was never the problem. The verdict
+    #               was right and the wording was not, so only the wording
+    #               changed.
+    #
     # The alternative for the absent case — stripping the dead hotspot and
     # running an open search — is worse than refusing: it silently redesigns
     # the run the user asked for, and an untargeted design still completes and
     # still scores, so nothing downstream would ever reveal it.
-    absent_hotspots, incomplete_hotspots = _split_dropped_hotspots(
-        pdb_bytes, target_chain, dropped_hotspots,
-    ) if dropped_hotspots else ([], [])
+    absent_hotspots, incomplete_hotspots, origin_hotspots = (
+        _split_dropped_hotspots(pdb_bytes, target_chain, dropped_hotspots)
+        if dropped_hotspots else ([], [], [])
+    )
 
-    if absent_hotspots or (
+    if absent_hotspots or origin_hotspots or (
         incomplete_hotspots and rules.hotspot_needs_full_backbone
     ):
         # One or more user-picked hotspots didn't survive cleanup. Suggest
@@ -742,33 +757,50 @@ def preflight_for_tool(
         )
         absent_str = ", ".join(str(h) for h in absent_hotspots)
         incomplete_str = ", ".join(str(h) for h in incomplete_hotspots)
-        # DON'T BLAME THE FILE FOR A NUMBER THAT WAS NEVER IN IT, and don't
-        # blame the numbering for a backbone that really is broken. Each cause
-        # sends the user somewhere different — re-pick the residue vs. repair
-        # or replace the structure — so each gets its own sentence.
-        if absent_hotspots and incomplete_hotspots:
-            reason = (
-                f"Hotspot residue(s) {absent_str} can't be used on this "
-                f"target: the chain each one names has no residue with that "
-                f"number, so it is outside that chain's numbering. "
-                f"{incomplete_str} is on its chain but was dropped during "
-                f"cleanup because the backbone is incomplete in this PDB, and "
-                f"{rules.slug} needs a complete N/CA/C/O backbone at every "
-                f"hotspot."
-            )
-        elif absent_hotspots:
-            reason = (
+        origin_str = ", ".join(str(h) for h in origin_hotspots)
+        # DON'T BLAME THE FILE FOR A NUMBER THAT WAS NEVER IN IT, don't blame
+        # the numbering for a backbone that really is broken, and don't blame
+        # EITHER for a residue that is numbered and modelled at nothing. Each
+        # cause sends the user somewhere different — re-pick the residue vs.
+        # repair or replace the structure vs. supply one that resolves the
+        # residue at all — so each gets its own sentence. Built as a list and
+        # joined rather than as one branch per combination: three causes are
+        # seven combinations, and the sentence for a cause must not depend on
+        # which other causes happen to be present beside it.
+        clauses: list = []
+        if absent_hotspots:
+            clauses.append(
                 f"Hotspot residue(s) {absent_str} can't be used on this "
                 f"target: the chain each one names has no residue with that "
                 f"number, so it is outside that chain's numbering."
             )
-        else:
-            reason = (
-                f"Hotspot residue(s) {incomplete_str} were dropped during "
-                f"cleanup because their backbone is incomplete in this PDB. "
-                f"{rules.slug.title()} needs a complete N/CA/C/O backbone at "
-                f"every hotspot."
+        if origin_hotspots:
+            clauses.append(
+                f"Hotspot residue(s) {origin_str} can't be used on this "
+                f"target: the chain does number them, but every CA they have "
+                f"sits at 0,0,0 — the placeholder this file uses for a residue "
+                f"it never resolved — so there is no actual position on the "
+                f"surface to aim a binder at."
             )
+        if incomplete_hotspots:
+            # The lead-in differs only because this clause may follow another
+            # one; the claim it makes is the same either way.
+            clauses.append(
+                (
+                    f"{incomplete_str} is on its chain but was dropped during "
+                    f"cleanup because the backbone is incomplete in this PDB, "
+                    f"and {rules.slug} needs a complete N/CA/C/O backbone at "
+                    f"every hotspot."
+                )
+                if clauses
+                else (
+                    f"Hotspot residue(s) {incomplete_str} were dropped during "
+                    f"cleanup because their backbone is incomplete in this "
+                    f"PDB. {rules.slug.title()} needs a complete N/CA/C/O "
+                    f"backbone at every hotspot."
+                )
+            )
+        reason = " ".join(clauses)
         if len(chain_ids) > 1 and any(
             split_hotspot(h, chain_ids)[0] is None for h in dropped_hotspots
         ):
@@ -787,11 +819,30 @@ def preflight_for_tool(
         # from A alone reads as "there is nothing usable on B either", which
         # the search never asked.
         searched = _hotspot_search_chains(dropped_hotspots, chain_ids)
-        fix = (
-            f"Pick a hotspot that exists, with a clean backbone, on the chain "
-            f"it names. Nearest usable residues on chain(s) "
+        # "Pick a hotspot that exists" IS THE WRONG INSTRUCTION for a residue
+        # that does exist and is merely unresolved — it sends the user back to
+        # a number that was never the problem, and any other number they pick
+        # in the same unresolved stretch fails identically. The remedy there is
+        # a different structure, so the at-origin case names its own.
+        fix_parts: list = []
+        if absent_hotspots or incomplete_hotspots:
+            fix_parts.append(
+                "Pick a hotspot that exists, with a clean backbone, on the "
+                "chain it names."
+            )
+        if origin_hotspots:
+            fix_parts.append(
+                f"Residue(s) {origin_str} are numbered in this file but carry "
+                f"no modelled position, so re-picking the number won't help: "
+                f"use a structure that resolves them — an AlphaFold model has "
+                f"coordinates for every residue — or aim at a residue this "
+                f"file does resolve."
+            )
+        fix_parts.append(
+            f"Nearest usable residues on chain(s) "
             f"{', '.join(searched) or target_chain}: {nearest_str}."
         )
+        fix = " ".join(fix_parts)
         if len(chain_ids) > 1:
             fix += (
                 f" Prefix a hotspot with its chain to place it exactly — "
@@ -979,6 +1030,33 @@ def multi_chain_refusal(tool_slug: str, target_chain: str) -> Optional[str]:
     return f"{reason} {fix}"
 
 
+def _hotspot_field_tokens(raw) -> list:  # noqa: ANN001
+    """One hotspot field of a ``validate()`` dict, as the tokens it carries.
+
+    A PLAIN STRING IS ONE FIELD, NOT A LIST OF CHARACTERS. This used to be a
+    bare ``list(raw or [])``, which turns ``"B520"`` into
+    ``["B", "5", "2", "0"]`` — four unparseable tokens, so the range gate
+    refuses an input the container would have accepted. The container's own
+    reader (``tools/proteina/run_pipeline.py``'s ``_hotspot_tokens``) takes a
+    string and splits it on commas and whitespace, so the gate has to read the
+    same shape the same way or it judges a token the run never sends.
+
+    Unreachable from the sole producer today — proteina's ``_parse_hotspots``
+    emits a list — and the old behaviour failed closed rather than open, so
+    this is parity work, not a live bug. STRINGS ARE THE ONLY SHAPE THAT
+    CHANGES: ``None`` and the falsy empties still give ``[]``, and every other
+    value still goes through the same ``list(raw or [])`` it always did, so a
+    scalar still raises rather than being shape-guessed into something
+    plausible.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        # Same split as the container's ``_hotspot_tokens``.
+        return [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    return list(raw or [])
+
+
 def shipped_hotspots(validated) -> list:  # noqa: ANN001
     """The hotspot tokens a range gate must judge, from a ``validate()`` dict.
 
@@ -1014,9 +1092,9 @@ def shipped_hotspots(validated) -> list:  # noqa: ANN001
     """
     if not validated:
         return []
-    spec = list(validated.get("hotspot_spec") or [])
-    bare = list(validated.get("hotspot_residues") or [])
-    epitope = list(validated.get("epitope_pdb_resnums") or [])
+    spec = _hotspot_field_tokens(validated.get("hotspot_spec"))
+    bare = _hotspot_field_tokens(validated.get("hotspot_residues"))
+    epitope = _hotspot_field_tokens(validated.get("epitope_pdb_resnums"))
     return (spec or bare) + epitope
 
 
@@ -1164,9 +1242,52 @@ def _present_resnums_by_chain(
     stricter than what it models. Nothing is designed against a placeholder:
     such a run completes, scores, and looks successful while aimed at nothing,
     which is the failure class the absent branch exists to stop.
+
+    That divergence is why :func:`_origin_only_resnums_by_chain` exists beside
+    this one. A residue this probe rejects for all-zero coordinates is not the
+    same failure as a residue that was never in the file, and the refusal has
+    to be able to tell the user which one it hit.
+    """
+    return _ca_resnums_by_chain(pdb_bytes, target_chain)[0]
+
+
+def _origin_only_resnums_by_chain(
+    pdb_bytes: bytes, target_chain: str
+) -> dict[str, set]:
+    """``{chain_id: {resnum, ...}}`` for residues NUMBERED on each named chain
+    whose CA records all sit at 0,0,0.
+
+    The placeholder convention for a residue a structure names but never
+    resolved. :func:`_present_resnums_by_chain` rejects these — correctly, a
+    binder aimed at the coordinate origin is aimed at nothing — but rejecting
+    them there put them in the same bucket as a number that is not on the
+    chain at all, and the refusal then told the user their number was "outside
+    that chain's numbering" about a residue plainly numbered there. Same
+    verdict, different sentence, and a different fix: re-pick the number vs.
+    supply a structure that actually resolves it.
+
+    ORIGIN-ONLY, not origin-anywhere: a residue with several CA records (an
+    altloc, or a multi-model file flattened by an earlier step) counts as
+    placed if ANY of them has real coordinates, which is exactly the rule its
+    sibling applies. So the two sets are disjoint by construction, and a
+    residue with no CA at all is in neither — the genuinely absent case.
+    """
+    return _ca_resnums_by_chain(pdb_bytes, target_chain)[1]
+
+
+def _ca_resnums_by_chain(
+    pdb_bytes: bytes, target_chain: str
+) -> tuple[dict[str, set], dict[str, set]]:
+    """One parse, two answers: ``(placed, origin_only)`` CA resnums per chain.
+
+    Written as a single scan rather than two so the two probes cannot drift
+    apart. They partition the CA-bearing residues of each named chain, and the
+    whole point of the split is that a caller can trust "in neither set" to
+    mean "no CA record at all".
     """
     wanted = _chain_tokens(target_chain)
-    present: dict[str, set] = {c: set() for c in wanted}
+    placed: dict[str, set] = {c: set() for c in wanted}
+    seen: dict[str, set] = {c: set() for c in wanted}
     for raw in pdb_bytes.split(b"\n"):
         if not (raw.startswith(b"ATOM") or raw.startswith(b"HETATM")):
             continue
@@ -1177,7 +1298,7 @@ def _present_resnums_by_chain(
         if len(line) < 54:
             continue
         chain = line[21]
-        if chain not in present:
+        if chain not in placed:
             continue
         if line[12:16].strip() != "CA":
             continue
@@ -1188,10 +1309,12 @@ def _present_resnums_by_chain(
             z = float(line[46:54])
         except ValueError:
             continue
+        seen[chain].add(resnum)
         if all(abs(c) < 1e-6 for c in (x, y, z)):
             continue
-        present[chain].add(resnum)
-    return present
+        placed[chain].add(resnum)
+    origin_only = {c: seen[c] - placed[c] for c in wanted}
+    return placed, origin_only
 
 
 def _hotspot_search_chains(dropped: list, chain_ids: list) -> list:
@@ -1216,8 +1339,8 @@ def _hotspot_search_chains(dropped: list, chain_ids: list) -> list:
 
 def _split_dropped_hotspots(
     pdb_bytes: bytes, target_chain: str, dropped: list,
-) -> tuple[list, list]:
-    """Partition dropped hotspots into ``(absent, incomplete)``.
+) -> tuple[list, list, list]:
+    """Partition dropped hotspots into ``(absent, incomplete, at_origin)``.
 
     ``absent``     — the chain this token will be SENT AS has no such residue
                      (or the token does not parse as one). Nothing downstream
@@ -1225,25 +1348,37 @@ def _split_dropped_hotspots(
     ``incomplete`` — the residue is there, with a CA, and only its backbone is
                      short of N/CA/C/O. proteina's container accepts it; trunk
                      shipped it; refusing it is a false refusal.
+    ``at_origin``  — the residue is numbered on that chain but every CA record
+                     for it sits at 0,0,0, the placeholder for a residue the
+                     structure never resolved. HARD FAIL like ``absent``, and
+                     it used to BE ``absent``, which is the defect: the number
+                     is fine, the coordinates are not, and the two send the
+                     user somewhere different.
 
     Attribution mirrors :func:`_check_hotspots` exactly — bare tokens onto the
     first named chain, prefixed ones onto the chain they name — because these
     two functions are partitioning the SAME list and a disagreement between
     them would file a token under a chain it was never checked against.
     """
-    present = _present_resnums_by_chain(pdb_bytes, target_chain)
+    present, origin_only = _ca_resnums_by_chain(pdb_bytes, target_chain)
     names = list(present)
     first = names[0] if names else None
     absent: list = []
     incomplete: list = []
+    at_origin: list = []
     for h in dropped:
         cid, n = split_hotspot(h, names)
         if n is None:
             absent.append(h)
             continue
-        pool = present.get(cid if cid is not None else first, ())
-        (incomplete if n in pool else absent).append(h)
-    return absent, incomplete
+        landed = cid if cid is not None else first
+        if n in present.get(landed, ()):
+            incomplete.append(h)
+        elif n in origin_only.get(landed, ()):
+            at_origin.append(h)
+        else:
+            absent.append(h)
+    return absent, incomplete, at_origin
 
 
 # ``_clean_resnums_on_chain`` used to live here: the union of
