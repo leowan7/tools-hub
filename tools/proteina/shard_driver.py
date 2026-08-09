@@ -16,18 +16,26 @@ written BEFORE the spawn, the ``submitted`` record naming the call id is
 written BEFORE the driver waits, and a resume reconnects to uncollected calls
 rather than resubmitting.
 
-ONE GPU AT A TIME, and the two ways that can be violated are BOTH guarded,
-because neither is caught by anything downstream — Modal would allocate a
-second A100 and bill it.
+ONE GPU AT A TIME. Nothing downstream enforces this — Modal will happily
+allocate a second A100 and bill it — so every route to a concurrent container
+is guarded here. There are three, and an earlier revision claimed there were
+two:
   * ``fn.spawn`` does not queue against a pool: each call gets its own
     container and ``run_tool`` is unconditionally ``gpu="A100-80GB"``. So the
     driver never spawns while a call of its own is unresolved — including the
     case where waiting on it TIMED OUT, which is not the same as it having
     finished (see ``_collect``).
-  * Two driver processes on one ``--outdir`` would each spawn. An exclusive
-    lock file prevents it. This is enforcement, not convention: on a 4.7-day
-    unattended run an operator restarting because "it looks stuck" is expected
-    behaviour, not misuse.
+  * A second driver process. The lock is GLOBAL (``default_lock_path``), not
+    per-outdir: the invariant belongs to the account, not to a directory, and
+    ``--outdir`` defaults to a RELATIVE path, so two shells in different
+    working directories already evaded an outdir-scoped lock. Starting a fresh
+    campaign is the obvious move on a run that looks stuck, which makes this
+    the likely violation rather than the exotic one.
+  * A ledger the loop cannot interpret. Skip-terminal / reconnect-submitted /
+    else-spawn means every unrecognised state falls through to a spawn, and
+    this module's own recovery advice tells operators to hand-edit that file.
+    ``_refuse_unresumable`` stops on anything that is not terminal and not a
+    ``submitted`` carrying a call id.
 
 WHAT IT DELIBERATELY DOES NOT DO.
   * No automatic retry. A retry needs a FRESH job_id — the shard seed is
@@ -48,6 +56,7 @@ import base64
 import csv
 import json
 import os
+import socket
 import statistics
 import sys
 import time
@@ -59,10 +68,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.proteina.direct_call_fc import (  # noqa: E402
     DEFAULT_TARGET, APP, FN, _load_env_and_path, _stage_target, build_payload,
 )
-# IMPORTED, not copied. The previous revision hardcoded 6780 beside a comment
-# saying it mirrored upstream; upstream's is env-overridable
-# (PROTEINA_DESIGN_TIMEOUT_S) and a copy silently stops mirroring the moment it
-# changes. Importing makes the drift impossible.
+# IMPORTED rather than hardcoded, so a change to upstream's SOURCE cannot
+# leave a stale copy here.
+#
+# WHAT THIS DOES NOT TRACK, and the earlier comment wrongly claimed it did:
+# upstream's EFFECTIVE deadline is DESIGN_SUBPROCESS_TIMEOUT_S, computed from
+# PROTEINA_DESIGN_TIMEOUT_S in the environment of whatever process reads it.
+# That is the CONTAINER's environment, which this local process cannot see, so
+# no import can mirror it. If that variable is set in the Modal environment
+# below ~5000 s, _validate_plan will approve a 64-design shard the container
+# then kills. Importing the *_DEFAULT_* symbol is the honest choice - it is the
+# value that applies unless someone deliberately overrode it - but it is a
+# source-drift guard, not an override guard.
 from tools.proteina.run_pipeline import (  # noqa: E402
     DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S as DESIGN_SUBPROCESS_DEADLINE_S,
 )
@@ -266,9 +283,15 @@ def ledger_replay(path: Path) -> dict[int, dict]:
             print(f"[ledger] skipping unparsable line: {line[:80]!r}",
                   file=sys.stderr)
             continue
-        if "index" in rec:
+        try:
             key = int(rec["index"])
-            latest[key] = {**latest.get(key, {}), **rec}
+        except (KeyError, TypeError, ValueError):
+            # The ledger is a file this module TELLS operators to hand-edit,
+            # so a bad index is a foreseeable input, not an internal error.
+            print(f"[ledger] skipping record with an unusable index: "
+                  f"{line[:80]!r}", file=sys.stderr)
+            continue
+        latest[key] = {**latest.get(key, {}), **rec}
     return latest
 
 
@@ -289,40 +312,87 @@ def _verify_plan_matches_ledger(plan: list[dict], state: dict[int, dict]) -> Non
                 f"says {want}. BINS changed; use a fresh --outdir.")
 
 
-def _refuse_ambiguous_intents(state: dict[int, dict]) -> None:
-    """An ``intent`` with no ``submitted`` is the one hole write-before-wait
-    cannot close: the driver died between deciding to spawn and recording the
-    call id, so a container may or may not exist and its id is gone either way.
-    Continuing would either double-charge or leave an A100 running alongside
-    the next shard, so this stops and hands the operator the job id to check.
+def _refuse_unresumable(state: dict[int, dict]) -> None:
+    """Refuse ANY shard the loop cannot safely act on.
+
+    The loop's rule is: skip TERMINAL_STATES, reconnect on ``submitted`` WITH a
+    call id, otherwise spawn. That last "otherwise" is the danger, and an
+    earlier revision guarded only ``intent`` against it — so a ``submitted``
+    record whose call id was missing, or a state with a typo in it, fell
+    straight through to a fresh spawn beside a container that may still be
+    running. That is the two-A100 case, reached from the very file this
+    module's own recovery message tells an operator to hand-edit at 3am.
+
+    Two distinct hazards, both ending here:
+      * ``intent`` with no call id — the one hole write-before-spawn cannot
+        close. A container may exist and its id is gone either way.
+      * anything else non-terminal — either a hand-edit that dropped the call
+        id, or a state this code does not know about. Both mean "the loop
+        would guess", and guessing costs an A100.
     """
-    stuck = [(i, r) for i, r in state.items() if r.get("state") == "intent"]
+    stuck = []
+    for index, rec in sorted(state.items()):
+        st = rec.get("state")
+        if st in TERMINAL_STATES:
+            continue
+        if st == "submitted" and rec.get("call_id"):
+            continue
+        stuck.append((index, rec))
     if not stuck:
         return
     lines = "\n".join(
-        f"  shard {i}: job_id {r.get('job_id')!r}" for i, r in stuck)
+        f"  shard {i}: state={r.get('state')!r} job_id={r.get('job_id')!r} "
+        f"call_id={r.get('call_id')!r}" for i, r in stuck)
     raise SystemExit(
-        "refusing to resume: the ledger holds intent records with no call id, "
-        "so a container may be running that this driver can no longer reach."
-        f"\n{lines}\n"
-        "Check `modal app logs ranomics-proteina-prod` for those job ids. "
-        "Once you know, edit the ledger: add a line "
-        '{"index": N, "state": "failed"} to write the shard off, or '
-        '{"index": N, "state": "submitted", "call_id": "fc-..."} to reconnect.')
+        "refusing to resume: the ledger holds shards this driver cannot act "
+        "on safely, so a container may be running that it can no longer "
+        f"reach.\n{lines}\n"
+        f"Check `modal app logs {APP}` for those job ids. Once you know, "
+        'append EITHER {"index": N, "state": "failed"} to write the shard '
+        'off, OR {"index": N, "state": "submitted", "call_id": "fc-..."} '
+        "to reconnect — the call_id is required, a submitted record without "
+        "one is refused for the same reason as an intent.")
 
 
 # --- lock -------------------------------------------------------------------
 
-class OutdirLock:
-    """Exclusive lock on --outdir. Two drivers on one campaign would each
-    spawn, which is two A100s — the exact thing the sequential design exists
-    to prevent, and nothing downstream would notice."""
+def _hostname() -> str:
+    try:
+        return socket.gethostname()
+    except OSError:  # pragma: no cover - defensive
+        return "?"
 
-    def __init__(self, outdir: Path):
-        self.path = outdir / ".driver.lock"
+
+def default_lock_path() -> Path:
+    """GLOBAL, not per-outdir.
+
+    The invariant is "one A100 at a time", and that is a property of the
+    ACCOUNT, not of a directory. An outdir-scoped lock let two drivers with
+    two ``--outdir`` values both spawn — and since ``--outdir`` defaults to a
+    RELATIVE path, the same command in two shells with different working
+    directories already bypassed it. Starting a clean second campaign is also
+    the obvious operator move on a run that looks stuck, so this is the likely
+    violation, not the exotic one.
+
+    Overridable so tests (and anyone who genuinely has a second GPU) can opt
+    out deliberately rather than by accident.
+    """
+    override = os.environ.get("PROTEINA_DRIVER_LOCK")
+    if override:
+        return Path(override)
+    return Path.home() / f".{APP}-shard-driver.lock"
+
+
+class DriverLock:
+    """Exclusive lock. Two drivers means two A100s — the exact thing the
+    sequential design exists to prevent, and nothing downstream notices."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
         self.fd: int | None = None
 
-    def __enter__(self) -> "OutdirLock":
+    def __enter__(self) -> "DriverLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.fd = os.open(str(self.path),
                               os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -334,10 +404,12 @@ class OutdirLock:
                 pass
             raise SystemExit(
                 f"another driver holds {self.path}\n  {held}\n"
-                "Two drivers on one outdir means two A100s. If you are certain "
-                "no other process is running, delete that file.") from None
-        os.write(self.fd, f"pid={os.getpid()} started={time.strftime('%F %T')}"
-                          .encode())
+                "Two drivers means two A100s. A lock left by a hard kill looks "
+                "identical to a live one from here, so CHECK the pid above is "
+                "gone before deleting the file.") from None
+        os.write(self.fd, f"pid={os.getpid()} host={_hostname()} "
+                          f"started={time.strftime('%F %T')}".encode())
+        os.fsync(self.fd)
         return self
 
     def __exit__(self, *exc) -> None:
@@ -446,17 +518,28 @@ def _harvest(out: dict, item: dict, job_id: str, call_id: str,
         json.dumps(smoke, indent=2), encoding="utf-8")
 
     rows, with_atoms = [], 0
-    for cand in (smoke.get("candidates") or []):
+    used_names: set[str] = set()
+    for position, cand in enumerate(smoke.get("candidates") or [], start=1):
         scores = cand.get("scores") or {}
         blob = cand.get("pdb_content_b64")
-        # `or 0` not `.get("rank", 0)`: the key is present-and-None on a
-        # malformed candidate, and dict.get returns that None rather than the
-        # default, which then raises inside the format spec.
-        rank = cand.get("rank") or 0
+        # `or position` not `.get("rank", ...)`: the key is present-and-None
+        # on a malformed candidate, and dict.get returns that None rather than
+        # the default, which then raises inside the format spec.
+        rank = cand.get("rank") or position
         pdb_file, length = "", ""
         if blob:
             raw = base64.b64decode(blob)
-            dest = shard_dir / f"design_{int(rank):03d}.pdb"
+            # Deduplicated. Mapping every malformed candidate onto one number
+            # made two of them collide, and the SECOND silently overwrote the
+            # first: one file on disk, two manifest rows pointing at it, and a
+            # row claiming a 55 aa design beside 77 aa coordinates. A
+            # mislabelled structure is worse than a missing one in a study
+            # whose entire output is length versus quality.
+            name = f"design_{int(rank):03d}.pdb"
+            if name in used_names:
+                name = f"design_{int(rank):03d}_dup{position:02d}.pdb"
+            used_names.add(name)
+            dest = shard_dir / name
             dest.write_bytes(raw)
             # posix separators: the manifest is read on other machines and a
             # backslash path is not portable.
@@ -498,7 +581,11 @@ def _check_lengths(rows: list[dict], item: dict) -> str:
     lo, hi = item["bin"]
     outside = [n for n in lengths
                if not (lo - LENGTH_SLACK_AA <= n <= hi + LENGTH_SLACK_AA)]
-    if len(outside) > len(lengths) / 2:
+    # ANY design outside the bin, not a majority. Upstream samples within
+    # [lo, hi] and the count comes off the returned coordinates, so a correct
+    # shard has none - a ">50%" rule let exactly half a shard sit 36 aa off
+    # target and still report clean.
+    if outside:
         return (f"{len(outside)}/{len(lengths)} designs fall outside the "
                 f"requested bin [{lo}, {hi}] (+/-{LENGTH_SLACK_AA}); "
                 f"median realised length {statistics.median(lengths):.0f}")
@@ -563,7 +650,10 @@ def _collect(call, item, job_id, call_id, outdir, ledger,
 
     smoke = (out or {}).get("smoke_result") or {}
     state = "collected" if with_atoms else "empty"
-    mismatch = _check_lengths(rows, item) if with_atoms else ""
+    # Called even with no coordinates: an all-cap-dropped shard is exactly
+    # when nobody is looking, and _check_lengths says so rather than letting
+    # the ledger record a silent clean pass.
+    mismatch = _check_lengths(rows, item)
     ledger_append(ledger, {
         "index": item["index"], "state": state,
         "exit_code": (out or {}).get("exit_code"),
@@ -572,7 +662,19 @@ def _collect(call, item, job_id, call_id, outdir, ledger,
         "runtime_seconds": smoke.get("runtime_seconds"),
         "length_mismatch": mismatch or None,
     })
-    rebuild_manifest(outdir)
+    # NOT allowed to end the campaign. The manifest is DERIVED from the shard
+    # files, so a failure here loses nothing that is not rebuildable on the
+    # next shard or at the end - whereas letting it propagate killed the run
+    # on a routine operator action: os.replace over a destination another
+    # process holds open raises PermissionError on Windows, so opening
+    # manifest.csv in Excel to check progress on day 2 stopped the campaign,
+    # and each restart advanced exactly one shard.
+    try:
+        rebuild_manifest(outdir)
+    except OSError as exc:
+        print(f"[shard {item['index']:03d}] manifest rebuild deferred "
+              f"({type(exc).__name__}: {exc}); shard rows are safe on disk",
+              file=sys.stderr)
     print(f"[shard {item['index']:03d}] {state}: {with_atoms}/{len(rows)} "
           f"with coordinates, {smoke.get('runtime_seconds')}s, "
           f"status={smoke.get('status')}")
@@ -583,6 +685,13 @@ def _collect(call, item, job_id, call_id, outdir, ledger,
 
 
 def run_campaign(args) -> int:
+    # Checked HERE as well as in main(). A test drove main() with a real argv
+    # and no fakes, relying entirely on main()'s gate; when a mutation removed
+    # that gate the test spawned against the real Modal Function and wrote a
+    # live ledger into the repo tree. A spend gate with exactly one enforcement
+    # point is one refactor away from not existing.
+    if not getattr(args, "yes", False):
+        raise SystemExit("run_campaign requires args.yes")
     plan = build_plan()
     _validate_plan(plan)
 
@@ -595,7 +704,7 @@ def run_campaign(args) -> int:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    with OutdirLock(outdir):
+    with DriverLock(default_lock_path()):
         return _run_locked(args, plan, outdir)
 
 
@@ -604,7 +713,7 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
 
     state = ledger_replay(ledger)
     _verify_plan_matches_ledger(plan, state)
-    _refuse_ambiguous_intents(state)
+    _refuse_unresumable(state)
 
     target = Path(args.target or os.environ.get("PROTEINA_TARGET_PDB")
                   or DEFAULT_TARGET)
@@ -657,21 +766,27 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
         # id re-runs an identical search AND overwrites that run's raw archive.
         job_id = (f"proteina-sweep-{lo}-{hi}-r{item['round']:02d}-"
                   f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}")
-        # Recorded BEFORE the spawn. If the driver dies in the window between
-        # spawn returning and the call id being written, this is the only trace
-        # that a container may exist; _refuse_ambiguous_intents turns it into a
-        # stop rather than a silent double-charge.
-        ledger_append(ledger, {
-            "index": index, "round": item["round"], "bin": item["bin"],
-            "state": "intent", "job_id": job_id,
-        })
         # Re-staged per shard. presigned_input_url expires in 7200 s and a
         # shard runs ~85 min, so one URL cannot safely cover the next shard.
+        # DELIBERATELY BEFORE the intent record: this is an S3 upload, it is
+        # fallible, and it runs 80 times over 4.7 days. Writing intent first
+        # meant one transient upload failure left an orphan intent for a
+        # container that was never created, wedging the resume into a hard
+        # refusal whose only documented recovery is hand-editing the ledger.
         url = _stage_target(job_id, target)
         payload = build_payload(
             url, preset=args.preset, nsamples=NSAMPLES, replicas=REPLICAS,
             job_id=job_id, binder_length=(lo, hi))
 
+        # Recorded in the LAST statement before the spawn, so the window it
+        # covers is the spawn itself and nothing else. If the driver dies
+        # between spawn returning and the call id being written, this is the
+        # only trace that a container may exist; _refuse_unresumable turns it
+        # into a stop rather than a silent double-charge.
+        ledger_append(ledger, {
+            "index": index, "round": item["round"], "bin": item["bin"],
+            "state": "intent", "job_id": job_id,
+        })
         call = fn.spawn(payload)
         # BEFORE waiting. See the module docstring.
         ledger_append(ledger, {
@@ -688,7 +803,13 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
 
     final = ledger_replay(ledger)
     ok = sum(1 for r in final.values() if r.get("state") == "collected")
-    rows = rebuild_manifest(outdir)
+    try:
+        rows = rebuild_manifest(outdir)
+    except OSError as exc:
+        rows = -1
+        print(f"[done] manifest rebuild FAILED ({type(exc).__name__}: {exc}). "
+              "Per-shard rows.csv files are intact; re-run to rebuild.",
+              file=sys.stderr)
     print(f"\n[done] {ok}/{len(plan)} shards delivered designs; {rows} rows; "
           f"~${_spent_usd(final):.2f} spent (best estimate); "
           f"manifest at {outdir / 'manifest.csv'}")

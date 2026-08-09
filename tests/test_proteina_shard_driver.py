@@ -12,6 +12,7 @@ drop the budget lookahead) all passed 25/25.
 import base64
 import csv
 import json
+import pathlib
 import types
 
 import pytest
@@ -100,6 +101,8 @@ def campaign(tmp_path, monkeypatch):
     target = tmp_path / "target.pdb"
     target.write_bytes(_pdb(10, chain="A"))
     outdir = tmp_path / "out"
+
+    monkeypatch.setenv("PROTEINA_DRIVER_LOCK", str(tmp_path / "driver.lock"))
 
     def make_args(**over):
         argv = ["--run", "--yes", "--outdir", str(outdir),
@@ -213,6 +216,23 @@ class TestATimeoutIsNotAFailure:
         assert sd.ledger_replay(campaign.ledger)[0]["state"] == "submitted", (
             "a live container was written off; its designs are now unreachable")
 
+    def test_a_timeout_on_the_RECONNECT_path_also_stops(
+            self, campaign, monkeypatch):
+        """The branch a resume actually takes. A stuck container reached by
+        reconnect is exactly as live as one reached by spawn."""
+        import modal.exception
+        campaign.outdir.mkdir(parents=True)
+        sd.ledger_append(campaign.ledger, {
+            "index": 0, "bin": list(sd.BINS[0]), "state": "submitted",
+            "job_id": "j0", "call_id": "fc-STUCK"})
+        fn = FakeFn()
+        _install(monkeypatch, fn, from_id=lambda cid: FakeCall(
+            cid, exc=modal.exception.FunctionTimeoutError("t")))
+        assert sd.run_campaign(campaign.make_args()) == 4
+        assert fn.spawns == [], (
+            "spawned beside a container that is still running")
+        assert sd.ledger_replay(campaign.ledger)[0]["state"] == "submitted"
+
     def test_the_shard_is_reconnected_on_the_next_run(
             self, campaign, monkeypatch):
         import modal.exception
@@ -235,6 +255,138 @@ class TestATimeoutIsNotAFailure:
         assert sd.run_campaign(campaign.make_args()) == 0
         assert len(fn.spawns) == 5, "one bad shard ended the campaign"
         assert sd.ledger_replay(campaign.ledger)[0]["state"] == "failed"
+
+
+class TestEveryUnresumableLedgerStateStops:
+    """The loop is skip-terminal / reconnect-submitted / ELSE SPAWN, and this
+    module's own recovery message tells operators to hand-edit the ledger. An
+    earlier revision guarded only `intent`, so a hand-edit that dropped the
+    call id — or any typo — fell through to a fresh spawn beside a container
+    that may still be running."""
+
+    @pytest.mark.parametrize("rec, needle", [
+        ({"state": "submitted", "job_id": "j0"}, "submitted"),
+        ({"state": "colected", "call_id": "fc-PAID"}, "colected"),
+        ({"state": "intent", "job_id": "j-orphan"}, "j-orphan"),
+        ({"state": "running", "call_id": "fc-X"}, "running"),
+    ])
+    def test_it_refuses_rather_than_spawning(self, campaign, monkeypatch,
+                                             rec, needle):
+        campaign.outdir.mkdir(parents=True)
+        sd.ledger_append(campaign.ledger,
+                         {"index": 0, "bin": list(sd.BINS[0]), **rec})
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        with pytest.raises(SystemExit, match=needle):
+            sd.run_campaign(campaign.make_args())
+        assert fn.spawns == [], (
+            f"state {rec['state']!r} fell through to a spawn; if a container "
+            "is live that is two A100s")
+
+    def test_a_submitted_WITH_a_call_id_is_still_resumable(
+            self, campaign, monkeypatch):
+        campaign.outdir.mkdir(parents=True)
+        sd.ledger_append(campaign.ledger, {
+            "index": 0, "bin": list(sd.BINS[0]), "state": "submitted",
+            "job_id": "j0", "call_id": "fc-OK"})
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 0
+
+
+class TestTheIntentRecordCoversTheSpawnAndNothingElse:
+
+    def test_a_staging_failure_leaves_no_orphan_intent(
+            self, campaign, monkeypatch):
+        """Staging is an S3 upload, fallible, run 80 times over 4.7 days.
+        Writing intent before it meant one transient failure wedged the resume
+        into a hard refusal for a container that was never created."""
+        def boom(job_id, target):
+            raise OSError("S3 timeout")
+
+        monkeypatch.setattr(sd, "_stage_target", boom)
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        with pytest.raises(OSError):
+            sd.run_campaign(campaign.make_args())
+        assert sd.ledger_replay(campaign.ledger) == {}, (
+            "an intent was recorded for a container that never existed; the "
+            "resume will hard-refuse and demand a hand-edit")
+
+        # And the resume proceeds normally rather than refusing.
+        monkeypatch.setattr(sd, "_stage_target",
+                            lambda job_id, target: "https://fake/presigned")
+        assert sd.run_campaign(campaign.make_args()) == 0
+
+    def test_the_intent_precedes_the_spawn(self, campaign, monkeypatch):
+        """It is the only trace that a container may exist."""
+        seen = []
+
+        def spy(payload):
+            seen.append(sd.ledger_replay(campaign.ledger).get(
+                len(seen), {}).get("state"))
+            return FakeCall(f"fc-{len(seen)}")
+
+        fn = FakeFn()
+        fn.spawn = spy
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 0
+        assert seen and all(s == "intent" for s in seen), (
+            f"states at spawn time were {seen}; a spawn with no prior intent "
+            "record can strand a live container")
+
+
+class TestEachShardsBinReachesItsPayload:
+    """The campaign's entire premise. If binder_length silently fails to
+    steer, every shard still returns 64 plausible designs."""
+
+    def test_the_spawned_payloads_carry_the_planned_bins(
+            self, campaign, monkeypatch):
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 0
+        sent = [p["job_spec"]["binder_length"] for p in fn.spawns]
+        assert sent == [list(b) for b in sd.BINS], (
+            f"payload bins {sent} do not match the plan {sd.BINS}")
+
+    def test_each_payload_still_selects_inline_delivery(
+            self, campaign, monkeypatch):
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        sd.run_campaign(campaign.make_args())
+        for p in fn.spawns:
+            assert "upload_urls_endpoint" not in p
+            assert "job_token" not in p
+
+
+class TestADerivedFileCannotKillTheCampaign:
+
+    def test_a_failing_manifest_rebuild_is_logged_not_fatal(
+            self, campaign, monkeypatch):
+        """os.replace over a destination another process holds open raises
+        PermissionError on Windows, so opening manifest.csv in Excel to check
+        progress on day 2 used to stop the run — and each restart advanced
+        exactly one shard."""
+        def boom(outdir):
+            raise PermissionError("[WinError 5] Access is denied")
+
+        monkeypatch.setattr(sd, "rebuild_manifest", boom)
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 0
+        assert len(fn.spawns) == 5, "a manifest rebuild ended the campaign"
+        assert sd.ledger_replay(campaign.ledger)[0]["state"] == "collected"
+
+    def test_the_shard_rows_survive_a_failed_rebuild(
+            self, campaign, monkeypatch):
+        monkeypatch.setattr(sd, "rebuild_manifest",
+                            lambda outdir: (_ for _ in ()).throw(OSError("x")))
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        sd.run_campaign(campaign.make_args())
+        assert (campaign.outdir / "shard_000" / "rows.csv").is_file(), (
+            "the per-shard rows are the durable copy; they must be written "
+            "regardless of the derived manifest")
 
 
 class TestTheBudgetActuallyStops:
@@ -262,6 +414,24 @@ class TestTheBudgetActuallyStops:
         assert sd.shard_usd_ceiling() > sd.shard_usd()
         assert sd.USD_PER_SECOND_CEILING == pytest.approx(0.5528 / 673.0)
 
+    def test_the_guard_uses_the_ceiling_at_the_POINT_OF_USE(
+            self, campaign, monkeypatch):
+        """Pinning the constant is not enough — the loop has to actually call
+        it. A budget priced at the estimate stops one shard too late."""
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        # Midway between "3 shards at the estimate" and "3 shards at the
+        # ceiling": affords 3 of the cheap price but only 2 of the dear one,
+        # so the two pricings give DIFFERENT answers. A budget that happens to
+        # stop at the same shard either way proves nothing.
+        budget = (3 * sd.shard_usd_ceiling() + 3 * sd.shard_usd()) / 2
+        assert budget >= 3 * sd.shard_usd()
+        assert budget < 3 * sd.shard_usd_ceiling()
+        assert sd.run_campaign(campaign.make_args(budget=budget)) == 3
+        assert len(fn.spawns) == 2, (
+            f"{len(fn.spawns)} shards spawned against ${budget:.2f}; the guard "
+            "is pricing at the optimistic estimate, not the ceiling")
+
     def test_a_reconnect_does_not_consume_fresh_budget(
             self, campaign, monkeypatch):
         """That money is already spent; refusing here would strand it."""
@@ -281,29 +451,55 @@ class TestTheBudgetActuallyStops:
 
 class TestOneDriverAtATime:
 
-    def test_a_second_driver_on_the_same_outdir_is_refused(
-            self, campaign, monkeypatch):
-        campaign.outdir.mkdir(parents=True)
-        with sd.OutdirLock(campaign.outdir):
+    def test_a_second_driver_is_refused(self, campaign, monkeypatch):
+        with sd.DriverLock(sd.default_lock_path()):
             fn = FakeFn()
             _install(monkeypatch, fn)
             with pytest.raises(SystemExit, match="another driver"):
                 sd.run_campaign(campaign.make_args())
             assert fn.spawns == [], "two drivers means two A100s"
 
+    def test_the_lock_is_global_not_per_outdir(self, campaign, monkeypatch,
+                                               tmp_path):
+        """An outdir-scoped lock let two drivers with two --outdir values both
+        spawn — and --outdir defaults to a RELATIVE path, so two shells in
+        different working directories already evaded it."""
+        with sd.DriverLock(sd.default_lock_path()):
+            fn = FakeFn()
+            _install(monkeypatch, fn)
+            other = sd.build_parser().parse_args(
+                ["--run", "--yes", "--outdir", str(tmp_path / "somewhere-else"),
+                 "--target", str(tmp_path / "target.pdb")])
+            with pytest.raises(SystemExit, match="another driver"):
+                sd.run_campaign(other)
+            assert fn.spawns == []
+
+    def test_the_lock_path_is_not_inside_the_outdir(self, monkeypatch):
+        monkeypatch.delenv("PROTEINA_DRIVER_LOCK", raising=False)
+        assert sd.default_lock_path().parent == pathlib.Path.home()
+
     def test_the_lock_is_released_on_exit(self, campaign, monkeypatch):
         fn = FakeFn()
         _install(monkeypatch, fn)
         assert sd.run_campaign(campaign.make_args()) == 0
-        assert not (campaign.outdir / ".driver.lock").exists()
+        assert not sd.default_lock_path().exists()
 
     def test_the_lock_is_released_even_when_the_run_stops_early(
             self, campaign, monkeypatch):
         fn = FakeFn()
         _install(monkeypatch, fn)
         assert sd.run_campaign(campaign.make_args(budget=0.0)) == 3
-        assert not (campaign.outdir / ".driver.lock").exists(), (
+        assert not sd.default_lock_path().exists(), (
             "an early return leaked the lock; the next run cannot start")
+
+    def test_a_losing_acquire_does_not_delete_the_holders_lock(self, tmp_path):
+        path = tmp_path / "l.lock"
+        with sd.DriverLock(path):
+            with pytest.raises(SystemExit):
+                with sd.DriverLock(path):
+                    pass
+            assert path.exists(), "the loser removed the winner's lock"
+        assert not path.exists()
 
 
 class TestHarvestFailuresDoNotEndTheCampaign:
@@ -340,14 +536,19 @@ class TestHarvestFailuresDoNotEndTheCampaign:
 
     def test_a_rank_of_None_does_not_raise(self, tmp_path):
         """`.get("rank", 0)` returns the None when the key is PRESENT and
-        None, so the default never applies and the format spec raises."""
+        None, so the default never applies and the format spec raises. The
+        fallback is the candidate's POSITION, not 0, so two malformed
+        candidates cannot collide onto one filename."""
         out = {"exit_code": 0, "smoke_result": {"candidates": [
             {"rank": None, "name": "x", "scores": {},
              "pdb_content_b64": base64.b64encode(_pdb(55)).decode()}]}}
         rows, with_atoms = sd._harvest(
             out, {"index": 0, "round": 0, "bin": [50, 59]}, "j", "c", tmp_path)
         assert with_atoms == 1
-        assert (tmp_path / "shard_000" / "design_000.pdb").is_file()
+        assert (tmp_path / "shard_000" / "design_001.pdb").is_file()
+        assert rows[0]["rank"] is None, (
+            "the manifest must report the candidate's real rank, even when "
+            "the filename had to fall back to a position")
 
     def test_the_paid_result_is_persisted_before_candidates_are_parsed(
             self, tmp_path):
@@ -433,14 +634,59 @@ class TestTheRequestedBinIsCheckedAgainstReality:
         assert "no design carried coordinates" in sd._check_lengths(
             [{"binder_length": ""}], {"bin": [50, 59]})
 
+    def test_even_ONE_design_outside_the_bin_is_reported(self):
+        """A >50% rule let exactly half a shard sit 36 aa off target and still
+        report clean. Upstream samples inside [lo, hi], so a correct shard has
+        none outside."""
+        rows = [{"binder_length": n} for n in (50, 51, 52, 95)]
+        assert sd._check_lengths(rows, {"bin": [50, 59]})
+
+    def test_exactly_half_outside_is_reported(self):
+        rows = [{"binder_length": n} for n in (50, 51, 95, 96)]
+        assert sd._check_lengths(rows, {"bin": [50, 59]})
+
+    def test_an_all_capped_shard_is_still_checked(self, campaign, monkeypatch):
+        """The branch runs from the money loop, not only from a unit test —
+        an all-cap-dropped shard is exactly when nobody is looking."""
+        out = {"exit_code": 0, "smoke_result": {
+            "status": "COMPLETED", "candidates": [
+                {"rank": 1, "name": "capped", "scores": {"total_reward": -1}}]}}
+        fn = FakeFn(lambda i: FakeCall(f"fc-{i}", result=out))
+        _install(monkeypatch, fn)
+        sd.run_campaign(campaign.make_args())
+        rec = sd.ledger_replay(campaign.ledger)[0]
+        assert rec["state"] == "empty"
+        assert rec["length_mismatch"], (
+            "a shard that delivered no coordinates recorded a silent clean pass")
+
 
 class TestRunRefusesWithoutConfirmation:
 
-    def test_run_without_yes_refuses_and_names_the_cost(self, monkeypatch):
+    def test_run_without_yes_refuses_and_names_the_cost(
+            self, campaign, monkeypatch):
+        """Fully isolated. An earlier version of this test drove main() with a
+        real argv, no fakes and the DEFAULT relative --outdir, relying entirely
+        on main()'s gate; when a mutation removed that gate it spawned against
+        the real Modal Function and wrote a live ledger into the repo tree."""
         import sys as _sys
-        monkeypatch.setattr(_sys, "argv", ["shard_driver.py", "--run"])
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        monkeypatch.setattr(_sys, "argv", [
+            "shard_driver.py", "--run", "--outdir", str(campaign.outdir)])
         with pytest.raises(SystemExit, match=r"\$"):
             sd.main()
+        assert fn.spawns == []
+
+    def test_run_campaign_ALSO_enforces_the_gate(self, campaign, monkeypatch):
+        """Belt and braces: a spend gate with one enforcement point is one
+        refactor away from not existing."""
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        args = campaign.make_args()
+        args.yes = False
+        with pytest.raises(SystemExit, match="requires args.yes"):
+            sd.run_campaign(args)
+        assert fn.spawns == []
 
     def test_run_with_yes_proceeds(self, campaign, monkeypatch):
         """Guard the guard: a --yes that still refused would be silent."""
@@ -573,6 +819,18 @@ class TestTheLedgerSurvivesACrash:
     def test_a_missing_ledger_is_an_empty_campaign(self, tmp_path):
         assert sd.ledger_replay(tmp_path / "nope.jsonl") == {}
 
+    @pytest.mark.parametrize("bad", ['{"index": "oops", "state": "failed"}',
+                                     '{"index": null, "state": "failed"}',
+                                     '{"state": "failed"}'])
+    def test_an_unusable_index_is_skipped_not_a_traceback(self, tmp_path, bad):
+        """This module TELLS operators to hand-edit the ledger, so a bad index
+        is foreseeable input rather than an internal error."""
+        led = tmp_path / "l.jsonl"
+        sd.ledger_append(led, {"index": 0, "state": "collected"})
+        with led.open("a", encoding="utf-8") as fh:
+            fh.write(bad + "\n")
+        assert sd.ledger_replay(led)[0]["state"] == "collected"
+
     def test_both_writers_fsync(self, tmp_path, monkeypatch):
         """Write-before-wait is only a guarantee if the write reached the
         disk. A ledger buffered in the OS page cache is lost by exactly the
@@ -656,6 +914,32 @@ class TestHarvestKeepsWhatWasPaidFor:
             out, {"index": 0, "round": 0, "bin": [50, 59]}, "j", "c", tmp_path)
         assert with_atoms == 0 and len(rows) == 1
         assert rows[0]["total_reward"] == -0.9 and rows[0]["pdb_file"] == ""
+
+    def test_colliding_ranks_never_overwrite_a_paid_design(self, tmp_path):
+        """Two malformed candidates both mapping to one filename meant the
+        second silently clobbered the first: one file, two rows pointing at
+        it, and a row claiming 55 aa beside 77 aa coordinates."""
+        # DUPLICATE EXPLICIT ranks, not two Nones: a None falls back to the
+        # candidate's position, which is already unique, so it would not
+        # exercise the dedup at all.
+        out = {"exit_code": 0, "smoke_result": {"candidates": [
+            {"rank": 1, "name": "a", "scores": {},
+             "pdb_content_b64": base64.b64encode(_pdb(55)).decode()},
+            {"rank": 1, "name": "b", "scores": {},
+             "pdb_content_b64": base64.b64encode(_pdb(77)).decode()},
+        ]}}
+        rows, with_atoms = sd._harvest(
+            out, {"index": 0, "round": 0, "bin": [50, 59]}, "j", "c", tmp_path)
+        assert with_atoms == 2
+        paths = [r["pdb_file"] for r in rows]
+        assert len(set(paths)) == 2, f"both rows point at {paths}"
+        files = sorted(f.name for f in (tmp_path / "shard_000").glob("*.pdb"))
+        assert len(files) == 2, f"a paid design was overwritten: {files}"
+        for row in rows:
+            on_disk = sd._binder_length(
+                (tmp_path / row["pdb_file"]).read_bytes())
+            assert on_disk == row["binder_length"], (
+                "the manifest length does not match the file it points at")
 
     def test_a_zero_design_shard_persists_its_diagnosis(self, tmp_path):
         out = {"exit_code": 1, "smoke_result": {"status": "FAILED",
