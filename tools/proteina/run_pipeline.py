@@ -79,17 +79,20 @@ is re-checked here against the uploaded structure before the model loads
 
 from __future__ import annotations
 
+import base64
 import csv
 import glob
 import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
@@ -109,6 +112,112 @@ SMOKE_RESULTS_PATH = "/tmp/smoke_results.json"
 # id; nothing about it travels through the job result. Fixed path == the wrapper
 # needs no coordination with this script beyond the constant.
 RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
+
+# --- delivery mode for design coordinates ----------------------------------
+# Two ways a design's atoms reach the caller, chosen by whether the payload
+# carries an upload endpoint. NOT a preference: it is a statement about what
+# the caller can actually receive.
+#
+#   UPLOAD  (upload_urls_endpoint present) — the tools-hub web path. Each PDB
+#           is PUT to a presigned URL and the entry carries a `pdb_key`
+#           pointer. Unchanged, and it stays the only behaviour a real job
+#           sees, because a real job always supplies the endpoint.
+#   INLINE  (endpoint absent) — a direct `modal.Function.from_name(...)` call.
+#           There is no tools-hub server to call back to and no job_token to
+#           authenticate with, so the atoms travel in the return value as
+#           base64 under `pdb_content_b64` — the same field name and encoding
+#           PXDesign and BindCraft already emit, so a cross-generator consumer
+#           needs no per-tool special-casing.
+#
+# NOT the reason, despite what this comment used to claim: "the web tier cannot
+# express a multi-chain target or chain-prefixed hotspots". It can, and that
+# claim was wrong in a way that cost real safety. `tools/proteina/validate`
+# accepts `A236-443,B236-443` (target_chain becomes "A B") and accepts
+# `A264 B264` verbatim. The absent upload endpoint and job_token are the whole
+# justification for INLINE; multi-chain has nothing to do with it.
+#
+# That false premise is why `normalize_hotspots`' bare-integer refusal below
+# was placed on the container's direct-call entry ONLY. THE WEB TIER IS A
+# FIRST-CLASS MULTI-CHAIN PATH AND IT IS STILL UNGUARDED: _parse_hotspots in
+# tools/proteina/__init__.py promotes a bare `264` onto contig_chains[0] before
+# dispatch, so those tokens reach here already chain-prefixed and the refusal
+# cannot fire. The two payloads are byte-identical here — a promoted `A264` and
+# a deliberately typed `A264` differ in NOTHING that crosses the container
+# boundary (hotspot_residues carries the bare number either way) — so this file
+# cannot close the hole and must not pretend to. The fix belongs in
+# _parse_hotspots: refuse a bare token when len(chain_ids) > 1 instead of
+# promoting it. Do not "fix" it here by refusing when the hotspots address
+# fewer chains than the contig names — designing against one epitope of a
+# multi-chain complex, with the other chains present as steric context, is
+# ordinary and correct, and both this file and the adapter accept it today.
+# That guard would refuse legitimate campaigns to catch a case it cannot even
+# see. Pinned by test_hotspots_on_a_SUBSET_of_the_contig_chains_are_legitimate
+# in tests/test_proteina_delivery.py, so the reasoning is checkable rather than
+# asserted — no smoke test covers a STRICT subset of the contig's chains.
+#
+# The two are EXCLUSIVE, and that is a deliberate correction rather than an
+# accident of the gate. Inlining alongside an upload would put a second copy of
+# every structure in the Modal return value for no gain — the uploaded one
+# already resolves by pdb_key — and reconcile_campaign_children pulls each
+# child's full return into web-tier memory from inside a user-facing request.
+# Exclusivity is what lets "the web path is unchanged" mean the whole payload
+# and not merely the upload calls.
+#
+# Modal imposes no hard ceiling on a return value — _utils/blob_utils.py
+# format_blob_data() blob-uploads anything over MAX_OBJECT_SIZE_BYTES (2 MiB)
+# transparently, and the container's return path (container_io_manager.py
+# package_output) goes through it. So inlining cannot fail on size. It can
+# still be WASTEFUL: a 419-residue target plus binder is ~340 KB of PDB, ~450 KB
+# once base64'd, and nsamples*replicas of those runs to multiple MB. The cap
+# below bounds the total; designs past it keep their scores and lose only their
+# coordinates, which are still recoverable from the raw archive.
+INLINE_PDB_DEFAULT_CAP_BYTES = 64 * 1024 * 1024
+
+
+def _inline_cap_bytes() -> int:
+    """Parse the cap defensively.
+
+    A bare ``int(os.environ[...])`` at module scope raises ValueError on a
+    typo like ``64MB`` BEFORE ``_fail`` can write /tmp/smoke_results.json, so
+    the container dies with no result file and the hub reports it as a webhook
+    delivery failure — a misleading error for a mistyped env var, on a GPU
+    container that is already allocated and billing.
+    """
+    raw = (os.environ.get("PROTEINA_INLINE_PDB_CAP_BYTES") or "").strip()
+    if not raw:
+        return INLINE_PDB_DEFAULT_CAP_BYTES
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning(
+            "PROTEINA_INLINE_PDB_CAP_BYTES=%r is not an integer; using the "
+            "%d byte default", raw, INLINE_PDB_DEFAULT_CAP_BYTES,
+        )
+        return INLINE_PDB_DEFAULT_CAP_BYTES
+
+
+INLINE_PDB_TOTAL_CAP_BYTES = _inline_cap_bytes()
+# A DEGENERATE-cap floor, and deliberately nothing more. It catches 0 and 1 —
+# caps that cannot admit a single atom — before the GPU, because that check is
+# free and those are the values a bug produces.
+#
+# It is NOT "the smallest cap worth starting a run for", which is what this
+# constant used to claim and could not deliver. A single design's PDB is target
+# dependent and UNKNOWABLE before the run (the Fc target this work exists to
+# serve is ~340 KB, ~34x this floor; a small-target campaign is a fraction of
+# it), so no pre-GPU threshold can separate "admits some designs" from "admits
+# none". Raising the number would only move the false negative and would start
+# refusing legitimate small-target runs. The guarantee lives POST-loop instead,
+# where the real sizes are known: see the inline-delivery verdict in main(),
+# which fails a shard that inlined nothing while the cap dropped designs.
+INLINE_PDB_MIN_USEFUL_CAP_BYTES = 10 * 1024
+
+# Hard off-switch for inline delivery. It is only observable when there is NO
+# upload endpoint, because inlining never happens when there is one — with an
+# endpoint the atoms are already in Storage and this flag changes nothing. Its
+# one real effect is to turn a direct, endpoint-less call into a pre-GPU
+# refusal, which is what you want if such a call was made by mistake.
+_INLINE_OFF = {"off", "false", "0", "no"}
 
 PROTEINA_HOME = os.environ.get("PROTEINA_HOME", "/opt/proteina")
 CONFIG_DIR = os.environ.get("PROTEINA_CONFIG_DIR", f"{PROTEINA_HOME}/configs")
@@ -166,12 +275,120 @@ _PDB_NAME_COLUMNS = ("sample", "name", "sample_name", "design_id", "sample_id", 
 # ===========================================================================
 
 
-def _write_result(payload: dict[str, Any]) -> None:
+# Has this process already written a result file? ``main()``'s catch-all reads
+# it so a crash AFTER the shard wrote its result cannot REPLACE that result
+# with a traceback stub. The window is small but real — everything from
+# ``send_heartbeat`` to the final log line runs after ``_write_result`` — and
+# overwriting a COMPLETED result carrying every design would destroy the run
+# rather than diagnose it. A flag rather than ``os.path.isfile`` on purpose:
+# containers are reused warm and ``modal_app.run_tool`` does NOT delete
+# /tmp/smoke_results.json between jobs, so a stale file from the previous shard
+# would read as "this run already reported" and suppress the only diagnosis
+# this run was going to produce. Reset at the top of ``main()``.
+#
+# THAT IS ONLY THE IN-PROCESS HALF, and the comment above used to read as
+# though it were the whole thing. The flag stops a stale file being MISREAD by
+# this process; it cannot stop the stale file itself being handed to the caller
+# when this process dies without writing. ``_reset_result_file`` below closes
+# that half, and is why only a REAL report may set this flag.
+_RESULT_WRITTEN = False
+
+
+def _dump_result(payload: dict[str, Any]) -> bool:
+    """Serialise ``payload`` over SMOKE_RESULTS_PATH; return whether it landed.
+
+    The file write on its own, with NO ``_RESULT_WRITTEN`` bookkeeping, so the
+    startup placeholder can reuse the same OSError handling without claiming
+    that this run has reported anything.
+    """
     try:
         with open(SMOKE_RESULTS_PATH, "w") as fh:
             json.dump(payload, fh, indent=2, default=str)
+        return True
     except OSError as exc:
         logger.error("Could not write %s: %s", SMOKE_RESULTS_PATH, exc)
+        return False
+
+
+def _write_result(payload: dict[str, Any]) -> None:
+    """Write THIS run's result and record that it reported."""
+    global _RESULT_WRITTEN
+    if _dump_result(payload):
+        _RESULT_WRITTEN = True
+
+
+def _reset_result_file() -> None:
+    """Clear any result file a PREVIOUS shard left, then leave a placeholder.
+
+    Proteina was the only one of the six generators that never did this, and
+    /tmp/smoke_results.json is its ONLY reporting channel — this script posts
+    no terminal webhook. Modal reuses containers warm and
+    ``modal_app.run_tool`` reads the path unconditionally; it clears the raw
+    archive and the staged-target dir for exactly this reason but not this
+    path. So a shard that died without writing handed the caller the PREVIOUS
+    shard's COMPLETED result — its provider_job_id, its candidates, its atoms —
+    and the hub scored it ``succeeded``. Reproduced by driving this ``main()``
+    with ``_run_shard`` replaced by ``os._exit(137)``.
+
+    WHAT IS ACTUALLY REACHABLE, so this is not sold as more than it is. The
+    container-level timeout does NOT leak: ``modal_app.py`` passes ``timeout=``
+    to ``subprocess.run``, so that kill raises ``TimeoutExpired`` out of
+    ``run_tool`` and the results file is never read. The leak needs
+    ``subprocess.run`` to RETURN with the child dead — an OOM-kill or fatal
+    signal, which skips every ``except`` and ``finally`` and so also skips
+    ``main()``'s catch-all — or the OSError arm of ``_dump_result`` swallowing
+    the write and a later ``sys.exit(1)`` leaving no file. Inline delivery
+    makes the OOM arm likelier on this path specifically: up to
+    ``INLINE_PDB_TOTAL_CAP_BYTES`` of raw PDB, its ~4/3 base64 expansion and
+    the ``json.dump`` buffer are all live in this process at once.
+
+    THE UNLINK IS THE LOAD-BEARING HALF; the placeholder is the courtesy.
+    ``open(..., "w")`` truncates, but only once it has opened — remove first
+    and a placeholder write that FAILS leaves no file at all, which the hub
+    reports as a failure, instead of the previous shard's designs.
+
+    IT DELIBERATELY DOES NOT GO THROUGH ``_write_result``. That would set
+    ``_RESULT_WRITTEN`` before the shard had reported anything, and
+    ``main()``'s catch-all — whose whole job is to guarantee a structured
+    failure — would then decline to write the real diagnosis because it
+    believed this run had already reported. That trades a rare stale-result
+    leak for losing EVERY crash diagnosis, which is strictly worse than the bug
+    being fixed. Pinned by
+    ``test_the_startup_placeholder_does_not_suppress_the_catch_all``.
+    """
+    try:
+        os.remove(SMOKE_RESULTS_PATH)
+    except OSError:
+        pass
+    _dump_result(
+        {
+            "status": "FAILED",
+            "error": {
+                "bucket": "internal",
+                "check": "did_not_complete",
+                # Says what is KNOWN — this text survived, so no later write
+                # replaced it — and lists the causes rather than asserting one.
+                # Two different things produce it: the process died without
+                # running any `except` or `finally` (OOM-kill, fatal signal), or
+                # the run finished and BOTH its result write and the catch-all's
+                # hit the OSError arm of _dump_result, which /tmp filling up
+                # mid-run would do and which co-occurs with the first cause.
+                # Naming only the kill would misreport the second as a crash.
+                "detail": (
+                    "run_pipeline.py left no result of its own, so this "
+                    "placeholder from container startup is what survived. "
+                    "Either the process was killed without running any "
+                    "`except` or `finally` — the kernel OOM-killer or a fatal "
+                    "signal, and there is no traceback in that case — or it "
+                    "could not write to /tmp. Check the Modal function logs "
+                    "for this job id; anything the run produced is in the raw "
+                    "archive."
+                ),
+            },
+            "tier": os.environ.get("JOB_TIER", ""),
+            "provider_job_id": os.environ.get("JOB_ID", ""),
+        }
+    )
 
 
 def _fail(bucket: str, check: str, detail: str) -> None:
@@ -415,6 +632,831 @@ def pdb_ca_residues(pdb_path: Path) -> tuple[list[tuple[str, int, str]], int]:
             seen.add(key)
             residues.append(key)
     return residues, n_unparsable
+
+
+def normalize_target_chain(raw: str) -> str:
+    """Accept both chain separators, emit the whitespace form this file parses.
+
+    ``target_chain`` is consumed by ``derive_segments`` via a bare ``.split()``,
+    so only whitespace ever separated chains here. The campaign side and the
+    other three generators standardised on the comma form (see
+    llm-proteinDesigner/docs/MULTI-CHAIN-TARGETS.md: ``"A,B"``, ``"A B"`` and
+    ``"A, B"`` are equivalent). Parsing only one of them is how a multi-chain
+    request gets accepted at the form and rejected — or worse, silently
+    narrowed — at every gate behind it.
+
+    ``"A,B"`` alone was already a LOUD failure: it splits to the single token
+    ``"A,B"``, no chain matches, ``derive_segments`` returns [] and the caller
+    is told the chain is absent. The quiet case is a mixed string like
+    ``"A B,C"``, which yields ``["A", "B,C"]`` — chain A resolves, ``B,C`` is
+    dropped by ``derive_segments``' ``continue``, and the run designs against
+    one protomer of a dimer while looking entirely successful.
+
+    Order is significant (it drives contig segment order) and duplicates are
+    removed, both per that contract.
+    """
+    tokens = [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for tok in tokens:
+        if tok not in seen:
+            seen.add(tok)
+            ordered.append(tok)
+    return " ".join(ordered)
+
+
+def _hotspot_element(value: object, field: str) -> str:
+    """Render ONE element of a hotspot list as the token this file parses.
+
+    A WHOLE-NUMBER FLOAT IS AN INTEGER RESIDUE NUMBER, not a token of its own.
+    ``str(296.0)`` is ``"296.0"``, which the bare-integer regex below does not
+    match, so such a hotspot was neither refused as ambiguous on a multi-chain
+    target nor attributed to the chain on a single-chain one: it travelled on
+    as the literal ``"296.0"``, and upstream matches ``f"{chain_id}{res_id}"``,
+    so it addresses nothing that can exist. That is contained on the
+    custom-target path — ``missing_hotspots`` refuses it pre-GPU — but the
+    refusal then blames "not in the selected region" for what is really a
+    number format, and on the multi-chain case it means the ambiguity guard,
+    the one refusal standing between a caller and a silently half-aimed dimer,
+    is simply skipped. ``shared/pdb_inspect.split_hotspot`` already truncates a
+    float for exactly this reason: main's commit 0cbfea6 restored it because
+    "a JSON body sending a whole number as a float is the shape that reaches
+    it". This is the same shape crossing the container boundary.
+
+    A FRACTIONAL float is REFUSED rather than truncated, and that is a
+    deliberate divergence from ``split_hotspot``, which truncates. No residue
+    is numbered 296.7, so resolving it means guessing which residue was meant,
+    and guessing on the hotspot field is the whole failure class this function
+    exists to stop. The refusal costs nothing and stops nothing real: the web
+    adapter's ``_parse_hotspots`` yields ints from a regex and can never emit
+    a float, and today such a token is refused anyway — by ``missing_hotspots``
+    on the custom path, with a worse message, and dropped unread on the curated
+    path. ``bool`` is refused for the same reason ``split_hotspot`` refuses it:
+    it subclasses int, so ``True`` would otherwise read as residue 1.
+    """
+    if isinstance(value, bool):
+        raise TypeError(
+            f"job_spec.{field} contains {value!r}, which is a boolean, not a "
+            "residue number. Send the residue number itself (e.g. 264 or "
+            '"A264").'
+        )
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise TypeError(
+                f"job_spec.{field} contains {value!r}, which is not a whole "
+                "residue number. Residues are numbered with integers, and "
+                "there is no residue to round it to without guessing. Send "
+                f"{int(value)} or {int(value) + 1} explicitly."
+            )
+        return str(int(value))
+    return str(value).strip()
+
+
+def _hotspot_tokens(raw: object, field: str) -> list[str]:
+    """Tokenise ONE hotspot field. Empty -> []; a wrong TYPE -> TypeError.
+
+    Split out of ``normalize_hotspots`` so "is this field empty?" is answered by
+    the tokens it actually yields rather than by comparing the raw value against
+    a hand-listed set of empty shapes. The old predicate was
+    ``raw is None or raw == []``, which recognises exactly two of them; ``""``,
+    ``" "``, ``[""]``, ``("",)``, ``()`` and ``","`` all read as "hotspots were
+    supplied and there are none", so the ``hotspot_residues`` alias beside them
+    was never consulted and every hotspot it carried was discarded into a fully
+    unconstrained search that completes successfully.
+
+    A value of the wrong TYPE is REFUSED here rather than coerced, and both
+    ways it used to go were bad. A scalar (``264``, ``True``, ``3.5``) reached
+    ``for h in raw`` and raised ``TypeError: 'int' object is not iterable``,
+    which ``main()`` did not catch, so the container died with no
+    /tmp/smoke_results.json and the caller saw an opaque delivery failure for a
+    mistyped field. A dict did not crash at all — ``for h in {"a": 1}``
+    iterates KEYS, so it yielded the hotspot ``"a"`` out of nothing. Neither is
+    salvaged: ``main()`` turns this into a clean pre-GPU ``_fail`` naming the
+    field, and shape-guessing on the hotspot field is the same class of
+    helpfulness that produced the silent mis-aim the refusal below exists to
+    stop.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [t for t in re.split(r"[,\s]+", raw.strip()) if t]
+    if isinstance(raw, (list, tuple)):
+        # Per element via _hotspot_element, not a bare str(): a whole-number
+        # float is a residue number and must be seen as one by the bare-integer
+        # checks below, not carried through as the token "296.0".
+        return [t for t in (_hotspot_element(h, field) for h in raw) if t]
+    raise TypeError(
+        f"job_spec.{field} is a {type(raw).__name__} ({raw!r}), which is "
+        "neither a list of hotspot tokens nor a comma/space-separated string. "
+        "Send a list like [\"A264\", \"B264\"] or a string like \"A264 B264\" "
+        "— never a bare value, not even for a single hotspot."
+    )
+
+
+def normalize_hotspots(job_spec: dict) -> list[str]:
+    """Resolve hotspot tokens from either this tool's name or the shared one.
+
+    Proteina's native key is ``hotspot_spec``; the campaign side and the other
+    three generators send ``hotspot_residues``. Native wins when both are
+    present so nothing already in flight changes meaning — where "present"
+    means "yields at least one token", so an empty native key in ANY shape
+    (``[]``, ``""``, ``[""]``, ``{}``) falls through to the alias instead of
+    silently discarding everything the alias carries. A plain string is
+    accepted for either key and split on commas/whitespace, because that is
+    what a caller who typed the chain list as a string tends to send for the
+    hotspots too.
+
+    Bare integers are attributed to the single target chain, per the shared
+    contract. Upstream matches hotspots as ``f"{chain_id}{res_id}"``, so a bare
+    ``264`` addresses nothing at all; attributing it is what makes the
+    single-chain shorthand mean what its sender intended.
+
+    A BARE INTEGER IS REFUSED WHEN THE TARGET HAS MORE THAN ONE CHAIN, and that
+    refusal is the whole reason this function is allowed to rewrite a token at
+    all. "Attribute to the first chain" is only unambiguous for a single-chain
+    target. On a homodimer it is actively dangerous: ``264`` becomes ``A264``,
+    ``missing_hotspots`` is a set-membership test and a real dimer genuinely
+    contains ``A264``, so the guard passes, the log reports every hotspot
+    matched, and the run designs against protomer A with B completely
+    unconstrained — indistinguishable from a correct run, which is precisely
+    the failure this file exists to prevent. On a symmetric Fc set the two
+    protomers' numbers are identical, so 16 tokens silently collapse to 8.
+    ValueError here reaches ``main()`` as a pre-GPU ``_fail``.
+
+    When no chain is known at all the token is passed through untouched rather
+    than guessed at — the pre-GPU ``missing_hotspots`` guard then refuses it.
+    """
+    # Emptiness is decided by the TOKENS a field yields, not by the shape of
+    # the raw value — see _hotspot_tokens. "Native wins when both are present"
+    # is unchanged: a native key that yields any token still wins outright.
+    items = _hotspot_tokens(job_spec.get("hotspot_spec"), "hotspot_spec")
+    if not items:
+        items = _hotspot_tokens(
+            job_spec.get("hotspot_residues"), "hotspot_residues")
+    if not items:
+        return []
+
+    # The chains the DESIGN will actually contain — which is the only question
+    # that decides whether a bare number is ambiguous — read from whichever
+    # field prepare_custom_target itself reads.
+    #
+    # A CONTIG REPLACES target_chain, it does not add to it. prepare_custom_target
+    # derives its segments from target_input when that is present and never
+    # looks at target_chain again (``requested_chains`` is used in the else
+    # branch and nowhere else), so with a contig the contig's chains ARE the
+    # design. Counting target_chain as well invents a protomer that does not
+    # exist: {"target_chain": "A", "target_input": "C1-200"} — proteina's
+    # shipped default "A" over a structure whose chain is C, the normal shape
+    # because the form tells the user to leave that field alone and name their
+    # chains in the contig — has exactly one chain, so a bare 264 is
+    # unambiguous, yet the union counted two and refused the run while
+    # suggesting A264, a residue on a chain the upload does not contain.
+    # shared/pdb_inspect made the same replace-not-union correction on main
+    # (commit 0cbfea6) for this same input shape.
+    #
+    # The union's own motivating case is untouched, because it never needed the
+    # union: {"target_chain": "A", "target_input": "A1-200,B1-200"} has two
+    # chains read from the contig ALONE, so bare hotspots are still refused
+    # rather than silently promoted to A with the second protomer
+    # unconstrained.
+    chains = normalize_target_chain(str(job_spec.get("target_chain") or "")).split()
+    target_input = str(job_spec.get("target_input") or "").strip()
+    if target_input:
+        try:
+            contig_chains: list[str] = []
+            for chain, _lo, _hi in parse_target_input(target_input):
+                if chain not in contig_chains:
+                    contig_chains.append(chain)
+            # Only when the contig actually named something. A contig that
+            # parses to nothing (``","``) is refused downstream on its own
+            # terms; until then target_chain stays the best available answer,
+            # so this cannot silently drop the count to zero and let a bare
+            # token through unchecked.
+            if contig_chains:
+                chains = contig_chains
+        except ValueError:
+            # Malformed contig: leave it to parse_target_input's own pre-GPU
+            # refusal in prepare_custom_target, which reports it properly.
+            pass
+    bare = [t for t in items if re.fullmatch(r"-?\d+", t)]
+    if bare and len(chains) > 1:
+        raise ValueError(
+            f"hotspots {bare} carry no chain prefix, but this run targets "
+            f"{len(chains)} chains ({' '.join(chains)}). A bare residue number "
+            "cannot say which protomer it means, and guessing the first one "
+            "would leave every other chain unconstrained while still reporting "
+            "a full hotspot match. Prefix each hotspot with its chain, e.g. "
+            f"{chains[0]}{bare[0]} or {chains[1]}{bare[0]}."
+        )
+    out: list[str] = []
+    for tok in items:
+        if chains and re.fullmatch(r"-?\d+", tok):
+            out.append(f"{chains[0]}{tok}")
+        else:
+            out.append(tok)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Putting the DELIVERED design back into the operator's residue numbering
+# ---------------------------------------------------------------------------
+#
+# THE DEFECT, MEASURED. Upstream renumbers every chain of a design to 1..N. On
+# 8 of 8 designs of a completed Fc shard, input chains A 234-444 (211 residues)
+# and B 237-444 (208) came back as A 1-211 and B 1-208 — contiguous, chain
+# labels preserved, residue order preserved, 100.0% positional sequence identity
+# on both chains across 3,352 correspondences. Only the keys changed.
+#
+# THIS IS NOT A CORRECTNESS BUG IN PRODUCTION, and saying so precisely matters:
+# every hotspot check runs PRE-GPU against the uploaded file, so nothing is
+# designed against the wrong residue. What breaks is the DELIVERABLE. An
+# operator who asked for hotspot A241 gets back a structure that has no residue
+# 241 in it and cannot cross-reference the result against the numbering they
+# typed.
+#
+# The restore is fail-closed: it proves the correspondence by sequence before
+# using it, and when it cannot, the design is uploaded byte-for-byte as upstream
+# wrote it — today's behaviour. A design is never lost to this step.
+
+# The three answers to "which numbering does the delivered file carry?":
+# ``input`` (the operator's uploaded numbering was restored, so their own
+# hotspot labels resolve against the download), ``upstream`` (they gave us a
+# numbering and the file carries 1..N instead), ``n/a`` (there was no operator
+# numbering at all — a curated benchmark run uploads no file). Where each is
+# chosen, and why the third is not a synonym for the second, is at
+# ``not_restored`` in main().
+#
+# NOTHING READS THIS TUPLE AT RUNTIME, which is worth saying rather than
+# leaving it to look like a gate: the pipeline emits the strings as literals
+# and ``webhooks/modal.py::_sanitize_candidate`` allowlists the same three a
+# third time. What it is for is giving those two lists one place to be
+# compared — tests/test_proteina_smoke.py reads this tuple and the webhook's
+# own allowlist and fails when they drift, which is the drift that would make
+# one design report one numbering while it streams and another once it
+# finalised.
+_TARGET_NUMBERING_VALUES = ("input", "upstream", "n/a")
+
+_UNKNOWN_RESNAMES = frozenset({"UNK", "UNX", "XAA", "X"})
+
+# The parent amino acid of each modified residue in ``_MODRES_EQUIV``. Used ONLY
+# when comparing a design output's residue names against the input's: refold and
+# relax steps routinely write MSE back as MET, and counting that as a MISMATCH
+# pushes a perfectly good selenomethionine target below the identity floor, so
+# the restore declines and the operator silently receives 1..N. Never used for
+# selection. Kept in lockstep with the canary's MODRES_PARENT by hand — see the
+# note on _RENUMBER_MIN_IDENTITY for why this file cannot import it.
+_MODRES_PARENT = {
+    "MSE": "MET", "CME": "CYS", "CSO": "CYS", "SEP": "SER", "TPO": "THR",
+    "PTR": "TYR", "KCX": "LYS", "HYP": "PRO", "LLP": "LYS", "CSD": "CYS",
+    "OCS": "CYS", "MLY": "LYS", "M3L": "LYS", "CAS": "CYS", "CSS": "CYS",
+    "CSX": "CYS", "PCA": "GLU", "SAC": "SER",
+}
+
+# How far a chain may drift from the input before we refuse to call it the same
+# chain, and how much of that chain must carry actual evidence. Same values as
+# the canary's TARGET_MIN_SEQUENCE_IDENTITY / TARGET_MIN_INFORMATIVE_RESIDUES /
+# TARGET_MIN_INFORMATIVE_FRACTION. DUPLICATED, NOT IMPORTED, and that is forced:
+# modal_app.py copies run_pipeline.py into the image and nothing else, so
+# _canary_scoring.py does not exist in production. Keep the two in step by hand.
+_RENUMBER_MIN_IDENTITY = 0.9
+_RENUMBER_MIN_INFORMATIVE = 10
+# THE ABSOLUTE FLOOR ALONE IS NOT ENOUGH, and the canary has carried this second
+# half since the day the first one was written. ``max(1, min(10, ref_informative))``
+# is capped at what the reference offers so a genuinely tiny target still works —
+# but a 200-residue reference of which 198 are UNK caps the bar at 2, and two
+# coincidental matches then certify a map over all 200 residues. A FRACTION of
+# the chain has to be evidence, not just a count of it.
+_RENUMBER_MIN_INFORMATIVE_FRACTION = 0.5
+
+# Records whose residue-sequence number lives in columns 23-26 (and whose
+# insertion code lives in column 27), i.e. the ones a resseq rewrite must touch.
+# TER is handled separately — see restore_design_numbering.
+_RESSEQ_COORD_RECORDS = ("ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ")
+
+# Records that ALSO carry residue numbers, at other column positions. Upstream's
+# design output contains none of them (measured on the 8 archived Fc designs: a
+# real design is MODEL / ATOM / TER / ENDMDL / END and nothing else). If one ever
+# appears, renumbering only the coordinate section would leave the file
+# self-inconsistent, so the restore declines instead — the direction that ships
+# upstream's file unchanged.
+#
+# ``REMARK`` is NOT in this tuple and must not be: every real PDB carries
+# REMARKs and refusing on all of them would disable the restore entirely. Only
+# REMARK 465 (MISSING RESIDUES) carries residue numbers, and it is matched by
+# its own two-field test in _annotation_refusal.
+_RESSEQ_ANNOTATION_RECORDS = (
+    "HELIX ", "SHEET ", "SSBOND", "LINK  ", "CISPEP", "SITE  ", "MODRES",
+    "SEQADV", "DBREF ", "HET   ",
+)
+
+
+def pdb_ca_sequence(pdb_text: str) -> dict[str, list[tuple[int, str, str]]]:
+    """``chain -> [(resseq, icode, resname), ...]`` ascending, over every CA.
+
+    The sibling of ``pdb_ca_residues``, which returns ``(chain, resseq, icode)``
+    and no residue NAME. A positional map has to be checked by sequence, so the
+    names are the entire point, and a second parser is cheaper than changing a
+    return shape that several callers depend on.
+
+    Same model-1 / altloc / modified-residue rules as ``pdb_ca_residues``, so
+    the two never disagree about what counts as a residue.
+
+    THE INSERTION CODE IS PART OF THE RESIDUE ID, NOT DECORATION. This function
+    used to de-dupe on ``(chain, resseq, icode)`` but STORE only
+    ``(resseq, resname)``, which threw the icode away one line after computing
+    it. Input residues ``A100``, ``A100A`` and ``A100B`` then became three
+    entries all keyed 100, the renumber map's values collided, and the rewrite
+    stamped three different design residues with residue number 100 and a blank
+    icode — measured: a 200-residue chain with 3 insertion codes scored identity
+    0.985, cleared the 0.9 floor, applied, and delivered a file containing
+    ``{('A', 100, ' '): 3}``. That is a WORSE deliverable than the 1..N it
+    replaced, and Kabat/Chothia-numbered antibodies — the target market — always
+    carry insertion codes.
+
+    THE SORT KEY IS ``(resseq, icode)``, NOT THE WHOLE TUPLE, for the same
+    reason. Sorting ``(resseq, resname)`` broke ties on the RESIDUE NAME: file
+    order TRP(100) / ALA(100A) / GLY(100B) parsed back as ALA / GLY / TRP,
+    scrambling the positional correspondence before anything could check it.
+    Blank icode sorts first because ``"" < "A"``, which is the PDB convention.
+
+    KNOWN LIMIT, NOT FIXED: FIVE-DIGIT RESIDUE NUMBERS. PDB gives resSeq four
+    columns, and writers that exceed it spill the fifth digit into the iCode
+    column, so ``10000`` parses as ``(1000, "0")``. A target numbered ENTIRELY
+    at or above 10000 still round-trips — the misparse is identical on both
+    sides and preserves order, measured ``10000..10004 -> (1000,"0")..
+    (1000,"4")`` and applied. A target that CROSSES the boundary does not:
+    ``9998, 9999, 10000`` parse as ``(9998,""), (9999,""), (1000,"0")`` and
+    sort with the last one FIRST, which scrambles the positional
+    correspondence. That is fail-closed — measured identity 0.0, refused — but
+    the refusal blames chain order rather than naming the real cause.
+    """
+    by_chain: dict[str, list[tuple[int, str, str]]] = {}
+    seen: set[tuple[str, int, str]] = set()
+    for line in pdb_text.split("\n"):
+        record = line[:6]
+        if record.startswith("ENDMDL"):
+            break
+        if record not in ("ATOM  ", "HETATM"):
+            continue
+        if line[12:16].strip() != "CA":
+            continue
+        resname = line[17:20].strip().upper()
+        if record == "HETATM" and resname not in _MODRES_EQUIV:
+            continue
+        chain = line[21:22].strip()
+        try:
+            resseq = int(line[22:26])
+        except ValueError:
+            continue
+        icode = line[26:27].strip()
+        key = (chain, resseq, icode)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_chain.setdefault(chain, []).append((resseq, icode, resname))
+    for chain in by_chain:
+        by_chain[chain].sort(key=lambda e: (e[0], e[1]))
+    return by_chain
+
+
+def _is_unknown_resname(name: str) -> bool:
+    """``UNK`` / ``UNX`` / ``XAA`` / ``X`` — "I do not know what this is"."""
+    return str(name).strip().upper() in _UNKNOWN_RESNAMES
+
+
+def _same_resname(a: str, b: str) -> bool:
+    """Do two residue names denote the same residue for identity purposes?
+
+    Equal, or equal after folding a modified residue to its parent. MSE and MET
+    are the same residue; an upstream refold that writes selenomethionine back
+    as methionine has not changed the protein, and calling that a mismatch is
+    how a real target drops below the 0.9 floor and silently ships in 1..N.
+
+    NO UNKNOWN WILDCARD HERE, unlike the canary's ``same_residue``. Every caller
+    restricts the comparison to INFORMATIVE pairs first — both names known — so
+    an unknown can never reach this function, and adding a wildcard it does not
+    need would only invite someone to aggregate it into a fraction later.
+    """
+    a, b = str(a).strip().upper(), str(b).strip().upper()
+    return _MODRES_PARENT.get(a, a) == _MODRES_PARENT.get(b, b)
+
+
+def chain_renumber_map(observed: list[tuple[int, str, str]],
+                       reference: list[tuple[int, str, str]],
+                       *,
+                       min_identity: float = _RENUMBER_MIN_IDENTITY,
+                       min_informative: int = _RENUMBER_MIN_INFORMATIVE,
+                       min_informative_fraction: float = (
+                           _RENUMBER_MIN_INFORMATIVE_FRACTION),
+                       ) -> dict:
+    """Position-for-position map from a design chain's numbering to the input's.
+
+    Both lists are ``(resseq, icode, resname)`` ASCENDING BY ``(resseq, icode)``.
+    The i-th residue of the design chain is taken to be the i-th residue of the
+    input chain — and that assumption is then CHECKED against the residue names
+    rather than trusted, because assuming it is how a rewrite ends up keyed to
+    the wrong chain.
+
+    Returns ``{"ok", "reason", "map", "n", "n_informative", "identity"}``, where
+    ``map`` is ``{(design_resseq, design_icode): (input_resseq, input_icode)}``.
+    ``ok`` is False on any doubt and ``map`` is then empty.
+
+    WHAT IT REFUSES, AND WHY EACH REFUSAL EARNS ITS PLACE. A binder relabelled
+    onto a target's chain id fails on length. A binder that happens to match on
+    length fails on sequence, because a de-novo binder is not the target. A chain
+    of nothing but UNK fails the informative floor — unknown residues compare
+    equal to anything, so without that floor an all-UNK chain scores a perfect
+    identity against any reference at all and would certify a map that renumbers
+    the wrong chain onto the operator's keys. A chain that is MOSTLY unknown
+    fails the informative FRACTION for the same reason at a smaller scale.
+    A map that is not one-to-one fails injectivity, because collapsing two
+    design residues onto one input residue id emits a file with duplicate
+    residues in it — strictly worse than the 1..N it replaced.
+
+    Residue-name comparison folds modified residues to their parent
+    (``_same_resname``). It used to be exact ``==``, on the argument that only a
+    false MATCH can do damage — true as far as it goes, but it ignored the cost
+    of the other direction. A selenomethionine target comes back from an
+    upstream refold with MSE written as MET; exact comparison scores every one
+    of those a mismatch, a target with enough of them drops below 0.9, and the
+    operator receives 1..N with no indication that anything was declined. That
+    is not a free refusal, it is the defect this function exists to fix, firing
+    on a correct input.
+    """
+    n_obs, n_ref = len(observed), len(reference)
+    if n_obs != n_ref:
+        return {"ok": False, "n": n_obs, "n_informative": 0, "identity": None,
+                "map": {},
+                "reason": (f"length differs: {n_obs} residues in the design, "
+                           f"{n_ref} in the input chain — a positional map needs "
+                           f"one residue per residue")}
+    if not n_obs:
+        return {"ok": False, "n": 0, "n_informative": 0, "identity": None,
+                "map": {}, "reason": "the chain carries no CA residue"}
+
+    pairs = [(o[-1], r[-1]) for o, r in zip(observed, reference)]
+    informative = [(a, b) for a, b in pairs
+                   if not _is_unknown_resname(a) and not _is_unknown_resname(b)]
+    identical = sum(1 for a, b in informative if _same_resname(a, b))
+    identity = (identical / len(informative)) if informative else None
+    ref_informative = sum(1 for entry in reference
+                          if not _is_unknown_resname(entry[-1]))
+    floor = max(1, min(int(min_informative), int(ref_informative)))
+    fraction = len(informative) / n_obs
+
+    if len(informative) < floor:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"only {len(informative)} informative residue pair(s), "
+                           f"below the {floor} required — an all-unknown chain "
+                           f"matches anything and must not certify a map")}
+    if fraction < min_informative_fraction:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"only {len(informative)} of the {n_obs} residues "
+                           f"carry a known name on both sides "
+                           f"({fraction:.0%}, need "
+                           f"{min_informative_fraction:.0%}) — a predominantly "
+                           f"sequence-free chain is mostly wildcard matches, "
+                           f"not evidence")}
+    if identity is None or identity < min_identity:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"sequence identity {identity!r} over "
+                           f"{len(informative)} informative pair(s) is below "
+                           f"{min_identity} — these are not the same chain in "
+                           f"the same order")}
+
+    mapping = {(o[0], o[1]): (r[0], r[1]) for o, r in zip(observed, reference)}
+    # INJECTIVITY, as a backstop rather than a live case. ``pdb_ca_sequence``
+    # de-dupes on ``(chain, resseq, icode)``, so a reference parsed by it cannot
+    # offer two identical residue ids and this can only fire on a hand-built
+    # list. It stays because the version of this file that shipped WITHOUT it
+    # was one dropped field away from emitting duplicate residues, and the
+    # symptom — a valid-looking file the operator cannot key into — is exactly
+    # the one the whole function exists to prevent. A map that is not one-to-one
+    # must never be applied to anything.
+    if len(set(mapping.values())) != len(mapping):
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": (None if identity is None else round(identity, 4)),
+                "map": {},
+                "reason": ("the map is not one-to-one: two design residues "
+                           "would be given the same input residue id, which "
+                           "would emit a file with duplicate residues in it")}
+    return {"ok": True, "n": n_obs, "n_informative": len(informative),
+            "identity": round(identity, 4),
+            "map": mapping,
+            "reason": ""}
+
+
+def _annotation_refusal(line: str) -> str | None:
+    """The record type on ``line`` that this rewrite cannot maintain, or None.
+
+    ``REMARK 465`` (MISSING RESIDUES) is matched on its two leading fields
+    rather than by membership in ``_RESSEQ_ANNOTATION_RECORDS``: every real PDB
+    carries REMARKs, so refusing on the record name alone would disable the
+    restore on any file that has one, while 465 specifically tabulates residue
+    numbers that renumbering the coordinates would silently invalidate.
+    """
+    record = line[:6]
+    if record in _RESSEQ_ANNOTATION_RECORDS:
+        return record.strip()
+    if record == "REMARK" and line[7:10].strip() == "465":
+        return "REMARK 465"
+    return None
+
+
+def restore_design_numbering(pdb_text: str,
+                             target_chains: list[str],
+                             reference: dict[str, list[tuple[int, str, str]]],
+                             *,
+                             min_identity: float = _RENUMBER_MIN_IDENTITY,
+                             min_informative: int = _RENUMBER_MIN_INFORMATIVE,
+                             min_informative_fraction: float = (
+                                 _RENUMBER_MIN_INFORMATIVE_FRACTION),
+                             ) -> tuple[str, dict]:
+    """Rewrite a design's TARGET chains back into the input's residue numbering.
+
+    Returns ``(text, report)``. ``text`` is the rewritten file when
+    ``report["applied"]`` and the input string unchanged otherwise. The binder
+    chain is never touched: it is a de-novo chain with no input to be numbered
+    against, and 1..N is the only numbering it has ever had.
+
+    ALL TARGET CHAINS MAP OR NONE IS APPLIED. A partial rewrite would leave one
+    target chain keyed to the operator's input and another to upstream's 1..N,
+    which is harder to reason about than either alone.
+
+    AND THEIR COORDINATE RECORDS THAT THE MAP HAS NO KEY FOR — but only where
+    leaving one where it is would actually collide. The map is built from CA
+    atoms, so a residue modelled without a CA, a HETATM ion or ligand on a
+    target chain, or a second MODEL numbered differently from the first yields
+    coordinate records that are not keys. Such a record keeps the number it
+    has, and that is a problem in exactly one case: when some OTHER residue is
+    being renumbered ONTO that number, so the delivered file would carry two
+    different residues on one residue id. Those are counted and the whole file
+    is refused. A record nothing is moving onto stays where it is and the
+    restore still applies — refusing it would cost the shard its numbering for
+    a file that is fine.
+
+    ONLY MODEL 1 DEFINES THE MAP, WHILE THE REWRITE WALKS THE WHOLE FILE.
+    ``pdb_ca_sequence`` stops at the first ``ENDMDL``, so a multi-model file's
+    later models are rewritten with model 1's map. That is correct exactly when
+    the models share a numbering, which is the normal case and the only one
+    upstream emits (the 8 archived designs are single-model). A later model
+    numbered DIFFERENTLY is caught only where its numbers land on ids model 1
+    is being renumbered onto; where they do not, that model keeps its own
+    numbers and the file goes out with two models in two numberings. Nothing
+    upstream writes reaches that state — it is named here rather than claimed
+    closed.
+
+    WHAT IS GUARANTEED ABOUT DUPLICATE RESIDUE IDS, PRECISELY: this rewrite
+    never CREATES one. It cannot do so through the map, which is checked
+    one-to-one, so two records reach one destination only if they already
+    shared a source id; the unmapped-record refusal covers the only other way.
+    It does not REMOVE one either — a design that arrives with a ligand sitting
+    on a real residue's number is delivered with both moved together, because
+    refusing hands the operator the same two residues on the same id and takes
+    their numbering away as well.
+
+    BOTH THE resSeq COLUMNS AND THE iCode COLUMN ARE WRITTEN. A residue id in
+    PDB is ``(chain, resSeq, iCode)``, and an earlier version of this function
+    wrote only ``resSeq`` — which mapped ``A100 / A100A / A100B`` onto three
+    residues all numbered 100 with a blank icode. Writing four columns and
+    leaving the fifth alone is not a partial fix, it is a corrupted file.
+
+    TER IS SET FROM THE LAST COORDINATE RECORD SEEN FOR THAT CHAIN SO FAR IN THE
+    FILE, NOT THROUGH THE MAP, and that is measured rather than stylistic.
+    Upstream's TER records already carry a cumulative index that is not in the
+    chain's own numbering space: in a real design, chain B's final ATOM is
+    ``SER B 208`` while its TER reads ``SER B 419``, and chain C's TER names a
+    different residue than the atom it follows. Those numbers are not keys in
+    the map and a map lookup would skip them — which would be fine for B and C,
+    but chain A's TER *does* agree with its atoms, so skipping it would leave
+    ``TER ... A 211`` beside atoms renumbered to 234-444 and break something
+    that was correct. "So far in the file" is the honest statement of the rule
+    and differs from "the chain's last coordinate record" for a file whose
+    chains are INTERLEAVED; upstream writes each chain contiguously, so on the
+    measured input the two coincide.
+
+    NEVER RAISES. A design that reaches this function has already been paid for;
+    losing it over a numbering nicety would be a far worse outcome than shipping
+    upstream's keys. Any failure returns the input text with a reason.
+
+    KNOWN LIMIT, NOT FIXED: a BARE three-character ``TER`` refuses the whole
+    restore when a target chain has a BLANK chain id. ``line[21:22]`` is ``""``
+    on such a line, a blank chain id is a legal key in ``remap``, and
+    ``_splice_resid`` cannot write a residue id into a 3-character line — so it
+    returns None and the file is declined. Fail-closed and rare (upstream pads
+    its TER records to 80 columns), and over-refusing costs only the numbering,
+    never the design.
+    """
+    report: dict = {"applied": False, "already_input_numbering": False,
+                    "chains": {}, "reason": ""}
+    try:
+        # NOT ``if c``: a blank chain id is a legal PDB chain and a legitimate
+        # key in ``reference``. Filtering it out here dropped it from ``wanted``
+        # while leaving the rest of the file rewritten, which quietly broke the
+        # all-or-none promise for exactly the input least likely to be noticed.
+        wanted = sorted(set(target_chains))
+        if not wanted:
+            report["reason"] = "no target chains were named"
+            return pdb_text, report
+
+        observed = pdb_ca_sequence(pdb_text)
+        chains: dict[str, dict] = {}
+        for chain in wanted:
+            if chain not in observed:
+                chains[chain] = {"ok": False, "n": 0, "n_informative": 0,
+                                 "identity": None, "map": {},
+                                 "reason": "chain absent from the design output"}
+            elif chain not in reference:
+                chains[chain] = {"ok": False, "n": len(observed[chain]),
+                                 "n_informative": 0, "identity": None, "map": {},
+                                 "reason": "chain absent from the input target"}
+            else:
+                chains[chain] = chain_renumber_map(
+                    observed[chain], reference[chain],
+                    min_identity=min_identity, min_informative=min_informative,
+                    min_informative_fraction=min_informative_fraction)
+        report["chains"] = chains
+
+        # THE SEQUENCE CHECK GATES "already", it does not bypass it. Matching
+        # residue ids alone are not evidence that the design's chain A is the
+        # input's chain A: a target numbered from 1 (an AlphaFold model, say)
+        # against a design where upstream emitted the BINDER as chain A gives
+        # identical key lists and 5% sequence identity, and this used to return
+        # before the ok check and report ``target_numbering: "input"`` for it.
+        # Requiring ok first means "already" can only be claimed for a chain the
+        # code has actually recognised; when the keys match but the sequence
+        # does not, the refusal below names the real problem.
+        already = (
+            all(chains[c]["ok"] for c in wanted)
+            and all([(k, i) for k, i, _ in observed.get(c, [])]
+                    == [(k, i) for k, i, _ in reference.get(c, [])]
+                    for c in wanted))
+        report["already_input_numbering"] = already
+        if already:
+            report["reason"] = "the design already carries the input numbering"
+            return pdb_text, report
+        if not all(c["ok"] for c in chains.values()):
+            report["reason"] = "; ".join(
+                f"chain {c}: {v['reason']}"
+                for c, v in sorted(chains.items()) if not v["ok"])
+            return pdb_text, report
+
+        remap = {c: chains[c]["map"] for c in wanted}
+        # Columns 23-26 hold resSeq and column 27 holds the insertion code — four
+        # characters and one. A value that does not fit would shift every column
+        # to its right, so refuse the whole file rather than emit a corrupted
+        # one. The icode half is not hypothetical padding: it is the field the
+        # first version of this rewrite dropped.
+        for chain, mapping in remap.items():
+            for value, icode in mapping.values():
+                if len(f"{value:d}") > 4:
+                    report["reason"] = (
+                        f"chain {chain}: input residue number {value} does not "
+                        f"fit the four columns PDB gives resSeq")
+                    return pdb_text, report
+                if len(icode) > 1:
+                    report["reason"] = (
+                        f"chain {chain}: insertion code {icode!r} does not fit "
+                        f"the single column PDB gives iCode")
+                    return pdb_text, report
+
+        lines = pdb_text.split("\n")
+        for line in lines:
+            found = _annotation_refusal(line)
+            if found:
+                report["reason"] = (
+                    f"the design carries {found} records, whose residue numbers "
+                    f"this rewrite does not maintain — renumbering only the "
+                    f"coordinates would leave the file self-inconsistent")
+                return pdb_text, report
+
+        out: list[str] = []
+        last_seen: dict[str, tuple[int, str]] = {}
+        # A COORDINATE RECORD THE MAP HAS NO KEY FOR IS ONLY A PROBLEM WHEN
+        # SOMETHING IS MOVING ONTO IT. The injectivity refusal above proves the
+        # MAP is one-to-one and says nothing about such records.
+        # ``pdb_ca_sequence`` builds the map from CA atoms only, so a residue
+        # modelled without a CA, a HETATM ligand or ion sitting on a target
+        # chain, or a second model whose numbering differs from the first all
+        # produce them — and this loop used to hand them straight through,
+        # keeping upstream's number while every neighbour moved. Measured:
+        # ``[A100..A109, A105 ZN]`` against a 100..109 reference delivered
+        # duplicate residue ids with ``applied`` True and the payload claiming
+        # the operator's numbering was restored. That is the exact outcome the
+        # one-to-one refusal exists to prevent, reached around the side.
+        #
+        # THE FIRST VERSION OF THIS GUARD REFUSED ON ALL OF THEM, and gave that
+        # collision as its reason for every one. Measured false: a ``HETATM ZN``
+        # at ``A9000`` against a 234-253 reference collides with nothing, and
+        # refusing it shipped the WHOLE shard in upstream's 1..N — both target
+        # chains, every design, the operator's hotspot labels no longer
+        # resolving and the results page raising its warning banner. One benign
+        # heteroatom for the entire feature, on a stated reason that was false
+        # about that file. The test is therefore the collision itself: the
+        # record's own ``(resseq, icode)`` being a value of the map, i.e. an id
+        # this rewrite is renumbering some other residue onto.
+        #
+        # COUNTED BY RESIDUE, NOT BY RECORD. One CA-less tryptophan is 8 atoms
+        # plus their 8 ``ANISOU`` lines; "16 coordinate record(s)" with the same
+        # residue named three times in the sample sends an operator looking for
+        # sixteen problems. Keying on the residue id is also what bounds this:
+        # the keys are a subset of the map's values, so it cannot outgrow the
+        # map however many records a pathological file piles onto one residue.
+        #
+        # No archived design can trigger this: all 8 are ATOM-only, one model,
+        # every residue has a CA, and ``crop_pdb_to_contig`` strips ligands,
+        # ions and waters out of the staged input. Verified 8/8 still applied.
+        destinations = {c: set(m.values()) for c, m in remap.items()}
+        collisions: dict[tuple[str, int, str], None] = {}
+        for line in lines:
+            record = line[:6]
+            chain = line[21:22].strip() if len(line) > 21 else ""
+            if record in _RESSEQ_COORD_RECORDS and chain in remap:
+                icode = line[26:27].strip()
+                try:
+                    old = int(line[22:26])
+                except ValueError:
+                    # A residue number that is not a number cannot be a
+                    # destination either: every id this rewrite writes comes
+                    # out of ``f"{n:4d}"`` and ``int`` reads every one of those
+                    # back, so nothing can be renumbered onto this record. It
+                    # keeps its own field, exactly as it arrived.
+                    out.append(line)
+                    continue
+                new = remap[chain].get((old, icode))
+                if new is None:
+                    if (old, icode) in destinations[chain]:
+                        collisions[(chain, old, icode)] = None
+                    out.append(line)
+                    continue
+                spliced = _splice_resid(line, new)
+                if spliced is None:
+                    report["reason"] = (
+                        f"chain {chain}: a coordinate record is too short at "
+                        f"{len(line)} characters to carry the residue id "
+                        f"{new[0]}{new[1]} without changing the line's width")
+                    return pdb_text, report
+                last_seen[chain] = new
+                out.append(spliced)
+                continue
+            if record.startswith("TER") and chain in remap and chain in last_seen:
+                spliced = _splice_resid(line, last_seen[chain])
+                if spliced is None:
+                    report["reason"] = (
+                        f"chain {chain}: a TER record is too short at "
+                        f"{len(line)} characters to carry the residue id "
+                        f"{last_seen[chain][0]}{last_seen[chain][1]} without "
+                        f"changing the line's width")
+                    return pdb_text, report
+                out.append(spliced)
+                continue
+            out.append(line)
+
+        if collisions:
+            shown = ", ".join(f"chain {c} residue {r}{i}"
+                              for c, r, i in list(collisions)[:3])
+            report["reason"] = (
+                f"{len(collisions)} residue(s) on a chain being renumbered are "
+                f"not in the map and sit on residue ids this rewrite is moving "
+                f"other residues onto ({shown}"
+                f"{', ...' if len(collisions) > 3 else ''}) — leaving them "
+                f"there would emit a file with two different residues sharing "
+                f"one residue id")
+            return pdb_text, report
+
+        report["applied"] = True
+        return "\n".join(out), report
+    except Exception as exc:  # noqa: BLE001 — never lose a paid design to this
+        report["applied"] = False
+        report["reason"] = f"{type(exc).__name__}: {exc}"
+        return pdb_text, report
+
+
+def _splice_resid(line: str, resid: tuple[int, str]) -> str | None:
+    """``line`` with columns 23-26 set to ``resSeq`` and column 27 to ``iCode``.
+
+    ALWAYS LENGTH-PRESERVING, or ``None``. Returning a longer line would shift
+    every column to its right in a fixed-width format, and the caller refuses
+    the whole file on ``None`` rather than emit one. Three cases:
+
+    * 27 characters or more — the iCode column exists; splice both fields.
+    * exactly 26 — resSeq is complete but the file ends before iCode. Writing a
+      BLANK icode into a column that does not exist is a no-op, so the line is
+      rewritten without one; a REAL icode has nowhere to go and returns None.
+      Real files do this: the archived input target's TER records are 26
+      characters plus a trailing space, and a 26-character TER is valid PDB.
+    * fewer than 26 — the resSeq field itself is truncated; nothing can be
+      written into it safely.
+    """
+    seq, icode = resid
+    if len(line) < 26:
+        return None
+    if len(line) < 27:
+        return None if icode else f"{line[:22]}{seq:>4d}"
+    return f"{line[:22]}{seq:>4d}{(icode or ' '):1s}{line[27:]}"
 
 
 def parse_target_input(spec: str) -> list[tuple[str, Optional[int], Optional[int]]]:
@@ -1087,6 +2129,21 @@ def _rf3_enabled() -> bool:
     return os.environ.get("PROTEINA_RF3", "on").strip().lower() not in _RF3_OFF
 
 
+def _inline_enabled() -> bool:
+    """Whether design coordinates may travel in the return value.
+
+    Defaults ON: a caller with no upload endpoint has no other way to receive
+    atoms, and that caller is the whole reason this exists.
+
+    Observable ONLY when there is no upload endpoint. Inlining is exclusive
+    with uploading, so with an endpoint this flag changes nothing — there is no
+    "scores inline but not the atoms" mode, because with an endpoint the atoms
+    were never inline to begin with. Turning it off makes an endpoint-less call
+    a pre-GPU refusal instead of an inline delivery.
+    """
+    return os.environ.get("PROTEINA_INLINE_PDBS", "on").strip().lower() not in _INLINE_OFF
+
+
 # ===========================================================================
 # Custom-target registration (`complexa target add`)
 #
@@ -1350,8 +2407,40 @@ def prepare_custom_target(
                     f"It contains: {spans}.",
                 )
     else:
+        # PER CHAIN, not in aggregate. ``derive_segments`` ``continue``s past a
+        # chain it finds no residues for, so a request for two chains against a
+        # structure that holds one produces a perfectly healthy one-chain
+        # ``segments`` and nothing downstream ever mentions the chain that
+        # vanished: every later guard (3b, 4, 4b, target_too_small,
+        # missing_hotspots) reads the ALREADY-PRUNED list, and hotspots on a
+        # strict subset of the contig's chains are legitimate, so a request
+        # aimed at one protomer clears step 5 with "all N hotspot(s) matched"
+        # while the other protomer is absent from the staged file entirely. An
+        # A100 is billed and the binders are designed against a monomer, in a
+        # run indistinguishable from a correct one.
+        #
+        # An aggregate check cannot see this — it only fires when ALL the
+        # chains are missing — and the ``target_input`` branch immediately
+        # above has always refused per chain, so this closes an asymmetry
+        # rather than adding a new class of refusal. The comma spelling
+        # ``"A,B"`` is why it matters now: ``normalize_target_chain`` turns it
+        # into two real chain tokens (it used to be one unmatchable token that
+        # emptied ``segments`` and tripped the aggregate guard), so the exact
+        # literal ``direct_call_fc.build_job_spec`` sends now takes this path.
+        present = {r[0] for r in residues}
+        absent = [c for c in requested_chains if c not in present]
+        if absent:
+            noun, verb = ("chains", "are") if len(absent) > 1 else ("chain", "is")
+            _fail(
+                "input", "target_chain",
+                f"{noun} {' '.join(absent)} {verb} not present in the uploaded "
+                f"target. It contains: {spans}.",
+            )
         segments = derive_segments(residues, requested_chains)
         if not segments:
+            # Reachable only when NO chain was requested at all (an empty
+            # target_chain with no contig): ``absent`` is empty because there
+            # was nothing to look for, and nothing was selected either.
             _fail(
                 "input", "target_chain",
                 f"chain {target_chain!r} is not present in the uploaded target. "
@@ -1661,13 +2750,76 @@ def design_subprocess_env() -> dict:
     return env
 
 
-def run_streaming(cmd: list[str], cwd: Path) -> int:
+# THE DESIGN SUBPROCESS OWNS ITS OWN DEADLINE.
+#
+# ``modal_app.py`` caps the container at ``_MAX_SESSION_S = 7200`` and gives
+# run_pipeline.py itself ``max(60, 7200 - 120) = 7080`` s. Without a timeout of
+# our own, a hung ``complexa design`` runs until ONE of those two fires — and
+# both land on run_pipeline.py, not on the child: subprocess.run is killed with
+# the parent, main() never reaches _write_result, /tmp/smoke_results.json is
+# never written, and ``run_tool`` hands the caller ``smoke_result: None`` with
+# an empty ``stdout_tail``. A 2 h A100 is billed for a result that says nothing
+# at all, and any design the search had ALREADY scored and written to the reward
+# CSV dies with it.
+#
+# BindCraft owns the same deadline for the same reason (``run_command(cmd,
+# timeout=timeout_s)``, then a ``timeout`` run_status recorded beside the
+# designs it banked) and returns a structured result on the timeout path. This
+# is that, sized to leave the shard time to parse, upload/inline, write its
+# result and tar the raw tree inside the wrapper's 7080 s.
+DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6600
+# The exit code a timed-out search reports into ``result["search"]``. 124 is
+# what coreutils `timeout(1)` uses, so it does not collide with a real
+# `complexa design` exit status, and ``rc != 0`` already routes it through the
+# existing partial-delivery arithmetic.
+SEARCH_TIMEOUT_RC = 124
+
+
+def _design_timeout_s() -> float:
+    """Parse the override defensively, exactly as ``_inline_cap_bytes`` does.
+
+    Module scope again: a typo like ``2h`` raising ValueError here would kill
+    the container before ``_fail`` can write a result file, which is the very
+    outcome the timeout exists to prevent.
+    """
+    raw = (os.environ.get("PROTEINA_DESIGN_TIMEOUT_S") or "").strip()
+    if not raw:
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "PROTEINA_DESIGN_TIMEOUT_S=%r is not a number; using the %d s "
+            "default", raw, DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S,
+        )
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    if value <= 0:
+        logger.warning(
+            "PROTEINA_DESIGN_TIMEOUT_S=%r is not positive; using the %d s "
+            "default", raw, DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S,
+        )
+        return float(DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S)
+    return value
+
+
+DESIGN_SUBPROCESS_TIMEOUT_S = _design_timeout_s()
+
+
+def run_streaming(cmd: list[str], cwd: Path, timeout: float | None = None) -> int:
     """Run a subprocess, live-streaming stdout/stderr to Modal logs (never
-    capture_output for long GPU work, per the Modal-subprocess memory)."""
-    logger.info("cmd (cwd=%s): %s", cwd, " ".join(cmd))
+    capture_output for long GPU work, per the Modal-subprocess memory).
+
+    Raises ``subprocess.TimeoutExpired`` when the child outlives ``timeout``
+    (default ``DESIGN_SUBPROCESS_TIMEOUT_S``). Deliberately not swallowed here:
+    the caller is the only place that knows whether anything was banked before
+    the hang, and main() turns it into a structured result either way.
+    """
+    if timeout is None:
+        timeout = DESIGN_SUBPROCESS_TIMEOUT_S
+    logger.info("cmd (cwd=%s, timeout=%ss): %s", cwd, timeout, " ".join(cmd))
     result = subprocess.run(
         cmd, cwd=str(cwd), stdout=sys.stdout, stderr=sys.stderr, check=False,
-        env=design_subprocess_env(),
+        env=design_subprocess_env(), timeout=timeout,
     )
     return result.returncode
 
@@ -1763,9 +2915,164 @@ def parse_designs(run_dir: Path) -> list[dict]:
         )
     # Rank by total_reward desc (None at the bottom), mirroring filter.py.
     parsed.sort(key=lambda d: (d["total_reward"] is not None, d["total_reward"] or 0.0), reverse=True)
-    for rank, d in enumerate(parsed):
-        d["rank"] = rank
+    # ``rank`` HERE IS THE REWARD-SORT POSITION, 0-BASED, AND IT IS NOT THE
+    # NUMBER ANY CALLER EVER SEES. It says "this row sorted Nth"; it does not
+    # say "this is delivered design N", because whether a row is delivered at
+    # all is decided later — main()'s loop drops a row whose PDB never
+    # materialised, whose upload raised, or whose file reads as zero bytes.
+    # Feeding this index straight into the candidate would therefore hand a
+    # direct caller a rank 0 (every sibling generator's best design is rank 1)
+    # and, after any drop, a gapped set. main() counts the DELIVERED rank
+    # itself, densely and from 1 — see ``emitted_rank`` there, and boltzgen /
+    # rfantibody, which carry the same split for the same reason.
+    for sort_position, d in enumerate(parsed):
+        d["rank"] = sort_position
     return parsed
+
+
+# ===========================================================================
+# What the shard actually delivered: census + ONE verdict
+# ===========================================================================
+
+
+def census_output_tree(run_dir: Path) -> dict:
+    """Count what ``complexa design`` actually wrote under the shard run dir.
+
+    A zero-design result is only interpretable next to this. "The search never
+    produced a reward CSV" (the tool broke, exit code notwithstanding) and "the
+    filter culled every sample" (the search worked, nothing survived) are the
+    same three lines of JSON without it — empty ``designs``, empty
+    ``candidates``, status COMPLETED — and they call for opposite responses:
+    the first is a bug to fix, the second is a campaign to widen. BindCraft
+    carries the identical thing as ``diagnostics["output_tree"]`` and puts it
+    in the failure detail for exactly this reason.
+
+    ``filtered_out_pdbs`` is the discriminator that matters most: it is the
+    bucket ``find_pdb_for`` deliberately skips, so those structures are
+    invisible everywhere else in the result, and a run with 8 of them and 0
+    design PDBs is a filter outcome, not a broken tool.
+
+    A DIAGNOSTIC MUST NOT FAIL A RUN. Everything here is best-effort and every
+    exception is captured into the census itself, because this is called on
+    the paths where something has already gone wrong.
+    """
+    census: dict[str, Any] = {"run_dir": str(run_dir)}
+    try:
+        census["exists"] = os.path.isdir(str(run_dir))
+        pdbs = glob.glob(str(run_dir / "**/*.pdb"), recursive=True)
+        census["design_pdbs"] = len(
+            [p for p in pdbs if "filtered_out_samples" not in p])
+        census["filtered_out_pdbs"] = len(
+            [p for p in pdbs if "filtered_out_samples" in p])
+        csvs = sorted(glob.glob(str(run_dir / "**/*.csv"), recursive=True))
+        census["csvs"] = [os.path.basename(p) for p in csvs][:40]
+        reward_csv = find_reward_csv(run_dir)
+        census["reward_csv"] = (
+            os.path.basename(str(reward_csv)) if reward_csv else None)
+        census["subdirs"] = sorted(
+            p.name for p in run_dir.iterdir() if p.is_dir()
+        )[:40] if os.path.isdir(str(run_dir)) else []
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never raise
+        census["error"] = f"{type(exc).__name__}: {exc}"
+    return census
+
+
+def delivery_verdict(
+    *,
+    n_parsed: int,
+    n_delivered: int,
+    n_structures: int,
+    n_scored_delivered: int,
+    n_inline_capped: int,
+    n_failures: int,
+    inline_pdbs: bool,
+    census: dict | None = None,
+) -> dict | None:
+    """ONE verdict on what this shard actually delivered. ``None`` == honest.
+
+    Written once and consulted once, because the four ways this shard could
+    return ``status: COMPLETED``, exit 0 and no ``error`` key while having
+    delivered nothing usable are not four different bugs — they are one
+    missing question, asked in four places or nowhere:
+
+        did the caller end up with coordinates AND scores?
+
+    The predecessor asked a narrower one — "did the inline size cap drop
+    every design?" — which is true on exactly one of the paths. A shard whose
+    PDBs never matched a reward row, whose files could not be read, or whose
+    files read as zero bytes reaches the identical outcome (candidates with no
+    atoms behind them, or no candidates at all) and used to certify it as a
+    clean run: the exact spend-then-look-fine failure the delivery accounting
+    exists to prevent. BindCraft returns a structured FAILED for all of them.
+
+    ``n_structures`` is the honest count of DELIVERED COORDINATES and it is
+    mode-dependent on purpose: inline, a candidate carries atoms only if it
+    was actually inlined (``n_inlined``), because a cap-dropped candidate has
+    scores and a pdb_key and no bytes; on the upload path a candidate exists
+    only after its PUT returned, so the candidate itself is the evidence.
+
+    NOT a failure, deliberately:
+      * ``n_parsed == 0`` — nothing was produced, so nothing was undelivered.
+        The campaign pools survivors across shards and delivered-only billing
+        releases the hold; a legitimately culled shard is a COMPLETED shard.
+        It gets a census instead, so it can be told apart from a broken one.
+      * a PARTIAL loss — some designs delivered, some dropped. That is what
+        ``n_failures`` and ``inline_delivery`` report, and throwing away the
+        survivors would cost more than the diagnosis is worth.
+
+    The ``check`` is reason-specific while the code path is single: a caller
+    branching on ``error.check`` gets told which of the four it hit, and
+    ``inline_cap_admitted_nothing`` keeps its original spelling because the
+    cap is a distinct, operator-fixable cause (raise the env var) rather than
+    a symptom of a broken search.
+    """
+    if n_parsed <= 0:
+        return None
+    note = f" Output tree: {census}." if census else ""
+
+    if n_structures == 0:
+        if inline_pdbs and n_inline_capped > 0:
+            return {
+                "bucket": "delivery",
+                "check": "inline_cap_admitted_nothing",
+                "detail": (
+                    f"the inline PDB cap ({INLINE_PDB_TOTAL_CAP_BYTES} bytes) "
+                    f"admitted none of the {n_inline_capped} design(s) this "
+                    "shard produced, so the run delivered no coordinates at "
+                    "all. Scores and ranks are in this result and the atoms "
+                    "are in the raw archive. Raise "
+                    "PROTEINA_INLINE_PDB_CAP_BYTES above one design's PDB and "
+                    "re-run." + note
+                ),
+            }
+        return {
+            "bucket": "delivery",
+            "check": "no_coordinates_delivered",
+            "detail": (
+                f"the search scored {n_parsed} design(s) but this shard "
+                f"delivered no coordinates at all ({n_delivered} candidate(s) "
+                f"survived, {n_failures} dropped: no PDB matched the "
+                "reward-CSV row, the file could not be read, or it read as "
+                "zero bytes). An A100 was billed and no structure came back. "
+                "Whatever the search did write is in the raw archive." + note
+            ),
+        }
+
+    if n_delivered > 0 and n_scored_delivered == 0:
+        return {
+            "bucket": "delivery",
+            "check": "no_scores_delivered",
+            "detail": (
+                f"all {n_delivered} delivered design(s) carry coordinates but "
+                "not one carries a total_reward, so nothing in this result can "
+                "be ranked or triaged and the rank order is arbitrary. The "
+                "reward CSV was found and read, so this is a column/scoring "
+                "failure rather than a missing file. The structures are in "
+                "this result and the full output tree is in the raw "
+                "archive." + note
+            ),
+        }
+    return None
 
 
 # ===========================================================================
@@ -1830,12 +3137,21 @@ def archive_raw_outputs(out_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
 
 
 # ===========================================================================
-# validate tier (free, CPU dry-run — the staging gate)
+# validate tier (wallet-free staging gate — NOT a CPU-only container)
 # ===========================================================================
+# "free, CPU dry-run" is what this header used to say, and half of it was
+# false in the direction that costs money. WALLET-free is true: tools-hub does
+# not bill the validate preset. CPU-only is not: modal_app.py declares exactly
+# one @app.function and it is unconditionally `gpu="A100-80GB"`, so this tier
+# runs on an A100 container for its whole lifetime and Modal bills wall-clock
+# rather than utilisation. Skipping GPU *work* is not the same as not
+# allocating a GPU. See FN_GPU in tools/proteina/direct_call_fc.py, whose
+# direct path bypasses the wallet and therefore pays the infrastructure bill
+# with nothing free about it.
 
 
 def run_validate(config_dir: str, preset: str, task_name: str) -> None:
-    """Free pre-flight / staging gate. Variant-agnostic checks, no GPU compute:
+    """Pre-flight / staging gate. Variant-agnostic checks, no GPU compute:
     (1) the proteinfoundation package imports (src-layout sane), (2) all three
     variant config files are present, (3) at least one model checkpoint is
     present on the mounted weights Volume (catches an unseeded / wrong-path
@@ -1892,7 +3208,9 @@ def run_validate(config_dir: str, preset: str, task_name: str) -> None:
 # ===========================================================================
 
 
-def main() -> None:
+def _run_shard() -> None:
+    """The shard itself. Always entered through ``main()``, never directly —
+    ``main()`` is what guarantees a result file exists on every exit path."""
     start = time.time()
     payload = parse_payload()
 
@@ -1907,9 +3225,46 @@ def main() -> None:
     # Custom-target fields. Defaults reproduce the curated behaviour exactly, so
     # a campaign created before these existed keeps draining unchanged.
     target_source = str(job_spec.get("target_source") or "curated")
-    target_chain = str(job_spec.get("target_chain") or "")
+    # Both accept the shared cross-tool spelling as well as this file's native
+    # one; see normalize_target_chain / normalize_hotspots.
+    #
+    # ACCEPTED WEB-PATH CHANGE, recorded here rather than discovered later.
+    # Routing this field through normalize_target_chain also DE-DUPLICATES it,
+    # and the web adapter does not (tools/proteina/__init__.py joins the form
+    # field on whitespace and stops). So a form entry of "A A" or "A,A" —
+    # which validate() accepts — used to reach ``derive_segments`` as two
+    # tokens and register ``--target-input A1-200,A1-200``; it now registers
+    # ``A1-200``. Measured across the adapter's whole accepted input space,
+    # that is the ONLY divergence this change introduces on the web path.
+    #
+    # It is accepted because the deduplicated form is the one whose meaning is
+    # known. A repeated segment is not a harmless spelling here: counting one
+    # is what let ``A10-20,A10-20`` report 22 residues for 11 and walk through
+    # the minimum-size floor (see selected_residue_keys — that particular hole
+    # is closed, by counting a de-duplicated key set, but it is what the shape
+    # costs when something downstream forgets). And upstream's own contig
+    # grammar is unread: atomworks is not vendored here, so what
+    # ``AtomSelectionStack.from_contig`` does with the same range named twice
+    # is not something this file may assume. Sending it once removes the
+    # question. Pinned end to end by TestAcceptedWebPathChanges in
+    # tests/test_proteina_delivery.py.
+    target_chain = normalize_target_chain(str(job_spec.get("target_chain") or ""))
     target_input = str(job_spec.get("target_input") or "")
-    hotspot_spec = [str(h) for h in (job_spec.get("hotspot_spec") or [])]
+    try:
+        hotspot_spec = normalize_hotspots(job_spec)
+    except ValueError as exc:
+        # Ambiguous bare-int hotspots on a multi-chain target. Pre-GPU, and it
+        # has to be: the guess it refuses to make would pass every downstream
+        # check and produce a run that looks correct.
+        _fail("input", "hotspot_chain_ambiguous", str(exc))
+    except TypeError as exc:
+        # A hotspot field of the wrong TYPE. Caught for the same reason
+        # _inline_cap_bytes parses defensively: an uncaught exception here
+        # escapes main() before _fail can write /tmp/smoke_results.json, so
+        # modal_app's json.load finds nothing, `smoke_result` comes back None,
+        # and a mistyped field is reported as a webhook delivery failure on a
+        # container that is already allocated and billing.
+        _fail("input", "hotspot_malformed", str(exc))
     binder_length = [int(v) for v in (job_spec.get("binder_length") or [60, 120])]
 
     webhook_url = os.environ.get("WEBHOOK_URL", "")
@@ -1927,7 +3282,8 @@ def main() -> None:
         " ".join(hotspot_spec) or "-", rf3_required, rf3_on,
     )
 
-    # --- validate tier: free CPU dry-run, no wallet, no GPU compute ----------
+    # --- validate tier: no wallet charge, no GPU compute — but the container
+    # --- is still the A100 run_tool always allocates. See the section header.
     if preset == "validate":
         run_validate(CONFIG_DIR, preset, task_name)
         return
@@ -1946,8 +3302,97 @@ def main() -> None:
 
     if not config_name:
         _fail("preflight", "config", "job_spec.config_name is empty")
-    if not upload_endpoint:
-        _fail("preflight", "upload_urls_endpoint", "upload_urls_endpoint missing from payload")
+
+    # Delivery mode, decided pre-GPU so the choice is visible in the logs of a
+    # run that later returns no coordinates. This used to be a hard _fail:
+    # without an endpoint the per-design loop had nowhere to put a PDB, so
+    # refusing before spending money was correct. It is no longer the only
+    # option — INLINE carries the atoms in the return value instead — so the
+    # refusal is now only about the case where inlining was explicitly
+    # disabled AND there is no endpoint, which really does deliver nothing.
+    # Inline ONLY when there is no endpoint. Deliberately not "always, as a
+    # bonus": with an endpoint the atoms are already in Storage and resolve by
+    # pdb_key, so a second copy in the Modal return value buys nothing and is
+    # not free. shared/compute_campaigns.py reconcile_campaign_children pulls
+    # each finished child's FULL return into web-tier memory (max_poll=64)
+    # from inside a user-facing request; at 8 designs/shard an Fc-sized target
+    # is ~3.6 MB of base64 per child, so "harmless extra field" is ~230 MB
+    # through one worker. Gating here is what makes the claim that the web
+    # path is unchanged actually true, rather than true only of its upload
+    # mechanics.
+    inline_pdbs = _inline_enabled() and not upload_endpoint
+    cap_ok = INLINE_PDB_TOTAL_CAP_BYTES >= INLINE_PDB_MIN_USEFUL_CAP_BYTES
+
+    # A HUB-SHAPED PAYLOAD THAT LOST ITS ENDPOINT STILL FAILS FREE.
+    #
+    # Dropping the unconditional pre-GPU refusal is what buys parity with the
+    # five siblings — every one of them does a bare
+    # ``payload.get("upload_urls_endpoint", "")`` and never refuses, so an
+    # endpoint-less DIRECT call must run and deliver inline. But the same
+    # deletion also un-refused a case that is not a direct call at all: a
+    # tools-hub web submission whose endpoint went missing. That is a bug in
+    # the web tier, and it used to cost nothing (FAILED, pre-GPU, before the
+    # container did any work). Silently running it INLINE instead spends a full
+    # A100 shard and then persists multi-MB of base64 into job.result, where
+    # the caller that was supposed to receive presigned-upload pointers has no
+    # idea what to do with it.
+    #
+    # ``job_token`` / ``WEBHOOK_URL`` is the discriminator, and it is exact
+    # rather than heuristic. ``ModalClient.submit`` (gpu/modal_client.py) takes
+    # ``job_token`` and ``webhook_url`` as REQUIRED keyword arguments, so every
+    # web submission carries both; ``modal_app._build_run_env`` copies them
+    # straight into JOB_TOKEN / WEBHOOK_URL for this process. A direct call
+    # sets neither — ``direct_call_fc.py`` documents the deliberate absence of
+    # both the endpoint and the token, and passes no webhook — so the two
+    # populations do not overlap.
+    #
+    # Same ``check`` name the original refusal used (``upload_urls_endpoint``),
+    # because anything already branching on it is looking for exactly this;
+    # only the detail changes, to name the real cause instead of implying the
+    # operator forgot a field.
+    if (job_token or webhook_url) and not upload_endpoint:
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            "this payload carries "
+            + " and ".join(
+                [n for n, v in (("a job_token", job_token),
+                                ("a WEBHOOK_URL", webhook_url)) if v])
+            + ", so it was submitted by the tools-hub web tier, but it has no "
+            "upload_urls_endpoint. The endpoint is required on that path: the "
+            "hub expects each design in Storage behind a pdb_key and there is "
+            "no direct caller here to hand inline coordinates to. Refusing "
+            "before any GPU spend — this is a submission bug in the web tier, "
+            "not a bad request. (A genuine direct "
+            "`modal.Function.from_name(...)` call carries neither a job_token "
+            "nor a webhook and is delivered inline instead.)",
+        )
+
+    if not upload_endpoint and not (inline_pdbs and cap_ok):
+        # Every way a finished design could end up with nowhere to put its
+        # coordinates, refused before the GPU rather than after. A cap of 0 is
+        # the sharp edge here: "0" is truthy so it does not fall back to the
+        # default, _inline_enabled() is still True, and without this clause the
+        # run would spend an A100 and return COMPLETED with zero structures.
+        reason = (
+            "inline PDBs are disabled (PROTEINA_INLINE_PDBS=off)" if not _inline_enabled()
+            else f"the inline PDB cap is {INLINE_PDB_TOTAL_CAP_BYTES} bytes, "
+                 f"below the {INLINE_PDB_MIN_USEFUL_CAP_BYTES} byte floor "
+                 "(PROTEINA_INLINE_PDB_CAP_BYTES)"
+        )
+        _fail(
+            "preflight",
+            "upload_urls_endpoint",
+            f"no upload_urls_endpoint in the payload and {reason}, so a "
+            "completed design would have nowhere to put its coordinates. "
+            "Supply the endpoint, re-enable inline delivery, or raise the cap.",
+        )
+    logger.info(
+        "design delivery: upload=%s inline=%s (cap %.0f MB)",
+        "on" if upload_endpoint else "off",
+        "on" if inline_pdbs else "off",
+        INLINE_PDB_TOTAL_CAP_BYTES / 1e6,
+    )
 
     # Designs/shard is derived from the (overridden) generation profile so it
     # tracks the actual Hydra overrides, not a hardcoded 8.
@@ -2058,10 +3503,27 @@ def main() -> None:
         )
         send_heartbeat(webhook_url, job_id, stage="searching", designs_total=designs_total)
 
+        # A HUNG SEARCH IS A RESULT, NOT A DEAD CONTAINER. See
+        # DESIGN_SUBPROCESS_TIMEOUT_S: without this except the kill arrives
+        # from Modal or from the wrapper, lands on THIS process, and the shard
+        # returns no result file at all — no scores, no coordinates, no
+        # diagnosis, on a fully billed A100. Catching it here keeps the rest of
+        # the function running, so anything ``complexa design`` had already
+        # written to the reward CSV before it hung is still parsed, still
+        # delivered, and still ranked. That is BindCraft's behaviour on its own
+        # timeout, and the only reason it can bank partial work.
+        search_timeout_s: float | None = None
         try:
             rc = run_streaming(cmd, work_dir)
         except FileNotFoundError:
             _fail("search", "complexa", f"`{COMPLEXA_BIN}` binary not found on PATH")
+        except subprocess.TimeoutExpired as exc:
+            rc = SEARCH_TIMEOUT_RC
+            search_timeout_s = float(exc.timeout or DESIGN_SUBPROCESS_TIMEOUT_S)
+            logger.error(
+                "`complexa design` exceeded its %.0fs timeout and was killed; "
+                "delivering whatever it had already written", search_timeout_s,
+            )
 
         designs = parse_designs(run_dir)
         # `complexa design` chains generate -> filter -> evaluate -> analyze. A late
@@ -2072,6 +3534,21 @@ def main() -> None:
         # exit left nothing scored to deliver (a genuine early failure).
         n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
         if rc != 0:
+            if n_scored == 0 and search_timeout_s is not None:
+                # Its OWN check name. "exited 124" is a number nobody can act
+                # on; "the search ran out of time" says which knob moves
+                # (PROTEINA_DESIGN_TIMEOUT_S, or a smaller target) and rules
+                # out the crash reading entirely.
+                _fail(
+                    "search", "timeout",
+                    f"`complexa design` exceeded its {search_timeout_s:.0f}s "
+                    "timeout and was killed before it scored a single design. "
+                    "Nothing was banked, so there is nothing to deliver. The "
+                    "partial output tree is in the raw archive. Raise "
+                    "PROTEINA_DESIGN_TIMEOUT_S (it must stay under the "
+                    "container's own ceiling) or reduce the target size / "
+                    "nsamples.",
+                )
             if n_scored == 0:
                 _fail("search", "complexa", f"`complexa design` exited {rc} with no scored designs")
             logger.warning(
@@ -2083,46 +3560,406 @@ def main() -> None:
         if not designs:
             # A shard that legitimately produced no survivors still COMPLETES
             # with zero candidates — the campaign pools survivors across shards,
-            # and delivered-only billing releases this shard's hold.
+            # and delivered-only billing releases this shard's hold. NOT a
+            # delivery failure either: nothing was produced, so nothing was
+            # undelivered. The counters ride along at zero purely so
+            # `inline_delivery` is present on EVERY inline result and a caller
+            # can read it without first testing for its existence.
+            #
+            # WITH A CENSUS, THOUGH. "COMPLETED, 0 designs, 0 failures" is the
+            # same three lines whether the filter culled every sample or
+            # `complexa design` never wrote a reward CSV at all, and those call
+            # for opposite responses. Note this branch is reachable only with
+            # rc == 0: the guard above already _fail()s on a nonzero exit with
+            # nothing scored, which is what a zero-design shard always is. So a
+            # census here is describing a run that claims to have succeeded.
             runtime = int(time.time() - start)
-            _write_result(
-                {
-                    "status": "COMPLETED",
-                    "tier": preset,
-                    "designs_total": designs_total,
-                    "designs_completed": 0,
-                    "n_failures": 0,
-                    "designs": [],
-                    "candidates": [],
-                    "runtime_seconds": runtime,
-                    "provider_job_id": job_id,
+            empty_result = {
+                "status": "COMPLETED",
+                "tier": preset,
+                "designs_total": designs_total,
+                "designs_completed": 0,
+                "n_failures": 0,
+                "designs": [],
+                "candidates": [],
+                "output_census": census_output_tree(run_dir),
+                "runtime_seconds": runtime,
+                "provider_job_id": job_id,
+            }
+            if inline_pdbs:
+                empty_result["inline_delivery"] = {
+                    "n_inlined": 0,
+                    "n_inline_capped": 0,
+                    "inline_bytes_used": 0,
+                    "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
                 }
-            )
+                # Empty for the same reason the counters are zero: present on
+                # EVERY inline result so a caller can read it without first
+                # testing for its existence. Nothing was parsed here, so
+                # nothing could have been dropped.
+                empty_result["undelivered"] = []
+            _write_result(empty_result)
             send_heartbeat(webhook_url, job_id, stage="complete", designs_total=designs_total)
             logger.info("shard produced 0 survivors in %ds", runtime)
             return
 
-        # --- upload + stream each design -------------------------------------
+        # --- upload and/or inline each design --------------------------------
+        # Parsed ONCE, not per design: the reference is the STAGED CROPPED file,
+        # which is what upstream was given and therefore the only thing the
+        # design's target chains can be positionally compared against. The
+        # uploaded original is the wrong reference — the crop is what defines
+        # which residues exist.
+        renumber_reference: dict[str, list[tuple[int, str, str]]] = {}
+        if target_source == "custom" and task_name:
+            # ``except Exception``, not ``except OSError``. This block sits
+            # inside main()'s outer try/finally, which has no except clause of
+            # its own, so anything this raises that is not an OSError kills a
+            # shard that has ALREADY PAID for its GPU and loses all 8 designs.
+            # Nothing about restoring a residue number is worth that.
+            #
+            # latin-1, not utf-8: PDB is a fixed-COLUMN format, and a multi-byte
+            # utf-8 sequence would shift every column after it. latin-1 maps one
+            # byte to one character for all 256 values, so column 23 is byte 23.
+            #
+            # KNOWN ASYMMETRY, NOT FIXED, and measured rather than reasoned
+            # about. Three reads of one upload disagree about encoding:
+            # ``prepare_custom_target`` reads it with
+            # ``incoming.read_text(errors="replace")`` (platform default),
+            # ``stage_cropped_target`` WRITES the crop with
+            # ``dest.write_text(...)`` (platform default again), and this line
+            # reads that back as latin-1. All three agree byte for byte on the
+            # ASCII a coordinate section is made of, which is every real target.
+            #
+            # A non-ASCII byte does NOT reach here through an annotation
+            # record: ``crop_pdb_to_contig`` emits COORDINATE lines — ``ATOM``,
+            # and ``HETATM`` for a modified residue in ``_MODRES_EQUIV`` — plus
+            # one ``TER`` per chain and a final ``END``, and no annotation
+            # record at all, so no REMARK, HEADER or SEQRES survives to carry
+            # one. Where it CAN land is a coordinate line the crop keeps,
+            # and there it moves both of the things an earlier version of this
+            # note said it moved neither of. Under a UTF-8 default — what the
+            # container runs — ``errors="replace"`` destroys the byte before
+            # anything is written, the U+FFFD goes out as three bytes, this
+            # latin-1 read finds that line two columns wider, its resSeq field
+            # no longer parses and the residue drops out of the reference
+            # entirely: a chain one residue short, refused as "length differs".
+            # Under a single-byte default the widths hold and the residue NAME
+            # changes instead, refused as "sequence identity". Fail-closed both
+            # ways — a clean apply becomes a refusal, never a wrong file — and
+            # ``stage_cropped_target``'s own count self-check cannot see either,
+            # because it reads the file back with the same default encoding it
+            # was written with. See TestTheStagedReferenceEncoding.
+            try:
+                renumber_reference = pdb_ca_sequence(
+                    (Path(_HUB_TARGET_DIR) / f"{task_name}.pdb")
+                    .read_text(encoding="latin-1"))
+            except Exception as exc:  # noqa: BLE001 — see above
+                logger.warning(
+                    "renumbering: staged target unreadable (%s) — designs ship "
+                    "in upstream's 1..N numbering", exc)
+        renumber_chains = sorted(renumber_reference)
+        # WHAT GETS RECORDED WHEN NOTHING WAS RESTORED, and why it is not always
+        # "upstream". Every value here reaches the results page, which turns
+        # "upstream" into a WARNING: "not the numbering in the file you
+        # uploaded ... hotspot labels such as A241 will not resolve". That is
+        # true of a custom run whose restore declined and false of a curated
+        # benchmark run, where there is no uploaded file to be at odds with.
+        # Computed once, outside the loop, because it is a property of the RUN
+        # and not of any design.
+        not_restored = "upstream" if target_source == "custom" else "n/a"
+        # Warn once per shard, not once per design. A flag rather than a test on
+        # ``rank``: rank comes from ``enumerate(parsed)`` and therefore starts at
+        # ZERO, so "rank == 1" would announce the second design and stay silent
+        # on a one-design shard.
+        #
+        # LOG-ONLY, and that is a limit rather than a design: this line reaches
+        # whoever reads the container log, not the operator. What the OPERATOR
+        # gets is ``target_numbering`` on every candidate and the sentence the
+        # results page renders from it. The log line carries the ``reason``,
+        # which the page does not.
+        renumber_warned = False
+
         out_designs: list[dict] = []
         out_candidates: list[dict] = []
         n_failures = 0
         n_rows = len(designs)
+        inline_bytes_used = 0
+        n_inlined = 0
+        n_inline_capped = 0
+        # THE SCORES OF A DROPPED DESIGN SURVIVE THE DROP. INLINE ONLY.
+        #
+        # Each of the three ``continue``s below throws away a row that an A100
+        # already scored: the reward, the AF2/RF3 confidences and the cluster
+        # id are computed BEFORE this loop runs, and losing the PDB does not
+        # make them wrong. They used to vanish with the design — nothing in the
+        # returned result recorded that the row existed, let alone what it
+        # scored — and the raw archive is a tarball in a Modal Volume that
+        # neither ``--collect`` nor the hub ever opens, so "it is in the
+        # archive" is not the same as "the caller has it". A shard that scored
+        # 8 and matched 6 PDBs handed back six designs and no way to learn that
+        # the best-scoring row was one of the two that went missing.
+        #
+        # WHY NOT AS A CANDIDATE, which is what BindCraft does (it keeps the
+        # entry and just omits ``pdb_content_b64`` when the read raises). Two
+        # reasons, both specific to this file rather than to taste:
+        #
+        #   * The upload path MUST keep dropping — it is the production web
+        #     tier and its failure arithmetic is fixed. Keeping the design on
+        #     the inline path only would make ``designs_completed`` and
+        #     ``n_failures`` depend on the delivery mode, which is exactly what
+        #     ``test_a_read_failure_is_counted_the_same_way_on_both_paths``
+        #     exists to forbid.
+        #   * ``delivery_verdict`` reads ``n_scored_delivered`` off the
+        #     candidate list to answer "did the caller get coordinates AND
+        #     scores?". Admitting score-only candidates would let a run in
+        #     which no single candidate has both pass as COMPLETED — the
+        #     no_scores_delivered check would see a scored candidate and stop
+        #     asking. ``candidates`` means "delivered, with atoms" here, and
+        #     the verdict is built on that meaning.
+        #
+        # So the scores ride in their own list, clearly marked as NOT
+        # delivered, and every consumer that resolves structures
+        # (shared/storage.py, shared/exports.py, the candidate table) keeps
+        # reading ``candidates`` and sees exactly what it saw.
+        undelivered: list[dict] = []
+        # Basenames whose PUT raised and whose atoms therefore travel inline
+        # instead. UPLOAD PATH ONLY, and only ever non-empty on a run where
+        # something was already broken. The name is not local shorthand: it is
+        # the key ``shared/jobs.py::_slim_result_for_persist`` reads to decide
+        # that a ``designs/``-prefixed candidate's inline copy is the ONLY copy
+        # and must survive persistence, and rfdiffusion already emits it with
+        # exactly this meaning. Added to the result only when non-empty, so a
+        # healthy web result grows no key.
+        failed_uploads: list[str] = []
+        # THE DELIVERED RANK IS COUNTED HERE, not read off the parsed row.
+        #
+        # ``parse_designs`` numbers rows by reward-sort position, 0-based, over
+        # rows that have not yet faced any of the three drops below (no PDB
+        # matched, upload/read raised, zero-byte file). Using it as the
+        # candidate rank produced BOTH defects the other five generators
+        # already fixed: a best design at rank 0 / design_000.pdb where every
+        # sibling emits rank 1 / design_001.pdb, and — once anything was
+        # dropped — surviving ranks like 2,3,4 with no rank 1 in the result at
+        # all. boltzgen's comment on the identical bug: "designs without a
+        # matching structure file get skipped — so we can't use rank_idx for
+        # the candidate rank or we end up with gaps"; rfantibody mirrors it.
+        #
+        # It matters beyond cosmetics. ``shared/exports.py`` states the
+        # cross-tool invariant that "every tool emits a rank 1 and a
+        # ``design_1.pdb``" and copies this number into ``source_rank``, so a
+        # merged campaign export listed proteina's rows off by one against
+        # every other generator; ``direct_call_fc`` names the operator's output
+        # files from it, so a collected shard began at design_002.pdb with
+        # nothing to distinguish "two were dropped" from "the numbering is
+        # offset"; and the candidate table renders it verbatim, showing "0" for
+        # the top design.
+        #
+        # ``emitted_rank`` advances ONLY when a design actually joins the
+        # candidate list, which is why ``rank`` below is provisional until the
+        # append: proteina — unlike the siblings, which batch their uploads
+        # after the loop — can still drop a design AFTER the name is needed for
+        # the upload request. A dropped design must not burn its number, or the
+        # gap simply moves to a later drop path. Reusing the basename is
+        # correct as well as dense: the drop means nothing of that design was
+        # delivered, so no candidate points at the object it would have written.
+        emitted_rank = 0
+
+        def keep_scores(design: dict, reason: str) -> None:
+            """Bank a dropped design's scores. INLINE ONLY — see ``undelivered``.
+
+            Gated on ``inline_pdbs`` rather than on "there is no endpoint" so a
+            web-path result can never grow this key, which is the same gate
+            ``inline_delivery`` uses and the same reason.
+            """
+            if not inline_pdbs:
+                return
+            undelivered.append({
+                "name": design["name"],
+                "reason": reason,
+                "scores": design["scores"],
+            })
+
         for d in designs:
-            rank = d["rank"]
             pdb_path = find_pdb_for(d, run_dir, d["_row_index"], n_rows)
             if pdb_path is None:
                 n_failures += 1
-                logger.warning("design rank %d: no PDB file matched — skipping", rank)
+                keep_scores(d, "no_pdb_matched")
+                logger.warning(
+                    "design %s (reward CSV row %d): no PDB file matched — skipping",
+                    d["name"], d["_row_index"],
+                )
                 continue
+            rank = emitted_rank + 1
             basename = f"design_{rank:03d}.pdb"
-            pdb_key = f"designs/{basename}"
+            # The `designs/` prefix is a claim that the bytes are in Storage —
+            # the web service's resolver reads it as {user}/{job}/designs/<name>
+            # and shared/jobs.py _slim_result_for_persist strips the inline copy
+            # from any candidate carrying it, on the stated grounds that the
+            # structure "resolves from Storage". Nothing was uploaded on the
+            # inline path, so claiming the prefix there would let slimming
+            # delete the ONLY copy and leave a pointer at an object that was
+            # never written — scores intact, every structure gone, no error
+            # (shared/storage.py skips a candidate that resolves via neither).
+            # A bare filename is the convention jobs.py already documents for
+            # candidates that are not Storage-backed.
+            pdb_key = f"designs/{basename}" if upload_endpoint else basename
+            numbering = not_restored
+            # THE READ AND THE UPLOAD ARE NOW TWO DIFFERENT FAILURES, because
+            # they leave the shard in two different states. A read that raises
+            # leaves NO BYTES — there is nothing to deliver by any route, so it
+            # drops and counts, identically on both paths (that symmetry is
+            # what ``test_a_read_failure_is_counted_the_same_way_on_both_paths``
+            # forbids drifting). An upload that raises leaves the bytes sitting
+            # right here, already read, already correct.
             try:
                 pdb_bytes = pdb_path.read_bytes()
-                urls = request_upload_urls(upload_endpoint, job_token, [basename])
-                upload_pdb(urls[basename], pdb_bytes)
             except Exception as exc:
                 n_failures += 1
-                logger.warning("design rank %d: upload failed (%s) — skipping", rank, exc)
+                keep_scores(d, "pdb_read_failed")
+                # Named by DESIGN, not by rank: this one is being dropped, so
+                # it never gets a delivered rank and the number it was about to
+                # take goes to the next survivor instead.
+                logger.warning(
+                    "design %s: PDB read failed (%s) — skipping", d["name"], exc)
+                continue
+
+            # PLACED BETWEEN THE READ AND THE UPLOAD, which is stronger than
+            # what it inherited. The comment below describes escaping the
+            # upload's try; on this branch the read and the upload are two
+            # separate failures with two separate handlers, so this sits
+            # outside BOTH. A numbering failure cannot cost a design here by
+            # any route, and the bytes it hands on are the ones the upload
+            # (or the inline rescue) will use.
+            #
+            # GENUINELY OUTSIDE THE UPLOAD'S FAILURE ACCOUNTING. The previous
+            # version of this block carried that claim in a comment while
+            # sitting INSIDE the upload's try, whose ``except Exception``
+            # increments n_failures and drops the design — so a numbering
+            # failure could cost a design that had already been paid for, which
+            # is the exact opposite of what the comment promised. It now has its
+            # own try, because ``restore_design_numbering`` never raises but the
+            # decode/encode around it are outside that guarantee. Every path
+            # here leaves ``pdb_bytes`` uploadable.
+            if renumber_chains:
+                try:
+                    restored, rep = restore_design_numbering(
+                        pdb_bytes.decode("latin-1"),
+                        renumber_chains, renumber_reference)
+                    if rep["applied"]:
+                        # latin-1 round-trips all 256 byte values, so a design
+                        # this step declines to change is uploaded byte-for-byte.
+                        pdb_bytes = restored.encode("latin-1")
+                        numbering = "input"
+                    elif rep["already_input_numbering"]:
+                        numbering = "input"
+                    elif not renumber_warned:
+                        renumber_warned = True
+                        logger.warning(
+                            "renumbering: designs ship in upstream's 1..N "
+                            "numbering — %s", rep["reason"])
+                except Exception as exc:  # noqa: BLE001 — never lose a design
+                    # ``not_restored``, not the literal "upstream": this branch
+                    # is inside ``if renumber_chains:`` and a reference only
+                    # exists on a custom run, so the two are provably the same
+                    # value here — spelling it once is what stops them drifting
+                    # if that ever stops being true.
+                    numbering = not_restored
+                    if not renumber_warned:
+                        renumber_warned = True
+                        logger.warning(
+                            "renumbering: failed (%s) — designs ship in "
+                            "upstream's 1..N numbering", exc)
+
+            upload_failed = False
+            if upload_endpoint:
+                try:
+                    urls = request_upload_urls(upload_endpoint, job_token, [basename])
+                    upload_pdb(urls[basename], pdb_bytes)
+                except Exception as exc:
+                    upload_failed = True
+                    logger.warning(
+                        "design %s: upload failed (%s) — falling back to "
+                        "inline delivery", d["name"], exc,
+                    )
+
+            # AN UPLOAD FAILURE NO LONGER DESTROYS THE DESIGN.
+            #
+            # It used to share the read's ``except`` and take the same
+            # count-and-skip, so a present-but-BROKEN endpoint — HTTP 401/404,
+            # a revoked presigned URL, or an empty ``job_token`` (rfdiffusion
+            # guards that explicitly; this file never did) — returned nothing
+            # at all: every PUT raised, every design was dropped, and the
+            # billed shard handed back an empty candidate list. The atoms were
+            # in this process's memory the entire time.
+            #
+            # Every sibling ships them anyway. rfdiffusion keeps the candidate
+            # when its PUT raises, appends the filename to ``failed_uploads``
+            # and inlines ``pdb_content_b64``; the hub is already built for it,
+            # and this is the ONE case where a ``designs/`` pdb_key and an
+            # inline copy are both correct at once —
+            # ``shared/jobs.py::_slim_result_for_persist`` strips the inline
+            # copy from a Storage-backed candidate EXCEPT when its basename is
+            # listed in ``failed_uploads``, precisely because then Storage does
+            # not have it. Keeping the key is what makes the rescue reach the
+            # browser: ``candidate_table.html`` takes the URL branch whenever a
+            # pdb_key exists, and ``/api/jobs/<id>/pdb/<file>`` misses in
+            # Storage and then falls back to the inline copy by basename.
+            #
+            # It is NOT "inline as a bonus". Nothing changes on a healthy web
+            # job: no upload raised, so ``upload_failed`` is never True, no
+            # candidate grows a b64 field, and ``failed_uploads`` is absent
+            # from the result. The ~3.6 MB/child that reconcile_campaign_children
+            # would pull is only ever paid by a run that would otherwise have
+            # returned zero structures.
+            #
+            # The rescue is bounded by the SAME total budget inline mode uses,
+            # so a broken endpoint cannot turn into an unbounded return value;
+            # a design the budget cannot fit (or one that read as zero bytes)
+            # falls back to the original drop-and-count, which is also what
+            # keeps the delivered ranks dense across it.
+            rescue_inline = False
+            if upload_failed:
+                if pdb_bytes and (inline_bytes_used + len(pdb_bytes)
+                                  <= INLINE_PDB_TOTAL_CAP_BYTES):
+                    rescue_inline = True
+                else:
+                    n_failures += 1
+                    keep_scores(d, "upload_failed")
+                    logger.warning(
+                        "design %s: upload failed and its %d bytes do not fit "
+                        "the inline rescue budget (used %d of %d) — skipping",
+                        d["name"], len(pdb_bytes), inline_bytes_used,
+                        INLINE_PDB_TOTAL_CAP_BYTES,
+                    )
+                    continue
+
+            # A PDB THAT READS AS ZERO BYTES IS A FAILED DESIGN, not a delivered
+            # one. ``read_bytes()`` on a truncated or not-yet-written file
+            # returns b"" and raises nothing, so it slid past the except above;
+            # the cap test ``inline_bytes_used + 0 <= CAP`` is then trivially
+            # true, an EMPTY base64 string is attached, and ``n_inlined``
+            # increments for a blob carrying no atoms. With every design empty
+            # the shard reported COMPLETED, 8 designs, 0 failures, "8 inlined
+            # (0.0 MB)" — a delivery of nothing, certified by the very counters
+            # a caller reads instead of parsing logs, and with no `error` key to
+            # contradict it. n_inlined=8 alongside inline_bytes_used=0 is an
+            # impossible pair the post-loop verdict could not catch, because it
+            # only fires when the CAP dropped designs.
+            #
+            # Routed to the same count-and-skip an unreadable PDB takes, because
+            # it is the same thing: this design has no atoms. INLINE ONLY. On
+            # the upload path the identical weakness is pre-existing (empty
+            # bytes are PUT and counted) and fixing it here would change what
+            # the production web tier reports — designs_completed and n_failures
+            # both — for a shape no one has observed. That belongs in its own
+            # change, deliberately made, not as a side effect of this one.
+            if inline_pdbs and not pdb_bytes:
+                n_failures += 1
+                keep_scores(d, "pdb_empty")
+                logger.warning(
+                    "design %s: %s is empty (0 bytes), so there are no "
+                    "coordinates to inline — skipping", d["name"], pdb_path,
+                )
                 continue
 
             scores = d["scores"]
@@ -2130,6 +3967,13 @@ def main() -> None:
                 "rank": rank,
                 "name": d["name"],
                 "pdb_key": pdb_key,
+                # "input" when the delivered file carries the residue numbers
+                # the operator typed, "upstream" when they gave us a numbering
+                # and it carries 1..N instead, "n/a" when there was no operator
+                # numbering at all (a curated benchmark run). Recorded per
+                # design so the answer is in the result rather than in a log
+                # line nobody reads. See _TARGET_NUMBERING_VALUES.
+                "target_numbering": numbering,
                 # flat copies for the results template + classifiers
                 "total_reward": scores.get("total_reward"),
                 "af2_iptm": scores.get("af2_iptm"),
@@ -2138,18 +3982,130 @@ def main() -> None:
                 "binder_scrmsd": scores.get("binder_scrmsd"),
                 "cluster_id": scores.get("cluster_id"),
             }
+            candidate_entry = {
+                "rank": rank, "name": d["name"], "pdb_key": pdb_key,
+                # ON THE CANDIDATE, NOT ONLY ON THE DESIGN. shared/jobs.py's
+                # candidate_records prefers ``candidates`` over ``designs`` and
+                # templates/tools/proteina_results.html reads ``candidates``
+                # only, so a field written into out_designs alone is data no
+                # operator can ever see. It was.
+                "target_numbering": numbering,
+                "scores": scores,
+            }
+            # Coordinates inline, under the SAME key PXDesign and BindCraft
+            # emit, so a cross-generator consumer reads one field for all four
+            # tools. The extension is already carried by pdb_key (".pdb"),
+            # which is how PXDesign records it too — no extra field is invented.
+            #
+            # Reached only when there is no upload endpoint (see the delivery
+            # gate above), so this is the design's ONLY copy, never a duplicate
+            # of something already in Storage.
+            #
+            # ON `candidates` ONLY, and that placement is load-bearing rather
+            # than stylistic. /tmp/smoke_results.json IS the persisted
+            # job.result, and shared/jobs.py _slim_result_for_persist walks
+            # result["candidates"] and nothing else. A copy parked on
+            # result["designs"] would escape every size control the hub has and
+            # put multi-MB of base64 through the single PostgREST UPDATE in
+            # _cas_update, documented there to throw and strand the job in
+            # "running" after a webhook that already returned 200.
+            # shared/exports.py and shared/storage.py also read the inline copy
+            # off candidates only.
+            if inline_pdbs:
+                if inline_bytes_used + len(pdb_bytes) <= INLINE_PDB_TOTAL_CAP_BYTES:
+                    candidate_entry["pdb_content_b64"] = base64.b64encode(
+                        pdb_bytes
+                    ).decode("ascii")
+                    inline_bytes_used += len(pdb_bytes)
+                    n_inlined += 1
+                else:
+                    # NOT a failure: the design is real and its scores are
+                    # delivered. It loses only its atoms, which are still in
+                    # the raw archive. Counted and logged below rather than
+                    # dropped quietly — a truncated result set that looks
+                    # complete is the failure mode this whole file guards.
+                    n_inline_capped += 1
+                    # AND IT LOSES ITS pdb_key WITH THEM. INLINE ONLY.
+                    #
+                    # The candidate table's "does this row have a structure?"
+                    # test is ``pdb_key or pdb_content_b64``
+                    # (templates/components/candidate_table.html), and with a
+                    # pdb_key present it takes the URL branch: a live View-3D
+                    # button and a .pdb download link pointing at
+                    # /api/jobs/<job>/pdb/<key>. In INLINE mode there is no
+                    # Storage object behind that key — nothing was uploaded —
+                    # and this candidate has no inline copy either, so the
+                    # route's Storage lookup misses, its b64 fallback finds an
+                    # empty field, and both controls resolve to a 404. The key
+                    # is a promise nothing can keep, and an em-dash ("no
+                    # structure for this design") is the honest rendering.
+                    #
+                    # Dropped from the designs row too so the pair cannot
+                    # disagree: every other consumer of a proteina result
+                    # reads one list or the other, and a dangling pointer left
+                    # in ``designs`` would be the same lie in a second place.
+                    #
+                    # The upload path never reaches here (``inline_pdbs`` is
+                    # False whenever an endpoint exists), and there the key IS
+                    # backed by a real object that the PUT already wrote — so
+                    # it must keep it, untouched.
+                    candidate_entry.pop("pdb_key", None)
+                    design_entry.pop("pdb_key", None)
+            elif rescue_inline:
+                # ``elif``, and it can only ever be the other branch: the
+                # rescue needs an upload endpoint and ``inline_pdbs`` is False
+                # whenever one exists.
+                #
+                # The ``designs/`` pdb_key STAYS, unlike the cap branch above.
+                # There the key promised bytes that exist nowhere; here it is
+                # the key ``failed_uploads`` is matched on, and dropping it
+                # would make _slim_result_for_persist treat the candidate as
+                # not-Storage-backed, the basename lookup in the PDB route miss
+                # its target, and the export lose the pointer — for a
+                # candidate that IS carrying its atoms.
+                candidate_entry["pdb_content_b64"] = base64.b64encode(
+                    pdb_bytes
+                ).decode("ascii")
+                inline_bytes_used += len(pdb_bytes)
+                failed_uploads.append(basename)
+            # The design survived every drop, so the number it was assigned is
+            # now spent. Committing here rather than at the top of the loop is
+            # what keeps the delivered ranks contiguous no matter WHICH drop
+            # fired — a design that lost its atoms to the cap is still
+            # delivered (it keeps its rank, its name and its full scores; only
+            # the atoms and the pointer that promised them are gone), so it
+            # rightly consumes a rank; the three ``continue``s above do not.
+            emitted_rank = rank
             out_designs.append(design_entry)
-            out_candidates.append(
-                {"rank": rank, "name": d["name"], "pdb_key": pdb_key, "scores": scores}
-            )
+            out_candidates.append(candidate_entry)
             # Heartbeat new_candidate keys match webhook _sanitize_candidate.
+            #
+            # pdb_key is read off the CANDIDATE, not off the local, so a design
+            # the inline cap stripped it from cannot announce it here either:
+            # the live status page renders its View-3D control straight from
+            # the heartbeat, before any result exists, so announcing a key the
+            # result will not carry just moves the dead control earlier in the
+            # run. ``_sanitize_candidate`` already does ``cand.get("pdb_key")``
+            # and stores None, which the results renderer hides.
+            #
+            # A no-op on the upload path: ``inline_pdbs`` is False there, the
+            # pop never fires, and this reads back exactly ``pdb_key``.
+            #
+            # KNOWN GAP, NOT FIXED: the streamed copy of ``target_numbering``
+            # has no reader today. ``_sanitize_candidate`` preserves it, but
+            # ``shared/job_recovery.py::_candidate_from_partial`` — the path a
+            # job finalised from streamed heartbeats goes through — does not
+            # carry it, so such a job renders NO numbering line rather than a
+            # wrong one. Silent, not false, which is the right failure
+            # direction; it costs the operator a sentence, never a guarantee.
             send_heartbeat(
                 webhook_url, job_id, stage="searching",
                 designs_completed=len(out_designs), designs_total=designs_total,
                 new_candidate={
                     "rank": rank,
                     "name": d["name"],
-                    "pdb_key": pdb_key,
+                    "pdb_key": candidate_entry.get("pdb_key"),
+                    "target_numbering": numbering,
                     "total_reward": scores.get("total_reward"),
                     "af2_iptm": scores.get("af2_iptm"),
                     "af2_plddt": scores.get("af2_plddt"),
@@ -2158,36 +4114,260 @@ def main() -> None:
                     "cluster_id": scores.get("cluster_id"),
                 },
             )
-            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"), pdb_key)
+            logger.info("  -> rank %d reward=%s pdb=%s", rank, scores.get("total_reward"),
+                        candidate_entry.get("pdb_key") or "(capped, no atoms)")
 
         runtime = int(time.time() - start)
-        _write_result(
-            {
-                "status": "COMPLETED",
-                "tier": preset,
-                "designs_total": designs_total,
-                "designs_completed": len(out_designs),
-                "n_failures": n_failures,
-                "designs": out_designs,
-                "candidates": out_candidates,
-                "runtime_seconds": runtime,
-                "provider_job_id": job_id,
+        result = {
+            "status": "COMPLETED",
+            "tier": preset,
+            "designs_total": designs_total,
+            "designs_completed": len(out_designs),
+            "n_failures": n_failures,
+            "designs": out_designs,
+            "candidates": out_candidates,
+            "runtime_seconds": runtime,
+            "provider_job_id": job_id,
+        }
+        # Present only when a PUT actually raised. Its absence is the normal
+        # web result and the only shape a healthy job has ever returned; its
+        # presence is what tells the hub not to slim the rescued atoms away.
+        if failed_uploads:
+            result["failed_uploads"] = failed_uploads
+
+        # --- inline accounting (post-loop, sizes finally known) --------------
+        # ADDED ONLY IN INLINE MODE, so the web path's result dict is exactly
+        # what it was: same keys, same values, no `pdb_content_b64`, candidates
+        # still {rank, name, pdb_key, scores}. Inline mode is unreachable when
+        # an upload endpoint is present, so nothing a real web job returns can
+        # grow a field here.
+        #
+        # These counters existed only inside logger calls, which no caller can
+        # read: a shard that delivered ZERO of the coordinates it was asked for
+        # still returned status COMPLETED with a full designs_completed count
+        # and candidates whose bare-filename pdb_key is backed by nothing at
+        # all. That is the billed-and-empty outcome
+        # INLINE_PDB_MIN_USEFUL_CAP_BYTES claims to prevent and demonstrably
+        # cannot: any cap between that floor and one real PDB clears it.
+        if inline_pdbs:
+            result["inline_delivery"] = {
+                "n_inlined": n_inlined,
+                "n_inline_capped": n_inline_capped,
+                "inline_bytes_used": inline_bytes_used,
+                "cap_bytes": INLINE_PDB_TOTAL_CAP_BYTES,
             }
+            # THE BANKED SCORES, ACTUALLY HANDED BACK. ``keep_scores`` above
+            # collects every dropped design's A100-computed scores, and until
+            # this line that list was built and then discarded when main()
+            # returned — the local went out of scope, the result never grew a
+            # key, and the drop destroyed the scores exactly as before. A
+            # shard that scored 8 and matched 6 PDBs still handed back six
+            # designs and no way to learn that the best-scoring row was one of
+            # the two that went missing, which is the whole defect the helper
+            # was written for.
+            #
+            # It is its own list rather than score-only candidates on purpose;
+            # see ``undelivered``'s declaration for why (the upload path's
+            # failure arithmetic, and delivery_verdict's reading of
+            # ``candidates`` as "delivered, WITH atoms").
+            #
+            # Always present in inline mode, like ``inline_delivery``: an
+            # empty list is the readable statement that nothing was dropped,
+            # where a missing key is indistinguishable from an older shard.
+            result["undelivered"] = undelivered
+
+        # --- THE DELIVERY VERDICT (one question, asked once) -----------------
+        # This used to live inline above and ask only "did the size cap drop
+        # every design?", which is one of at least four ways this shard can
+        # deliver nothing and say COMPLETED. See ``delivery_verdict`` for the
+        # question it asks instead and for what is deliberately NOT a failure.
+        #
+        # ``n_structures`` is the count of coordinates that actually left the
+        # container, and it is mode-dependent because the evidence is: inline,
+        # only an INLINED candidate carries atoms (a cap-dropped one has scores
+        # and a pdb_key and no bytes); on the upload path a candidate exists
+        # only after its PUT returned, so the candidate is the evidence.
+        #
+        # ``n_scored_delivered`` counts the DELIVERED candidates, not the
+        # parsed rows, because this is a verdict on delivery: a run whose only
+        # scored rows were all dropped hands the caller an unrankable set even
+        # though ``n_scored`` above is nonzero.
+        n_structures = n_inlined if inline_pdbs else len(out_candidates)
+        n_scored_delivered = sum(
+            1 for c in out_candidates
+            if c["scores"].get("total_reward") is not None
         )
+        census = census_output_tree(run_dir)
+        error = delivery_verdict(
+            n_parsed=len(designs),
+            n_delivered=len(out_candidates),
+            n_structures=n_structures,
+            n_scored_delivered=n_scored_delivered,
+            n_inline_capped=n_inline_capped,
+            n_failures=n_failures,
+            inline_pdbs=inline_pdbs,
+            census=census,
+        )
+
+        # THE SEARCH'S EXIT CODE BELONGS IN THE RESULT, not only in a log line.
+        # `complexa design` chains generate -> filter -> evaluate -> analyze and
+        # a late stage can die AFTER a complete reward CSV is written (P-3
+        # canary: 8 designs fully RF3-scored, then exit 1). Delivering those is
+        # right — see the guard above — but the crash was then recorded in a
+        # logger.warning only, and container logs are not part of what a direct
+        # caller or the hub receives. A half-length shard was therefore
+        # indistinguishable from one the filter had legitimately culled down.
+        # BindCraft states the same thing as ``partial`` beside a subprocess
+        # status block; this mirrors it. Both keys appear ONLY when rc != 0, so
+        # a clean run's result — on either path — is unchanged.
+        if rc != 0:
+            result["partial"] = True
+            result["search"] = {
+                "exit_code": rc,
+                "n_parsed": len(designs),
+                "n_scored": n_scored,
+            }
+            if search_timeout_s is not None:
+                # BindCraft records the same pair (``status: "timeout"`` beside
+                # ``timeout_s``). A bare exit code of 124 is indistinguishable
+                # from a search that genuinely exited 124, and the two call for
+                # different responses.
+                result["search"]["status"] = "timeout"
+                result["search"]["timeout_s"] = search_timeout_s
+
+        # The census rides along whenever something is off — a nonzero exit or
+        # a failed verdict — and never on a clean run, which has nothing to
+        # diagnose and whose result shape is load-bearing on the web path.
+        delivery_failed = error is not None
+        if delivery_failed or rc != 0:
+            result["output_census"] = census
+        if delivery_failed:
+            # Scores, ranks and the candidate list are all KEPT on the failed
+            # result — the science survives, and the atoms are in the raw
+            # archive — so this reports a delivery failure without destroying
+            # what the run did produce.
+            logger.error(
+                "pipeline FAILED at %s/%s: %s",
+                error["bucket"], error["check"], error["detail"],
+            )
+            result["status"] = "FAILED"
+            result["error"] = error
+
+        _write_result(result)
         send_heartbeat(
             webhook_url, job_id, stage="complete",
             designs_completed=len(out_designs), designs_total=designs_total,
         )
+        if n_inline_capped:
+            logger.warning(
+                "inline PDB cap reached: %d design(s) carry scores but NO "
+                "coordinates (cap %d bytes, used %d). Their atoms are in the "
+                "raw archive. Raise PROTEINA_INLINE_PDB_CAP_BYTES to inline them.",
+                n_inline_capped, INLINE_PDB_TOTAL_CAP_BYTES, inline_bytes_used,
+            )
+        if failed_uploads:
+            logger.warning(
+                "%d design(s) could not be uploaded to Storage and are being "
+                "returned INLINE instead (%s). The upload endpoint or the "
+                "job_token is broken; the coordinates are still in this "
+                "result and _slim_result_for_persist will keep them.",
+                len(failed_uploads), " ".join(failed_uploads),
+            )
         logger.info(
-            "shard complete — %d/%d designs, %d failures, runtime=%ds",
-            len(out_designs), designs_total, n_failures, runtime,
+            "shard complete — %d/%d designs, %d failures, %d inlined "
+            "(%.1f MB b64), %d over cap, runtime=%ds",
+            len(out_designs), designs_total, n_failures, n_inlined,
+            inline_bytes_used * 4 / 3 / 1e6, n_inline_capped, runtime,
         )
+        if delivery_failed:
+            # After the result is written and the logs are out, matching
+            # _fail's exit code so a delivery failure is not the one failure
+            # mode that returns 0. The `finally` below still tars the raw
+            # outputs — which is where the undelivered atoms are.
+            sys.exit(1)
     finally:
         # NOT gated on rc, on survivors, or on what got uploaded. A shard whose
         # reward CSV went missing returns [] from parse_designs and completes as a
         # silent zero-candidate "success" having shipped nothing — that is
         # precisely the run whose tree you need to read afterwards.
         archive_raw_outputs(run_dir)
+
+
+def main() -> None:
+    """EVERY EXIT PATH WRITES A RESULT FILE. That is this function's whole job.
+
+    ``_run_shard`` had no ``except`` arm of its own, so anything it did not
+    anticipate — the wrong TYPE in a job_spec field, an OSError from the run
+    dir, a KeyError in a parser — left the interpreter with a bare traceback on
+    stderr and NO /tmp/smoke_results.json. ``modal_app.run_tool`` then hits
+    FileNotFoundError, passes, and returns ``smoke_result: None`` with an empty
+    ``stdout_tail`` and an empty ``stderr_tail``, which is the entire diagnosis
+    a direct caller receives for a fully billed A100. It is not hypothetical:
+    ``job_spec.binder_length = 90`` — a scalar where ``direct_call_fc`` documents
+    the ``[lo, hi]`` pair — raises TypeError out of the list comprehension near
+    the top and produced exactly that, silently.
+
+    It also guarantees the result file belongs to THIS run: the first thing it
+    does is unlink whatever a previous shard left on this warm container and
+    drop a ``did_not_complete`` placeholder in its place, so a kill that skips
+    every ``except`` cannot hand the caller someone else's designs. See
+    ``_reset_result_file``, including why that placeholder must not go through
+    ``_write_result``.
+
+    BindCraft guarantees a structured failure on every path and this mirrors it.
+    Three things it deliberately does NOT do:
+
+      * It does not swallow ``SystemExit``. ``_fail`` and the delivery-failure
+        exit have already written their result and chosen exit code 1;
+        re-wrapping them would only lose that.
+      * It does not overwrite a result that was already written. The tail of a
+        successful shard (heartbeat, log lines) runs after ``_write_result``,
+        and replacing a COMPLETED result carrying every design with an
+        ``unhandled_exception`` stub would destroy the run rather than report
+        it. ``_RESULT_WRITTEN`` is what makes that decidable.
+      * It does not exit 0. ``run_tool`` copies ``result.returncode`` straight
+        into what the caller receives, so a crash that exited 0 would be a
+        failed run reported as a clean one to anything branching on it.
+    """
+    global _RESULT_WRITTEN
+    # Reset rather than relying on the module default: one process runs one
+    # shard, but the test suite drives main() many times in a single
+    # interpreter, and a flag left True by an earlier run would suppress the
+    # very write this function exists to guarantee.
+    _RESULT_WRITTEN = False
+    # The on-disk half the flag cannot reach: a result file left by a PREVIOUS
+    # shard on this warm container. Must run before _run_shard, and must not
+    # set _RESULT_WRITTEN — see _reset_result_file.
+    _reset_result_file()
+    try:
+        _run_shard()
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — the point is that it is total
+        logger.exception("UNHANDLED exception in the proteina shard")
+        if not _RESULT_WRITTEN:
+            _write_result({
+                "status": "FAILED",
+                "error": {
+                    "bucket": "internal",
+                    "check": "unhandled_exception",
+                    "detail": (
+                        f"the shard crashed with an unhandled "
+                        f"{type(exc).__name__}: {exc}. This is a bug in "
+                        "run_pipeline.py, not a bad request — check the "
+                        "traceback below and the container logs. Any output "
+                        "the run produced before the crash is in the raw "
+                        "archive."
+                    ),
+                    # Tail, not head: the frames nearest the raise are the ones
+                    # that name the failing line, and the result is persisted
+                    # into a JSONB column that must not grow without bound.
+                    "traceback": traceback.format_exc()[-4000:],
+                },
+                "tier": os.environ.get("JOB_TIER", ""),
+                "provider_job_id": os.environ.get("JOB_ID", ""),
+            })
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
