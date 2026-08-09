@@ -376,13 +376,110 @@ def test_the_hotspot_copy_does_not_promise_silent_promotion(name):
         assert flat not in body, f"{name} still promises: {flat}"
 
 
-@pytest.mark.parametrize("name", _HOTSPOT_COPY_TEMPLATES)
-def test_the_hotspot_copy_states_when_a_prefix_is_required(name):
-    """The plain-text fields have no picker, so this copy is the only place the
-    rule can be read before the form is submitted."""
-    body = " ".join(_template(name).split()).lower()
-    assert "more than one chain" in body, (
-        f"{name} never says a prefix is required on a multi-chain run")
+# --- where the rule has to be, not merely that the file contains it ---------
+#
+# ``assert "more than one chain" in body`` against a whole template cannot fail
+# usefully: runs/new.html and targets/launch.html carry the phrase TWICE each,
+# so deleting the copy a user actually reads still passes. Prior art in this
+# repo: ``assert "600" in body`` passed on a Google Fonts URL carrying
+# ``wght@400;500;600``. So each region below is extracted first and the
+# assertion is scoped to it.
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _between(name: str, start: str, end: str) -> str:
+    """The template text between two anchors, whitespace-flattened."""
+    body = _template(name)
+    i = body.find(start)
+    assert i != -1, f"{name}: anchor {start!r} is gone; this test cannot locate the copy"
+    j = body.find(end, i + len(start))
+    assert j != -1, f"{name}: closing anchor {end!r} is gone after {start!r}"
+    return _flat(body[i:j])
+
+
+_HINT_TERNARY = re.compile(
+    r"getElementById\('hotspot-hint'\)\.textContent\s*=\s*isProteina\s*"
+    r"\?\s*'([^']*)'\s*:\s*'([^']*)'"
+)
+
+
+def _runs_new_hint_arms() -> tuple[str, str]:
+    """The two strings refreshTool() actually writes into #hotspot-hint."""
+    m = _HINT_TERNARY.search(_template("runs/new.html"))
+    assert m, (
+        "the #hotspot-hint ternary in runs/new.html moved or changed shape; "
+        "this test can no longer tell live copy from dead copy"
+    )
+    return m.group(1), m.group(2)
+
+
+def test_the_runs_form_states_the_rule_in_the_string_a_browser_renders():
+    """refreshTool() is called on load and unconditionally overwrites
+    #hotspot-hint.textContent, so the ONLY copy a JS-enabled browser ever shows
+    is the proteina arm of that ternary. Deleting it must turn this red."""
+    proteina_arm, _other = _runs_new_hint_arms()
+    assert "more than one chain" in proteina_arm, (
+        "runs/new.html never tells a proteina user a prefix is required")
+    assert "prefix the chain" in proteina_arm, (
+        "runs/new.html states the refusal without stating the fix")
+
+
+def test_the_runs_form_does_not_advertise_the_proteina_rule_to_other_tools():
+    """One hotspot field drives every tool. Only proteina refuses a bare token,
+    so only proteina's arm may say so."""
+    _proteina_arm, other_arm = _runs_new_hint_arms()
+    assert "more than one chain" not in other_arm, (
+        "the non-proteina hint claims a rule that only proteina enforces")
+
+
+def test_the_runs_form_keeps_no_dead_copy_in_the_server_rendered_hint():
+    """refreshTool() runs at the bottom of the IIFE and rewrites
+    #hotspot-hint.textContent unconditionally, for whatever tool the form
+    opened on. So whatever the server rendered inside that div is never read,
+    and a per-tool rule written there is both dead and, in the instant before
+    the rewrite, addressed to every tool rather than to proteina."""
+    body = _template("runs/new.html")
+    assert re.search(r"^\s*refreshTool\(\);\s*$", body, re.M), (
+        "refreshTool() is no longer called on load; re-check whether the "
+        "server-rendered hint has become live copy again"
+    )
+    rendered = _between("runs/new.html", '<div class="hint" id="hotspot-hint">', "</div>")
+    assert "more than one chain" not in rendered, (
+        "runs/new.html puts the multi-chain rule in the server-rendered hint, "
+        "which refreshTool() overwrites on load — no user ever reads it"
+    )
+
+
+def test_the_launch_form_states_the_rule_in_the_shared_hotspot_field():
+    """targets/launch.html has no JS that touches this helper, so the string in
+    the template IS the string on the page."""
+    help_text = _between(
+        "targets/launch.html", 'field_text("hotspot_residues"', "placeholder=")
+    assert "more than one chain, Proteina refuses it" in help_text
+    assert "prefix the chain instead (A45, C73)" in help_text
+
+
+def test_the_launch_form_repeats_the_rule_beside_proteina_binder_length():
+    """The second, proteina-scoped helper. It is separately live — nothing
+    overwrites it either — so it needs its own assertion."""
+    helper = _between(
+        "targets/launch.html", 'id="proteina__binder_length_max"', "{% endif %}")
+    assert "refused when this run targets more than one chain" in helper
+    assert "prefix the chain" in helper
+
+
+def test_the_proteina_form_states_the_rule_under_the_hotspot_input():
+    """The atomic form's own help block, directly under the input it governs."""
+    help_text = _between(
+        "tools/proteina_form.html",
+        '<label for="hotspot_residues"',
+        '<div class="hotspot-picker"',
+    )
+    assert "when the run targets more than one chain it is refused" in help_text
+    assert "prefix the chain instead (<code>A113,C73</code>)" in help_text
 
 
 def test_the_proteina_form_already_drives_a_chain_prefixed_picker():

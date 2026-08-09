@@ -153,7 +153,12 @@
         <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
-          <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact. On Proteina, a run that targets more than one chain needs each hotspot prefixed with its chain (A113, C73).</div>
+          {# refreshTool() runs on load and REPLACES this text whatever the tool
+             is, so whatever is written here is never read. Per-tool copy —
+             including proteina's multi-chain prefix rule — belongs in that
+             ternary, not here: this one field is posted for every tool in
+             supported_tools and only proteina refuses a bare token. #}
+          <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
         </div>
         <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
