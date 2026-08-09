@@ -61,6 +61,7 @@ import statistics
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -120,7 +121,8 @@ MAX_CONSECUTIVE_BARREN = 3
 # each": the sampler's draw semantics are upstream in the vendored image and
 # unverified here, and under replacement 16 draws cover ~8 of 10 lengths with
 # an uneven replicate count. The reliable unit of analysis is therefore the
-# BIN (n=1024 over 16 shards), with per-length counts read off the manifest's
+# BIN (n = 64 * SHARDS_PER_BIN, so 256 at tier 1), with per-length counts
+# read off the manifest's
 # realised lengths as indicative only.
 NSAMPLES = 16
 REPLICAS = 4
@@ -885,6 +887,130 @@ def _stop_on_timeout(index: int) -> int:
     return 4
 
 
+_TS = "%Y-%m-%dT%H:%M:%S"
+
+
+def _shard_durations(ledger: Path) -> dict[int, float]:
+    """Measured wall-clock seconds per finished shard, from the ledger's own
+    timestamps.
+
+    Parses the RAW lines rather than using ``ledger_replay``: the replay merges
+    records newest-wins, so a shard's ``submitted`` timestamp is overwritten by
+    its ``collected`` one and the interval is gone. This is the only place that
+    distinction matters, which is why replay is left alone.
+
+    submitted -> terminal covers everything the campaign actually waits on:
+    queue time, cold start, the pipeline, the archive and the commits. That is
+    the number an ETA needs, and it is measured rather than modelled.
+    """
+    starts: dict[int, str] = {}
+    out: dict[int, float] = {}
+    if not ledger.exists():
+        return out
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+            index, state, ts = int(rec["index"]), rec["state"], rec["ts"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        if state == "submitted":
+            starts[index] = ts
+        elif state in TERMINAL_STATES and index in starts:
+            try:
+                delta = (datetime.strptime(ts, _TS)
+                         - datetime.strptime(starts[index], _TS))
+            except ValueError:
+                continue
+            out[index] = max(delta.total_seconds(), 0.0)
+    return out
+
+
+def campaign_status(outdir: Path, plan: list[dict]) -> dict:
+    """Everything needed to answer 'when does this finish, and is it working'."""
+    state = ledger_replay(outdir / "ledger.jsonl")
+    durations = _shard_durations(outdir / "ledger.jsonl")
+    done = [i for i, r in state.items() if r.get("state") in TERMINAL_STATES]
+    delivered = [i for i, r in state.items() if r.get("state") == "collected"]
+    # Measured beats modelled the moment there is a measurement.
+    measured = (sum(durations.values()) / len(durations)) if durations else None
+    per_shard = measured if measured is not None else shard_seconds()
+    remaining = len(plan) - len(done)
+    return {
+        "shards_done": len(done), "shards_total": len(plan),
+        "shards_delivered": len(delivered), "remaining": remaining,
+        "measured_shard_s": measured, "modelled_shard_s": shard_seconds(),
+        "eta_s": remaining * per_shard,
+        "spent_usd": _spent_usd(state),
+        "projected_usd": _spent_usd(state) + remaining * per_shard * USD_PER_SECOND,
+        "mismatches": [i for i, r in state.items() if r.get("length_mismatch")],
+    }
+
+
+def _bin_yield(outdir: Path) -> dict[tuple[int, int], dict]:
+    """Per-bin delivery and refold counts off the manifest — the signal the
+    whole tier exists to produce. A design counts as refolded when AF2
+    re-predicts it within 5 A of the designed pose."""
+    out: dict[tuple[int, int], dict] = {}
+    manifest = outdir / "manifest.csv"
+    if not manifest.exists():
+        return out
+    with manifest.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            try:
+                key = (int(row["bin_lo"]), int(row["bin_hi"]))
+            except (ValueError, KeyError):
+                continue
+            slot = out.setdefault(key, {"n": 0, "refolded": 0, "iptm": []})
+            slot["n"] += 1
+            try:
+                if float(row["binder_scrmsd"]) < 5.0:
+                    slot["refolded"] += 1
+            except (ValueError, TypeError):
+                pass
+            try:
+                slot["iptm"].append(float(row["af2_iptm"]))
+            except (ValueError, TypeError):
+                pass
+    return out
+
+
+def cmd_status(args) -> int:
+    """Free and read-only. Never contacts Modal."""
+    plan = build_plan()
+    outdir = Path(args.outdir)
+    st = campaign_status(outdir, plan)
+    print(f"shards      : {st['shards_done']}/{st['shards_total']} finished, "
+          f"{st['shards_delivered']} delivered designs")
+    if st["measured_shard_s"] is None:
+        print(f"per shard   : {st['modelled_shard_s'] / 60:.0f} min "
+              "(MODELLED - no shard has finished yet)")
+    else:
+        drift = st["measured_shard_s"] / st["modelled_shard_s"] - 1.0
+        print(f"per shard   : {st['measured_shard_s'] / 60:.1f} min measured "
+              f"vs {st['modelled_shard_s'] / 60:.0f} min modelled "
+              f"({drift:+.0%})")
+    print(f"remaining   : {st['remaining']} shards, "
+          f"{st['eta_s'] / 3600:.1f} h ({st['eta_s'] / 86400:.2f} d)")
+    if st["remaining"]:
+        finish = datetime.now() + timedelta(seconds=st["eta_s"])
+        print(f"finishes    : {finish.strftime('%a %d %b %H:%M')} (local)")
+    print(f"spend       : ${st['spent_usd']:.2f} so far, "
+          f"${st['projected_usd']:.2f} projected for the tier")
+    if st["mismatches"]:
+        print(f"WARNING     : length mismatch on shards {st['mismatches']}")
+    yields = _bin_yield(outdir)
+    if yields:
+        print(f"\n{'bin':>10} {'designs':>8} {'refolded':>9} {'rate':>6} "
+              f"{'mean ipTM':>10}")
+        for key in sorted(yields):
+            v = yields[key]
+            rate = v["refolded"] / v["n"] if v["n"] else 0.0
+            iptm = sum(v["iptm"]) / len(v["iptm"]) if v["iptm"] else float("nan")
+            print(f"{key[0]:>4}-{key[1]:<5} {v['n']:>8} {v['refolded']:>9} "
+                  f"{rate:>5.0%} {iptm:>10.3f}")
+    return 0
+
+
 def cmd_dry_run(args) -> int:
     """Never contacts Modal. Prints the plan, the projection and one payload."""
     plan = build_plan()
@@ -928,6 +1054,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--dry-run", action="store_true",
                     help="plan and cost only; never contacts Modal")
+    ap.add_argument("--status", action="store_true",
+                    help="progress, measured pace and ETA from the "
+                         "ledger; free, never contacts Modal")
     ap.add_argument("--run", action="store_true",
                     help="SPENDS GPU MONEY; requires --yes")
     ap.add_argument("--yes", action="store_true",
@@ -949,6 +1078,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.status:
+        return cmd_status(args)
     if args.dry_run:
         return cmd_dry_run(args)
     if args.run:
