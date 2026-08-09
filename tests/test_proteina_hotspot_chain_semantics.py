@@ -32,6 +32,14 @@ These tests pin the two halves of the fix:
 
   2. The chain-qualified token is what the checks range-check. ``hotspot_spec``
      stops being a representation only the container sees.
+
+Half 2 shipped on main as PR #127, by a different mechanism than this branch
+first used. ``shared.pdb_preflight.shipped_hotspots`` prefers ``hotspot_spec``
+and every money gate calls it, so ``hotspot_residues`` stays the bare stripped
+copy -- lossy, and read by nothing that spends money. The branch's earlier
+approach (chain-qualifying ``hotspot_residues`` itself) was superseded and
+removed; what remains here pins the guarantee at its new location. Half 1 is
+this branch's alone: main still promotes a bare hotspot onto the first chain.
 """
 
 from __future__ import annotations
@@ -165,25 +173,66 @@ def test_a_bare_hotspot_mixed_with_a_prefixed_one_is_still_refused():
 
 # ---------------------------------------------------------------------------
 # Decision 2 -- the chain-qualified token is what the checks check
+#
+# The branch first did this by putting the chain-qualified tokens INTO
+# `hotspot_residues`. PR #127 landed the same guarantee on main by a different
+# mechanism: `shared.pdb_preflight.shipped_hotspots` prefers `hotspot_spec`,
+# and all four money gates route through it (blueprints/campaigns.py,
+# blueprints/targets.py, blueprints/tools.py x2). So `hotspot_residues` goes
+# back to being the bare stripped copy -- LOSSY, and deliberately not the
+# thing anything judges. These tests pin the guarantee at its new location.
 # ---------------------------------------------------------------------------
 
 
-def test_hotspot_residues_is_chain_qualified_on_a_multi_chain_run():
-    """This is the field every pre-money check reads. Emitting the bare number
-    here is what made the route answer a different question from the one the
-    run asked."""
+def test_the_token_the_gate_judges_is_the_token_the_payload_ships():
+    """Decision 2, at its post-#127 location. `hotspot_residues` is the lossy
+    copy again, so the assertion that matters is on `shipped_hotspots` -- what
+    the four paid gates actually call -- not on the bare field."""
+    from shared.pdb_preflight import shipped_hotspots
+
     inp, err = adapter.validate(
         _form(target_input="A234-444,B500-700",
               hotspot_residues="A241 B600"), {})
     assert err is None, err
-    assert inp["hotspot_residues"] == ["A241", "B600"]
+    assert inp["hotspot_spec"] == ["A241", "B600"]
+    # The bare copy really is lossy, so a gate reading IT could not get this
+    # right by accident -- which is the precondition that makes the next
+    # assertion a measurement.
+    assert inp["hotspot_residues"] == [241, 600]
+    assert shipped_hotspots(inp) == ["A241", "B600"]
+    assert shipped_hotspots(inp) == adapter.build_payload(
+        inp, "https://example.invalid/t.pdb")["hotspot_spec"]
 
 
-def test_hotspot_residues_stays_bare_ints_on_a_single_chain_all_bare_run():
-    """Byte-identical to the payload submitted before this change, and the same
-    rule tools/base.py::parse_hotspot_residues already applies for
-    rfdiffusion/bindcraft/pxdesign/boltzgen: one chain plus all-bare tokens
-    emits plain ints, anything else emits chain-prefixed strings."""
+def test_reading_the_lossy_copy_would_fund_a_run_the_spec_refuses():
+    """WHY it must be `shipped_hotspots` and not the bare field, in the
+    direction that costs money rather than the one that only annoys.
+
+    Chain A spans 1-700 and chain B only 500-539, so B600 is out of range on
+    the chain it names but its stripped form 600 is in range on the FIRST named
+    chain -- which is how `hotspot_error` reads an unprefixed token. A gate on
+    the bare copy therefore FUNDS a run whose one steering token addresses no
+    atom; upstream drops an unmatched hotspot to an all-zero mask silently, so
+    that bills in full and delivers an unsteered run.
+    """
+    from shared.pdb_preflight import shipped_hotspots
+
+    chains = [("A", 1, 700), ("B", 500, 539)]
+    inp, err = adapter.validate(
+        _form(target_input="A1-700,B500-539", hotspot_residues="B600"), {})
+    assert err is None, err
+    assert inp["hotspot_spec"] == ["B600"] and inp["hotspot_residues"] == [600]
+    t, run_chain = _target(chains), inp["target_chain"]
+    assert t.hotspot_error(run_chain, inp["hotspot_residues"]) is None, (
+        "precondition: 600 is in range on the first named chain, so a gate "
+        "reading the bare copy would fund this"
+    )
+    gate = t.hotspot_error(run_chain, shipped_hotspots(inp))
+    assert gate and "B600" in gate, gate
+
+
+def test_hotspot_residues_stays_bare_ints_on_a_single_chain_run():
+    """Byte-identical to the payload submitted before any of this."""
     inp, err = adapter.validate(
         _form(target_chain="A", hotspot_residues="42,88"), {})
     assert err is None, err
@@ -191,13 +240,18 @@ def test_hotspot_residues_stays_bare_ints_on_a_single_chain_all_bare_run():
     assert inp["hotspot_spec"] == ["A42", "A88"]
 
 
-def test_a_single_chain_run_that_names_its_chain_keeps_the_prefix():
-    """Mirrors parse_hotspot_residues' ``all_bare`` half: an operator who typed
-    the chain gets it back, on one chain as on two."""
+def test_a_single_chain_run_that_names_its_chain_keeps_the_prefix_on_the_spec():
+    """An operator who typed the chain gets it back where it counts. The bare
+    copy strips it -- on one chain as on two -- and that is fine because the
+    spec is what `shipped_hotspots` hands the gate."""
+    from shared.pdb_preflight import shipped_hotspots
+
     inp, err = adapter.validate(
         _form(target_chain="A", hotspot_residues="A42"), {})
     assert err is None, err
-    assert inp["hotspot_residues"] == ["A42"]
+    assert inp["hotspot_spec"] == ["A42"]
+    assert inp["hotspot_residues"] == [42]
+    assert shipped_hotspots(inp) == ["A42"]
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +271,13 @@ def test_the_route_no_longer_passes_a_hotspot_that_does_not_exist(typed):
     residue 600 exists on B and nowhere else. ``A600`` is a typo for ``B600``
     and ``600`` is the ambiguous form of it; both used to reach
     ``hotspot_error`` as the bare int 600, which is in range on B, so the route
-    funded a run aimed at nothing."""
+    funded a run aimed at nothing.
+
+    Modelled the way the route really does it post-#127: ``run_chain`` is
+    ``validated["target_chain"]`` (blueprints/targets.py) and the tokens are
+    ``shipped_hotspots(validated)``, NOT the bare ``hotspot_residues``."""
+    from shared.pdb_preflight import shipped_hotspots
+
     chains = [("A", 234, 444), ("B", 500, 700)]
     inp, err = adapter.validate(
         _form(target_input="A234-444,B500-700", hotspot_residues=typed), {})
@@ -228,7 +288,7 @@ def test_the_route_no_longer_passes_a_hotspot_that_does_not_exist(typed):
         return
 
     route = _target(chains).hotspot_error(
-        inp["target_chain"], inp["hotspot_residues"])
+        inp["target_chain"], shipped_hotspots(inp))
     assert _resolves(inp["hotspot_spec"], chains) == ["A600"], (
         "precondition: A600 must be the token that resolves to nothing")
     assert route is not None, (
@@ -236,7 +296,14 @@ def test_the_route_no_longer_passes_a_hotspot_that_does_not_exist(typed):
 
 
 def test_a_real_prefixed_hotspot_still_passes_the_route():
-    """The complement: the fix must not start blocking correct work."""
+    """The complement: the fix must not start blocking correct work.
+
+    This is the FALSE REFUSAL half. The bare copy is [241, 600]; unprefixed
+    tokens are judged against the FIRST named chain, and 600 is not on A
+    234-444 -- so a gate reading the bare field refuses a launch in which every
+    token the model receives is real and in range."""
+    from shared.pdb_preflight import shipped_hotspots
+
     chains = [("A", 234, 444), ("B", 500, 700)]
     inp, err = adapter.validate(
         _form(target_input="A234-444,B500-700",
@@ -244,19 +311,21 @@ def test_a_real_prefixed_hotspot_still_passes_the_route():
     assert err is None, err
     assert _resolves(inp["hotspot_spec"], chains) == []
     assert _target(chains).hotspot_error(
-        inp["target_chain"], inp["hotspot_residues"]) is None
+        inp["target_chain"], shipped_hotspots(inp)) is None
 
 
 def test_the_homodimer_wrong_protomer_hotspot_is_caught_end_to_end():
     """A241 is real on an Fc homodimer, so the route CANNOT catch it -- and
     should not, because designing against one protomer is legitimate work. What
     must not happen is the operator getting there without saying so."""
+    from shared.pdb_preflight import shipped_hotspots
+
     chains = [("A", 234, 444), ("B", 234, 444)]
     typed, err = adapter.validate(
         _form(target_input="A234-444,B234-444", hotspot_residues="A241"), {})
     assert err is None, err
     assert _target(chains).hotspot_error(
-        typed["target_chain"], typed["hotspot_residues"]) is None
+        typed["target_chain"], shipped_hotspots(typed)) is None
 
     promoted, err = adapter.validate(
         _form(target_input="A234-444,B234-444", hotspot_residues="241"), {})

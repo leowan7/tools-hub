@@ -1180,12 +1180,18 @@ def test_a_correct_two_chain_proteina_launch_still_funds(client):
             proteina__target_input="A234-444,B500-700",
             hotspot_residues="A241,B600",
         ))
+    from shared.pdb_preflight import shipped_hotspots
+
     assert resp.status_code == 302, _visible_text(resp)[-400:]
     params = rec.kwargs_for("proteina")["params"]
     assert params["hotspot_spec"] == ["A241", "B600"]
-    # The SAME tokens the route range-checked. These two fields disagreeing is
-    # what let a hotspot the gate approved differ from the one upstream matched.
-    assert params["hotspot_residues"] == ["A241", "B600"]
+    # The bare copy beside it is LOSSY -- [241, 600] cannot say whether the
+    # operator typed B600 or a stripped A600, and those want opposite verdicts.
+    assert params["hotspot_residues"] == [241, 600]
+    # Which is why the route does not read it. `shipped_hotspots` is what the
+    # gate calls, and it resolves to the SAME tokens build_payload ships, so a
+    # hotspot the gate approved cannot differ from the one upstream matches.
+    assert shipped_hotspots(params) == ["A241", "B600"]
 
 
 def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):

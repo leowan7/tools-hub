@@ -889,17 +889,17 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
     """The landscape the panel has to live with, pinned so it cannot shift
     silently underneath it.
 
-    TWO behaviours now, and this docstring used to say three:
-      - the five binder tools accept the prefixed form and EMIT it
+    Three behaviours, not two, which is why a single "parse it like the
+    adapters do" rule kept failing:
+      - the four binder tools accept the prefixed form and EMIT it
+      - proteina accepts it but emits bare ints, carrying the prefixed form
+        separately under hotspot_spec
       - rfantibody and boltz2 reject it outright
 
-    proteina was the third. It accepted the prefixed form and emitted bare
-    ints, carrying the prefix separately under hotspot_spec — and that split is
-    exactly what let the routes range-check "is 600 on any named chain" while
-    upstream string-matched "A600" and found nothing. hotspot_residues now
-    carries the same chain-qualified tokens hotspot_spec does, which is the
-    rule tools/base.py::parse_hotspot_residues already applied for the other
-    four. hotspot_spec stays, as proteina's native key name for the same list.
+    proteina's split is safe because nothing range-checks the bare copy any
+    more: the four money gates read `shared.pdb_preflight.shipped_hotspots`,
+    which prefers `hotspot_spec`. The panel must keep reading the pair, not
+    the bare key alone.
     """
     import importlib
 
@@ -917,11 +917,13 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
 
     assert err is None, f"{slug}: {err}"
     emitted = inputs.get("hotspot_residues") or []
-    assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
     if slug == "proteina":
+        assert emitted == [5, 7], emitted
         assert inputs.get("hotspot_spec") == ["A5", "B7"], (
             "proteina moved the prefixed form off hotspot_spec"
         )
+    else:
+        assert emitted == ["A5", "B7"], f"{slug} emitted {emitted!r}"
 
 
 def test_the_contig_chains_replace_the_typed_chain_rather_than_joining_it(client):

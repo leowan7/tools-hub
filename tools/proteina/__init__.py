@@ -318,7 +318,7 @@ def _english_list(items: list[str], conj: str = "and") -> str:
 
 def _parse_hotspots(
     raw: str, chain_ids: list[str], default_chain: str
-) -> tuple[list[str], list, Optional[str]]:
+) -> tuple[list[str], list[int], Optional[str]]:
     """Parse hotspot residues into BOTH representations the stack needs.
 
     Accepts ``A45 A67 A89`` (upstream's chain-prefixed form) and plain
@@ -347,20 +347,22 @@ def _parse_hotspots(
     Single-chain runs promote exactly as before, which is what keeps proteina
     co-launchable with rfdiffusion/pxdesign from one shared hotspot field.
 
-    Returns ``(spec, hotspots, error)``:
-      * ``spec``     — ``["A45", "A67"]``, what upstream string-matches on.
-      * ``hotspots`` — what the pre-money checks range-check. Chain-qualified
-        strings, EXCEPT on a single-chain run whose tokens were all bare, which
-        emits plain ints. That is the same rule
-        ``tools/base.py::parse_hotspot_residues`` already applies for
-        rfdiffusion/bindcraft/pxdesign/boltzgen, so this field carries one
-        shape fleet-wide, and it keeps the pre-existing single-chain payload
-        byte-identical. Both ``DesignTarget.hotspot_error`` and
-        ``shared.pdb_preflight._check_hotspots`` read a prefix when one is
-        there (PR #120, via ``shared.pdb_inspect.split_hotspot``) — which is
-        why the bare-int-only shape this used to emit is no longer needed for
-        them, and was actively wrong: it asked whether 600 exists on ANY named
-        chain when the run had already decided it meant A600.
+    Returns ``(spec, resnums, error)``:
+      * ``spec``    — ``["A45", "A67"]``, what upstream string-matches on and
+        what ``build_payload`` ships. THE AUTHORITY.
+      * ``resnums`` — ``[45, 67]``, bare author numbers. A LOSSY COPY, kept
+        because it is the shape the shared ``hotspot_residues`` key carries
+        fleet-wide and several older readers still expect ints there.
+
+    Nothing that decides money reads ``resnums`` directly any more. The four
+    paid gates call ``shared.pdb_preflight.shipped_hotspots(inputs)``, which
+    prefers ``hotspot_spec`` and only falls back to ``hotspot_residues`` for
+    tools that have no spec — so the token the gates judge is the token the
+    container matches on. That is what makes the bare copy safe to keep here:
+    it is no longer load-bearing. Do not reintroduce a range check that reads
+    it, because ``[600]`` cannot distinguish a typed ``600`` from a stripped
+    ``B600`` and answering with "600 exists on some chain" is the exact
+    question the run had already decided differently.
 
     Empty input is not an error — proteina's hotspots are OPTIONAL (an
     unconstrained search is a legitimate run), matching boltzgen rather than
@@ -374,7 +376,6 @@ def _parse_hotspots(
     spec: list[str] = []
     resnums: list[int] = []
     seen: set[str] = set()
-    all_bare = True
     for token in (t.strip() for t in text.replace(";", ",").replace(",", " ").split()):
         if not token:
             continue
@@ -399,13 +400,11 @@ def _parse_hotspots(
                     f"A{number}) because this run has no single target chain."
                 )
             chain = default_chain
-        else:
-            all_bare = False
-            if allowed and chain not in allowed:
-                return [], [], (
-                    f'Hotspot "{token}" names chain {chain}, which is not one '
-                    f"of this run's target chains ({', '.join(allowed)})."
-                )
+        elif allowed and chain not in allowed:
+            return [], [], (
+                f'Hotspot "{token}" names chain {chain}, which is not one '
+                f"of this run's target chains ({', '.join(allowed)})."
+            )
         key = f"{chain}{number}"
         if key in seen:
             continue
@@ -415,9 +414,7 @@ def _parse_hotspots(
 
     if len(spec) > _MAX_HOTSPOTS:
         return [], [], f"Too many hotspot residues (max {_MAX_HOTSPOTS})."
-    if len(allowed) <= 1 and all_bare:
-        return spec, resnums, None
-    return spec, list(spec), None
+    return spec, resnums, None
 
 
 def _parse_binder_length(
@@ -626,14 +623,16 @@ def validate(
             # structure. Prefixed so sanitize_shared_params drops it from
             # campaign.params rather than replaying a stale copy.
             "_target_segments": segments,
-            # Two keys, ONE meaning. `hotspot_spec` is proteina's native name
-            # for the chain-prefixed form upstream string-matches on;
-            # `hotspot_residues` is the shared name every route and preflight
-            # reads, and it now carries the SAME chain-qualified tokens (see
-            # _parse_hotspots for the one exception that keeps single-chain
-            # payloads byte-identical). They used to disagree — bare ints here,
-            # chain-prefixed there — so the checks answered a question the run
-            # had already decided differently.
+            # Two representations, ONE authority. `hotspot_spec` is the
+            # chain-prefixed form upstream string-matches on and build_payload
+            # ships; `hotspot_residues` is the same tokens with the chain
+            # letter stripped, kept because the shared launch field carries
+            # bare ints fleet-wide and older readers still expect them here.
+            # The bare copy is LOSSY and nothing that spends money reads it:
+            # every paid gate goes through
+            # `shared.pdb_preflight.shipped_hotspots`, which prefers the spec.
+            # See _parse_hotspots for why re-deriving a verdict from the bare
+            # copy is the defect, not the fix.
             "hotspot_residues": hotspot_residues,
             "hotspot_spec": hotspot_spec,
             "binder_length": list(binder_length),

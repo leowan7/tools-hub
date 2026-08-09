@@ -367,8 +367,9 @@ def _refold_hotspot_ints(raw) -> list:
     four parse their hotspots through ``tools/base.py::parse_hotspot_residues``,
     and that function returns ``["A296", "B264"]`` for any multi-chain target.
     ``int("A296")`` raises ValueError, which here is a 500 on a Refold click.
-    Proteina is not in SOURCE_TOOLS, so proteina's chain-qualified
-    hotspot_residues cannot reach this today — but the four that can already do.
+    Proteina emits BARE ints in ``hotspot_residues`` (its chain-qualified form
+    lives in ``hotspot_spec``) and is not in SOURCE_TOOLS either way, so it is
+    not what makes this reachable — the four above already are.
 
     Unparseable entries are dropped rather than raised on: the alternative is
     failing a refold the user asked for over a field boltz2 treats as optional.

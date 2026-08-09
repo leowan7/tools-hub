@@ -149,15 +149,18 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 # `modal.Function.from_name(...)` call, which has no adapter in front of it:
 # `{"target_chain": "A B", "hotspot_residues": [264]}` raises here today.
 #
-# Also no longer true, and it was the load-bearing half of the old claim:
-# "hotspot_residues carries the bare number either way". A multi-chain run now
-# emits the chain-qualified token in BOTH keys (`hotspot_residues` ==
-# `hotspot_spec` == `["A264", "B264"]`); only a single-chain run whose tokens
-# were ALL bare still emits plain ints (`[45, 67]`, beside `["A45", "A67"]` in
-# hotspot_spec), which is what keeps the pre-existing single-chain payload
-# byte-identical. Those two single-chain shapes — a promoted `A45` and a typed
-# `A45` — do still normalize to the same list HERE (`["A45", "A67"]` either
-# way), so this file cannot tell them apart and must not try.
+# `hotspot_residues` DOES still carry the bare number either way — that half of
+# the old claim stands. It is the chain-letter-stripped copy of `hotspot_spec`
+# on every run, single- or multi-chain, and it is LOSSY: `[264]` cannot say
+# whether the operator typed `264` or `B264`. Nothing that spends money reads
+# it any more. `shared.pdb_preflight.shipped_hotspots` prefers `hotspot_spec`
+# and all four money gates call it, which is the same precedence THIS file
+# already applies (`_hotspot_tokens(job_spec["hotspot_spec"])` first, falling
+# back to `hotspot_residues` only when the spec yields nothing). A promoted
+# `A45` and a typed `A45` do normalize to the same list here (`["A45"]` either
+# way), so this file cannot tell them apart and must not try — which is exactly
+# why the ambiguity has to be refused in the adapter, above, while it is still
+# visible.
 #
 # Do not "fix" it here by refusing when the hotspots address fewer chains than
 # the contig names — designing against one epitope of a multi-chain complex,
@@ -170,12 +173,12 @@ RAW_ARCHIVE_PATH = "/tmp/raw_archive.tgz"
 #
 # Nothing here is executable, which is exactly how the paragraph this replaced
 # survived the change that falsified it. So the claims above about the web
-# tier's refusal (from either chain source) and about the two hotspot_residues
-# shapes are each pinned by a test that runs:
+# tier's refusal (from either chain source) and about the hotspot_residues
+# shape are each pinned by a test that runs:
 # test_a_bare_hotspot_is_refused_when_target_chain_
 # names_two_chains, test_the_homodimer_case_is_refused_even_though_the_residue_
-# is_real, test_hotspot_residues_is_chain_qualified_on_a_multi_chain_run and
-# test_hotspot_residues_stays_bare_ints_on_a_single_chain_all_bare_run, all in
+# is_real, test_the_token_the_gate_judges_is_the_token_the_payload_ships and
+# test_hotspot_residues_stays_bare_ints_on_a_single_chain_run, all in
 # tests/test_proteina_hotspot_chain_semantics.py. The direct-call refusal below:
 # TestJobSpecAliases::test_bare_ints_on_a_MULTI_chain_target_are_refused in
 # tests/test_proteina_delivery.py.

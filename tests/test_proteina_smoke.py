@@ -331,19 +331,19 @@ class TestTargetInputParse:
 
 class TestHotspotParse:
     def test_chain_prefixed(self):
-        """``hotspot_residues`` keeps the prefix the operator typed.
+        """``hotspot_spec`` keeps the prefix; ``hotspot_residues`` is the
+        stripped copy.
 
-        It used to be stripped to [45, 67, 89] "so DesignTarget.hotspot_error
-        keeps working" — but hotspot_error has read a prefix since PR #120, and
-        stripping it is what let A600 pass a range check that only ever asked
-        whether 600 exists on SOME chain. Same rule as
-        tools/base.py::parse_hotspot_residues, which already returns ['A296']
-        for one chain plus a prefixed token.
+        The stripped copy is LOSSY on purpose-free grounds — it is simply the
+        shape the shared launch field carries fleet-wide. Nothing that spends
+        money reads it: every paid gate calls
+        ``shared.pdb_preflight.shipped_hotspots``, which prefers the spec (see
+        tests/test_multichain_targets.py).
         """
         inp, err = px.validate(_custom(target_input="A1-150", hotspot_residues="A45 A67 A89"), {})
         assert err is None
         assert inp["hotspot_spec"] == ["A45", "A67", "A89"]
-        assert inp["hotspot_residues"] == ["A45", "A67", "A89"]
+        assert inp["hotspot_residues"] == [45, 67, 89]
 
     def test_bare_ints_from_the_shared_launch_field(self):
         """The one shared hotspot field on the multi-tool launch screen posts
