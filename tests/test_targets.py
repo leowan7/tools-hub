@@ -363,6 +363,41 @@ def test_a_row_from_before_the_migration_still_loads(fake):
     assert target.effective_hotspots == [241, 243]
 
 
+def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list(fake):
+    """split_hotspot reads a prefix only against a KNOWN chain list, so with no
+    upload and no target_chain it returns (None, None) for every prefixed
+    token — and both columns would be written NULL. The hotspot would vanish on
+    save, silently, which is the exact failure this change exists to remove."""
+    with patch("shared.targets.upload_input") as staged:
+        target = create_target(
+            user_id="u-1", upload=None, name="curated",
+            hotspot_residues=["A241", "B241"],
+        )
+    staged.assert_not_called()
+    row = _stored_row(fake)
+    assert row["hotspot_residues"] == [241, 241]
+    assert row["hotspot_spec"] == ["A241", "B241"]
+    assert target.effective_hotspots == ["A241", "B241"]
+
+
+def test_the_known_chain_list_beats_the_single_letter_fallback():
+    """ORDER MATTERS, and nothing else pins it.
+
+    On an mmCIF target whose chain is "A2", the token "A296" is residue 96 on
+    chain A2 — not residue 296 on chain A. split_hotspot gets that right BECAUSE
+    it is given the chain list, so it has to be consulted first; the
+    single-letter regex is only the last resort for when no chain list exists.
+    Reversing the two is silent and produces a plausible wrong answer.
+    """
+    from shared.targets import _split_stored_hotspot
+
+    assert _split_stored_hotspot("A296", ["A2"]) == ("A2", 96)
+    assert _split_stored_hotspot("A296", ["A", "B"]) == ("A", 296)
+    assert _split_stored_hotspot("A296", []) == ("A", 296)
+    assert _split_stored_hotspot("296", ["A", "B"]) == (None, 296)
+    assert _split_stored_hotspot("zzz", ["A"]) == (None, None)
+
+
 def test_the_epitope_column_keeps_its_strict_integer_coercion(fake):
     """The hotspot helper is deliberately not shared with the epitope field."""
     with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):

@@ -22,6 +22,7 @@ without an owner-scoped fetch is a cross-tenant read.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -100,6 +101,31 @@ def _hotspot_chain_ids(target_chain, upload) -> list:
     return ids
 
 
+# Fallback shape for a hotspot token whose chain is not in the known chain
+# list. blueprints/targets._parse_residue_list already restricts a stored
+# hotspot to exactly this — one letter plus an integer — so matching it here
+# recovers the token rather than discarding it.
+_LONE_HOTSPOT_RE = re.compile(r"^([A-Za-z])(-?\d+)$")
+
+
+def _split_stored_hotspot(value, chain_ids) -> tuple[Optional[str], Optional[int]]:
+    """``split_hotspot`` first, then the single-letter shape.
+
+    ``split_hotspot`` reads a prefix only against a KNOWN chain list, which is
+    what stops ``"A296"`` being misread as chain ``"A2"`` residue 96 — so it is
+    authoritative whenever the chains are known and is tried first. When they
+    are not (a target created with no upload and no target_chain), it returns
+    ``(None, None)`` for every prefixed token, and both columns would then be
+    written NULL: the hotspot would vanish on save, silently, which is the
+    failure mode this whole change exists to remove.
+    """
+    cid, num = split_hotspot(value, chain_ids)
+    if num is not None:
+        return cid, num
+    m = _LONE_HOTSPOT_RE.match(str(value).strip())
+    return (m.group(1), int(m.group(2))) if m else (None, None)
+
+
 def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
     """The integer[] column's value, with any chain prefix dropped.
 
@@ -118,7 +144,7 @@ def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
         return None
     out: list = []
     for v in values:
-        _cid, num = split_hotspot(v, chain_ids)
+        _cid, num = _split_stored_hotspot(v, chain_ids)
         if num is not None:
             out.append(num)
     return out or None
@@ -139,7 +165,7 @@ def _clean_hotspot_spec(values, chain_ids) -> Optional[list]:
     tokens: list = []
     any_chain = False
     for v in values:
-        cid, num = split_hotspot(v, chain_ids)
+        cid, num = _split_stored_hotspot(v, chain_ids)
         if num is None:
             continue
         if cid:
