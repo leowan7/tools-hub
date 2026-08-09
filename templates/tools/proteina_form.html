@@ -176,11 +176,13 @@
                    class="proteina-field" style="max-width: 320px;">
             <div class="proteina-help">
               Optional. Residues the binder should contact, in original PDB
-              numbering. Plain numbers use the target chain; prefix the chain
-              for a multi-chain region (<code>A113,C73</code>). Every one is
-              checked against your structure before any GPU runs, so a typo is
-              refused rather than silently ignored. Click residues in the viewer
-              to toggle them.
+              numbering. A plain number is read as the target chain; when the
+              run targets more than one chain it is refused, because
+              <code>241</code> cannot say which protomer it means — prefix the
+              chain instead (<code>A113,C73</code>). Every one is checked
+              against your structure before any GPU runs, so a typo is refused
+              rather than silently ignored. Click residues in the viewer to
+              toggle them.
             </div>
 
             <div class="hotspot-picker" data-hotspot-picker>

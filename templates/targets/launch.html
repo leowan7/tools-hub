@@ -78,7 +78,7 @@
         </p>
         {% endif %}
         {{ field_text("hotspot_residues", "Hotspot residues",
-                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen and Proteina. Plain numbers apply to the target chain above; for a multi-chain Proteina target, prefix the chain (A45, C73).",
+                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen and Proteina. A plain number applies to the target chain above; when the run targets more than one chain, Proteina refuses it — prefix the chain instead (A45, C73).",
                       placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
       </div>
     </div>
@@ -220,9 +220,10 @@
               </div>
               <div class="field-helper">
                 Each design's length is drawn from this range. Blank uses 60-120.
-                Hotspots come from the shared field above &mdash; plain numbers
-                use the target chain, or prefix the chain for a multi-chain
-                region (<code>A113 C73</code>).
+                Hotspots come from the shared field above &mdash; a plain
+                number is read as the target chain, and is refused when this
+                run targets more than one chain, so prefix the chain
+                (<code>A113 C73</code>).
               </div>
             </div>
             {% endif %}

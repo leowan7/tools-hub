@@ -1094,6 +1094,100 @@ def test_proteina_target_region_reaches_the_container(client):
     assert params["target_chain"] == "A"
 
 
+def _fc_target(**kw):
+    """A two-chain target with DISJOINT numbering, so "which chain" is decidable.
+
+    Chain A is 234-444 and chain B is 500-700, so residue 600 exists on B and
+    nowhere else. A real Fc homodimer numbers both protomers 234-444, which
+    makes the wrong-protomer case undetectable by any range check — that half
+    is covered at the adapter, in
+    tests/test_proteina_hotspot_chain_semantics.py. This fixture covers the
+    half the ROUTE can still catch, and used to wave through.
+    """
+    base = dict(
+        name="Fc-like dimer",
+        filename="fc.pdb",
+        target_chain="A B",
+        chain_summary={
+            "total_standard_residues": 412,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 211,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 234, "max_resnum": 444},
+                {"chain_id": "B", "standard_residue_count": 201,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 500, "max_resnum": 700},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def test_a_mis_chained_proteina_hotspot_is_refused_before_any_money_moves(
+    client,
+):
+    """A600 is a typo for B600: residue 600 exists on chain B only. The route
+    used to receive the BARE 600 in ``hotspot_residues``, ask "is 600 in range
+    on any named chain", find it on B, and fund a run whose actual steering
+    token — ``A600`` — addresses no atom in the structure.
+
+    Upstream drops an unmatched hotspot to an all-zero mask silently, so this
+    was a fully-billed, fully-delivered, completely unsteered run."""
+    _login(client)
+    t = _fc_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__target_input="A234-444,B500-700",
+            hotspot_residues="A600",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == [], "a campaign was created for an unreachable hotspot"
+    assert "A600" in _visible_text(resp)
+
+
+def test_a_bare_proteina_hotspot_on_a_two_chain_target_is_refused(client):
+    """The ambiguous form, refused at the adapter and therefore before the
+    gate. The message has to name the chains, because the shared field is the
+    only hotspot input on this screen."""
+    _login(client)
+    t = _fc_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__target_input="A234-444,B500-700",
+            hotspot_residues="600",
+        ))
+    assert resp.status_code == 400, _visible_text(resp)[-400:]
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "needs a chain prefix" in body
+    assert "A600 or B600" in body
+
+
+def test_a_correct_two_chain_proteina_launch_still_funds(client):
+    """The complement, so the two tests above cannot be satisfied by refusing
+    every multi-chain proteina run."""
+    _login(client)
+    t = _fc_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+            proteina__target_input="A234-444,B500-700",
+            hotspot_residues="A241,B600",
+        ))
+    assert resp.status_code == 302, _visible_text(resp)[-400:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_spec"] == ["A241", "B600"]
+    # The SAME tokens the route range-checked. These two fields disagreeing is
+    # what let a hotspot the gate approved differ from the one upstream matched.
+    assert params["hotspot_residues"] == ["A241", "B600"]
+
+
 def test_proteina_oversized_target_is_refused_before_any_run_is_funded(client):
     """THE COST HOLE THIS ROUTE HAD. Nothing on the multi-tool launch path
     called the size envelope, so a target of any size funded a campaign — and

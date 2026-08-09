@@ -153,7 +153,7 @@
         <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
-          <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
+          <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact. On Proteina, a run that targets more than one chain needs each hotspot prefixed with its chain (A113, C73).</div>
         </div>
         <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
@@ -307,7 +307,7 @@
       if (lenMax.value === '65') { lenMax.value = '120'; }
     }
     document.getElementById('hotspot-hint').textContent = isProteina
-      ? 'Optional. Residues the binder should contact. Plain numbers use the target chain; prefix the chain for a multi-chain region (A113 C73). Every one is checked against your structure before any GPU runs.'
+      ? 'Optional. Residues the binder should contact. A plain number is read as the target chain; when the run targets more than one chain it is refused, because 241 cannot say which protomer it means — prefix the chain instead (A113 C73). Every one is checked against your structure before any GPU runs.'
       : 'Comma-separated target-chain residues the binder should contact.';
     refreshTarget();
   }

@@ -2209,40 +2209,51 @@ class TestTheWebTierIsAFirstClassMultiChainPath:
         assert err is None
         assert inp["hotspot_spec"] == ["A264", "B264"]
 
-    def test_a_promoted_hotspot_is_INDISTINGUISHABLE_from_a_typed_one(self):
-        """WHY run_pipeline CANNOT CLOSE THIS. ``_parse_hotspots`` promotes a
-        bare ``264`` onto ``contig_chains[0]`` before dispatch, so the token
-        reaches the container already chain-prefixed and
-        ``normalize_hotspots``' ``bare`` list is empty — the refusal never
-        fires, ``missing_hotspots`` returns [] because a real dimer genuinely
-        contains A264, and the run designs against protomer A with B entirely
-        unconstrained while the log reports a full hotspot match.
+    def test_the_ambiguous_hotspot_is_REFUSED_where_it_is_still_visible(self):
+        """This test used to assert the OPPOSITE, and its own instructions are
+        why it now reads this way.
 
-        This asserts the part that decides WHERE the fix can live: the payload
-        a promoted bare hotspot produces is byte-identical to the one a
-        deliberately typed ``A264`` produces, ``hotspot_residues`` carrying the
-        bare number in both. No container-side rule can separate them, so the
-        fix belongs in ``_parse_hotspots`` (refuse a bare token when
-        ``len(chain_ids) > 1``). If this test ever fails, the adapter has grown
-        a signal the container could act on — go and use it."""
+        It was ``test_a_promoted_hotspot_is_INDISTINGUISHABLE_from_a_typed_one``
+        and it pinned the defect: ``_parse_hotspots`` promoted a bare ``264``
+        onto ``contig_chains[0]`` before dispatch, so the token reached the
+        container already chain-prefixed, ``normalize_hotspots``' ``bare`` list
+        was empty, the refusal never fired, ``missing_hotspots`` returned []
+        because a real dimer genuinely contains A264, and the run designed
+        against protomer A with B entirely unconstrained while the log reported
+        a full hotspot match. The payload was byte-identical to a deliberately
+        typed ``A264``, so no container-side rule could separate them. Its
+        closing line: "the fix belongs in ``_parse_hotspots`` (refuse a bare
+        token when ``len(chain_ids) > 1``). If this test ever fails, the adapter
+        has grown a signal the container could act on — go and use it."
+
+        That is exactly what happened. The adapter no longer produces the
+        ambiguous payload at all, so there is nothing left for the container to
+        distinguish — the two paths now agree by construction rather than by
+        the web tier being quietly more permissive than the direct one."""
         from tools import proteina as adapter
         promoted, e1 = adapter.validate(
             self._form(target_input="A236-443,B236-443",
                        hotspot_residues="264,301"), {})
+        assert promoted is None, (
+            "a bare hotspot is ambiguous on a two-chain contig and must not "
+            "reach dispatch")
+        assert "chain prefix" in e1
+
         typed, e2 = adapter.validate(
             self._form(target_input="A236-443,B236-443",
                        hotspot_residues="A264,A301"), {})
-        assert e1 is None and e2 is None
-        assert promoted == typed, (
-            "the adapter now distinguishes a promoted hotspot from a typed "
-            "one; the container can and should refuse the ambiguous case")
-        assert promoted["hotspot_spec"] == ["A264", "A301"]
-        assert rp.normalize_hotspots(promoted) == ["A264", "A301"]
+        assert e2 is None, e2
+        assert typed["hotspot_spec"] == ["A264", "A301"]
+        assert rp.normalize_hotspots(typed) == ["A264", "A301"]
 
     def test_the_same_intent_from_a_DIRECT_caller_is_refused(self):
-        """The other half of the asymmetry, so the gap is documented as a gap
-        rather than as an oversight: expressed bare — which is what the direct
-        path receives, un-promoted — the identical request IS refused."""
+        """The container's half of the same rule.
+
+        This used to document an ASYMMETRY — the direct path refused what the
+        web path silently promoted. It is no longer asymmetric: the adapter
+        refuses it too (see the test above). Both halves are kept because they
+        guard different entry points, and the direct one is the only guard for
+        a caller that never touches ``validate()`` at all."""
         with pytest.raises(ValueError):
             rp.normalize_hotspots({
                 "target_input": "A236-443,B236-443",
