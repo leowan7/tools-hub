@@ -26,3 +26,7 @@ runs/
 # ...but the compute-campaign UI templates live under templates/runs/ and MUST be tracked.
 !templates/runs/
 !templates/runs/**
+
+# Proteina direct-call scratch (Modal call id + collected designs)
+.proteina_direct_call_state.json
+proteina_direct_out/

@@ -39,6 +39,7 @@ drop can happen.
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import os
 import re
@@ -5175,6 +5176,16 @@ def test_the_staged_crop_encoding_note_describes_the_code_that_exists():
 class TestUploadLoopNumbering:
     """THE CALL SITE, exercised rather than pattern-matched.
 
+    MERGE NOTE (parity branch). Three tests here assert the set of uploaded
+    basenames as a stand-in for "both designs shipped". They were written
+    against 0-based names and now read ``design_001.pdb`` / ``design_002.pdb``,
+    because the delivered rank became dense and 1-based to match the other five
+    generators -- the same change that makes proteina agree with
+    ``shared/exports.py``'s cross-tool invariant. The filenames were never this
+    class's subject; each of those tests is really asserting ``target_numbering``,
+    ``n_failures`` or ``designs_completed``, and every one of those assertions is
+    untouched. Nothing here was relaxed to accommodate the merge.
+
     Everything above this class tests pure functions. The only thing that stood
     between them and the delivered file was an AST check that
     ``restore_design_numbering`` appears somewhere in a Call node and a
@@ -5230,13 +5241,19 @@ class TestUploadLoopNumbering:
         return "\n".join(lines) + "\nEND\n"
 
     def _drive(self, tmp_path, monkeypatch, *, job_spec, n_designs=2,
-               design_text=None, input_text=None, plant_staged=None):
+               design_text=None, input_text=None, plant_staged=None,
+               endpoint="https://example/upload"):
         """Run main() to completion, returning (result, uploaded_bytes_by_name).
 
         ``plant_staged`` writes a file into the hub target dir under the run's
         task_name BEFORE main() runs -- the only way to give a CURATED run a
         staged reference to read, which is what makes the "curated runs too"
         mutation observable rather than inert.
+
+        ``endpoint=""`` drives the INLINE path instead, where nothing is
+        uploaded and the coordinates come back in the result. ``uploaded`` is
+        then empty by construction and the delivered bytes must be read off
+        ``candidates[*]["pdb_content_b64"]``.
         """
         result_file = tmp_path / "smoke.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
@@ -5318,8 +5335,11 @@ class TestUploadLoopNumbering:
             "input_presigned_url": (
                 "" if job_spec.get("target_source") != "custom"
                 else "https://example/target.pdb"),
-            "upload_urls_endpoint": "https://example/upload",
-            "job_token": "t", "tier": "protein_binder",
+            "upload_urls_endpoint": endpoint,
+            # No job_token on the inline path: a hub-shaped payload that lost
+            # its endpoint is refused pre-GPU by design, so leaving it set here
+            # would drive a refusal instead of an inline delivery.
+            "job_token": "t" if endpoint else "", "tier": "protein_binder",
         }
         monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
         monkeypatch.setenv("JOB_TIER", "protein_binder")
@@ -5414,6 +5434,34 @@ class TestUploadLoopNumbering:
         assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == list(range(11, 31))
         assert all(c["target_numbering"] == "input" for c in data["candidates"])
 
+    def test_the_INLINE_path_delivers_the_operators_numbering_too(
+            self, tmp_path, monkeypatch):
+        """A GAP THE MERGE CREATED, closed here rather than left to rot.
+
+        #123 was written when the upload was the only way a design left the
+        container, so every test in this class reads the bytes out of
+        ``uploaded``. The parity branch added INLINE delivery, and merging the
+        two put the restore between the read and the upload -- which means it
+        now applies to a design that is never uploaded at all. That is the
+        behaviour an operator calling ``modal.Function.from_name`` directly
+        actually gets, and nothing covered it: with the restore left on the
+        upload's side of the branch, every assertion in this class would still
+        pass while direct callers silently received 1..N.
+
+        Asserts on the DECODED INLINE BYTES, not on ``target_numbering`` -- the
+        label is what the code claims, the coordinates are what it did.
+        """
+        data, uploaded = self._drive(
+            tmp_path, monkeypatch, job_spec=self._custom(), endpoint="")
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert not uploaded, "the inline path must not upload anything"
+        assert len(data["candidates"]) == 2
+        for cand in data["candidates"]:
+            blob = base64.b64decode(cand["pdb_content_b64"]).decode("latin-1")
+            assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == \
+                list(range(11, 31)), "inline design shipped in upstream's 1..N"
+            assert cand["target_numbering"] == "input"
+
     # -- what the payload claims -------------------------------------------
 
     def test_target_numbering_records_what_really_happened(
@@ -5431,7 +5479,7 @@ class TestUploadLoopNumbering:
         assert [c["target_numbering"] for c in data["candidates"]] == ["upstream"] * 2
         assert [d["target_numbering"] for d in data["designs"]] == ["upstream"] * 2
         # ...and the design still SHIPS, byte-for-byte as upstream wrote it.
-        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
         assert next(iter(uploaded.values())) == scrambled.encode("latin-1")
 
     def test_the_candidates_carry_the_numbering_not_only_the_designs(
@@ -5665,7 +5713,7 @@ class TestUploadLoopNumbering:
         assert data["status"] == "COMPLETED", data.get("error")
         assert data["n_failures"] == 0
         assert data["designs_completed"] == 2
-        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
         assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
 
     def test_an_unreadable_staged_target_never_kills_the_shard(
@@ -5687,7 +5735,7 @@ class TestUploadLoopNumbering:
         data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
         assert data["status"] == "COMPLETED", data.get("error")
         assert data["designs_completed"] == 2
-        assert set(uploaded) == {"design_000.pdb", "design_001.pdb"}
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
         assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
 
 
