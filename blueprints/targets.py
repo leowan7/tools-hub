@@ -27,7 +27,6 @@ dispatched and never billed.
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 
 from flask import (
@@ -50,9 +49,9 @@ from shared.target_results import (
     aggregate_target_candidates,
 )
 from shared.targets import (
-    TargetSchemaError,
     archive_target,
     create_target,
+    enrich_target_hotspot_spec,
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
@@ -393,23 +392,28 @@ def _launch_blocker(target) -> "str | None":  # noqa: ANN001
     return None
 
 
-_CHAIN_RESIDUE_RE = re.compile(r"^([A-Za-z])(-?\d+)$")
-
-
-def _parse_residue_list(
-    raw: str, allow_chain_prefix: bool = False,
-) -> "tuple[list, str | None]":
+def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
     """Parse "32, 45, 58" into ``[32, 45, 58]``.
 
     Returns ``(residues, error)``. Rejects rather than silently dropping a
     non-numeric entry: a typo'd hotspot that vanishes here would be a target
     that quietly aims somewhere else than the user asked for.
 
-    With ``allow_chain_prefix`` a token may name its chain (``"A241"``) and is
-    kept as the string. Only HOTSPOTS pass this: they are the field that has to
-    survive to a multi-chain launch, and design_targets.hotspot_spec is the
-    column that stores them. The epitope field keeps the strict integer parse
-    it has always had, because nothing downstream of it reads a prefix.
+    STRICT INTEGERS, DELIBERATELY, on BOTH residue fields. This parser feeds
+    ``design_targets.hotspot_residues``, which
+    ``shared.targets.target_defaults_for_form`` prefills into the ONE shared
+    ``hotspot_residues`` launch field that every selected tool reads
+    (``_SHARED_LAUNCH_FIELDS``). Widening it to accept ``"A241"`` was executed
+    and refused by five of the six campaign tools:
+    rfdiffusion/bindcraft/boltzgen/pxdesign answer "does not name one of your
+    target chains" unless the run names that chain, and
+    ``tools/rfantibody/__init__.py`` is a bare ``int(tok)`` per token that
+    cannot accept a prefix on ANY target chain. The launch route is
+    all-or-nothing, so one prefixed token killed the whole launch.
+
+    A chain-qualified hotspot reaches proteina through proteina's OWN field
+    (``chain_hotspots``), never through this one. See
+    :func:`shared.targets.target_defaults_for_form`.
     """
     text = (raw or "").replace(";", ",").strip()
     if not text:
@@ -418,13 +422,8 @@ def _parse_residue_list(
     for piece in text.replace(",", " ").split():
         try:
             out.append(int(piece))
-            continue
         except ValueError:
-            pass
-        m = _CHAIN_RESIDUE_RE.match(piece) if allow_chain_prefix else None
-        if m is None:
             return [], f"'{piece}' is not a residue number."
-        out.append(f"{m.group(1)}{int(m.group(2))}")
     if len(out) > _MAX_RESIDUES:
         return [], f"Too many residues (max {_MAX_RESIDUES})."
     return out, None
@@ -490,9 +489,7 @@ def target_create():
         ), code
 
     target_chain = (request.form.get("target_chain") or "").strip()
-    hotspots, hs_err = _parse_residue_list(
-        request.form.get("hotspot_residues"), allow_chain_prefix=True,
-    )
+    hotspots, hs_err = _parse_residue_list(request.form.get("hotspot_residues"))
     if hs_err:
         return _err(f"Hotspot residues: {hs_err}")
     epitope, ep_err = _parse_residue_list(request.form.get("epitope_residues"))
@@ -533,13 +530,6 @@ def target_create():
         )
     except StorageError as exc:
         return _err(f"Upload failed: {exc}")
-    except TargetSchemaError as exc:
-        # A permanently-failing insert, not a transient. Falling through to the
-        # generic message below would tell the user to retry an operation that
-        # cannot succeed until the pending migration lands, and would offer no
-        # way to save the target in the meantime. The exception's own text says
-        # what happened and what still works.
-        return _err(str(exc))
     if target is None:
         return _err("Could not save the target. Try again in a moment.")
 
@@ -1317,6 +1307,26 @@ def target_launch_submit(target_id):
         created.append(campaign)
 
     touch_target(target.id)
+
+    # Record WHICH PROTOMER this target's stored hotspots were on, when a run in
+    # this launch said so. Beside `touch_target` deliberately: same trigger
+    # ("this target was just used for a run"), same posture (best-effort, may
+    # not fail a launch), same point in the sequence — after every run exists,
+    # so a launch that created nothing writes nothing.
+    #
+    # ENRICH-ONLY. `enrich_target_hotspot_spec` writes only into an EMPTY
+    # `hotspot_spec`, only when the run's chain-qualified tokens reduce to
+    # exactly the integers the target already stores, and never touches
+    # `hotspot_residues`. A user who typed different hotspots for one run has
+    # not asked to edit the target; see that function for the full argument.
+    for spec in plan.specs:
+        tokens = spec.params.get("hotspot_spec")
+        if tokens:
+            # No `break`: only proteina emits this key today, so this runs at
+            # most once. If a second adapter ever did, the UPDATE's own
+            # `hotspot_spec IS NULL` filter makes the later calls no-ops,
+            # rather than an arbitrary first-wins choice made here.
+            enrich_target_hotspot_spec(target, tokens)
 
     # `started` and `stalled` are bound at the top of the route, next to `_err`.
     # Re-initialising them here would work, but only by accident of `_err` never

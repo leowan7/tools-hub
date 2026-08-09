@@ -2865,3 +2865,218 @@ def test_the_confirming_read_is_owner_scoped(client):
     assert get_campaign.call_args_list
     for call in get_campaign.call_args_list:
         assert call.kwargs.get("user_id") == "u-1", call
+
+
+# ---------------------------------------------------------------------------
+# ALL SIX TOOLS, DRIVEN THROUGH THE REAL _collect_launch_specs
+#
+# THE REGRESSION THAT CAUSED THE P0 AND THAT NOTHING WAS HOLDING. There is
+# exactly ONE shared hotspot field (`_SHARED_LAUNCH_FIELDS`) and it is posted to
+# EVERY selected tool, so a change to what goes into it is a change to all six
+# validators at once -- and this route is all-or-nothing, so one refusal kills
+# the whole launch. A previous round widened target creation to accept "A241"
+# and prefilled it into that field; measured against these same six validators,
+# rfdiffusion, bindcraft, boltzgen and pxdesign refuse a token naming a chain
+# the run does not target, and tools/rfantibody is a bare `int(tok)` per token
+# that refuses a prefix on ANY target chain.
+#
+# These build the form from the REAL `target_defaults_for_form`, so the prefill
+# and the validators are pinned together rather than separately.
+# ---------------------------------------------------------------------------
+
+_ALL_SIX = (
+    "rfdiffusion", "bindcraft", "boltzgen", "pxdesign", "rfantibody", "proteina",
+)
+
+
+def _six_chain_target(**kw):
+    """A two-chain target every one of the six can actually be launched at.
+
+    260 residues total, inside proteina's 500 cap with margin; both protomers
+    numbered 234-444, which is the Fc shape whose bare 241 is genuinely
+    ambiguous. `target_chain` names both, because a run that targets one chain
+    can legitimately refuse a hotspot on the other and that is not the property
+    under test here.
+    """
+    base = dict(
+        name="Fc dimer", filename="fc.pdb", target_chain="A B",
+        hotspot_residues=[241, 241], epitope_residues=[241],
+        chain_summary={
+            "total_standard_residues": 260,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 130,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 234, "max_resnum": 444},
+                {"chain_id": "B", "standard_residue_count": 130,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 234, "max_resnum": 444},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def _six_tool_form(target):
+    """The launch form as the browser would post it FOR THIS TARGET.
+
+    Shared fields come from the real `target_defaults_for_form`, so if that
+    helper ever puts a chain-qualified token back into `hotspot_residues` these
+    tests go red for the five tools that cannot read one.
+    """
+    from werkzeug.datastructures import MultiDict
+
+    from shared.targets import target_defaults_for_form
+
+    pre = target_defaults_for_form(target)
+    form = MultiDict()
+    for tool in _ALL_SIX:
+        form.add("tools", tool)
+        form.add(f"{tool}__designs", "8")
+    form.add("pace", "burst")
+    form.add("target_chain", pre.get("target_chain", "A"))
+    form.add("hotspot_residues", pre.get("hotspot_residues", ""))
+    # Proteina's own field, prefilled exactly as templates/targets/launch.html
+    # does it. This is the ONLY place a chain-qualified token may travel.
+    form.add("proteina__chain_hotspots", pre.get("chain_hotspots", ""))
+    form.add("proteina__preset", "protein_binder")
+    form.add("proteina__target_input", pre.get("proteina__target_input", ""))
+    for tool in ("rfdiffusion", "bindcraft", "boltzgen"):
+        form.add(f"{tool}__binder_length_min", "55" if tool == "rfdiffusion" else "50")
+        form.add(f"{tool}__binder_length_max", "65" if tool == "rfdiffusion" else "100")
+    form.add("boltzgen__protocol", "protein-anything")
+    form.add("pxdesign__binder_length", "80")
+    form.add("rfantibody__cdr_lengths", "H1:8,H2:7,H3:10-16")
+    return form
+
+
+def _specs_for_all_six(app, target):
+    """Drive the REAL `_collect_launch_specs` and return {tool: spec-or-error}.
+
+    Per tool rather than in one call, so a failure names the tool instead of
+    stopping the loop at the first one.
+    """
+    from werkzeug.datastructures import MultiDict
+
+    from blueprints.targets import _collect_launch_specs
+
+    full = _six_tool_form(target)
+    out = {}
+    for tool in _ALL_SIX:
+        one = MultiDict(
+            (k, v) for k, v in full.items(multi=True)
+            if k != "tools" and ("__" not in k or k.startswith(f"{tool}__"))
+        )
+        one.add("tools", tool)
+        with app.test_request_context(f"/targets/{target.id}/launch", method="POST"):
+            with patch("shared.compute_campaigns.campaign_tool_gated_off",
+                       return_value=False):
+                specs, err = _collect_launch_specs(target, one)
+        out[tool] = err if specs is None else specs[0]
+    return out
+
+
+def _one_chain_target(**kw):
+    """The ordinary shape: one chain, bare integers, no `hotspot_spec`.
+
+    Most targets look like this and always will — `/targets/new` parses both
+    residue fields with a strict `int()`, so this is the only shape target
+    creation can produce.
+    """
+    base = dict(
+        name="single", filename="one.pdb", target_chain="A",
+        hotspot_residues=[241, 300], epitope_residues=[241],
+        chain_summary={
+            "total_standard_residues": 130,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 130,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 234, "max_resnum": 444},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def test_every_campaign_tool_launches_against_a_plain_integer_target(app):
+    """The shape `/targets/new` produces, which must never stop launching."""
+    results = _specs_for_all_six(app, _one_chain_target())
+    failed = {t: r for t, r in results.items() if isinstance(r, str)}
+    assert not failed, f"tools refused a plain-integer target: {failed}"
+    for tool, spec in results.items():
+        assert spec.tool == tool and spec.params, tool
+
+
+def test_every_campaign_tool_launches_against_a_target_carrying_hotspot_spec(app):
+    """THE ONE THAT REGRESSED. `target_defaults_for_form` used to prefill the
+    chain-qualified form into the SHARED field, so a target enriched with
+    `hotspot_spec` refused five of these six — including rfantibody, which is
+    not flag-gated and is therefore live for every user."""
+    target = _six_chain_target(hotspot_spec=["A241", "B241"])
+    results = _specs_for_all_six(app, target)
+    failed = {t: r for t, r in results.items() if isinstance(r, str)}
+    assert not failed, f"tools refused an enriched target: {failed}"
+    for tool, spec in results.items():
+        assert spec.tool == tool and spec.params, tool
+
+
+def test_the_five_shared_field_tools_receive_plain_integers(app):
+    """WHAT THE SHARED FIELD MAY CONTAIN, asserted on the validated params
+    rather than on the form string. rfantibody is the strictest reader
+    (`int(tok)` per token) and is NOT flag-gated, so it is live for every
+    user."""
+    results = _specs_for_all_six(
+        app, _six_chain_target(hotspot_spec=["A241", "B241"]))
+    # rfdiffusion/bindcraft/boltzgen/pxdesign normalise onto the run's chains
+    # once the run names more than one, which is `parse_hotspot_residues`'s
+    # documented output shape -- not a prefix that arrived from the form.
+    for tool in ("rfdiffusion", "bindcraft", "boltzgen", "pxdesign"):
+        assert results[tool].params["hotspot_residues"] == ["A241", "A241"], tool
+    assert results["rfantibody"].params["hotspot_residues"] == [241, 241]
+
+
+def test_only_proteina_receives_the_protomer(app):
+    """The information is not lost, it is routed. Proteina's own field carries
+    "A241,B241" and lands as two DIFFERENT protomers; every other tool sees the
+    shared field's plain numbers."""
+    results = _specs_for_all_six(
+        app, _six_chain_target(hotspot_spec=["A241", "B241"]))
+    assert results["proteina"].params["hotspot_spec"] == ["A241", "B241"]
+
+
+def test_a_prefixed_token_in_the_shared_field_is_still_refused_by_the_others(app):
+    """THE COUNTERFACTUAL, so the tests above are a measurement and not a
+    coincidence. This is what the reverted change actually posted."""
+    from werkzeug.datastructures import MultiDict
+
+    from blueprints.targets import _collect_launch_specs
+
+    target = _six_chain_target()
+    refused = {}
+    for tool in _ALL_SIX:
+        form = MultiDict([
+            ("tools", tool), (f"{tool}__designs", "8"),
+            ("target_chain", "A"), ("hotspot_residues", "A241,B241"),
+            ("pace", "burst"),
+            (f"{tool}__binder_length_min", "50"),
+            (f"{tool}__binder_length_max", "100"),
+            ("boltzgen__protocol", "protein-anything"),
+            ("pxdesign__binder_length", "80"),
+            ("rfantibody__cdr_lengths", "H1:8,H2:7,H3:10-16"),
+            ("proteina__preset", "protein_binder"),
+        ])
+        with app.test_request_context("/x", method="POST"):
+            with patch("shared.compute_campaigns.campaign_tool_gated_off",
+                       return_value=False):
+                specs, err = _collect_launch_specs(target, form)
+        if specs is None:
+            refused[tool] = err
+    assert set(refused) == set(_ALL_SIX), (
+        f"only {sorted(refused)} refused a chain-prefixed shared field; the "
+        "premise of the split is that this field cannot carry one"
+    )
+    assert "must be comma-separated integers" in refused["rfantibody"], (
+        "rfantibody no longer refuses a prefix outright; re-check whether the "
+        "shared field still has to be integers-only"
+    )

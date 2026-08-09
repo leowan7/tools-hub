@@ -150,15 +150,25 @@
             <input type="text" id="target_chain" name="target_chain" maxlength="4" value="{{ pre_fill.get('target_chain','A') }}">
           </div>
         </div>
+        {# TWO HOTSPOT FIELDS, ONE VISIBLE AT A TIME, and refreshTool() swaps
+           them. This field carries PLAIN NUMBERS and belongs to the five tools
+           that cannot read a chain prefix at all; the one below is proteina's
+           and is the only one that takes a protomer. refreshTool() disables the
+           hidden one, so exactly one hotspot value is ever posted — hiding
+           without disabling would let a prefilled shared value silently supply
+           hotspots to a proteina run whose own field the user had cleared. #}
         <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
-          {# refreshTool() runs on load and REPLACES this text whatever the tool
-             is, so whatever is written here is never read. Per-tool copy —
-             including proteina's multi-chain prefix rule — belongs in that
-             ternary, not here: this one field is posted for every tool in
-             supported_tools and only proteina refuses a bare token. #}
+          {# Server-rendered and LIVE: nothing overwrites this any more. It is
+             read only by tools that take plain numbers, so it must not carry
+             proteina's prefix rule — that copy lives under proteina's field. #}
           <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
+        </div>
+        <div class="runs-field" id="chain-hotspot-field">
+          <label for="chain_hotspots">Hotspot residues</label>
+          <input type="text" id="chain_hotspots" name="chain_hotspots" value="{{ pre_fill.get('chain_hotspots','') }}" placeholder="e.g. A417,B453" disabled>
+          <div class="hint" id="chain-hotspot-hint">Optional. Residues the binder should contact. A plain number is read as the target chain; when the run targets more than one chain it is refused, because 241 cannot say which protomer it means &mdash; prefix the chain instead (A113 C73). Every one is checked against your structure before any GPU runs.</div>
         </div>
         <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
@@ -224,6 +234,8 @@
   var regionInput = document.getElementById('target_input');
   var lenMin = document.getElementById('binder_length_min');
   var lenMax = document.getElementById('binder_length_max');
+  var hotspotInput = document.getElementById('hotspot_residues');
+  var chainHotspots = document.getElementById('chain_hotspots');
   var iggmPreset = document.getElementById('iggm_preset');
   var fasta = document.getElementById('fasta');
   var epitope = document.getElementById('epitope');
@@ -302,7 +314,19 @@
     // Hotspots and binder length are real proteina knobs on the custom-target
     // path — they are written into the registered target record. A curated task
     // carries its own, so they stay hidden there. IgGM uses neither.
-    show('hotspot-field', !isIggm && (!isProteina || custom));
+    //
+    // The SWAP, and the disables are the load-bearing half of it. Proteina
+    // reads `chain_hotspots` first and falls back to `hotspot_residues`, so a
+    // merely-hidden shared field would still post its prefilled value and
+    // supply hotspots to a proteina run whose own field the user had emptied.
+    // In the other direction a merely-hidden `chain_hotspots` would post a
+    // chain-prefixed token to a tool that cannot parse one at all
+    // (tools/rfantibody is a bare int() per token).
+    var sharedHotspots = !isIggm && !isProteina;
+    show('hotspot-field', sharedHotspots);
+    hotspotInput.disabled = !sharedHotspots;
+    show('chain-hotspot-field', custom);
+    chainHotspots.disabled = !custom;
     show('binderlen-row', !isIggm && (!isProteina || custom));
     if (custom) {
       // The generic defaults are the binder tools' narrow window; upstream
@@ -311,9 +335,11 @@
       if (lenMin.value === '55') { lenMin.value = '60'; }
       if (lenMax.value === '65') { lenMax.value = '120'; }
     }
-    document.getElementById('hotspot-hint').textContent = isProteina
-      ? 'Optional. Residues the binder should contact. A plain number is read as the target chain; when the run targets more than one chain it is refused, because 241 cannot say which protomer it means — prefix the chain instead (A113 C73). Every one is checked against your structure before any GPU runs.'
-      : 'Comma-separated target-chain residues the binder should contact.';
+    // NO per-tool rewrite of #hotspot-hint any more. It used to carry a
+    // proteina arm because one field served every tool; proteina now has its
+    // own field with its own server-rendered hint, and #hotspot-hint is only
+    // ever shown to tools that take plain numbers. A ternary here would be
+    // dead copy for the one tool it described.
     refreshTarget();
   }
 

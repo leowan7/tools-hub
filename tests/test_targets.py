@@ -16,6 +16,7 @@ out — they are load-bearing.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -320,20 +321,26 @@ def _stored_row(fake):
     return rows[0]
 
 
-def test_a_chain_qualified_hotspot_is_written_to_both_columns(fake):
-    """The text column carries the chain; the integer column keeps the number
-    so every reader that predates 0041 still sees a hotspot rather than NULL."""
+def test_create_target_never_names_the_new_column(fake):
+    """THE INSERT IS NOT THE WRITER, and this is what keeps it safe to deploy
+    ahead of migration 0041: an INSERT naming a column the database does not
+    have fails outright, every time.
+
+    Its one production caller is the ``/targets`` POST, whose
+    ``_parse_residue_list`` is a strict integer parse, so nothing
+    chain-qualified can reach it. ``hotspot_spec`` is filled in later, by
+    ``enrich_target_hotspot_spec``, from a run that named its chains.
+    """
     with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
         target = create_target(
             user_id="u-1", upload=_Upload(), target_chain="A B",
-            hotspot_residues=["A241", "B241"],
+            hotspot_residues=[241, 241],
         )
     row = _stored_row(fake)
-    assert row["hotspot_spec"] == ["A241", "B241"]
-    assert row["hotspot_residues"] == [241, 241], (
-        "_clean_int_list would int('A241'), fail, skip it, and store NULL")
-    assert target.hotspot_spec == ["A241", "B241"]
-    assert target.effective_hotspots == ["A241", "B241"]
+    assert "hotspot_spec" not in row
+    assert row["hotspot_residues"] == [241, 241]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 241]
 
 
 def test_a_bare_hotspot_target_never_names_the_new_column(fake):
@@ -363,21 +370,17 @@ def test_a_row_from_before_the_migration_still_loads(fake):
     assert target.effective_hotspots == [241, 243]
 
 
-def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list(fake):
-    """split_hotspot reads a prefix only against a KNOWN chain list, so with no
-    upload and no target_chain it returns (None, None) for every prefixed
-    token — and both columns would be written NULL. The hotspot would vanish on
-    save, silently, which is the exact failure this change exists to remove."""
-    with patch("shared.targets.upload_input") as staged:
-        target = create_target(
-            user_id="u-1", upload=None, name="curated",
-            hotspot_residues=["A241", "B241"],
-        )
-    staged.assert_not_called()
-    row = _stored_row(fake)
-    assert row["hotspot_residues"] == [241, 241]
-    assert row["hotspot_spec"] == ["A241", "B241"]
-    assert target.effective_hotspots == ["A241", "B241"]
+def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list():
+    """``split_hotspot`` reads a prefix only against a KNOWN chain list, so a
+    target with no chain summary and no ``target_chain`` gets ``(None, None)``
+    for every prefixed token. Both reductions would then read the run's
+    ``["A241", "B241"]`` as carrying no residues at all, and the enrichment
+    would decline a correct write, silently. ``_LONE_HOTSPOT_RE`` is the
+    fallback that recovers exactly the single-letter shape."""
+    from shared.targets import _clean_hotspot_ints, _clean_hotspot_spec
+
+    assert _clean_hotspot_ints(["A241", "B241"], []) == [241, 241]
+    assert _clean_hotspot_spec(["A241", "B241"], []) == ["A241", "B241"]
 
 
 def test_the_known_chain_list_beats_the_single_letter_fallback():
@@ -410,16 +413,28 @@ def test_the_epitope_column_keeps_its_strict_integer_coercion(fake):
     assert "hotspot_spec" not in row
 
 
-def test_the_form_prefill_carries_the_chain_back_to_the_next_run():
-    """The defect this closes on the read side: a hotspot pinned to protomer B
-    that comes back as a bare 241 gets promoted onto A by whatever reads it."""
+def test_the_form_prefill_splits_the_two_shapes_across_two_fields():
+    """TWO FIELDS, and putting the chain in the wrong one is the P0.
+
+    ``hotspot_residues`` is the ONE shared launch field, posted to every
+    selected tool, five of which cannot parse a chain prefix at all — so it
+    carries plain integers whatever the target stores. ``chain_hotspots`` is
+    proteina's own field and is where the protomer survives.
+
+    Fully covered, with the executed six-tool evidence, in
+    tests/test_target_hotspot_field_split.py and
+    tests/test_target_multi_launch_routes.py; kept here because this is the
+    module that owns the helper.
+    """
     from shared.targets import target_defaults_for_form
 
     dimer = DesignTarget(
         id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
         hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
     )
-    assert target_defaults_for_form(dimer)["hotspot_residues"] == "A241,B241"
+    out = target_defaults_for_form(dimer)
+    assert out["hotspot_residues"] == "241,241"
+    assert out["chain_hotspots"] == "A241,B241"
 
     plain = DesignTarget(
         id=str(uuid.uuid4()), user_id="u-1", target_chain="A",
@@ -445,49 +460,44 @@ def test_to_dict_adds_the_new_key_without_changing_the_old_one():
     assert out["hotspot_spec"] == ["A241", "B241"]
 
 
-def test_the_target_chain_seeds_the_chain_list_when_there_is_no_upload(fake):
+def test_the_target_chain_seeds_the_chain_list_for_the_enrichment():
     """DELETING THE ``target_chain`` SEED IN ``_hotspot_chain_ids`` IS OTHERWISE
     INVISIBLE. With a single-letter chain the one-letter fallback in
-    ``_split_stored_hotspot`` reaches the same answer, and an upload that names
-    the same chain supplies it through the chain summary anyway — so the two
-    differ only for a MULTI-CHARACTER chain id that ONLY ``target_chain``
-    contributes. (Brute-forced over 3696 seed/upload/token combinations while
-    writing this: no other shape changes an answer.)
+    ``_split_stored_hotspot`` reaches the same answer, and a target whose chain
+    summary names the same chain supplies it anyway — so the two differ only for
+    a MULTI-CHARACTER chain id that ONLY ``target_chain`` contributes.
 
     On a target whose chain is ``"A2"``, ``"A2296"`` is residue 296. Without the
     seed, ``split_hotspot`` has no chain list, the fallback regex takes the one
-    leading letter, and the integer column is written 2296 — a residue that is
-    not on the structure, saved silently.
+    leading letter, and the reduction reads 2296 — which no longer matches the
+    stored 296, so a correct enrichment is silently declined.
 
-    REACHABILITY, stated so this is not read as a live production path: a
-    two-character prefix cannot arrive from the web form today, because
-    ``blueprints/targets._parse_residue_list`` accepts only one letter plus an
-    integer. This drives ``create_target`` directly, which is its own contract
-    and is what a multi-character chain id would go through if that parser is
-    ever widened. The seed is defensive until then.
-
-    STILL UNCOVERED, and deliberately not fixed here: deleting the OTHER half of
-    ``_hotspot_chain_ids`` — the loop that adds the upload's chains — leaves 300
-    tests green (measured). Pinning it needs the same multi-character token,
-    so a test for it would presuppose the ``_parse_residue_list`` decision that
-    is still open.
+    The BOTH-HALVES case (the chain summary loop) is covered by
+    ``test_a_multi_character_chain_is_read_against_the_targets_own_chains`` in
+    tests/test_target_hotspot_field_split.py, which drives the real enrichment
+    against a target whose chains come from ``chain_summary``.
     """
     from shared.targets import _clean_hotspot_ints, _hotspot_chain_ids
 
     assert _hotspot_chain_ids("A2", None) == ["A2"]
-    with patch("shared.targets.upload_input") as staged:
-        target = create_target(
-            user_id="u-1", upload=None, target_chain="A2",
-            hotspot_residues=["A2296"],
-        )
-    staged.assert_not_called()
-    row = _stored_row(fake)
-    assert row["hotspot_residues"] == [296], "the target_chain seed was not used"
-    assert row["hotspot_spec"] == ["A2296"]
-    assert target.effective_hotspots == ["A2296"]
+    assert _clean_hotspot_ints(["A2296"], _hotspot_chain_ids("A2", None)) == [296]
     # The counterfactual, so the assertion above is a measurement and not a
     # coincidence: with no chain list the same token reads as residue 2296.
     assert _clean_hotspot_ints(["A2296"], []) == [2296]
+
+
+def test_the_chain_summary_also_seeds_the_chain_list():
+    """The OTHER half of ``_hotspot_chain_ids``, which nothing used to pin: a
+    target may carry a hotspot on a chain its default ``target_chain`` does not
+    name, and the structure's own chains are what recover it."""
+    from shared.targets import _hotspot_chain_ids
+
+    structure = SimpleNamespace(chain_summary={
+        "chains": [{"chain_id": "A2"}, {"chain_id": "B2"}],
+    })
+    assert _hotspot_chain_ids("A2", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", None) == []
 
 
 def test_the_fallback_never_invents_a_multi_letter_chain():
@@ -511,75 +521,16 @@ def test_the_fallback_never_invents_a_multi_letter_chain():
     assert _split_stored_hotspot("AB296", ["AB"]) == ("AB", 296)
 
 
-def test_a_deploy_ahead_of_migration_0041_does_not_say_try_again(fake):
-    """A chain-prefixed INSERT names a column a pre-0041 database does not have,
-    so it fails EVERY time. Returning None routed it to "Could not save the
-    target. Try again in a moment." — an instruction to retry an operation that
-    cannot succeed until a migration lands.
-
-    Only this identified failure raises; anything else keeps the pre-existing
-    ``return None`` so the generic message still covers a genuine transient.
-    """
-    from shared.targets import TargetSchemaError
-
-    class _Missing(Exception):
-        pass
-
-    boom = _Missing(
-        "{'message': \"Could not find the 'hotspot_spec' column of "
-        "'design_targets' in the schema cache\", 'code': 'PGRST204'}"
-    )
-    with patch.object(type(fake), "table", side_effect=boom):
-        with pytest.raises(TargetSchemaError) as exc:
-            create_target(
-                user_id="u-1", upload=None, target_chain="A B",
-                hotspot_residues=["A241", "B241"],
-            )
-    msg = str(exc.value)
-    assert "try again" not in msg.lower(), msg
-    assert "hotspot" in msg.lower() and "chain" in msg.lower(), msg
-
-
-def test_the_missing_column_detector_matches_the_real_postgrest_error():
-    """The detector is a substring test on the DRIVER'S OWN text, so it is only
-    ever as good as that text. Pinned against the installed client rather than
-    a hand-written string: a supabase-py upgrade that stops naming the column
-    on the exception turns this red, instead of silently downgrading the save
-    error back to "Could not save the target. Try again in a moment."
-    """
-    from postgrest.exceptions import APIError
-
-    from shared.targets import _names_missing_column
-
-    real = APIError({
-        "message": "Could not find the 'hotspot_spec' column of "
-                   "'design_targets' in the schema cache",
-        "code": "PGRST204", "hint": None, "details": None,
-    })
-    assert _names_missing_column(real, "hotspot_spec")
-    assert not _names_missing_column(real, "epitope_residues")
-
-
-def test_an_unidentified_insert_failure_still_returns_none(fake):
-    """The generic path is unchanged: a transient really may clear on a retry,
-    and this must not start claiming a migration is missing for every blip."""
+def test_an_insert_failure_returns_none(fake):
+    """``create_target`` has ONE failure contract and it is unchanged: None,
+    which the route renders as "try again in a moment". That answer is honest
+    here because the row names no column a pre-0041 database could be missing
+    (see ``test_create_target_never_names_the_new_column``), so every failure it
+    can have really may clear on a retry."""
     with patch.object(type(fake), "table", side_effect=RuntimeError("timeout")):
         assert create_target(
             user_id="u-1", upload=None, target_chain="A B",
-            hotspot_residues=["A241", "B241"],
-        ) is None
-
-
-def test_a_bare_hotspot_insert_failure_is_never_blamed_on_the_migration(fake):
-    """The row does not even name ``hotspot_spec`` on a bare-hotspot target, so
-    the missing column cannot be the cause and must not be offered as one."""
-    with patch.object(
-        type(fake), "table",
-        side_effect=RuntimeError("could not find the 'hotspot_spec' column"),
-    ):
-        assert create_target(
-            user_id="u-1", upload=None, target_chain="A",
-            hotspot_residues=[241],
+            hotspot_residues=[241, 241],
         ) is None
 
 

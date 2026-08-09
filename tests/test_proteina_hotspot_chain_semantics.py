@@ -400,73 +400,63 @@ def _between(name: str, start: str, end: str) -> str:
     return _flat(body[i:j])
 
 
-_HINT_TERNARY = re.compile(
-    r"getElementById\('hotspot-hint'\)\.textContent\s*=\s*isProteina\s*"
-    r"\?\s*'([^']*)'\s*:\s*'([^']*)'"
-)
-
-
-def _runs_new_hint_arms() -> tuple[str, str]:
-    """The two strings refreshTool() actually writes into #hotspot-hint."""
-    m = _HINT_TERNARY.search(_template("runs/new.html"))
-    assert m, (
-        "the #hotspot-hint ternary in runs/new.html moved or changed shape; "
-        "this test can no longer tell live copy from dead copy"
-    )
-    return m.group(1), m.group(2)
-
-
-def test_the_runs_form_states_the_rule_in_the_string_a_browser_renders():
-    """refreshTool() is called on load and unconditionally overwrites
-    #hotspot-hint.textContent, so the ONLY copy a JS-enabled browser ever shows
-    is the proteina arm of that ternary. Deleting it must turn this red."""
-    proteina_arm, _other = _runs_new_hint_arms()
-    assert "more than one chain" in proteina_arm, (
+def test_the_runs_form_states_the_rule_under_proteinas_own_hotspot_field():
+    """PROTEINA HAS ITS OWN FIELD NOW, so its rule belongs under that field and
+    nowhere else. The rule used to live in a ``refreshTool()`` ternary that
+    rewrote #hotspot-hint per tool, because ONE field served every tool; that
+    ternary is gone (see the assertion below), so this server-rendered hint IS
+    the string a browser shows."""
+    hint = _between(
+        "runs/new.html", '<div class="hint" id="chain-hotspot-hint">', "</div>")
+    assert "more than one chain it is refused" in hint, (
         "runs/new.html never tells a proteina user a prefix is required")
-    assert "prefix the chain" in proteina_arm, (
+    assert "prefix the chain instead" in hint, (
         "runs/new.html states the refusal without stating the fix")
 
 
 def test_the_runs_form_does_not_advertise_the_proteina_rule_to_other_tools():
-    """One hotspot field drives every tool. Only proteina refuses a bare token,
-    so only proteina's arm may say so."""
-    _proteina_arm, other_arm = _runs_new_hint_arms()
-    assert "more than one chain" not in other_arm, (
-        "the non-proteina hint claims a rule that only proteina enforces")
+    """#hotspot-hint governs the SHARED field, which is read by five tools that
+    cannot parse a chain prefix at all. Only proteina's own field may say so."""
+    shared = _between(
+        "runs/new.html", '<div class="hint" id="hotspot-hint">', "</div>")
+    assert "more than one chain" not in shared, (
+        "the shared hint claims a rule that only proteina enforces")
+    assert "prefix" not in shared.lower(), (
+        "the shared hint teaches a prefix to tools that refuse one")
 
 
-def test_the_runs_form_keeps_no_dead_copy_in_the_server_rendered_hint():
-    """refreshTool() runs at the bottom of the IIFE and rewrites
-    #hotspot-hint.textContent unconditionally, for whatever tool the form
-    opened on. So whatever the server rendered inside that div is never read,
-    and a per-tool rule written there is both dead and, in the instant before
-    the rewrite, addressed to every tool rather than to proteina."""
+def test_the_runs_form_no_longer_rewrites_the_shared_hint_per_tool():
+    """The ternary was live copy only while one field served every tool. With
+    proteina on its own field, a proteina arm there would be copy no user can
+    reach — and #hotspot-hint became live server-rendered text, so a rewrite
+    would silently shadow it."""
     body = _template("runs/new.html")
-    assert re.search(r"^\s*refreshTool\(\);\s*$", body, re.M), (
-        "refreshTool() is no longer called on load; re-check whether the "
-        "server-rendered hint has become live copy again"
-    )
-    rendered = _between("runs/new.html", '<div class="hint" id="hotspot-hint">', "</div>")
-    assert "more than one chain" not in rendered, (
-        "runs/new.html puts the multi-chain rule in the server-rendered hint, "
-        "which refreshTool() overwrites on load — no user ever reads it"
-    )
+    assert not re.search(
+        r"getElementById\('hotspot-hint'\)\.textContent\s*=", body
+    ), "runs/new.html still rewrites the shared hint per tool"
 
 
-def test_the_launch_form_states_the_rule_in_the_shared_hotspot_field():
-    """targets/launch.html has no JS that touches this helper, so the string in
-    the template IS the string on the page."""
+def test_the_launch_forms_shared_field_says_plain_numbers_only():
+    """THE COPY THAT CAUSED THE P0, INVERTED. This helper governs the ONE field
+    posted to every selected tool, and five of the six refuse a chain prefix —
+    rfantibody unconditionally. It must not teach one.
+
+    targets/launch.html has no JS that touches this helper, so the string in the
+    template IS the string on the page."""
     help_text = _between(
         "targets/launch.html", 'field_text("hotspot_residues"', "placeholder=")
-    assert "more than one chain, Proteina refuses it" in help_text
-    assert "prefix the chain instead (A45, C73)" in help_text
+    assert "Plain numbers only" in help_text
+    assert "prefix the chain" not in help_text
+    assert "Proteina's own hotspot field" in help_text, (
+        "the shared field refuses a protomer without saying where one goes")
 
 
-def test_the_launch_form_repeats_the_rule_beside_proteina_binder_length():
-    """The second, proteina-scoped helper. It is separately live — nothing
-    overwrites it either — so it needs its own assertion."""
+def test_the_launch_form_states_the_rule_under_proteinas_own_field():
+    """The proteina-scoped helper, under the field it governs. Separately live —
+    nothing overwrites it either — so it needs its own assertion."""
     helper = _between(
-        "targets/launch.html", 'id="proteina__binder_length_max"', "{% endif %}")
+        "targets/launch.html", 'id="proteina__chain_hotspots"',
+        '<label class="field-label">Binder length</label>')
     assert "refused when this run targets more than one chain" in helper
     assert "prefix the chain" in helper
 

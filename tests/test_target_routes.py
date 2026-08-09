@@ -227,23 +227,34 @@ def test_create_target_rejects_a_non_numeric_hotspot(client):
     mk.assert_not_called()
 
 
-def test_create_target_accepts_a_chain_qualified_hotspot(client):
-    """The write side of design_targets.hotspot_spec. Without this the new
-    column is unreachable from the UI: the route's integer-only parse refused
-    "A241" before create_target ever saw it, so a multi-chain target could
-    never store which protomer its hotspot was on."""
+def test_create_target_rejects_a_chain_qualified_hotspot(client):
+    """PLAIN INTEGERS ONLY ON THIS ROUTE, and it is not a limitation, it is the
+    fix for a P0.
+
+    Whatever is stored here is prefilled by ``target_defaults_for_form`` into
+    the ONE shared ``hotspot_residues`` field the launch screen posts to EVERY
+    selected tool. Accepting "A241" here was executed against the real
+    ``_collect_launch_specs``: rfdiffusion, bindcraft, boltzgen and pxdesign
+    refuse a token naming a chain the run does not target, and
+    ``tools/rfantibody`` parses it with a bare ``int(tok)`` and refuses a prefix
+    on ANY target chain — and the launch route is all-or-nothing.
+
+    A protomer reaches proteina through proteina's own ``chain_hotspots``
+    field, and reaches the target through
+    ``shared.targets.enrich_target_hotspot_spec``. Never through this form.
+    """
     _login(client)
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
             patch("blueprints.targets.create_target") as mk:
-        mk.return_value = _target()
         resp = client.post("/targets", data={
             "target_chain": "A",
             "hotspot_residues": "A241, B241",
             "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
         }, content_type="multipart/form-data")
 
-    assert resp.status_code == 302, resp.get_data(as_text=True)[-400:]
-    assert mk.call_args.kwargs["hotspot_residues"] == ["A241", "B241"]
+    assert resp.status_code == 400
+    assert "A241" in resp.get_data(as_text=True)
+    mk.assert_not_called()
 
 
 def test_create_target_still_rejects_a_chain_prefixed_epitope(client):
@@ -299,35 +310,19 @@ def test_create_target_honours_allow_duplicate(client):
     dupe.assert_not_called()
 
 
-def test_a_permanently_failing_save_does_not_tell_the_user_to_retry(client):
-    """A deploy landing ahead of migration 0041 makes a chain-prefixed INSERT
-    fail every single time. The route used to render "Could not save the
-    target. Try again in a moment." for it — an instruction to retry an
-    operation that cannot succeed, with no hint that dropping the prefixes
-    would work right now.
-
-    Pins the WIRING: shared/targets raises, and deleting the except clause here
-    turns a 400 with an explanation into an unhandled 500.
-    """
-    from shared.targets import TargetSchemaError
-
+def test_the_new_target_form_does_not_teach_a_token_this_route_rejects(client):
+    """The copy and the parser have to agree, and they did not: the form told
+    users to type "A241, B241" while ``_parse_residue_list`` answered "'A241'
+    is not a residue number.". Asserted on the RENDERED page, so a helper
+    rewritten in the macro rather than the template still counts."""
     _login(client)
-    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.find_target_by_sha256",
-                  return_value=None), \
-            patch("blueprints.targets.create_target",
-                  side_effect=TargetSchemaError(
-                      "These hotspots name their chain (A241), and the column "
-                      "that stores the chain is not on this database yet.")):
-        resp = client.post("/targets", data={
-            "hotspot_residues": "A241, B241",
-            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
-        }, content_type="multipart/form-data")
-
-    assert resp.status_code == 400
-    body = _flat(resp.get_data(as_text=True))
-    assert "not on this database yet" in body
-    assert "Try again in a moment" not in body
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()):
+        body = _flat(client.get("/targets/new").get_data(as_text=True))
+    i = body.find("Hotspot residues")
+    assert i != -1, "the hotspot field is gone from /targets/new"
+    helper = body[i:i + 600]
+    assert "Prefix the chain" not in helper
+    assert "A241" not in helper
 
 
 def test_target_detail_404s_for_another_users_target(client):

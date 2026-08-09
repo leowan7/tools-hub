@@ -46,12 +46,18 @@ stay on curated tasks; see ``_CUSTOM_TARGET_PRESETS``.
 
 A custom target additionally accepts ``target_input`` (a chain/residue
 contig such as ``A1-150`` or ``A12-157,B12-157,C12-157`` for a multi-chain
-target), ``hotspot_residues`` (chain-prefixed ``A45 A67``; a bare number is
-promoted onto the single target chain so one shared launch field can drive
-proteina alongside the other tools, and is REFUSED when the run names more
-than one chain, where "the target chain" does not identify a residue), and
-``binder_length``. All three are written
-into the registered record; a curated task carries its own and rejects them.
+target), hotspots, and ``binder_length``. All three are written into the
+registered record; a curated task carries its own and rejects them.
+
+Hotspots arrive on either of two form keys, ``chain_hotspots`` first and the
+shared ``hotspot_residues`` as a fallback. Chain-prefixed (``A45 A67``) is the
+native form; a bare number is promoted onto the single target chain so one
+shared launch field can still drive proteina alongside the other tools, and is
+REFUSED when the run names more than one chain, where "the target chain" does
+not identify a residue. The shared field is why the split exists: it is posted
+to EVERY tool on the launch screen, and five of the six cannot read a chain
+prefix at all, so anything chain-qualified has to come in on proteina's own
+key. See :func:`validate`.
 
 RF3 dependency (product decision): ``ligand_binder`` and ``motif_ame`` score
 on RF3 only — AF2RewardModel has no ligand protocol, so there is no AF2
@@ -528,7 +534,26 @@ def validate(
         )
 
     raw_contig = (form.get("target_input") or "").strip()
-    raw_hotspots = (form.get("hotspot_residues") or "").strip()
+    # PROTEINA'S OWN HOTSPOT FIELD FIRST, the shared one only as a fallback.
+    #
+    # `hotspot_residues` is the ONE field the multi-tool launch screen posts to
+    # every selected tool (`blueprints/targets._SHARED_LAUNCH_FIELDS`), and it
+    # can only ever carry plain integers: rfdiffusion, bindcraft, boltzgen and
+    # pxdesign refuse a token naming a chain the run does not target, and
+    # `tools/rfantibody` parses it with a bare `int(tok)` that refuses a prefix
+    # on ANY target chain. So a chain-qualified hotspot cannot travel in it.
+    # `chain_hotspots` is proteina-scoped — posted as `proteina__chain_hotspots`
+    # on the launch screen, which `_tool_form` un-prefixes, and as
+    # `chain_hotspots` on the campaign form — so it can.
+    #
+    # `or`, not "present": an EMPTY proteina field falls back to the shared one,
+    # which is what keeps a single-chain co-launch driven entirely from the
+    # shared field working unchanged. It also means proteina's field cannot be
+    # used to CLEAR a shared hotspot; clear the shared field for that.
+    raw_hotspots = (
+        (form.get("chain_hotspots") or "").strip()
+        or (form.get("hotspot_residues") or "").strip()
+    )
     raw_len_min = form.get("binder_length_min") or ""
     raw_len_max = form.get("binder_length_max") or ""
 

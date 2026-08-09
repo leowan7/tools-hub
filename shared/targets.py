@@ -83,13 +83,19 @@ def _clean_int_list(values) -> Optional[list]:
     return out or None
 
 
-def _hotspot_chain_ids(target_chain, upload) -> list:
+def _hotspot_chain_ids(target_chain, structure) -> list:
     """The chain ids a stored hotspot token may name.
 
     ``split_hotspot`` recognises a prefix only against a known chain list, so
-    the save path has to hand it one. The run's own ``target_chain`` comes
-    first; the uploaded structure's chains are added because a target may store
-    a hotspot on a chain the default ``target_chain`` does not name.
+    :func:`enrich_target_hotspot_spec` has to hand it one. The target's own
+    ``target_chain`` comes first; the structure's chains are added because a
+    target may carry a hotspot on a chain the default ``target_chain`` does not
+    name.
+
+    ``structure`` is anything exposing ``chain_summary`` — a
+    :class:`DesignTarget` or an upload inspection. Read through ``getattr``, so
+    ``None`` (no structure to consult) degrades to "just the target_chain"
+    rather than raising.
 
     WHAT THE LIST BUYS IS A MULTI-CHARACTER CHAIN ID, and that is the only case
     where the ``target_chain`` seed changes an answer at all. On a target whose
@@ -107,13 +113,14 @@ def _hotspot_chain_ids(target_chain, upload) -> list:
     another chain id followed by digits, and nothing here can resolve it —
     ``split_hotspot`` matches the LONGEST chain id that fits, and the adapters
     and the preflight hard gate all already depend on that choice, so changing
-    it here would be a bigger change than the ambiguity it removes. The text
-    column is unaffected in this case: it reassembles ``"A2"`` + ``96`` back
-    into ``"A296"``, which is the token the model steers by, so the guess is
-    confined to the integer column's legacy readers.
+    it here would be a bigger change than the ambiguity it removes. On the
+    enrich path this ambiguity cannot corrupt anything: the reduced integers
+    are COMPARED against ``hotspot_residues`` and a mismatch simply declines to
+    write, so a mis-split token loses the enrichment rather than storing a
+    wrong one.
     """
     ids: list = [c for c in (target_chain or "").replace(",", " ").split() if c]
-    summary = getattr(upload, "chain_summary", None) or {}
+    summary = getattr(structure, "chain_summary", None) or {}
     for chain in (summary.get("chains") or []):
         cid = (chain or {}).get("chain_id")
         if cid and cid not in ids:
@@ -122,9 +129,10 @@ def _hotspot_chain_ids(target_chain, upload) -> list:
 
 
 # Fallback shape for a hotspot token whose chain is not in the known chain
-# list. blueprints/targets._parse_residue_list already restricts a stored
-# hotspot to exactly this — one letter plus an integer — so matching it here
-# recovers the token rather than discarding it.
+# list: one letter plus an integer, which is the shape every adapter emits
+# (`tools/base.py::parse_hotspot_residues`, `tools/proteina` `hotspot_spec`)
+# for a single-letter chain. Matching it here recovers the token rather than
+# discarding it.
 #
 # ONE letter, deliberately: this runs only after `split_hotspot` has already
 # failed, i.e. when nothing has confirmed the prefix is a chain, so a wider
@@ -143,10 +151,11 @@ def _split_stored_hotspot(value, chain_ids) -> tuple[Optional[str], Optional[int
     the only one of the two that can see a multi-character chain id — which is
     why it is authoritative whenever the chains are known, and is tried first.
     (What that costs on an ambiguous token is in :func:`_hotspot_chain_ids`.)
-    When the chains are NOT known (a target created with no upload and no
+    When the chains are NOT known (a target with no stored chain summary and no
     target_chain), it returns ``(None, None)`` for every prefixed token, and
-    both columns would then be written NULL: the hotspot would vanish on save,
-    silently, which is the failure mode this whole change exists to remove.
+    the enrich path would then read a run's ``["A241", "B241"]`` as carrying no
+    residue numbers at all and decline to write — losing the enrichment
+    silently. The fallback below recovers exactly the single-letter shape.
     """
     cid, num = split_hotspot(value, chain_ids)
     if num is not None:
@@ -156,26 +165,23 @@ def _split_stored_hotspot(value, chain_ids) -> tuple[Optional[str], Optional[int
 
 
 def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
-    """The integer[] column's value, with any chain prefix dropped.
+    """A run's hotspot tokens reduced to bare author numbers.
 
     ``["A241", "B600"]`` -> ``[241, 600]``. Deliberately NOT ``_clean_int_list``,
-    which would ``int("A241")``, fail, and skip the element — writing NULL into
-    the ONLY column a reader can fall back to. Every reader now goes through
-    ``effective_hotspots`` (targets/detail.html, targets/list.html,
-    ``target_defaults_for_form``), and that property falls through to this
-    column whenever ``hotspot_spec`` is empty — which is every row predating
-    migration 0041 and every all-bare target. Those readers lose the chain,
-    which they never had; they must not lose the hotspot.
+    which would ``int("A241")``, fail, and SKIP the element — turning
+    ``["A241", "B241"]`` into ``None`` rather than ``[241, 241]``, so the
+    equality check in :func:`enrich_target_hotspot_spec` would compare the
+    wrong thing and either decline every enrichment or (on an empty stored
+    list) accept one it should not.
 
-    ``to_dict`` is NOT part of that constraint, despite what this comment used
-    to claim: it has no production callers at all (grep — only
-    tests/test_targets.py), so it constrains nothing and must not be cited as
-    if it did.
+    NOTHING WRITES ``hotspot_residues`` FROM THIS. It exists only to answer
+    "do these chain-qualified tokens reduce to the integers already stored?".
 
     Kept separate from ``_clean_int_list`` rather than replacing it so
-    ``epitope_residues`` keeps its exact current coercion. Nothing reaches that
-    field chain-prefixed today, and a shared helper would make this fix silently
-    change a field it was never reasoned about.
+    ``epitope_residues`` and ``create_target``'s own ``hotspot_residues``
+    coercion keep their exact current behaviour. Nothing reaches those
+    chain-prefixed today, and a shared helper would make this change a field it
+    was never reasoned about.
     """
     if not values:
         return None
@@ -188,14 +194,12 @@ def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
 
 
 def _clean_hotspot_spec(values, chain_ids) -> Optional[list]:
-    """The text[] column's value, or None when no token names a chain.
+    """The ``hotspot_spec`` column's value, or None when no token names a chain.
 
-    Returns None — not ``[]`` — for an all-bare list, so a bare-hotspot target
-    stores exactly what it stored before this column existed and every reader
-    falls through to the integer column. That is what keeps this additive: the
-    new column only ever holds information the old one could not express, and
-    it is also why ``create_target`` can leave the key out of the INSERT
-    entirely on every pre-existing shape.
+    Returns None — not ``[]`` — for an all-bare list, so a run whose hotspots
+    carry no chain enriches nothing and the target keeps falling through to the
+    integer column. That is what keeps the column additive: it only ever holds
+    information ``hotspot_residues`` could not express.
     """
     if not values:
         return None
@@ -209,39 +213,6 @@ def _clean_hotspot_spec(values, chain_ids) -> Optional[list]:
             any_chain = True
         tokens.append(f"{cid}{num}" if cid else str(num))
     return tokens if (tokens and any_chain) else None
-
-
-class TargetSchemaError(RuntimeError):
-    """An insert refused because this database lacks a column the row named.
-
-    Raised INSTEAD of ``create_target``'s ``return None``, and only for a
-    failure that has been IDENTIFIED as permanent. Every other insert failure
-    keeps the ``return None`` contract, so the route's generic "try again in a
-    moment" still covers a genuine transient. ``str(...)`` is user-facing copy —
-    the route renders it verbatim.
-    """
-
-
-def _names_missing_column(exc: BaseException, column: str) -> bool:
-    """Whether ``exc`` is the driver complaining about ``column``.
-
-    PostgREST answers an INSERT naming an unknown column with PGRST204 and
-    ``"Could not find the 'hotspot_spec' column of 'design_targets' in the
-    schema cache"``, and supabase-py surfaces that text on the exception.
-
-    A SUBSTRING MATCH ON THE DRIVER'S OWN MESSAGE IS BEST-EFFORT BY
-    CONSTRUCTION. If a future driver stops naming the column this returns False
-    and the caller falls back to the message it produced before — the
-    pre-existing behaviour, not a new failure mode. It is never consulted
-    unless the row actually named the column, so it cannot blame a missing
-    migration for a failure the migration has nothing to do with.
-    """
-    parts = [repr(exc)]
-    for attr in ("message", "details", "hint", "code"):
-        value = getattr(exc, attr, None)
-        if value:
-            parts.append(str(value))
-    return column in " ".join(parts).lower()
 
 
 def _segments_label(segments) -> Optional[str]:  # noqa: ANN001
@@ -645,12 +616,17 @@ def create_target(
     chain-checked, and CIF-converted) or None for the curated-benchmark path
     that legitimately has no uploaded structure.
 
-    Returns the target, or None when the insert failed for a reason this
-    function cannot name. Raises :class:`shared.storage.StorageError` when
-    staging failed, so the caller can tell "could not save" from "could not
-    upload" and say which, and :class:`TargetSchemaError` when the insert named
-    a column this database does not have — a failure no retry can clear, which
-    "could not save, try again" would have told the user to attempt anyway.
+    Returns the target, or None when the insert itself failed. Raises
+    :class:`shared.storage.StorageError` when staging failed, so the caller can
+    tell "could not save" from "could not upload" and say which.
+
+    THIS INSERT NEVER NAMES ``hotspot_spec``. Its one production caller is the
+    ``/targets`` POST, whose ``_parse_residue_list`` is a strict integer parse,
+    so there is nothing chain-qualified to store here — and an INSERT naming a
+    column a not-yet-migrated database lacks fails outright, so leaving the key
+    off is also what makes this row safe to write ahead of migration 0041.
+    ``hotspot_spec`` is filled in later, by
+    :func:`enrich_target_hotspot_spec`, from a run that named its chains.
     """
     client = get_service_client()
     if client is None:
@@ -661,45 +637,25 @@ def create_target(
     if isinstance(name, str) and name.strip():
         clean_name = name.strip()[:_MAX_NAME_LEN]
 
-    hotspot_chains = _hotspot_chain_ids(target_chain, upload)
     row = {
         "user_id": user_id,
         "name": clean_name,
         "kind": (getattr(upload, "kind", None) or "pdb"),
         "target_chain": (target_chain or "").strip() or None,
-        "hotspot_residues": _clean_hotspot_ints(hotspot_residues, hotspot_chains),
+        "hotspot_residues": _clean_int_list(hotspot_residues),
         "epitope_residues": _clean_int_list(epitope_residues),
         "uniprot_accession": (uniprot_accession or "").strip() or None,
         "source": (source or "").strip() or None,
         "notes": (notes or "").strip() or None,
     }
-    # ADDED ONLY WHEN THERE IS SOMETHING THE INTEGER COLUMN CANNOT HOLD. An
-    # INSERT naming a column the database does not have fails outright, so
-    # omitting the key on every pre-existing shape means a deploy that lands
-    # ahead of migration 0041 cannot break ordinary target creation.
-    hotspot_spec = _clean_hotspot_spec(hotspot_residues, hotspot_chains)
-    if hotspot_spec:
-        row["hotspot_spec"] = hotspot_spec
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
         if not rows:
             return None
         target = DesignTarget.from_row(rows[0])
-    except Exception as exc:
+    except Exception:
         logger.error("create_target: insert failed", exc_info=True)
-        # A deploy that landed ahead of migration 0041 fails this insert EVERY
-        # time, so returning None here sent the route's "Try again in a moment"
-        # to a user whose retry cannot ever succeed. Only the identified case
-        # raises; everything else keeps the generic answer.
-        if "hotspot_spec" in row and _names_missing_column(exc, "hotspot_spec"):
-            raise TargetSchemaError(
-                "These hotspots name their chain (A241), and the column that "
-                "stores the chain is not on this database yet, so saving them "
-                "will keep failing until a pending update is applied. Retrying "
-                "will not help. Save the target with plain residue numbers for "
-                "now, and add the chain prefixes once the update has landed."
-            ) from exc
         return None
 
     if upload is None:
@@ -1118,6 +1074,82 @@ def touch_target(target_id: str) -> None:
     _update_target(target_id, {"last_used_at": _now_iso()})
 
 
+def enrich_target_hotspot_spec(target: Optional[DesignTarget], tokens) -> bool:
+    """Record WHICH PROTOMER this target's stored hotspots were on, from a run
+    that said so. Returns whether the column was written.
+
+    ``design_targets.hotspot_residues`` is ``integer[]``, so on an Fc homodimer
+    — both chains numbered 234-444 — it holds ``[241, 241]`` with the protomer
+    stripped out, and nothing on the target itself can ever recover it. A
+    proteina run against that target DOES carry it, as ``["A241", "B241"]``
+    (``tools/proteina`` ``hotspot_spec``), and this is the one place that
+    information is written back.
+
+    IT IS AN ENRICHMENT, NOT AN EDIT, and all three restrictions are load-
+    bearing rather than defensive:
+
+    1. ONLY when ``hotspot_spec`` is currently empty. A target that already
+       says which protomer it means is never re-decided by a later run.
+    2. ONLY when ``tokens`` reduce to EXACTLY the integers already stored, same
+       values and same order. This is what makes the write a strictly-more-
+       specific restatement of what the target already says. A user who typed
+       different hotspots for one run has not asked to edit the target, and a
+       launch that silently rewrote the saved defaults would change every
+       LATER run's prefill from a screen that never mentioned the target.
+    3. ``hotspot_residues`` IS NEVER TOUCHED. Every other tool reads the
+       integer column through the shared launch field, and four of them
+       (rfdiffusion, bindcraft, boltzgen, pxdesign) refuse a token naming a
+       chain the run does not target while ``tools/rfantibody`` refuses one
+       outright — so a prefix written there breaks the launch for everyone.
+
+    Failing any condition is SILENT AND SUCCESSFUL-LOOKING by design: the
+    caller is a money route that has already created runs, and there is nothing
+    a user could do about "your target's stored hotspots were not enriched".
+
+    The UPDATE re-states conditions 1 and 3 in its own WHERE clause
+    (``user_id``, ``hotspot_spec IS NULL``), so a concurrent writer cannot be
+    clobbered by a decision made from a row read earlier in the request, and
+    only the one column is in the payload.
+
+    THE COLUMN MAY NOT EXIST. Migration 0041 adds it, and a deploy that lands
+    first makes this UPDATE fail every time — which is why every exception is
+    swallowed and logged rather than propagated. Nothing else about the launch
+    depends on it.
+    """
+    if target is None or target.hotspot_spec:
+        return False
+    chain_ids = _hotspot_chain_ids(target.target_chain, target)
+    spec = _clean_hotspot_spec(tokens, chain_ids)
+    if not spec:
+        # Nothing in this run's hotspots names a chain, so there is nothing the
+        # integer column could not already express.
+        return False
+    if (_clean_hotspot_ints(tokens, chain_ids) or []) != list(
+        target.hotspot_residues
+    ):
+        return False
+
+    client = get_service_client()
+    if client is None:
+        return False
+    try:
+        response = (
+            client.table(_TABLE)
+            .update({"hotspot_spec": spec})
+            .eq("id", target.id)
+            .eq("user_id", target.user_id)
+            .is_("hotspot_spec", "null")
+            .execute()
+        )
+    except Exception:
+        logger.warning(
+            "enrich_target_hotspot_spec: could not store %s on target %s",
+            spec, target.id, exc_info=True,
+        )
+        return False
+    return bool(getattr(response, "data", None))
+
+
 def campaign_ids_for_target(
     target_id: str, *, user_id: Optional[str] = None,
 ) -> tuple[list, bool]:
@@ -1206,11 +1238,28 @@ def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
     out: dict = {"target_id": target.id}
     if target.target_chain:
         out["target_chain"] = target.target_chain
-    # Chain-qualified when the target stored one. Prefilling the bare number
-    # instead is how a hotspot the user pinned to protomer B comes back as a
-    # bare 241 and gets promoted onto A by whichever tool reads it next.
-    if target.effective_hotspots:
+    # TWO FIELDS, TWO SHAPES, AND THE SPLIT IS THE WHOLE POINT.
+    #
+    # `hotspot_residues` is the ONE shared launch field
+    # (`blueprints/targets._SHARED_LAUNCH_FIELDS`) posted to EVERY selected
+    # tool, so it carries PLAIN INTEGERS regardless of what this target stores.
+    # Prefilling `effective_hotspots` here was executed against the real
+    # `_collect_launch_specs`: with "A241,B241" in this field,
+    # rfdiffusion/bindcraft/boltzgen/pxdesign refuse any token naming a chain
+    # the run does not target, and `tools/rfantibody` is a bare `int(tok)` that
+    # refuses a prefix on ANY chain. The launch route is all-or-nothing, so one
+    # prefixed token in this field kills the whole launch.
+    #
+    # `chain_hotspots` is proteina's own field, and it is the only one that
+    # carries the protomer. Read on the campaign form as `chain_hotspots` and
+    # on the multi-tool launch screen as `proteina__chain_hotspots`, exactly as
+    # `epitope` below is read as `iggm__epitope`.
+    if target.hotspot_residues:
         out["hotspot_residues"] = ",".join(
+            str(r) for r in target.hotspot_residues
+        )
+    if target.effective_hotspots:
+        out["chain_hotspots"] = ",".join(
             str(r) for r in target.effective_hotspots
         )
     if target.epitope_residues:
