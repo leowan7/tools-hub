@@ -92,7 +92,23 @@ from tools.proteina.run_pipeline import (  # noqa: E402
 # stratification for a study whose whole point is comparing lengths.
 # 51 integer lengths do not divide into 5 equal bins; the last one is 11 wide.
 BINS: list[tuple[int, int]] = [(50, 59), (60, 69), (70, 79), (80, 89), (90, 100)]
-SHARDS_PER_BIN = 16
+# TIER 1: 4 shards x 64 = 256 designs per bin, 20 shards, ~1.2 days, ~$71.
+# Deliberately a pilot. It resolves a ~11 percentage-point difference between
+# bins at 80% power, which is enough to decide WHERE to spend the rest, and
+# round-robin ordering means the comparison is valid even if it stops early.
+# Raise this to continue the same campaign — the plan is append-only in
+# SHARDS_PER_BIN, so existing shard indices keep their bins and the ledger
+# stays valid (see build_plan / _verify_plan_matches_ledger).
+SHARDS_PER_BIN = 4
+# Consecutive shards delivering NO designs before the driver gives up.
+#
+# The 8-designs-to-64 extrapolation behind SECONDS_PER_DESIGN is UNVERIFIED, and
+# if it is optimistic enough the pipeline overruns the subprocess deadline and
+# every shard dies the same way. Without this the campaign would spend its
+# entire budget reproducing one systemic failure — 20 shards at ~$4.21 for
+# nothing. Three in a row is past coincidence: a one-off bad shard does not
+# repeat, a wrong scaling assumption does.
+MAX_CONSECUTIVE_BARREN = 3
 # 64 designs/shard. nsamples draws LENGTHS (the upstream flag is
 # generation.dataloader.dataset.nres.nsamples) and replicas gives independent
 # designs at each drawn length — measured on job
@@ -594,6 +610,28 @@ def _check_lengths(rows: list[dict], item: dict) -> str:
 
 # --- the loop ---------------------------------------------------------------
 
+def _trailing_barren(plan: list[dict], state: dict[int, dict]) -> int:
+    """How many shards in a row, most recent first, delivered no designs.
+
+    Computed from the ledger rather than a loop counter so a resume inherits
+    the streak: three failures then a restart is still three failures, and
+    without this the operator's instinctive "just run it again" resets the only
+    guard standing between a systemic fault and the whole budget.
+    """
+    streak = 0
+    for item in reversed(plan):
+        st = state.get(item["index"], {}).get("state")
+        if st is None:
+            continue                      # not attempted yet
+        if st == "collected":
+            break
+        if st in TERMINAL_STATES:         # empty / failed / harvest_error
+            streak += 1
+        else:
+            break
+    return streak
+
+
 def _spent_usd(state: dict[int, dict], *, ceiling: bool = False) -> float:
     """Every shard that reached ``intent`` may have been billed, and every one
     that reached ``submitted`` certainly was, whether or not it then produced
@@ -753,6 +791,21 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
                 return _stop_on_timeout(index)
             state = ledger_replay(ledger)
             continue
+
+        # Checked BEFORE the spawn, not after the collect, so it also gates a
+        # RESUME. Evaluated after the collect only, three failures followed by
+        # the operator's instinctive "just run it again" would spend a fourth
+        # shard before the guard noticed — and the reconnect branch above is
+        # deliberately upstream of this, because that money is already spent.
+        barren = _trailing_barren(plan, state)
+        if barren >= MAX_CONSECUTIVE_BARREN:
+            last = _shard_dir(outdir, index - 1) / "smoke_result.json"
+            print(f"[stop] {barren} shards in a row delivered no designs. "
+                  "That is a systemic fault, not bad luck — continuing would "
+                  f"spend the rest of the budget reproducing it.\n"
+                  f"       Read {last} for the diagnosis, then re-run to "
+                  "resume once it is fixed.", file=sys.stderr)
+            return 5
 
         spent = _spent_usd(state, ceiling=True)
         if spent + shard_usd_ceiling() > args.budget:

@@ -164,8 +164,11 @@ class TestResumeNeverDoubleCharges:
 
     def test_terminal_shards_are_skipped(self, campaign, monkeypatch):
         campaign.outdir.mkdir(parents=True)
-        for i, st in enumerate(("collected", "empty", "failed",
-                                "harvest_error")):
+        # `collected` LAST on purpose: the barren-streak guard counts back from
+        # the most recent shard, and three non-delivering states in a row would
+        # stop the run before this test could observe the skipping.
+        for i, st in enumerate(("empty", "failed", "harvest_error",
+                                "collected")):
             sd.ledger_append(campaign.ledger, {
                 "index": i, "round": 0, "bin": list(sd.BINS[i]),
                 "state": st})
@@ -389,6 +392,56 @@ class TestADerivedFileCannotKillTheCampaign:
             "regardless of the derived manifest")
 
 
+class TestASystemicFaultStopsTheCampaign:
+    """The 8-to-64 design extrapolation is unverified. If it is wrong enough
+    the pipeline overruns its deadline and EVERY shard dies identically —
+    without a streak guard the campaign spends its whole budget reproducing
+    one fault."""
+
+    def test_three_barren_shards_in_a_row_stop_the_run(
+            self, campaign, monkeypatch):
+        empty = {"exit_code": 1, "smoke_result": {"status": "FAILED",
+                                                  "candidates": []}}
+        fn = FakeFn(lambda i: FakeCall(f"fc-{i}", result=empty))
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 5
+        assert len(fn.spawns) == sd.MAX_CONSECUTIVE_BARREN, (
+            f"{len(fn.spawns)} shards spawned; the budget would be spent "
+            "reproducing one systemic failure")
+
+    def test_a_delivering_shard_resets_the_streak(self, campaign, monkeypatch):
+        empty = {"exit_code": 1, "smoke_result": {"candidates": []}}
+        # barren, barren, good, barren, barren -> never three in a row
+        script = {0: empty, 1: empty, 3: empty, 4: empty}
+        fn = FakeFn(lambda i: FakeCall(f"fc-{i}", result=script.get(i)))
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 0
+        assert len(fn.spawns) == 5, "an isolated bad shard stopped the run"
+
+    def test_the_streak_survives_a_resume(self, campaign, monkeypatch):
+        """Three failures then a restart is still three failures. Otherwise
+        the operator's instinctive 'just run it again' resets the only guard
+        between a systemic fault and the whole budget."""
+        campaign.outdir.mkdir(parents=True)
+        for i in range(3):
+            sd.ledger_append(campaign.ledger, {
+                "index": i, "bin": list(sd.BINS[i]), "state": "empty"})
+        fn = FakeFn()
+        _install(monkeypatch, fn)
+        assert sd.run_campaign(campaign.make_args()) == 5
+        assert fn.spawns == [], "the resume reset the barren streak"
+
+    def test_the_streak_counts_back_from_the_most_recent(self):
+        plan = sd.build_plan()
+        state = {0: {"state": "empty"}, 1: {"state": "collected"},
+                 2: {"state": "failed"}, 3: {"state": "harvest_error"}}
+        assert sd._trailing_barren(plan, state) == 2
+
+    def test_unattempted_shards_do_not_break_the_count(self):
+        plan = sd.build_plan()
+        assert sd._trailing_barren(plan, {0: {"state": "failed"}}) == 1
+
+
 class TestTheBudgetActuallyStops:
 
     def test_it_refuses_to_start_a_shard_that_would_cross(
@@ -507,12 +560,16 @@ class TestHarvestFailuresDoNotEndTheCampaign:
     def test_a_raising_harvest_is_recorded_and_the_run_goes_on(
             self, campaign, monkeypatch):
         calls = {"n": 0}
+        real = sd._harvest
 
         def boom(*a, **k):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise ValueError("malformed candidate")
-            return [], 0
+            # Delegate afterwards, so the later shards DELIVER. Returning
+            # empties would trip the barren-streak guard and this test would
+            # be measuring that instead of the harvest guard.
+            return real(*a, **k)
 
         monkeypatch.setattr(sd, "_harvest", boom)
         fn = FakeFn()
@@ -653,7 +710,9 @@ class TestTheRequestedBinIsCheckedAgainstReality:
                 {"rank": 1, "name": "capped", "scores": {"total_reward": -1}}]}}
         fn = FakeFn(lambda i: FakeCall(f"fc-{i}", result=out))
         _install(monkeypatch, fn)
-        sd.run_campaign(campaign.make_args())
+        # Returns 5: every shard is barren, so the streak guard stops it. That
+        # is correct and orthogonal — what matters here is the ledger record.
+        assert sd.run_campaign(campaign.make_args()) == 5
         rec = sd.ledger_replay(campaign.ledger)[0]
         assert rec["state"] == "empty"
         assert rec["length_mismatch"], (
