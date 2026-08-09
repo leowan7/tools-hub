@@ -16,19 +16,21 @@ written BEFORE the spawn, the ``submitted`` record naming the call id is
 written BEFORE the driver waits, and a resume reconnects to uncollected calls
 rather than resubmitting.
 
-ONE GPU AT A TIME. Nothing downstream enforces this — Modal will happily
-allocate a second A100 and bill it — so every route to a concurrent container
-is guarded here. There are three, and an earlier revision claimed there were
-two:
-  * ``fn.spawn`` does not queue against a pool: each call gets its own
-    container and ``run_tool`` is unconditionally ``gpu="A100-80GB"``. So the
-    driver never spawns while a call of its own is unresolved — including the
-    case where waiting on it TIMED OUT, which is not the same as it having
-    finished (see ``_collect``).
-  * A second driver process. The lock is GLOBAL (``default_lock_path``), not
-    per-outdir: the invariant belongs to the account, not to a directory, and
-    ``--outdir`` defaults to a RELATIVE path, so two shells in different
-    working directories already evaded an outdir-scoped lock. Starting a fresh
+CONCURRENCY IS A DECLARED WIDTH, NEVER AN ACCIDENT. ``fn.spawn`` does not
+queue against a pool: each call gets its own container and ``run_tool`` is
+unconditionally ``gpu="A100-80GB"``, so **N in flight is N A100s and N times
+the burn rate**. Nothing downstream enforces a limit — Modal allocates and
+bills whatever is asked for — so the width is set once, explicitly, by
+``--max-in-flight``, and every other route to an extra container is closed:
+  * The driver never exceeds that width, and never spawns at all once a wait
+    has TIMED OUT, which is not the same as the container having finished (see
+    ``_collect``). Shards already in flight are still collected — that money
+    is spent and their designs are reachable only through their call ids.
+  * A second driver process, which would silently double the declared
+    width. The lock is GLOBAL (``default_lock_path``), not per-outdir: the
+    invariant belongs to the account, not to a directory, and ``--outdir``
+    defaults to a RELATIVE path, so two shells in different working
+    directories already evaded an outdir-scoped lock. Starting a fresh
     campaign is the obvious move on a run that looks stuck, which makes this
     the likely violation rather than the exotic one.
   * A ledger the loop cannot interpret. Skip-terminal / reconnect-submitted /
@@ -110,6 +112,14 @@ SHARDS_PER_BIN = 4
 # nothing. Three in a row is past coincidence: a one-off bad shard does not
 # repeat, a wrong scaling assumption does.
 MAX_CONSECUTIVE_BARREN = 3
+# How many shards may be in flight at once. EACH ONE IS ITS OWN A100, so this
+# is a statement about how many GPUs the operator actually has, not a
+# throughput dial to turn up hopefully. Default 1 because that is the safe
+# assumption; --max-in-flight raises it.
+#
+# Cost is UNCHANGED by width — Modal bills per container-second, so ten shards
+# in parallel cost exactly what ten in series cost. Only calendar time divides.
+DEFAULT_MAX_IN_FLIGHT = 1
 # 64 designs/shard. nsamples draws LENGTHS (the upstream flag is
 # generation.dataloader.dataset.nres.nsamples) and replicas gives independent
 # designs at each drawn length — measured on job
@@ -771,89 +781,114 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
           f"${args.budget:.2f} (priced at the ${USD_PER_SECOND_CEILING * 3600:.2f}/hr "
           "upper bound)")
 
+    # ---- the concurrency window -------------------------------------------
+    # A sliding window rather than fixed waves: a wave would idle every free
+    # GPU until its slowest member finished, and shard runtimes vary by ~10%.
+    #
+    # Ordering matters and is not arbitrary. Already-`submitted` shards go in
+    # FIRST, before anything new is spawned, because that money is already
+    # spent and their call ids are the only route to their designs. Only then
+    # is the window topped up.
+    resumed, queue = [], []
     for item in plan:
-        index = item["index"]
-        prior = state.get(index, {})
-
-        if prior.get("state") in TERMINAL_STATES:
+        rec = state.get(item["index"], {})
+        if rec.get("state") in TERMINAL_STATES:
             continue
+        if rec.get("state") == "submitted" and rec.get("call_id"):
+            print(f"[shard {item['index']:03d}] reconnecting to in-flight "
+                  f"{rec['call_id']}")
+            resumed.append((item, rec.get("job_id", ""),
+                            modal.FunctionCall.from_id(rec["call_id"]),
+                            rec["call_id"]))
+        else:
+            queue.append(item)
 
-        # PAID WORK ALREADY IN FLIGHT. Reconnect rather than resubmit: the
-        # container is running (or has finished) and its call id is the only
-        # way to reach the designs it produced. No budget check — that money
-        # is already spent, and refusing here would strand it.
-        if prior.get("state") == "submitted" and prior.get("call_id"):
-            print(f"[shard {index:03d}] reconnecting to in-flight "
-                  f"{prior['call_id']}")
-            result = _collect(
-                modal.FunctionCall.from_id(prior["call_id"]), item,
-                prior.get("job_id", ""), prior["call_id"], outdir,
-                ledger, args.timeout)
-            if result == "timeout":
-                return _stop_on_timeout(index)
+    in_flight = list(resumed)
+    width = max(1, int(args.max_in_flight))
+    stop_code: int | None = None
+    print(f"[width] up to {width} shard(s) in flight "
+          f"= up to {width} concurrent A100(s)")
+
+    while in_flight or (queue and stop_code is None):
+        # --- top the window up ---------------------------------------------
+        while queue and stop_code is None and len(in_flight) < width:
             state = ledger_replay(ledger)
-            continue
 
-        # Checked BEFORE the spawn, not after the collect, so it also gates a
-        # RESUME. Evaluated after the collect only, three failures followed by
-        # the operator's instinctive "just run it again" would spend a fourth
-        # shard before the guard noticed — and the reconnect branch above is
-        # deliberately upstream of this, because that money is already spent.
-        barren = _trailing_barren(plan, state)
-        if barren >= MAX_CONSECUTIVE_BARREN:
-            last = _shard_dir(outdir, index - 1) / "smoke_result.json"
-            print(f"[stop] {barren} shards in a row delivered no designs. "
-                  "That is a systemic fault, not bad luck — continuing would "
-                  f"spend the rest of the budget reproducing it.\n"
-                  f"       Read {last} for the diagnosis, then re-run to "
-                  "resume once it is fixed.", file=sys.stderr)
-            return 5
+            barren = _trailing_barren(plan, state)
+            if barren >= MAX_CONSECUTIVE_BARREN:
+                print(f"[stop] {barren} shards in a row delivered no designs. "
+                      "That is a systemic fault, not bad luck — continuing "
+                      "would spend the rest of the budget reproducing it.\n"
+                      "       Read the newest shard_*/smoke_result.json for "
+                      "the diagnosis, then re-run to resume once it is fixed.",
+                      file=sys.stderr)
+                stop_code = 5
+                break
 
-        spent = _spent_usd(state, ceiling=True)
-        if spent + shard_usd_ceiling() > args.budget:
-            print(f"[budget] STOP before shard {index}: ${spent:.2f} spent, "
-                  f"next shard up to ${shard_usd_ceiling():.2f}, ceiling "
-                  f"${args.budget:.2f}", file=sys.stderr)
-            return 3
+            # Counts every shard already spawned, in-flight ones included,
+            # because _spent_usd reads the ledger and they are `submitted`
+            # there. Without that a wide window would authorise `width` shards
+            # against the same remaining balance.
+            spent = _spent_usd(state, ceiling=True)
+            if spent + shard_usd_ceiling() > args.budget:
+                print(f"[budget] STOP: ${spent:.2f} committed, next shard up "
+                      f"to ${shard_usd_ceiling():.2f}, ceiling "
+                      f"${args.budget:.2f}", file=sys.stderr)
+                stop_code = 3
+                break
 
-        lo, hi = item["bin"]
-        # Fresh id per shard, always: the seed is derived from it, so a reused
-        # id re-runs an identical search AND overwrites that run's raw archive.
-        job_id = (f"proteina-sweep-{lo}-{hi}-r{item['round']:02d}-"
-                  f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}")
-        # Re-staged per shard. presigned_input_url expires in 7200 s and a
-        # shard runs ~85 min, so one URL cannot safely cover the next shard.
-        # DELIBERATELY BEFORE the intent record: this is an S3 upload, it is
-        # fallible, and it runs 80 times over 4.7 days. Writing intent first
-        # meant one transient upload failure left an orphan intent for a
-        # container that was never created, wedging the resume into a hard
-        # refusal whose only documented recovery is hand-editing the ledger.
-        url = _stage_target(job_id, target)
-        payload = build_payload(
-            url, preset=args.preset, nsamples=NSAMPLES, replicas=REPLICAS,
-            job_id=job_id, binder_length=(lo, hi))
+            item = queue.pop(0)
+            index = item["index"]
+            lo, hi = item["bin"]
+            # Fresh id per shard, always: the seed is derived from it, so a
+            # reused id re-runs an identical search AND overwrites that run's
+            # raw archive.
+            job_id = (f"proteina-sweep-{lo}-{hi}-r{item['round']:02d}-"
+                      f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}")
+            # Re-staged per shard. presigned_input_url expires in 7200 s.
+            # DELIBERATELY BEFORE the intent record: this is an S3 upload and
+            # it is fallible, and writing intent first meant one transient
+            # failure left an orphan intent for a container that was never
+            # created, wedging the resume into a hard refusal.
+            url = _stage_target(job_id, target)
+            payload = build_payload(
+                url, preset=args.preset, nsamples=NSAMPLES, replicas=REPLICAS,
+                job_id=job_id, binder_length=(lo, hi))
 
-        # Recorded in the LAST statement before the spawn, so the window it
-        # covers is the spawn itself and nothing else. If the driver dies
-        # between spawn returning and the call id being written, this is the
-        # only trace that a container may exist; _refuse_unresumable turns it
-        # into a stop rather than a silent double-charge.
-        ledger_append(ledger, {
-            "index": index, "round": item["round"], "bin": item["bin"],
-            "state": "intent", "job_id": job_id,
-        })
-        call = fn.spawn(payload)
-        # BEFORE waiting. See the module docstring.
-        ledger_append(ledger, {
-            "index": index, "state": "submitted", "job_id": job_id,
-            "call_id": call.object_id,
-        })
-        print(f"[shard {index:03d}] bin {lo}-{hi} -> {call.object_id}")
+            # Last statement before the spawn, so the window it covers is the
+            # spawn and nothing else.
+            ledger_append(ledger, {
+                "index": index, "round": item["round"], "bin": item["bin"],
+                "state": "intent", "job_id": job_id,
+            })
+            call = fn.spawn(payload)
+            # BEFORE waiting. See the module docstring.
+            ledger_append(ledger, {
+                "index": index, "state": "submitted", "job_id": job_id,
+                "call_id": call.object_id,
+            })
+            print(f"[shard {index:03d}] bin {lo}-{hi} -> {call.object_id} "
+                  f"({len(in_flight) + 1}/{width} in flight)")
+            in_flight.append((item, job_id, call, call.object_id))
 
-        result = _collect(call, item, job_id, call.object_id, outdir,
-                          ledger, args.timeout)
+        if not in_flight:
+            break
+
+        # --- collect the oldest --------------------------------------------
+        # FIFO. Shards are spawned together and run for roughly the same time,
+        # so the oldest is the likeliest to be ready; blocking on it frees a
+        # slot without polling.
+        item, job_id, call, call_id = in_flight.pop(0)
+        result = _collect(call, item, job_id, call_id, outdir, ledger,
+                          args.timeout)
         if result == "timeout":
-            return _stop_on_timeout(index)
+            # Stop SPAWNING, but keep collecting what is already out there —
+            # those containers are paid for and reachable only via their call
+            # ids. Returning immediately here would strand up to `width` of
+            # them.
+            if stop_code is None:
+                stop_code = 4
+                _stop_on_timeout(item["index"])
         state = ledger_replay(ledger)
 
     final = ledger_replay(ledger)
@@ -868,10 +903,13 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
     print(f"\n[done] {ok}/{len(plan)} shards delivered designs; {rows} rows; "
           f"~${_spent_usd(final):.2f} spent (best estimate); "
           f"manifest at {outdir / 'manifest.csv'}")
-    return 0
+    # A stop reached mid-window still collected everything already paid for,
+    # which is why it is reported here rather than returned the moment it
+    # happened.
+    return stop_code if stop_code is not None else 0
 
 
-def _stop_on_timeout(index: int) -> int:
+def _stop_on_timeout(index: int) -> None:
     """Stopping is the point.
 
     Spawning the next shard while a timed-out container may still hold the GPU
@@ -881,10 +919,11 @@ def _stop_on_timeout(index: int) -> int:
     reconnects to it once it finishes.
     """
     print(f"[stop] shard {index} timed out and may still be running. NOT "
-          "spawning the next shard — that would put two A100s in flight.\n"
-          "       Re-run the driver to reconnect once it finishes, or check "
-          "`modal app logs ranomics-proteina-prod`.", file=sys.stderr)
-    return 4
+          "spawning anything further — that would add an A100 beside a "
+          "container still holding one.\n"
+          "       Shards already in flight are still being collected. Re-run "
+          "the driver to reconnect once they finish, or check "
+          f"`modal app logs {APP}`.", file=sys.stderr)
 
 
 _TS = "%Y-%m-%dT%H:%M:%S"
@@ -1069,6 +1108,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--outdir", default="proteina_sweep_out")
     ap.add_argument("--preset", default="protein_binder")
     ap.add_argument("--target", default="")
+    ap.add_argument("--max-in-flight", type=int, default=DEFAULT_MAX_IN_FLIGHT,
+                    help="how many shards may run at once. EACH IS ITS OWN "
+                         "A100 — set it to the number of GPUs you actually "
+                         "have. Cost is unchanged (Modal bills per "
+                         "container-second); only calendar time divides.")
     ap.add_argument("--timeout", type=int, default=9000,
                     help="seconds to wait on one shard; must exceed the "
                          f"{CONTAINER_CEILING_S}s container ceiling so a slow "

@@ -392,6 +392,131 @@ class TestADerivedFileCannotKillTheCampaign:
             "regardless of the derived manifest")
 
 
+class TestTheConcurrencyWidthIsRespected:
+    """Each in-flight shard is its OWN A100, so the window width is a
+    statement about how many GPUs exist. Exceeding it bills for GPUs the
+    operator does not have; nothing downstream would notice."""
+
+    @staticmethod
+    def _probe(monkeypatch, width, n_shards=5, exc_at=None):
+        live = {"now": 0, "peak": 0}
+
+        def make(i):
+            def on_get(call):
+                live["now"] -= 1
+            return FakeCall(f"fc-{i}", on_get=on_get,
+                            exc=exc_at(i) if exc_at else None)
+
+        class Probing(FakeFn):
+            def spawn(self, payload):
+                live["now"] += 1
+                live["peak"] = max(live["peak"], live["now"])
+                return super().spawn(payload)
+
+        fn = Probing(make)
+        _install(monkeypatch, fn)
+        return fn, live
+
+    @pytest.mark.parametrize("width", [1, 2, 3, 5, 10])
+    def test_never_more_than_width_are_in_flight(self, campaign, monkeypatch,
+                                                 width):
+        fn, live = self._probe(monkeypatch, width)
+        args = campaign.make_args()
+        args.max_in_flight = width
+        assert sd.run_campaign(args) == 0
+        assert live["peak"] <= width, (
+            f"{live['peak']} A100s in flight against a width of {width}")
+        assert len(fn.spawns) == 5, "every shard must still run exactly once"
+
+    def test_a_wide_window_actually_uses_it(self, campaign, monkeypatch):
+        """Guard the guard: a width that silently stayed at 1 would look
+        identical from the ledger and just be slow."""
+        fn, live = self._probe(monkeypatch, 5)
+        args = campaign.make_args()
+        args.max_in_flight = 5
+        assert sd.run_campaign(args) == 0
+        assert live["peak"] == 5, (
+            f"peak concurrency was {live['peak']}; the window is not filling")
+
+    def test_every_shard_is_spawned_exactly_once(self, campaign, monkeypatch):
+        fn, _ = self._probe(monkeypatch, 5)
+        args = campaign.make_args()
+        args.max_in_flight = 5
+        sd.run_campaign(args)
+        bins = [p["job_spec"]["binder_length"] for p in fn.spawns]
+        assert sorted(bins) == sorted([list(b) for b in sd.BINS]), (
+            f"a wide window duplicated or dropped shards: {bins}")
+
+    def test_resumed_shards_are_collected_before_anything_new_spawns(
+            self, campaign, monkeypatch):
+        """That money is already spent and the call id is the only route to
+        those designs — they must not be starved behind fresh work."""
+        campaign.outdir.mkdir(parents=True)
+        sd.ledger_append(campaign.ledger, {
+            "index": 0, "bin": list(sd.BINS[0]), "state": "submitted",
+            "job_id": "j0", "call_id": "fc-PRIOR"})
+        order = []
+        fn = FakeFn(lambda i: FakeCall(f"fc-{i}"))
+        _install(monkeypatch, fn,
+                 from_id=lambda cid: (order.append(("reconnect", cid))
+                                      or FakeCall(cid)))
+        args = campaign.make_args()
+        args.max_in_flight = 5
+        assert sd.run_campaign(args) == 0
+        assert order and order[0] == ("reconnect", "fc-PRIOR")
+        assert len(fn.spawns) == 4
+
+    def test_the_budget_counts_shards_still_in_flight(self, campaign,
+                                                      monkeypatch):
+        """A wide window must not authorise `width` shards against the same
+        remaining balance — every one already spawned is committed money."""
+        fn, _ = self._probe(monkeypatch, 10)
+        args = campaign.make_args(budget=sd.shard_usd_ceiling() * 2.5)
+        args.max_in_flight = 10
+        assert sd.run_campaign(args) == 3
+        assert len(fn.spawns) == 2, (
+            f"{len(fn.spawns)} shards spawned against a 2.5-shard ceiling")
+
+    def test_a_timeout_stops_spawning_but_still_collects_the_rest(
+            self, campaign, monkeypatch):
+        """Returning the moment one shard times out would strand up to
+        `width` paid containers whose designs are reachable only via their
+        call ids."""
+        import modal.exception
+        collected = []
+
+        def make(i):
+            def on_get(call):
+                collected.append(i)
+            if i == 0:
+                return FakeCall("fc-0",
+                                exc=modal.exception.FunctionTimeoutError("t"))
+            return FakeCall(f"fc-{i}", on_get=on_get)
+
+        fn = FakeFn(make)
+        _install(monkeypatch, fn)
+        args = campaign.make_args()
+        args.max_in_flight = 3
+        assert sd.run_campaign(args) == 4
+        assert len(fn.spawns) == 3, "it kept spawning after a timeout"
+        assert sorted(collected) == [1, 2], (
+            f"paid in-flight shards were stranded; collected {collected}")
+        state = sd.ledger_replay(campaign.ledger)
+        assert state[0]["state"] == "submitted", "a live container was written off"
+        assert state[1]["state"] == "collected"
+
+    def test_width_below_one_is_clamped(self, campaign, monkeypatch):
+        fn, live = self._probe(monkeypatch, 1)
+        args = campaign.make_args()
+        args.max_in_flight = 0
+        assert sd.run_campaign(args) == 0
+        assert live["peak"] == 1
+
+    def test_the_default_width_is_one(self):
+        assert sd.build_parser().parse_args([]).max_in_flight == 1, (
+            "a default above 1 would silently bill for GPUs nobody asked for")
+
+
 class TestASystemicFaultStopsTheCampaign:
     """The 8-to-64 design extrapolation is unverified. If it is wrong enough
     the pipeline overruns its deadline and EVERY shard dies identically —
