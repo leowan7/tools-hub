@@ -50,6 +50,7 @@ from shared.target_results import (
     aggregate_target_candidates,
 )
 from shared.targets import (
+    TargetSchemaError,
     archive_target,
     create_target,
     find_target_by_sha256,
@@ -532,6 +533,13 @@ def target_create():
         )
     except StorageError as exc:
         return _err(f"Upload failed: {exc}")
+    except TargetSchemaError as exc:
+        # A permanently-failing insert, not a transient. Falling through to the
+        # generic message below would tell the user to retry an operation that
+        # cannot succeed until the pending migration lands, and would offer no
+        # way to save the target in the meantime. The exception's own text says
+        # what happened and what still works.
+        return _err(str(exc))
     if target is None:
         return _err("Could not save the target. Try again in a moment.")
 

@@ -86,11 +86,31 @@ def _clean_int_list(values) -> Optional[list]:
 def _hotspot_chain_ids(target_chain, upload) -> list:
     """The chain ids a stored hotspot token may name.
 
-    ``split_hotspot`` recognises a prefix only against a known chain list —
-    that is what stops ``"A296"`` being read as chain ``"A2"``, residue 96 —
-    so the save path has to hand it one. The run's own ``target_chain`` comes
+    ``split_hotspot`` recognises a prefix only against a known chain list, so
+    the save path has to hand it one. The run's own ``target_chain`` comes
     first; the uploaded structure's chains are added because a target may store
     a hotspot on a chain the default ``target_chain`` does not name.
+
+    WHAT THE LIST BUYS IS A MULTI-CHARACTER CHAIN ID, and that is the only case
+    where the ``target_chain`` seed changes an answer at all. On a target whose
+    chain is ``"A2"``, ``"A2296"`` is residue 296; with no list, the one-letter
+    fallback in :func:`_split_stored_hotspot` takes the single leading letter
+    and stores 2296 instead, and ``"AB12"`` on chain ``"AB"`` matches nothing
+    and is dropped from both columns. Pinned by
+    ``test_the_target_chain_seeds_the_chain_list_when_there_is_no_upload``.
+
+    WHAT IT COSTS, stated because it is a real limitation and not a safety
+    property: on that same ``"A2"`` target ``split_hotspot("A296", ["A2"])``
+    returns ``("A2", 96)``, so the integer column stores 96 for a token an
+    operator may have meant as residue 296. ``<chain><resnum>`` with no
+    separator is genuinely ambiguous whenever one chain id is a prefix of
+    another chain id followed by digits, and nothing here can resolve it —
+    ``split_hotspot`` matches the LONGEST chain id that fits, and the adapters
+    and the preflight hard gate all already depend on that choice, so changing
+    it here would be a bigger change than the ambiguity it removes. The text
+    column is unaffected in this case: it reassembles ``"A2"`` + ``96`` back
+    into ``"A296"``, which is the token the model steers by, so the guess is
+    confined to the integer column's legacy readers.
     """
     ids: list = [c for c in (target_chain or "").replace(",", " ").split() if c]
     summary = getattr(upload, "chain_summary", None) or {}
@@ -105,19 +125,28 @@ def _hotspot_chain_ids(target_chain, upload) -> list:
 # list. blueprints/targets._parse_residue_list already restricts a stored
 # hotspot to exactly this — one letter plus an integer — so matching it here
 # recovers the token rather than discarding it.
+#
+# ONE letter, deliberately: this runs only after `split_hotspot` has already
+# failed, i.e. when nothing has confirmed the prefix is a chain, so a wider
+# `[A-Za-z]+` would invent a chain "AB" out of a token no structure vouches
+# for. The price is that a genuine multi-character chain with no chain list to
+# confirm it is dropped from both columns instead — which is what
+# `_hotspot_chain_ids` exists to prevent. Pinned by
+# test_the_fallback_never_invents_a_multi_letter_chain.
 _LONE_HOTSPOT_RE = re.compile(r"^([A-Za-z])(-?\d+)$")
 
 
 def _split_stored_hotspot(value, chain_ids) -> tuple[Optional[str], Optional[int]]:
     """``split_hotspot`` first, then the single-letter shape.
 
-    ``split_hotspot`` reads a prefix only against a KNOWN chain list, which is
-    what stops ``"A296"`` being misread as chain ``"A2"`` residue 96 — so it is
-    authoritative whenever the chains are known and is tried first. When they
-    are not (a target created with no upload and no target_chain), it returns
-    ``(None, None)`` for every prefixed token, and both columns would then be
-    written NULL: the hotspot would vanish on save, silently, which is the
-    failure mode this whole change exists to remove.
+    ``split_hotspot`` reads a prefix only against a KNOWN chain list, so it is
+    the only one of the two that can see a multi-character chain id — which is
+    why it is authoritative whenever the chains are known, and is tried first.
+    (What that costs on an ambiguous token is in :func:`_hotspot_chain_ids`.)
+    When the chains are NOT known (a target created with no upload and no
+    target_chain), it returns ``(None, None)`` for every prefixed token, and
+    both columns would then be written NULL: the hotspot would vanish on save,
+    silently, which is the failure mode this whole change exists to remove.
     """
     cid, num = split_hotspot(value, chain_ids)
     if num is not None:
@@ -131,9 +160,17 @@ def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
 
     ``["A241", "B600"]`` -> ``[241, 600]``. Deliberately NOT ``_clean_int_list``,
     which would ``int("A241")``, fail, and skip the element — writing NULL into
-    a column that every existing reader (to_dict, targets/detail.html,
-    targets/list.html) still reads. Those readers lose the chain, which they
-    never had; they must not lose the hotspot.
+    the ONLY column a reader can fall back to. Every reader now goes through
+    ``effective_hotspots`` (targets/detail.html, targets/list.html,
+    ``target_defaults_for_form``), and that property falls through to this
+    column whenever ``hotspot_spec`` is empty — which is every row predating
+    migration 0041 and every all-bare target. Those readers lose the chain,
+    which they never had; they must not lose the hotspot.
+
+    ``to_dict`` is NOT part of that constraint, despite what this comment used
+    to claim: it has no production callers at all (grep — only
+    tests/test_targets.py), so it constrains nothing and must not be cited as
+    if it did.
 
     Kept separate from ``_clean_int_list`` rather than replacing it so
     ``epitope_residues`` keeps its exact current coercion. Nothing reaches that
@@ -172,6 +209,39 @@ def _clean_hotspot_spec(values, chain_ids) -> Optional[list]:
             any_chain = True
         tokens.append(f"{cid}{num}" if cid else str(num))
     return tokens if (tokens and any_chain) else None
+
+
+class TargetSchemaError(RuntimeError):
+    """An insert refused because this database lacks a column the row named.
+
+    Raised INSTEAD of ``create_target``'s ``return None``, and only for a
+    failure that has been IDENTIFIED as permanent. Every other insert failure
+    keeps the ``return None`` contract, so the route's generic "try again in a
+    moment" still covers a genuine transient. ``str(...)`` is user-facing copy —
+    the route renders it verbatim.
+    """
+
+
+def _names_missing_column(exc: BaseException, column: str) -> bool:
+    """Whether ``exc`` is the driver complaining about ``column``.
+
+    PostgREST answers an INSERT naming an unknown column with PGRST204 and
+    ``"Could not find the 'hotspot_spec' column of 'design_targets' in the
+    schema cache"``, and supabase-py surfaces that text on the exception.
+
+    A SUBSTRING MATCH ON THE DRIVER'S OWN MESSAGE IS BEST-EFFORT BY
+    CONSTRUCTION. If a future driver stops naming the column this returns False
+    and the caller falls back to the message it produced before — the
+    pre-existing behaviour, not a new failure mode. It is never consulted
+    unless the row actually named the column, so it cannot blame a missing
+    migration for a failure the migration has nothing to do with.
+    """
+    parts = [repr(exc)]
+    for attr in ("message", "details", "hint", "code"):
+        value = getattr(exc, attr, None)
+        if value:
+            parts.append(str(value))
+    return column in " ".join(parts).lower()
 
 
 def _segments_label(segments) -> Optional[str]:  # noqa: ANN001
@@ -517,18 +587,26 @@ class DesignTarget:
         )
 
     def to_dict(self) -> dict:
-        """JSON-friendly view for templates and status endpoints."""
+        """JSON-friendly view for templates and status endpoints.
+
+        NOTHING IN PRODUCTION CALLS THIS (grep: tests/test_targets.py only), so
+        it mirrors the two stored columns and adds no third name for them. The
+        choice between them is :attr:`effective_hotspots`, which is what the
+        templates and ``target_defaults_for_form`` actually read; a
+        ``"hotspots"`` key here would be a third spelling with no caller,
+        inviting a future consumer to pick one of three and get it wrong.
+        """
         return {
             "id": self.id,
             "name": self.display_name,
             "kind": self.kind,
             "filename": self.filename,
             "target_chain": self.target_chain,
-            # hotspot_residues keeps its existing shape and meaning for every
-            # consumer that already reads it; hotspot_spec is added beside it.
+            # One key per stored column, same shape and meaning as the column.
+            # (There is no consumer to keep compatible — see the docstring —
+            # so this is a mirror, not a compatibility promise.)
             "hotspot_residues": list(self.hotspot_residues),
             "hotspot_spec": list(self.hotspot_spec),
-            "hotspots": list(self.effective_hotspots),
             "epitope_residues": list(self.epitope_residues),
             "residue_count": self.residue_count,
             "chains": [c.get("chain_id") for c in self.chains],
@@ -567,9 +645,12 @@ def create_target(
     chain-checked, and CIF-converted) or None for the curated-benchmark path
     that legitimately has no uploaded structure.
 
-    Returns the target, or None when the insert itself failed. Raises
-    :class:`shared.storage.StorageError` when staging failed, so the caller can
-    tell "could not save" from "could not upload" and say which.
+    Returns the target, or None when the insert failed for a reason this
+    function cannot name. Raises :class:`shared.storage.StorageError` when
+    staging failed, so the caller can tell "could not save" from "could not
+    upload" and say which, and :class:`TargetSchemaError` when the insert named
+    a column this database does not have — a failure no retry can clear, which
+    "could not save, try again" would have told the user to attempt anyway.
     """
     client = get_service_client()
     if client is None:
@@ -605,8 +686,20 @@ def create_target(
         if not rows:
             return None
         target = DesignTarget.from_row(rows[0])
-    except Exception:
+    except Exception as exc:
         logger.error("create_target: insert failed", exc_info=True)
+        # A deploy that landed ahead of migration 0041 fails this insert EVERY
+        # time, so returning None here sent the route's "Try again in a moment"
+        # to a user whose retry cannot ever succeed. Only the identified case
+        # raises; everything else keeps the generic answer.
+        if "hotspot_spec" in row and _names_missing_column(exc, "hotspot_spec"):
+            raise TargetSchemaError(
+                "These hotspots name their chain (A241), and the column that "
+                "stores the chain is not on this database yet, so saving them "
+                "will keep failing until a pending update is applied. Retrying "
+                "will not help. Save the target with plain residue numbers for "
+                "now, and add the chain prefixes once the update has landed."
+            ) from exc
         return None
 
     if upload is None:

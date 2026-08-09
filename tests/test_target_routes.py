@@ -7,6 +7,7 @@ the duplicate-upload offer.
 from __future__ import annotations
 
 import io
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -298,6 +299,37 @@ def test_create_target_honours_allow_duplicate(client):
     dupe.assert_not_called()
 
 
+def test_a_permanently_failing_save_does_not_tell_the_user_to_retry(client):
+    """A deploy landing ahead of migration 0041 makes a chain-prefixed INSERT
+    fail every single time. The route used to render "Could not save the
+    target. Try again in a moment." for it — an instruction to retry an
+    operation that cannot succeed, with no hint that dropping the prefixes
+    would work right now.
+
+    Pins the WIRING: shared/targets raises, and deleting the except clause here
+    turns a 400 with an explanation into an unhandled 500.
+    """
+    from shared.targets import TargetSchemaError
+
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.find_target_by_sha256",
+                  return_value=None), \
+            patch("blueprints.targets.create_target",
+                  side_effect=TargetSchemaError(
+                      "These hotspots name their chain (A241), and the column "
+                      "that stores the chain is not on this database yet.")):
+        resp = client.post("/targets", data={
+            "hotspot_residues": "A241, B241",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    body = _flat(resp.get_data(as_text=True))
+    assert "not on this database yet" in body
+    assert "Try again in a moment" not in body
+
+
 def test_target_detail_404s_for_another_users_target(client):
     """ABSENT still 404s, and that is the half of the three-outcome read that
     did not change (register item A90). A read that COMPLETED and matched no row
@@ -445,6 +477,41 @@ def test_target_detail_lists_only_this_targets_runs(client):
     # outside the cap rendered "nothing has been run against this target yet"
     # for runs they had paid for.
     everything.assert_not_called()
+
+
+def test_target_detail_renders_the_chain_qualified_hotspots(client):
+    """THE READ-SIDE HALF OF THE PERSISTENCE FIX, and nothing else pinned it.
+
+    ``hotspot_residues`` is ``integer[]``, so on an Fc homodimer — both chains
+    numbered 234-444 — it holds ``[241, 241]`` with the protomer stripped out.
+    Rendering that column instead of ``effective_hotspots`` puts "241, 241" on
+    the page for two hotspots the user pinned to different protomers, and the
+    page then disagrees with both the launch prefill and the run that target
+    will actually produce.
+
+    Asserted against the RENDERED span rather than the template text: the
+    template names the property, but only the render proves the property is
+    what reaches the page.
+    """
+    _login(client)
+    t = _target(
+        target_chain="A B",
+        hotspot_residues=[241, 241],
+        hotspot_spec=["A241", "B241"],
+    )
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()), \
+            patch("shared.compute_campaigns.list_campaigns_for_user"):
+        resp = client.get(f"/targets/{t.id}")
+
+    assert resp.status_code == 200
+    body = _flat(resp.get_data(as_text=True))
+    shown = re.search(r"Hotspots:\s*<span[^>]*>(.*?)</span>", body)
+    assert shown, "the target page no longer renders a Hotspots row"
+    assert shown.group(1).strip() == "A241, B241", (
+        "the detail page dropped the protomer off the stored hotspots")
 
 
 def test_launch_renders_the_multi_tool_screen(client):
