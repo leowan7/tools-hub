@@ -42,6 +42,7 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["legend_text"] = score_legends.legend_text
     # The REAL function, not a stub. A stub here would let the percentile cell
     # be tested against this file's idea of an ordinal rather than production's.
     env.globals["ordinal"] = ranking.ordinal
@@ -327,6 +328,77 @@ def test_the_score_tooltip_comes_from_the_rows_own_tool():
     for tool in ("bindcraft", "rfdiffusion"):
         explanation = score_legends.get_legend(tool, "ipTM")["explanation"]
         assert explanation in html, f"{tool}'s own ipTM legend is missing"
+
+
+class _Titles(HTMLParser):
+    """Every ``title`` and ``data-tooltip`` value on the page.
+
+    Read through the parser rather than by substring, because HTMLParser
+    unescapes attribute values — so the assertions see the string the user's
+    browser shows, apostrophes and all, rather than ``&#39;``.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.values: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        for key, value in attrs:
+            if key in ("title", "data-tooltip") and value:
+                self.values.append(value)
+
+
+def _tooltips(html: str) -> list[str]:
+    parser = _Titles()
+    parser.feed(html)
+    return parser.values
+
+
+def test_a_legend_caveat_reaches_both_of_this_macros_tooltip_surfaces():
+    """The macro shows a legend in two places, and they are easy to split.
+
+    A legend may carry an optional ``caveat`` — the half that is about what an
+    OLD STORED result holds rather than about the metric — and this table is
+    the only surface in the app that renders old stored results. It renders
+    them two ways: the single-tool column header, and the multi-tool per-row
+    Score cell, which resolves the legend from THAT ROW'S tool.
+
+    The reason this is a test and not a comment: the caveat used to live
+    inside ``explanation``, which meant every consumer carried it including
+    one it was false in — the job-completion email, see
+    tests/test_job_complete_email_caption.py. Splitting it out fixed the email
+    and created exactly one new way to be wrong: rendering it on one of these
+    two surfaces and not the other. Both go through a single ``legend_text``
+    global, and both are asserted here, so they cannot drift apart.
+    """
+    caveat = score_legends.get_legend("boltzgen", "ipTM").get("caveat")
+    assert caveat, (
+        "boltzgen's ipTM legend no longer carries a caveat, so this test "
+        "guards nothing; re-point it rather than leave it passing"
+    )
+
+    single = _render(
+        candidates=[{"pdb_key": "designs/design_0.pdb", "sequence": "MKTAY",
+                     "scores": {"ipTM": 0.91}}],
+        columns=["ipTM"], job_id="j-1", tool_slug="boltzgen",
+    )
+    assert any(caveat in t for t in _tooltips(single)), (
+        f"the single-tool column header shows the boltzgen ipTM legend "
+        f"without its caveat: {_tooltips(single)!r}"
+    )
+
+    rows = ranking.rank_candidates(
+        [_row("boltzgen", "ipTM", 0.90 - 0.002 * i, job="j-bg", index=i)
+         for i in range(25)],
+        limit=None,
+    )["rows"]
+    multi = _render(candidates=rows, columns=[], job_id="", tool_slug="",
+                    target_id="t-1", multi_tool=True)
+    assert any(caveat in t for t in _tooltips(multi)), (
+        "the multi-tool Score cell shows the boltzgen ipTM legend without "
+        "its caveat — this is the pooled target page, where a pre-deploy "
+        "boltzgen run gets no banner and the tooltip is the only warning left"
+    )
 
 
 def test_percentile_column_renders_a_percentile():

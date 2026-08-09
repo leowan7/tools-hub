@@ -137,8 +137,10 @@ def _job_complete_template_context(
 ) -> dict:
     """Build the variable dict for ``templates/email/job_complete.{html,txt}``.
 
-    Extracts top-candidate score plus a 1-line interpretation from the
-    score-legends table (C7), and resolves the natural next-step tool
+    Extracts top-candidate score plus an interpretation from the
+    score-legends table (C7) via ``score_legends.email_caption`` — one line
+    about the metric, plus that metric's caveat when THIS job's target names
+    more than one chain — and resolves the natural next-step tool
     via the C3 SOURCE_TOOLS / DESTINATION_TOOLS mapping in shared.refold.
     Robust against partial result payloads: every optional field falls
     back to "" so the templates render cleanly with no missing-data
@@ -238,9 +240,30 @@ def _top_candidate_summary(*, job, tone: str) -> tuple[str, str, str, str]:  # n
     caption = ""
     legend = legends.get(chosen_col)
     if isinstance(legend, dict):
-        explanation = legend.get("explanation")
-        if isinstance(explanation, str):
-            caption = explanation
+        # ``email_caption``, not ``legend["explanation"]`` and not
+        # ``legend_text``. A legend's optional ``caveat`` says what an OLD
+        # STORED result may hold, and THIS MAIL IS SENT ABOUT STORED RESULTS:
+        # shared/jobs.complete_job is called by timeout_stuck_job (recovering
+        # a result out of Storage), by the inline poll in
+        # blueprints/jobs.job_status, and by scripts/finalize_stuck_job.py —
+        # each of them arbitrarily long after the run. An earlier comment here
+        # asserted the opposite ("its number always comes from the container
+        # running now"), and all three paths were then driven with the
+        # transport captured: each mailed a pre-deploy BoltzGen score
+        # described as "the binder-to-target interface", uncaveated.
+        #
+        # ``email_caption`` appends the caveat only when THIS job's target
+        # names more than one chain — the condition the caveat states, and one
+        # the legend cannot evaluate because it never sees a job. The chain
+        # comes from ``job.inputs`` (the value the run was SUBMITTED with),
+        # not from a target row, which is editable and is overridden per
+        # launch (templates/targets/launch.html: "Overrides the target default
+        # for these runs only").
+        from shared.score_legends import email_caption  # noqa: PLC0415
+
+        inputs = getattr(job, "inputs", None)
+        target_chain = inputs.get("target_chain") if isinstance(inputs, dict) else None
+        caption = email_caption(legend, target_chain)
     pdb_key = top.get("pdb_key") or ""
     if not isinstance(pdb_key, str):
         pdb_key = str(pdb_key)

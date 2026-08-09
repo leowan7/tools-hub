@@ -208,14 +208,21 @@
             </div>
 
             <label for="target_chain" class="label" style="display:block; margin-bottom: 0.4rem;">Target chain</label>
-            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="4"
-                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 1.25rem;">
+            <input type="text" name="target_chain" id="target_chain" {{ pre_value(pre_fill, "target_chain", "A") }} maxlength="32"
+                   style="width: 100%; max-width: 160px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
+            <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 1.25rem;">
+              One chain (<code>A</code>), or several for an oligomeric target
+              (<code>A,B</code>). Every named chain reaches the model; designing
+              against one protomer of a dimer aims at half the epitope.
+            </div>
 
             <label for="hotspot_residues" class="label" style="display:block; margin-bottom: 0.4rem;">Hotspot residues</label>
             <input type="text" name="hotspot_residues" id="hotspot_residues" placeholder="54,56,115" {{ pre_value(pre_fill, "hotspot_residues", "") }}
                    style="width: 100%; max-width: 320px; background: var(--bg-elevated); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.55rem 0.75rem; font-family: var(--font-body); font-size: 0.9rem; margin-bottom: 0.35rem;">
             <div style="color: var(--text-secondary); font-size: 0.85rem; max-width: 58ch; margin-bottom: 0.75rem;">
-              Comma-separated residue indices from the target chain that the binder should contact (e.g. <code>54,56,115</code>).
+              Residues the binder should contact, in original PDB numbering. A plain
+              number is read as your <strong>first</strong> target chain; prefix the chain to
+              name another (<code>A296,B264</code>).
               Click residues in the 3D viewer below to toggle them in and out of this list.
             </div>
 
@@ -314,6 +321,10 @@
         emptyMessageId: 'hotspot-empty',
         surfaceToggleId: 'hotspot-surface-toggle',
         clearBtnId: 'hotspot-clear-btn',
+        // See rfdiffusion_form.html for why. Short version: without it the
+        // picker is inert on a multi-chain target and eats typed prefixed
+        // hotspots on a single-chain one.
+        chainPrefixed: true,
       });
     });
   </script>
