@@ -2767,7 +2767,19 @@ def design_subprocess_env() -> dict:
 # designs it banked) and returns a structured result on the timeout path. This
 # is that, sized to leave the shard time to parse, upload/inline, write its
 # result and tar the raw tree inside the wrapper's 7080 s.
-DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6600
+#
+# SIZED AT THE HEADROOM FLOOR, DELIBERATELY. This deadline is NEW, so every
+# value below 7080 takes jobs that used to finish and kills them instead: a
+# search running between this number and 7080 completed before and does not
+# now. Nobody has measured real Fc runtimes against it, so the honest choice
+# is the largest value that still leaves the shard the 300 s it needs to
+# parse, deliver, write and tar — which is exactly 7080 - 300 = 6780. That
+# keeps the newly-fatal band as small as the headroom rule allows (480 s ->
+# 300 s) instead of picking a rounder number that forfeits three minutes of
+# other people's compute. The test above asserts the 300 s floor, so this
+# sits ON it: raising the container ceiling gives this room, lowering it
+# fails the test rather than silently inverting the ordering.
+DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6780
 # The exit code a timed-out search reports into ``result["search"]``. 124 is
 # what coreutils `timeout(1)` uses, so it does not collide with a real
 # `complexa design` exit status, and ``rc != 0`` already routes it through the
