@@ -252,14 +252,23 @@ def _drive_real_parser(tmp_path, monkeypatch, *, rows, endpoint="",
             if search_raises is not None:
                 raise search_raises
             return search_rc
+        # BOTH pLDDT spellings, complementary, exactly as a real reward CSV
+        # writes them: af2folding_plddt is the AfDesign LOSS (1 - pLDDT) and
+        # af2folding_plddt_log is the metric. The fixture used to write only
+        # the loss column and call it 0.8, which modelled the CSV wrongly and
+        # is why the inversion survived every test in this file. Keeping both
+        # here makes EVERY test that drives the real parser a polarity guard:
+        # revert the alias in _SCORE_COLUMNS and the delivered value becomes
+        # 0.2 instead of 0.8.
         header = ("pdb_path,total_reward,af2folding_i_ptm_log,"
-                  "af2folding_plddt,af2folding_rmsd,metadata_tag")
+                  "af2folding_plddt,af2folding_plddt_log,af2folding_rmsd,"
+                  "metadata_tag")
         lines = [header]
         for name, reward, body in rows:
             pdb = run_dir / f"{name}.pdb"
             if body is not None:
                 pdb.write_bytes(body)
-            lines.append(f"{pdb},{reward},0.7,0.8,1.2,{name}")
+            lines.append(f"{pdb},{reward},0.7,0.2,0.8,1.2,{name}")
         (run_dir / "rewards_search_binder_local_pipeline_0.csv").write_text(
             "\n".join(lines) + "\n")
         if search_raises is not None:
@@ -3103,7 +3112,7 @@ class TestThePlddtScaleIsStated:
     """``--collect`` is the operator-facing surface of the inline path, and
     ``plddt=0.86`` there is a trap.
 
-    Proteina's reward CSV carries ``af2folding_plddt`` on [0,1] and
+    Proteina's reward CSV carries ``af2folding_plddt_log`` on [0,1] and
     ``parse_designs`` stores it unchanged. Every sibling generator rescales
     pLDDT to the field-standard AlphaFold2 0-100 range in the container before
     it reaches a candidate's ``scores`` (pxdesign, rfantibody and boltzgen all
@@ -3146,7 +3155,7 @@ class TestThePlddtScaleIsStated:
         rescale would be written and ``_drive_design_loop`` stubs it out: the
         first draft of this test used that helper, and inserting the very
         ``scores["af2_plddt"] *= 100`` it forbids left it green. Here the
-        number comes off an ``af2folding_plddt`` column in a reward CSV the
+        number comes off an ``af2folding_plddt_log`` column in a reward CSV the
         pipeline parses itself."""
         rows = [("alfa", -1.0, b"ATOM  alfa\nEND\n"),
                 ("bravo", -2.0, b"ATOM  bravo\nEND\n")]
@@ -3156,8 +3165,8 @@ class TestThePlddtScaleIsStated:
                 endpoint=endpoint)
             assert [c["scores"]["af2_plddt"] for c in data["candidates"]] == [
                 0.8, 0.8], (
-                "the CSV's af2folding_plddt reached the caller on a different "
-                f"scale than it was written on (endpoint={endpoint!r})")
+                "the CSV's af2folding_plddt_log reached the caller on a "
+                f"different scale than it was written on (endpoint={endpoint!r})")
             assert [d["af2_plddt"] for d in data["designs"]] == [0.8, 0.8]
 
     def test_a_value_ALREADY_on_the_0_100_scale_is_not_annotated(self):
@@ -3174,6 +3183,54 @@ class TestThePlddtScaleIsStated:
         report."""
         from tools.proteina.direct_call_fc import _plddt_text
         assert _plddt_text(None) == "None"
+
+
+class TestThePlddtPolarityIsTheMetricNotTheLoss:
+    """``af2_plddt`` used to read ``af2folding_plddt``, which is the AfDesign
+    LOSS term — ``1 - pLDDT`` — not pLDDT.
+
+    Every row of a real reward CSV carries BOTH spellings and they sum to
+    1.000000, so the old alias delivered a monotonically INVERTED confidence:
+    sorting or thresholding on pLDDT selected the worst designs. Observed on
+    job proteina-direct-fc-20260809-091702-68025f — rank 1 reported ipTM
+    0.7625 and scRMSD 1.22 A alongside pLDDT 0.226, while its ``_log`` value
+    was 0.774.
+
+    The shared fixture now writes both columns, so most of this file guards
+    the polarity implicitly. These tests state it directly, because an
+    implicit guard is one fixture edit away from silently disappearing —
+    which is exactly how the original defect survived.
+    """
+
+    def test_the_metric_wins_when_both_columns_are_present(
+            self, tmp_path, monkeypatch):
+        """THROUGH THE REAL PARSER. The fixture writes loss 0.2 / metric 0.8;
+        reverting ``_SCORE_COLUMNS["af2_plddt"]`` to the bare column makes this
+        0.2."""
+        rows = [("alfa", -1.0, b"ATOM  alfa\nEND\n")]
+        smoke, _ = _drive_real_parser(tmp_path / "shard", monkeypatch, rows=rows)
+        got = smoke["candidates"][0]["scores"]["af2_plddt"]
+        assert got == 0.8, (
+            f"af2_plddt delivered {got}; 0.2 means the alias is reading "
+            "af2folding_plddt, which is the loss term (1 - pLDDT)")
+
+    def test_the_loss_column_is_not_a_fallback(self):
+        """A CSV carrying ONLY the loss column must yield None, not an
+        inverted number. Deliberate: the renderer hides None, and a wrong
+        confidence is worse than an absent one."""
+        from tools.proteina.run_pipeline import _SCORE_COLUMNS
+        assert "af2folding_plddt" not in _SCORE_COLUMNS["af2_plddt"], (
+            "af2folding_plddt is back in the alias chain; it is the complement "
+            "of pLDDT, so any CSV missing the _log column silently re-inverts")
+        assert _SCORE_COLUMNS["af2_plddt"][0] == "af2folding_plddt_log"
+
+    def test_iptm_still_reads_its_own_log_column(self):
+        """Guard the neighbour. ``af2_iptm`` is correct only because no
+        non-log ``af2folding_i_ptm`` column exists upstream; if one ever
+        appears, prepending it would repeat this bug on ipTM."""
+        from tools.proteina.run_pipeline import _SCORE_COLUMNS
+        assert "af2folding_i_ptm_log" in _SCORE_COLUMNS["af2_iptm"]
+        assert "af2folding_i_ptm" not in _SCORE_COLUMNS["af2_iptm"]
 
 
 class TestAHubShapedPayloadIsNotADirectCall:
