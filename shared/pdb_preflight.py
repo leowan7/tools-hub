@@ -708,7 +708,26 @@ def preflight_for_tool(
             size_envelope=size_envelope,
         )
 
-    if dropped_hotspots and rules.hotspots_required:
+    # A DROPPED HOTSPOT IS A HARD FAIL FOR EVERY TOOL, not just the three that
+    # require one. ``hotspots_required`` answers "does this tool need a hotspot
+    # at all", which is a different question from "is the hotspot the user gave
+    # us usable" — and conflating them is what let a paid A100 start on a job
+    # that could not succeed. Nothing here edits the payload: ``build_payload``
+    # ships ``inputs["hotspot_residues"]`` verbatim, so a token this function
+    # files under ``dropped`` is still sent. For boltzgen that reaches
+    # ``docker/boltzgen/run_pipeline.py`` and raises; for proteina the
+    # in-container ``missing_hotspots`` guard refuses it. Both refuse AFTER the
+    # wallet hold is taken and the GPU is running.
+    #
+    # The dedicated boltz2 evaluator above already works this way — it is
+    # hotspots-optional too and still returns NEEDS_FIX on an out-of-range
+    # position. This branch was the odd one out inside its own module.
+    #
+    # The alternative, stripping the dead hotspot and running an open search,
+    # is worse: it silently redesigns the run the user asked for, and an
+    # untargeted design still completes and still scores, so nothing downstream
+    # would ever reveal it.
+    if dropped_hotspots:
         # One or more user-picked hotspots didn't survive cleanup. Suggest
         # nearby clean residues on the same chain.
         nearest = _nearest_clean_residues(
@@ -720,6 +739,48 @@ def preflight_for_tool(
             if nearest
             else "(no clean neighbours found within ±10 of the dropped residues)"
         )
+        # DON'T BLAME THE FILE FOR A NUMBER THAT WAS NEVER IN IT. A hotspot is
+        # dropped either because its chain has no such residue or because the
+        # residue is there with a broken backbone, and the old copy asserted
+        # the second unconditionally — sending a user to PyMOL to repair a
+        # backbone that is perfectly intact. This says what is known.
+        reason = (
+            f"Hotspot residue(s) {dropped_str} can't be used on this target. "
+            f"After cleanup, the chain each one names has no residue with "
+            f"that number and a complete N/CA/C/O backbone — either the "
+            f"number is outside that chain's numbering, or its backbone is "
+            f"incomplete in this PDB."
+        )
+        if len(chain_ids) > 1 and any(
+            split_hotspot(h, chain_ids)[0] is None for h in dropped_hotspots
+        ):
+            # The attribution rule, stated, because it is invisible otherwise
+            # and it is the single likeliest reason a multi-chain user is
+            # reading this sentence at all.
+            reason += (
+                f" A hotspot typed without a chain letter is read as chain "
+                f"{chain_ids[0]}, the first of the {len(chain_ids)} chains "
+                f"you named ({', '.join(chain_ids)})."
+            )
+        fix = (
+            f"Pick a hotspot that exists, with a clean backbone, on the chain "
+            f"it names. Nearest usable residues on chain(s) "
+            f"{', '.join(chain_ids) or target_chain}: {nearest_str}."
+        )
+        if len(chain_ids) > 1:
+            fix += (
+                f" Prefix a hotspot with its chain to place it exactly — "
+                f"e.g. {chain_ids[1]}264 for chain {chain_ids[1]}."
+            )
+        # Only offered when there IS a suggestion attached. It used to be
+        # printed unconditionally next to ``alphafold=af_suggestion``, so a
+        # target with no UniProt mapping was told to click a control the panel
+        # never rendered — the same defect the size branch above already fixed.
+        if af_suggestion:
+            fix += (
+                " Or use the AlphaFold model below — it's single-conformation "
+                "and won't have this gap."
+            )
         return PreflightVerdict(
             kind=VerdictKind.NEEDS_FIX,
             tool_slug=tool_slug,
@@ -729,18 +790,8 @@ def preflight_for_tool(
                 "surviving": surviving,
                 "dropped": dropped_hotspots,
             },
-            reason=(
-                f"Hotspot residue(s) {dropped_str} were dropped during "
-                f"cleanup because their backbone is incomplete in this "
-                f"PDB. The model needs a complete N/CA/C/O backbone at "
-                f"every hotspot."
-            ),
-            suggested_fix=(
-                f"Pick a hotspot with a clean backbone. Nearest clean "
-                f"residues on chain {target_chain}: {nearest_str}. "
-                f"Or use the AlphaFold model below — it's single-conformation "
-                f"and won't have this gap."
-            ),
+            reason=reason,
+            suggested_fix=fix,
             alphafold=af_suggestion,
             nearest_clean_residues=nearest,
             gap_analysis=gap_analysis,
@@ -995,11 +1046,29 @@ def _check_hotspots(
 ) -> tuple[list, list]:
     """Return ``(surviving_hotspots, dropped_hotspots)`` after cleanup.
 
-    A bare hotspot survives if its number survives on ANY named chain; a
-    chain-prefixed one (``"B264"``) must survive on THAT chain. Both forms
-    are echoed back in the shape they arrived in, because the caller renders
-    ``dropped`` straight into the user-facing refusal and ``"B264"`` tells
-    them which protomer to re-pick on where ``264`` would not.
+    A bare hotspot is attributed to the FIRST named chain; a chain-prefixed
+    one (``"B264"``) must survive on THAT chain. Both forms are echoed back in
+    the shape they arrived in, because the caller renders ``dropped`` straight
+    into the user-facing refusal and ``"B264"`` tells them which protomer to
+    re-pick on where ``264`` would not.
+
+    WHY FIRST-CHAIN AND NOT THE UNION. This used to accept a bare number that
+    survived on ANY named chain, and that disagreed with the only attribution
+    that can actually reach a GPU. ``tools/base.py:108`` (and proteina's own
+    ``_parse_hotspots``) rewrite a bare ``520`` on target ``"A,B"`` as
+    ``"A520"`` before the payload is built — they have no structure to consult
+    at ``validate()`` time, so first-chain is the only rule they CAN apply, and
+    it is the documented pipeline contract. Judging the typed token more
+    permissively than the shipped one is how a target whose chains carry
+    different numbering (a Fab H/L, any heterocomplex) passed every gate: with
+    chain A at 1..40 and chain B at 500..539, bare ``520`` range-checked green
+    against the union, shipped as ``"A520"``, and died in the container. The
+    gate has to judge the token the run will send.
+
+    Behaviour-preserving on a single named chain, where the union IS the first
+    chain's residue set — which is every job submitted before the multi-chain
+    contract existed. It changes outcomes only for a multi-chain target, and
+    only in the direction of catching a hotspot that would not have resolved.
 
     Every token used to go through a bare ``int()``, so the whole
     chain-prefixed contract landed in ``dropped``. For the three tools with
@@ -1013,20 +1082,22 @@ def _check_hotspots(
         cid: set(nums)
         for cid, nums in _clean_resnums_by_chain(pdb_bytes, target_chain).items()
     }
-    clean: set = set()
-    for nums in by_chain.values():
-        clean.update(nums)
+    # ``_clean_resnums_by_chain`` seeds its dict from ``_chain_tokens`` and
+    # keeps that order, so this is the same "first target chain" the adapters
+    # promote onto — both parse the field with the same split-and-dedupe.
+    names = list(by_chain)
+    first = names[0] if names else None
     surviving: list = []
     dropped: list = []
     for h in hotspots:
-        cid, n = split_hotspot(h, list(by_chain))
+        cid, n = split_hotspot(h, names)
         if n is None:
             dropped.append(h)
             continue
-        if cid is None:
-            (surviving if n in clean else dropped).append(n)
-        else:
-            (surviving if n in by_chain.get(cid, ()) else dropped).append(h)
+        # ``cid or first`` rather than a branch: an unattributed token is
+        # attributed here exactly as the adapter attributes it downstream.
+        pool = by_chain.get(cid if cid is not None else first, ())
+        (surviving if n in pool else dropped).append(n if cid is None else h)
     return surviving, dropped
 
 
@@ -1346,23 +1417,27 @@ def _nearest_clean_residues(
 
     A chain-prefixed hotspot really is confined to its own chain here, and
     its suggestions come back prefixed (``"B268"``) so they can be pasted
-    straight back into the field. Unprefixed hotspots search the union of
-    the named chains and return bare ints, unchanged.
+    straight back into the field. An unprefixed hotspot searches the FIRST
+    named chain and returns bare ints, because a bare number the user pastes
+    back will itself be attributed to that chain by ``tools/base.py`` — see
+    :func:`_check_hotspots`. Suggesting from the union instead offered chain
+    B residues in answer to a hotspot that can only ever land on chain A.
+
+    Single-chain targets are unaffected: the first named chain IS the union.
     """
     by_chain = {
         cid: set(nums)
         for cid, nums in _clean_resnums_by_chain(pdb_bytes, target_chain).items()
     }
-    union: set = set()
-    for nums in by_chain.values():
-        union.update(nums)
-    if not union:
+    names = list(by_chain)
+    first_pool: set = set(by_chain.get(names[0], set())) if names else set()
+    if not any(by_chain.values()):
         return []
 
-    # chain id (or None for "any named chain") -> dropped resnums on it
+    # chain id (or None for "the first named chain") -> dropped resnums on it
     dropped_by_chain: dict = {}
     for h in dropped_hotspots:
-        cid, n = split_hotspot(h, list(by_chain))
+        cid, n = split_hotspot(h, names)
         if n is None:
             continue
         dropped_by_chain.setdefault(cid, []).append(n)
@@ -1372,7 +1447,7 @@ def _nearest_clean_residues(
     # (chain-or-None, resnum) -> (distance, label)
     candidates: dict = {}
     for cid, dropped_ints in dropped_by_chain.items():
-        pool = union if cid is None else by_chain.get(cid, set())
+        pool = first_pool if cid is None else by_chain.get(cid, set())
         for r in pool:
             if r in dropped_ints:
                 continue

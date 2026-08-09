@@ -384,11 +384,28 @@ def validate_hotspots(
 
     ``target_chain`` may name SEVERAL chains, whitespace- or comma-separated
     (``"A B"`` for ProteinMPNN-style multi-chain design, ``"A B C"`` for a
-    proteina trimer target). A BARE residue number is in range if it falls
-    inside ANY named chain. A CHAIN-PREFIXED one (``"B264"``) is checked
-    against that chain alone — on a homodimer both protomers carry residue
-    264, so unioning would accept ``"C264"`` on an A/B target and report a
-    hotspot as valid on a chain the design never touches.
+    proteina trimer target). A BARE residue number is checked against the
+    FIRST named chain. A CHAIN-PREFIXED one (``"B264"``) is checked against
+    that chain alone — on a homodimer both protomers carry residue 264, so
+    unioning would accept ``"C264"`` on an A/B target and report a hotspot as
+    valid on a chain the design never touches.
+
+    THE BARE CASE USED TO UNION, AND THE UNION WAS NEVER WHAT RAN. Nothing
+    downstream reads an unprefixed hotspot as "any named chain": ``tools/
+    base.py:108`` rewrites it onto ``target_chains[0]`` before building the
+    payload, and proteina's ``_parse_hotspots`` promotes it onto
+    ``contig_chains[0]``. So on a target whose chains are numbered differently
+    — a Fab H/L, any heterocomplex — a bare number that exists only on the
+    SECOND chain passed here and then addressed the first one on the GPU.
+    proteina makes that live rather than theoretical: it deliberately emits
+    ``hotspot_residues`` as bare author numbers (so the routes' range checks
+    keep working) while sending the prefixed ``hotspot_spec`` upstream, so
+    every proteina multi-chain campaign reaches this function unprefixed.
+    Checking the first chain is what makes this function judge the token the
+    run will actually match on.
+
+    Single-chain targets are unaffected — with one named chain the union IS
+    the first chain — so every pre-multi-chain caller sees identical answers.
 
     Coercing every token with ``int()`` here is what made the multi-chain
     contract unusable: the adapters emit ``["A296", "B264"]`` from
@@ -423,10 +440,11 @@ def validate_hotspots(
             out_of_range.append(h)
             continue
         if cid is None:
-            # Unprefixed: any named chain will do. Echo the bare int, which
-            # is the shape every pre-multi-chain caller already receives.
-            ok = any(lo <= n <= hi for _, lo, hi in ranges)
-            (in_range if ok else out_of_range).append(n)
+            # Unprefixed: the FIRST named chain, because that is the one it
+            # will be sent as. Echo the bare int, which is the shape every
+            # pre-multi-chain caller already receives.
+            _first, lo, hi = ranges[0]
+            (in_range if lo <= n <= hi else out_of_range).append(n)
         else:
             ok = any(c == cid and lo <= n <= hi for c, lo, hi in ranges)
             # Echo the token as typed so the error names the chain too.

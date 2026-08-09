@@ -239,7 +239,10 @@ def test_build_payload_forwards_the_multichain_shape(name, mod):
 from shared.pdb_inspect import (            # noqa: E402
     inspect_pdb_bytes, validate_target_chain,
 )
-from shared.pdb_preflight import _chain_tokens, preflight_for_tool  # noqa: E402
+from shared.pdb_preflight import (          # noqa: E402
+    VerdictKind, _chain_tokens, preflight_for_tool,
+)
+from tools import boltzgen as boltzgen_mod                          # noqa: E402
 from tests.test_pdb_preflight import _atom_line                     # noqa: E402
 
 
@@ -503,6 +506,215 @@ def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
     assert all(500 <= int(str(r)[1:]) <= 539 for r in nearest), nearest
 
 
+# ---------------------------------------------------------------------------
+# A BARE hotspot on a target whose chains are numbered differently
+#
+# The half of the seam the tests above miss. They all pass PREFIXED hotspots,
+# which is what a user gets when they type one. A bare number is the other
+# half, and it has no chain of its own — so something must attribute it, and
+# for a long time two components attributed it differently:
+#
+#   tools/base.py:108     bare 520 on "A,B"  ->  "A520"   (FIRST named chain)
+#   _check_hotspots       bare 520 on "A,B"  ->  in range on the UNION
+#
+# On any target whose chains carry different numbering — a Fab H/L, any
+# heterocomplex — those disagree, and the disagreement is not cosmetic. The
+# adapter's answer is the one that reaches the GPU, because build_payload
+# ships inputs["hotspot_residues"] verbatim; the preflight's answer is the one
+# that decides whether the run is allowed to start. Executed end to end on the
+# fixture below, trunk produced:
+#
+#   preflight panel      -> READY            (520 range-checks on chain B)
+#   adapter emits        -> ["A520"]
+#   boltzgen submit gate -> ok=True, dropped=['A520']
+#   payload              -> ships "A520" anyway
+#   container            -> docker/boltzgen/run_pipeline.py raises
+#
+# Two independent faults, and BOTH have to be fixed for the money to be safe:
+# the attribution has to match, AND a dropped hotspot has to refuse even on a
+# tool whose hotspots are optional.
+# ---------------------------------------------------------------------------
+
+_BOLTZGEN_FORM_BASE = {
+    "preset": "pilot", "binder_length_min": "55", "binder_length_max": "65",
+    "budget": "4", "protocol": "protein-anything",
+}
+
+
+def _boltzgen_form(target_chain: str, hotspots: str) -> dict:
+    return dict(_BOLTZGEN_FORM_BASE, target_chain=target_chain,
+                hotspot_residues=hotspots)
+
+
+def test_a_bare_hotspot_is_judged_on_the_chain_it_will_be_sent_as():
+    """520 exists on chain B only, and the adapter will ship it as "A520".
+
+    RED on trunk: the union check called it surviving, so the panel said READY
+    for a token that can only ever address chain A.
+    """
+    from shared.pdb_preflight import _check_hotspots
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    surviving, dropped = _check_hotspots(pdb, "A,B", [520])
+    assert surviving == []
+    assert dropped == [520], (
+        "bare 520 was accepted because chain B happens to carry it, but "
+        "tools/base.py will ship it as 'A520' and chain A runs 1..40"
+    )
+    # ...and the same number typed for the chain it really is on passes.
+    assert _check_hotspots(pdb, "A,B", ["B520"]) == (["B520"], [])
+    assert _check_hotspots(pdb, "A,B", [20]) == ([20], [])    # 20 IS on A
+
+
+def test_the_panel_and_the_submit_gate_agree_on_a_bare_hotspot():
+    """The AJAX panel passes the bare token; the submit gate passes the
+    adapter's rewritten one. Trunk gave READY and READY; the run then died.
+
+    Both must now reach the same verdict, or the panel green-lights a submit
+    the gate refuses.
+    """
+    pdb = _asymmetric_pdb()
+    panel = preflight_for_tool(
+        "boltzgen", pdb, target_chain="A,B", hotspots=[520],
+    )
+    inputs, err = boltzgen_mod.validate(_boltzgen_form("A,B", "520"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == ["A520"]
+    gate = preflight_for_tool(
+        "boltzgen", pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+    )
+    assert panel.ok is gate.ok is False, (
+        f"panel ok={panel.ok} gate ok={gate.ok} — a divergence here is the "
+        f"defect itself"
+    )
+
+
+def test_a_dropped_hotspot_refuses_even_when_hotspots_are_optional():
+    """THE MONEY GATE. boltzgen and proteina are hotspots_required=False, so
+    trunk returned READY and let the wallet hold, the A100 and the container
+    failure all happen. The payload still carries the token either way.
+    """
+    pdb = _asymmetric_pdb()
+    for slug in ("boltzgen", "proteina"):
+        verdict = preflight_for_tool(
+            slug, pdb, target_chain="A,B", hotspots=["A520"],
+        )
+        assert not verdict.ok, (
+            f"{slug}: READY while dropping "
+            f"{verdict.hotspot_status['dropped']!r} — build_payload ships that "
+            f"token, so this funds a run that cannot succeed"
+        )
+        assert verdict.hotspot_status["dropped"] == ["A520"]
+
+
+def test_the_refusal_does_not_blame_a_backbone_that_is_intact():
+    """The fixture is synthetic and every residue has a complete N/CA/C/O
+    backbone. "A520" is dropped because chain A stops at 40, so copy that
+    asserts an incomplete backbone sends the user to PyMOL for nothing."""
+    verdict = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=["A520"],
+    )
+    reason = verdict.reason or ""
+    assert "outside that chain's numbering" in reason, reason
+    assert "incomplete backbone" not in reason.lower(), reason
+
+
+def test_the_refusal_states_the_attribution_that_caused_it():
+    """A user who typed "520" and is told "A520 can't be used" has no way to
+    connect the two. The one sentence that closes that gap has to be there."""
+    verdict = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=[520],
+    )
+    reason = verdict.reason or ""
+    assert "without a chain letter is read as chain A" in reason, reason
+    # And the fix tells them how to say what they meant.
+    assert "Prefix a hotspot with its chain" in (verdict.suggested_fix or "")
+
+
+def test_suggestions_for_a_bare_hotspot_come_from_the_chain_it_lands_on():
+    """A bare suggestion pasted back into the field is itself attributed to
+    the first chain, so offering a chain-B residue as a bare number hands the
+    user a value that will be re-read as chain A and dropped again.
+
+    THE SECOND CASE IS THE TEST. A bare 35 is within ±10 of chain A residues
+    only, so the union and the first chain give the SAME answer for it and it
+    discriminates nothing — asserting on that alone left a revert to the union
+    fully green. 505 is the number that separates them: chain B carries
+    500..539 all around it, and chain A carries nothing within reach.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", [35], [])
+    assert nearest, "expected suggestions near 35 on chain A"
+    assert all(isinstance(r, int) for r in nearest), nearest
+    assert all(1 <= r <= 40 for r in nearest), nearest
+
+    # Bare 505 lands on chain A, which stops at 40. Chain B's 500..539 sit
+    # right next to the number but are unreachable without a prefix, so
+    # offering them bare would be handing back values that drop again.
+    assert _nearest_clean_residues(pdb, "A,B", [505], []) == [], (
+        "a bare hotspot was offered chain-B neighbours as bare numbers; "
+        "pasted back, tools/base.py re-reads each one as chain A"
+    )
+    # Prefixed, the same neighbourhood IS reachable and comes back prefixed.
+    prefixed = _nearest_clean_residues(pdb, "A,B", ["B505"], [])
+    assert prefixed and all(str(r).startswith("B") for r in prefixed), prefixed
+
+
+# --- BACKWARD COMPATIBILITY, single chain. This is the load-bearing one -----
+
+def test_single_chain_bare_hotspots_are_unmoved_by_the_attribution_rule():
+    """One named chain has nothing to attribute BETWEEN, so the first chain
+    IS the union and every answer must be byte-identical to trunk's.
+
+    Payload shape included: bare ints in, bare ints out, no new prefixes.
+    """
+    from shared.pdb_preflight import _check_hotspots
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    # Surviving and dropped, both still bare ints, both still on chain A.
+    assert _check_hotspots(pdb, "A", [5, 7, 39]) == ([5, 7, 39], [])
+    assert _check_hotspots(pdb, "A", [5, 999]) == ([5], [999])
+    # A single-chain target naming chain B alone reads B's numbering, not A's.
+    assert _check_hotspots(pdb, "B", [520]) == ([520], [])
+
+    inputs, err = boltzgen_mod.validate(_boltzgen_form("A", "5,7,39"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == [5, 7, 39], "payload shape moved"
+    assert inputs["target_chain"] == "A"
+    verdict = preflight_for_tool(
+        "boltzgen", pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+    )
+    assert verdict.ok
+    assert verdict.kind is VerdictKind.READY
+    assert verdict.hotspot_status == {"surviving": [5, 7, 39], "dropped": []}
+    payload = boltzgen_mod.build_payload(inputs, "https://example/t.pdb")
+    assert payload["hotspot_residues"] == [5, 7, 39]
+
+
+def test_single_chain_suggestions_are_still_bare_ints():
+    """The other half of the single-chain floor: the refusal's suggestion list
+    keeps its old shape, so nothing the user pastes back changes form."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    nearest = _nearest_clean_residues(_asymmetric_pdb(), "A", [35], [])
+    assert nearest and all(isinstance(r, int) for r in nearest), nearest
+
+
+def test_an_empty_hotspot_list_is_still_fine_for_the_optional_tools():
+    """The new refusal must fire on a DROPPED hotspot, never on the absence of
+    one — boltzgen and proteina run an open search legitimately."""
+    for slug in ("boltzgen", "proteina"):
+        verdict = preflight_for_tool(
+            slug, _asymmetric_pdb(), target_chain="A,B", hotspots=[],
+        )
+        assert verdict.ok, f"{slug}: {verdict.reason}"
+        assert verdict.hotspot_status == {"surviving": [], "dropped": []}
+
+
 # --- split_hotspot, the one parser all of the above now share ---------------
 
 @pytest.mark.parametrize("token,chains,expected", [
@@ -576,26 +788,44 @@ def test_the_three_hotspot_validators_give_the_same_answer():
     # R2: B5 does not exist on chain B, and chain A having a residue 5 must
     # not rescue it in ANY of the three.
     assert _all_three(["B5"]) == (False, False, False)
-    # R1: the pre-multi-chain shape, unioned across both chains, unchanged.
-    assert _all_three([5, 505]) == (True, True, True)
+    # R1: a BARE number is judged against the FIRST named chain, in all three.
+    #
+    # This line used to read `_all_three([5, 505]) == (True, True, True)` and
+    # called the union "the pre-multi-chain shape, unchanged". The first half
+    # was true and the second was not: before multi-chain there was only ever
+    # one named chain, so "the union" and "the first chain" were the same
+    # sentence, and generalising to the union picked a rule no consumer
+    # implements. tools/base.py:108 sends a bare 505 as "A505"; proteina's
+    # _parse_hotspots sends it as contig_chains[0] + 505. 505 exists on chain B
+    # alone, so all three used to green-light a token that addresses chain A —
+    # which runs 1..40 — and the run was funded and then died in the container.
+    assert _all_three([5]) == (True, True, True)          # 5 IS on chain A
+    assert _all_three([505]) == (False, False, False)     # 505 is on B only
     # A bare number on neither chain still fails everywhere.
     assert _all_three([9000]) == (False, False, False)
 
 
 def test_validate_hotspots_keeps_the_bare_int_contract():
     """The R1 floor for validate_hotspots specifically: bare ints come back as
-    ints, in range against the union, exactly as before the contract changed.
-    A wholesale revert of this function to its int()-only body passes every
-    other test in this file, because everything else reaches it through
-    preflight rather than calling it.
+    ints, exactly as before the contract changed. A wholesale revert of this
+    function to its int()-only body passes every other test in this file,
+    because everything else reaches it through preflight rather than calling it.
+
+    The SHAPE is the floor being pinned here, and it has not moved. What moved
+    is the multi-chain reading: a bare number is range-checked against the
+    first named chain rather than the union, because that is the chain it will
+    be sent as. Single-chain callers — every caller that predates multi-chain —
+    cannot tell the difference.
     """
     from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
 
     report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
 
     in_range, out_of_range = validate_hotspots(report, "A,B", [5, 505, 9000])
-    assert in_range == [5, 505]
-    assert out_of_range == [9000]
+    assert in_range == [5]
+    assert out_of_range == [505, 9000], (
+        "505 lives on chain B alone; a bare token is shipped against chain A"
+    )
     assert all(isinstance(h, int) for h in in_range), in_range
 
     # Single chain, the shape every pre-#109 caller posts.
