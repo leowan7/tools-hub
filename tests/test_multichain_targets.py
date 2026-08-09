@@ -239,7 +239,10 @@ def test_build_payload_forwards_the_multichain_shape(name, mod):
 from shared.pdb_inspect import (            # noqa: E402
     inspect_pdb_bytes, validate_target_chain,
 )
-from shared.pdb_preflight import _chain_tokens, preflight_for_tool  # noqa: E402
+from shared.pdb_preflight import (          # noqa: E402
+    VerdictKind, _chain_tokens, preflight_for_tool,
+)
+from tools import boltzgen as boltzgen_mod                          # noqa: E402
 from tests.test_pdb_preflight import _atom_line                     # noqa: E402
 
 
@@ -503,6 +506,215 @@ def test_suggestions_for_a_dropped_prefixed_hotspot_stay_on_its_chain():
     assert all(500 <= int(str(r)[1:]) <= 539 for r in nearest), nearest
 
 
+# ---------------------------------------------------------------------------
+# A BARE hotspot on a target whose chains are numbered differently
+#
+# The half of the seam the tests above miss. They all pass PREFIXED hotspots,
+# which is what a user gets when they type one. A bare number is the other
+# half, and it has no chain of its own — so something must attribute it, and
+# for a long time two components attributed it differently:
+#
+#   tools/base.py:108     bare 520 on "A,B"  ->  "A520"   (FIRST named chain)
+#   _check_hotspots       bare 520 on "A,B"  ->  in range on the UNION
+#
+# On any target whose chains carry different numbering — a Fab H/L, any
+# heterocomplex — those disagree, and the disagreement is not cosmetic. The
+# adapter's answer is the one that reaches the GPU, because build_payload
+# ships inputs["hotspot_residues"] verbatim; the preflight's answer is the one
+# that decides whether the run is allowed to start. Executed end to end on the
+# fixture below, trunk produced:
+#
+#   preflight panel      -> READY            (520 range-checks on chain B)
+#   adapter emits        -> ["A520"]
+#   boltzgen submit gate -> ok=True, dropped=['A520']
+#   payload              -> ships "A520" anyway
+#   container            -> docker/boltzgen/run_pipeline.py raises
+#
+# Two independent faults, and BOTH have to be fixed for the money to be safe:
+# the attribution has to match, AND a dropped hotspot has to refuse even on a
+# tool whose hotspots are optional.
+# ---------------------------------------------------------------------------
+
+_BOLTZGEN_FORM_BASE = {
+    "preset": "pilot", "binder_length_min": "55", "binder_length_max": "65",
+    "budget": "4", "protocol": "protein-anything",
+}
+
+
+def _boltzgen_form(target_chain: str, hotspots: str) -> dict:
+    return dict(_BOLTZGEN_FORM_BASE, target_chain=target_chain,
+                hotspot_residues=hotspots)
+
+
+def test_a_bare_hotspot_is_judged_on_the_chain_it_will_be_sent_as():
+    """520 exists on chain B only, and the adapter will ship it as "A520".
+
+    RED on trunk: the union check called it surviving, so the panel said READY
+    for a token that can only ever address chain A.
+    """
+    from shared.pdb_preflight import _check_hotspots
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    surviving, dropped = _check_hotspots(pdb, "A,B", [520])
+    assert surviving == []
+    assert dropped == [520], (
+        "bare 520 was accepted because chain B happens to carry it, but "
+        "tools/base.py will ship it as 'A520' and chain A runs 1..40"
+    )
+    # ...and the same number typed for the chain it really is on passes.
+    assert _check_hotspots(pdb, "A,B", ["B520"]) == (["B520"], [])
+    assert _check_hotspots(pdb, "A,B", [20]) == ([20], [])    # 20 IS on A
+
+
+def test_the_panel_and_the_submit_gate_agree_on_a_bare_hotspot():
+    """The AJAX panel passes the bare token; the submit gate passes the
+    adapter's rewritten one. Trunk gave READY and READY; the run then died.
+
+    Both must now reach the same verdict, or the panel green-lights a submit
+    the gate refuses.
+    """
+    pdb = _asymmetric_pdb()
+    panel = preflight_for_tool(
+        "boltzgen", pdb, target_chain="A,B", hotspots=[520],
+    )
+    inputs, err = boltzgen_mod.validate(_boltzgen_form("A,B", "520"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == ["A520"]
+    gate = preflight_for_tool(
+        "boltzgen", pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+    )
+    assert panel.ok is gate.ok is False, (
+        f"panel ok={panel.ok} gate ok={gate.ok} — a divergence here is the "
+        f"defect itself"
+    )
+
+
+def test_a_dropped_hotspot_refuses_even_when_hotspots_are_optional():
+    """THE MONEY GATE. boltzgen and proteina are hotspots_required=False, so
+    trunk returned READY and let the wallet hold, the A100 and the container
+    failure all happen. The payload still carries the token either way.
+    """
+    pdb = _asymmetric_pdb()
+    for slug in ("boltzgen", "proteina"):
+        verdict = preflight_for_tool(
+            slug, pdb, target_chain="A,B", hotspots=["A520"],
+        )
+        assert not verdict.ok, (
+            f"{slug}: READY while dropping "
+            f"{verdict.hotspot_status['dropped']!r} — build_payload ships that "
+            f"token, so this funds a run that cannot succeed"
+        )
+        assert verdict.hotspot_status["dropped"] == ["A520"]
+
+
+def test_the_refusal_does_not_blame_a_backbone_that_is_intact():
+    """The fixture is synthetic and every residue has a complete N/CA/C/O
+    backbone. "A520" is dropped because chain A stops at 40, so copy that
+    asserts an incomplete backbone sends the user to PyMOL for nothing."""
+    verdict = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=["A520"],
+    )
+    reason = verdict.reason or ""
+    assert "outside that chain's numbering" in reason, reason
+    assert "incomplete backbone" not in reason.lower(), reason
+
+
+def test_the_refusal_states_the_attribution_that_caused_it():
+    """A user who typed "520" and is told "A520 can't be used" has no way to
+    connect the two. The one sentence that closes that gap has to be there."""
+    verdict = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=[520],
+    )
+    reason = verdict.reason or ""
+    assert "without a chain letter is read as chain A" in reason, reason
+    # And the fix tells them how to say what they meant.
+    assert "Prefix a hotspot with its chain" in (verdict.suggested_fix or "")
+
+
+def test_suggestions_for_a_bare_hotspot_come_from_the_chain_it_lands_on():
+    """A bare suggestion pasted back into the field is itself attributed to
+    the first chain, so offering a chain-B residue as a bare number hands the
+    user a value that will be re-read as chain A and dropped again.
+
+    THE SECOND CASE IS THE TEST. A bare 35 is within ±10 of chain A residues
+    only, so the union and the first chain give the SAME answer for it and it
+    discriminates nothing — asserting on that alone left a revert to the union
+    fully green. 505 is the number that separates them: chain B carries
+    500..539 all around it, and chain A carries nothing within reach.
+    """
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    nearest = _nearest_clean_residues(pdb, "A,B", [35], [])
+    assert nearest, "expected suggestions near 35 on chain A"
+    assert all(isinstance(r, int) for r in nearest), nearest
+    assert all(1 <= r <= 40 for r in nearest), nearest
+
+    # Bare 505 lands on chain A, which stops at 40. Chain B's 500..539 sit
+    # right next to the number but are unreachable without a prefix, so
+    # offering them bare would be handing back values that drop again.
+    assert _nearest_clean_residues(pdb, "A,B", [505], []) == [], (
+        "a bare hotspot was offered chain-B neighbours as bare numbers; "
+        "pasted back, tools/base.py re-reads each one as chain A"
+    )
+    # Prefixed, the same neighbourhood IS reachable and comes back prefixed.
+    prefixed = _nearest_clean_residues(pdb, "A,B", ["B505"], [])
+    assert prefixed and all(str(r).startswith("B") for r in prefixed), prefixed
+
+
+# --- BACKWARD COMPATIBILITY, single chain. This is the load-bearing one -----
+
+def test_single_chain_bare_hotspots_are_unmoved_by_the_attribution_rule():
+    """One named chain has nothing to attribute BETWEEN, so the first chain
+    IS the union and every answer must be byte-identical to trunk's.
+
+    Payload shape included: bare ints in, bare ints out, no new prefixes.
+    """
+    from shared.pdb_preflight import _check_hotspots
+
+    pdb = _asymmetric_pdb()          # A: 1..40, B: 500..539
+    # Surviving and dropped, both still bare ints, both still on chain A.
+    assert _check_hotspots(pdb, "A", [5, 7, 39]) == ([5, 7, 39], [])
+    assert _check_hotspots(pdb, "A", [5, 999]) == ([5], [999])
+    # A single-chain target naming chain B alone reads B's numbering, not A's.
+    assert _check_hotspots(pdb, "B", [520]) == ([520], [])
+
+    inputs, err = boltzgen_mod.validate(_boltzgen_form("A", "5,7,39"), {})
+    assert err is None, err
+    assert inputs["hotspot_residues"] == [5, 7, 39], "payload shape moved"
+    assert inputs["target_chain"] == "A"
+    verdict = preflight_for_tool(
+        "boltzgen", pdb, target_chain=inputs["target_chain"],
+        hotspots=inputs["hotspot_residues"],
+    )
+    assert verdict.ok
+    assert verdict.kind is VerdictKind.READY
+    assert verdict.hotspot_status == {"surviving": [5, 7, 39], "dropped": []}
+    payload = boltzgen_mod.build_payload(inputs, "https://example/t.pdb")
+    assert payload["hotspot_residues"] == [5, 7, 39]
+
+
+def test_single_chain_suggestions_are_still_bare_ints():
+    """The other half of the single-chain floor: the refusal's suggestion list
+    keeps its old shape, so nothing the user pastes back changes form."""
+    from shared.pdb_preflight import _nearest_clean_residues
+
+    nearest = _nearest_clean_residues(_asymmetric_pdb(), "A", [35], [])
+    assert nearest and all(isinstance(r, int) for r in nearest), nearest
+
+
+def test_an_empty_hotspot_list_is_still_fine_for_the_optional_tools():
+    """The new refusal must fire on a DROPPED hotspot, never on the absence of
+    one — boltzgen and proteina run an open search legitimately."""
+    for slug in ("boltzgen", "proteina"):
+        verdict = preflight_for_tool(
+            slug, _asymmetric_pdb(), target_chain="A,B", hotspots=[],
+        )
+        assert verdict.ok, f"{slug}: {verdict.reason}"
+        assert verdict.hotspot_status == {"surviving": [], "dropped": []}
+
+
 # --- split_hotspot, the one parser all of the above now share ---------------
 
 @pytest.mark.parametrize("token,chains,expected", [
@@ -576,26 +788,44 @@ def test_the_three_hotspot_validators_give_the_same_answer():
     # R2: B5 does not exist on chain B, and chain A having a residue 5 must
     # not rescue it in ANY of the three.
     assert _all_three(["B5"]) == (False, False, False)
-    # R1: the pre-multi-chain shape, unioned across both chains, unchanged.
-    assert _all_three([5, 505]) == (True, True, True)
+    # R1: a BARE number is judged against the FIRST named chain, in all three.
+    #
+    # This line used to read `_all_three([5, 505]) == (True, True, True)` and
+    # called the union "the pre-multi-chain shape, unchanged". The first half
+    # was true and the second was not: before multi-chain there was only ever
+    # one named chain, so "the union" and "the first chain" were the same
+    # sentence, and generalising to the union picked a rule no consumer
+    # implements. tools/base.py:108 sends a bare 505 as "A505"; proteina's
+    # _parse_hotspots sends it as contig_chains[0] + 505. 505 exists on chain B
+    # alone, so all three used to green-light a token that addresses chain A —
+    # which runs 1..40 — and the run was funded and then died in the container.
+    assert _all_three([5]) == (True, True, True)          # 5 IS on chain A
+    assert _all_three([505]) == (False, False, False)     # 505 is on B only
     # A bare number on neither chain still fails everywhere.
     assert _all_three([9000]) == (False, False, False)
 
 
 def test_validate_hotspots_keeps_the_bare_int_contract():
     """The R1 floor for validate_hotspots specifically: bare ints come back as
-    ints, in range against the union, exactly as before the contract changed.
-    A wholesale revert of this function to its int()-only body passes every
-    other test in this file, because everything else reaches it through
-    preflight rather than calling it.
+    ints, exactly as before the contract changed. A wholesale revert of this
+    function to its int()-only body passes every other test in this file,
+    because everything else reaches it through preflight rather than calling it.
+
+    The SHAPE is the floor being pinned here, and it has not moved. What moved
+    is the multi-chain reading: a bare number is range-checked against the
+    first named chain rather than the union, because that is the chain it will
+    be sent as. Single-chain callers — every caller that predates multi-chain —
+    cannot tell the difference.
     """
     from shared.pdb_inspect import inspect_pdb_bytes, validate_hotspots
 
     report = inspect_pdb_bytes(_asymmetric_pdb())   # A: 1..40, B: 500..539
 
     in_range, out_of_range = validate_hotspots(report, "A,B", [5, 505, 9000])
-    assert in_range == [5, 505]
-    assert out_of_range == [9000]
+    assert in_range == [5]
+    assert out_of_range == [505, 9000], (
+        "505 lives on chain B alone; a bare token is shipped against chain A"
+    )
     assert all(isinstance(h, int) for h in in_range), in_range
 
     # Single chain, the shape every pre-#109 caller posts.
@@ -901,3 +1131,905 @@ def test_nearest_suggestions_come_from_the_hotspots_own_chain():
         f"suggestions for A45 must exist on chain A, which stops at 40: "
         f"{nearest!r}"
     )
+
+
+# ===========================================================================
+# THE GATE MUST JUDGE THE TOKEN THAT SHIPS  (P0-1)
+# ===========================================================================
+#
+# proteina's `_parse_hotspots` emits two representations of one input:
+# `hotspot_spec` (["B520"], what the container matches on) and
+# `hotspot_residues` ([520], bare, kept so the pre-multi-chain range checks
+# kept compiling). Every gate read the bare one, and the bare one cannot say
+# whether the letter was never typed or was stripped:
+#
+#     typed "B520"  ->  spec ["B520"]  bare [520]   must RUN
+#     typed "520"   ->  spec ["A520"]  bare [520]   must be REFUSED
+#
+# Same bare list, opposite correct verdicts. Under the first-chain rule the
+# gates read [520] as chain A and refused BOTH -- a false refusal of the
+# canonical multi-chain case, on a paid path.
+
+def _proteina_form(hotspots: str, contig: str = "A1-40,B500-539") -> dict:
+    """What the proteina launch form posts for a custom two-chain target."""
+    return {
+        "preset": "protein_binder",
+        "target_input": contig,
+        "hotspot_residues": hotspots,
+        "binder_length_min": "60",
+        "binder_length_max": "80",
+        "_has_custom_target": "1",
+    }
+
+
+_ASYM_SUMMARY = {
+    "chains": [
+        {"chain_id": "A", "standard_residue_count": 40, "hetatm_resnames": [],
+         "water_count": 0, "min_resnum": 1, "max_resnum": 40},
+        {"chain_id": "B", "standard_residue_count": 40, "hetatm_resnames": [],
+         "water_count": 0, "min_resnum": 500, "max_resnum": 539},
+    ],
+}
+
+
+@pytest.mark.parametrize("typed,expected_spec", [
+    ("B520", ["B520"]),                    # the canonical single-chain-B pick
+    ("A20 B520", ["A20", "B520"]),         # one hotspot per chain
+    ("A20,B520", ["A20", "B520"]),         # the separator the form also posts
+])
+def test_a_chain_prefixed_proteina_hotspot_clears_every_money_gate(
+    typed, expected_spec,
+):
+    """RED on a492b71 at all three gates. The user typed the chain letter, the
+    letter is correct, the token that ships carries it -- and the run was
+    refused because the field the gates read had already dropped it.
+    """
+    import uuid as _uuid
+
+    from shared.pdb_preflight import shipped_hotspots
+    from shared.targets import DesignTarget
+    from tools import proteina as proteina_mod
+
+    inputs, err = proteina_mod.adapter.validate(_proteina_form(typed), {})
+    assert err is None, err
+    assert inputs["hotspot_spec"] == expected_spec
+    # The precondition that makes this test worth having: the bare copy really
+    # is lossy, so a gate reading it cannot get this right by accident.
+    assert inputs["hotspot_residues"] == [int(t[1:]) for t in expected_spec], (
+        "hotspot_residues stopped being the stripped copy; re-read this test"
+    )
+
+    gate_tokens = shipped_hotspots(inputs)
+    assert gate_tokens == expected_spec, (
+        f"the gates would judge {gate_tokens!r}, but build_payload ships "
+        f"{inputs['hotspot_spec']!r}"
+    )
+
+    # Gate 1 + 2 -- POST /campaigns and POST /targets/<id>/launch both call this.
+    target = DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1", chain_summary=_ASYM_SUMMARY,
+    )
+    assert target.hotspot_error("A B", gate_tokens) is None, (
+        target.hotspot_error("A B", gate_tokens)
+    )
+
+    # Gate 3 -- the atomic submit route's hard preflight.
+    verdict = preflight_for_tool(
+        "proteina", _asymmetric_pdb(), target_chain=inputs["target_chain"],
+        hotspots=gate_tokens, binder_max_aa=80, num_designs=2,
+    )
+    assert verdict.ok, verdict.reason
+    assert verdict.hotspot_status["dropped"] == []
+
+
+def test_the_bare_hotspot_that_lands_off_its_chain_is_still_refused():
+    """The A1 defect, which the fix above must not re-open.
+
+    Typed bare on a two-chain contig, 520 is promoted onto chain A by
+    proteina's own parser and ships as "A520". Chain A runs 1..40, so the run
+    cannot succeed and must not be funded -- by either the range gate or the
+    preflight, and for a hotspots-OPTIONAL tool as much as a required one.
+    """
+    import uuid as _uuid
+
+    from shared.pdb_preflight import shipped_hotspots
+    from shared.targets import DesignTarget
+    from tools import proteina as proteina_mod
+
+    inputs, err = proteina_mod.adapter.validate(_proteina_form("520"), {})
+    assert err is None, err
+    assert inputs["hotspot_spec"] == ["A520"], (
+        "proteina no longer promotes a bare hotspot onto the first contig "
+        "chain; the premise of this test has moved"
+    )
+
+    gate_tokens = shipped_hotspots(inputs)
+    target = DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1", chain_summary=_ASYM_SUMMARY,
+    )
+    range_err = target.hotspot_error("A B", gate_tokens)
+    assert range_err and "A520" in range_err, range_err
+
+    for slug in ("proteina", "boltzgen"):
+        verdict = preflight_for_tool(
+            slug, _asymmetric_pdb(), target_chain="A B",
+            hotspots=gate_tokens, binder_max_aa=80, num_designs=2,
+        )
+        assert not verdict.ok, (
+            f"{slug}: funded a run whose only hotspot ships as A520 against a "
+            f"chain that stops at 40"
+        )
+
+
+def test_shipped_hotspots_prefers_the_spec_and_is_a_no_op_without_one():
+    """The precedence rule, and the half of it that protects every other tool.
+
+    Only proteina emits `hotspot_spec`. Every other adapter's
+    `hotspot_residues` is ALREADY the shipped token, so the helper must fall
+    through untouched rather than assume the key exists.
+    """
+    from shared.pdb_preflight import shipped_hotspots
+
+    # proteina: spec wins outright, exactly as the container's own parser does
+    # (tools/proteina/run_pipeline.py falls back to hotspot_residues only when
+    # the spec yields no tokens).
+    assert shipped_hotspots(
+        {"hotspot_spec": ["B520"], "hotspot_residues": [520]}
+    ) == ["B520"]
+    # No spec -> the bare list, unchanged and unwrapped.
+    assert shipped_hotspots({"hotspot_residues": [42, 88]}) == [42, 88]
+    assert shipped_hotspots({"hotspot_residues": ["A5", "B7"]}) == ["A5", "B7"]
+    # An EMPTY spec is not a spec. proteina emits [] for an open search, and
+    # falling through to the bare list there is what keeps a campaign replaying
+    # its stored params unchanged.
+    assert shipped_hotspots({"hotspot_spec": [], "hotspot_residues": [42]}) == [42]
+    # iggm's epitope key rides along rather than replacing anything.
+    assert shipped_hotspots({"epitope_pdb_resnums": [32, 45]}) == [32, 45]
+    assert shipped_hotspots({
+        "hotspot_spec": ["B520"], "hotspot_residues": [520],
+        "epitope_pdb_resnums": [32],
+    }) == ["B520", 32]
+    # Nothing at all, and a falsy input, are both empty rather than a crash.
+    assert shipped_hotspots({}) == []
+    assert shipped_hotspots(None) == []
+
+
+def test_shipped_hotspots_reads_a_string_field_the_way_the_container_does():
+    """A plain string is ONE field, not a list of characters.
+
+    `list("B520")` is `["B", "5", "2", "0"]` -- four tokens, none of which
+    parses as a residue, so the range gate would refuse an input the container
+    accepts. Unreachable from the sole producer today (proteina's
+    `_parse_hotspots` emits a list) and fail-CLOSED if it were reached, so this
+    is parity work rather than a live refusal -- but the gate exists to judge
+    the token that ships, and it cannot do that while reading the field in a
+    shape the container never would.
+    """
+    from shared.pdb_preflight import shipped_hotspots
+
+    assert shipped_hotspots({"hotspot_spec": "B520"}) == ["B520"]
+    # Commas and whitespace both separate, the container's rule exactly.
+    assert shipped_hotspots({"hotspot_spec": "B520, A12 A13"}) == [
+        "B520", "A12", "A13",
+    ]
+    # The sibling fields go through the same reader -- the character-explosion
+    # was never specific to the spec.
+    assert shipped_hotspots({"hotspot_residues": "A5,B7"}) == ["A5", "B7"]
+    assert shipped_hotspots({"epitope_pdb_resnums": "32 45"}) == ["32", "45"]
+    # An empty / whitespace-only string is still "no spec", so precedence is
+    # unchanged and the bare list behind it is still consulted.
+    assert shipped_hotspots(
+        {"hotspot_spec": "  ", "hotspot_residues": [520]}
+    ) == [520]
+    # The list shape every producer actually emits is untouched.
+    assert shipped_hotspots({"hotspot_spec": ["B520"]}) == ["B520"]
+    assert shipped_hotspots({"hotspot_residues": [42, 88]}) == [42, 88]
+
+
+def test_the_container_tokenises_a_string_hotspot_field_the_same_way():
+    """The parity claim above, executed rather than cited.
+
+    If proteina's own `_hotspot_tokens` ever stops splitting a string on
+    commas-and-whitespace, this is the test that should go red -- before the
+    gate starts judging tokens the container will not produce.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from shared.pdb_preflight import shipped_hotspots
+
+    spec = importlib.util.spec_from_file_location(
+        "_proteina_run_pipeline_tokens",
+        str(Path(__file__).resolve().parents[1]
+            / "tools" / "proteina" / "run_pipeline.py"),
+    )
+    rp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rp)
+
+    for raw in ("B520", "B520, A12 A13", "  ", "", "5,7,39"):
+        assert shipped_hotspots({"hotspot_spec": raw}) == rp._hotspot_tokens(
+            raw, "hotspot_spec"
+        ), raw
+
+
+@pytest.mark.parametrize("name,mod", [
+    ("bindcraft", bindcraft_mod),
+    ("pxdesign", pxdesign_mod),
+    ("rfdiffusion", rfdiffusion_mod),
+])
+@pytest.mark.parametrize("typed_chain,typed_hot", [
+    ("A", "5,7"),        # the pre-multi-chain shape: bare ints in, bare out
+    ("A,B", "A5,B7"),
+])
+def test_every_other_adapter_is_untouched_by_the_spec_preference(
+    name, mod, typed_chain, typed_hot,
+):
+    """The four gates now route through `shipped_hotspots`. For the five tools
+    that emit no spec, what they judge must be identical to the field they
+    judged before -- same objects, same types, same order."""
+    from shared.pdb_preflight import shipped_hotspots
+
+    inputs, err = mod.validate(_form(name, typed_chain, typed_hot), {})
+    assert err is None, err
+    assert "hotspot_spec" not in inputs, (
+        f"{name} started emitting hotspot_spec; the no-op claim needs "
+        f"re-checking"
+    )
+    judged = shipped_hotspots(inputs)
+    assert judged == inputs["hotspot_residues"]
+    assert [type(h) for h in judged] == [
+        type(h) for h in inputs["hotspot_residues"]
+    ]
+
+
+# ===========================================================================
+# AN INCOMPLETE BACKBONE IS NOT AN ABSENT RESIDUE  (P0-2)
+# ===========================================================================
+#
+# Preflight drops any hotspot whose residue lacks a complete N/CA/C/O
+# backbone. Missing O atoms are routine -- terminal residues, disordered
+# loops -- and whether that is fatal is a per-tool fact about the CONTAINER,
+# not about `hotspots_required`. Executed against the fixture below:
+#
+#   normalize_for_boltzgen / _pxdesign  -> renumber_map has no ("A", 30), so
+#       boltzgen's run_pipeline raises "not present after structure cleanup"
+#       with the GPU already running. Refusing is right.
+#   proteina's pdb_ca_residues -> select_residues -> missing_hotspots -> []
+#       for "A30". It runs, correctly constrained. Refusing is a false
+#       refusal of work trunk did successfully.
+
+def _missing_o_pdb(n_res: int = 40, drop_o_at: int = 30) -> bytes:
+    """One chain, 1..n, where `drop_o_at` carries N/CA/C and no O."""
+    lines = ["HEADER    SYNTHETIC MISSING O\n"]
+    serial = 0
+    for i in range(n_res):
+        for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+            if aname == "O" and (i + 1) == drop_o_at:
+                continue
+            serial += 1
+            lines.append(_atom_line(
+                serial=serial, name=aname, resname="ALA", chain="A",
+                resnum=i + 1, x=i * 4.0 + off,
+                y=1.0 if aname != "O" else 2.0, z=1.0,
+            ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+def test_the_fixture_really_is_missing_only_an_oxygen():
+    """Precondition. If residue 30 were absent outright, or complete, every
+    assertion below would pass for the wrong reason."""
+    from shared.pdb_preflight import (
+        _clean_resnums_by_chain, _present_resnums_by_chain,
+    )
+
+    pdb = _missing_o_pdb()
+    assert 30 in _present_resnums_by_chain(pdb, "A")["A"], (
+        "residue 30 has no usable CA -- the fixture is not the case under test"
+    )
+    assert 30 not in _clean_resnums_by_chain(pdb, "A")["A"], (
+        "residue 30 still has a complete N/CA/C/O backbone -- the fixture "
+        "does not exercise the split at all"
+    )
+
+
+def test_an_incomplete_backbone_hotspot_still_runs_on_proteina():
+    """RED on a492b71. Single chain, one hotspot, one missing oxygen -- the
+    branch refused it, trunk ran it, and proteina's own container accepts it.
+    """
+    verdict = preflight_for_tool(
+        "proteina", _missing_o_pdb(), target_chain="A", hotspots=[30],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert verdict.ok, verdict.reason
+    # Still REPORTED as dropped by the cleanup summary -- this is about the
+    # verdict, not about hiding the fact from the panel.
+    assert verdict.hotspot_status["dropped"] == [30]
+
+
+def test_proteinas_container_accepts_the_hotspot_the_gate_now_admits():
+    """The evidence the verdict above rests on, executed rather than cited.
+
+    proteina's container never runs pipeline_normalize; it selects residues by
+    CA. If that ever changes, this test is the one that should go red first --
+    before a user pays for the run the gate waved through.
+    """
+    import importlib.util
+    import tempfile
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "_proteina_run_pipeline",
+        str(Path(__file__).resolve().parents[1]
+            / "tools" / "proteina" / "run_pipeline.py"),
+    )
+    rp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rp)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "target.pdb"
+        path.write_bytes(_missing_o_pdb())
+        residues, unparsable = rp.pdb_ca_residues(path)
+
+    assert unparsable == 0
+    selected = rp.select_residues(residues, [("A", 1, 40)])
+    assert ("A", 30) in selected, (
+        "proteina's own selection no longer contains residue 30; the gate "
+        "must stop admitting it"
+    )
+    assert rp.missing_hotspots(selected, ["A30"]) == []
+
+
+def test_boltzgen_still_refuses_an_incomplete_backbone_hotspot():
+    """The counter-case, and the reason this is a per-tool rule rather than a
+    revert. boltzgen is hotspots-OPTIONAL like proteina, but it runs
+    pipeline_normalize in-container, which drops residue 30 -- so its own
+    run_pipeline raises after the wallet hold. Refusing at the gate is right.
+    """
+    verdict = preflight_for_tool(
+        "boltzgen", _missing_o_pdb(), target_chain="A", hotspots=[30],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok
+    assert "backbone is incomplete" in (verdict.reason or ""), verdict.reason
+
+
+def test_the_container_cleanup_boltzgen_runs_really_does_drop_that_residue():
+    """The evidence behind hotspot_needs_full_backbone=True for boltzgen.
+
+    shared/pipeline_normalize is this repo's VENDORED copy of the module the
+    boltzgen image mounts. It is NOT byte-identical to the sibling's original
+    (llm-proteinDesigner/backend/pdb_utils/pipeline_normalize.py), so this
+    asserts on the copy that always ships with the repo and
+    `test_the_normalizer_the_image_mounts_agrees_with_the_vendored_copy`
+    below checks the original whenever that checkout is present. The
+    renumber_map is exactly what docker/boltzgen/run_pipeline.py:1083 consults
+    before raising "Hotspot residue(s) ... are not present after structure
+    cleanup".
+    """
+    import tempfile
+    from pathlib import Path
+
+    from shared.pipeline_normalize import (
+        normalize_for_boltzgen, normalize_for_proteina,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "in.pdb"
+        src.write_bytes(_missing_o_pdb())
+        report = normalize_for_boltzgen(
+            str(src), str(Path(tmp) / "bz.pdb"), target_chain="A",
+        )
+        assert report.renumber_map, "expected boltzgen to renumber"
+        assert ("A", 30) not in report.renumber_map, (
+            "boltzgen's cleanup now keeps residue 30; its gate should stop "
+            "refusing it"
+        )
+        # proteina's PRESET of the same module drops it too -- which is why the
+        # preflight dry-run files it as dropped, and exactly why the verdict
+        # must not be read off that dry-run for proteina: the real proteina
+        # container does not run this module at all.
+        out = Path(tmp) / "pr.pdb"
+        normalize_for_proteina(str(src), str(out), target_chain="A")
+        kept = {
+            int(line[22:26]) for line in out.read_text().splitlines()
+            if line.startswith("ATOM") and line[12:16].strip() == "CA"
+        }
+        assert 30 not in kept
+
+
+@pytest.mark.parametrize("slug", ["proteina", "boltzgen", "rfdiffusion"])
+def test_a_hotspot_that_is_not_on_the_chain_at_all_is_refused_for_every_tool(
+    slug,
+):
+    """The other half of the split. An absent residue cannot be resolved by
+    anything downstream, so it hard-fails whatever the tool's backbone rule and
+    whatever `hotspots_required` says.
+
+    Structure is the CLEAN fixture on purpose: rfdiffusion hard-fails on any
+    internal gap before it ever reaches the hotspot branch, so running this
+    against `_missing_o_pdb` would assert on the gap message instead.
+    """
+    verdict = preflight_for_tool(
+        slug, _asymmetric_pdb(), target_chain="A", hotspots=[9000],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok
+    assert "outside that chain's numbering" in (verdict.reason or ""), (
+        verdict.reason
+    )
+    assert "backbone" not in (verdict.reason or "").lower(), (
+        f"blamed a backbone for a residue that was never in the file: "
+        f"{verdict.reason!r}"
+    )
+
+
+def test_a_mixed_refusal_names_each_cause_against_its_own_residue():
+    """Both causes at once. The old copy printed one sentence covering both
+    with an "either/or", which tells a user neither which residue to re-pick
+    nor which structure to repair."""
+    verdict = preflight_for_tool(
+        "pxdesign", _missing_o_pdb(), target_chain="A", hotspots=[30, 9000],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok
+    reason = verdict.reason or ""
+    assert "outside that chain's numbering" in reason, reason
+    assert "backbone is incomplete" in reason, reason
+    # 9000 is named by the absent clause and 30 by the backbone clause, not
+    # the other way round.
+    assert reason.index("9000") < reason.index("outside that chain's"), reason
+    assert reason.index("outside that chain's") < reason.index("30 is on"), (
+        reason
+    )
+    assert reason.index("30 is on") < reason.index("backbone is incomplete"), (
+        reason
+    )
+
+
+def test_the_suggestion_list_names_only_the_chains_it_searched():
+    """`_nearest_clean_residues` looks on the chain each dropped hotspot lands
+    on. A bare number lands on the first named chain only, so labelling its
+    suggestions "chain(s) A, B" claims a search of B that never happened."""
+    verdict = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=[9000],
+        binder_max_aa=80, num_designs=2,
+    )
+    fix = verdict.suggested_fix or ""
+    assert "on chain(s) A:" in fix, fix
+    assert "chain(s) A, B:" not in fix, fix
+    # A prefixed hotspot on B labels B, and only B.
+    verdict_b = preflight_for_tool(
+        "boltzgen", _asymmetric_pdb(), target_chain="A,B", hotspots=["B9000"],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert "on chain(s) B:" in (verdict_b.suggested_fix or ""), (
+        verdict_b.suggested_fix
+    )
+
+
+def test_both_submit_side_gates_ask_for_the_shipped_token():
+    """The two gates in blueprints/tools.py that no route test can reach here.
+
+    `POST /tools/<slug>/submit` needs a real upload, a wallet hold and a job
+    row, so the campaign and launch routes are the ones pinned end to end
+    above. This asserts the remaining two call sites read the SAME field those
+    do, because the failure mode is silent: `inputs["hotspot_residues"]` is a
+    perfectly good expression that simply judges the wrong token, and proteina
+    is the only adapter for which the two differ.
+
+    Same shape as test_proteina_smoke's "production asks the predicate instead
+    of restating it".
+    """
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "blueprints" / "tools.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    def _is_shipped_call(node) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "shipped_hotspots"
+        )
+
+    # 1. the hard preflight on the atomic submit route
+    assigns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "preflight_hotspots"
+            for t in n.targets
+        )
+    ]
+    assert len(assigns) == 1, (
+        f"expected exactly one preflight_hotspots assignment, found "
+        f"{len(assigns)}"
+    )
+    assert _is_shipped_call(assigns[0].value), (
+        "the submit gate stopped reading shipped_hotspots(inputs); a "
+        "chain-prefixed proteina hotspot is refused again at "
+        f"line {assigns[0].lineno}"
+    )
+
+    # 2. the reuse-token path, which runs validate_hotspots AND the preflight
+    reuse = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "_verify_reuse_pdb_bytes"
+    ]
+    assert len(reuse) == 1, f"expected one reuse gate, found {len(reuse)}"
+    hotspot_kw = [k for k in reuse[0].keywords if k.arg == "hotspots"]
+    assert hotspot_kw, "the reuse gate stopped passing hotspots at all"
+    assert _is_shipped_call(hotspot_kw[0].value), (
+        "the reuse gate stopped reading shipped_hotspots(inputs), so a "
+        "resampled proteina job is range-checked on the stripped copy"
+    )
+
+
+def test_an_unparseable_hotspot_token_is_refused_by_the_optional_tools_too():
+    """A token that parses to no residue at all belongs with the ABSENT half.
+
+    The adapters' own regexes reject garbage at validate(), so this arrives
+    only from a stored campaign param, a reuse token or a crafted POST -- and
+    those are exactly the paths that skip validate(). Filing it as "backbone
+    incomplete" would hand it proteina's benign verdict and fund a run whose
+    hotspot addresses nothing.
+    """
+    for slug in ("proteina", "boltzgen", "pxdesign"):
+        verdict = preflight_for_tool(
+            slug, _missing_o_pdb(), target_chain="A", hotspots=["xyz"],
+            binder_max_aa=80, num_designs=2,
+        )
+        assert not verdict.ok, f"{slug}: funded a run whose hotspot is 'xyz'"
+        assert verdict.hotspot_status["dropped"] == ["xyz"]
+
+
+def _origin_placeholder_pdb(n_res: int = 40, at: int = 30) -> bytes:
+    """One chain, 1..n, where `at` has a COMPLETE N/CA/C/O backbone whose atoms
+    all sit at 0,0,0 -- the placeholder convention for an unresolved residue."""
+    lines = ["HEADER    SYNTHETIC ORIGIN\n"]
+    serial = 0
+    for i in range(n_res):
+        placeholder = (i + 1) == at
+        for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+            serial += 1
+            lines.append(_atom_line(
+                serial=serial, name=aname, resname="ALA", chain="A",
+                resnum=i + 1,
+                x=0.0 if placeholder else i * 4.0 + off,
+                y=0.0 if placeholder else (1.0 if aname != "O" else 2.0),
+                z=0.0 if placeholder else 1.0,
+            ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+def test_a_residue_parked_at_the_origin_is_refused_but_not_called_absent():
+    """The two probes PARTITION the dropped list, so every rule except the
+    backbone one has to match between them.
+
+    A residue whose atoms all sit at 0,0,0 is a placeholder. Its backbone is
+    complete, so calling it "incomplete" would be a false sentence -- and,
+    worse, would hand it proteina's benign verdict and fund a design aimed at
+    the coordinate origin. `_clean_resnums_by_chain` already rejects it; the
+    presence probe must reject it the same way, even though proteina's own
+    container (`pdb_ca_residues`) does not filter coordinates at all.
+
+    THE REFUSAL IS UNCHANGED AND THE SENTENCE IS NOT. This used to be reported
+    with the ABSENT wording -- "the chain each one names has no residue with
+    that number, so it is outside that chain's numbering" -- about a residue
+    the file plainly numbers, and the fix line then told the user to "pick a
+    hotspot that exists". Both are false here: the number is fine, the
+    coordinates are not, and re-picking a number in the same unresolved stretch
+    fails identically.
+    """
+    from shared.pdb_preflight import (
+        _clean_resnums_by_chain, _origin_only_resnums_by_chain,
+        _present_resnums_by_chain,
+    )
+
+    pdb = _origin_placeholder_pdb()
+    assert 30 not in _clean_resnums_by_chain(pdb, "A")["A"]
+    assert 30 not in _present_resnums_by_chain(pdb, "A")["A"], (
+        "the presence probe kept a residue its sibling dropped for a reason "
+        "that has nothing to do with backbone completeness"
+    )
+    # ...and the residue IS numbered on the chain, which is the whole reason
+    # the absent wording was wrong. If this is empty the fixture has stopped
+    # exercising the case and every assertion below passes for free.
+    assert 30 in _origin_only_resnums_by_chain(pdb, "A")["A"]
+
+    verdict = preflight_for_tool(
+        "proteina", pdb, target_chain="A", hotspots=[30],
+        binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok, "funded a design aimed at the coordinate origin"
+    assert "backbone is incomplete" not in (verdict.reason or ""), (
+        f"called a complete backbone incomplete: {verdict.reason!r}"
+    )
+    assert "outside that chain's numbering" not in (verdict.reason or ""), (
+        f"still blaming the numbering for a residue that is numbered: "
+        f"{verdict.reason!r}"
+    )
+    assert "0,0,0" in (verdict.reason or ""), verdict.reason
+    assert "never resolved" in (verdict.reason or ""), verdict.reason
+    assert "Pick a hotspot that exists" not in (verdict.suggested_fix or ""), (
+        f"sent the user to re-pick a number that was never wrong: "
+        f"{verdict.suggested_fix!r}"
+    )
+
+
+def test_an_absent_hotspot_and_an_at_origin_one_do_not_read_the_same():
+    """ONE FILE, TWO CAUSES, TWO SENTENCES -- the assertion the wording fix
+    exists for.
+
+    Residue 999 is not on chain A at all; residue 30 is numbered there and
+    parked at 0,0,0. Both are hard-failed and both always were, so this test
+    says nothing about the verdict -- it says the user can tell which of two
+    different problems they have, and is sent to the right remedy for it.
+
+    Deliberately asserts the DIFFERENCE first: collapsing the two branches back
+    into one string is the regression, and a test that only checked each branch
+    against its own substrings would survive a merge that made both emit the
+    absent text.
+    """
+    pdb = _origin_placeholder_pdb()
+
+    absent = preflight_for_tool(
+        "proteina", pdb, target_chain="A", hotspots=[999],
+        binder_max_aa=80, num_designs=2,
+    )
+    at_origin = preflight_for_tool(
+        "proteina", pdb, target_chain="A", hotspots=[30],
+        binder_max_aa=80, num_designs=2,
+    )
+
+    # Preconditions: same verdict, so the difference below is about text only.
+    assert not absent.ok and not at_origin.ok, (
+        "a refusal DECISION moved; this test only governs the wording"
+    )
+    assert absent.hotspot_status["dropped"] == [999]
+    assert at_origin.hotspot_status["dropped"] == [30]
+
+    assert absent.reason != at_origin.reason, (
+        "an at-origin hotspot is still reported with the absent wording"
+    )
+    assert absent.suggested_fix != at_origin.suggested_fix, (
+        "both causes are still routed to the same remedy"
+    )
+
+    # Each names its own cause, rather than merely differing by the residue
+    # number interpolated into one shared sentence.
+    assert "outside that chain's numbering" in (absent.reason or "")
+    assert "outside that chain's numbering" not in (at_origin.reason or "")
+    assert "0,0,0" in (at_origin.reason or "")
+    assert "0,0,0" not in (absent.reason or "")
+
+    # And each points somewhere useful: re-pick for a number that isn't there,
+    # a different structure for one that is there and unresolved.
+    assert "Pick a hotspot that exists" in (absent.suggested_fix or "")
+    assert "Pick a hotspot that exists" not in (at_origin.suggested_fix or "")
+    assert "resolves them" in (at_origin.suggested_fix or "")
+
+
+def test_an_at_origin_hotspot_beside_an_absent_one_keeps_both_sentences():
+    """The two causes in one request. Each clause is built independently, so
+    neither may swallow the other -- a user who typed both gets told about
+    both, and the fix line carries both remedies.
+    """
+    verdict = preflight_for_tool(
+        "proteina", _origin_placeholder_pdb(), target_chain="A",
+        hotspots=[30, 999], binder_max_aa=80, num_designs=2,
+    )
+    assert not verdict.ok
+    reason = verdict.reason or ""
+    assert "outside that chain's numbering" in reason, reason
+    assert "0,0,0" in reason, reason
+    # Attributed to the right residue on each side, not merged into one list.
+    assert "residue(s) 999 can't be used" in reason, reason
+    assert "residue(s) 30 can't be used" in reason, reason
+    fix = verdict.suggested_fix or ""
+    assert "Pick a hotspot that exists" in fix, fix
+    assert "Residue(s) 30 are numbered in this file" in fix, fix
+
+
+# --- BACKWARD COMPATIBILITY, across every PDB-target tool -------------------
+#
+# The pre-multi-chain shape is `target_chain: "A"` with bare integer hotspots.
+# It has to survive validate -> build_payload -> preflight unchanged, for all
+# six tools, or this branch is a regression for every job submitted before the
+# contract existed. Executed against trunk (1853746), against a492b71 and
+# against HEAD: the validate() dict, the payload dict and the full preflight
+# verdict -- kind, reason, suggested_fix and hotspot_status -- come back
+# identical for all three, per tool.
+
+_BACKCOMPAT_FORMS = {
+    "bindcraft": {
+        "preset": "pilot", "target_chain": "A", "hotspot_residues": "5,7,39",
+        "binder_length_min": "55", "binder_length_max": "65", "num_designs": "2",
+    },
+    "pxdesign": {
+        "preset": "pilot", "target_chain": "A", "hotspot_residues": "5,7,39",
+        "binder_length": "80", "num_designs": "2",
+    },
+    "rfdiffusion": {
+        "preset": "pilot", "target_chain": "A", "hotspot_residues": "5,7,39",
+        "binder_length_min": "55", "binder_length_max": "65", "num_designs": "2",
+    },
+    "rfantibody": {
+        "preset": "pilot", "target_chain": "A", "hotspot_residues": "5,7,39",
+        "num_designs": "2",
+    },
+    "boltzgen": {
+        "preset": "pilot", "target_chain": "A", "hotspot_residues": "5,7,39",
+        "binder_length_min": "55", "binder_length_max": "65", "num_designs": "2",
+    },
+    "proteina": {
+        "preset": "protein_binder", "target_chain": "A",
+        "hotspot_residues": "5,7,39", "binder_length_min": "60",
+        "binder_length_max": "80", "_has_custom_target": "1",
+    },
+}
+
+
+def _clean_single_chain_pdb(n_res: int = 60) -> bytes:
+    lines = ["HEADER    BACKCOMPAT\n"]
+    serial = 0
+    for i in range(n_res):
+        for aname, off in [("N", 0.0), ("CA", 1.0), ("C", 2.0), ("O", 2.0)]:
+            serial += 1
+            lines.append(_atom_line(
+                serial=serial, name=aname, resname="ALA", chain="A",
+                resnum=i + 1, x=i * 4.0 + off,
+                y=1.0 if aname != "O" else 2.0, z=1.0,
+            ))
+    lines.append("END\n")
+    return "".join(lines).encode()
+
+
+@pytest.mark.parametrize("slug", sorted(_BACKCOMPAT_FORMS))
+def test_the_pre_multichain_shape_survives_every_tool_unchanged(slug):
+    """One chain, bare ints, all six tools: same payload shape, same verdict.
+
+    Deliberately asserts the SAME expected values for every tool rather than
+    each tool's own output, because the claim is that they agree -- a
+    per-tool expectation would let one drift alone and stay green.
+    """
+    import uuid as _uuid
+
+    from shared.pdb_preflight import shipped_hotspots
+    from shared.targets import DesignTarget
+
+    mod = __import__(f"tools.{slug}", fromlist=["*"])
+    validate = getattr(mod, "validate", None) or mod.adapter.validate
+    build = getattr(mod, "build_payload", None) or mod.adapter.build_payload
+
+    inputs, err = validate(_BACKCOMPAT_FORMS[slug], {})
+    assert err is None, err
+    assert inputs["target_chain"] == "A"
+    assert inputs["hotspot_residues"] == [5, 7, 39], (
+        f"{slug}: bare ints did not survive validate(): "
+        f"{inputs['hotspot_residues']!r}"
+    )
+    assert all(isinstance(h, int) for h in inputs["hotspot_residues"])
+
+    payload = build(inputs, "https://example/t.pdb")
+    assert payload["hotspot_residues"] == [5, 7, 39], (
+        f"{slug}: the payload the container receives changed shape"
+    )
+
+    # The gates read this, and for a single chain it must still range-check
+    # green -- proteina's spec is ["A5", "A7", "A39"], which names chain A.
+    gate_tokens = shipped_hotspots(inputs)
+    target = DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1",
+        chain_summary={"chains": [{
+            "chain_id": "A", "standard_residue_count": 60,
+            "hetatm_resnames": [], "water_count": 0,
+            "min_resnum": 1, "max_resnum": 60,
+        }]},
+    )
+    assert target.hotspot_error("A", gate_tokens) is None, (
+        target.hotspot_error("A", gate_tokens)
+    )
+
+    verdict = preflight_for_tool(
+        slug, _clean_single_chain_pdb(), target_chain="A",
+        hotspots=inputs["hotspot_residues"], binder_max_aa=80, num_designs=2,
+    )
+    assert verdict.kind is VerdictKind.READY, verdict.reason
+    assert verdict.reason is None and verdict.suggested_fix is None
+    assert verdict.hotspot_status == {
+        "surviving": [5, 7, 39], "dropped": [],
+    }
+
+
+def test_the_panel_and_the_submit_gate_agree_on_a_prefixed_hotspot():
+    """The other half of the panel/gate agreement already pinned for a bare
+    number. The AJAX panel has ALWAYS rebuilt the prefixed token
+    (`f"{_cid}{_resnum}"` in blueprints/tools.tool_preflight), so before the
+    fix it returned READY for B520 while the submit gate -- reading proteina's
+    stripped copy -- refused. Panel green plus gate red is the one divergence
+    direction that panel's own comment forbids: Run stays enabled and the user
+    is refused on click.
+    """
+    from shared.pdb_preflight import shipped_hotspots
+    from tools import proteina as proteina_mod
+
+    pdb = _asymmetric_pdb()
+    panel = preflight_for_tool(
+        "proteina", pdb, target_chain="A B", hotspots=["B520"],
+    )
+    inputs, err = proteina_mod.adapter.validate(_proteina_form("B520"), {})
+    assert err is None, err
+    gate = preflight_for_tool(
+        "proteina", pdb, target_chain=inputs["target_chain"],
+        hotspots=shipped_hotspots(inputs),
+    )
+    assert panel.ok is gate.ok is True, (
+        f"panel ok={panel.ok} gate ok={gate.ok} -- a divergence here is the "
+        f"defect itself"
+    )
+
+
+def test_the_normalizer_the_image_mounts_agrees_with_the_vendored_copy():
+    """The claim under hotspot_needs_full_backbone=True is about the module the
+    GPU loads, not the one this repo carries -- and they are not byte-identical.
+
+    tools-hub vendors shared/pipeline_normalize.py; the boltzgen and pxdesign
+    images are built from llm-proteinDesigner and mount ITS
+    backend/pdb_utils/pipeline_normalize.py. Asserting only on the vendored
+    copy would be an argument about a file the GPU never loads. Skipped when
+    the sibling checkout is not beside this one, so CI without it stays green.
+    """
+    import importlib.util
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    # Found by search, not by a fixed number of `..`: this repo is worked on
+    # both from its main checkout and from git worktrees at an unrelated
+    # depth, and a hardcoded parents[N] silently resolves to nothing in one of
+    # them -- which reads as "the sibling is absent" and skips forever.
+    tail = Path("llm-proteinDesigner") / "backend" / "pdb_utils" / \
+        "pipeline_normalize.py"
+    root = Path(__file__).resolve().parents[1]
+    candidates = [
+        anc / tail for anc in [root, *root.parents]
+    ] + [
+        anc / "Documents" / "Claude_projects" / tail
+        for anc in [root, *root.parents]
+    ]
+    sibling = next((c for c in candidates if c.exists()), None)
+    if sibling is None:
+        pytest.skip("llm-proteinDesigner checkout not found next to this repo")
+
+    spec = importlib.util.spec_from_file_location("_sibling_pn", str(sibling))
+    pn = importlib.util.module_from_spec(spec)
+    # Registered before exec: the module defines dataclasses, and the
+    # dataclasses machinery looks its own module up in sys.modules.
+    sys.modules["_sibling_pn"] = pn
+    try:
+        spec.loader.exec_module(pn)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.pdb"
+            src.write_bytes(_missing_o_pdb())
+            report = pn.normalize_for_boltzgen(
+                str(src), str(Path(tmp) / "out.pdb"), target_chain="A",
+            )
+        assert report.renumber_map, "expected the shipped normalizer to renumber"
+        assert ("A", 30) not in report.renumber_map, (
+            "the normalizer the boltzgen image actually mounts now KEEPS a "
+            "residue missing only its O — hotspot_needs_full_backbone=True is "
+            "no longer true for boltzgen and the gate refuses runs that would "
+            "succeed"
+        )
+        assert report.residues_dropped_per_chain.get("A") == 1
+    finally:
+        sys.modules.pop("_sibling_pn", None)

@@ -623,10 +623,12 @@ class TestRewardParse:
         sub.mkdir(parents=True)
         (sub / "design_A.pdb").write_text("ATOM\n")
         (sub / "design_B.pdb").write_text("ATOM\n")
+        # af2folding_plddt is the AfDesign LOSS (1 - pLDDT); af2folding_plddt_log
+        # is the metric. Both are written, complementary, as upstream does.
         csv_text = (
-            "pdb_path,pdb_index,total_reward,af2folding_i_ptm_log,af2folding_plddt,af2folding_rmsd,sample_type,metadata_tag\n"
-            f"{sub / 'design_A.pdb'},0,-0.60,0.18,0.62,5.2,final,design_A\n"
-            f"{sub / 'design_B.pdb'},1,-0.45,0.30,0.71,0.8,final,design_B\n"
+            "pdb_path,pdb_index,total_reward,af2folding_i_ptm_log,af2folding_plddt,af2folding_plddt_log,af2folding_rmsd,sample_type,metadata_tag\n"
+            f"{sub / 'design_A.pdb'},0,-0.60,0.18,0.38,0.62,5.2,final,design_A\n"
+            f"{sub / 'design_B.pdb'},1,-0.45,0.30,0.29,0.71,0.8,final,design_B\n"
         )
         (run / "inference" / "rewards_search_binder_local_pipeline_0.csv").write_text(csv_text)
         return run
@@ -641,7 +643,8 @@ class TestRewardParse:
         s = designs[0]["scores"]
         assert s["total_reward"] == -0.45
         assert s["af2_iptm"] == 0.30       # af2folding_i_ptm_log
-        assert s["af2_plddt"] == 0.71      # af2folding_plddt
+        # af2folding_plddt_log, NOT the 0.29 loss column beside it.
+        assert s["af2_plddt"] == 0.71
         assert s["binder_scrmsd"] == 0.8   # af2folding_rmsd
         assert s["rf3_score"] is None      # protein reward has no rf3 column
         assert s["cluster_id"] is None     # diversity assigned at the hub

@@ -66,7 +66,7 @@
       <div class="panel-body">
         {{ field_text("target_chain", "Target chain",
                       "Checked against this target's stored structure. Overrides the target default for these runs only.",
-                      placeholder="e.g. A", max_length=4, max_width="120px",
+                      placeholder="e.g. A", max_length=32, max_width="120px",
                       prefilled=pre_fill) }}
         {% if target.chains %}
         <p style="margin: -0.5rem 0 1rem; font-size: 0.8rem; color: var(--text-tertiary);

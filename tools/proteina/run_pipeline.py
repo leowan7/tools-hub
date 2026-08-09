@@ -272,7 +272,11 @@ _CUSTOM_TARGET_PRESETS = {"protein_binder"}
 
 # Results columns the viewer renders (proteina_results.html). Column names are
 # VERIFIED against the P-2 (protein: af2folding_*) and P-3 (ligand: rf3folding_*)
-# canary reward CSVs @916eaaed. Each display key lists the real upstream columns
+# canary reward CSVs @916eaaed. NOTE WHAT THAT VERIFICATION COVERED: that each
+# named column EXISTS. It did not check what any of them MEANS, which is how
+# af2_plddt shipped reading a loss term for its metric — see below. A column
+# name matching is not evidence the value is the quantity the display key
+# claims. Each display key lists the real upstream columns
 # for BOTH variants; the tolerant _pick takes the first that exists (unmatched ->
 # None -> hidden by the renderer).
 #   protein_binder reward = af2folding_* (AF2 refold); total_reward == -i_pae.
@@ -281,8 +285,32 @@ _SCORE_COLUMNS: dict[str, tuple[str, ...]] = {
     "total_reward": ("total_reward",),
     # interface pTM: raw for ligand (rf3folding_ipTM), log-only for protein.
     "af2_iptm": ("rf3folding_ipTM", "af2folding_i_ptm_log", "af2_iptm", "iptm"),
-    # pLDDT (0-1): af2folding_plddt (protein) / rf3folding_plddt (ligand).
-    "af2_plddt": ("af2folding_plddt", "rf3folding_plddt", "af2_plddt", "plddt"),
+    # pLDDT (0-1). The protein variant MUST read the ``_log`` column. The bare
+    # ``af2folding_plddt`` is the AfDesign LOSS term — ``1 - pLDDT`` — and the
+    # two sum to 1.000000 in every row of a real reward CSV. Reading the loss
+    # delivered an INVERTED confidence, and inverted monotonically, so any
+    # sort, filter or threshold on pLDDT picked the WORST designs.
+    #
+    # Measured on job proteina-direct-fc-20260809-091702-68025f (prod v20 @
+    # 1302d47): rank 1 scored ipTM 0.7625 and scRMSD 1.22 A while reporting
+    # pLDDT 0.226 — impossible together. Its ``_log`` value is 0.774. The
+    # ``_log`` suffix is NOT a logarithm: ``af2folding_rmsd`` and
+    # ``af2folding_rmsd_log`` are identical in every row, which is what proves
+    # ``_log`` is the reported-metric dict rather than a transform.
+    #
+    # ``af2folding_plddt`` is deliberately NOT retained as a fallback. It is
+    # not a worse-but-usable source, it is the complement; falling back to it
+    # would silently restore the inversion on any CSV lacking the _log column.
+    # Better to deliver None, which the renderer hides.
+    #
+    # ``af2_iptm`` above is right only by accident — there is no non-log
+    # ``af2folding_i_ptm`` column at all, so it was forced onto the metric.
+    # pLDDT is the one field where both spellings exist.
+    #
+    # ``rf3folding_plddt`` (ligand) is UNVERIFIED: the run that proved this was
+    # protein_binder and says nothing about the RF3 variant. Left exactly where
+    # it was rather than speculatively reordered on an assumed symmetry.
+    "af2_plddt": ("af2folding_plddt_log", "rf3folding_plddt", "af2_plddt", "plddt"),
     # RF3 summary (ligand only): the fold ranking score (0-1, higher better).
     "rf3_score": ("rf3folding_ranking_score", "rf3_score"),
     # self-consistency RMSD (protein AF2 refold; absent for the ligand variant).
@@ -2792,7 +2820,19 @@ def design_subprocess_env() -> dict:
 # designs it banked) and returns a structured result on the timeout path. This
 # is that, sized to leave the shard time to parse, upload/inline, write its
 # result and tar the raw tree inside the wrapper's 7080 s.
-DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6600
+#
+# SIZED AT THE HEADROOM FLOOR, DELIBERATELY. This deadline is NEW, so every
+# value below 7080 takes jobs that used to finish and kills them instead: a
+# search running between this number and 7080 completed before and does not
+# now. Nobody has measured real Fc runtimes against it, so the honest choice
+# is the largest value that still leaves the shard the 300 s it needs to
+# parse, deliver, write and tar — which is exactly 7080 - 300 = 6780. That
+# keeps the newly-fatal band as small as the headroom rule allows (480 s ->
+# 300 s) instead of picking a rounder number that forfeits three minutes of
+# other people's compute. The test above asserts the 300 s floor, so this
+# sits ON it: raising the container ceiling gives this room, lowering it
+# fails the test rather than silently inverting the ordering.
+DESIGN_SUBPROCESS_DEFAULT_TIMEOUT_S = 6780
 # The exit code a timed-out search reports into ``result["search"]``. 124 is
 # what coreutils `timeout(1)` uses, so it does not collide with a real
 # `complexa design` exit status, and ``rc != 0`` already routes it through the

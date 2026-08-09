@@ -1088,9 +1088,20 @@ def test_chain_error_skips_when_no_chain_was_requested():
     assert t.chain_error("") is None
 
 
-def test_hotspot_error_accepts_a_residue_in_any_named_chain():
-    """``target_chain`` may name several ("A B"), which rfdiffusion's
-    validator accepts. A residue in the second chain is in range."""
+def test_hotspot_error_reads_a_bare_residue_against_the_first_named_chain():
+    """``target_chain`` may name several ("A B"), which rfdiffusion's validator
+    accepts. A BARE number is judged against the FIRST of them.
+
+    This used to assert the union — "a residue in the second chain is in range"
+    — and that was wrong in the direction that spends money. Nothing downstream
+    reads an unprefixed hotspot as "any named chain": tools/base.py:108 rewrites
+    it onto the first target chain and proteina promotes it onto
+    contig_chains[0]. So 320 here is SENT as "A320", against a chain that stops
+    at 210; this route funded the campaign and the container refused it with the
+    GPU already running. proteina is what makes that reachable rather than
+    hypothetical — it emits hotspot_residues as bare author numbers on purpose,
+    so every proteina multi-chain launch arrives here unprefixed.
+    """
     summary = {
         "chains": [
             {"chain_id": "A", "standard_residue_count": 210,
@@ -1102,7 +1113,24 @@ def test_hotspot_error_accepts_a_residue_in_any_named_chain():
         ],
     }
     t = DesignTarget(id=str(uuid.uuid4()), user_id="u-1", chain_summary=summary)
-    assert t.hotspot_error("A B", [30, 320]) is None
+    assert t.hotspot_error("A B", [30]) is None
+    err = t.hotspot_error("A B", [30, 320])
+    assert err and "320" in err, err
+    # ...and it says WHY, or the user reads "320 is outside A 1-210, B 300-350"
+    # about a number that is plainly inside B 300-350.
+    assert "read as chain A" in err, err
+    # Naming the chain explicitly is how you reach the second one — and this
+    # arm has to be REACHABLE, or the sentence above sends users to an escape
+    # hatch that is not there. It always was for rfdiffusion / bindcraft /
+    # pxdesign, whose validate() emits the prefixed token straight into
+    # hotspot_residues. It was NOT for proteina, which strips the letter into a
+    # bare number and carries the prefixed form in hotspot_spec instead, so
+    # every proteina hotspot arrived here unprefixed however it was typed and
+    # this line pinned a door proteina users could not open. The routes now
+    # judge shipped_hotspots(validated), which prefers the spec, so the
+    # prefixed token reaches this function from every tool. Pinned end to end
+    # in tests/test_multichain_targets.py and at both money routes.
+    assert t.hotspot_error("A B", [30, "B320"]) is None
     err = t.hotspot_error("A B", [30, 9001])
     assert err and "9001" in err and "A 1-210" in err and "B 300-350" in err
 

@@ -133,9 +133,17 @@ def cleanup_old_jobs(base_dir: Path = Path("tmp"), max_age_seconds: int = 3600) 
     """Delete job directories under base_dir that are older than max_age_seconds.
 
     Iterates over immediate subdirectories of base_dir and removes any whose
-    last-modification time is older than the specified age threshold. Only
-    directories are removed; loose files directly under base_dir (e.g. .gitkeep)
-    are not touched.
+    last-modification time is older than the specified age threshold AND whose
+    name is a strict UUID.
+
+    THE SAFETY PROPERTY IS THE NAME FILTER, not a file-versus-directory
+    distinction. ``base_dir`` defaults to the repo's ``tmp/``, which is not
+    this module's private scratch space — it is shared with at least
+    ``tmp/calibration/`` (tracked provenance written by scripts/calibration/)
+    and ``tmp/pdb_compare/`` (untracked real-PDB test fixtures). So: only
+    directories named like the UUIDs ``create_job_dir`` mints are removed.
+    Everything else under base_dir is left alone, loose file or sibling
+    tenant's directory alike.
 
     Args:
         base_dir: Root directory containing per-job subdirectories.
@@ -161,7 +169,26 @@ def cleanup_old_jobs(base_dir: Path = Path("tmp"), max_age_seconds: int = 3600) 
     cutoff_time = time.time() - max_age_seconds
 
     for entry in base_dir.iterdir():
-        # Only clean up subdirectories — skip files like .gitkeep
+        # Ours or not? base_dir is SHARED (see the docstring), so the name is
+        # what separates a job dir from a sibling tenant's data. Reaping
+        # tmp/pdb_compare/ is the worst case: its tests skip rather than fail
+        # when the fixtures are missing, so the coverage loss is silent.
+        # create_job_dir has minted str(uuid.uuid4()) in every version of this
+        # file, so there is no legacy job-dir shape stranded by this check.
+        #
+        # TRADE-OFF, accepted: a hand-made non-UUID directory under tmp/ now
+        # persists forever. That is the right way round — persisting an
+        # unknown directory beats deleting someone else's data.
+        #
+        # NOT the .owner marker instead: create_job_dir writes it only
+        # `if owner:` and write_owner swallows OSError, so filtering on it
+        # would leak unowned dirs and failed marker-writes forever — the
+        # unbounded disk growth this reaper exists to prevent. The UUID shape
+        # is minted by construction and cannot leak.
+        if not is_valid_job_id(entry.name):
+            continue
+
+        # Only clean up subdirectories — a stray UUID-named file is not a job
         if not entry.is_dir():
             continue
 

@@ -394,6 +394,25 @@ def create_app() -> Flask:
         _metric_glossary.format_value
     )
     flask_app.jinja_env.globals["score_legend_for"] = _score_legends.get_legend
+    # ``legend_text`` renders a legend the way a RESULTS TABLE needs it:
+    # explanation plus the optional ``caveat``, the half that is about what an
+    # old stored result may hold rather than about the metric. A global rather
+    # than three inline concatenations in candidate_table.html, so a caveat
+    # cannot land on the header tooltip and miss the per-row one. The email is
+    # the OTHER consumer of a stored result and calls
+    # shared/score_legends.email_caption instead — same two halves, gated on
+    # the chain count of the job it is about, which a table cannot see. It is
+    # not exempt from caveats: complete_job also runs from the stuck-job
+    # sweeper, the inline poll and scripts/finalize_stuck_job.py, so that mail
+    # can be about a result the app read back out of Storage.
+    flask_app.jinja_env.globals["legend_text"] = _score_legends.legend_text
+    # Whether a results view should mark ipTM as not-comparable. Kept in Python
+    # rather than as a chain-splitting expression repeated across six results
+    # templates — the tool set and the "more than one chain" rule are one
+    # decision, and it is testable there.
+    flask_app.jinja_env.globals["multichain_iptm_unreliable"] = (
+        _score_legends.multichain_iptm_unreliable
+    )
     flask_app.jinja_env.globals["ordinal"] = _ranking.ordinal
     # Exposed so the target page can tell a PAUSED run from a still-running one
     # without a second copy of the status set in markup. It must stay
