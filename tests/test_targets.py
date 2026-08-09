@@ -370,6 +370,30 @@ def test_a_row_from_before_the_migration_still_loads(fake):
     assert target.effective_hotspots == [241, 243]
 
 
+def test_a_row_that_HAS_the_column_actually_reads_it(fake):
+    """THE READ SIDE OF THE WHOLE FEATURE, and nothing else pinned it.
+
+    Every other test here hands ``DesignTarget(hotspot_spec=[...])`` straight to
+    the constructor, and the pre-migration test above passes a row with the key
+    ABSENT — so ``from_row`` returning a constant ``[]`` satisfied all of them.
+    That mutation survived an independent QC pass over 1254 tests.
+
+    It is the worst survivor to have, because it fails silently in the safe
+    direction: `effective_hotspots` falls back to the integer column, the detail
+    page, the list page and the launch prefill all render the unqualified form,
+    every enrichment ever written becomes invisible, and the suite stays green.
+    """
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 241],
+        "hotspot_spec": ["A241", "B241"],
+    })
+    assert target.hotspot_spec == ["A241", "B241"]
+    # And the property the rest of the app reads prefers it over the lossy copy
+    # — on a homodimer that is the whole difference between one protomer and two.
+    assert target.effective_hotspots == ["A241", "B241"]
+
+
 def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list():
     """``split_hotspot`` reads a prefix only against a KNOWN chain list, so a
     target with no chain summary and no ``target_chain`` gets ``(None, None)``

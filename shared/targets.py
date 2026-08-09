@@ -103,7 +103,7 @@ def _hotspot_chain_ids(target_chain, structure) -> list:
     fallback in :func:`_split_stored_hotspot` takes the single leading letter
     and stores 2296 instead, and ``"AB12"`` on chain ``"AB"`` matches nothing
     and is dropped from both columns. Pinned by
-    ``test_the_target_chain_seeds_the_chain_list_when_there_is_no_upload``.
+    ``test_the_target_chain_seeds_the_chain_list_for_the_enrichment``.
 
     WHAT IT COSTS, stated because it is a real limitation and not a safety
     property: on that same ``"A2"`` target ``split_hotspot("A296", ["A2"])``
