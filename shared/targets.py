@@ -1106,33 +1106,45 @@ def enrich_target_hotspot_spec(target: Optional[DesignTarget], tokens) -> bool:
     caller is a money route that has already created runs, and there is nothing
     a user could do about "your target's stored hotspots were not enriched".
 
-    The UPDATE re-states conditions 1 and 3 in its own WHERE clause
-    (``user_id``, ``hotspot_spec IS NULL``), so a concurrent writer cannot be
-    clobbered by a decision made from a row read earlier in the request, and
-    only the one column is in the payload.
+    Condition 1 is ALSO in the UPDATE's WHERE clause (``hotspot_spec IS NULL``),
+    because the in-memory check was made from a row read earlier in the request
+    and a concurrent writer must not be clobbered. Owner scope is there for the
+    same reason it is on every other write here — this is a content write, and
+    addressing it by id alone would make ownership depend entirely on the
+    caller having fetched correctly. Condition 3 is enforced by the PAYLOAD, not
+    the WHERE clause: one key, one column.
 
     THE COLUMN MAY NOT EXIST. Migration 0041 adds it, and a deploy that lands
-    first makes this UPDATE fail every time — which is why every exception is
-    swallowed and logged rather than propagated. Nothing else about the launch
-    depends on it.
+    first makes this UPDATE fail every time. That is why EVERY exception is
+    swallowed and logged rather than propagated, and why the ``try`` covers the
+    reductions as well as the write: both callers are past their commit point,
+    where an escaping exception would 500 a request whose runs are already
+    funded and billing.
     """
     if target is None or target.hotspot_spec:
         return False
-    chain_ids = _hotspot_chain_ids(target.target_chain, target)
-    spec = _clean_hotspot_spec(tokens, chain_ids)
-    if not spec:
-        # Nothing in this run's hotspots names a chain, so there is nothing the
-        # integer column could not already express.
-        return False
-    if (_clean_hotspot_ints(tokens, chain_ids) or []) != list(
-        target.hotspot_residues
-    ):
-        return False
-
-    client = get_service_client()
-    if client is None:
-        return False
+    spec = None
     try:
+        # INSIDE the try, not just the UPDATE. `chain_summary` is JSON off a
+        # database row and `tokens` comes from a validated params dict, so the
+        # reductions below are the parts most likely to meet a shape nobody
+        # anticipated — and the caller is a money route past its commit point,
+        # where "may not fail a launch" has to be a guarantee rather than an
+        # expectation.
+        chain_ids = _hotspot_chain_ids(target.target_chain, target)
+        spec = _clean_hotspot_spec(tokens, chain_ids)
+        if not spec:
+            # Nothing in this run's hotspots names a chain, so there is nothing
+            # the integer column could not already express.
+            return False
+        if (_clean_hotspot_ints(tokens, chain_ids) or []) != list(
+            target.hotspot_residues
+        ):
+            return False
+
+        client = get_service_client()
+        if client is None:
+            return False
         response = (
             client.table(_TABLE)
             .update({"hotspot_spec": spec})

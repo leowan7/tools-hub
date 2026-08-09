@@ -436,6 +436,18 @@ def test_a_database_failure_is_swallowed():
         assert _enrich(_fc(), ["A241", "B241"]) is False
 
 
+def test_a_malformed_chain_summary_cannot_reach_the_caller():
+    """THE TRY COVERS THE REDUCTIONS, NOT JUST THE WRITE. ``chain_summary`` is
+    JSON off a database row, so its shape is not guaranteed by anything in this
+    process, and ``_hotspot_chain_ids`` calls ``.get("chains")`` on it. Both
+    callers are money routes PAST their commit point — an escaping exception
+    there is a 500 on a request whose runs are already funded and billing."""
+    wrote, update = _attempt(_fc(chain_summary=["not", "a", "dict"]),
+                             ["A241", "B241"])
+    assert wrote is False
+    assert update is None or "fields" not in update
+
+
 def test_no_client_is_not_an_error():
     with patch("shared.targets.get_service_client", return_value=None):
         assert _enrich(_fc(), ["A241", "B241"]) is False

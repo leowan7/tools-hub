@@ -165,7 +165,11 @@
              proteina's prefix rule — that copy lives under proteina's field. #}
           <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
         </div>
-        <div class="runs-field" id="chain-hotspot-field">
+        {# Hidden AND disabled in the server-rendered markup, like
+           #target-sdf-field above. The form opens on a non-proteina tool, so
+           this starts closed; the `disabled` is what makes it inert with no JS
+           at all, and refreshTool() opens it only for a custom proteina run. #}
+        <div class="runs-field" id="chain-hotspot-field" style="display:none;">
           <label for="chain_hotspots">Hotspot residues</label>
           <input type="text" id="chain_hotspots" name="chain_hotspots" value="{{ pre_fill.get('chain_hotspots','') }}" placeholder="e.g. A417,B453" disabled>
           <div class="hint" id="chain-hotspot-hint">Optional. Residues the binder should contact. A plain number is read as the target chain; when the run targets more than one chain it is refused, because 241 cannot say which protomer it means &mdash; prefix the chain instead (A113 C73). Every one is checked against your structure before any GPU runs.</div>
