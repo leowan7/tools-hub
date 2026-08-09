@@ -142,6 +142,45 @@ class ToolRules:
     thing that has to change: port the multi-chain normalizer to
     llm-proteinDesigner, rebuild those images, then flip
     ``multi_chain_container_ready``. Nothing else here needs to move.
+
+    On ``hotspot_needs_full_backbone``
+    ---------------------------------
+    Does a hotspot on a residue with an INCOMPLETE backbone (present, with a
+    CA, but short of N/CA/C/O) survive into this tool's run?
+
+    It is a third distinct question, and it is NOT ``hotspots_required``.
+    That flag says whether the tool needs a hotspot at all; this one says
+    whether the one it was given will resolve. Missing O atoms are routine —
+    terminal residues, disordered loops — so answering it with the wrong flag
+    either refuses ordinary paid work or funds a run that dies mid-flight.
+
+    True for the five tools dispatched to llm-proteinDesigner images: they run
+    ``pipeline_normalize`` in-container, which DROPS such a residue, so the
+    hotspot cannot be mapped afterwards. Executed against a synthetic chain
+    whose residue 30 carries N/CA/C and no O: ``normalize_for_boltzgen`` and
+    ``normalize_for_pxdesign`` both return a ``renumber_map`` with no
+    ``("A", 30)``, and llm-proteinDesigner's
+    ``docker/boltzgen/run_pipeline.py:1083`` raises ``"Hotspot residue(s) ...
+    are not present after structure cleanup"`` on exactly that condition —
+    after the wallet hold, with the GPU running.
+
+    Run against BOTH copies of the normalizer, because they are NOT
+    byte-identical: this repo's vendored ``shared/pipeline_normalize.py`` and
+    the sibling's ``backend/pdb_utils/pipeline_normalize.py`` that the image
+    actually mounts. Each drops one residue from chain A and neither maps
+    ``("A", 30)``. Checking only the vendored copy would have been an argument
+    about a file the GPU never loads.
+
+    False for proteina alone. Its container is the one in THIS repo and it
+    never calls ``pipeline_normalize``; it selects residues by CA
+    (``pdb_ca_residues`` -> ``select_residues``) and matches
+    ``missing_hotspots`` against that set. Executed on the same structure:
+    ``missing_hotspots(selected, ["A30"])`` returns ``[]`` — the run is
+    accepted and correctly constrained. Refusing it at the gate would be a
+    false refusal of a run that succeeds today.
+
+    Defaults True, the cautious direction: a new tool that forgets to declare
+    this refuses a user rather than spending their money.
     """
     slug: str
     gpu: str                       # human-readable, surfaced in the panel
@@ -151,6 +190,8 @@ class ToolRules:
     min_target_aa: int             # below this the model has nothing to design
     size: SizeEnvelope
     gap: GapThresholds
+    # Does an incomplete-backbone hotspot survive into this tool's run?
+    hotspot_needs_full_backbone: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +503,15 @@ _PROTEINA = ToolRules(
         needs_fix_length=50,
         needs_fix_hotspot_distance=10,
     ),
+    # The only False in this column, and the only one there is evidence for.
+    # proteina's container does not run pipeline_normalize at all — grep
+    # tools/proteina/run_pipeline.py — it selects by CA and matches
+    # missing_hotspots against that, so a hotspot whose residue is merely
+    # missing an O still resolves. Verified by executing that module:
+    # pdb_ca_residues -> select_residues(A1-40) contains ("A", 30) and
+    # missing_hotspots(selected, ["A30"]) == [] for a residue with N/CA/C and
+    # no O. Trunk let those runs through and they succeeded.
+    hotspot_needs_full_backbone=False,
 )
 
 

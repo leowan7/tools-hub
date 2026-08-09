@@ -1346,6 +1346,130 @@ def test_a_hotspot_outside_the_target_blocks_the_launch(client):
     assert rec.calls == []
 
 
+# ---------------------------------------------------------------------------
+# Container / model capability
+#
+# `_collect_launch_specs` says of itself: "This, not the form UI, is the guard
+# against paying for a mis-configured GPU run, so every check that the
+# single-tool create route performs has to happen here too." It ran size checks
+# only. This blueprint contained ZERO references to preflight_for_tool, whose
+# only callers are blueprints/tools.py (the atomic submit route and its AJAX
+# panel) and shared/pdb_intake (the reuse-token path) -- so the gate deciding
+# whether the image we dispatch to can even parse a multi-chain target guarded
+# the route that spends the least, and this one, which funds ONE CAMPAIGN PER
+# SELECTED TOOL, was open.
+#
+# Executed on trunk against the two-chain target below: bindcraft, rfdiffusion,
+# pxdesign and rfantibody all reached create -> fund -> drive.
+# ---------------------------------------------------------------------------
+
+def _two_chain_target(**kw):
+    """A stored target with two chains, both comfortably inside every cap."""
+    base = dict(
+        name="Fab", filename="fab.pdb", target_chain="A,B",
+        chain_summary={
+            "total_standard_residues": 220,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 120,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 120},
+                {"chain_id": "B", "standard_residue_count": 100,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 100},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def test_a_model_that_cannot_do_multi_chain_is_refused_before_funding(client):
+    """rfantibody is multi_chain_supported=False — it builds a VHH against one
+    chain by construction, so no image rebuild will ever make this work. Its
+    adapter accepts "A,B" because it only length-checks the field at 4
+    characters, and nothing downstream of it looked."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _launch(client, t, form=_form(
+        tools=["rfantibody"], target_chain="A,B", rfantibody__designs="4",
+    ))
+    assert resp.status_code == 400
+    assert rec.calls == [], (
+        f"a two-chain rfantibody launch reached {[c[0] for c in rec.calls]} — "
+        f"the model cannot run this at all"
+    )
+    body = _visible_text(resp)
+    assert "designs against a single target chain" in body, body
+    # A MODEL limit is permanent; saying "GPU image" here invites the user to
+    # wait for a capability that is never coming.
+    assert "GPU image" not in body, body
+
+
+def test_a_container_that_cannot_do_multi_chain_is_refused_too(client):
+    """bindcraft's MODEL can (Pacesa 2024) but its image is unverified — it is
+    the one binder tool with no smoke tier, so clearing it costs a full paid
+    pilot. The refusal has to name the image, not the model."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _launch(client, t, form=_form(
+        tools=["bindcraft"], target_chain="A,B", bindcraft__designs="4",
+    ))
+    assert resp.status_code == 400
+    assert rec.calls == []
+    body = _visible_text(resp)
+    assert "GPU image still handles" in body, body
+
+
+def test_the_refusal_names_the_tool_that_cannot_take_the_chains(client):
+    """Seven tools on one screen and one shared chain field: a launch refused
+    without naming the tool is unactionable."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _launch(client, t, form=_form(
+        tools=["rfdiffusion", "rfantibody"], target_chain="A,B",
+        rfdiffusion__designs="12", rfantibody__designs="4",
+    ))
+    assert resp.status_code == 400
+    assert rec.calls == [], "all-or-nothing: nothing may be created"
+    assert "RFantibody:" in _visible_text(resp)
+
+
+def test_a_verified_tool_still_launches_against_two_chains(client):
+    """THE FALSE-REFUSAL FLOOR. rfdiffusion and pxdesign were both cleared on
+    a live A100 against a real two-chain 4ZQK, so the gate must let them
+    through — a check that refuses these is as bad as the hole it closes."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _launch(client, t, form=_form(
+        tools=["rfdiffusion", "pxdesign"], target_chain="A,B",
+    ))
+    assert resp.status_code in (302, 303), _visible_text(resp)[:400]
+    kinds = [c[0] for c in rec.calls]
+    assert kinds[:2] == ["create", "create"]
+    assert sorted(kinds[2:]) == ["drive", "drive", "fund", "fund"]
+    assert rec.kwargs_for("rfdiffusion")["params"]["target_chain"] == "A,B"
+
+
+def test_a_single_chain_launch_is_untouched_for_every_tool(client):
+    """The backward-compatibility floor. One chain is what every launch before
+    multi-chain posted, and the gate must be invisible to it — including for
+    the two tools it blocks at two chains."""
+    _login(client)
+    for tool, extra in (
+        ("rfantibody", {"rfantibody__designs": "4"}),
+        ("bindcraft", {"bindcraft__designs": "4"}),
+        ("rfdiffusion", {"rfdiffusion__designs": "12"}),
+    ):
+        t = _target()          # single chain A, 210 residues
+        resp, rec = _launch(client, t, form=_form(
+            tools=[tool], target_chain="A", **extra,
+        ))
+        assert resp.status_code in (302, 303), (
+            f"{tool}: {_visible_text(resp)[:300]}"
+        )
+        assert [c[0] for c in rec.calls] == ["create", "fund", "drive"], tool
+
+
 def test_no_tools_selected_is_refused(client):
     _login(client)
     t = _target()
@@ -2771,3 +2895,104 @@ def test_the_confirming_read_is_owner_scoped(client):
     assert get_campaign.call_args_list
     for call in get_campaign.call_args_list:
         assert call.kwargs.get("user_id") == "u-1", call
+
+
+# ---------------------------------------------------------------------------
+# The chain letter has to survive from the form to the range gate
+#
+# proteina's validate() emits the hotspot twice: `hotspot_spec` (["B520"],
+# which build_payload ships and the container matches on) and
+# `hotspot_residues` ([520], the same token with the chain letter stripped).
+# This route range-checked the stripped one. On a two-chain contig that field
+# cannot distinguish "the user typed 520" from "the user typed B520", so
+# reading it as the first chain refused BOTH -- including the canonical
+# multi-chain pick, which is a false refusal on a route whose whole job is to
+# spend money.
+# ---------------------------------------------------------------------------
+
+def _asymmetric_target(**kw):
+    """Two chains with DISJOINT numbering: A 1..40, B 500..539.
+
+    Disjoint is the whole point. On a homodimer both protomers carry the same
+    numbers, so "is 520 on chain B" and "is 520 on any chain" agree and the
+    fixture cannot tell a chain-aware gate from a unioning one.
+    """
+    base = dict(
+        name="Fab HL",
+        filename="fab.pdb",
+        chain_summary={
+            "total_standard_residues": 80,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 40},
+                {"chain_id": "B", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 500, "max_resnum": 539},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def _proteina_launch_form(hotspots: str, **kw):
+    base = dict(
+        tools=["proteina"],
+        proteina__designs="8",
+        proteina__preset="protein_binder",
+        proteina__target_input="A1-40,B500-539",
+        hotspot_residues=hotspots,
+    )
+    base.update(kw)
+    return _form(**base)
+
+
+@pytest.mark.parametrize("typed,expected_spec", [
+    ("B520", ["B520"]),
+    ("A20 B520", ["A20", "B520"]),
+])
+def test_a_chain_prefixed_hotspot_funds_the_launch(client, typed, expected_spec):
+    """RED on a492b71: refused with "520 ... outside this target's chain(s)"
+    for a hotspot that is plainly inside B 500-539 and ships as B520."""
+    _login(client)
+    t = _asymmetric_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_proteina_launch_form(typed))
+    assert resp.status_code == 302, _visible_text(resp)[-600:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_spec"] == expected_spec
+    # And the run really was funded and driven, not merely created.
+    assert ("fund", "c-0") in rec.calls or any(
+        c[0] == "fund" for c in rec.calls
+    ), rec.calls
+    assert any(c[0] == "drive" for c in rec.calls), rec.calls
+
+
+def test_a_bare_hotspot_off_the_first_chain_is_still_refused_here(client):
+    """The A1 defect this route was fixed for. Typed bare, 520 is promoted onto
+    the contig's FIRST chain and ships as "A520" against a chain that stops at
+    40 -- so nothing may be created, funded or driven."""
+    _login(client)
+    t = _asymmetric_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_proteina_launch_form("520"))
+    assert resp.status_code == 400, _visible_text(resp)[-600:]
+    assert rec.calls == [], rec.calls
+    assert "A520" in _visible_text(resp), _visible_text(resp)[-600:]
+
+
+def test_single_chain_bare_hotspots_still_launch_unchanged(client):
+    """The backward-compatibility floor for this route: one chain, bare ints,
+    which is every proteina launch posted before the contig existed."""
+    _login(client)
+    t = _proteina_target()          # single chain A, 1..130
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+        ))
+    assert resp.status_code == 302, _visible_text(resp)[-600:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_residues"] == [42, 88]
+    assert params["hotspot_spec"] == ["A42", "A88"]

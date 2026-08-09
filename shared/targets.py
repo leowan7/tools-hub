@@ -284,13 +284,29 @@ class DesignTarget:
         summary rather than a re-parse. Returns None when there is nothing to
         check.
 
-        A BARE residue number is in range if it falls inside ANY named chain,
-        because ``target_chain`` may name several (``"A B"``, which
-        ProteinMPNN-style multi-chain design submits and rfdiffusion's
-        validator accepts). A CHAIN-PREFIXED one (``"B264"``) is checked
-        against the chain it names and nothing else: on a homodimer both
-        protomers carry residue 264, so unioning would pass a hotspot sitting
-        on a protomer the design never touches.
+        A BARE residue number is checked against the FIRST named chain
+        (``target_chain`` may name several — ``"A B"``, which ProteinMPNN-style
+        multi-chain design submits and rfdiffusion's validator accepts). A
+        CHAIN-PREFIXED one (``"B264"``) is checked against the chain it names
+        and nothing else: on a homodimer both protomers carry residue 264, so
+        unioning would pass a hotspot sitting on a protomer the design never
+        touches.
+
+        THE BARE CASE USED TO UNION ACROSS EVERY NAMED CHAIN, and that let this
+        route fund a run that could not succeed. No consumer downstream reads an
+        unprefixed hotspot as "any named chain": ``tools/base.py:108`` rewrites
+        it onto the first target chain, and proteina's ``_parse_hotspots``
+        promotes it onto ``contig_chains[0]``. proteina is what makes this
+        reachable in production rather than hypothetical — it emits
+        ``hotspot_residues`` as BARE author numbers precisely so this check
+        keeps working, while shipping the prefixed ``hotspot_spec`` to the
+        model. So on a target whose chains are numbered differently, a bare
+        number living only on the second chain passed here, was funded, and
+        then failed the container's own ``missing_hotspots`` guard with the
+        A100 already running. Judging the first chain judges what runs.
+
+        Single-chain targets are unaffected: with one named chain the union IS
+        the first chain.
 
         The A18 note this docstring used to carry — that
         ``shared.pdb_inspect.validate_hotspots`` passed the whole string to
@@ -316,8 +332,9 @@ class DesignTarget:
             if n is None:
                 bad.append(h)
             elif cid is None:
-                # Unprefixed: in range on any named chain is good enough.
-                if not any(lo <= n <= hi for _, lo, hi in ranges):
+                # Unprefixed: the FIRST named chain, the one it will be sent as.
+                _first, lo, hi = ranges[0]
+                if not lo <= n <= hi:
                     bad.append(n)
             elif not any(c == cid and lo <= n <= hi for c, lo, hi in ranges):
                 # Prefixed: must be in range on the chain it names.
@@ -325,10 +342,22 @@ class DesignTarget:
         if not bad:
             return None
         spans = ", ".join(f"{cid} {lo}-{hi}" for cid, lo, hi in ranges)
-        return (
+        message = (
             f"Hotspot residue(s) {', '.join(str(b) for b in bad)} are outside "
             f"this target's chain(s): {spans}."
         )
+        if len(ranges) > 1 and any(
+            split_hotspot(b, named)[0] is None for b in bad
+        ):
+            # Without this the sentence contradicts itself: a bare 320 refused
+            # on chain A is reported as "outside A 1-210, B 300-350" while
+            # sitting visibly inside B 300-350. Say which chain it was read as.
+            message += (
+                f" A hotspot typed without a chain letter is read as chain "
+                f"{named[0]}, the first chain named — prefix it (e.g. "
+                f"{named[1]}264) to place it on another one."
+            )
+        return message
 
     def segment_error(self, segments) -> Optional[str]:  # noqa: ANN001
         """Reject chain/residue-range segments that this target cannot satisfy.

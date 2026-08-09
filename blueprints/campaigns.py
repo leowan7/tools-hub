@@ -378,6 +378,35 @@ def compute_campaign_create():
     if validated is None:
         return _err(verr or "Invalid parameters.")
 
+    # 2b. Can this tool's MODEL, and the IMAGE we dispatch to, take the number
+    #     of chains just named? This route has never asked. `preflight_for_tool`
+    #     owns that gate and is called only from the atomic submit route, its
+    #     AJAX panel, and the reuse-token path, so a two-chain campaign was
+    #     created, funded and driven here for tools whose container cannot
+    #     parse the target -- and for rfantibody, whose MODEL cannot
+    #     (multi_chain_supported=False; its adapter accepts "A,B" because it
+    #     only length-checks the field at 4 characters). Verified by executing
+    #     this route against a two-chain stored target.
+    #
+    #     Placed BEFORE the target/upload split so both branches are covered by
+    #     one call: the fresh-upload branch spends exactly as much as the
+    #     target-bound one. Ahead of campaign_preauth and create_campaign, so a
+    #     refusal costs a message rather than a funded wave.
+    #
+    #     Capability ONLY, deliberately -- see multi_chain_refusal and
+    #     DesignTarget.size_error for why the rest of the preflight does not
+    #     belong on a route that never downloads the structure.
+    #     iggm names its antigen chain `antigen_chain`; the PDB tools use
+    #     `target_chain`. proteina replaces target_chain with its contig's
+    #     chains, which is the right string to judge.
+    run_chain = (
+        validated.get("target_chain") or validated.get("antigen_chain") or ""
+    )
+    from shared.pdb_preflight import multi_chain_refusal  # noqa: PLC0415
+    capability_err = multi_chain_refusal(tool, run_chain)
+    if capability_err:
+        return _err(capability_err)
+
     # 3. Resolve the campaign target. The live tools + proteina's protein/motif
     #    variants take a PDB (inspected + chain-validated); proteina's ligand
     #    variant takes an SDF (cheap sanity only; the RDKit -> chain-A PDB
@@ -420,21 +449,22 @@ def compute_campaign_create():
             )
         # The chain and hotspots are per-RUN and may override the target's
         # defaults, so they still have to be checked — against the inspection
-        # persisted at upload time, so no download is needed.
-        run_chain = (
-            validated.get("target_chain") or validated.get("antigen_chain") or ""
-        )
+        # persisted at upload time, so no download is needed. ``run_chain`` is
+        # resolved above (step 2b) from the same two keys; it used to be
+        # recomputed here from the identical expression.
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return _err(chain_err)
         # Both keys are original PDB author numbering, so both are range-
         # checkable against the target's chain. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its
-        # hotspots ``hotspot_residues``.
+        # hotspots ``hotspot_residues``. ``shipped_hotspots`` is what reads
+        # the pair, and it prefers proteina's chain-prefixed ``hotspot_spec``
+        # over the bare copy — see that function for why the bare one cannot
+        # be range-checked without refusing correct multi-chain runs.
+        from shared.pdb_preflight import shipped_hotspots  # noqa: PLC0415
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return _err(hotspot_err)
