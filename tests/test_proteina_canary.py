@@ -7083,8 +7083,8 @@ class TestTheShardReportsWhatProductionWouldDeliver:
         """A reward table in the shape ``run_pipeline.parse_designs`` reads:
         one row per design with a ``total_reward``. ``None`` for a row's reward
         writes an empty cell, which is what an unscored sample looks like."""
-        head = "sample,total_reward,af2folding_plddt"
-        body = [f"design_{i},{'' if r is None else r},0.9"
+        head = "sample,total_reward,af2folding_plddt,af2folding_plddt_log"
+        body = [f"design_{i},{'' if r is None else r},0.1,0.9"
                 for i, r in enumerate(rows)]
         return "\n".join([head, *body]) + "\n"
 

@@ -343,7 +343,7 @@ def cmd_submit(args) -> int:
 def _plddt_text(value) -> str:
     """Render ``af2_plddt`` so the number cannot be read on the wrong scale.
 
-    Proteina's reward CSV carries ``af2folding_plddt`` on [0,1] and
+    Proteina's reward CSV carries ``af2folding_plddt_log`` on [0,1] and
     ``parse_designs`` stores it unchanged, so this line prints ``0.86`` where
     every sibling generator prints ``86``: pxdesign, rfantibody and boltzgen
     each rescale pLDDT to the field-standard AlphaFold2 0-100 range inside the
@@ -367,7 +367,17 @@ def _plddt_text(value) -> str:
     forbid, and would mix scales inside one campaign's pooled shards.
 
     So the printed line states both readings and the JSON keeps the one scale
-    it has always had. The [0,1] guard mirrors pxdesign's: the column aliases
+    it has always had.
+
+    THE SCALE WAS THE SECOND PROBLEM WITH THIS NUMBER, AND THE SMALLER ONE.
+    Until the polarity fix, ``af2_plddt`` resolved to ``af2folding_plddt`` —
+    the AfDesign LOSS term, ``1 - pLDDT`` — so this helper was confidently
+    annotating an inverted value ("AF2 scale: 22.6/100" for a design whose
+    real pLDDT was 77.4). Everything below about scale was correct and did
+    nothing to catch it, which is the lesson: a careful note about how to READ
+    a number is not a check on whether it is the RIGHT number.
+
+    The [0,1] guard mirrors pxdesign's: the column aliases
     in ``_SCORE_COLUMNS`` include plain ``plddt``, which some CSVs write on
     0-100 already, and annotating THAT would create the error it prevents.
     """
