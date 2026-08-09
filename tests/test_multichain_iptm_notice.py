@@ -1671,14 +1671,21 @@ def _reachable_pages(flask_app) -> dict:
     AND THE SCOUT REAPER IS STUBBED, which was found by doing rather than by
     anticipating. ``/scout/example`` is a no-arg GET behind ``@login_required``,
     so the signed-in pass reached it for the first time — and it calls
-    ``scout.jobs.cleanup_old_jobs``, which deletes EVERY subdirectory of
-    ``tmp/`` older than an hour. ``tmp/calibration/`` is two files this repo
-    TRACKS; the first signed-in run deleted them both. A sweep that asks pages
-    what they SAY has no business running a directory reaper, so the reaper and
-    the job-dir creation it precedes are stubbed here, and
+    ``scout.jobs.cleanup_old_jobs``, which AT THE TIME deleted EVERY
+    subdirectory of ``tmp/`` older than an hour. ``tmp/calibration/`` is two
+    files this repo TRACKS; the first signed-in run deleted them both. A sweep
+    that asks pages what they SAY has no business running a directory reaper,
+    so the reaper and the job-dir creation it precedes are stubbed here, and
     ``test_the_sweep_leaves_the_repo_alone`` fails on the next route that
     mutates the tree instead of a reviewer noticing files missing from
     ``git status``.
+
+    The reaper itself has since been fixed — it now skips any directory whose
+    name is not a UUID it minted (``scout.jobs.cleanup_old_jobs``, guarded by
+    ``TestCleanupOldJobsScope`` in ``tests/test_scout_access_control.py``), so
+    it can no longer reach ``tmp/calibration/``. The stubs stay: the sweep must
+    not depend on the reaper being well behaved, and the job-dir creation stub
+    beside it is doing separate work.
     """
     ctx = SimpleNamespace(
         user_id="u-1", tier="free", balance=100, email="u@example.com",
@@ -1730,9 +1737,11 @@ def test_the_sweep_leaves_the_repo_alone(flask_app):
 
     Not hypothetical. Signing the sweep in reached ``/scout/example`` — a
     no-arg GET behind ``@login_required``, invisible to the signed-out sweep —
-    which calls ``scout.jobs.cleanup_old_jobs``, which rmtrees every
-    subdirectory of ``tmp/`` older than an hour. ``tmp/calibration/`` is
-    tracked, and the first run deleted both files in it.
+    which calls ``scout.jobs.cleanup_old_jobs``, which AT THE TIME rmtree'd
+    every subdirectory of ``tmp/`` older than an hour. ``tmp/calibration/`` is
+    tracked, and the first run deleted both files in it. (The reaper now filters
+    on the UUID shape it mints, so it can no longer reach a sibling tenant —
+    but this test does not assume that, and should not.)
 
     The stubs in ``_reachable_pages`` close that one. This closes the class:
     the next swept route that writes, deletes or rewrites anything under
