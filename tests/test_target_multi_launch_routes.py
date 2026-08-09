@@ -2977,11 +2977,17 @@ def _specs_for_all_six(app, target):
 
 
 def _one_chain_target(**kw):
-    """The ordinary shape: one chain, bare integers, no `hotspot_spec`.
+    """The shape every one of the six can actually be launched at: ONE chain.
 
-    Most targets look like this and always will — `/targets/new` parses both
-    residue fields with a strict `int()`, so this is the only shape target
-    creation can produce.
+    Deliberately single-chain, and not only because it is the ordinary case.
+    Whether a two-chain target may launch at all is a separate question with a
+    separate answer per tool (a model limit for rfantibody, an image limit for
+    bindcraft), and mixing it in here would make "all six still launch" fail for
+    reasons that have nothing to do with hotspots.
+
+    A single-chain target can still carry `hotspot_spec`: a proteina run that
+    wrote `A241 A300` reduces to the stored `[241, 300]` and enriches. So this
+    fixture covers the enriched shape too — see the caller below.
     """
     base = dict(
         name="single", filename="one.pdb", target_chain="A",
@@ -3010,10 +3016,11 @@ def test_every_campaign_tool_launches_against_a_plain_integer_target(app):
 
 def test_every_campaign_tool_launches_against_a_target_carrying_hotspot_spec(app):
     """THE ONE THAT REGRESSED. `target_defaults_for_form` used to prefill the
-    chain-qualified form into the SHARED field, so a target enriched with
-    `hotspot_spec` refused five of these six — including rfantibody, which is
-    not flag-gated and is therefore live for every user."""
-    target = _six_chain_target(hotspot_spec=["A241", "B241"])
+    chain-qualified form into the SHARED field, so an enriched target put
+    "A241,A300" in front of `tools/rfantibody`'s bare `int(tok)` — and
+    rfantibody is not flag-gated, so that is live for every user. The launch
+    route is all-or-nothing, so it took the whole launch with it."""
+    target = _one_chain_target(hotspot_spec=["A241", "A300"])
     results = _specs_for_all_six(app, target)
     failed = {t: r for t, r in results.items() if isinstance(r, str)}
     assert not failed, f"tools refused an enriched target: {failed}"
@@ -3023,26 +3030,47 @@ def test_every_campaign_tool_launches_against_a_target_carrying_hotspot_spec(app
 
 def test_the_five_shared_field_tools_receive_plain_integers(app):
     """WHAT THE SHARED FIELD MAY CONTAIN, asserted on the validated params
-    rather than on the form string. rfantibody is the strictest reader
-    (`int(tok)` per token) and is NOT flag-gated, so it is live for every
-    user."""
+    rather than on the form string — so it pins what reached the ADAPTER."""
     results = _specs_for_all_six(
-        app, _six_chain_target(hotspot_spec=["A241", "B241"]))
-    # rfdiffusion/bindcraft/boltzgen/pxdesign normalise onto the run's chains
-    # once the run names more than one, which is `parse_hotspot_residues`'s
-    # documented output shape -- not a prefix that arrived from the form.
-    for tool in ("rfdiffusion", "bindcraft", "boltzgen", "pxdesign"):
-        assert results[tool].params["hotspot_residues"] == ["A241", "A241"], tool
-    assert results["rfantibody"].params["hotspot_residues"] == [241, 241]
+        app, _one_chain_target(hotspot_spec=["A241", "A300"]))
+    for tool in ("rfdiffusion", "bindcraft", "boltzgen", "pxdesign",
+                 "rfantibody"):
+        assert results[tool].params["hotspot_residues"] == [241, 300], tool
 
 
 def test_only_proteina_receives_the_protomer(app):
-    """The information is not lost, it is routed. Proteina's own field carries
-    "A241,B241" and lands as two DIFFERENT protomers; every other tool sees the
-    shared field's plain numbers."""
-    results = _specs_for_all_six(
-        app, _six_chain_target(hotspot_spec=["A241", "B241"]))
-    assert results["proteina"].params["hotspot_spec"] == ["A241", "B241"]
+    """The information is not lost, it is routed. On a target whose protomers
+    share one numbering, proteina's own field carries "A241,B241" and lands as
+    two DIFFERENT protomers — which is exactly what the shared field's
+    `[241, 241]` cannot say.
+
+    Proteina alone, because a two-chain launch is a per-tool capability
+    question that is not this test's subject.
+    """
+    from werkzeug.datastructures import MultiDict
+
+    from blueprints.targets import _collect_launch_specs
+    from shared.targets import target_defaults_for_form
+
+    target = _six_chain_target(hotspot_spec=["A241", "B241"])
+    pre = target_defaults_for_form(target)
+    form = MultiDict([
+        ("tools", "proteina"), ("proteina__designs", "8"), ("pace", "burst"),
+        ("target_chain", pre["target_chain"]),
+        ("hotspot_residues", pre["hotspot_residues"]),
+        ("proteina__chain_hotspots", pre["chain_hotspots"]),
+        ("proteina__preset", "protein_binder"),
+        ("proteina__target_input", pre["proteina__target_input"]),
+    ])
+    with app.test_request_context("/x", method="POST"):
+        with patch("shared.compute_campaigns.campaign_tool_gated_off",
+                   return_value=False):
+            specs, err = _collect_launch_specs(target, form)
+    assert err is None, err
+    assert specs[0].params["hotspot_spec"] == ["A241", "B241"]
+    # And the shared field it was co-posted with stayed plain, which is what
+    # let the other five be launched alongside it.
+    assert pre["hotspot_residues"] == "241,241"
 
 
 def test_a_prefixed_token_in_the_shared_field_is_still_refused_by_the_others(app):
