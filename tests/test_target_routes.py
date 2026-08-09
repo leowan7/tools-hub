@@ -226,6 +226,42 @@ def test_create_target_rejects_a_non_numeric_hotspot(client):
     mk.assert_not_called()
 
 
+def test_create_target_accepts_a_chain_qualified_hotspot(client):
+    """The write side of design_targets.hotspot_spec. Without this the new
+    column is unreachable from the UI: the route's integer-only parse refused
+    "A241" before create_target ever saw it, so a multi-chain target could
+    never store which protomer its hotspot was on."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        mk.return_value = _target()
+        resp = client.post("/targets", data={
+            "target_chain": "A",
+            "hotspot_residues": "A241, B241",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 302, resp.get_data(as_text=True)[-400:]
+    assert mk.call_args.kwargs["hotspot_residues"] == ["A241", "B241"]
+
+
+def test_create_target_still_rejects_a_chain_prefixed_epitope(client):
+    """Only the hotspot field opted in. The epitope field feeds IgGM, whose
+    parser has never read a prefix, so accepting one here would store a value
+    that silently means nothing downstream."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        resp = client.post("/targets", data={
+            "epitope_residues": "A32",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert "A32" in resp.get_data(as_text=True)
+    mk.assert_not_called()
+
+
 def test_create_target_offers_an_existing_target_with_the_same_content(client):
     """Two targets for one structure split its designs across two combined
     tables, which is exactly what targets exist to prevent."""

@@ -27,6 +27,7 @@ dispatched and never billed.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from flask import (
@@ -391,12 +392,23 @@ def _launch_blocker(target) -> "str | None":  # noqa: ANN001
     return None
 
 
-def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
+_CHAIN_RESIDUE_RE = re.compile(r"^([A-Za-z])(-?\d+)$")
+
+
+def _parse_residue_list(
+    raw: str, allow_chain_prefix: bool = False,
+) -> "tuple[list, str | None]":
     """Parse "32, 45, 58" into ``[32, 45, 58]``.
 
     Returns ``(residues, error)``. Rejects rather than silently dropping a
     non-numeric entry: a typo'd hotspot that vanishes here would be a target
     that quietly aims somewhere else than the user asked for.
+
+    With ``allow_chain_prefix`` a token may name its chain (``"A241"``) and is
+    kept as the string. Only HOTSPOTS pass this: they are the field that has to
+    survive to a multi-chain launch, and design_targets.hotspot_spec is the
+    column that stores them. The epitope field keeps the strict integer parse
+    it has always had, because nothing downstream of it reads a prefix.
     """
     text = (raw or "").replace(";", ",").strip()
     if not text:
@@ -405,8 +417,13 @@ def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
     for piece in text.replace(",", " ").split():
         try:
             out.append(int(piece))
+            continue
         except ValueError:
+            pass
+        m = _CHAIN_RESIDUE_RE.match(piece) if allow_chain_prefix else None
+        if m is None:
             return [], f"'{piece}' is not a residue number."
+        out.append(f"{m.group(1)}{int(m.group(2))}")
     if len(out) > _MAX_RESIDUES:
         return [], f"Too many residues (max {_MAX_RESIDUES})."
     return out, None
@@ -472,7 +489,9 @@ def target_create():
         ), code
 
     target_chain = (request.form.get("target_chain") or "").strip()
-    hotspots, hs_err = _parse_residue_list(request.form.get("hotspot_residues"))
+    hotspots, hs_err = _parse_residue_list(
+        request.form.get("hotspot_residues"), allow_chain_prefix=True,
+    )
     if hs_err:
         return _err(f"Hotspot residues: {hs_err}")
     epitope, ep_err = _parse_residue_list(request.form.get("epitope_residues"))

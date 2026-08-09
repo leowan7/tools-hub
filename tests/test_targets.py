@@ -305,6 +305,107 @@ def test_create_target_without_an_upload_keeps_storage_path_null(fake):
 
 
 # ---------------------------------------------------------------------------
+# Chain-qualified hotspots (design_targets.hotspot_spec, migration 0041)
+#
+# design_targets.hotspot_residues is integer[], so a hotspot that names its
+# protomer cannot be stored in it. On an IgG1 Fc — both chains numbered
+# 234-444 — storing the bare 241 means every later run re-prefills it as A241
+# and silently designs against one protomer.
+# ---------------------------------------------------------------------------
+
+
+def _stored_row(fake):
+    rows = fake.store.get("design_targets") or []
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def test_a_chain_qualified_hotspot_is_written_to_both_columns(fake):
+    """The text column carries the chain; the integer column keeps the number
+    so every reader that predates 0041 still sees a hotspot rather than NULL."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A B",
+            hotspot_residues=["A241", "B241"],
+        )
+    row = _stored_row(fake)
+    assert row["hotspot_spec"] == ["A241", "B241"]
+    assert row["hotspot_residues"] == [241, 241], (
+        "_clean_int_list would int('A241'), fail, skip it, and store NULL")
+    assert target.hotspot_spec == ["A241", "B241"]
+    assert target.effective_hotspots == ["A241", "B241"]
+
+
+def test_a_bare_hotspot_target_never_names_the_new_column(fake):
+    """Additive means the pre-existing shape is untouched — and the INSERT must
+    not even MENTION a column the database may not have yet, so a deploy that
+    lands ahead of the migration cannot break ordinary target creation."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            hotspot_residues=[42, 88],
+        )
+    row = _stored_row(fake)
+    assert "hotspot_spec" not in row, (
+        "an INSERT naming hotspot_spec fails outright before 0041 is applied")
+    assert row["hotspot_residues"] == [42, 88]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [42, 88]
+
+
+def test_a_row_from_before_the_migration_still_loads(fake):
+    """No backfill, so most rows have no such key at all."""
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 243],
+    })
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 243]
+
+
+def test_the_epitope_column_keeps_its_strict_integer_coercion(fake):
+    """The hotspot helper is deliberately not shared with the epitope field."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            epitope_residues=[32, 45],
+        )
+    row = _stored_row(fake)
+    assert row["epitope_residues"] == [32, 45]
+    assert "hotspot_spec" not in row
+
+
+def test_the_form_prefill_carries_the_chain_back_to_the_next_run():
+    """The defect this closes on the read side: a hotspot pinned to protomer B
+    that comes back as a bare 241 gets promoted onto A by whatever reads it."""
+    from shared.targets import target_defaults_for_form
+
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    assert target_defaults_for_form(dimer)["hotspot_residues"] == "A241,B241"
+
+    plain = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A",
+        hotspot_residues=[42, 88],
+    )
+    assert target_defaults_for_form(plain)["hotspot_residues"] == "42,88"
+
+
+def test_to_dict_adds_the_new_key_without_changing_the_old_one():
+    """Existing consumers of to_dict()["hotspot_residues"] must be unaffected."""
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    out = dimer.to_dict()
+    assert out["hotspot_residues"] == [241, 241]
+    assert out["hotspot_spec"] == ["A241", "B241"]
+    assert out["hotspots"] == ["A241", "B241"]
+
+
+# ---------------------------------------------------------------------------
 # Ownership
 # ---------------------------------------------------------------------------
 

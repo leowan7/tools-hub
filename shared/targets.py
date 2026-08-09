@@ -82,6 +82,72 @@ def _clean_int_list(values) -> Optional[list]:
     return out or None
 
 
+def _hotspot_chain_ids(target_chain, upload) -> list:
+    """The chain ids a stored hotspot token may name.
+
+    ``split_hotspot`` recognises a prefix only against a known chain list —
+    that is what stops ``"A296"`` being read as chain ``"A2"``, residue 96 —
+    so the save path has to hand it one. The run's own ``target_chain`` comes
+    first; the uploaded structure's chains are added because a target may store
+    a hotspot on a chain the default ``target_chain`` does not name.
+    """
+    ids: list = [c for c in (target_chain or "").replace(",", " ").split() if c]
+    summary = getattr(upload, "chain_summary", None) or {}
+    for chain in (summary.get("chains") or []):
+        cid = (chain or {}).get("chain_id")
+        if cid and cid not in ids:
+            ids.append(cid)
+    return ids
+
+
+def _clean_hotspot_ints(values, chain_ids) -> Optional[list]:
+    """The integer[] column's value, with any chain prefix dropped.
+
+    ``["A241", "B600"]`` -> ``[241, 600]``. Deliberately NOT ``_clean_int_list``,
+    which would ``int("A241")``, fail, and skip the element — writing NULL into
+    a column that every existing reader (to_dict, targets/detail.html,
+    targets/list.html) still reads. Those readers lose the chain, which they
+    never had; they must not lose the hotspot.
+
+    Kept separate from ``_clean_int_list`` rather than replacing it so
+    ``epitope_residues`` keeps its exact current coercion. Nothing reaches that
+    field chain-prefixed today, and a shared helper would make this fix silently
+    change a field it was never reasoned about.
+    """
+    if not values:
+        return None
+    out: list = []
+    for v in values:
+        _cid, num = split_hotspot(v, chain_ids)
+        if num is not None:
+            out.append(num)
+    return out or None
+
+
+def _clean_hotspot_spec(values, chain_ids) -> Optional[list]:
+    """The text[] column's value, or None when no token names a chain.
+
+    Returns None — not ``[]`` — for an all-bare list, so a bare-hotspot target
+    stores exactly what it stored before this column existed and every reader
+    falls through to the integer column. That is what keeps this additive: the
+    new column only ever holds information the old one could not express, and
+    it is also why ``create_target`` can leave the key out of the INSERT
+    entirely on every pre-existing shape.
+    """
+    if not values:
+        return None
+    tokens: list = []
+    any_chain = False
+    for v in values:
+        cid, num = split_hotspot(v, chain_ids)
+        if num is None:
+            continue
+        if cid:
+            any_chain = True
+        tokens.append(f"{cid}{num}" if cid else str(num))
+    return tokens if (tokens and any_chain) else None
+
+
 def _segments_label(segments) -> Optional[str]:  # noqa: ANN001
     """``[("A",236,300),("B",None,None)]`` -> ``"A236-300,B"``, or None."""
     parts = []
@@ -171,6 +237,11 @@ class DesignTarget:
     byte_size: Optional[int] = None
     target_chain: Optional[str] = None
     hotspot_residues: list = field(default_factory=list)
+    # Chain-qualified hotspots ("A241", "B600"), when the target has any.
+    # Empty means "this target's hotspots carry no chain", which is also what
+    # a row predating migration 0041 looks like — the two are deliberately
+    # indistinguishable, because the fallback is the same for both.
+    hotspot_spec: list = field(default_factory=list)
     epitope_residues: list = field(default_factory=list)
     chain_summary: Optional[dict] = None
     uniprot_accession: Optional[str] = None
@@ -194,6 +265,9 @@ class DesignTarget:
             byte_size=row.get("byte_size"),
             target_chain=row.get("target_chain"),
             hotspot_residues=list(row.get("hotspot_residues") or []),
+            # .get, not [..]: a row selected before 0041 was applied, or by a
+            # projection that does not ask for the column, simply has no key.
+            hotspot_spec=list(row.get("hotspot_spec") or []),
             epitope_residues=list(row.get("epitope_residues") or []),
             chain_summary=row.get("chain_summary"),
             uniprot_accession=row.get("uniprot_accession"),
@@ -207,6 +281,17 @@ class DesignTarget:
     @property
     def display_name(self) -> str:
         return self.name or self.filename or f"Target {self.id[:8]}"
+
+    @property
+    def effective_hotspots(self) -> list:
+        """The hotspots to CHECK and to PREFILL: chain-qualified when stored.
+
+        Prefer the text column, fall back to the integer one. The fallback is
+        not a legacy path — it is the normal shape for a single-chain target,
+        whose bare numbers are unambiguous — so it is not deprecated and does
+        not warn.
+        """
+        return list(self.hotspot_spec or self.hotspot_residues)
 
     @property
     def is_archived(self) -> bool:
@@ -413,7 +498,11 @@ class DesignTarget:
             "kind": self.kind,
             "filename": self.filename,
             "target_chain": self.target_chain,
+            # hotspot_residues keeps its existing shape and meaning for every
+            # consumer that already reads it; hotspot_spec is added beside it.
             "hotspot_residues": list(self.hotspot_residues),
+            "hotspot_spec": list(self.hotspot_spec),
+            "hotspots": list(self.effective_hotspots),
             "epitope_residues": list(self.epitope_residues),
             "residue_count": self.residue_count,
             "chains": [c.get("chain_id") for c in self.chains],
@@ -465,17 +554,25 @@ def create_target(
     if isinstance(name, str) and name.strip():
         clean_name = name.strip()[:_MAX_NAME_LEN]
 
+    hotspot_chains = _hotspot_chain_ids(target_chain, upload)
     row = {
         "user_id": user_id,
         "name": clean_name,
         "kind": (getattr(upload, "kind", None) or "pdb"),
         "target_chain": (target_chain or "").strip() or None,
-        "hotspot_residues": _clean_int_list(hotspot_residues),
+        "hotspot_residues": _clean_hotspot_ints(hotspot_residues, hotspot_chains),
         "epitope_residues": _clean_int_list(epitope_residues),
         "uniprot_accession": (uniprot_accession or "").strip() or None,
         "source": (source or "").strip() or None,
         "notes": (notes or "").strip() or None,
     }
+    # ADDED ONLY WHEN THERE IS SOMETHING THE INTEGER COLUMN CANNOT HOLD. An
+    # INSERT naming a column the database does not have fails outright, so
+    # omitting the key on every pre-existing shape means a deploy that lands
+    # ahead of migration 0041 cannot break ordinary target creation.
+    hotspot_spec = _clean_hotspot_spec(hotspot_residues, hotspot_chains)
+    if hotspot_spec:
+        row["hotspot_spec"] = hotspot_spec
     try:
         response = client.table(_TABLE).insert(row).execute()
         rows = list(getattr(response, "data", None) or [])
@@ -990,8 +1087,13 @@ def target_defaults_for_form(target: Optional[DesignTarget]) -> dict:
     out: dict = {"target_id": target.id}
     if target.target_chain:
         out["target_chain"] = target.target_chain
-    if target.hotspot_residues:
-        out["hotspot_residues"] = ",".join(str(r) for r in target.hotspot_residues)
+    # Chain-qualified when the target stored one. Prefilling the bare number
+    # instead is how a hotspot the user pinned to protomer B comes back as a
+    # bare 241 and gets promoted onto A by whichever tool reads it next.
+    if target.effective_hotspots:
+        out["hotspot_residues"] = ",".join(
+            str(r) for r in target.effective_hotspots
+        )
     if target.epitope_residues:
         # Key is ``epitope``, not ``epitope_residues``: that is the form field
         # iggm reads (tools/iggm/__init__.py parses ``form["epitope"]``), and

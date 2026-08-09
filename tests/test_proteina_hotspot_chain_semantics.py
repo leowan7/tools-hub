@@ -266,6 +266,54 @@ def test_the_homodimer_wrong_protomer_hotspot_is_caught_end_to_end():
 
 
 # ---------------------------------------------------------------------------
+# Persistence -- the new column is ADDITIVE
+# ---------------------------------------------------------------------------
+
+
+def _migration_sql():
+    hits = sorted(_REPO.glob("supabase/migrations/*_design_targets_hotspot_spec.sql"))
+    assert hits, "no hotspot_spec migration found"
+    assert len(hits) == 1, f"more than one hotspot_spec migration: {hits}"
+    return hits[0], hits[0].read_text(encoding="utf-8")
+
+
+def test_the_migration_follows_the_existing_numbering_convention():
+    path, _sql = _migration_sql()
+    assert re.match(r"^\d{4}_[a-z0-9_]+\.sql$", path.name), path.name
+    numbers = sorted(
+        int(p.name[:4]) for p in (_REPO / "supabase/migrations").glob("*.sql")
+    )
+    assert int(path.name[:4]) == numbers[-1], (
+        "the new migration must be the highest-numbered one")
+    assert len(numbers) == len(set(numbers)), "duplicate migration number"
+
+
+def test_the_migration_adds_a_nullable_text_array_and_nothing_else():
+    """Additive means additive: no default, no backfill, no NOT NULL, and the
+    integer[] column every existing reader depends on is untouched."""
+    _path, sql = _migration_sql()
+    body = re.sub(r"--[^\n]*", "", sql)  # strip comments before asserting
+    assert re.search(
+        r"add\s+column\s+if\s+not\s+exists\s+hotspot_spec\s+text\[\]",
+        body, re.I,
+    ), body
+    assert "not null" not in body.lower()
+    assert not re.search(r"\bdefault\b", body, re.I), "no default"
+    assert not re.search(r"\bupdate\b|\binsert\b", body, re.I), "no backfill"
+    assert not re.search(r"drop\s+column|alter\s+column", body, re.I)
+    assert "hotspot_residues" not in body, (
+        "the existing integer[] column must not be touched")
+
+
+def test_the_existing_column_is_still_integer_array_in_0039():
+    """Guards the direction of the change: 0039 keeps its integer[] so old
+    readers keep reading what they always read."""
+    sql = (_REPO / "supabase/migrations/0039_design_targets.sql").read_text(
+        encoding="utf-8")
+    assert re.search(r"hotspot_residues\s+integer\[\]", sql)
+
+
+# ---------------------------------------------------------------------------
 # Decision 3 -- the plain-text fields have to state the rule
 # ---------------------------------------------------------------------------
 
