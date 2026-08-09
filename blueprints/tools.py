@@ -56,7 +56,11 @@ from shared.pdb_intake import (
     _verify_reuse_pdb_bytes,
     preflight_target_segments,
 )
-from shared.pdb_preflight import PREFLIGHT_TOOLS, preflight_for_tool
+from shared.pdb_preflight import (
+    PREFLIGHT_TOOLS,
+    preflight_for_tool,
+    shipped_hotspots,
+)
 from shared.storage import (
     StorageError,
     copy_input,
@@ -1269,7 +1273,18 @@ def tool_submit(tool: str):
         and pdb_bytes is not None
     ):
         preflight_target_chain = (inputs.get("target_chain") or "").strip()
-        preflight_hotspots = inputs.get("hotspot_residues") or []
+        # NOT ``inputs["hotspot_residues"]``. proteina emits that key as BARE
+        # author numbers with the chain letter stripped, so on a multi-chain
+        # contig it cannot distinguish a hotspot the user typed bare (which
+        # ships onto the first chain) from one they chain-prefixed (which ships
+        # onto the chain they named) — and the gate below wants opposite
+        # verdicts for those. ``shipped_hotspots`` prefers the prefixed
+        # ``hotspot_spec`` exactly as the container does, and is a no-op for
+        # every other tool, whose ``hotspot_residues`` is already the shipped
+        # token. The AJAX panel that previews this verdict has always sent the
+        # prefixed form (see ``tool_preflight`` above), so this also stops the
+        # panel and the gate disagreeing on the same field.
+        preflight_hotspots = shipped_hotspots(inputs)
         preflight_binder_max, preflight_num_designs = (
             _parse_preflight_size_params(inputs)
         )
@@ -1638,7 +1653,11 @@ def tool_submit(tool: str):
             reuse_err = _verify_reuse_pdb_bytes(
                 adapter, check_bytes,
                 target_chain=(inputs.get("target_chain") or "").strip(),
-                hotspots=inputs.get("hotspot_residues") or [],
+                # Same rule as the fresh-upload gate above: the prefixed
+                # ``hotspot_spec`` when the adapter emits one, because this
+                # path runs both ``validate_hotspots`` and the full preflight
+                # and both range-check by chain.
+                hotspots=shipped_hotspots(inputs),
                 filename=staged_filename or "input.pdb",
                 binder_max_aa=reuse_binder_max,
                 num_designs=reuse_num_designs,

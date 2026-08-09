@@ -2895,3 +2895,104 @@ def test_the_confirming_read_is_owner_scoped(client):
     assert get_campaign.call_args_list
     for call in get_campaign.call_args_list:
         assert call.kwargs.get("user_id") == "u-1", call
+
+
+# ---------------------------------------------------------------------------
+# The chain letter has to survive from the form to the range gate
+#
+# proteina's validate() emits the hotspot twice: `hotspot_spec` (["B520"],
+# which build_payload ships and the container matches on) and
+# `hotspot_residues` ([520], the same token with the chain letter stripped).
+# This route range-checked the stripped one. On a two-chain contig that field
+# cannot distinguish "the user typed 520" from "the user typed B520", so
+# reading it as the first chain refused BOTH -- including the canonical
+# multi-chain pick, which is a false refusal on a route whose whole job is to
+# spend money.
+# ---------------------------------------------------------------------------
+
+def _asymmetric_target(**kw):
+    """Two chains with DISJOINT numbering: A 1..40, B 500..539.
+
+    Disjoint is the whole point. On a homodimer both protomers carry the same
+    numbers, so "is 520 on chain B" and "is 520 on any chain" agree and the
+    fixture cannot tell a chain-aware gate from a unioning one.
+    """
+    base = dict(
+        name="Fab HL",
+        filename="fab.pdb",
+        chain_summary={
+            "total_standard_residues": 80,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 40},
+                {"chain_id": "B", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 500, "max_resnum": 539},
+            ],
+        },
+    )
+    base.update(kw)
+    return _target(**base)
+
+
+def _proteina_launch_form(hotspots: str, **kw):
+    base = dict(
+        tools=["proteina"],
+        proteina__designs="8",
+        proteina__preset="protein_binder",
+        proteina__target_input="A1-40,B500-539",
+        hotspot_residues=hotspots,
+    )
+    base.update(kw)
+    return _form(**base)
+
+
+@pytest.mark.parametrize("typed,expected_spec", [
+    ("B520", ["B520"]),
+    ("A20 B520", ["A20", "B520"]),
+])
+def test_a_chain_prefixed_hotspot_funds_the_launch(client, typed, expected_spec):
+    """RED on a492b71: refused with "520 ... outside this target's chain(s)"
+    for a hotspot that is plainly inside B 500-539 and ships as B520."""
+    _login(client)
+    t = _asymmetric_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_proteina_launch_form(typed))
+    assert resp.status_code == 302, _visible_text(resp)[-600:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_spec"] == expected_spec
+    # And the run really was funded and driven, not merely created.
+    assert ("fund", "c-0") in rec.calls or any(
+        c[0] == "fund" for c in rec.calls
+    ), rec.calls
+    assert any(c[0] == "drive" for c in rec.calls), rec.calls
+
+
+def test_a_bare_hotspot_off_the_first_chain_is_still_refused_here(client):
+    """The A1 defect this route was fixed for. Typed bare, 520 is promoted onto
+    the contig's FIRST chain and ships as "A520" against a chain that stops at
+    40 -- so nothing may be created, funded or driven."""
+    _login(client)
+    t = _asymmetric_target()
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_proteina_launch_form("520"))
+    assert resp.status_code == 400, _visible_text(resp)[-600:]
+    assert rec.calls == [], rec.calls
+    assert "A520" in _visible_text(resp), _visible_text(resp)[-600:]
+
+
+def test_single_chain_bare_hotspots_still_launch_unchanged(client):
+    """The backward-compatibility floor for this route: one chain, bare ints,
+    which is every proteina launch posted before the contig existed."""
+    _login(client)
+    t = _proteina_target()          # single chain A, 1..130
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        resp, rec = _launch(client, t, form=_form(
+            tools=["proteina"], proteina__designs="8",
+            proteina__preset="protein_binder",
+        ))
+    assert resp.status_code == 302, _visible_text(resp)[-600:]
+    params = rec.kwargs_for("proteina")["params"]
+    assert params["hotspot_residues"] == [42, 88]
+    assert params["hotspot_spec"] == ["A42", "A88"]

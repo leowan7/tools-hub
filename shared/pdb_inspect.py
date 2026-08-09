@@ -335,10 +335,18 @@ def split_hotspot(
     list to hand parse only the bare-integer form, i.e. exactly the old
     behaviour.
 
-    Returning ``chain=None`` for a bare integer is deliberate, and it is what
-    preserves byte-identical handling of every hotspot submitted before the
-    multi-chain contract existed: those callers union across all named chains,
-    and an unprefixed number still means "any of them".
+    Returning ``chain=None`` for a bare integer is deliberate: this parser
+    reports what was TYPED and leaves attribution to the caller, which is the
+    only place that knows the chain order. Every caller now resolves it the
+    same way — onto the FIRST named chain, because that is what
+    ``tools/base.py`` and proteina's ``_parse_hotspots`` do when they build the
+    payload, so it is the chain the token will actually be sent as. They used
+    to union across all named chains instead ("any of them"), which accepted
+    numbers that then addressed a different chain on the GPU; see
+    :func:`validate_hotspots` and ``shared/targets.DesignTarget.hotspot_error``
+    for that history. Single-chain targets are unaffected either way — with one
+    named chain the union IS the first chain — so every hotspot submitted
+    before the multi-chain contract existed is handled byte-identically.
     """
     if isinstance(hotspot, bool):
         # bool subclasses int, so the int() this replaced read True as residue

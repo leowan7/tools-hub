@@ -209,7 +209,9 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
     route performs has to happen here too.
     """
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.pdb_preflight import multi_chain_refusal  # noqa: PLC0415
+    from shared.pdb_preflight import (  # noqa: PLC0415
+        multi_chain_refusal, shipped_hotspots,
+    )
     from shared.target_launch import ToolLaunchSpec  # noqa: PLC0415
 
     tools = [t.strip() for t in form.getlist("tools") if t.strip()]
@@ -315,11 +317,12 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
             return None, f"{label}: {capability_err}"
         # Both keys are original PDB author numbering. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its hotspots
-        # ``hotspot_residues``.
+        # ``hotspot_residues``. ``shipped_hotspots`` reads the pair and prefers
+        # proteina's chain-prefixed ``hotspot_spec``, because the bare copy
+        # cannot say whether a number was typed bare or had its chain letter
+        # stripped — and those two want opposite verdicts.
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return None, f"{label}: {hotspot_err}"

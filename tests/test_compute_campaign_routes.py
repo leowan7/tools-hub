@@ -1222,3 +1222,79 @@ def test_campaign_capability_gate_covers_the_fresh_upload_branch_too(client):
     assert resp.status_code == 400
     assert rec.created == [] and rec.funded == []
     assert "designs against a single target chain" in resp.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# The chain letter has to survive from the form to the range gate
+#
+# The sibling of the same pin on POST /targets/<id>/launch. proteina's
+# validate() emits the hotspot twice -- `hotspot_spec` (["B520"], what
+# build_payload ships and the container matches on) and `hotspot_residues`
+# ([520], the same token with its chain letter stripped) -- and this route
+# range-checked the stripped one. On a two-chain contig that field cannot say
+# whether the letter was never typed or was dropped, so reading it as the first
+# chain refused the canonical multi-chain pick along with the broken one.
+# ---------------------------------------------------------------------------
+
+def _asymmetric_campaign_target():
+    """A 1..40, B 500..539 -- disjoint numbering, so "on chain B" and "on any
+    chain" give different answers and the fixture can tell a chain-aware gate
+    from a unioning one."""
+    import uuid as _uuid
+
+    from shared.targets import DesignTarget
+    return DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1", kind="pdb", name="Fab HL",
+        filename="fab.pdb", storage_path="u-1/target-abc/fab.pdb",
+        target_chain="A,B", hotspot_residues=[], epitope_residues=[],
+        chain_summary={
+            "total_standard_residues": 80,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 40},
+                {"chain_id": "B", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 500, "max_resnum": 539},
+            ],
+        },
+    )
+
+
+def _post_proteina_campaign(client, target, hotspots: str):
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        return _post_target_campaign(
+            client, target,
+            tool="proteina",
+            preset="protein_binder",
+            target_input="A1-40,B500-539",
+            target_chain="A,B",
+            hotspot_residues=hotspots,
+            binder_length_min="60",
+            binder_length_max="80",
+        )
+
+
+@pytest.mark.parametrize("typed", ["B520", "A20 B520"])
+def test_campaign_funds_a_chain_prefixed_proteina_hotspot(client, typed):
+    """RED on a492b71: 400, "520 ... are outside this target's chain(s)", for a
+    hotspot that sits inside B 500-539 and ships as B520."""
+    _login(client)
+    t = _asymmetric_campaign_target()
+    resp, rec = _post_proteina_campaign(client, t, typed)
+    assert resp.status_code == 302, resp.get_data(as_text=True)[-600:]
+    assert len(rec.created) == 1 and rec.funded and rec.driven
+
+
+def test_campaign_still_refuses_a_bare_hotspot_off_the_first_chain(client):
+    """The A1 defect this route was fixed for, which the fix above must not
+    re-open: typed bare, 520 is promoted onto the contig's FIRST chain and
+    ships as "A520" against a chain that stops at 40."""
+    _login(client)
+    t = _asymmetric_campaign_target()
+    resp, rec = _post_proteina_campaign(client, t, "520")
+    assert resp.status_code == 400
+    assert rec.created == [] and rec.funded == [] and rec.driven == [], (
+        f"created={rec.created} funded={rec.funded} driven={rec.driven}"
+    )
+    assert "A520" in resp.get_data(as_text=True)

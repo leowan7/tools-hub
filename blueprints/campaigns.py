@@ -458,11 +458,13 @@ def compute_campaign_create():
         # Both keys are original PDB author numbering, so both are range-
         # checkable against the target's chain. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its
-        # hotspots ``hotspot_residues``.
+        # hotspots ``hotspot_residues``. ``shipped_hotspots`` is what reads
+        # the pair, and it prefers proteina's chain-prefixed ``hotspot_spec``
+        # over the bare copy — see that function for why the bare one cannot
+        # be range-checked without refusing correct multi-chain runs.
+        from shared.pdb_preflight import shipped_hotspots  # noqa: PLC0415
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return _err(hotspot_err)

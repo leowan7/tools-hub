@@ -675,49 +675,100 @@ def preflight_for_tool(
             size_envelope=size_envelope,
         )
 
-    # A DROPPED HOTSPOT IS A HARD FAIL FOR EVERY TOOL, not just the three that
-    # require one. ``hotspots_required`` answers "does this tool need a hotspot
-    # at all", which is a different question from "is the hotspot the user gave
-    # us usable" — and conflating them is what let a paid A100 start on a job
-    # that could not succeed. Nothing here edits the payload: ``build_payload``
-    # ships ``inputs["hotspot_residues"]`` verbatim, so a token this function
-    # files under ``dropped`` is still sent. For boltzgen that reaches
-    # ``docker/boltzgen/run_pipeline.py`` and raises; for proteina the
-    # in-container ``missing_hotspots`` guard refuses it. Both refuse AFTER the
-    # wallet hold is taken and the GPU is running.
+    # A DROPPED HOTSPOT SPLITS INTO TWO CAUSES THAT DESERVE OPPOSITE VERDICTS,
+    # and the sentence this branch prints has always named both without ever
+    # separating them — "either the number is outside that chain's numbering,
+    # or its backbone is incomplete".
     #
-    # The dedicated boltz2 evaluator above already works this way — it is
-    # hotspots-optional too and still returns NEEDS_FIX on an out-of-range
-    # position. This branch was the odd one out inside its own module.
+    #   ABSENT      the chain the token will be SENT AS has no such residue.
+    #               Nothing downstream can resolve it. ``build_payload`` ships
+    #               the token verbatim, so the run is already paid for by the
+    #               time anything notices: proteina's in-container
+    #               ``missing_hotspots`` guard refuses it with the A100 hot,
+    #               and boltzgen raises at llm-proteinDesigner
+    #               ``docker/boltzgen/run_pipeline.py:1083`` ("Hotspot
+    #               residue(s) ... are not present after structure cleanup").
+    #               HARD FAIL FOR EVERY TOOL, ``hotspots_required`` or not:
+    #               that flag answers "does this tool need a hotspot at all",
+    #               which is a different question from "is the one we were
+    #               given usable".
     #
-    # The alternative, stripping the dead hotspot and running an open search,
-    # is worse: it silently redesigns the run the user asked for, and an
-    # untargeted design still completes and still scores, so nothing downstream
-    # would ever reveal it.
-    if dropped_hotspots:
+    #   INCOMPLETE  the residue is on the chain, with a CA, and only its
+    #               backbone is short of N/CA/C/O. Whether that is fatal is a
+    #               PER-TOOL fact — ``rules.hotspot_needs_full_backbone`` — and
+    #               it is emphatically not ``hotspots_required``, which was the
+    #               first thing this branch reached for.
+    #
+    #               Executed, not assumed, on a chain whose residue 30 has
+    #               N/CA/C and no O. boltzgen and pxdesign run
+    #               ``pipeline_normalize`` in-container and its renumber_map
+    #               comes back with no ``("A", 30)``, so boltzgen raises at the
+    #               line above — refusing them here is right even though
+    #               boltzgen is hotspots-OPTIONAL. Run against BOTH copies of
+    #               that module, because they are not byte-identical: this
+    #               repo's vendored ``shared/pipeline_normalize.py`` and the
+    #               sibling's ``backend/pdb_utils/pipeline_normalize.py`` that
+    #               the image actually mounts. Same answer from each — one
+    #               residue dropped on chain A, no ``("A", 30)`` in the map.
+    #               proteina never calls that
+    #               module: it selects by CA and matches ``missing_hotspots``
+    #               against the result, which returns ``[]`` for ``"A30"``, so
+    #               the run is accepted and correctly constrained. Missing O
+    #               atoms are routine (terminal residues, disordered loops), so
+    #               refusing proteina here refuses ordinary paid work that
+    #               trunk ran successfully — and a false refusal on a design
+    #               path costs more than the failure it would prevent.
+    #
+    # The alternative for the absent case — stripping the dead hotspot and
+    # running an open search — is worse than refusing: it silently redesigns
+    # the run the user asked for, and an untargeted design still completes and
+    # still scores, so nothing downstream would ever reveal it.
+    absent_hotspots, incomplete_hotspots = _split_dropped_hotspots(
+        pdb_bytes, target_chain, dropped_hotspots,
+    ) if dropped_hotspots else ([], [])
+
+    if absent_hotspots or (
+        incomplete_hotspots and rules.hotspot_needs_full_backbone
+    ):
         # One or more user-picked hotspots didn't survive cleanup. Suggest
         # nearby clean residues on the same chain.
         nearest = _nearest_clean_residues(
             pdb_bytes, target_chain, dropped_hotspots, surviving,
         )
-        dropped_str = ", ".join(str(h) for h in dropped_hotspots)
         nearest_str = (
             ", ".join(str(r) for r in nearest)
             if nearest
             else "(no clean neighbours found within ±10 of the dropped residues)"
         )
-        # DON'T BLAME THE FILE FOR A NUMBER THAT WAS NEVER IN IT. A hotspot is
-        # dropped either because its chain has no such residue or because the
-        # residue is there with a broken backbone, and the old copy asserted
-        # the second unconditionally — sending a user to PyMOL to repair a
-        # backbone that is perfectly intact. This says what is known.
-        reason = (
-            f"Hotspot residue(s) {dropped_str} can't be used on this target. "
-            f"After cleanup, the chain each one names has no residue with "
-            f"that number and a complete N/CA/C/O backbone — either the "
-            f"number is outside that chain's numbering, or its backbone is "
-            f"incomplete in this PDB."
-        )
+        absent_str = ", ".join(str(h) for h in absent_hotspots)
+        incomplete_str = ", ".join(str(h) for h in incomplete_hotspots)
+        # DON'T BLAME THE FILE FOR A NUMBER THAT WAS NEVER IN IT, and don't
+        # blame the numbering for a backbone that really is broken. Each cause
+        # sends the user somewhere different — re-pick the residue vs. repair
+        # or replace the structure — so each gets its own sentence.
+        if absent_hotspots and incomplete_hotspots:
+            reason = (
+                f"Hotspot residue(s) {absent_str} can't be used on this "
+                f"target: the chain each one names has no residue with that "
+                f"number, so it is outside that chain's numbering. "
+                f"{incomplete_str} is on its chain but was dropped during "
+                f"cleanup because the backbone is incomplete in this PDB, and "
+                f"{rules.slug} needs a complete N/CA/C/O backbone at every "
+                f"hotspot."
+            )
+        elif absent_hotspots:
+            reason = (
+                f"Hotspot residue(s) {absent_str} can't be used on this "
+                f"target: the chain each one names has no residue with that "
+                f"number, so it is outside that chain's numbering."
+            )
+        else:
+            reason = (
+                f"Hotspot residue(s) {incomplete_str} were dropped during "
+                f"cleanup because their backbone is incomplete in this PDB. "
+                f"{rules.slug.title()} needs a complete N/CA/C/O backbone at "
+                f"every hotspot."
+            )
         if len(chain_ids) > 1 and any(
             split_hotspot(h, chain_ids)[0] is None for h in dropped_hotspots
         ):
@@ -729,10 +780,17 @@ def preflight_for_tool(
                 f"{chain_ids[0]}, the first of the {len(chain_ids)} chains "
                 f"you named ({', '.join(chain_ids)})."
             )
+        # NAME THE CHAINS THAT WERE ACTUALLY SEARCHED, not every chain in the
+        # target. ``_nearest_clean_residues`` looks on the chain each dropped
+        # hotspot lands on — its own for a prefixed token, the FIRST named one
+        # for a bare number — so listing "A, B" beside a suggestion list drawn
+        # from A alone reads as "there is nothing usable on B either", which
+        # the search never asked.
+        searched = _hotspot_search_chains(dropped_hotspots, chain_ids)
         fix = (
             f"Pick a hotspot that exists, with a clean backbone, on the chain "
             f"it names. Nearest usable residues on chain(s) "
-            f"{', '.join(chain_ids) or target_chain}: {nearest_str}."
+            f"{', '.join(searched) or target_chain}: {nearest_str}."
         )
         if len(chain_ids) > 1:
             fix += (
@@ -921,6 +979,47 @@ def multi_chain_refusal(tool_slug: str, target_chain: str) -> Optional[str]:
     return f"{reason} {fix}"
 
 
+def shipped_hotspots(validated) -> list:  # noqa: ANN001
+    """The hotspot tokens a range gate must judge, from a ``validate()`` dict.
+
+    THE GATE MUST JUDGE THE TOKEN THAT SHIPS, and for one adapter that is not
+    the one the gate used to read. proteina's ``_parse_hotspots`` emits TWO
+    representations of the same input: ``hotspot_spec`` (``["B520"]``, the
+    chain-prefixed form upstream string-matches on) and ``hotspot_residues``
+    (``[520]``, bare author numbers, kept so the pre-multi-chain range checks
+    kept compiling). ``build_payload`` ships both, and the container reads
+    ``hotspot_spec`` FIRST — ``tools/proteina/run_pipeline.py``'s hotspot
+    parser only falls back to ``hotspot_residues`` when the spec yields no
+    tokens.
+
+    The bare list is LOSSY, and every gate that read it inherited the loss:
+    ``[520]`` on contig ``A1-40,B500-539`` means "the user typed 520" (which
+    ships as ``A520``, is out of range, and must be refused) OR "the user typed
+    B520 and the adapter stripped the letter" (which ships as ``B520``, is
+    perfectly in range, and must run). Those are opposite verdicts and the bare
+    field cannot tell them apart, so judging it either refuses correct
+    multi-chain runs or funds broken ones — there is no third option. The spec
+    distinguishes them exactly: ``['A520']`` vs ``['B520']``.
+
+    Precedence mirrors the container's, deliberately: the spec wins outright
+    when it yields anything, otherwise the bare list. Every other tool emits no
+    ``hotspot_spec`` at all and its ``hotspot_residues`` is ALREADY the shipped
+    token (``["A5", "B7"]`` from ``tools/base.parse_hotspot_residues``, or bare
+    ints on a single-chain target), so this is a no-op for them — never assume
+    the key exists.
+
+    ``epitope_pdb_resnums`` is iggm's name for the same field and is appended
+    rather than substituted: a tool could in principle carry both, and the two
+    campaign money routes have always range-checked their concatenation.
+    """
+    if not validated:
+        return []
+    spec = list(validated.get("hotspot_spec") or [])
+    bare = list(validated.get("hotspot_residues") or [])
+    epitope = list(validated.get("epitope_pdb_resnums") or [])
+    return (spec or bare) + epitope
+
+
 def _maybe_alphafold(pdb_bytes: bytes, target_chain: str) -> Optional[AlphaFoldSuggestion]:
     """Return an AlphaFold suggestion if we can map the target chain to a UniProt."""
     try:
@@ -1023,6 +1122,128 @@ def _clean_resnums_by_chain(
         chain: sorted(r for r, atoms in per_res.items() if required.issubset(atoms))
         for chain, per_res in bb_present.items()
     }
+
+
+def _present_resnums_by_chain(
+    pdb_bytes: bytes, target_chain: str
+) -> dict[str, set]:
+    """``{chain_id: {resnum, ...}}`` for residues that EXIST on each named
+    chain, backbone completeness set aside.
+
+    THE COMPANION TO :func:`_clean_resnums_by_chain`, AND THE DIFFERENCE
+    BETWEEN THEM IS THE POINT. That one requires a complete N/CA/C/O backbone;
+    this one requires only a CA with real coordinates. A hotspot that is in the
+    first set is usable by everything; one that is in this set but not that one
+    exists on the chain and is merely missing a backbone atom; one in neither
+    was never in the file at all. Those last two are different failures with
+    different fixes, and collapsing them is what let a single missing ``O`` —
+    routine on a terminal residue or a disordered loop — refuse a run that
+    trunk executed successfully.
+
+    CA-with-coordinates is not an arbitrary floor: it is exactly what
+    proteina's container counts as a residue. ``tools/proteina/run_pipeline.py``
+    builds its selection from ``pdb_ca_residues`` and matches
+    ``missing_hotspots`` against that, so a CA-present hotspot reaches the
+    model whatever else its backbone is missing. Executed against a synthetic
+    chain whose residue 30 carries N/CA/C and no O: ``missing_hotspots`` on
+    ``["A30"]`` returns ``[]``, i.e. the container accepts it.
+
+    EVERY OTHER PARSING RULE IS IDENTICAL TO ITS SIBLING, which is load-bearing
+    rather than tidy: the two functions PARTITION one list, so a rule they
+    disagreed on would put a residue in neither set for a reason that has
+    nothing to do with backbones, and the refusal would then say "the chain has
+    no residue with that number" about a residue plainly numbered there. So:
+    HETATM accepted (modified residues are still residues), integer resnum only
+    (icodes fold into their number), all-zero coordinates rejected as the
+    placeholder they are.
+
+    That last rule is a DELIBERATE divergence from the container, which does
+    not filter coordinates at all — ``pdb_ca_residues`` takes any CA record —
+    so a hotspot on a residue parked at the origin would technically run there.
+    It is refused here instead, and it is the one place this function is
+    stricter than what it models. Nothing is designed against a placeholder:
+    such a run completes, scores, and looks successful while aimed at nothing,
+    which is the failure class the absent branch exists to stop.
+    """
+    wanted = _chain_tokens(target_chain)
+    present: dict[str, set] = {c: set() for c in wanted}
+    for raw in pdb_bytes.split(b"\n"):
+        if not (raw.startswith(b"ATOM") or raw.startswith(b"HETATM")):
+            continue
+        try:
+            line = raw.decode("ascii", errors="replace")
+        except Exception:
+            continue
+        if len(line) < 54:
+            continue
+        chain = line[21]
+        if chain not in present:
+            continue
+        if line[12:16].strip() != "CA":
+            continue
+        try:
+            resnum = int(line[22:26])
+            x = float(line[30:38])
+            y = float(line[38:46])
+            z = float(line[46:54])
+        except ValueError:
+            continue
+        if all(abs(c) < 1e-6 for c in (x, y, z)):
+            continue
+        present[chain].add(resnum)
+    return present
+
+
+def _hotspot_search_chains(dropped: list, chain_ids: list) -> list:
+    """The chains :func:`_nearest_clean_residues` actually searched, in order.
+
+    A prefixed hotspot is searched on the chain it names; a bare one on the
+    first named chain, because that is where a bare number pasted back would
+    land. So the set is a function of the DROPPED TOKENS, not of the target —
+    and the refusal used to label its suggestion list with every named chain
+    regardless.
+    """
+    out: list = []
+    for h in dropped:
+        cid, n = split_hotspot(h, chain_ids)
+        if n is None:
+            continue
+        landed = cid if cid is not None else (chain_ids[0] if chain_ids else "")
+        if landed and landed not in out:
+            out.append(landed)
+    return out
+
+
+def _split_dropped_hotspots(
+    pdb_bytes: bytes, target_chain: str, dropped: list,
+) -> tuple[list, list]:
+    """Partition dropped hotspots into ``(absent, incomplete)``.
+
+    ``absent``     — the chain this token will be SENT AS has no such residue
+                     (or the token does not parse as one). Nothing downstream
+                     can resolve it, so it is a hard fail for every tool.
+    ``incomplete`` — the residue is there, with a CA, and only its backbone is
+                     short of N/CA/C/O. proteina's container accepts it; trunk
+                     shipped it; refusing it is a false refusal.
+
+    Attribution mirrors :func:`_check_hotspots` exactly — bare tokens onto the
+    first named chain, prefixed ones onto the chain they name — because these
+    two functions are partitioning the SAME list and a disagreement between
+    them would file a token under a chain it was never checked against.
+    """
+    present = _present_resnums_by_chain(pdb_bytes, target_chain)
+    names = list(present)
+    first = names[0] if names else None
+    absent: list = []
+    incomplete: list = []
+    for h in dropped:
+        cid, n = split_hotspot(h, names)
+        if n is None:
+            absent.append(h)
+            continue
+        pool = present.get(cid if cid is not None else first, ())
+        (incomplete if n in pool else absent).append(h)
+    return absent, incomplete
 
 
 # ``_clean_resnums_on_chain`` used to live here: the union of
