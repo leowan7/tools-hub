@@ -645,13 +645,50 @@ def _trailing_barren(plan: list[dict], state: dict[int, dict]) -> int:
     return streak
 
 
+def _billed_seconds(rec: dict, *, ceiling: bool) -> float:
+    """Billed container seconds for ONE shard: measured if it has finished,
+    modelled if it has not.
+
+    ``runtime_seconds`` is the PIPELINE clock reported from inside the
+    container, not the billed clock, so the two readings of the single metered
+    run are each completed in their own terms rather than mixed. They are two
+    points on one constraint curve, ``rate x (673 + overhead) = $0.5528``:
+      * point estimate — $2.50/hr WITH a 123 s container overhead, so the
+        overhead is added back onto the pipeline clock;
+      * ceiling — $2.958/hr with ZERO overhead, so nothing is added. For any
+        shard longer than the 673 s calibration point (which is every real
+        one) that branch still returns the larger dollar figure, so it remains
+        the conservative one.
+
+    The modelled fallback is returned unchanged for both, which leaves the
+    ceiling slightly over-conservative there — ``shard_seconds`` already
+    includes CONTAINER_OVERHEAD_S. Deliberate: that is the shipped behaviour of
+    the budget guard and loosening a money guard is not this function's job.
+    """
+    measured = rec.get("runtime_seconds")
+    if not measured:
+        return shard_seconds()
+    measured = float(measured)
+    return measured if ceiling else measured + CONTAINER_OVERHEAD_S
+
+
 def _spent_usd(state: dict[int, dict], *, ceiling: bool = False) -> float:
     """Every shard that reached ``intent`` may have been billed, and every one
     that reached ``submitted`` certainly was, whether or not it then produced
     designs. Counting only successes would let a run of failures walk straight
-    through the budget ceiling."""
-    per = shard_usd_ceiling() if ceiling else shard_usd()
-    return sum(per for rec in state.values()
+    through the budget ceiling.
+
+    MEASURED BEATS MODELLED. An earlier revision priced every shard off
+    ``shard_usd()`` and never looked at the ``runtime_seconds`` sitting in its
+    own ledger, so it reported a projection while calling it spend. The model
+    is two free parameters fitted to one 8-design observation and it
+    over-predicts a 64-design shard by ~48% (5124 s modelled, 3459 s measured
+    over tier 1), which reads as a 48% overspend and trips the budget guard
+    about a third of the way early.
+    """
+    rate = USD_PER_SECOND_CEILING if ceiling else USD_PER_SECOND
+    return sum(_billed_seconds(rec, ceiling=ceiling) * rate
+               for rec in state.values()
                if rec.get("state") in BILLED_STATES)
 
 
@@ -901,8 +938,11 @@ def _run_locked(args, plan: list[dict], outdir: Path) -> int:
         print(f"[done] manifest rebuild FAILED ({type(exc).__name__}: {exc}). "
               "Per-shard rows.csv files are intact; re-run to rebuild.",
               file=sys.stderr)
+    gpu_h = sum(float(r["runtime_seconds"]) for r in final.values()
+                if r.get("runtime_seconds")) / 3600.0
     print(f"\n[done] {ok}/{len(plan)} shards delivered designs; {rows} rows; "
-          f"~${_spent_usd(final):.2f} spent (best estimate); "
+          f"{gpu_h:.2f} GPU-hours; ${_spent_usd(final):.2f} spent "
+          f"(${_spent_usd(final, ceiling=True):.2f} at the rate ceiling); "
           f"manifest at {outdir / 'manifest.csv'}")
     # A stop reached mid-window still collected everything already paid for,
     # which is why it is reported here rather than returned the moment it
@@ -991,6 +1031,18 @@ def campaign_status(outdir: Path, plan: list[dict]) -> dict:
     never_spawned = sum(
         1 for item in plan
         if state.get(item["index"], {}).get("state") not in BILLED_STATES)
+
+    # The ETA above uses WALL CLOCK (submitted -> terminal) because queue
+    # latency delays the finish even though nobody bills for it. Cost must not
+    # use it, so the projection takes its own mean off the pipeline clock and
+    # prices it exactly the way _spent_usd prices a finished shard. Sharing one
+    # `per_shard` between the two made `spent_usd` and `projected_usd` two
+    # different definitions of what a shard costs.
+    billed_s = [float(r["runtime_seconds"]) for r in state.values()
+                if r.get("runtime_seconds")]
+    per_shard_usd = (
+        (sum(billed_s) / len(billed_s) + CONTAINER_OVERHEAD_S) * USD_PER_SECOND
+        if billed_s else shard_usd())
     return {
         "shards_done": len(done), "shards_total": len(plan),
         "shards_delivered": len(delivered), "remaining": remaining,
@@ -998,8 +1050,7 @@ def campaign_status(outdir: Path, plan: list[dict]) -> dict:
         "measured_shard_s": measured, "modelled_shard_s": shard_seconds(),
         "eta_s": waves * per_shard,
         "spent_usd": _spent_usd(state),
-        "projected_usd": (_spent_usd(state)
-                          + never_spawned * per_shard * USD_PER_SECOND),
+        "projected_usd": _spent_usd(state) + never_spawned * per_shard_usd,
         "mismatches": [i for i, r in state.items() if r.get("length_mismatch")],
     }
 

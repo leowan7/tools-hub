@@ -1077,6 +1077,137 @@ class TestTheBudgetCountsEverythingThatWasBilled:
         assert sd.shard_usd_ceiling() > sd.shard_usd()
 
 
+class TestSpendIsMeasuredNotModelled:
+    """The model is two parameters fitted to one 8-design run and it
+    over-predicts a 64-design shard by ~48%. Reporting it as spend, and
+    gating a budget on it, is the bug these cover."""
+
+    def test_a_finished_shard_is_priced_off_its_measured_runtime(self):
+        rec = {"state": "collected", "runtime_seconds": 3459}
+        assert sd._spent_usd({0: rec}) == pytest.approx(
+            (3459 + sd.CONTAINER_OVERHEAD_S) * sd.USD_PER_SECOND)
+
+    def test_a_measured_shard_is_cheaper_than_the_model_claimed(self):
+        """Tier 1's real mean. The whole point: the model says $3.56."""
+        measured = sd._spent_usd({0: {"state": "collected",
+                                      "runtime_seconds": 3459}})
+        assert measured < sd.shard_usd() * 0.80
+
+    def test_an_unfinished_shard_still_falls_back_to_the_model(self):
+        for state in ("intent", "submitted"):
+            assert sd._spent_usd({0: {"state": state}}) == pytest.approx(
+                sd.shard_usd())
+
+    def test_measured_and_modelled_shards_mix_in_one_campaign(self):
+        state = {0: {"state": "collected", "runtime_seconds": 3459},
+                 1: {"state": "submitted"}}
+        assert sd._spent_usd(state) == pytest.approx(
+            (3459 + sd.CONTAINER_OVERHEAD_S) * sd.USD_PER_SECOND
+            + sd.shard_usd())
+
+    def test_the_ceiling_adds_no_overhead_because_its_rate_absorbed_it(self):
+        """$2.958/hr is the zero-overhead corner of the same constraint
+        curve; adding 123 s on top would double-count it."""
+        rec = {"state": "collected", "runtime_seconds": 3459}
+        assert sd._spent_usd({0: rec}, ceiling=True) == pytest.approx(
+            3459 * sd.USD_PER_SECOND_CEILING)
+
+    def test_the_ceiling_is_still_the_larger_number_for_a_real_shard(self):
+        rec = {"state": "collected", "runtime_seconds": 3459}
+        assert (sd._spent_usd({0: rec}, ceiling=True)
+                > sd._spent_usd({0: rec}))
+
+    def test_a_shard_that_reported_no_runtime_uses_the_model(self):
+        """`empty`/`failed` can land with runtime_seconds absent or null."""
+        for rt in (None, 0):
+            assert sd._spent_usd({0: {"state": "failed",
+                                      "runtime_seconds": rt}}) == (
+                pytest.approx(sd.shard_usd()))
+
+    def test_the_budget_guard_no_longer_stops_a_third_of_the_way_early(self):
+        """20 measured shards at tier 1's mean, against tier 1's own $90
+        ceiling: the model priced this at $71 and would refuse work the
+        real $50 leaves plenty of room for."""
+        state = {i: {"state": "collected", "runtime_seconds": 3459}
+                 for i in range(20)}
+        assert sd._spent_usd(state) == pytest.approx(49.7, abs=1.0)
+        assert sd._spent_usd(state, ceiling=True) < 60.0
+
+
+class TestCampaignStatusReportsWhatItMeasured:
+    """``--status`` had no coverage at all, and it is the only thing an
+    operator reads while a tier is burning money."""
+
+    @staticmethod
+    def _outdir(tmp_path, records):
+        (tmp_path / "ledger.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+        return tmp_path
+
+    # one shard queued 30 min, then ran 10. Wall clock 2400 s, billed 600 s.
+    _QUEUED = [
+        {"index": 0, "bin": [60, 69], "state": "submitted",
+         "ts": "2026-08-09T10:00:00"},
+        {"index": 0, "state": "collected", "runtime_seconds": 600,
+         "ts": "2026-08-09T10:40:00"},
+    ]
+
+    def test_the_cost_projection_uses_the_pipeline_clock(self, tmp_path):
+        """Queue latency delays the finish but nobody bills for it. Sharing
+        the ETA's wall-clock mean with the projection billed the queue."""
+        st = sd.campaign_status(self._outdir(tmp_path, self._QUEUED),
+                                sd.build_plan(bins=[(60, 69)], per_bin=2))
+        each = (600 + sd.CONTAINER_OVERHEAD_S) * sd.USD_PER_SECOND
+        assert st["projected_usd"] == pytest.approx(2 * each)
+        # what it would cost if the 2400 s wall clock had leaked into the price
+        assert st["projected_usd"] < 2400 * sd.USD_PER_SECOND
+
+    def test_the_eta_still_uses_the_wall_clock(self, tmp_path):
+        """The other half of the same split: a shard that spends 30 min in a
+        queue really does finish 30 min later."""
+        st = sd.campaign_status(self._outdir(tmp_path, self._QUEUED),
+                                sd.build_plan(bins=[(60, 69)], per_bin=2))
+        assert st["measured_shard_s"] == pytest.approx(2400)
+        assert st["eta_s"] == pytest.approx(2400)
+
+    def test_an_untouched_campaign_projects_off_the_model(self, tmp_path):
+        st = sd.campaign_status(self._outdir(tmp_path, []),
+                                sd.build_plan(bins=[(60, 69)], per_bin=3))
+        assert st["spent_usd"] == 0.0
+        assert st["projected_usd"] == pytest.approx(3 * sd.shard_usd())
+        assert st["measured_shard_s"] is None
+
+    def test_in_flight_shards_are_not_projected_a_second_time(self, tmp_path):
+        """They are already counted in spent_usd — double-counting them
+        inflated a width-10 tier by ~$23."""
+        st = sd.campaign_status(
+            self._outdir(tmp_path, self._QUEUED + [
+                {"index": 1, "bin": [60, 69], "state": "submitted",
+                 "ts": "2026-08-09T10:41:00"}]),
+            sd.build_plan(bins=[(60, 69)], per_bin=2))
+        assert st["in_flight"] == 1
+        assert st["projected_usd"] == pytest.approx(st["spent_usd"])
+
+    def test_width_is_observed_from_the_shards_actually_running(self, tmp_path):
+        running = [{"index": i, "bin": [60, 69], "state": "submitted",
+                    "ts": "2026-08-09T10:00:00"} for i in range(4)]
+        st = sd.campaign_status(self._outdir(tmp_path, running),
+                                sd.build_plan(bins=[(60, 69)], per_bin=12))
+        assert st["in_flight"] == 4
+        # 12 unfinished / width 4. The 4 in flight are wave 1, not wave 0 —
+        # they have not landed yet, so they still cost a wave of wall clock.
+        assert st["waves"] == 3
+
+    def test_a_length_mismatch_is_surfaced(self, tmp_path):
+        st = sd.campaign_status(
+            self._outdir(tmp_path, [
+                {"index": 0, "bin": [60, 69], "state": "collected",
+                 "runtime_seconds": 600, "length_mismatch": "40 aa in a 60-69 shard",
+                 "ts": "2026-08-09T10:40:00"}]),
+            sd.build_plan(bins=[(60, 69)], per_bin=1))
+        assert st["mismatches"] == [0]
+
+
 class TestHarvestKeepsWhatWasPaidFor:
 
     def test_binder_length_counts_chain_C_only(self):
