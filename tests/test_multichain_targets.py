@@ -1222,13 +1222,31 @@ def test_a_chain_prefixed_proteina_hotspot_clears_every_money_gate(
     assert verdict.hotspot_status["dropped"] == []
 
 
-def test_the_bare_hotspot_that_lands_off_its_chain_is_still_refused():
-    """The A1 defect, which the fix above must not re-open.
+def test_the_bare_hotspot_on_a_two_chain_contig_never_reaches_the_gate():
+    """The A1 defect, closed one layer earlier than this test used to check.
 
-    Typed bare on a two-chain contig, 520 is promoted onto chain A by
-    proteina's own parser and ships as "A520". Chain A runs 1..40, so the run
-    cannot succeed and must not be funded -- by either the range gate or the
-    preflight, and for a hotspots-OPTIONAL tool as much as a required one.
+    This test used to assert that a bare 520 was PROMOTED to "A520" and then
+    caught downstream. proteina no longer promotes: a bare token on a run that
+    names more than one chain is refused in the adapter, naming both corrected
+    forms, because "the target chain" does not identify a residue when there
+    are two. The message this assertion used to carry said the premise would
+    move; it has. The downstream half it guarded is not lost -- the test below
+    reaches it with a TYPED A520, which the adapter still accepts.
+    """
+    from tools import proteina as proteina_mod
+
+    inputs, err = proteina_mod.adapter.validate(_proteina_form("520"), {})
+    assert inputs is None
+    assert err and "needs a chain prefix" in err and "A520 or B520" in err, err
+
+
+def test_the_hotspot_that_lands_off_its_chain_is_still_refused():
+    """The downstream half, reached the way it is still reachable.
+
+    A520 is a typo the adapter cannot fault -- chain A is a chain this run
+    targets -- so the range gate and the preflight are what stand between it
+    and a funded run. Chain A runs 1..40, so the run cannot succeed and must
+    not be funded, for a hotspots-OPTIONAL tool as much as a required one.
     """
     import uuid as _uuid
 
@@ -1236,12 +1254,9 @@ def test_the_bare_hotspot_that_lands_off_its_chain_is_still_refused():
     from shared.targets import DesignTarget
     from tools import proteina as proteina_mod
 
-    inputs, err = proteina_mod.adapter.validate(_proteina_form("520"), {})
+    inputs, err = proteina_mod.adapter.validate(_proteina_form("A520"), {})
     assert err is None, err
-    assert inputs["hotspot_spec"] == ["A520"], (
-        "proteina no longer promotes a bare hotspot onto the first contig "
-        "chain; the premise of this test has moved"
-    )
+    assert inputs["hotspot_spec"] == ["A520"]
 
     gate_tokens = shipped_hotspots(inputs)
     target = DesignTarget(

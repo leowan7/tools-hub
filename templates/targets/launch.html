@@ -77,8 +77,15 @@
           {%- endfor %}
         </p>
         {% endif %}
+        {# PLAIN NUMBERS ONLY, and the copy has to say so, because this one
+           field is posted to EVERY selected tool. RFdiffusion, BindCraft,
+           BoltzGen and PXDesign refuse a token naming a chain the run does not
+           target, and tools/rfantibody parses it with a bare int() that
+           refuses a prefix on any chain — and the launch route is
+           all-or-nothing, so one prefixed token here kills the whole launch.
+           Proteina's own field, below its checkbox, is where a protomer goes. #}
         {{ field_text("hotspot_residues", "Hotspot residues",
-                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen and Proteina. Plain numbers apply to the target chain above; for a multi-chain Proteina target, prefix the chain (A45, C73).",
+                      "Comma-separated, PDB numbering. Required by RFdiffusion, BindCraft, PXDesign and RFantibody; optional for BoltzGen and Proteina. Plain numbers only — they apply to the target chain above. To aim at a specific protomer, use Proteina's own hotspot field.",
                       placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
       </div>
     </div>
@@ -203,6 +210,32 @@
                 residue of the target chain above.
               </div>
             </div>
+            {# PROTEINA'S OWN HOTSPOT FIELD. The shared field above is posted to
+               every selected tool, and none of the other five will take a
+               chain-qualified token there — four refuse a chain the run does
+               not target, and rfantibody's parser is a bare int() per token —
+               so a protomer-specific hotspot has to come in here. The
+               adapter prefers this key and falls back to the shared one when it
+               is blank, so a single-chain co-launch driven entirely from the
+               shared field is unchanged. Rendered `disabled` like every other
+               control in a tool panel, so an unticked Proteina posts nothing.
+               Prefilled from `proteina__chain_hotspots` on a re-render and from
+               the target's stored `chain_hotspots` otherwise — the same
+               two-level lookup iggm__epitope uses. #}
+            <div class="field-group">
+              <label for="proteina__chain_hotspots" class="field-label">Hotspot residues</label>
+              <input type="text" name="proteina__chain_hotspots"
+                     id="proteina__chain_hotspots" class="field-input"
+                     style="max-width: 320px;" disabled
+                     value="{{ pre_fill.get('proteina__chain_hotspots', pre_fill.get('chain_hotspots', '')) }}"
+                     placeholder="e.g. A417, B453">
+              <div class="field-helper">
+                Optional, and Proteina's alone. A plain number is read as the
+                target chain, and is refused when this run targets more than one
+                chain, so prefix the chain (<code>A113, C73</code>). Leave blank
+                to use the shared hotspot field above.
+              </div>
+            </div>
             <div class="field-group">
               <label class="field-label">Binder length</label>
               <div style="display: flex; gap: 0.5rem; align-items: center; max-width: 320px;">
@@ -220,9 +253,6 @@
               </div>
               <div class="field-helper">
                 Each design's length is drawn from this range. Blank uses 60-120.
-                Hotspots come from the shared field above &mdash; plain numbers
-                use the target chain, or prefix the chain for a multi-chain
-                region (<code>A113 C73</code>).
               </div>
             </div>
             {% endif %}

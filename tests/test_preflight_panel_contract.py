@@ -658,6 +658,16 @@ def test_single_chain_bare_hotspots_stay_bare_for_every_tool(slug):
     mod = importlib.import_module(f"tools.{slug}")
     form = dict(_PANEL_HOTSPOT_FORMS[slug])
     form.update({"target_chain": "A", "hotspot_residues": "5,7"})
+    # The table's proteina entry carries a TWO-chain contig, because the other
+    # three tests that read it need a chain set that accepts a prefix. This
+    # test is the single-chain one — its own name says so — and proteina reads
+    # its chain set from the contig, so "target_chain": "A" does not make the
+    # run single-chain the way it does for every other adapter. Narrow the
+    # contig instead of asserting single-chain behaviour against a dimer: a
+    # bare hotspot on two chains cannot say which protomer it means and is now
+    # refused (tools/proteina/__init__.py::_parse_hotspots).
+    if form.get("target_input"):
+        form["target_input"] = form["target_input"].split(",")[0]
 
     inputs, err = mod.validate(form, {})
     assert err is None, f"{slug}: {err}"
@@ -885,6 +895,11 @@ def test_what_each_adapter_does_with_a_chain_prefixed_hotspot(slug):
       - proteina accepts it but emits bare ints, carrying the prefixed form
         separately under hotspot_spec
       - rfantibody and boltz2 reject it outright
+
+    proteina's split is safe because nothing range-checks the bare copy any
+    more: the four money gates read `shared.pdb_preflight.shipped_hotspots`,
+    which prefers `hotspot_spec`. The panel must keep reading the pair, not
+    the bare key alone.
     """
     import importlib
 

@@ -271,7 +271,9 @@ def compute_campaign_create():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.targets import get_target, touch_target  # noqa: PLC0415
+    from shared.targets import (  # noqa: PLC0415
+        enrich_target_hotspot_spec, get_target, touch_target,
+    )
 
     tool = (request.form.get("tool") or "").strip()
     name = (request.form.get("name") or "").strip()
@@ -606,6 +608,15 @@ def compute_campaign_create():
 
     if target is not None:
         touch_target(target.id)
+        # Same enrichment the multi-tool launch route performs, at the same
+        # seam, for the same reason: this is the OTHER route that runs a tool
+        # against a saved target, and a target enriched by one screen and not
+        # the other would depend on which form the user happened to use.
+        # ENRICH-ONLY — see shared.targets.enrich_target_hotspot_spec for the
+        # three conditions and why each one is load-bearing. Only proteina's
+        # adapter emits `hotspot_spec`; the helper answers False for everything
+        # else without touching the database.
+        enrich_target_hotspot_spec(target, validated.get("hotspot_spec"))
 
     # A59. The return value used to be discarded, so a failed fund redirected as
     # success and left the row at `draft` forever -- `cron/tick_campaigns.py`

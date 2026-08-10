@@ -188,15 +188,18 @@
 </div>
 {% endif %}
 
-{% if target.hotspot_residues or target.epitope_residues or target.notes %}
+{% if target.effective_hotspots or target.epitope_residues or target.notes %}
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header"><span class="panel-title">Defaults</span></div>
   <div class="panel-body" style="font-size: 0.88rem; color: var(--text-secondary);">
-    {% if target.hotspot_residues %}
+    {% if target.effective_hotspots %}
     <p style="margin: 0 0 0.4rem;">
       Hotspots:
+      {# effective_hotspots, not hotspot_residues: on a multi-chain target the
+         integer column has had the chain stripped out of it, so rendering it
+         would show 241 for a hotspot the user pinned to protomer B. #}
       <span style="font-family: var(--font-mono); color: var(--accent-text);">
-        {{ target.hotspot_residues|join(', ') }}
+        {{ target.effective_hotspots|join(', ') }}
       </span>
     </p>
     {% endif %}

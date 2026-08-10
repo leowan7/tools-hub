@@ -46,10 +46,21 @@ stay on curated tasks; see ``_CUSTOM_TARGET_PRESETS``.
 
 A custom target additionally accepts ``target_input`` (a chain/residue
 contig such as ``A1-150`` or ``A12-157,B12-157,C12-157`` for a multi-chain
-target), ``hotspot_residues`` (chain-prefixed ``A45 A67``, or bare numbers
-promoted onto the target chain so one shared launch field can drive proteina
-alongside the other tools), and ``binder_length``. All three are written
-into the registered record; a curated task carries its own and rejects them.
+target), hotspots, and ``binder_length``. All three are written into the
+registered record; a curated task carries its own and rejects them.
+
+Hotspots arrive on either of two form keys, ``chain_hotspots`` first and the
+shared ``hotspot_residues`` as a fallback. Chain-prefixed (``A45 A67``) is the
+native form; a bare number is promoted onto the single target chain so one
+shared launch field can still drive proteina alongside the other tools, and is
+REFUSED when the run names more than one chain, where "the target chain" does
+not identify a residue. The shared field is why the split exists: it is posted
+to EVERY tool on the launch screen, and none of the other five will accept a
+chain-qualified token arriving there from a target's saved default. rfdiffusion,
+bindcraft, boltzgen and pxdesign refuse any token naming a chain the RUN does
+not target (``tools/base.py::parse_hotspot_residues``); rfantibody parses it
+with a bare ``int(tok)`` and refuses a prefix on any chain at all. So anything
+chain-qualified has to come in on proteina's own key. See :func:`validate`.
 
 RF3 dependency (product decision): ``ligand_binder`` and ``motif_ame`` score
 on RF3 only — AF2RewardModel has no ligand protocol, so there is no AF2
@@ -294,6 +305,17 @@ def _format_contig(segments: list[tuple[str, int, int]]) -> str:
     return ",".join(parts)
 
 
+def _english_list(items: list[str], conj: str = "and") -> str:
+    """``["A", "B"] -> "A and B"``; ``["A", "B", "C"] -> "A, B and C"``.
+
+    Only ever renders chain ids and hotspot tokens into a refusal message.
+    """
+    items = list(items)
+    if len(items) <= 1:
+        return items[0] if items else ""
+    return f"{', '.join(items[:-1])} {conj} {items[-1]}"
+
+
 def _parse_hotspots(
     raw: str, chain_ids: list[str], default_chain: str
 ) -> tuple[list[str], list[int], Optional[str]]:
@@ -301,14 +323,46 @@ def _parse_hotspots(
 
     Accepts ``A45 A67 A89`` (upstream's chain-prefixed form) and plain
     ``54,56,115`` (what the shared launch field posts for every other tool —
-    see ``_SHARED_LAUNCH_FIELDS`` in blueprints/targets.py). A bare number is
-    promoted onto ``default_chain``, which is what lets one launch screen drive
-    proteina alongside rfdiffusion/pxdesign without a second field.
+    see ``_SHARED_LAUNCH_FIELDS`` in blueprints/targets.py).
+
+    ``chain_ids`` is EVERY chain this run targets — the contig's chains when
+    there is a contig, otherwise ``target_chain``'s. It used to be handed only
+    the contig's, so a run that named its chains in ``target_chain`` ("A B",
+    no contig) looked single-chain here, which broke this function in both
+    directions at once: a bare token was silently promoted onto A, and an
+    explicit ``B264`` was refused as "not one of this run's target chains (A)".
+
+    A BARE NUMBER IS REFUSED WHEN THE RUN NAMES MORE THAN ONE CHAIN. Upstream
+    matches hotspots literally, as ``f"{chain_id}{res_id}"``, so a bare number
+    has to be attributed to some chain before it addresses anything — and
+    "attribute it to the first one" is only unambiguous when there IS only one.
+    On an IgG1 Fc, whose protomers share one author numbering, ``241`` became
+    ``A241``, which is a real residue: the route's range check passed, preflight
+    passed, the container's own ``normalize_hotspots`` guard never saw a bare
+    token to refuse, and the run designed against protomer A with B entirely
+    unconstrained — indistinguishable, at every layer, from a correct run. The
+    refusal has to happen here because here is the last place the ambiguity is
+    still visible.
+
+    Single-chain runs promote exactly as before, which is what keeps proteina
+    co-launchable with rfdiffusion/pxdesign from one shared hotspot field.
 
     Returns ``(spec, resnums, error)``:
-      * ``spec``    — ``["A45", "A67"]``, what upstream string-matches on.
-      * ``resnums`` — ``[45, 67]``, bare author numbers, so the routes' existing
-        ``DesignTarget.hotspot_error`` range check keeps working unchanged.
+      * ``spec``    — ``["A45", "A67"]``, what upstream string-matches on and
+        what ``build_payload`` ships. THE AUTHORITY.
+      * ``resnums`` — ``[45, 67]``, bare author numbers. A LOSSY COPY, kept
+        because it is the shape the shared ``hotspot_residues`` key carries
+        fleet-wide and several older readers still expect ints there.
+
+    Nothing that decides money reads ``resnums`` directly any more. The four
+    paid gates call ``shared.pdb_preflight.shipped_hotspots(inputs)``, which
+    prefers ``hotspot_spec`` and only falls back to ``hotspot_residues`` for
+    tools that have no spec — so the token the gates judge is the token the
+    container matches on. That is what makes the bare copy safe to keep here:
+    it is no longer load-bearing. Do not reintroduce a range check that reads
+    it, because ``[600]`` cannot distinguish a typed ``600`` from a stripped
+    ``B600`` and answering with "600 exists on some chain" is the exact
+    question the run had already decided differently.
 
     Empty input is not an error — proteina's hotspots are OPTIONAL (an
     unconstrained search is a legitimate run), matching boltzgen rather than
@@ -334,6 +388,12 @@ def _parse_hotspots(
             )
         chain, number = m.group(1), int(m.group(2))
         if chain is None:
+            if len(allowed) > 1:
+                return [], [], (
+                    f'Hotspot "{token}" needs a chain prefix — this run '
+                    f"targets chains {_english_list(allowed)}, so write "
+                    f'{_english_list([f"{c}{number}" for c in allowed], "or")}.'
+                )
             if not default_chain:
                 return [], [], (
                     f'Hotspot residue "{token}" needs a chain prefix (e.g. '
@@ -342,8 +402,8 @@ def _parse_hotspots(
             chain = default_chain
         elif allowed and chain not in allowed:
             return [], [], (
-                f'Hotspot "{token}" names chain {chain}, which is not one of '
-                f"this run's target chains ({', '.join(allowed)})."
+                f'Hotspot "{token}" names chain {chain}, which is not one '
+                f"of this run's target chains ({', '.join(allowed)})."
             )
         key = f"{chain}{number}"
         if key in seen:
@@ -474,7 +534,26 @@ def validate(
         )
 
     raw_contig = (form.get("target_input") or "").strip()
-    raw_hotspots = (form.get("hotspot_residues") or "").strip()
+    # PROTEINA'S OWN HOTSPOT FIELD FIRST, the shared one only as a fallback.
+    #
+    # `hotspot_residues` is the ONE field the multi-tool launch screen posts to
+    # every selected tool (`blueprints/targets._SHARED_LAUNCH_FIELDS`), and it
+    # can only ever carry plain integers: rfdiffusion, bindcraft, boltzgen and
+    # pxdesign refuse a token naming a chain the run does not target, and
+    # `tools/rfantibody` parses it with a bare `int(tok)` that refuses a prefix
+    # on ANY target chain. So a chain-qualified hotspot cannot travel in it.
+    # `chain_hotspots` is proteina-scoped — posted as `proteina__chain_hotspots`
+    # on the launch screen, which `_tool_form` un-prefixes, and as
+    # `chain_hotspots` on the campaign form — so it can.
+    #
+    # `or`, not "present": an EMPTY proteina field falls back to the shared one,
+    # which is what keeps a single-chain co-launch driven entirely from the
+    # shared field working unchanged. It also means proteina's field cannot be
+    # used to CLEAR a shared hotspot; clear the shared field for that.
+    raw_hotspots = (
+        (form.get("chain_hotspots") or "").strip()
+        or (form.get("hotspot_residues") or "").strip()
+    )
     raw_len_min = form.get("binder_length_min") or ""
     raw_len_max = form.get("binder_length_max") or ""
 
@@ -514,9 +593,15 @@ def validate(
             if len(chain) > 4:
                 return None, f"Chain id {chain!r} is too long (max 4 characters)."
 
-    default_chain = (contig_chains or target_chain.split() or [""])[0]
+    # EVERY chain this run targets. A contig REPLACES target_chain rather than
+    # adding to it (prepare_custom_target derives its segments from
+    # target_input and never looks at target_chain again), so the contig's
+    # chains ARE the design when there is one. Passing only `contig_chains`
+    # here made a contig-less "A B" run look single-chain to _parse_hotspots.
+    run_chains = contig_chains or target_chain.split()
+    default_chain = (run_chains or [""])[0]
     hotspot_spec, hotspot_residues, err = _parse_hotspots(
-        raw_hotspots, contig_chains, default_chain
+        raw_hotspots, run_chains, default_chain
     )
     if err:
         return None, err
@@ -538,10 +623,16 @@ def validate(
             # structure. Prefixed so sanitize_shared_params drops it from
             # campaign.params rather than replaying a stale copy.
             "_target_segments": segments,
-            # Two representations on purpose: `hotspot_residues` is bare author
-            # numbers so DesignTarget.hotspot_error keeps working unchanged for
-            # free at both routes, `hotspot_spec` is the chain-prefixed form
-            # upstream actually string-matches on.
+            # Two representations, ONE authority. `hotspot_spec` is the
+            # chain-prefixed form upstream string-matches on and build_payload
+            # ships; `hotspot_residues` is the same tokens with the chain
+            # letter stripped, kept because the shared launch field carries
+            # bare ints fleet-wide and older readers still expect them here.
+            # The bare copy is LOSSY and nothing that spends money reads it:
+            # every paid gate goes through
+            # `shared.pdb_preflight.shipped_hotspots`, which prefers the spec.
+            # See _parse_hotspots for why re-deriving a verdict from the bare
+            # copy is the defect, not the fix.
             "hotspot_residues": hotspot_residues,
             "hotspot_spec": hotspot_spec,
             "binder_length": list(binder_length),
