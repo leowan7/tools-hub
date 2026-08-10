@@ -194,7 +194,19 @@ def _load_env_and_path() -> None:
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
-def build_job_spec(*, preset: str, nsamples: int, replicas: int) -> dict:
+def build_job_spec(*, preset: str, nsamples: int, replicas: int,
+                   binder_length: tuple[int, int] = (60, 120)) -> dict:
+    """``binder_length`` defaults to the SAME [60, 120] this file always sent,
+    so every existing caller is unchanged.
+
+    It is a parameter because omitting the field is NOT "let the model choose":
+    ``run_pipeline.main()`` does ``job_spec.get("binder_length") or [60, 120]``
+    and ``tools/proteina/__init__._parse_binder_length`` returns the identical
+    default, so an unset value silently caps the design space at the CLI
+    default. The validated range is 20-300 (``_BINDER_LEN_MIN`` /
+    ``_BINDER_LEN_MAX``), and a length sweep has to reach outside [60, 120] to
+    be a sweep at all.
+    """
     return {
         "preset": preset,
         "config_name": "search_binder_local_pipeline",
@@ -204,7 +216,7 @@ def build_job_spec(*, preset: str, nsamples: int, replicas: int) -> dict:
         "target_source": "custom",
         "target_chain": "A,B",
         "hotspot_residues": HOTSPOTS,
-        "binder_length": [60, 120],
+        "binder_length": [int(binder_length[0]), int(binder_length[1])],
         "rf3_required": False,
         "nsamples": nsamples,
         "replicas": replicas,
@@ -212,12 +224,14 @@ def build_job_spec(*, preset: str, nsamples: int, replicas: int) -> dict:
 
 
 def build_payload(url: str, *, preset: str, nsamples: int, replicas: int,
-                  job_id: str) -> dict:
+                  job_id: str,
+                  binder_length: tuple[int, int] = (60, 120)) -> dict:
     """NOTE the absence of upload_urls_endpoint and job_token. That absence is
     the whole point: it selects INLINE delivery in run_pipeline.main()."""
     return {
         "job_spec": build_job_spec(
-            preset=preset, nsamples=nsamples, replicas=replicas),
+            preset=preset, nsamples=nsamples, replicas=replicas,
+            binder_length=binder_length),
         "input_presigned_url": url,
         "tier": preset,
         "job_tier": preset,
