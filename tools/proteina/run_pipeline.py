@@ -1963,6 +1963,17 @@ MAX_CONTIG_RUNS = 64
 # is not, so the string must never be printable in a truncatable form.
 # ``tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD`` raises the fields to
 # match, and it is the two together that make truncation unreachable.
+#
+# IT BOUNDS TWO SITES, NOT ONE, and the second is the wider. The paragraph above
+# was written for the endpoint refusal and shipped claiming the invariant for
+# the whole service, while ``target_input_negative`` was still printing one
+# range per refused CHAIN — and on the derived path (blank contig) the chains
+# come from ``target_chain``, bounded only by ``_MAX_CHAIN_FIELD`` (32
+# characters, so 16 single-letter chains, so 175 characters of hint). One
+# bounded site and one unbounded site is not an invariant, so the number is
+# applied at both, and ``TestEveryPasteableHintFitsTheFieldItIsPastedInto``
+# reads this function's source for the emissions rather than trusting that two
+# is all there will ever be.
 MAX_HINT_RUNS = 8
 
 
@@ -2697,12 +2708,75 @@ def prepare_custom_target(
     # happens on a billed A100 instead of here.
     bad = unrenderable_segments(segments)
     if bad:
-        hints = []
-        for chain, lo, hi in bad:
+        # PER CHAIN, AS SEGMENTS, RENDERED BY ``format_contig`` — three things
+        # the old assembly-by-f-string did not do, each of which mattered.
+        #
+        # PER CHAIN, because the suggestion is "the widest range on this chain
+        # that starts at 0 or above", which is a fact about the CHAIN. Built
+        # per refused segment it repeated itself on a contig naming one chain
+        # twice, and ``A0-240,A0-240`` is advice the form refuses as
+        # overlapping — the operator's next attempt spent on our own answer.
+        #
+        # AS SEGMENTS, because a bound has to count something, and a list of
+        # ranges can be counted where a joined string cannot.
+        #
+        # AND A CHAIN WITH NOTHING TO SUGGEST IS NAMED OUTSIDE THE EXAMPLE, not
+        # inside it. A chain numbered entirely below zero has no range to offer,
+        # and it used to be comma-joined into the example itself — "e.g.
+        # A0-240,(chain B has no residue numbered 0 or above)" — which is not a
+        # contig at all, so the advice was unpasteable for everyone reading
+        # that message and not only for the chain it was about.
+        hints: list[tuple[str, int, int]] = []
+        unnumbered: list[str] = []
+        for chain in dict.fromkeys(c for c, _lo, _hi in bad):
             nonneg = [r[1] for r in residues if r[0] == chain and r[1] >= 0]
-            hints.append(
-                f"{chain}{min(nonneg)}-{max(nonneg)}" if nonneg else
-                f"(chain {chain} has no residue numbered 0 or above)"
+            if nonneg:
+                hints.append((chain, min(nonneg), max(nonneg)))
+            else:
+                unnumbered.append(chain)
+        # THE HINT IS BOUNDED HERE FOR THE REASON IT IS BOUNDED AT STEP 4b, AND
+        # BY THE SAME CONSTANT. See ``MAX_HINT_RUNS``: what settles the number
+        # is how many ranges ``validate()`` takes back, which is a question
+        # about the FIELD and not about which guard did the printing, so a
+        # second number here would be a second thing to move.
+        #
+        # THIS SITE IS THE WIDER OF THE TWO, and that is why it needed the
+        # bound at all. Step 4b's hint is one entry per RUN of a contig the
+        # user typed, so on the form path ``_MAX_SEGMENTS`` (8) already caps it
+        # at 87 characters. This one is one entry per CHAIN, and on the derived
+        # path (blank contig) the chains come from ``target_chain``, bounded
+        # only by ``_MAX_CHAIN_FIELD`` — 32 characters, so up to 16 of them,
+        # so up to 175 characters into a 128-character field. Nothing bounded
+        # it in the container at all, which is what the campaign and canary
+        # paths use.
+        if not hints:
+            advice, why = "", ""
+        elif len(hints) <= MAX_HINT_RUNS:
+            advice = f", e.g. {format_contig(hints)}"
+            why = ""
+        else:
+            # NOT the first ``MAX_HINT_RUNS`` of them. A prefix of a range list
+            # is a smaller target that reads exactly like a deliberate one, so
+            # printing one hands the operator something every gate here accepts
+            # and nobody asked for — which is precisely what the browser would
+            # have done to a hint we printed in full.
+            advice = ""
+            why = (
+                " No range is suggested here: one would have to be given for "
+                f"{len(hints)} chains, more than the {MAX_HINT_RUNS} ranges "
+                "this service accepts in one target chain range, so it would "
+                "not fit the field it has to be pasted back into. A shortened "
+                "list would name a smaller target than you asked for and would "
+                "look no different from one you meant, so none is given. Ask "
+                "for fewer chains in one run, and give each an explicit range "
+                "that starts at 0 or above."
+            )
+        if unnumbered:
+            noun, verb = (("chains", "have") if len(unnumbered) > 1
+                          else ("chain", "has"))
+            why += (
+                f" No range is suggested for {noun} {' '.join(unnumbered)}, "
+                f"which {verb} no residue numbered 0 or above at all."
             )
         _fail(
             "input", "target_input_negative",
@@ -2711,7 +2785,7 @@ def prepare_custom_target(
             "design engine's contig format cannot express — it accepts digits "
             "only. Structures carrying an expression tag are usually numbered "
             "this way. Set an explicit target chain range that starts at 0 or "
-            f"above, e.g. {','.join(hints)}. The target contains: {spans}.",
+            f"above{advice}. The target contains: {spans}.{why}",
         )
 
     # --- 4. every segment must select something ---------------------------
