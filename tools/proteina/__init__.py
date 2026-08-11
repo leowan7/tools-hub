@@ -45,9 +45,14 @@ whose records key on ``contig_atoms``, which the CLI cannot emit). Those two
 stay on curated tasks; see ``_CUSTOM_TARGET_PRESETS``.
 
 A custom target additionally accepts ``target_input`` (a chain/residue
-contig such as ``A1-150`` or ``A12-157,B12-157,C12-157`` for a multi-chain
-target), hotspots, and ``binder_length``. All three are written into the
-registered record; a curated task carries its own and rejects them.
+contig such as ``A1-150``, or ``A12-157,B12-157,C12-157`` for a multi-chain
+target, or ``A1-50,A60-240`` for one chain with a disordered loop), hotspots,
+and ``binder_length``. All three are written into the registered record; a
+curated task carries its own and rejects them. The container splits a range at
+every gap in the uploaded structure before registering it
+(``run_pipeline.contig_runs``), so the third form rarely has to be typed —
+upstream resolves every residue number in a range and raises on the first one
+the file does not hold.
 
 Hotspots arrive on either of two form keys, ``chain_hotspots`` first and the
 shared ``hotspot_residues`` as a fallback. Chain-prefixed (``A45 A67``) is the
@@ -195,9 +200,51 @@ _SEGMENT_RE = re.compile(r"^([A-Za-z])(-?\d+)-(-?\d+)$")
 _WHOLE_CHAIN_RE = re.compile(r"^([A-Za-z])$")
 _HOTSPOT_RE = re.compile(r"^([A-Za-z])?(-?\d+)$")
 
-_MAX_SEGMENTS = 8        # a target with >8 chain ranges is a modelling mistake
+# A cap on what a human TYPES here, not on what the container ships.
+#
+# UNCALIBRATED, and it always was — >8 hand-written chain ranges is a modelling
+# smell, which is a judgement and not a measurement. Its scope is now the part
+# worth stating: the container splits a range at every disordered gap before it
+# reaches `complexa target add` (`run_pipeline.contig_runs`), so ONE segment
+# typed here can legitimately become several runs down there, and the ceiling
+# that bounds those is `run_pipeline.MAX_CONTIG_RUNS` (64), not this. Raising
+# this number is a form-usability decision; raising that one is a decision about
+# what structures the service will design against.
+_MAX_SEGMENTS = 8
 _MAX_HOTSPOTS = 64       # mirrors iggm's EPITOPE_MAX order of magnitude
 _MAX_CHAIN_FIELD = 32    # "A B C D ..." — bounds the space-joined chain string
+
+# The widest ``target_input`` this parser will look at, and the number the three
+# templates that render the field set ``maxlength`` to (templates/tools/
+# proteina_form.html, templates/runs/new.html, templates/targets/launch.html).
+#
+# DERIVED, not chosen, unlike the two above. It is an upper bound on the longest
+# contig anything here would accept, plus headroom:
+#
+#   * ``_MAX_SEGMENTS`` (8) ranges is the most this parser takes;
+#   * a range renders as ``<letter><lo>-<hi>`` — the chain id is ONE character
+#     (``_SEGMENT_RE`` is ``[A-Za-z]``) and a residue number is at most FOUR
+#     ("9999", or "-999" on a tagged construct), because the numbering comes out
+#     of a PDB and ``run_pipeline.pdb_ca_residues`` reads ``line[22:26]``, a
+#     four-column resSeq. So a range is at most 1 + 4 + 1 + 4 = 10 characters;
+#   * 8 of those, comma-joined, is 8 * 10 + 7 = 87.
+#
+# 128 is the next round number above 87, ~47% of headroom. The headroom is not
+# decoration: the point of the cap is that nothing a user can legitimately type
+# — and nothing ``run_pipeline`` can legitimately PRINT for them to paste (see
+# ``MAX_HINT_RUNS``, bounded by the same ``_MAX_SEGMENTS``) — ever reaches it,
+# so the field can never silently keep a prefix of a contig. A truncated contig
+# is still a valid contig, so a browser that trims one produces a smaller target
+# that no gate downstream can distinguish from an intended one.
+#
+# IT IS ALSO A REAL SERVER-SIDE REFUSAL, not just a mirror of an attribute:
+# ``maxlength`` is an affordance in a browser and nothing at all to curl.
+# ``_SEGMENT_RE``'s ``(-?\d+)`` is unbounded and this parser calls ``int()`` on
+# what it captures — and since Python 3.11 ``int()`` REFUSES a string over 4300
+# digits — so ``A1-<5000 nines>`` used to come back out of ``validate()`` as an
+# unhandled ValueError, i.e. a 500. The length check runs before the loop, so
+# those digits are never converted.
+_MAX_TARGET_INPUT_FIELD = 128
 
 # Binder length envelope. Upstream's own curated records span [50, 155]; the
 # target-CLI default is [60, 120]. The generator samples the binder length
@@ -224,6 +271,18 @@ def _parse_target_input(
     text = (raw or "").strip()
     if not text:
         return [], "", [], None
+    # BEFORE THE LOOP, because the loop calls ``int()`` on an unbounded
+    # ``(-?\d+)`` capture and ``int()`` itself raises above 4300 digits — which
+    # left ``validate()`` returning an exception rather than a message. See
+    # ``_MAX_TARGET_INPUT_FIELD`` for where 128 comes from; the ceiling is far
+    # above the longest contig ``_MAX_SEGMENTS`` ranges can spell, so nothing a
+    # user would type on purpose can reach it.
+    if len(text) > _MAX_TARGET_INPUT_FIELD:
+        return [], "", [], (
+            f"Target chain range is too long (max {_MAX_TARGET_INPUT_FIELD} "
+            f"characters, this is {len(text)}). Give at most {_MAX_SEGMENTS} "
+            "ranges, like A1-150 or A1-50,A60-240."
+        )
 
     segments: list[tuple[str, int, int]] = []
     chain_ids: list[str] = []
@@ -259,12 +318,48 @@ def _parse_target_input(
                     "numbers, which the design engine cannot express. Pick a "
                     f"range starting at 0 or above, like {chain}1-{max(hi, 1)}."
                 )
-        if chain in chain_ids:
-            return [], "", [], (
-                f"Chain {chain} appears more than once in the target chain "
-                "range. Give each chain a single range."
-            )
-        chain_ids.append(chain)
+        # A CHAIN MAY REPEAT WHEN THE RANGES ARE DISJOINT. This used to be a
+        # flat "Chain A appears more than once", which made the CORRECT contig
+        # for a gapped target un-typable: upstream resolves every integer
+        # between a range's endpoints and raises on the first residue the file
+        # does not hold, so a chain with a disordered loop has to be written
+        # A1-50,A60-240 — a chain named twice — and a user who knew that could
+        # not say it. run_pipeline now derives that split itself
+        # (``contig_runs``), but the two must agree about what is legal or the
+        # container would accept a contig the form refuses.
+        #
+        # OVERLAP IS STILL REFUSED, and what it used to backstop is now held
+        # properly downstream. The flat rule existed because A10-20,A10-20
+        # counted 22 residues for 11 and defeated the container's 20-residue
+        # floor; ``run_pipeline.target_too_small`` now counts
+        # ``n_selected_residues``, which is ``len(selected_residue_keys(...))``
+        # — a de-duplicated key SET, as its docstring states — so the same
+        # contig counts 11 and is refused there whether or not it arrives
+        # through this parser. The web tier's own size gate
+        # (``shared/targets.py::selection_residue_count``) sums per segment and
+        # is documented as an UPPER bound that rounds up, so a repeat can only
+        # make it more conservative, never less.
+        for prev_chain, prev_lo, prev_hi in segments:
+            if prev_chain != chain:
+                continue
+            # A bare chain id is "the whole chain", so it overlaps every other
+            # range on that chain — including a second bare id.
+            if lo is None or prev_lo is None or (lo <= prev_hi and prev_lo <= hi):
+                return [], "", [], (
+                    f"Target chain ranges "
+                    f"{_format_contig([(prev_chain, prev_lo, prev_hi)])} and "
+                    f"{_format_contig([(chain, lo, hi)])} overlap. A chain may "
+                    "be listed more than once only when its ranges do not "
+                    "overlap, like A1-50,A60-240 for a chain with a disordered "
+                    "loop."
+                )
+        if chain not in chain_ids:
+            # DISTINCT chains, in first-appearance order. `chain_ids` becomes
+            # `target_chain` ("A B") and the allow-list `_parse_hotspots`
+            # judges a hotspot's prefix against; a repeat here would render
+            # "chain A A" and make the hotspot refusal read "write A241 or
+            # A241".
+            chain_ids.append(chain)
         segments.append((chain, lo, hi))
 
     if not segments:

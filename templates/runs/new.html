@@ -83,7 +83,17 @@
              own, so posting them together is refused server-side. -->
         <div class="runs-field" id="proteina-region-field" style="display:none;">
           <label for="target_input">Target region</label>
-          <input type="text" id="target_input" name="target_input" maxlength="64" value="{{ pre_fill.get('target_input','') }}" placeholder="e.g. A1-150" disabled>
+          <!-- maxlength MIRRORS tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD
+               (128) and is not a round number picked for looks. 8 ranges
+               (_MAX_SEGMENTS) x 10 characters ("A1000-1010" is the widest a
+               range can render, since a resSeq is 4 PDB columns) + 7 commas =
+               87, so 128 is comfortably above every contig the server accepts.
+               It was 64, and the container's own endpoint refusal prints a
+               recommended contig split at each disordered gap — 100+ characters
+               on a gappy chain. The browser kept the first 64, the cut landed
+               on a comma, and the survivor was a VALID contig naming a smaller
+               target that nothing downstream could tell from an intended one. -->
+          <input type="text" id="target_input" name="target_input" maxlength="128" value="{{ pre_fill.get('target_input','') }}" placeholder="e.g. A1-150" disabled>
           <div class="hint">Which chains and residues to design against. One chain (<code>A1-150</code>) or several (<code>A12-157,B12-157,C12-157</code>). Blank uses every residue of the target chain.</div>
         </div>
         {# Binder length is NOT duplicated here: the shared #binderlen-row below

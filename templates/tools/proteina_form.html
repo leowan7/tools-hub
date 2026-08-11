@@ -160,7 +160,17 @@
             </div>
 
             <label for="target_input" class="label" style="display:block; margin-bottom: 0.4rem;">Target region</label>
-            <input type="text" name="target_input" id="target_input" maxlength="64"
+            <!-- maxlength MIRRORS tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD
+                 (128). 8 ranges (_MAX_SEGMENTS) x 10 characters ("A1000-1010"
+                 is the widest a range can render, since a resSeq is 4 PDB
+                 columns) + 7 commas = 87, so 128 sits comfortably above every
+                 contig the server accepts. It was 64, and the container's
+                 endpoint refusal prints a recommended contig split at each
+                 disordered gap — 100+ characters on a gappy chain. The browser
+                 kept the first 64, the cut landed on a comma, and the survivor
+                 was a VALID contig naming a smaller target that nothing
+                 downstream could tell from an intended one. -->
+            <input type="text" name="target_input" id="target_input" maxlength="128"
                    placeholder="A1-150" {{ pre_value(pre_fill, "target_input", "") }}
                    class="proteina-field" style="max-width: 320px;">
             <div class="proteina-help">

@@ -1635,11 +1635,16 @@ def selected_residue_keys(
     on a 60-residue chain, ``--contig A10-20`` counted 11 and was refused, while
     ``--contig A10-20,A10-20`` counted 22 for the same 11 residues and was not.
     One comma bought a run of exactly the input the floor exists to stop. On the
-    WEB route production was shielded from that by the adapter, which rejects a
-    chain named twice ("Chain A appears more than once in the target chain
-    range", ``tools/proteina/__init__.py``); ``prepare_custom_target`` itself
-    was not, and the canary does not go through the adapter at all.
-    ``target_too_small`` now counts THIS, which is also what the crop stages.
+    WEB route production was shielded from that by the adapter, which at the
+    time rejected a chain named twice at all; it now refuses only OVERLAPPING
+    ranges on one chain (``tools/proteina/__init__.py::_parse_target_input``),
+    because ``A1-50,A60-240`` is the correct — and until then un-typable —
+    contig for a chain with a disordered loop, and the flat rule made it
+    unsayable. ``A10-20,A10-20`` still fails there. What matters here is that
+    the shield was never the defence: ``prepare_custom_target`` is reached with
+    contigs the adapter never saw and the canary does not go through the adapter
+    at all, so THIS de-duplicated count is what holds the floor.
+    ``target_too_small`` counts it, which is also what the crop stages.
 
     The insertion code is carried because ``A100`` and ``A100A`` are two
     residues with two CA atoms — upstream counts both, so the crop has to keep
@@ -1900,6 +1905,199 @@ def hotspots_outside_contig(
 
 def format_contig(segments: list[tuple[str, int, int]]) -> str:
     return ",".join(f"{chain}{lo}-{hi}" for chain, lo, hi in segments)
+
+
+# The most contiguous runs a normalised contig may carry before the run is
+# refused outright.
+#
+# UNCALIBRATED, and a POLICY choice rather than a measured limit — the same
+# provenance convention ``MIN_SELECTED_RESIDUES`` and ``SizeEnvelope.cap_basis``
+# use ("untested" = no run has ever approached the number, so the copy must
+# claim a precaution and not a predicted failure point). Nothing upstream is
+# known to break at any particular run count, and nothing here has measured one.
+#
+# WHAT IT IS NOT. It is not an upstream cost bound. ``AtomSelectionStack.
+# from_contig`` expands EVERY range into one ``AtomSelection`` per integer, so a
+# 240-residue chain already costs 240 selections whether it arrives as one run
+# or as forty; splitting on gaps barely moves that number and can only lower it.
+#
+# WHAT IT IS. A pathological-input stop. A structure whose author numbering is
+# non-contiguous by construction — a C-alpha trace numbered every tenth residue,
+# a model built from sparse density — turns nearly every residue into its own
+# run, and a 400-residue contig would render as a 400-token string that no
+# operator can read and no reviewer can check. Refusing is the honest answer
+# there; silently truncating to the first N runs would design against a target
+# nobody asked for, which is the failure class this whole file exists to stop.
+#
+# THE NUMBER'S ONLY BASIS is a ratio to the adapter's typed-contig ceiling:
+# ``tools/proteina/__init__.py::_MAX_SEGMENTS`` is 8, so 64 lets every one of
+# the 8 segments a user may legally type shatter into 8 runs — 7 disordered
+# loops each — and still register. It is also the same order as that file's
+# ``_MAX_HOTSPOTS``. Real crystal structures carry single-digit gap counts per
+# chain, so this sits far above ordinary input on purpose.
+MAX_CONTIG_RUNS = 64
+
+
+# The most runs a contig we SUGGEST may carry before we suggest nothing at all.
+#
+# NOT A SECOND COPY OF ``MAX_CONTIG_RUNS``, and deliberately far below it. That
+# one bounds what this service will REGISTER, which is a question about the
+# structure. This one bounds what this service will PRINT, which is a question
+# about the FIELD the answer has to be pasted back into — so the only number
+# that can settle it is ``tools/proteina/__init__.py::_MAX_SEGMENTS`` (8), the
+# most ranges ``validate()`` will take. A hint of more runs than that is advice
+# the form refuses; printing it wastes the operator's next attempt at best.
+#
+# WHY IT EXISTS. Until this bound, the endpoint refusal printed however many
+# runs the structure's gaps produced, and every field it can be pasted into was
+# capped at 64 characters. On a chain with 12 gaps the hint was 100+ characters,
+# the BROWSER kept the first 64, the cut landed on a comma, and what survived
+# parsed as a shorter contig that clears every gate here: 120 residues asked
+# for, 80 designed against, and nothing anywhere saying so.
+#
+# THE ASYMMETRY THAT MAKES THAT UNRECOVERABLE, and the reason prevention is the
+# only defence: a truncated contig is still a SYNTACTICALLY VALID contig. No
+# guard downstream can tell "A1-50,A60-90" typed on purpose from the front half
+# of something longer — the two are the same string. Every other guard in this
+# file works because the bad input is distinguishable from the good; this one
+# is not, so the string must never be printable in a truncatable form.
+# ``tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD`` raises the fields to
+# match, and it is the two together that make truncation unreachable.
+#
+# IT BOUNDS TWO SITES, NOT ONE, and the second is the wider. The paragraph above
+# was written for the endpoint refusal and shipped claiming the invariant for
+# the whole service, while ``target_input_negative`` was still printing one
+# range per refused CHAIN — and on the derived path (blank contig) the chains
+# come from ``target_chain``, bounded only by ``_MAX_CHAIN_FIELD`` (32
+# characters, so 16 single-letter chains, so 175 characters of hint). One
+# bounded site and one unbounded site is not an invariant, so the number is
+# applied at both, and ``TestEveryPasteableHintFitsTheFieldItIsPastedInto``
+# reads this function's source for the emissions rather than trusting that two
+# is all there will ever be.
+MAX_HINT_RUNS = 8
+
+
+def contig_runs(
+    residues: list[tuple[str, int, str]],
+    segments: list[tuple[str, Optional[int], Optional[int]]],
+) -> list[tuple[str, int, int]]:
+    """Each segment as the CONTIGUOUS RUNS of residues that really exist in it.
+
+    ``A1-240`` on a chain missing 51-59 becomes ``[("A", 1, 50), ("A", 60,
+    240)]``. A segment with NO gap comes back unchanged — that is the property
+    that makes this safe to apply to every contig rather than only to the ones
+    suspected of being gappy.
+
+    WHY THIS EXISTS, AND WHY IT IS A REWRITE RATHER THAN A REFUSAL. Upstream's
+    ``load_target_from_pdb`` (``proteinfoundation/utils/pdb_utils.py``
+    @916eaaed) resolves the contig with::
+
+        select = AtomSelectionStack.from_contig(target_spec)
+        mask = select.get_mask(struct)
+
+    and atomworks' ``from_contig`` (``src/atomworks/io/utils/selection.py``)
+    expands a range into ONE ``AtomSelection`` PER INTEGER::
+
+        for i in range(int(start), int(stop) + 1):
+            selections.append(AtomSelection(chain_id=chain_id, res_id=i))
+
+    ``AtomSelectionStack.get_mask`` is then a bare list comprehension with no
+    try/except, over a per-selection ``get_mask`` that RAISES on an empty
+    match::
+
+        if not np.any(mask):
+            raise ValueError(f"No atoms found for selection: {atom_selection}")
+
+    So every integer between the two endpoints must be a real residue, not just
+    the endpoints. A disordered loop — which most crystal structures have — kills
+    the run inside ``complexa design``, on a billed A100, after the checkpoints
+    have loaded. Comma-separated segments are UNIONED and repeating a chain is
+    legal upstream, so ``A1-50,A60-240`` succeeds exactly where ``A1-240`` dies.
+
+    THIS IS THE ONLY GUARD ON THIS PATH THAT REWRITES INSTEAD OF REFUSING, and
+    the asymmetry is deliberate. ``missing_endpoints`` refuses a bad ENDPOINT
+    because an endpoint the user typed and the file does not hold is a mistake
+    only the user can settle — ``A1-500`` on a 240-residue chain might mean
+    ``A1-240`` or might mean the wrong file was uploaded. An interior gap is not
+    a mistake at all: the operator asked for "chain A from 1 to 240", the file
+    answers "these 231 residues", and the two agree about which residues are
+    wanted. Nothing is added or dropped by the rewrite — see
+    ``selected_residue_keys``, which selects the identical set either way — so
+    there is no decision left for a human to make.
+
+    IT MUST THEREFORE RUN LAST, after every existing refusal. Normalising first
+    would silently narrow ``A1-500`` to the real last residue and swallow the
+    refusal ``missing_endpoints`` exists to raise.
+
+    DETAILS THAT ARE LOAD-BEARING:
+
+    * ``lo is None`` (a bare chain id, "the whole chain") selects every residue
+      of the chain, matching ``select_residues`` and ``selected_residue_keys``.
+      Callers expand bare ids first; tolerating one here means a caller that
+      forgets gets the right answer instead of a TypeError.
+
+      AND THE TOLERANCE IS ONE-SIDED ON PURPOSE. The argument above does NOT
+      reach ``hi is None``: a half-bound ``(chain, 100, None)`` raises
+      ``TypeError`` out of the chained comparison below, and should. ``lo is
+      None`` is worth answering because it is a shape a parser really emits —
+      both ``parse_target_input`` implementations return ``(chain, None,
+      None)`` for a bare chain id — so the forgetful caller it rescues exists
+      and there is one unambiguous answer to give it. NOTHING emits a
+      half-bound tuple: no parser builds one and ``derive_segments`` builds
+      ``(chain, min, max)``. So there is no caller to rescue and no meaning to
+      recover — "from 100 to the end of the chain" would be an invention, and
+      an invented bound silently changes how much of the target gets designed
+      against, which is the failure class this file exists to stop.
+      ``select_residues`` and ``selected_residue_keys`` draw the line in
+      exactly the same place (``if lo is not None and not (lo <= resseq <=
+      hi)``); moving it here alone would make the function that RENDERS the
+      contig disagree with the two that decide what is selected and what is
+      staged. ``missing_endpoints`` skipping both cases is not a
+      counter-example — a bare chain id has no endpoints to verify, which is a
+      defined answer rather than a guess.
+    * INSERTION CODES DO NOT SPLIT A RUN. Runs are computed over the DISTINCT
+      ``resseq`` values, so ``A100``/``A100A`` is one number and one residue for
+      this purpose — the same reading ``missing_endpoints`` takes, and the only
+      one a contig can express, since a range endpoint is a bare integer with
+      nowhere to put a code.
+
+      THAT INCLUDES A RESIDUE PRESENT ONLY UNDER A CODE — ``102A`` with no
+      plain ``102`` — which does NOT split the run either, and this is the one
+      part of the rule that could not be settled by reading. atomworks is not
+      vendored here, so it was EXECUTED against the pair the image installs
+      (atomworks 2.2.1, biotite 1.4.0): a chain holding 100, 101, 102A, 103,
+      104 resolved through the contig ``A100-104`` selects five CA atoms and
+      raises nothing, because ``AtomSelection(res_id=102)`` matches on the
+      number field alone. Splitting there would therefore be actively wrong
+      rather than merely cautious — it would fragment a contig upstream
+      resolves without complaint and spend a run of the ``MAX_CONTIG_RUNS``
+      budget per coded residue on an antibody-numbered target.
+    * SEGMENT ORDER IS PRESERVED and runs within a segment ascend. Overlapping
+      segments are NOT merged across the segment boundary: upstream ORs the
+      masks, so a residue named twice is selected once either way, and merging
+      would make this function's output stop corresponding one-to-one with the
+      input the guards judged.
+    * A segment that selects nothing contributes NO run. Unreachable from
+      ``prepare_custom_target`` — ``empty_segments`` refuses that segment, and a
+      wholly empty ``segments`` list is refused by ``target_too_small`` at a
+      count of 0 — so the caller never has to handle a shrunken list.
+    """
+    out: list[tuple[str, int, int]] = []
+    for chain, lo, hi in segments:
+        nums = sorted({
+            resseq for c, resseq, _icode in residues
+            if c == chain and (lo is None or lo <= resseq <= hi)
+        })
+        if not nums:
+            continue
+        start = prev = nums[0]
+        for num in nums[1:]:
+            if num != prev + 1:
+                out.append((chain, start, prev))
+                start = num
+            prev = num
+        out.append((chain, start, prev))
+    return out
 
 
 def unrenderable_segments(
@@ -2510,12 +2708,75 @@ def prepare_custom_target(
     # happens on a billed A100 instead of here.
     bad = unrenderable_segments(segments)
     if bad:
-        hints = []
-        for chain, lo, hi in bad:
+        # PER CHAIN, AS SEGMENTS, RENDERED BY ``format_contig`` — three things
+        # the old assembly-by-f-string did not do, each of which mattered.
+        #
+        # PER CHAIN, because the suggestion is "the widest range on this chain
+        # that starts at 0 or above", which is a fact about the CHAIN. Built
+        # per refused segment it repeated itself on a contig naming one chain
+        # twice, and ``A0-240,A0-240`` is advice the form refuses as
+        # overlapping — the operator's next attempt spent on our own answer.
+        #
+        # AS SEGMENTS, because a bound has to count something, and a list of
+        # ranges can be counted where a joined string cannot.
+        #
+        # AND A CHAIN WITH NOTHING TO SUGGEST IS NAMED OUTSIDE THE EXAMPLE, not
+        # inside it. A chain numbered entirely below zero has no range to offer,
+        # and it used to be comma-joined into the example itself — "e.g.
+        # A0-240,(chain B has no residue numbered 0 or above)" — which is not a
+        # contig at all, so the advice was unpasteable for everyone reading
+        # that message and not only for the chain it was about.
+        hints: list[tuple[str, int, int]] = []
+        unnumbered: list[str] = []
+        for chain in dict.fromkeys(c for c, _lo, _hi in bad):
             nonneg = [r[1] for r in residues if r[0] == chain and r[1] >= 0]
-            hints.append(
-                f"{chain}{min(nonneg)}-{max(nonneg)}" if nonneg else
-                f"(chain {chain} has no residue numbered 0 or above)"
+            if nonneg:
+                hints.append((chain, min(nonneg), max(nonneg)))
+            else:
+                unnumbered.append(chain)
+        # THE HINT IS BOUNDED HERE FOR THE REASON IT IS BOUNDED AT STEP 4b, AND
+        # BY THE SAME CONSTANT. See ``MAX_HINT_RUNS``: what settles the number
+        # is how many ranges ``validate()`` takes back, which is a question
+        # about the FIELD and not about which guard did the printing, so a
+        # second number here would be a second thing to move.
+        #
+        # THIS SITE IS THE WIDER OF THE TWO, and that is why it needed the
+        # bound at all. Step 4b's hint is one entry per RUN of a contig the
+        # user typed, so on the form path ``_MAX_SEGMENTS`` (8) already caps it
+        # at 87 characters. This one is one entry per CHAIN, and on the derived
+        # path (blank contig) the chains come from ``target_chain``, bounded
+        # only by ``_MAX_CHAIN_FIELD`` — 32 characters, so up to 16 of them,
+        # so up to 175 characters into a 128-character field. Nothing bounded
+        # it in the container at all, which is what the campaign and canary
+        # paths use.
+        if not hints:
+            advice, why = "", ""
+        elif len(hints) <= MAX_HINT_RUNS:
+            advice = f", e.g. {format_contig(hints)}"
+            why = ""
+        else:
+            # NOT the first ``MAX_HINT_RUNS`` of them. A prefix of a range list
+            # is a smaller target that reads exactly like a deliberate one, so
+            # printing one hands the operator something every gate here accepts
+            # and nobody asked for — which is precisely what the browser would
+            # have done to a hint we printed in full.
+            advice = ""
+            why = (
+                " No range is suggested here: one would have to be given for "
+                f"{len(hints)} chains, more than the {MAX_HINT_RUNS} ranges "
+                "this service accepts in one target chain range, so it would "
+                "not fit the field it has to be pasted back into. A shortened "
+                "list would name a smaller target than you asked for and would "
+                "look no different from one you meant, so none is given. Ask "
+                "for fewer chains in one run, and give each an explicit range "
+                "that starts at 0 or above."
+            )
+        if unnumbered:
+            noun, verb = (("chains", "have") if len(unnumbered) > 1
+                          else ("chain", "has"))
+            why += (
+                f" No range is suggested for {noun} {' '.join(unnumbered)}, "
+                f"which {verb} no residue numbered 0 or above at all."
             )
         _fail(
             "input", "target_input_negative",
@@ -2524,7 +2785,7 @@ def prepare_custom_target(
             "design engine's contig format cannot express — it accepts digits "
             "only. Structures carrying an expression tag are usually numbered "
             "this way. Set an explicit target chain range that starts at 0 or "
-            f"above, e.g. {','.join(hints)}. The target contains: {spans}.",
+            f"above{advice}. The target contains: {spans}.{why}",
         )
 
     # --- 4. every segment must select something ---------------------------
@@ -2563,14 +2824,58 @@ def prepare_custom_target(
                 continue
             # The nearest residue that EXISTS, moving inwards: the smallest at
             # or above ``lo`` and the largest at or below ``hi``. Handles a
-            # disordered gap as well as an over-run bound, and always renders a
-            # range whose two endpoints are really in the file.
+            # disordered gap as well as an over-run bound.
             at_or_above = [n for n in nums if n >= lo] or [nums[-1]]
             at_or_below = [n for n in nums if n <= hi] or [nums[0]]
-            fixes.append(f"{chain}{at_or_above[0]}-{at_or_below[-1]}")
+            # THEN THROUGH ``contig_runs``, WHICH IS THE FIX. Two endpoints that
+            # exist still bracket a span that can straddle a disordered gap, and
+            # upstream resolves every integer between them — so ``f"{chain}{at_
+            # or_above[0]}-{at_or_below[-1]}"`` on its own told the user to
+            # retype a range that dies in exactly the way they had just been
+            # refused for. Splitting the hint at each gap makes the advice
+            # something they can paste.
+            #
+            # RUNS, NOT A RENDERED STRING PER CHAIN. The bound below counts runs
+            # across the WHOLE hint, and a per-chain string cannot be counted:
+            # two chains of five runs each is a ten-run suggestion, which is
+            # past what the form will accept even though neither half is.
+            fixes.extend(
+                contig_runs(residues, [(chain, at_or_above[0], at_or_below[-1])]))
         named = ", ".join(f"residue {endpoint} on chain {chain}"
                           for chain, endpoint in absent)
-        advice = f", e.g. {','.join(fixes)}" if fixes else ""
+        # THE HINT IS BOUNDED, AND WHEN IT IS BOUNDED THE MESSAGE SAYS SO.
+        #
+        # NOT truncated to the first ``MAX_HINT_RUNS`` — that is the same defect
+        # ``MAX_CONTIG_RUNS`` refuses rather than trims, arriving one function
+        # earlier and with the BROWSER doing the trimming. A prefix of a run
+        # list is a smaller target that looks exactly like a deliberate one, so
+        # printing one would hand the operator something every gate here
+        # accepts and nobody asked for. See ``MAX_HINT_RUNS``.
+        #
+        # ``not fixes`` is UNREACHABLE from here and is not the case this guard
+        # is for. ``contig_runs`` returns [] only when its two bounds cross,
+        # which needs a segment that selects no residue at all — and step 4
+        # (``empty_segments``) refuses exactly that, above, with a different
+        # message. It costs one branch to not index into an empty list if that
+        # ever stops being true, the same way the ``if not nums`` above it does.
+        if not fixes:
+            advice, why = "", ""
+        elif len(fixes) <= MAX_HINT_RUNS:
+            advice = f", e.g. {format_contig(fixes)}"
+            why = (" The range suggested above is built from residues that "
+                   "really exist rather than from the ends you gave.")
+        else:
+            advice = ""
+            why = (
+                f" No range is suggested here: the region you asked for breaks "
+                f"into {len(fixes)} separate runs of residues once the gaps in "
+                f"the uploaded structure are taken out, more than the "
+                f"{MAX_HINT_RUNS} ranges this service accepts in one target "
+                "chain range. A shortened list would name a smaller target "
+                "than you asked for and would look no different from one you "
+                "meant, so none is given. Narrow the target chain range to a "
+                "well-ordered region and try again."
+            )
         _fail(
             "input", "target_input_endpoint",
             f"the target chain range names {named}, which the uploaded target "
@@ -2580,8 +2885,7 @@ def prepare_custom_target(
             "after the GPU work was already paid for. Set an explicit target "
             f"chain range whose ends are real residues{advice}. "
             f"The chains present run {spans} — a run is first-to-last and can "
-            "have gaps inside it, which is why the range suggested above is "
-            "built from residues that really exist rather than from those ends.",
+            f"have gaps inside it.{why}",
         )
 
     selected = select_residues(residues, segments)
@@ -2639,7 +2943,47 @@ def prepare_custom_target(
         )
 
     # --- 6. name it, then refuse to shadow a curated target ---------------
-    contig = format_contig(segments)
+    # THE CONTIG IS NORMALISED HERE AND NOWHERE EARLIER. See ``contig_runs``:
+    # upstream resolves EVERY integer between a range's endpoints and raises on
+    # the first one the file does not hold, so ``A1-240`` on a chain with a
+    # disordered loop dies inside `complexa design` where ``A1-50,A60-240``
+    # succeeds. Every guard above ran against the segments the operator asked
+    # for, unrewritten, which is the whole reason this sits below them rather
+    # than above: normalising first would quietly narrow ``A1-500`` to the real
+    # last residue and swallow the ``missing_endpoints`` refusal at step 4b.
+    #
+    # This is the LAST place the contig exists as segments — from here it is a
+    # string, written into the record, compared on read-back and passed as
+    # ``--target-input``. All three must be the same string, which is why one
+    # variable feeds all three.
+    runs = contig_runs(residues, segments)
+    requested = format_contig(segments)
+    if len(runs) > MAX_CONTIG_RUNS:
+        # NOT truncated to the first MAX_CONTIG_RUNS. A shortened contig is a
+        # different target, and designing against one the operator did not ask
+        # for is the exact failure class every other guard here exists to stop.
+        _fail(
+            "input", "target_input_runs",
+            f"the target chain range {requested} covers {len(runs)} separate "
+            "runs of residues once the gaps in the uploaded structure are "
+            f"taken out, more than the {MAX_CONTIG_RUNS} this service will "
+            "register. The design engine resolves every residue number in a "
+            "range, so a range spanning a gap has to be split at each one, and "
+            "a structure that needs this many splits is usually numbered "
+            "non-contiguously by design (a C-alpha trace, or a model built from "
+            "sparse density). Narrow the target chain range to a well-ordered "
+            f"region. The target contains: {spans}.",
+        )
+    contig = format_contig(runs)
+    if contig != requested:
+        logger.info(
+            "custom target: the chain range %s spans gaps in the uploaded "
+            "structure and was shipped to the design engine as %s (%d "
+            "contiguous run(s)); the same residues are selected either way, but "
+            "the engine resolves every number in a range and raises on the "
+            "first one the file does not contain",
+            requested, contig, len(runs),
+        )
     record = {
         "source": _HUB_SOURCE,
         "target_input": contig,
