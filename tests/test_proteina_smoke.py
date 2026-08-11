@@ -313,9 +313,59 @@ class TestTargetInputParse:
         _, err = px.validate(_custom(target_input="A150-1"), {})
         assert err and "backwards" in err.lower()
 
-    def test_duplicate_chain_rejected(self):
-        _, err = px.validate(_custom(target_input="A1-50,A60-90"), {})
-        assert err and "more than once" in err.lower()
+    def test_a_chain_may_repeat_when_the_ranges_are_DISJOINT(self):
+        """THE CONTIG A GAPPED TARGET NEEDS, WHICH USED TO BE UN-TYPABLE.
+
+        Upstream resolves every integer between a range's endpoints and raises
+        on the first residue the file does not hold, so a chain with a
+        disordered loop has to be written ``A1-50,A60-240``. The old rule —
+        "Chain A appears more than once … Give each chain a single range" —
+        refused exactly that, so a user who KNEW about their gap had no way to
+        say so. ``run_pipeline.contig_runs`` now derives the split itself, and
+        the form has to agree with the container about what is legal.
+        """
+        inp, err = px.validate(_custom(target_input="A1-50,A60-240"), {})
+        assert err is None, err
+        assert inp["target_input"] == "A1-50,A60-240"
+        assert inp["_target_segments"] == [("A", 1, 50), ("A", 60, 240)]
+
+    def test_a_repeated_chain_is_named_ONCE_in_target_chain(self):
+        """``chain_ids`` becomes ``target_chain`` and the allow-list
+        ``_parse_hotspots`` judges a prefix against. A duplicate there renders
+        "chain A A" and makes the multi-chain hotspot refusal read "write A241
+        or A241" — and, worse, turns a genuinely single-chain run into a
+        "targets more than one chain" refusal for every bare hotspot."""
+        inp, err = px.validate(
+            _custom(target_input="A1-50,A60-240", hotspot_residues="70"), {})
+        assert err is None, err
+        assert inp["target_chain"] == "A"
+        assert inp["hotspot_spec"] == ["A70"], (
+            "a bare hotspot stopped being promoted onto the single target "
+            "chain, so the repeat is being counted as two chains")
+
+    def test_overlapping_ranges_on_one_chain_are_still_rejected(self):
+        for token in ("A1-50,A40-90",      # partial overlap
+                      "A1-50,A50-90",      # touching at one residue
+                      "A1-19,A1-19",       # the size-floor defeater
+                      "A10-20,A1-90"):     # fully contained
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
+    def test_a_bare_chain_id_overlaps_every_range_on_that_chain(self):
+        """``A`` is "the whole chain", so it cannot be disjoint from anything
+        on A — including a second ``A``."""
+        for token in ("A,A1-50", "A1-50,A", "A,A"):
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
+    def test_disjoint_ranges_on_DIFFERENT_chains_are_untouched(self):
+        inp, err = px.validate(_custom(target_input="A1-50,B1-50,A60-90"), {})
+        assert err is None, err
+        assert inp["target_chain"] == "A B"
+        assert inp["_target_segments"] == [
+            ("A", 1, 50), ("B", 1, 50), ("A", 60, 90)]
 
     def test_garbage_rejected(self):
         _, err = px.validate(_custom(target_input="not-a-range"), {})
@@ -2827,10 +2877,14 @@ class TestMinimumTargetSize:
         ``A1-19,A1-19`` is 19 residues written twice. The gate counted 38 and
         staged the target; the crop then wrote the 19 the gate had just decided
         were too few. On the web route the adapter happens to shield this — it
-        rejects a chain named twice ("Chain A appears more than once in the
-        target chain range") — but ``prepare_custom_target`` is also reached
-        with a contig the adapter never saw, and the canary bypasses the
-        adapter entirely.
+        refuses two OVERLAPPING ranges on one chain, and two identical ranges
+        overlap — but ``prepare_custom_target`` is also reached with a contig
+        the adapter never saw, and the canary bypasses the adapter entirely.
+
+        The adapter's rule USED to be the broader "a chain may appear only
+        once", which also refused the disjoint ``A1-50,A60-240`` a gapped
+        target needs. This count is what made narrowing it safe: the floor is
+        held here, on a de-duplicated key set, not by the form.
         """
         floor = rp.MIN_SELECTED_RESIDUES
         error, staged = self._prepare(
