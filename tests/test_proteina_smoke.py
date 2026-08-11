@@ -3128,6 +3128,19 @@ class TestEmptyContigSegments:
         names this one, and the canary's "six of production's eight" count
         includes it. This commit restructured the refusal (out of the expansion
         loop into a standalone one) and added no coverage for it.
+
+        THAT DENOMINATOR HAS SINCE MOVED, and is recorded here rather than
+        quietly left to rot. Production grew a NINTH pre-GPU refusal — the
+        contig run-count ceiling, ``run_pipeline.MAX_CONTIG_RUNS`` /
+        ``target_input_runs`` — and ``_hotspot_canary`` does not mirror it, nor
+        does it apply ``contig_runs`` to the contig it ships to
+        ``build_target_add_cmd`` (``_hotspot_canary.py`` ``_stage``, and
+        ``_refuse_unresolvable_hotspots``' ``resolved``). So on a target with a
+        disordered loop the canary still spawns and dies where production now
+        refuses for free. That is the safe direction for correctness and the
+        expensive one for the operator (~$4 phase 1, ~$12 phase 2), and it is
+        the drift this file's own history keeps finding. Fix it in the canary
+        before the next paid phase.
         """
         error, staged = TestMinimumTargetSize()._prepare(
             tmp_path, monkeypatch, "Q")
