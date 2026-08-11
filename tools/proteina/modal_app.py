@@ -246,6 +246,22 @@ def run_tool(payload: Any) -> dict:
         f"RF3={env.get('PROTEINA_RF3', 'on')} WEBHOOK={env.get('WEBHOOK_URL')}",
         flush=True,
     )
+    # Clear any stale smoke_results.json from a prior invocation on a warm Modal
+    # container. Without this, if THIS shard's run_pipeline.py dies before writing
+    # its own file (early import error, OOM kill, SIGKILL, uncaught exception), the
+    # read below picks up the PREVIOUS job's result and
+    # ``gpu.modal_client._interpret_pipeline_return()`` marks this job succeeded
+    # with another run's designs — there is no exit_code gate on that branch. It is
+    # the inline poll that decides here: Proteina only ever POSTs heartbeats, never
+    # a terminal webhook, and on this path no stage="complete" heartbeat is sent
+    # either. Shards of one search share a container too, so the stale file need
+    # not even come from a different customer's job. Codex P1 (colabfold).
+    try:
+        os.remove("/tmp/smoke_results.json")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
     # Warm containers are reused: a leftover raw archive from a prior job would be parked
     # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
     try:
