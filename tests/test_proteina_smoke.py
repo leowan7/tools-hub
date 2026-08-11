@@ -1909,6 +1909,548 @@ class TestContigEndpointsMustBeRealResidues:
         assert calls == []
 
 
+def _gapped_pdb(runs, extra=""):
+    """``{chain: [(lo, hi), ...]}`` -> a PDB holding EXACTLY those residues.
+
+    ``_make_pdb`` takes one contiguous span per chain, which is the one shape
+    that cannot express the failure this section is about. Every span listed
+    here is materialised and nothing between them is, so the file has real
+    internal gaps rather than a low occupancy or a missing side chain.
+    """
+    lines, serial = [], 1
+    for chain, spans in runs.items():
+        for lo, hi in spans:
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", "ALA", chain, resseq))
+                serial += 1
+    return "\n".join(lines) + "\n" + extra + "END\n"
+
+
+class TestContigIsSplitAtDisorderedGaps:
+    """THE FAILURE: a range that spans a disordered loop dies on a paid A100.
+
+    Upstream's ``load_target_from_pdb`` resolves the contig through atomworks'
+    ``AtomSelectionStack.from_contig``, which expands a range into ONE
+    ``AtomSelection`` PER INTEGER, and ``get_mask`` is a bare list comprehension
+    over a per-selection mask that raises ``ValueError("No atoms found for
+    selection: ...")`` on an empty match. So EVERY residue number between the
+    two endpoints has to be in the file — not just the endpoints.
+
+    Most crystal structures have a disordered loop. Nothing before the GPU
+    caught it, and each miss was defensible on its own terms:
+
+    * ``select_residues`` filters ``lo <= resseq <= hi``, so the gap is simply
+      not selected. The count is right.
+    * ``empty_segments`` sees a healthy non-empty selection.
+    * ``missing_endpoints`` (PR #118) guards the ENDPOINTS against this exact
+      raise — its own message even says "a run is first-to-last and can have
+      gaps inside it" — and never looks inside.
+    * ``derive_segments`` builds ``(chain, min, max)``, so a BLANK contig
+      produces the gap-spanning range by itself.
+    * ``complexa target add`` never opens the PDB (pure YAML), so registration
+      and read-back cannot see it.
+    * the web tier structurally cannot see it: ``chain_summary`` carries a
+      per-chain count plus min/max resnum, not the resnum list
+      (``shared/targets.py::selection_residue_count`` says so). The container is
+      the only place that can decide.
+
+    Comma-separated segments are UNIONED upstream and repeating a chain is
+    legal, so ``A1-50,A60-240`` succeeds exactly where ``A1-240`` dies.
+    ``contig_runs`` derives that split from the structure.
+    """
+
+    # Borrowed, exactly as TestContigEndpointsMustBeRealResidues borrows them.
+    _drive = TestCustomTargetRegistration._drive
+    _spec = TestCustomTargetRegistration._spec
+
+    # An Fc-like homodimer: two protomers sharing one author numbering, each
+    # with a DIFFERENT disordered loop. That asymmetry is the point — a fixture
+    # whose chains break in the same place would pass a per-file split as
+    # readily as a per-chain one.
+    _FC_GAPS = {"A": [(236, 300), (310, 443)], "B": [(236, 350), (360, 442)]}
+    _FC_CONTIG = "A236-443,B236-442"
+    _FC_SPLIT = "A236-300,A310-443,B236-350,B360-442"
+
+    @classmethod
+    def _fc(cls):
+        return _gapped_pdb(cls._FC_GAPS)
+
+    @staticmethod
+    def _residues(tmp_path, text):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        p = tmp_path / "in.pdb"
+        p.write_text(text)
+        return rp.pdb_ca_residues(p)[0]
+
+    def _prepare(self, tmp_path, monkeypatch, target_input, pdb_text,
+                 target_chain="A"):
+        """``prepare_custom_target`` with everything outside tmp_path patched.
+
+        Modelled on ``TestMinimumTargetSize._prepare`` and diverging in one
+        way: the PDB text is passed in, because every case here needs a
+        structure ``_make_pdb``'s one-contiguous-span-per-chain shape cannot
+        build. Nothing reaches ``complexa`` — the registry path does not exist,
+        which is a DIFFERENT check name and is what makes "got past the gate"
+        observable.
+        """
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target", lambda url, dest: dest.write_text(pdb_text))
+        with pytest.raises(SystemExit) as excinfo:
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain=target_chain, target_input=target_input,
+                hotspot_spec=[], binder_length=[60, 120],
+                run_dir=tmp_path / "run")
+        assert excinfo.value.code == 1
+        return json.loads(results.read_text())["error"], sorted(
+            p.name for p in hub.glob("hub_*.pdb"))
+
+    # ---- the pure helper -------------------------------------------------
+
+    def test_a_gapless_segment_comes_back_UNCHANGED(self, tmp_path):
+        """THE PROPERTY WORTH PINNING ABOVE ALL THE OTHERS.
+
+        This rewrite is applied to every contig, gappy or not, so the ordinary
+        case has to survive it byte for byte. If a gapless range ever came back
+        as anything but itself, every existing target would re-register under a
+        different key and a different ``--target-input`` for no reason.
+        """
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 240)}))
+        assert rp.contig_runs(residues, [("A", 1, 240)]) == [("A", 1, 240)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, rp.parse_target_input("A1-240"))) == "A1-240"
+
+    def test_a_gap_splits_the_segment(self, tmp_path):
+        residues = self._residues(tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)]}))
+        assert rp.contig_runs(residues, [("A", 1, 240)]) == [
+            ("A", 1, 50), ("A", 60, 240)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, [("A", 1, 240)])) == "A1-50,A60-240"
+
+    def test_a_one_residue_gap_and_a_one_residue_run_both_split(self, tmp_path):
+        """The smallest gap upstream can die on is a single absent residue, and
+        the smallest run is a single present one. Both are rendered as ``n-n``,
+        which upstream's ``([A-Za-z]+)(\\d+)-(\\d+)`` matches."""
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(1, 20), (22, 22), (24, 60)]}))
+        assert rp.contig_runs(residues, [("A", 1, 60)]) == [
+            ("A", 1, 20), ("A", 22, 22), ("A", 24, 60)]
+        assert rp.format_contig(rp.contig_runs(residues, [("A", 1, 60)])) == (
+            "A1-20,A22-22,A24-60")
+
+    def test_two_protomers_with_DIFFERENT_gaps_split_differently(self, tmp_path):
+        """The homodimer case. A and B share one author numbering and break in
+        different places, so a split derived once and applied to both chains —
+        or derived from chain A and reused — would be wrong on B."""
+        residues = self._residues(tmp_path, self._fc())
+        runs = rp.contig_runs(residues, rp.parse_target_input(self._FC_CONTIG))
+        assert runs == [("A", 236, 300), ("A", 310, 443),
+                        ("B", 236, 350), ("B", 360, 442)]
+        assert rp.format_contig(runs) == self._FC_SPLIT
+
+    def test_a_gapless_chain_beside_a_gapped_one_is_left_alone(self, tmp_path):
+        """Multi-chain, mixed. Only the chain that needs splitting is split."""
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)], "B": [(1, 100)]}))
+        assert rp.contig_runs(
+            residues, rp.parse_target_input("A1-240,B1-100")) == [
+                ("A", 1, 50), ("A", 60, 240), ("B", 1, 100)]
+
+    def test_a_bare_chain_id_means_the_whole_chain(self, tmp_path):
+        """``(chain, None, None)`` is legal input to every other predicate here
+        and must not raise. It selects the whole chain, split at its gaps —
+        the same reading ``select_residues`` gives it."""
+        residues = self._residues(tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)]}))
+        assert rp.contig_runs(residues, [("A", None, None)]) == [
+            ("A", 1, 50), ("A", 60, 240)]
+
+    def test_insertion_codes_do_not_split_a_run(self, tmp_path):
+        """``A100`` and ``A100A`` are two residues with two CA atoms but ONE
+        number, and a contig endpoint is a bare integer with nowhere to put a
+        code. Runs are computed over distinct ``resseq``, matching
+        ``missing_endpoints``, so a coded twin neither splits a run nor bridges
+        a gap."""
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 100, icode="A"),
+            _atom(3, "CA", "ALA", "A", 101),
+            _atom(4, "CA", "ALA", "A", 103),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text)
+        assert residues == [("A", 100, ""), ("A", 100, "A"), ("A", 101, ""),
+                            ("A", 103, "")], "fixture check"
+        assert rp.contig_runs(residues, [("A", 100, 103)]) == [
+            ("A", 100, 101), ("A", 103, 103)]
+
+    def test_a_chain_absent_from_the_file_contributes_no_run(self, tmp_path):
+        """Unreachable from production — ``empty_segments`` refuses it first —
+        but the helper is pure and must answer rather than raise."""
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60)}))
+        assert rp.contig_runs(residues, [("Z", 1, 99)]) == []
+        assert rp.contig_runs(residues, [("A", 1, 60), ("Z", 1, 99)]) == [
+            ("A", 1, 60)]
+
+    def test_segment_order_is_kept_and_overlaps_are_not_merged(self, tmp_path):
+        """Upstream ORs the per-selection masks, so a residue named twice is
+        selected once either way. Merging across segments would break the
+        one-to-one correspondence with the segments the guards judged."""
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60), "B": (1, 40)}))
+        assert rp.contig_runs(residues, [("B", 1, 40), ("A", 1, 60)]) == [
+            ("B", 1, 40), ("A", 1, 60)], "segment order"
+        assert rp.contig_runs(residues, [("A", 1, 30), ("A", 20, 60)]) == [
+            ("A", 1, 30), ("A", 20, 60)], "overlaps stay two runs"
+
+    def test_the_crop_selects_the_SAME_residues_either_way(self, tmp_path):
+        """VERIFIED, NOT ASSUMED. ``selected_residue_keys`` is what
+        ``stage_cropped_target`` writes, and the claim that it needs no change
+        is only true if the split selects the identical set. Asserted on the
+        keys AND through the staged file's own self-check, which is the number
+        upstream compares."""
+        text = self._fc()
+        residues = self._residues(tmp_path, text)
+        segments = rp.parse_target_input(self._FC_CONTIG)
+        runs = rp.contig_runs(residues, segments)
+        assert (rp.selected_residue_keys(residues, segments)
+                == rp.selected_residue_keys(residues, runs))
+        assert (rp.stage_cropped_target(tmp_path / "a.pdb", text, residues, segments)
+                == rp.stage_cropped_target(tmp_path / "b.pdb", text, residues, runs))
+        assert ((tmp_path / "a.pdb").read_text() == (tmp_path / "b.pdb").read_text())
+
+    # ---- the rendered --target-input --------------------------------------
+
+    def test_the_registered_contig_carries_the_split(self, tmp_path, monkeypatch):
+        """THE MONEY ASSERTION, END TO END THROUGH ``main()``. The contig that
+        reaches ``complexa target add`` is the one upstream will resolve."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._FC_SPLIT
+
+    def test_a_blank_contig_is_split_too(self, tmp_path, monkeypatch):
+        """``derive_segments`` emits ``(chain, min, max)`` — ONE span per chain
+        — so the no-contig path produces the gap-spanning range all by itself.
+        That is the shape most users hit, since the field is optional."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._FC_SPLIT
+        # ...and the derivation really did produce the un-split range, so this
+        # test cannot pass because the fixture happens to be gapless.
+        residues = self._residues(tmp_path, self._fc())
+        assert rp.format_contig(
+            rp.derive_segments(residues, ["A", "B"])) == self._FC_CONTIG
+
+    def test_target_input_stays_ONE_argv_element(self, tmp_path, monkeypatch):
+        """``--target-input`` is a plain argparse option, NOT ``nargs="+"`` —
+        unlike ``--hotspot-residues`` and ``--binder-length`` beside it. The
+        split introduces commas into a value that previously often had none, so
+        the shape it relies on is pinned here rather than assumed: one element,
+        commas and all, and the next element is the following FLAG."""
+        calls: list = []
+        self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        i = add.index("--target-input")
+        assert add[i + 1] == self._FC_SPLIT
+        assert add[i + 2].startswith("--"), (
+            "the contig was split across argv elements; argparse would take "
+            f"only the first: {add[i + 1:i + 4]}")
+        assert add.count(self._FC_SPLIT) == 1
+
+    def test_the_registry_readback_compares_the_SPLIT_string(
+            self, tmp_path, monkeypatch):
+        """One variable feeds the record, the read-back comparison and the CLI
+        flag. If the record kept the un-split form, ``registration_mismatch``
+        would refuse a registration that had actually succeeded."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        registry = (tmp_path / "proteina" / "configs" / "targets"
+                    / "targets_dict.yaml").read_text()
+        assert f"target_input: {self._FC_SPLIT}" in registry, registry
+
+    def test_a_gapless_upload_registers_EXACTLY_as_before(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL. ``_make_3s7g_like`` has no internal gaps, so the whole
+        rewrite must be invisible on it — same contig, one segment per chain."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A236-443,B236-442", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_the_rewrite_is_LOGGED_when_it_changes_anything(
+            self, tmp_path, monkeypatch, caplog):
+        """The operator reads the shard log to find out what was designed
+        against. A silent rewrite of the contig they typed is the kind of
+        helpfulness that becomes a mystery three weeks later."""
+        with caplog.at_level("INFO", logger="proteina_pipeline"):
+            self._prepare(tmp_path, monkeypatch, self._FC_CONTIG, self._fc(),
+                          target_chain="A B")
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert self._FC_CONTIG in text and self._FC_SPLIT in text, text
+        assert "4 contiguous run(s)" in text, text
+
+    def test_a_gapless_contig_logs_no_rewrite(self, tmp_path, monkeypatch, caplog):
+        """The other half: the line must not appear when nothing changed, or it
+        is noise on every run and stops being read."""
+        with caplog.at_level("INFO", logger="proteina_pipeline"):
+            self._prepare(tmp_path, monkeypatch, "A1-60", _make_pdb({"A": (1, 60)}))
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "contiguous run(s)" not in text, text
+
+    # ---- normalisation must not swallow a guard --------------------------
+
+    def test_missing_endpoints_STILL_fires_on_a_gapped_upload(
+            self, tmp_path, monkeypatch):
+        """THE ORDERING, AND WHY IT IS THIS WAY ROUND. ``A236-500`` names a
+        residue the file does not hold. Normalising first would narrow it to
+        the real last residue and swallow a refusal the operator decided to
+        keep — the user might have uploaded the wrong file. The rewrite
+        therefore runs BELOW every guard, and this is the test that says so."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "A236-500", self._fc())
+        assert error["check"] == "target_input_endpoint", error
+        assert "residue 500 on chain A" in error["detail"]
+        assert staged == [], "nothing may be staged once an endpoint is absent"
+
+    def test_every_other_refusal_still_fires_with_its_existing_message(
+            self, tmp_path, monkeypatch):
+        """One gapped structure, four guards, four unchanged verdicts. A
+        rewrite placed above any of them would turn one of these green."""
+        gapped = _gapped_pdb({"A": [(1, 50), (60, 240)]})
+        # step 3b: negative numbering (unrenderable_segments)
+        tagged = _gapped_pdb({"A": [(-5, 50), (60, 240)]})
+        error, _ = self._prepare(tmp_path / "neg", monkeypatch, "", tagged)
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-240" in error["detail"], error["detail"]
+        # step 4: a segment that selects nothing
+        error, _ = self._prepare(tmp_path / "empty", monkeypatch,
+                                 "A1-240,Z1-50", gapped)
+        assert error["check"] == "target_input", error
+        assert "chain Z residues 1-50 select 0 residues" in error["detail"]
+        # the size floor, counted on DISTINCT residues
+        error, _ = self._prepare(tmp_path / "small", monkeypatch, "A1-10", gapped)
+        assert error["check"] == "target_input", error
+        assert "Widen the chain range" in error["detail"]
+        # step 5: a hotspot inside the gap exists nowhere
+        hub = tmp_path / "hot" / "hub"
+        results = tmp_path / "hot" / "res.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(
+            rp, "download_target", lambda url, dest: dest.write_text(gapped))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/t.pdb", job_id="j1",
+                target_chain="A", target_input="A1-240", hotspot_spec=["A55"],
+                binder_length=[60, 120], run_dir=tmp_path / "hot" / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "hotspot_missing", error
+        assert "A55" in error["detail"]
+
+    def test_the_negative_guard_reads_the_UNREWRITTEN_span(
+            self, tmp_path, monkeypatch):
+        """The sharpest ordering case. On a construct numbered from -5 with a
+        gap, the rewrite would render ``A-5-50,A60-240`` — still unrenderable,
+        but the refusal names the SPAN the user asked for. Pinning the message
+        pins the order."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb({"A": [(-5, 50), (60, 240)]}))
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-240 uses negative residue numbers" in error["detail"]
+
+    def test_the_guards_are_still_called_ABOVE_the_rewrite(self):
+        """STRUCTURAL, because the behavioural tests above each cover one
+        ordering and a future edit could move the rewrite past a guard they do
+        not exercise. Asserted on the source order of the calls inside
+        ``prepare_custom_target``."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+        # MIN, not setdefault: ast.walk is breadth-first, so the first node it
+        # yields for a name is not the first one in the source. And
+        # ``contig_runs`` is deliberately called twice — once to build the
+        # endpoint refusal's hint, once to render the contig — so its EARLIER
+        # call cannot be the thing the guards are ordered against.
+        first: dict[str, int] = {}
+        for node in ast.walk(prepare):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                first[node.func.id] = min(
+                    first.get(node.func.id, node.lineno), node.lineno)
+        assert "contig_runs" in first, (
+            "prepare_custom_target must ASK for the split, not restate it")
+        rendered = [n for n in ast.walk(prepare) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "contig"
+                            for t in n.targets)]
+        assert len(rendered) == 1, (
+            "the contig that goes to --target-input is rendered in more than "
+            "one place, so the ordering pinned here speaks for only one of them")
+        assert ast.unparse(rendered[0].value) == "format_contig(runs)", (
+            "the registered contig no longer comes from the split")
+        for guard in ("unrenderable_segments", "empty_segments",
+                      "missing_endpoints", "target_too_small",
+                      "missing_hotspots"):
+            assert first[guard] < rendered[0].lineno, (
+                f"{guard} now runs BELOW the contig rewrite, so it judges a "
+                "contig the user never typed")
+
+    # ---- the suggested fix must itself be typable ------------------------
+
+    def test_the_endpoint_refusals_hint_is_split_at_the_gaps(
+            self, tmp_path, monkeypatch):
+        """PR #118's hint was ``at_or_above[0]``..``at_or_below[-1]`` — two
+        endpoints that exist with a span between them that can still straddle a
+        gap. We were telling the user to type a range that dies in exactly the
+        way we had just refused theirs for."""
+        error, _ = self._prepare(tmp_path, monkeypatch, "A236-500", self._fc())
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g. A236-300,A310-443" in error["detail"], error["detail"]
+
+    def test_the_hint_it_gives_is_one_the_gate_then_accepts(
+            self, tmp_path, monkeypatch):
+        """A guard that refuses with unusable advice is a dead end. The
+        recommended contig must clear every guard AND already be normalised, so
+        pasting it back changes nothing."""
+        residues = self._residues(tmp_path, self._fc())
+        hint = rp.parse_target_input("A236-300,A310-443")
+        assert rp.missing_endpoints(residues, hint) == []
+        assert rp.empty_segments(residues, hint) == []
+        assert not rp.target_too_small(residues, hint)
+        assert rp.contig_runs(residues, hint) == hint, "already normalised"
+
+    def test_a_multi_chain_hint_stays_a_valid_contig(self, tmp_path, monkeypatch):
+        """The per-chain hints are comma-joined, and each may now itself hold
+        commas. The result still has to parse as one contig."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A236-500,B236-500", self._fc(),
+            target_chain="A B")
+        assert error["check"] == "target_input_endpoint", error
+        match = re.search(r"e\.g\. ([A-Za-z0-9,\-]+)", error["detail"])
+        assert match, error["detail"]
+        assert rp.parse_target_input(match.group(1)) == [
+            ("A", 236, 300), ("A", 310, 443), ("B", 236, 350), ("B", 360, 442)]
+
+    # ---- the run-count ceiling -------------------------------------------
+
+    @staticmethod
+    def _alternating(n_runs):
+        """A chain of ``n_runs`` single-residue runs: 1, 3, 5, ... Both
+        endpoints exist and the selection is well above the size floor, so
+        every cheaper guard passes and only the ceiling can fire."""
+        return {"A": [(2 * i + 1, 2 * i + 1) for i in range(n_runs)]}
+
+    def test_above_the_ceiling_the_run_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        over = rp.MAX_CONTIG_RUNS + 2
+        spans = self._alternating(over)
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb(spans))
+        assert error["check"] == "target_input_runs", error
+        assert f"covers {over} separate runs" in error["detail"], error["detail"]
+        assert f"more than the {rp.MAX_CONTIG_RUNS}" in error["detail"]
+        # The target's real spans, so the operator can pick a narrower region.
+        assert f"A1-{2 * over - 1}" in error["detail"], error["detail"]
+        assert staged == [], "a refused target must not be staged"
+
+    def test_the_ceiling_does_NOT_truncate(self, tmp_path, monkeypatch):
+        """SILENT TRUNCATION IS THE WORSE BUG. A contig cut to its first N runs
+        is a different target, and designing against one nobody asked for is
+        the failure class every guard in this file exists to stop. Pinned by
+        the absence of any registration at all."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A"), calls=calls,
+            pdb_text=_gapped_pdb(self._alternating(rp.MAX_CONTIG_RUNS + 2)))
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_runs"
+        assert calls == [], "no subprocess may run once the ceiling is exceeded"
+
+    def test_at_the_ceiling_the_run_gets_past_the_gate(
+            self, tmp_path, monkeypatch):
+        """The control, and the reason the bound is ``>`` rather than ``>=``.
+        It still fails — the registry does not exist here — but on the check
+        that comes AFTER the crop."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "",
+            _gapped_pdb(self._alternating(rp.MAX_CONTIG_RUNS)))
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, f"never reached the crop: {error}"
+
+    def test_the_guard_actually_READS_the_constant(self, tmp_path, monkeypatch):
+        """THE CONSTANT MUST GOVERN, NOT MERELY AGREE — the mutation that
+        survived on ``MIN_SELECTED_RESIDUES`` was a hardcoded literal matching
+        the constant's current value. Moving the number must move the answer,
+        asserted in both directions so it cannot pass on the fixture's size."""
+        # 24 runs: above MIN_SELECTED_RESIDUES so the size floor cannot fire
+        # first, and well under the real ceiling so only the patch decides.
+        text = _gapped_pdb(self._alternating(24))
+        residues = self._residues(tmp_path, text)
+        assert len(rp.contig_runs(residues, [("A", 1, 47)])) == 24
+        assert not rp.target_too_small(residues, [("A", 1, 47)]), (
+            "the fixture must clear the size floor or that guard, not this "
+            "one, is what these two assertions are measuring")
+
+        monkeypatch.setattr(rp, "MAX_CONTIG_RUNS", 4)
+        error, _ = self._prepare(tmp_path / "lo", monkeypatch, "", text)
+        assert error["check"] == "target_input_runs", (
+            "lowering the ceiling below the run count must refuse it; the "
+            "guard is not reading MAX_CONTIG_RUNS")
+        assert "more than the 4" in error["detail"], error["detail"]
+
+        monkeypatch.setattr(rp, "MAX_CONTIG_RUNS", 40)
+        error, staged = self._prepare(tmp_path / "hi", monkeypatch, "", text)
+        assert error["check"] == "target_registry", (
+            "raising the ceiling above the run count must accept it; the "
+            "guard is not reading MAX_CONTIG_RUNS")
+        assert len(staged) == 1
+
+    def test_the_ceiling_is_labelled_uncalibrated(self):
+        """THE PROVENANCE CLAIM, PINNED WHERE IT CAN ROT — the same convention
+        ``MIN_SELECTED_RESIDUES`` and ``SizeEnvelope.cap_basis`` follow. No
+        structure has been measured against this number and no upstream limit
+        implies it; a constant that quietly loses its label reads as measured.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        declaration = source.index("MAX_CONTIG_RUNS = ")
+        preamble = source[max(0, declaration - 2200):declaration]
+        assert "UNCALIBRATED" in preamble, (
+            "the ceiling's comment no longer says the number is unmeasured")
+        assert "POLICY" in preamble, (
+            "the ceiling's comment no longer says the number is a choice")
+
+    def test_the_ceiling_leaves_room_above_the_typed_segment_cap(self):
+        """A CONSISTENCY BOUND, not a calibration. The adapter lets a user type
+        ``_MAX_SEGMENTS`` ranges; the container splits each of them at every
+        gap. A ceiling at or below the typed cap would refuse contigs the form
+        had just accepted, after the campaign existed."""
+        assert rp.MAX_CONTIG_RUNS > px._MAX_SEGMENTS
+
+
 class TestNumericChainsAndUnboundedRangesAreAlreadyRefused:
     """BACKLOG #21, VERIFIED BY EXECUTION RATHER THAN BY READING.
 
