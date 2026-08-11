@@ -1938,6 +1938,34 @@ def format_contig(segments: list[tuple[str, int, int]]) -> str:
 MAX_CONTIG_RUNS = 64
 
 
+# The most runs a contig we SUGGEST may carry before we suggest nothing at all.
+#
+# NOT A SECOND COPY OF ``MAX_CONTIG_RUNS``, and deliberately far below it. That
+# one bounds what this service will REGISTER, which is a question about the
+# structure. This one bounds what this service will PRINT, which is a question
+# about the FIELD the answer has to be pasted back into — so the only number
+# that can settle it is ``tools/proteina/__init__.py::_MAX_SEGMENTS`` (8), the
+# most ranges ``validate()`` will take. A hint of more runs than that is advice
+# the form refuses; printing it wastes the operator's next attempt at best.
+#
+# WHY IT EXISTS. Until this bound, the endpoint refusal printed however many
+# runs the structure's gaps produced, and every field it can be pasted into was
+# capped at 64 characters. On a chain with 12 gaps the hint was 100+ characters,
+# the BROWSER kept the first 64, the cut landed on a comma, and what survived
+# parsed as a shorter contig that clears every gate here: 120 residues asked
+# for, 80 designed against, and nothing anywhere saying so.
+#
+# THE ASYMMETRY THAT MAKES THAT UNRECOVERABLE, and the reason prevention is the
+# only defence: a truncated contig is still a SYNTACTICALLY VALID contig. No
+# guard downstream can tell "A1-50,A60-90" typed on purpose from the front half
+# of something longer — the two are the same string. Every other guard in this
+# file works because the bad input is distinguishable from the good; this one
+# is not, so the string must never be printable in a truncatable form.
+# ``tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD`` raises the fields to
+# match, and it is the two together that make truncation unreachable.
+MAX_HINT_RUNS = 8
+
+
 def contig_runs(
     residues: list[tuple[str, int, str]],
     segments: list[tuple[str, Optional[int], Optional[int]]],
@@ -2699,15 +2727,49 @@ def prepare_custom_target(
             # or_above[0]}-{at_or_below[-1]}"`` on its own told the user to
             # retype a range that dies in exactly the way they had just been
             # refused for. Splitting the hint at each gap makes the advice
-            # something they can paste. ``[]`` when the two bounds cross (no
-            # residue at or above ``lo``, none at or below ``hi``): the sentence
-            # drops its "e.g." clause rather than printing a backwards range.
-            fixed = contig_runs(residues, [(chain, at_or_above[0], at_or_below[-1])])
-            if fixed:
-                fixes.append(format_contig(fixed))
+            # something they can paste.
+            #
+            # RUNS, NOT A RENDERED STRING PER CHAIN. The bound below counts runs
+            # across the WHOLE hint, and a per-chain string cannot be counted:
+            # two chains of five runs each is a ten-run suggestion, which is
+            # past what the form will accept even though neither half is.
+            fixes.extend(
+                contig_runs(residues, [(chain, at_or_above[0], at_or_below[-1])]))
         named = ", ".join(f"residue {endpoint} on chain {chain}"
                           for chain, endpoint in absent)
-        advice = f", e.g. {','.join(fixes)}" if fixes else ""
+        # THE HINT IS BOUNDED, AND WHEN IT IS BOUNDED THE MESSAGE SAYS SO.
+        #
+        # NOT truncated to the first ``MAX_HINT_RUNS`` — that is the same defect
+        # ``MAX_CONTIG_RUNS`` refuses rather than trims, arriving one function
+        # earlier and with the BROWSER doing the trimming. A prefix of a run
+        # list is a smaller target that looks exactly like a deliberate one, so
+        # printing one would hand the operator something every gate here
+        # accepts and nobody asked for. See ``MAX_HINT_RUNS``.
+        #
+        # ``not fixes`` is UNREACHABLE from here and is not the case this guard
+        # is for. ``contig_runs`` returns [] only when its two bounds cross,
+        # which needs a segment that selects no residue at all — and step 4
+        # (``empty_segments``) refuses exactly that, above, with a different
+        # message. It costs one branch to not index into an empty list if that
+        # ever stops being true, the same way the ``if not nums`` above it does.
+        if not fixes:
+            advice, why = "", ""
+        elif len(fixes) <= MAX_HINT_RUNS:
+            advice = f", e.g. {format_contig(fixes)}"
+            why = (" The range suggested above is built from residues that "
+                   "really exist rather than from the ends you gave.")
+        else:
+            advice = ""
+            why = (
+                f" No range is suggested here: the region you asked for breaks "
+                f"into {len(fixes)} separate runs of residues once the gaps in "
+                f"the uploaded structure are taken out, more than the "
+                f"{MAX_HINT_RUNS} ranges this service accepts in one target "
+                "chain range. A shortened list would name a smaller target "
+                "than you asked for and would look no different from one you "
+                "meant, so none is given. Narrow the target chain range to a "
+                "well-ordered region and try again."
+            )
         _fail(
             "input", "target_input_endpoint",
             f"the target chain range names {named}, which the uploaded target "
@@ -2717,8 +2779,7 @@ def prepare_custom_target(
             "after the GPU work was already paid for. Set an explicit target "
             f"chain range whose ends are real residues{advice}. "
             f"The chains present run {spans} — a run is first-to-last and can "
-            "have gaps inside it, which is why the range suggested above is "
-            "built from residues that really exist rather than from those ends.",
+            f"have gaps inside it.{why}",
         )
 
     selected = select_residues(residues, segments)

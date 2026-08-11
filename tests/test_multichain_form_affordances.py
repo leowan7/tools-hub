@@ -628,6 +628,142 @@ def test_the_residue_example_extractor_can_see_a_chain_prefix():
     ) == ["A296", "B264"]
 
 
+# ---------------------------------------------------------------------------
+# The contig field has to hold what the CONTAINER tells a user to paste into it
+# ---------------------------------------------------------------------------
+#
+# Same defect as 1b, one field over, and this time the value the field could
+# not hold was one WE printed. ``run_pipeline.prepare_custom_target`` refuses a
+# contig whose endpoint is not a real residue and recommends a replacement; on
+# a gapped structure that recommendation is split at every gap, so its length
+# is set by the structure rather than by the operator. Twelve gaps produced a
+# 100-character contig into a field capped at 64 — the browser kept the first
+# 64, the cut landed on a comma, and the survivor was a shorter contig that
+# every gate accepts. 120 residues asked for, 80 designed against, silently.
+#
+# Both halves are needed and neither is sufficient. ``MAX_HINT_RUNS`` bounds
+# what the container will print; these three fields have to be wide enough that
+# nothing it prints — and nothing ``validate()`` would accept — can be cut.
+
+# Every rendered page that carries proteina's contig field, and the name the
+# field posts under on that page. The launch screen namespaces per tool
+# (``_tool_form`` un-prefixes on the way in), so the same field is a different
+# name there; a test that only knew ``target_input`` would silently check two
+# pages out of three.
+_CONTIG_FIELDS = {
+    "/tools/proteina": "target_input",
+    "/campaigns/new": "target_input",
+    "/targets/launch": "proteina__target_input",
+}
+
+
+@pytest.fixture(scope="module")
+def contig_pages(flask_app):
+    """The three real pages that render proteina's ``target_input``."""
+    import uuid
+
+    from shared.targets import DesignTarget
+
+    ctx = SimpleNamespace(
+        user_id="u-1", tier="free", balance=100, email="u@example.com"
+    )
+    target = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", kind="pdb", name="HER2",
+        filename="her2.pdb", storage_path="u-1/target-abc/her2.pdb",
+        target_chain="A", hotspot_residues=[42, 88], epitope_residues=[],
+        chain_summary={
+            "total_standard_residues": 130,
+            "chains": [{
+                "chain_id": "A", "standard_residue_count": 130,
+                "hetatm_resnames": [], "water_count": 0,
+                "min_resnum": 1, "max_resnum": 130,
+            }],
+        },
+    )
+
+    def _client():
+        client = flask_app.test_client()
+        with client.session_transaction() as sess:
+            sess["user_id"] = "u-1"
+            sess["user_email"] = "u@example.com"
+        return client
+
+    responses = {}
+    with patch("blueprints.tools.load_user_context", return_value=ctx), patch(
+        "blueprints.tools.tool_enabled", return_value=True
+    ), patch(
+        "blueprints.tools.get_or_create_wallet",
+        return_value={"balance_usd": "100", "wallet_frozen": False},
+    ):
+        responses["/tools/proteina"] = _client().get("/tools/proteina")
+    with patch("blueprints.campaigns.load_user_context", return_value=ctx):
+        responses["/campaigns/new"] = _client().get("/campaigns/new")
+    # proteina is flag-gated off the launch screen, so its block renders only
+    # with the flag on. Without this the page 200s and carries no contig field
+    # at all, and `input_named` would report the absence rather than a width.
+    prev = os.environ.get("FLAG_TOOL_PROTEINA")
+    os.environ["FLAG_TOOL_PROTEINA"] = "on"
+    try:
+        with patch("blueprints.targets.load_user_context", return_value=ctx), \
+                patch("blueprints.targets.get_target", return_value=target):
+            responses["/targets/launch"] = _client().get(
+                f"/targets/{target.id}/launch")
+    finally:
+        if prev is None:
+            os.environ.pop("FLAG_TOOL_PROTEINA", None)
+        else:
+            os.environ["FLAG_TOOL_PROTEINA"] = prev
+
+    out = {}
+    for path, resp in responses.items():
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+        doc = _Doc()
+        doc.feed(resp.get_data(as_text=True))
+        out[path] = doc
+    return out
+
+
+@pytest.mark.parametrize("path", sorted(_CONTIG_FIELDS))
+def test_the_contig_field_matches_the_server_cap(path, contig_pages):
+    """One number, declared once, mirrored by all three fields.
+
+    Asserted on the PARSED attribute, never on a substring of the body: the
+    page ships a Google Fonts URL carrying 400/500/600/700, so a bare number
+    matched against the HTML matches something on every page here.
+    """
+    from tools.proteina import _MAX_TARGET_INPUT_FIELD
+
+    field = contig_pages[path].input_named(_CONTIG_FIELDS[path])
+    assert field.get("maxlength") == str(_MAX_TARGET_INPUT_FIELD), (
+        f"{path}: {_CONTIG_FIELDS[path]} maxlength={field.get('maxlength')!r}, "
+        f"server cap is {_MAX_TARGET_INPUT_FIELD}"
+    )
+
+
+@pytest.mark.parametrize("path", sorted(_CONTIG_FIELDS))
+def test_the_contig_field_can_hold_the_widest_hint_the_container_prints(
+    path, contig_pages
+):
+    """Stated as the requirement rather than as a number, so it survives a
+    change to either end: whatever the container is willing to recommend, the
+    field it recommends into must be able to hold it.
+
+    ``MAX_HINT_RUNS`` runs, each at its widest rendering — one chain letter,
+    two four-character residue numbers and a hyphen, since ``pdb_ca_residues``
+    reads a four-column resSeq — comma-joined.
+    """
+    from tools.proteina.run_pipeline import MAX_HINT_RUNS
+
+    widest = MAX_HINT_RUNS * (1 + 4 + 1 + 4) + (MAX_HINT_RUNS - 1)
+    maxlength = contig_pages[path].input_named(_CONTIG_FIELDS[path]).get(
+        "maxlength")
+    assert maxlength is not None, f"{path}: contig field has no maxlength"
+    assert int(maxlength) >= widest, (
+        f"{path}: maxlength={maxlength} silently truncates a {widest}-character "
+        f"contig, which is one this service prints and one validate() accepts"
+    )
+
+
 def test_field_text_actually_renders_max_length_as_maxlength(flask_app):
     """Pins the indirection the previous test relies on: max_length is a macro
     KEYWORD, and the assertion above reads it from source rather than from a

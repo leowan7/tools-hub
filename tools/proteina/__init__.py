@@ -214,6 +214,38 @@ _MAX_SEGMENTS = 8
 _MAX_HOTSPOTS = 64       # mirrors iggm's EPITOPE_MAX order of magnitude
 _MAX_CHAIN_FIELD = 32    # "A B C D ..." — bounds the space-joined chain string
 
+# The widest ``target_input`` this parser will look at, and the number the three
+# templates that render the field set ``maxlength`` to (templates/tools/
+# proteina_form.html, templates/runs/new.html, templates/targets/launch.html).
+#
+# DERIVED, not chosen, unlike the two above. It is an upper bound on the longest
+# contig anything here would accept, plus headroom:
+#
+#   * ``_MAX_SEGMENTS`` (8) ranges is the most this parser takes;
+#   * a range renders as ``<letter><lo>-<hi>`` — the chain id is ONE character
+#     (``_SEGMENT_RE`` is ``[A-Za-z]``) and a residue number is at most FOUR
+#     ("9999", or "-999" on a tagged construct), because the numbering comes out
+#     of a PDB and ``run_pipeline.pdb_ca_residues`` reads ``line[22:26]``, a
+#     four-column resSeq. So a range is at most 1 + 4 + 1 + 4 = 10 characters;
+#   * 8 of those, comma-joined, is 8 * 10 + 7 = 87.
+#
+# 128 is the next round number above 87, ~47% of headroom. The headroom is not
+# decoration: the point of the cap is that nothing a user can legitimately type
+# — and nothing ``run_pipeline`` can legitimately PRINT for them to paste (see
+# ``MAX_HINT_RUNS``, bounded by the same ``_MAX_SEGMENTS``) — ever reaches it,
+# so the field can never silently keep a prefix of a contig. A truncated contig
+# is still a valid contig, so a browser that trims one produces a smaller target
+# that no gate downstream can distinguish from an intended one.
+#
+# IT IS ALSO A REAL SERVER-SIDE REFUSAL, not just a mirror of an attribute:
+# ``maxlength`` is an affordance in a browser and nothing at all to curl.
+# ``_SEGMENT_RE``'s ``(-?\d+)`` is unbounded and this parser calls ``int()`` on
+# what it captures — and since Python 3.11 ``int()`` REFUSES a string over 4300
+# digits — so ``A1-<5000 nines>`` used to come back out of ``validate()`` as an
+# unhandled ValueError, i.e. a 500. The length check runs before the loop, so
+# those digits are never converted.
+_MAX_TARGET_INPUT_FIELD = 128
+
 # Binder length envelope. Upstream's own curated records span [50, 155]; the
 # target-CLI default is [60, 120]. The generator samples the binder length
 # uniformly from this range per design (UniformInt on
@@ -239,6 +271,18 @@ def _parse_target_input(
     text = (raw or "").strip()
     if not text:
         return [], "", [], None
+    # BEFORE THE LOOP, because the loop calls ``int()`` on an unbounded
+    # ``(-?\d+)`` capture and ``int()`` itself raises above 4300 digits — which
+    # left ``validate()`` returning an exception rather than a message. See
+    # ``_MAX_TARGET_INPUT_FIELD`` for where 128 comes from; the ceiling is far
+    # above the longest contig ``_MAX_SEGMENTS`` ranges can spell, so nothing a
+    # user would type on purpose can reach it.
+    if len(text) > _MAX_TARGET_INPUT_FIELD:
+        return [], "", [], (
+            f"Target chain range is too long (max {_MAX_TARGET_INPUT_FIELD} "
+            f"characters, this is {len(text)}). Give at most {_MAX_SEGMENTS} "
+            "ranges, like A1-150 or A1-50,A60-240."
+        )
 
     segments: list[tuple[str, int, int]] = []
     chain_ids: list[str] = []

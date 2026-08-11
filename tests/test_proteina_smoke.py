@@ -2404,6 +2404,138 @@ class TestContigIsSplitAtDisorderedGaps:
         assert rp.parse_target_input(match.group(1)) == [
             ("A", 236, 300), ("A", 310, 443), ("B", 236, 350), ("B", 360, 442)]
 
+    # ---- ...and short enough that the BROWSER cannot cut it down ----------
+    #
+    # THE HOLE THIS BRANCH OPENED, AND THE ONLY DEFENCE THERE IS. Before the
+    # hint went through ``contig_runs`` it was one range per chain — never more
+    # than ~20 characters — and a one-chain multi-segment contig was un-typable
+    # anyway, because the adapter refused a repeated chain. Both of those
+    # changed on this branch at once, so the refusal now prints a contig whose
+    # length is set by how gappy the structure is, into a field that was capped
+    # at 64 characters.
+    #
+    # A chain with 12 gaps produced a 100-character hint. The browser kept the
+    # first 64, the cut happened to land on a comma, and what was left parsed
+    # as a perfectly valid 8-segment contig that every gate accepts and stages:
+    # 120 residues requested, 80 designed against, nothing anywhere saying so.
+    # That asymmetry is what makes this worth a section of its own — a
+    # TRUNCATED CONTIG IS STILL A SYNTACTICALLY VALID CONTIG, so no gate
+    # downstream can tell it apart from what the operator meant, and the only
+    # place the difference is knowable is here, before the string is printed.
+
+    @staticmethod
+    def _widest(n_runs, first=1000, step=20, span=10):
+        """``n_runs`` runs whose contig text is as wide as a run can ever be.
+
+        ``A1000-1010`` is 10 characters and nothing can beat it: the chain id
+        is one letter (``_SEGMENT_RE`` is ``[A-Za-z]``) and a residue number is
+        at most four characters, because ``pdb_ca_residues`` reads
+        ``line[22:26]`` — four columns — so ``9999`` and ``-999`` are the
+        widest values that can come out of a file at all.
+        """
+        return {"A": [(first + step * i, first + step * i + span)
+                      for i in range(n_runs)]}
+
+    def test_a_hint_too_gappy_to_type_is_not_printed_AT_ALL(
+            self, tmp_path, monkeypatch):
+        """NOT A PREFIX. A shortened run list is a smaller target, and printing
+        one that LOOKS complete is worse than printing none: the operator
+        pastes it, every gate accepts it, and the run designs against a region
+        nobody asked for. The refusal says how many runs there were and sends
+        them to narrow the range instead."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999", _gapped_pdb(self._widest(12)))
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g." not in error["detail"], (
+            f"a hint of 12 runs was printed anyway: {error['detail']}")
+        assert "12 separate runs" in error["detail"], error["detail"]
+        assert "narrow the target chain range" in error["detail"].lower(), (
+            error["detail"])
+        assert staged == []
+
+    def test_the_widest_hint_we_can_print_fits_the_field_and_re_parses(
+            self, tmp_path, monkeypatch):
+        """THE BOUND, MEASURED RATHER THAN ASSUMED, on the worst input that can
+        reach it: ``MAX_HINT_RUNS`` runs of four-digit residue numbers. The
+        string that comes out has to fit the form field AND still be a contig
+        ``validate()`` accepts unchanged."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999",
+            _gapped_pdb(self._widest(rp.MAX_HINT_RUNS)))
+        assert error["check"] == "target_input_endpoint", error
+        match = re.search(r"e\.g\. ([A-Za-z0-9,\-]+)", error["detail"])
+        assert match, error["detail"]
+        hint = match.group(1)
+        assert hint.count(",") == rp.MAX_HINT_RUNS - 1, hint
+        assert len(hint) == 87, (
+            f"the widest hint is {len(hint)} characters, not the 87 the field "
+            f"width is derived from: {hint}")
+        assert len(hint) <= px._MAX_TARGET_INPUT_FIELD, (
+            f"the hint is wider than the field it must be pasted into: {hint}")
+        inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert inp["target_input"] == hint, "the hint did not survive the form"
+
+    def test_the_bound_counts_runs_across_the_WHOLE_hint_not_per_chain(
+            self, tmp_path, monkeypatch):
+        """The per-chain hints are comma-joined into ONE contig, and it is that
+        contig the form has to accept. Two chains of five runs each is a
+        ten-range suggestion — past ``_MAX_SEGMENTS`` — while neither half is,
+        so a bound applied per chain prints something the form refuses and the
+        browser then cuts. Single-chain fixtures cannot tell the two apart."""
+        gaps = {"A": [(1000 + 20 * i, 1010 + 20 * i) for i in range(5)],
+                "B": [(1000 + 20 * i, 1010 + 20 * i) for i in range(5)]}
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999,B1000-9999", _gapped_pdb(gaps),
+            target_chain="A B")
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g." not in error["detail"], (
+            f"a ten-run hint was printed per chain: {error['detail']}")
+        assert "10 separate runs" in error["detail"], error["detail"]
+
+    def test_the_hint_bound_is_the_number_the_FORM_accepts(self):
+        """``MAX_HINT_RUNS`` is not a second ``MAX_CONTIG_RUNS``. That one
+        bounds what this service will REGISTER — a question about the structure
+        — and sits at 64. This one bounds what we PRINT, and the only thing
+        that can settle it is how many ranges the form will take back."""
+        assert rp.MAX_HINT_RUNS == px._MAX_SEGMENTS, (
+            "the hint may now be longer than the form will accept")
+        assert rp.MAX_HINT_RUNS <= rp.MAX_CONTIG_RUNS
+
+    def test_the_field_is_wide_enough_for_ANY_hint_the_bound_allows(self):
+        """THE ARITHMETIC, WRITTEN OUT, because the field width is a derived
+        number and a derived number with no derivation rots into a guess.
+
+        A run renders as ``<letter><lo>-<hi>``. The letter is one character;
+        ``lo`` and ``hi` are at most four each (``pdb_ca_residues`` reads
+        ``line[22:26]``, so ``9999`` and ``-999`` are the widest a file can
+        express); the hyphen is one. ``MAX_HINT_RUNS`` of those, comma-joined,
+        is the longest string this code can ever ask a user to paste — and it
+        is also the longest contig ``validate()`` would accept from them, since
+        ``_MAX_SEGMENTS`` is the same number.
+        """
+        widest_run = 1 + 4 + 1 + 4
+        widest = rp.MAX_HINT_RUNS * widest_run + (rp.MAX_HINT_RUNS - 1)
+        assert widest == 87, widest
+        assert px._MAX_TARGET_INPUT_FIELD >= widest, (
+            f"the field holds {px._MAX_TARGET_INPUT_FIELD} characters and a "
+            f"legal contig can be {widest}; the browser would truncate it")
+
+    def test_an_absurdly_long_contig_is_REFUSED_rather_than_raised(self):
+        """THE SERVER-SIDE HALF, which a maxlength cannot do: ``maxlength`` is
+        an affordance in a browser and nothing at all to curl.
+
+        Not merely tidiness. ``_SEGMENT_RE``'s ``(-?\\d+)`` is unbounded and
+        ``_parse_target_input`` calls ``int()`` on what it captures, and since
+        Python 3.11 ``int()`` REFUSES a string over 4300 digits — so a posted
+        ``A1-<5000 nines>`` came back as an unhandled ``ValueError`` out of
+        ``validate()`` rather than as a message, i.e. a 500 on the submit
+        route. The length check runs before the regex loop, so the digits are
+        never converted.
+        """
+        _, err = px.validate(_custom(target_input="A1-" + "9" * 5000), {})
+        assert err and "too long" in err.lower(), err
+
     # ---- the run-count ceiling -------------------------------------------
 
     @staticmethod
