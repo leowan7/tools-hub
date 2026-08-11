@@ -2827,6 +2827,276 @@ class TestContigIsSplitAtDisorderedGaps:
         assert rp.MAX_CONTIG_RUNS > px._MAX_SEGMENTS
 
 
+class TestEveryPasteableHintFitsTheFieldItIsPastedInto:
+    """EVERY "e.g." this function prints, enumerated — not just the one noticed.
+
+    TWO PATHS EXISTED AND ONLY ONE WAS BOUNDED, which is the whole reason this
+    class is written as an enumeration rather than as one more case bolted on to
+    the endpoint tests above. ``MAX_HINT_RUNS`` bounded the
+    ``target_input_endpoint`` hint and ``_MAX_TARGET_INPUT_FIELD`` raised the
+    form field to match, on the claim that nothing this service prints for a
+    user to paste can be silently truncated. That claim had an exception:
+    ``target_input_negative`` prints one range per chain it refuses, and on the
+    DERIVED path (blank contig) those chains come from ``target_chain``, which
+    is bounded only by ``_MAX_CHAIN_FIELD`` — 32 characters, so up to 16
+    single-letter chains, so a 175-character hint into a 128-character field.
+    An invariant with an exception is not one.
+
+    SO THE TESTS ARE WRITTEN AGAINST THE CLASS OF EMISSIONS RATHER THAN AGAINST
+    ITS TWO MEMBERS. ``test_every_paste_me_site_is_enumerated_here`` reads the
+    source for the emissions themselves, so a THIRD hint added later fails on
+    the day it is written, before it can ship unbounded — which is the only
+    mechanism that would have caught the second one.
+
+    WHAT COUNTS AS A PASTE-ME, and why the line is drawn at "e.g.". These
+    refusals also print contigs that DESCRIBE something — the range you asked
+    for (``format_contig(bad)``, ``requested``), and the spans the file holds
+    (``chain_span_summary``). Those are answers to "what did I send" and "what
+    is in the file", not "type this"; see
+    ``test_the_descriptive_contigs_are_left_unbounded_ON_PURPOSE`` for the
+    decision and for the condition it depends on.
+    """
+
+    # Borrowed, exactly as this file's other contig classes borrow theirs. It
+    # takes the PDB text, which is what a many-chain or negatively-numbered
+    # fixture needs.
+    _prepare = TestContigIsSplitAtDisorderedGaps._prepare
+
+    # The widest a single range can render, measured rather than assumed: one
+    # chain letter (``pdb_ca_residues`` reads ``line[21:22]``, one column), four
+    # digits for each bound (``line[22:26]``, four columns, so ``9999`` and
+    # ``-999`` are the widest a PDB can express), one hyphen.
+    WIDEST_RANGE = 1 + 4 + 1 + 4
+
+    @staticmethod
+    def _paste_me_sites():
+        """Every ``e.g. {<runtime value>}`` inside ``prepare_custom_target``.
+
+        A PASTE-ME IS AN "e.g." FOLLOWED IMMEDIATELY BY AN INTERPOLATION. That
+        is the shape of this service handing back a string it built from the
+        upload for the operator to copy into the form — and it is the only shape
+        that can be silently truncated, because it is the only one whose length
+        is set by the file rather than by the source. The hotspot refusal's
+        "(e.g. A45)" is an "e.g." followed by a LITERAL — a note about the token
+        format, nothing to paste — and is correctly not collected.
+
+        Identified by the expression, not by the surrounding copy: message
+        wording churns, and a test that fails on a comma edit gets deleted.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "prepare_custom_target")
+        sites = []
+        for node in ast.walk(prepare):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            # Adjacent string literals are merged into one JoinedStr by the
+            # parser, so an "e.g." written in a plain fragment and interpolated
+            # by the next f-string fragment still lands as Constant then
+            # FormattedValue.
+            for left, right in zip(node.values, node.values[1:]):
+                if (isinstance(left, ast.Constant)
+                        and isinstance(left.value, str)
+                        and left.value.rstrip().endswith("e.g.")
+                        and isinstance(right, ast.FormattedValue)):
+                    sites.append(ast.unparse(right.value))
+        return sorted(sites)
+
+    # One entry per paste-me site: the check it is printed under, and the
+    # widest input that can reach it. ``n`` is the number of ranges the hint
+    # would carry, so the same number drives both the at-the-bound case and the
+    # over-the-bound case.
+    def _refuse(self, tmp_path, monkeypatch, site, n):
+        if site == "endpoint":
+            # ``n`` runs of four-digit residues on one chain, asked for as a
+            # range whose upper end does not exist.
+            gaps = {"A": [(1000 + 20 * i, 1010 + 20 * i) for i in range(n)]}
+            return self._prepare(
+                tmp_path, monkeypatch, "A1000-9999", _gapped_pdb(gaps))
+        # ``n`` chains, each numbered from -999 (an expression tag) and running
+        # to 9999, asked for with a BLANK contig so the segments are derived
+        # from target_chain — the path whose width nothing bounded.
+        chains = "ABCDEFGHIJKLMNOP"[:n]
+        pdb = _gapped_pdb({c: [(-999, -990), (9990, 9999)] for c in chains})
+        return self._prepare(
+            tmp_path, monkeypatch, "", pdb, target_chain=" ".join(chains))
+
+    @staticmethod
+    def _hint(detail):
+        match = re.search(r"e\.g\. ([^.]+)\.", detail)
+        return match.group(1) if match else None
+
+    def test_every_paste_me_site_is_enumerated_here(self):
+        """THE TRIPWIRE, and the only part of this class that can catch the
+        NEXT one. Both hints below were written by someone who had read the
+        other; neither noticed the other was the same hazard. A behavioural
+        test can only cover the sites its author already knew about, so the set
+        itself is asserted, from the source."""
+        assert self._paste_me_sites() == [
+            "format_contig(fixes)", "format_contig(hints)"
+        ], (
+            "prepare_custom_target prints an example contig this class does "
+            "not cover. Bound it by MAX_HINT_RUNS and add it to _refuse() "
+            "before it ships: the field it will be pasted into holds "
+            f"{px._MAX_TARGET_INPUT_FIELD} characters and a browser cuts it "
+            "silently, and a truncated contig is still a valid contig")
+
+    @pytest.mark.parametrize("site", ["endpoint", "negative"])
+    def test_the_widest_hint_a_site_can_print_fits_the_field(
+            self, site, tmp_path, monkeypatch):
+        """THE BOUND, MEASURED PER SITE on the worst input that can reach it:
+        ``MAX_HINT_RUNS`` ranges of four-digit residue numbers, which is the
+        widest string this code can ever ask anyone to paste. It has to fit the
+        field AND still be a contig ``validate()`` takes unchanged, or the
+        advice is a dead end."""
+        error, _ = self._refuse(
+            tmp_path, monkeypatch, site, rp.MAX_HINT_RUNS)
+        hint = self._hint(error["detail"])
+        assert hint, error["detail"]
+        assert hint.count(",") == rp.MAX_HINT_RUNS - 1, hint
+        assert len(hint) <= px._MAX_TARGET_INPUT_FIELD, (
+            f"the {site} hint is {len(hint)} characters and the field holds "
+            f"{px._MAX_TARGET_INPUT_FIELD}; the browser would keep a prefix, "
+            f"and a prefix of a contig is a valid contig: {hint}")
+        inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert inp["target_input"] == hint, "the hint did not survive the form"
+
+    @pytest.mark.parametrize("site,n,counted,fix", [
+        ("endpoint", 12, "12 separate runs", "narrow the target chain range"),
+        ("negative", 16, "for 16 chains", "fewer chains"),
+    ])
+    def test_a_hint_over_the_bound_is_not_printed_AT_ALL(
+            self, site, n, counted, fix, tmp_path, monkeypatch):
+        """NOT A PREFIX, AT EITHER SITE. Truncating to the first
+        ``MAX_HINT_RUNS`` would print exactly the string the browser would have
+        produced, which is the defect rather than the fix. The refusal has to
+        say how many there were, and what to do instead, or suppressing the
+        advice just makes the message useless."""
+        error, staged = self._refuse(tmp_path, monkeypatch, site, n)
+        assert "e.g." not in error["detail"], (
+            f"a {n}-range hint was printed anyway: {error['detail']}")
+        assert counted in error["detail"], error["detail"]
+        assert fix in error["detail"].lower(), error["detail"]
+        assert staged == []
+
+    def test_the_negative_hint_is_one_range_per_CHAIN_not_per_segment(
+            self, tmp_path, monkeypatch):
+        """The suggestion is "the widest range on this chain that starts at 0
+        or above", which is a fact about the chain. Built per refused SEGMENT
+        it repeats itself on a contig naming one chain twice — and
+        ``A100-240,A100-240`` is advice ``validate()`` refuses as overlapping,
+        so the operator's next attempt is spent on our own suggestion.
+
+        Reachable off the web only: the adapter refuses a typed negative range
+        outright, while ``run_pipeline.parse_target_input`` re-parses without
+        that rule, which is the campaign and canary path. Both bounds negative
+        (``A-999--900``) is NOT the fixture — that one is unparsable in the
+        container too, because ``parse_target_input`` splits on the last hyphen
+        — so the reachable shape is two tagged ranges on one chain.
+        """
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A-5-240,A-3-100",
+            _gapped_pdb({"A": [(-5, 240)]}))
+        assert error["check"] == "target_input_negative", error
+        hint = self._hint(error["detail"])
+        assert hint == "A0-240", error["detail"]
+        _inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+
+    def test_a_chain_with_no_range_to_suggest_stays_OUT_of_the_e_g(
+            self, tmp_path, monkeypatch):
+        """A chain numbered entirely below zero has no range to offer, and it
+        used to be named INSIDE the comma-joined example — "e.g.
+        A100-240,(chain B has no residue numbered 0 or above)" — which is not a
+        contig at all. That is not the silent failure this class is about, it
+        is a loud one, but it makes the advice unpasteable for everybody on the
+        message and the fact still has to be carried somewhere."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "",
+            _gapped_pdb({"A": [(-5, 240)], "B": [(-90, -1)]}),
+            target_chain="A B")
+        assert error["check"] == "target_input_negative", error
+        hint = self._hint(error["detail"])
+        assert hint == "A0-240", error["detail"]
+        _inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert "chain B" in error["detail"], error["detail"]
+        assert "0 or above" in error["detail"], error["detail"]
+
+    def test_each_paste_me_site_is_GUARDED_by_the_one_shared_bound(self):
+        """ONE COMPARISON PER SITE, AND ONE CONSTANT ACROSS THEM.
+
+        Counted against ``_paste_me_sites`` rather than pinned at two, so the
+        pair moves together: a third hint added without a bound leaves the
+        counts unequal, and a bound spelled with a fresh number instead of
+        ``MAX_HINT_RUNS`` does not appear here at all. The constant is shared
+        because the question is shared — how many ranges will the form take
+        back — and it has nothing to do with which guard is printing.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "prepare_custom_target")
+        guarded = [n for n in ast.walk(prepare) if isinstance(n, ast.Compare)
+                   and any(isinstance(c, ast.Name) and c.id == "MAX_HINT_RUNS"
+                           for c in n.comparators)]
+        assert len(guarded) == len(self._paste_me_sites()), (
+            f"{len(self._paste_me_sites())} example contigs are printed and "
+            f"{len(guarded)} of them are measured against MAX_HINT_RUNS")
+        assert rp.MAX_HINT_RUNS == px._MAX_SEGMENTS, (
+            "a hint may now carry more ranges than the form will accept")
+
+    def test_the_descriptive_contigs_are_left_unbounded_ON_PURPOSE(self):
+        """THE DECISION, WITH ITS CONDITION MADE EXECUTABLE — because "we
+        thought about it and it is fine" rots into "nobody looked".
+
+        ``chain_span_summary`` renders ``A1-115, B3-97`` over every chain in the
+        file, and ``format_contig(bad)`` / ``requested`` echo the range that was
+        asked for. All three are unbounded in chain count and all three parse as
+        contigs, so on a 28-chain structure they run past the field. They are
+        NOT bounded, for two reasons that do not apply to the hints:
+
+        * they are descriptive, not advice. Suppressing a hint costs the reader
+          nothing — the message tells them what to do instead. Suppressing the
+          spans removes the only account of what the upload actually contains,
+          which is the entire reason that string is in the message.
+        * a truncated one is refused LOUDLY rather than accepted quietly, and
+          that is what this test pins. A range is at most ``WIDEST_RANGE``
+          characters and a separator at least one, so a prefix of
+          ``_MAX_TARGET_INPUT_FIELD`` characters holds at least
+          ``(F + 1) // (WIDEST_RANGE + 1)`` complete ranges — 11 today — which
+          is past ``_MAX_SEGMENTS`` and comes back as "Too many chain ranges".
+
+        THE SECOND REASON IS ARITHMETIC AND THEREFORE CONDITIONAL, which is why
+        the hints are bounded anyway rather than left to it: it fails the moment
+        ``_MAX_SEGMENTS`` is raised or the field is narrowed — at the 64-wide
+        field this service used to have, a prefix held five ranges and was
+        accepted in silence. If this assertion ever fails, the descriptive
+        strings need the same treatment as the hints, and this docstring is the
+        record of what that decision rested on.
+        """
+        floor_ranges = (px._MAX_TARGET_INPUT_FIELD + 1) // (self.WIDEST_RANGE + 1)
+        assert floor_ranges > px._MAX_SEGMENTS, (
+            f"a {px._MAX_TARGET_INPUT_FIELD}-character prefix now holds only "
+            f"{floor_ranges} ranges, within the {px._MAX_SEGMENTS} the form "
+            "accepts, so a truncated span summary would be taken as a smaller "
+            "target instead of refused")
+        # The same claim, executed rather than derived, on the widest span
+        # summary 16 single-letter chains can produce.
+        spans = rp.chain_span_summary(
+            [(c, n, "") for c in "ABCDEFGHIJKLMNOP" for n in (1000, 9999)])
+        assert len(spans) > px._MAX_TARGET_INPUT_FIELD, spans
+        _segs, _canon, _chains, err = px._parse_target_input(
+            spans[:px._MAX_TARGET_INPUT_FIELD])
+        assert err is not None, (
+            "a truncated span summary is now accepted as a contig: "
+            f"{spans[:px._MAX_TARGET_INPUT_FIELD]!r}")
+
+
 class TestNumericChainsAndUnboundedRangesAreAlreadyRefused:
     """BACKLOG #21, VERIFIED BY EXECUTION RATHER THAN BY READING.
 
