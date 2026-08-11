@@ -257,6 +257,26 @@ def _run_one_seed(payload: Any) -> dict:
         flush=True,
     )
 
+    # Clear any stale smoke_results.json from a prior invocation on a warm Modal
+    # container. Without this, if this seed's run_pipeline.py dies before writing its
+    # own file (early import error, OOM kill, SIGKILL, uncaught exception), the read
+    # below picks up the PREVIOUS invocation's result and reports it as this seed's.
+    # Sharper here than elsewhere: ``run_tool`` fans out N children per job, so the
+    # container this seed inherits is most often one a SIBLING seed just ran on — a
+    # dead seed would be aggregated as a real one, and for n_seeds == 1 the worker
+    # dict is returned to the hub verbatim, where
+    # ``gpu.modal_client._interpret_pipeline_return()`` marks the job succeeded off
+    # smoke["status"] alone with no exit_code gate. Codex P1 (colabfold).
+    try:
+        os.remove("/tmp/smoke_results.json")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(
+            f"[_run_one_seed] could not remove stale smoke_results.json: {exc}",
+            flush=True,
+        )
+
     # Warm containers are reused: a leftover raw archive from a prior job would be parked
     # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
     try:
