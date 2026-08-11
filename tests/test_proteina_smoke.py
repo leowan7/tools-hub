@@ -352,6 +352,31 @@ class TestTargetInputParse:
             assert err and "overlap" in err.lower(), (
                 f"{token} was accepted: {err!r}")
 
+    def test_a_repeat_is_checked_against_EVERY_earlier_range_not_just_the_last(self):
+        """THE OVERLAP SHAPE AN ADJACENT-ONLY COMPARISON WAVES THROUGH.
+
+        ``A1-19,A1-19`` above is the size-floor defeater; these are the same
+        contigs with a chain INTERPOSED. Comparing each range only against the
+        one immediately before it accepts every case here — the token before
+        the second ``A`` range is a ``B`` range, the chains differ, the loop
+        moves on — and the two identical A ranges are then summed as 38
+        residues by ``shared/targets.py::selection_residue_count``, which is
+        documented as an upper bound that adds per segment. That is the
+        arithmetic the flat "chain appears more than once" rule used to
+        backstop and that this branch deliberately stopped relying on.
+
+        ``test_disjoint_ranges_on_DIFFERENT_chains_are_untouched`` is the
+        control: ``A1-50,B1-50,A60-90`` has the identical interposed shape and
+        must still be ACCEPTED, so this cannot be satisfied by refusing
+        non-adjacent repeats as a class.
+        """
+        for token in ("A1-19,B1-19,A1-19",        # identical, one chain apart
+                      "A1-19,B1-19,C1-19,A5-9",   # contained, two chains apart
+                      "A60-90,B1-50,A1-70"):      # partial, the later one wider
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
     def test_a_bare_chain_id_overlaps_every_range_on_that_chain(self):
         """``A`` is "the whole chain", so it cannot be disjoint from anything
         on A — including a second ``A``."""
@@ -2138,6 +2163,58 @@ class TestContigIsSplitAtDisorderedGaps:
         assert rp.contig_runs(residues, [("A", 100, 103)]) == [
             ("A", 100, 101), ("A", 103, 103)]
 
+    def test_a_residue_present_ONLY_under_an_insertion_code_does_not_split(
+            self, tmp_path):
+        """THE HALF THE TEST ABOVE CANNOT REACH, SETTLED BY EXECUTING UPSTREAM
+        RATHER THAN BY READING IT.
+
+        Above, ``100`` exists as a plain residue AND as ``A100A``, so both
+        readings of "which numbers are present" agree and that fixture passes
+        under either. Here ``102`` exists ONLY as ``102A`` — there is no plain
+        102 anywhere in the file — and the two readings finally diverge: over
+        distinct ``resseq`` the chain is 100-104 and ``A100-104`` is ONE run;
+        over residues carrying no insertion code it is 100-101 and 103-104, so
+        the contig gets split at a gap that is not there.
+
+        WHY NOT SPLITTING IS THE CORRECT ANSWER, AND HOW THAT WAS SETTLED.
+        ``missing_endpoints``'s own docstring flags this as the weak, expensive
+        bullet: atomworks is not vendored here, so nothing in review could
+        decide it and the failure it would cause is a dead shard on a billed
+        A100. It was EXECUTED against the pair the image installs (atomworks
+        2.2.1, biotite 1.4.0): a chain holding 100, 101, 102A, 103, 104
+        resolved through the contig ``A100-104`` selects FIVE CA atoms and
+        raises nothing — ``AtomSelection(res_id=102)`` matches the
+        insertion-coded residue, because ``res_id`` is the number field alone.
+        So splitting here would be actively WRONG rather than merely cautious:
+        it would fragment a contig upstream resolves without complaint, and on
+        an antibody-numbered target — where codes are routine — it would spend
+        a run of the ``MAX_CONTIG_RUNS`` budget on every coded residue.
+
+        AND IT NEEDS A FIXTURE OF ITS OWN. The mutation "compute the runs over
+        residues carrying no insertion code" passes the entire suite without
+        this one: the test above keeps a plain ``A100`` beside ``A100A``, so
+        dropping coded residues changes nothing there, and every other fixture
+        in this class is code-free.
+        """
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 101),
+            _atom(3, "CA", "ALA", "A", 102, icode="A"),
+            _atom(4, "CA", "ALA", "A", 103),
+            _atom(5, "CA", "ALA", "A", 104),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text)
+        assert residues == [("A", 100, ""), ("A", 101, ""), ("A", 102, "A"),
+                            ("A", 103, ""), ("A", 104, "")], "fixture check"
+        assert rp.contig_runs(residues, [("A", 100, 104)]) == [("A", 100, 104)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, [("A", 100, 104)])) == "A100-104"
+        # The same reading, in the two places that have to agree with it: the
+        # endpoint guard must not call 102 absent, and the crop must keep all
+        # five residues or upstream's own count assertion stops matching.
+        assert rp.missing_endpoints(residues, [("A", 102, 104)]) == []
+        assert len(rp.selected_residue_keys(residues, [("A", 100, 104)])) == 5
+
     def test_a_chain_absent_from_the_file_contributes_no_run(self, tmp_path):
         """Unreachable from production — ``empty_segments`` refuses it first —
         but the helper is pure and must answer rather than raise."""
@@ -2145,6 +2222,66 @@ class TestContigIsSplitAtDisorderedGaps:
         assert rp.contig_runs(residues, [("Z", 1, 99)]) == []
         assert rp.contig_runs(residues, [("A", 1, 60), ("Z", 1, 99)]) == [
             ("A", 1, 60)]
+
+    def test_a_run_is_built_ONLY_from_residues_that_EXIST(self, tmp_path):
+        """THE PROPERTY THE FUNCTION'S NAME CLAIMS, pinned on the one fixture
+        shape where the requested bounds and the real ones differ at BOTH ends.
+
+        Every other case in this section asks for a range whose ``lo`` and
+        ``hi`` are themselves residues, so "start the first run at the
+        requested ``lo``" and "end the last run at the requested ``hi``" are
+        each indistinguishable from the real behaviour on all of them — both
+        mutations pass this whole file. They are not equivalent in general, and
+        what they produce is a contig naming a residue the file does not hold:
+        the ValueError on a paid A100 that this helper exists to prevent,
+        reintroduced by the fix for it.
+
+        A DIRECT TEST ON PURPOSE. ``prepare_custom_target`` cannot reach this
+        shape today — ``missing_endpoints`` refuses an absent endpoint at step
+        4b, above the rewrite. But the docstring offers the helper for reuse,
+        and the canary already reaches into this module for its siblings
+        (``_hotspot_canary`` calls ``rp_local.empty_segments`` and hands the
+        result to ``cs.refuse_empty_segments``) with no step 4b in front of it.
+        """
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(10, 20), (30, 40)]}))
+        runs = rp.contig_runs(residues, [("A", 5, 100)])
+        assert runs == [("A", 10, 20), ("A", 30, 40)], (
+            "a run bound came from the request rather than from the structure")
+        present = {(chain, resseq) for chain, resseq, _icode in residues}
+        for chain, lo, hi in runs:
+            assert (chain, lo) in present and (chain, hi) in present, (
+                f"run {chain}{lo}-{hi} names a residue the file does not hold")
+
+    def test_a_HALF_bound_segment_raises_in_all_three_predicates(self, tmp_path):
+        """THE ``lo is None`` TOLERANCE IS ONE-SIDED, AND THAT IS A DECISION.
+
+        ``(chain, None, None)`` is answered because a parser really emits it —
+        both ``parse_target_input`` implementations return it for a bare chain
+        id — so the forgetful caller it rescues exists and there is one
+        unambiguous answer to give it. ``(chain, 100, None)`` is emitted by
+        NOTHING: no parser builds one, ``derive_segments`` builds ``(chain,
+        min, max)``. There is no caller to rescue and no meaning to recover, so
+        "from 100 to the end of the chain" would be an invention — and an
+        invented bound silently changes how much of the target gets designed
+        against, which is the failure class this file exists to stop. The
+        ``TypeError`` out of the chained comparison is the right answer.
+
+        PINNED ON ALL THREE TOGETHER, because that is the real property: the
+        three functions that COMPUTE A SELECTION share one reading of a segment
+        tuple, and teaching only ``contig_runs`` to answer would make the
+        function that RENDERS the contig disagree with the two that decide what
+        is selected and what is staged. ``missing_endpoints`` skipping both
+        cases is not a counter-example — a bare chain id has no endpoints to
+        verify, which is a defined answer rather than a guess.
+        """
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60)}))
+        for fn in (rp.contig_runs, rp.select_residues, rp.selected_residue_keys):
+            with pytest.raises(TypeError):
+                fn(residues, [("A", 10, None)])
+            assert fn(residues, [("A", None, None)]), (
+                f"{fn.__name__} stopped answering the bare chain id that the "
+                "parsers really do emit")
 
     def test_segment_order_is_kept_and_overlaps_are_not_merged(self, tmp_path):
         """Upstream ORs the per-selection masks, so a residue named twice is
@@ -2404,6 +2541,44 @@ class TestContigIsSplitAtDisorderedGaps:
         assert rp.parse_target_input(match.group(1)) == [
             ("A", 236, 300), ("A", 310, 443), ("B", 236, 350), ("B", 360, 442)]
 
+    def test_a_segment_that_yields_NO_run_is_refused_BEFORE_the_hint(
+            self, tmp_path, monkeypatch):
+        """WHAT MAKES THE HINT'S ``if not fixes:`` BRANCH UNREACHABLE, executed
+        rather than argued — until now that claim was carried by a comment and
+        nothing held the comment up.
+
+        The hint re-bounds each segment to the nearest residues that exist and
+        runs ``contig_runs`` over the result. That comes back empty only when
+        the two re-bounded ends cross, which needs ``lo > hi``. ``A300-1`` on a
+        1-240 chain is the sharpest case there is: 300 really is absent, so
+        ``missing_endpoints`` really would fire and the hint really would be
+        empty — and the ONLY thing keeping step 4b from seeing it is that a
+        backwards segment selects nothing, so step 4 (``empty_segments``)
+        refuses it two guards earlier under a different check name. Both halves
+        are asserted, because the first is what makes the branch dead and the
+        second is what would bring it back to life.
+
+        REACHABLE HERE EVEN THOUGH THE FORM REFUSES IT. The adapter checks ``lo
+        <= hi``; ``run_pipeline.parse_target_input`` deliberately does not, and
+        ``prepare_custom_target`` is entered with contigs the adapter never saw
+        — the same reason ``TestMinimumTargetSize`` re-tests the overlap rule
+        down here rather than trusting the form's copy of it.
+        """
+        pdb_text = _make_pdb({"A": (1, 240)})
+        residues = self._residues(tmp_path, pdb_text)
+        assert rp.missing_endpoints(residues, [("A", 300, 1)]) == [("A", 300)], (
+            "the endpoint guard no longer fires on this contig, so it is no "
+            "longer the case that pins the branch")
+        assert rp.contig_runs(residues, [("A", 300, 1)]) == [], (
+            "the hint would no longer be empty here, so `if not fixes:` is "
+            "reachable by some route this test does not describe")
+        error, staged = self._prepare(
+            tmp_path / "run", monkeypatch, "A300-1", pdb_text)
+        assert error["check"] == "target_input", error
+        assert "chain A residues 300-1 select 0 residues" in error["detail"], (
+            error["detail"])
+        assert staged == []
+
     # ---- ...and short enough that the BROWSER cannot cut it down ----------
     #
     # THE HOLE THIS BRANCH OPENED, AND THE ONLY DEFENCE THERE IS. Before the
@@ -2582,6 +2757,25 @@ class TestContigIsSplitAtDisorderedGaps:
             _gapped_pdb(self._alternating(rp.MAX_CONTIG_RUNS)))
         assert error["check"] == "target_registry", error
         assert len(staged) == 1, f"never reached the crop: {error}"
+
+    def test_ONE_run_above_the_ceiling_is_ALREADY_refused(
+            self, tmp_path, monkeypatch):
+        """THE BOUNDARY ITSELF, which the pair above brackets without pinning.
+
+        ``MAX_CONTIG_RUNS`` gets past the gate and ``MAX_CONTIG_RUNS + 2`` is
+        refused, so ``> MAX_CONTIG_RUNS`` and ``> MAX_CONTIG_RUNS + 1`` are
+        indistinguishable to both of them and the second passes this file. The
+        off-by-one is not cosmetic: it registers and designs against a contig
+        one run wider than the number the refusal quotes, so the message the
+        operator reads would be a lie about the gate that printed it.
+        """
+        over = rp.MAX_CONTIG_RUNS + 1
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb(self._alternating(over)))
+        assert error["check"] == "target_input_runs", error
+        assert f"covers {over} separate runs" in error["detail"], error["detail"]
+        assert f"more than the {rp.MAX_CONTIG_RUNS}" in error["detail"]
+        assert staged == [], "a refused target must not be staged"
 
     def test_the_guard_actually_READS_the_constant(self, tmp_path, monkeypatch):
         """THE CONSTANT MUST GOVERN, NOT MERELY AGREE — the mutation that

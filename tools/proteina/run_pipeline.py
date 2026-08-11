@@ -2024,11 +2024,43 @@ def contig_runs(
       of the chain, matching ``select_residues`` and ``selected_residue_keys``.
       Callers expand bare ids first; tolerating one here means a caller that
       forgets gets the right answer instead of a TypeError.
+
+      AND THE TOLERANCE IS ONE-SIDED ON PURPOSE. The argument above does NOT
+      reach ``hi is None``: a half-bound ``(chain, 100, None)`` raises
+      ``TypeError`` out of the chained comparison below, and should. ``lo is
+      None`` is worth answering because it is a shape a parser really emits —
+      both ``parse_target_input`` implementations return ``(chain, None,
+      None)`` for a bare chain id — so the forgetful caller it rescues exists
+      and there is one unambiguous answer to give it. NOTHING emits a
+      half-bound tuple: no parser builds one and ``derive_segments`` builds
+      ``(chain, min, max)``. So there is no caller to rescue and no meaning to
+      recover — "from 100 to the end of the chain" would be an invention, and
+      an invented bound silently changes how much of the target gets designed
+      against, which is the failure class this file exists to stop.
+      ``select_residues`` and ``selected_residue_keys`` draw the line in
+      exactly the same place (``if lo is not None and not (lo <= resseq <=
+      hi)``); moving it here alone would make the function that RENDERS the
+      contig disagree with the two that decide what is selected and what is
+      staged. ``missing_endpoints`` skipping both cases is not a
+      counter-example — a bare chain id has no endpoints to verify, which is a
+      defined answer rather than a guess.
     * INSERTION CODES DO NOT SPLIT A RUN. Runs are computed over the DISTINCT
       ``resseq`` values, so ``A100``/``A100A`` is one number and one residue for
       this purpose — the same reading ``missing_endpoints`` takes, and the only
       one a contig can express, since a range endpoint is a bare integer with
       nowhere to put a code.
+
+      THAT INCLUDES A RESIDUE PRESENT ONLY UNDER A CODE — ``102A`` with no
+      plain ``102`` — which does NOT split the run either, and this is the one
+      part of the rule that could not be settled by reading. atomworks is not
+      vendored here, so it was EXECUTED against the pair the image installs
+      (atomworks 2.2.1, biotite 1.4.0): a chain holding 100, 101, 102A, 103,
+      104 resolved through the contig ``A100-104`` selects five CA atoms and
+      raises nothing, because ``AtomSelection(res_id=102)`` matches on the
+      number field alone. Splitting there would therefore be actively wrong
+      rather than merely cautious — it would fragment a contig upstream
+      resolves without complaint and spend a run of the ``MAX_CONTIG_RUNS``
+      budget per coded residue on an antibody-numbered target.
     * SEGMENT ORDER IS PRESERVED and runs within a segment ascend. Overlapping
       segments are NOT merged across the segment boundary: upstream ORs the
       masks, so a residue named twice is selected once either way, and merging
