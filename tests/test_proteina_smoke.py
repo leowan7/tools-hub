@@ -918,7 +918,7 @@ class TestArchiveGatesTheInputCopy:
     """The archive decides what it tars on what THIS process did, not on what it
     finds on disk.
 
-    Every mechanism that clears stale state is best-effort — main()'s run_dir
+    Every mechanism that clears stale state is best-effort — _run_shard's run_dir
     wipe passes ignore_errors=True, and the pre-download clear can be refused by
     the filesystem — so presence of a _hub_input/upload.pdb is not evidence that
     this job uploaded it. Gating the tar on `_hub_input_written` is what makes
@@ -1024,6 +1024,50 @@ class TestArchiveGatesTheInputCopy:
         run.mkdir()
         rp.archive_input_copy(tmp_path / "does_not_exist.pdb", run, rp._HUB_UPLOAD_NAME)
         assert rp._hub_input_written == set()
+
+
+class TestCensusDoesNotCountTheInputAsOutput:
+    """`census_output_tree` exists to tell "the search never produced a reward
+    CSV" (the tool broke) from "the filter culled every sample" (the search
+    worked). Its own docstring says those "call for opposite responses".
+
+    The archive copies of the INPUT live under run_dir, so a census that globs
+    `**/*.pdb` counts them as output. On a shard that designed nothing that
+    reads as "2 structures written, no reward CSV" — which is neither state,
+    and points the reader at a broken tool that isn't broken. The count has to
+    be of things the SEARCH wrote.
+    """
+
+    def _census(self, run):
+        return rp.census_output_tree(run)
+
+    def test_the_input_copies_are_not_counted_as_designs(self, tmp_path):
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / rp._HUB_INPUT_DIR / rp._HUB_INPUT_NAME).write_bytes(b"ATOM  tgt\n")
+        assert self._census(run)["design_pdbs"] == 0, (
+            "a run that designed nothing must not report structures it was GIVEN")
+
+    def test_real_designs_are_still_counted(self, tmp_path):
+        """The exclusion must not swallow the number it exists to report."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        (run / "sample_1.pdb").write_bytes(b"ATOM  design\n")
+        assert self._census(run)["design_pdbs"] == 2
+
+    def test_the_filtered_bucket_is_still_the_discriminator(self, tmp_path):
+        """filtered_out_pdbs is the number that separates the two states, so
+        the input copies must not leak into it either."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "filtered_out_samples").mkdir()
+        (run / "filtered_out_samples" / "s0.pdb").write_bytes(b"ATOM  culled\n")
+        census = self._census(run)
+        assert (census["design_pdbs"], census["filtered_out_pdbs"]) == (0, 1)
 
 
 class TestStructureVerification:
@@ -1742,8 +1786,8 @@ class TestCustomTargetRegistration:
         placement creates if the staging dir is only tested for existence.
 
         _HUB_TARGET_DIR is NOT wiped at shard start (only ./inference is), and a
-        refused shard leaves its incoming.pdb behind: the rename that clears it
-        fires at step 6, which a refusal never reaches. If THIS shard's GET then
+        refused shard leaves its incoming.pdb behind: the unlink that clears it
+        fires in step 6b, which a refusal never reaches. If THIS shard's GET then
         fails before writing anything — an expired presigned URL raises before
         the file is opened — an exists() check alone sees the leftover and files
         ANOTHER CUSTOMER'S structure under this job id, inside the one artifact
@@ -1766,7 +1810,7 @@ class TestCustomTargetRegistration:
             f"the prior shard's structure was archived under this job: {names}")
 
     def _plant_stale_run_dir_copy(self, tmp_path, monkeypatch, body, undeletable=False):
-        """Put a previous shard's copy inside run_dir and make main()'s wipe
+        """Put a previous shard's copy inside run_dir and make _run_shard's wipe
         silently fail to remove it — which is exactly what its
         rmtree(ignore_errors=True) does when it cannot.
 
@@ -1814,7 +1858,7 @@ class TestCustomTargetRegistration:
         (hub / "incoming.pdb").write_bytes(prior)
         # An UNDELETABLE stale copy inside run_dir too. Without `undeletable`
         # the clear removes it and the closing assertion below is evaluated over
-        # an empty directory, pinning nothing: main()'s finally tars run_dir
+        # an empty directory, pinning nothing: the archiving finally tars run_dir
         # whether or not the run refused, so a leftover that survives the clear
         # is the only one with a live route into the archive, and the archive's
         # own gate is the only thing that can stop it.
@@ -1920,7 +1964,7 @@ class TestCustomTargetRegistration:
     def test_a_curated_run_never_archives_a_leftover_copy(self, tmp_path, monkeypatch):
         """The path with no clear at all. A curated run never calls
         prepare_custom_target, so nothing on that route inspects _hub_input —
-        yet main()'s finally still tars run_dir. A previous custom shard's copy
+        yet the archiving finally still tars run_dir. A previous custom shard's copy
         that outlived the wipe would be filed under this curated job, whose
         caller never uploaded anything. The archive's own gate is what stops
         it: this shard wrote no copy, so no _hub_input goes in.
@@ -1944,9 +1988,9 @@ class TestCustomTargetRegistration:
             f"a custom shard's upload was archived under a curated job: {names}")
 
     def test_a_stale_copy_surviving_the_run_dir_wipe_is_cleared(self, tmp_path, monkeypatch):
-        """The other leg of the same contamination path. main()'s
+        """The other leg of the same contamination path. _run_shard's
         `shutil.rmtree(run_dir, ignore_errors=True)` is by construction
-        best-effort, so a prior shard's inference/_hub_input/target.pdb can
+        best-effort, so a prior shard's inference/_hub_input/upload.pdb can
         outlive it. If this shard then writes no bytes of its own, the archive
         would carry the previous job's structure with nothing having gone wrong
         loudly anywhere. Here the run_dir wipe is made to silently no-op — what

@@ -2434,7 +2434,8 @@ _HUB_INPUT_DIR = "_hub_input"
 # forces a choice between them that the file name would then hide:
 #
 #   target.pdb  what was DESIGNED AGAINST — the staged, contig-cropped file,
-#               copied at step 6c once staging has produced it. Reproduces the
+#               copied once staging has produced it, just before step 7's
+#               registration. Reproduces the
 #               run. Absent from every refusal that happens before staging.
 #   upload.pdb  what the USER SENT — the exact downloaded bytes, copied the
 #               moment they arrive, before any guard can refuse them. Present on
@@ -2449,7 +2450,7 @@ _HUB_UPLOAD_NAME = "upload.pdb"
 # Which _hub_input files did THIS shard write?
 #
 # A file's PRESENCE proves nothing. A previous shard on a warm container can
-# leave one behind, and main()'s run_dir wipe is rmtree(ignore_errors=True), so
+# leave one behind, and _run_shard's run_dir wipe is rmtree(ignore_errors=True), so
 # "there is a _hub_input/upload.pdb" and "this job uploaded it" are different
 # claims. Everything that clears stale state is best-effort by nature — it can
 # be refused by the filesystem — so the archive cannot be gated on a clear
@@ -2715,14 +2716,23 @@ def prepare_custom_target(
 
     ARCHIVE CONTRACT. Every refusal that READS the downloaded structure — a
     missing hotspot, a chain range selecting nothing, an unrenderable contig, a
-    region below the minimum size — leaves those exact bytes in the run archive.
-    They are copied into ``run_dir`` (the only tree ``archive_raw_outputs``
-    tars) as soon as the download produces them and before any check inspects
-    them; see ``archive_input_copy``. The refusals that PRECEDE the bytes
-    archive nothing, and have nothing to archive: ``staging_dir`` (the staging
-    directory could not be created), ``stale_staging`` (a previous shard's
-    leftovers could not be cleared) and a ``download`` whose GET raised before
-    the file was opened.
+    region below the minimum size — ATTEMPTS to leave those exact bytes in the
+    run archive. They are copied into ``run_dir`` (the only tree
+    ``archive_raw_outputs`` tars) as soon as the download produces them and
+    before any check inspects them; see ``archive_input_copy``.
+
+    "Attempts", not "leaves", and the gap is deliberate: ``archive_input_copy``
+    swallows OSError, so a filesystem that refuses the copy costs the evidence
+    rather than the refusal message. A run can therefore complete, or refuse
+    with a perfectly good message, carrying nothing — see the note at the end of
+    step 1. What the contract really guarantees is that no guard between the
+    download and the copy can be the reason it is missing.
+
+    The refusals that PRECEDE the bytes archive nothing and have nothing to
+    archive: ``staging_dir`` (the staging directory could not be created),
+    ``stale_staging`` (a previous shard's leftovers could not be cleared) and a
+    ``download`` whose GET raised before the file was opened. Those are the only
+    two ``_fail`` sites ahead of the copy; the other eighteen are behind it.
     """
     target_dir = Path(_HUB_TARGET_DIR)
     try:
@@ -2739,9 +2749,9 @@ def prepare_custom_target(
     # "there is a file at incoming.pdb" and "this job uploaded it" are the same
     # statement. Neither path is guaranteed empty: this file never wipes the
     # staging dir (modal_app's _clear_hub_targets() sweeps it, best-effort, from
-    # another file), and main()'s run_dir wipe is rmtree(ignore_errors=True). A
-    # refused shard leaves its incoming.pdb behind, because step 6's rename is
-    # what clears it and only runs that get that far reach it.
+    # another file), and _run_shard's run_dir wipe is rmtree(ignore_errors=True).
+    # A refused shard leaves its incoming.pdb behind, because the unlink in step
+    # 6b is what clears it and only runs that get that far reach it.
     #
     # Both paths are cleared INDEPENDENTLY and both are always attempted:
     # sharing one try would let a failure on the first silently skip the second,
@@ -3440,11 +3450,12 @@ def find_pdb_for(row: dict, run_dir: Path, idx: int, total_rows: int) -> Path | 
         if p.is_file():
             return p
     # Design PDBs only: exclude the (now-blocked) staged target input, this
-    # wrapper's archive copy of the uploaded target, and the filter's
-    # rejected-sample bucket, so an index fallback can never mis-pair a row's
-    # scores onto a non-design structure. _HUB_INPUT_DIR is excluded as a whole
-    # directory rather than by basename: the copy is named target.pdb today and
-    # the exclusion must not depend on it staying that way.
+    # wrapper's archive copies of the input, and the filter's rejected-sample
+    # bucket, so an index fallback can never mis-pair a row's scores onto a
+    # non-design structure. _HUB_INPUT_DIR is excluded as a whole directory
+    # rather than by basename, which is what covers BOTH copies: target.pdb is
+    # also on the basename list below, upload.pdb is not and rests on this line
+    # alone. New names can be added there without touching this.
     all_pdbs = [
         p for p in sorted(glob.glob(str(run_dir / "**/*.pdb"), recursive=True))
         if "filtered_out_samples" not in p
@@ -3536,8 +3547,15 @@ def census_output_tree(run_dir: Path) -> dict:
     try:
         census["exists"] = os.path.isdir(str(run_dir))
         pdbs = glob.glob(str(run_dir / "**/*.pdb"), recursive=True)
+        # _hub_input holds THIS SERVICE's archive copies of the input, not
+        # search output. Counting them makes a shard that produced nothing
+        # report "2 structures written, no reward CSV" — which is neither of the
+        # two states this census exists to tell apart, and is the reading that
+        # sends someone hunting a broken tool. Same exclusion as find_pdb_for.
         census["design_pdbs"] = len(
-            [p for p in pdbs if "filtered_out_samples" not in p])
+            [p for p in pdbs
+             if "filtered_out_samples" not in p
+             and _HUB_INPUT_DIR not in Path(p).parts])
         census["filtered_out_pdbs"] = len(
             [p for p in pdbs if "filtered_out_samples" in p])
         csvs = sorted(glob.glob(str(run_dir / "**/*.csv"), recursive=True))
@@ -3699,10 +3717,13 @@ def archive_raw_outputs(out_dir: Path, dest: str | None = None) -> None:
         # It is not that the line is dangerous: ``is None`` compares identity and
         # calls no method on dest, and an adversarial dest raises at the abspath
         # below, which was inside the try before this default existed. It is here
-        # because the body reads four module globals — RAW_ARCHIVE_PATH, logger,
-        # os, tarfile — and keeping this line here is what puts the
-        # RAW_ARCHIVE_PATH read under the guard: renaming the constant should log,
-        # not fire a NameError through main()'s finally. Only that one read; the
+        # because the body reads module globals — RAW_ARCHIVE_PATH, logger, os,
+        # tarfile, _HUB_INPUT_DIR, _hub_input_written — and keeping this line
+        # here is what puts the RAW_ARCHIVE_PATH read under the guard: renaming
+        # the constant should log, not fire a NameError through the archiving
+        # finally. (The last two are read inside the filter, already under the
+        # guard; they are listed so the enumeration stays true as this grows.)
+        # Only that one read; the
         # handler's own logger.warning() sits outside every guard already, and
         # hoisting some other line would take its globals out too. One escape
         # closed,
@@ -3735,14 +3756,22 @@ def archive_raw_outputs(out_dir: Path, dest: str | None = None) -> None:
 
             THE ONE THING THIS TAR MUST NOT DO is put another customer's
             structure under this job id, in the artifact whose whole purpose is
-            to be evidence. A previous shard's copy can outlive main()'s
+            to be evidence. A previous shard's copy can outlive _run_shard's
             rmtree(ignore_errors=True) wipe, and the pre-download clear that
             also targets it can be refused by the filesystem — at which point
-            the run refuses, but this finally still runs and would tar it
-            anyway. So the decision is made HERE, where the bytes are actually
-            selected, and on what this process did rather than on what is on
-            disk. Everything outside _hub_input is upstream's own output and is
-            archived unconditionally, exactly as before.
+            the run refuses, but the archiving finally still runs and would tar
+            it anyway. So the decision is made HERE, where the bytes are
+            actually selected, and on what this process did rather than on what
+            is on disk.
+
+            Anything with no _hub_input component is upstream's own output and
+            is archived unconditionally, exactly as before. The converse is
+            deliberately blunt: the component test matches at ANY depth while
+            only the top-level copies can be in ``ours``, so a _hub_input
+            nested deeper in the tree is dropped rather than reasoned about.
+            Nothing writes one — this function's copies go to the top level and
+            upstream has no such directory — and the failure direction is to
+            lose output, never to leak someone else's structure.
             """
             if _HUB_INPUT_DIR not in info.name.split("/"):
                 return info
