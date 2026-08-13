@@ -34,14 +34,14 @@ import pytest
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from blueprints.targets import HANDOFF_REASONS
-from shared.targets import DesignTarget
+from shared.targets import TARGET_READ_OK, DesignTarget, TargetRead
 
 # The one sentence per reason that no other reason says.
 _DISTINGUISHING = {
     "none":       "arrived with no designs in it",
     "rejected":   "none of them could be matched to a design on this target",
     "noname":     "needs a name for the target",
-    "unverified": "could not read the full list of runs on this target",
+    "unverified": "could not confirm that the designs you starred belong to this target",
     "failed":     "Your request could not be submitted",
 }
 
@@ -190,13 +190,20 @@ def _render_target_page(client, query="", *, paragraphs=False):
     blanked Supabase env: the route calls it on the empty-runs path this
     envelope produces, and a test whose isolation depends on a client
     happening to be unavailable is not isolated.
+
+    ``read_target`` and not ``get_target``: the route resolves its parent
+    through the three-outcome read (register item A90), and this helper asserts
+    a 200, so it must hand back the OK outcome. The unavailable outcome renders
+    a 503 page which carries these same banners; that is pinned in
+    tests/test_target_routes.py.
     """
     target = _target()
     with client.session_transaction() as sess:
         sess["user_id"] = "u-1"
         sess["user_email"] = "u@example.com"
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=target), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(target, TARGET_READ_OK)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg()), \
             patch("shared.compute_campaigns.list_campaigns_for_target",
@@ -264,6 +271,41 @@ def test_the_rejected_banner_does_not_tell_the_user_to_retry(client):
     assert "will be refused the same way" in rejected
 
 
+def test_the_unverified_banner_names_no_particular_read(client):
+    """THREE causes reach this banner, so it may name none of them.
+
+    ``_submit_target_shortlist`` sends `unverified` when the PARENT target read
+    at its gate came back unavailable (``read_target``, register item A90), when
+    any SUB-JOB read inside its loop did, and when ``campaign_ids_for_target``
+    returned a known prefix of the real set. The sentence named the third of
+    those and was therefore already false for the second before A90 added the
+    first, which is the defect this assertion exists to stop recurring: a
+    sentence written against one cause, inherited by another, and never re-read.
+
+    Asserted in both directions -- the cause-neutral sentence the whitelist test
+    keys on is present, and the two phrasings that name a specific read are
+    absent.
+
+    WHAT THOSE TWO ABSENCE ASSERTIONS ARE, precisely, because the wrong answer
+    is easy and was written here first. They are NOT a cross-page check. Both
+    strings were deleted from BOTH templates by A90 -- this page's old sentence
+    ("the full list of runs on this target") and the run page's old one ("could
+    not read every sub-job your starred designs came from") -- so neither exists
+    anywhere now and neither can be reached from this route by any route. They
+    are regression guards against RESTORING either wording, on either page, and
+    that is all they are. This page's own sentence is the one asserted present
+    above, ``_DISTINGUISHING["unverified"]``, which names no read.
+
+    A docstring in the one test whose subject is "a sentence written against one
+    cause and never re-read" must not itself be that, which is why this says
+    what the assertions do rather than what they were originally for.
+    """
+    text = _render_target_page(client, "?handoff=unverified")
+    assert "the full list of runs on this target" not in text
+    assert "could not read every sub-job your starred designs came from" not in text
+    assert _DISTINGUISHING["unverified"] in text
+
+
 def test_no_banner_claims_a_charge_was_avoided(client):
     """/lab-projects/submit has no wallet or Stripe code on any path, and the
     modal that opens this flow says "No commitment -- this is a scoping
@@ -271,13 +313,19 @@ def test_no_banner_claims_a_charge_was_avoided(client):
     moved, contradicting that modal; the compute these designs came from was
     charged long before this button existed.
 
-    Scoped to the handoff paragraph, found by its own sentence. Other banners
-    on this page -- the launch summary and the stranded-draft empty state --
-    discuss charges for good reason, and a page-wide assertion would be
-    testing those instead of this one.
+    Scoped to the banner's paragraphs, each found by its own sentence. Other
+    banners on this page -- the launch summary and the stranded-draft empty
+    state -- discuss charges for good reason, and a page-wide assertion would
+    be testing those instead of this one.
+
+    BOTH OF THE BANNER'S PARAGRAPHS, not just the reason. The reason paragraph
+    is one of five and the size-cap paragraph rides any of them, so a `charge`
+    reassurance added to the second would have satisfied a loop that only ever
+    rendered the first -- which is what this test did until the claim in
+    templates/components/lab_handoff_banner.html was checked against it.
     """
     for reason, sentence in _DISTINGUISHING.items():
-        paras = _render_target_page(client, f"?handoff={reason}",
+        paras = _render_target_page(client, f"?handoff={reason}&truncated=7",
                                     paragraphs=True)
         banner = [p for p in paras if sentence in p]
         assert len(banner) == 1, (
@@ -286,6 +334,15 @@ def test_no_banner_claims_a_charge_was_avoided(client):
         assert "charge" not in banner[0], (
             f"?handoff={reason} still reassures about a charge this route "
             f"cannot make: {banner[0]!r}"
+        )
+        capped = [p for p in paras if _OVER_LIMIT in p]
+        assert len(capped) == 1, (
+            f"?handoff={reason}&truncated=7 did not render exactly one "
+            f"size-cap paragraph"
+        )
+        assert "charge" not in capped[0], (
+            f"the size-cap paragraph reassures about a charge this route "
+            f"cannot make: {capped[0]!r}"
         )
 
 

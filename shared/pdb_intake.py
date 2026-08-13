@@ -148,6 +148,14 @@ def _verdict_to_json(verdict: PreflightVerdict, source_label: str) -> dict:
             "gpu": verdict.size_envelope.gpu,
             "warn_message": verdict.size_envelope.warn_message,
             "hard_fail_message": verdict.size_envelope.hard_fail_message,
+            # WHAT THE GATE ACTUALLY COUNTED. Without these the AJAX panel had
+            # no way to tell a whole-chain count from a contig selection, so it
+            # printed ``residues_kept_on_target_chain`` — the file's number —
+            # next to a verdict reached on a different one. The server-rendered
+            # twin (templates/components/preflight_panel.html) has always shown
+            # residue_count and the cap; this is what lets the two agree.
+            "size_basis": verdict.size_envelope.size_basis,
+            "selection_label": verdict.size_envelope.selection_label,
         }
     return {
         "kind": verdict.kind.value,
@@ -204,9 +212,81 @@ def _parse_preflight_size_params(source) -> tuple[Optional[int], Optional[int]]:
             if lengths:
                 binder_max = max(lengths)
     if binder_max is None:
-        binder_max = _maybe_int(source.get("binder_length"))
+        raw_len = source.get("binder_length")
+        # proteina's VALIDATED inputs carry binder_length as a two-element
+        # [min, max] list, not a scalar. _maybe_int(list) returned None, so on
+        # the submit path binder_max was always None and the combined-budget
+        # cap never evaluated — it fired only on the AJAX panel, where the raw
+        # form supplies binder_length_max as a string. The hard gate was the
+        # one that did not have it.
+        #
+        # THE FOURTH SHAPE, and the one that kept the campaign routes blind.
+        # rfdiffusion's validator emits ``binder_length`` as a {min, max} DICT
+        # (tools/rfdiffusion/__init__.py::_parse_binder_length). Neither the
+        # list branch nor the scalar branch reads a dict, so rfdiffusion
+        # returned None here — and once the money routes started calling this
+        # helper, None is silently "no combined cap" rather than a failure. The
+        # four live shapes are now: dict {min,max} (rfdiffusion), [min,max]
+        # list (proteina), scalar int (pxdesign), and a separate
+        # ``binder_length_max`` key handled above (boltzgen, bindcraft).
+        # rfantibody has no binder length at all — CDR lengths instead — and
+        # correctly yields None.
+        if isinstance(raw_len, dict):
+            binder_max = _maybe_int(raw_len.get("max"))
+        elif isinstance(raw_len, (list, tuple)) and raw_len:
+            binder_max = _maybe_int(raw_len[-1])
+        else:
+            binder_max = _maybe_int(raw_len)
 
-    return (binder_max, _maybe_int(source.get("num_designs")))
+    num_designs = _maybe_int(source.get("num_designs"))
+    if num_designs is None:
+        # Same shape problem for the design count: proteina's validated inputs
+        # put it under designs_per_shard / parameters.n_designs_total, so the
+        # runtime estimate never rendered on submit either.
+        num_designs = _maybe_int(source.get("designs_per_shard"))
+    if num_designs is None:
+        params = source.get("parameters")
+        if isinstance(params, dict):
+            num_designs = _maybe_int(params.get("n_designs_total"))
+
+    return (binder_max, num_designs)
+
+
+def preflight_target_segments(source) -> Optional[list]:
+    """The chain/residue contig a run will design against, or None.
+
+    Two shapes reach preflight and both have to resolve to the same thing, or
+    the advisory panel and the hard gate would size different runs:
+
+      * ``_target_segments`` — already-parsed ``[(chain, lo, hi), ...]`` from an
+        adapter's validator. This is what ``tool_submit`` has.
+      * ``target_input`` — the raw contig string the user typed, which is what
+        the AJAX ``/preflight`` route has.
+
+    The raw string is parsed by the ADAPTER'S OWN parser via a lazy import, not
+    by a second copy living here. A duplicate regex would drift, and the half
+    that drifts is whichever one is not the money gate. ``shared`` already
+    reaches into ``tools`` this way (compute_campaigns.py:1616).
+
+    Returns None when nothing was declared, which the size envelope reads as
+    the whole-chain default — the conservative direction, since counting whole
+    chains can only over-count relative to a selection.
+    """
+    segments = source.get("_target_segments")
+    if segments:
+        return list(segments)
+
+    raw = source.get("target_input")
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        from tools.proteina import parse_target_segments  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 - never break preflight over this
+        return None
+    try:
+        return parse_target_segments(str(raw))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +480,7 @@ def _verify_reuse_pdb_bytes(
     filename: str,
     binder_max_aa: Optional[int] = None,
     num_designs: Optional[int] = None,
+    target_segments: Optional[list] = None,
 ) -> Optional[str]:
     """Re-run the upload gate on resolved reuse/handoff/resample bytes.
 
@@ -431,6 +512,7 @@ def _verify_reuse_pdb_bytes(
                 adapter.slug, pdb_bytes,
                 target_chain=tc, hotspots=hotspots or [],
                 binder_max_aa=binder_max_aa, num_designs=num_designs,
+                target_segments=target_segments,
             )
         except Exception:
             logger.exception(

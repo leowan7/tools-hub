@@ -1,0 +1,40 @@
+-- 0041_design_targets_hotspot_spec.sql
+--
+-- One nullable column on design_targets, idempotent and purely additive.
+--
+--   * hotspot_spec — the CHAIN-QUALIFIED hotspot tokens ("A241", "B600"),
+--                    the form upstream actually string-matches on as
+--                    f"{chain_id}{res_id}".
+--
+-- WHY A SECOND COLUMN RATHER THAN A WIDENED ONE. 0039 declared
+-- hotspot_residues as integer[], so a chain-qualified token cannot be stored
+-- in it at all — Postgres rejects the element, and the target save fails.
+-- Bare numbers were fine while every hotspot meant "somewhere on the target
+-- chain", but on a multi-chain target they cannot say WHICH chain: an IgG1 Fc
+-- numbers both protomers 234-444, so a stored 241 re-prefills as A241 on every
+-- later run and silently aims at one protomer.
+--
+-- ALTERing hotspot_residues to text[] was the other option and is rejected:
+-- every existing reader of that column (DesignTarget.from_row, to_dict,
+-- templates/targets/detail.html, templates/targets/list.html, and the
+-- ``|join(', ')`` in both) would start receiving a different element type on
+-- rows nobody migrated, and the change would have to land in lockstep with a
+-- deploy. A second nullable column changes nothing for anything that does not
+-- ask for it.
+--
+-- NO DEFAULT, NO BACKFILL, NO NOT NULL, and hotspot_residues is untouched.
+-- NULL here means "this target predates the column, or its hotspots carry no
+-- chain" — shared/targets.py falls back to the integer column in exactly that
+-- case, so an un-migrated row and a bare-hotspot row behave identically to
+-- how they behave today.
+--
+-- WRITE PATH SAFETY. create_target only includes this key in its INSERT when
+-- there is a chain-qualified spec to store. A deploy that reaches production
+-- before this migration is applied therefore cannot break ordinary target
+-- creation; only a chain-prefixed hotspot would fail, and it would fail at
+-- save time with a visible error rather than by silently dropping the chain.
+-- Still: apply this in the Supabase SQL editor BEFORE deploying, per the same
+-- rule 0036 states. ADD COLUMN IF NOT EXISTS is safe to re-run.
+
+ALTER TABLE public.design_targets
+    ADD COLUMN IF NOT EXISTS hotspot_spec text[];

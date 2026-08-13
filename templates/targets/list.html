@@ -35,7 +35,7 @@
         {{ t.filename or 'no structure' }}
         {%- if t.target_chain %} · chain {{ t.target_chain }}{% endif %}
         {%- if t.residue_count %} · {{ t.residue_count }} residues{% endif %}
-        {%- if t.hotspot_residues %} · {{ t.hotspot_residues|length }} hotspot(s){% endif %}
+        {%- if t.effective_hotspots %} · {{ t.effective_hotspots|length }} hotspot(s){% endif %}
       </div>
     </div>
     {% endfor %}

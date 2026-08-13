@@ -248,21 +248,134 @@ def _load_rp():
     return _load_by_path("rp", _RUN_PIPELINE_REMOTE)
 
 
-def _poll_vram(stop: threading.Event, out: dict) -> None:
-    """Device-wide peak VRAM, not per-process — the shard is the only tenant."""
+def _device_used_mb() -> int:
+    """One device-wide ``memory.used`` sample, or 0 if nvidia-smi is unhappy."""
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return max(
+            (int(line.strip()) for line in r.stdout.strip().splitlines()),
+            default=0,
+        )
+    except Exception:  # noqa: BLE001 — instrumentation may never fail a shard
+        return 0
+
+
+def _proc_used_mb(pid: int) -> int:
+    """VRAM attributed to ``pid`` by the driver, or 0 when it is not listed.
+
+    A process appears in ``--query-compute-apps`` only while it holds a CUDA
+    context, so 0 means "not measurable right now", never "used nothing".
+    """
+    try:
+        r = subprocess.run(
+            ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 2 and parts[0] == str(pid):
+                return int(parts[1])
+    except Exception:  # noqa: BLE001 — instrumentation may never fail a shard
+        return 0
+    return 0
+
+
+# One poll iteration is two nvidia-smi calls, each capped at 10 s, and the
+# poller always completes an iteration after the stop flag is set. Anything at
+# or below 20 can cut the final sample off.
+_VRAM_JOIN_TIMEOUT_S = 25
+
+
+def _prealloc_disabled(env: dict | None) -> bool | None:
+    """Was JAX preallocation OFF in the env the CHILD actually received?
+
+    DERIVED, NEVER ASSERTED. This field exists for exactly one purpose: to make
+    it impossible to silently compare a reading taken before the allocator fix
+    with one taken after it. A hardcoded ``True`` cannot do that job — it
+    reports the intent of the code rather than the condition of the run.
+
+    The hole is real, not theoretical. ``design_subprocess_env`` builds its env
+    with ``setdefault`` so an operator can override any flag per run, which is
+    a deliberate feature. An operator who exports
+    ``XLA_PYTHON_CLIENT_PREALLOCATE=true`` therefore gets a child that DOES
+    preallocate — 61,440 MB of an A100-80GB on the first JAX op — while the
+    shard's JSON still says ``vram_prealloc_disabled: true``. That is the exact
+    mislabelling that made the previous two measurements unusable, reproduced
+    with a stamp of authenticity on it.
+
+    Returns None when the variable is absent from the env entirely, because
+    "absent" means JAX's own default applies and that default is preallocation
+    ON — but it is a default rather than a declaration, and a reader deciding
+    whether two numbers are comparable should see the difference.
+    """
+    if not env:
+        return None
+    raw = env.get("XLA_PYTHON_CLIENT_PREALLOCATE")
+    if raw is None:
+        return None
+    return str(raw).strip().lower() in ("false", "0", "no", "off")
+
+
+def _poll_vram(
+    stop: threading.Event, out: dict, pid: int | None = None,
+    child_env: dict | None = None,
+) -> None:
+    """Peak VRAM during the design, device-wide AND for the design process.
+
+    WHY THIS IS NOT JUST THE DEVICE READING. The device figure is what the two
+    existing canary shards recorded, and it turned out to be ~91% a JAX
+    preallocation constant: with PREALLOCATE=true at MEM_FRACTION=0.75 the
+    first JAX op reserves 61,440 MB of an A100-80GB whatever the target size,
+    so both shards read ~67.5 GB and agreed to 24 MB. ``run_pipeline``
+    now disables that (``_ALLOCATOR_ENV``), which is what makes a device
+    reading mean demand again — but only for runs taken AFTER that change.
+    Numbers from before it are not comparable to numbers from after it.
+
+    ``peak_proc_mb`` attributes memory to the design subprocess, so a reading
+    is not silently inflated by anything else sharing the card, and
+    ``baseline_mb`` is the device reading taken BEFORE the design starts, so a
+    reader can subtract what was already resident rather than assume this shard
+    is the sole tenant. The old docstring asserted sole tenancy; it was never
+    checked, and now it does not have to be.
+
+    Every number here is SAMPLED, so each is a LOWER bound: a spike shorter
+    than the interval is invisible. The interval is 1 s rather than the 5 s the
+    existing measurements were taken at.
+
+    Note ``torch.cuda.max_memory_allocated()`` is deliberately absent: the
+    design is a separate process with its own CUDA context, so the harness
+    cannot read its torch allocator at all, and a field that always reported 0
+    would be worse than no field. Per-PID driver accounting is the equivalent
+    that is actually observable from here.
+    """
     peak = 0
-    while not stop.is_set():
-        try:
-            r = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10,
-            )
-            for line in r.stdout.strip().splitlines():
-                peak = max(peak, int(line.strip()))
-        except Exception:
-            pass
-        stop.wait(5)
+    peak_proc = 0
+    # Sample FIRST, then test the stop flag: a `while not stop.is_set()` loop
+    # takes zero samples when the design ends before the poller is scheduled,
+    # and reports peak 0 — which reads as "used no VRAM" rather than "was never
+    # measured". A shard that dies early is exactly the one whose memory you
+    # want to see.
+    while True:
+        peak = max(peak, _device_used_mb())
+        if pid is not None:
+            peak_proc = max(peak_proc, _proc_used_mb(pid))
+        if stop.is_set():
+            break
+        stop.wait(1)
     out["peak_vram_mb"] = peak
+    out["peak_proc_vram_mb"] = peak_proc if pid is not None else None
+    out["vram_poll_interval_s"] = 1
+    # From the env handed to the child, not from this file's intentions.
+    out["vram_prealloc_disabled"] = _prealloc_disabled(child_env)
+    # Set LAST, and only on the normal exit. The join below has a timeout; if
+    # it expires this key is absent and the caller can tell "the poller was cut
+    # off mid-sample" from "the poller ran and measured nothing".
+    out["vram_poll_complete"] = True
 
 
 def _stage_dir(rp) -> Path:
@@ -274,8 +387,10 @@ def _stage_dir(rp) -> Path:
     return Path(rp._HUB_TARGET_DIR)
 
 
-def _stage(rp, pdb_text: str, key: str) -> Path:
-    """Stage the target EXACTLY the way ``prepare_custom_target`` does.
+def _stage(rp, pdb_text: str, key: str, contig: str = "") -> tuple:
+    """Stage the target THROUGH ``prepare_custom_target``'s own staging step.
+
+    Returns ``(staged_path, raw_residues, contig)``.
 
     THE CANARY MUST NOT EXERCISE A PATH PRODUCTION NEVER RUNS. It used to write
     ``/tmp/canary_targets/<label>.pdb`` — a directory prod never touches, under
@@ -287,6 +402,27 @@ def _stage(rp, pdb_text: str, key: str) -> Path:
     literal strings in that record; testing it with a different directory and a
     different stem tests a request prod never makes.
 
+    THIS DOCSTRING WAS TRUE WHEN IT WAS WRITTEN AND THEN BECAME FALSE, WHICH IS
+    WHY THE BYTES ARE NOW DERIVED TOO. Production grew a crop —
+    ``stage_cropped_target``, reducing the file to the contig's residues so
+    upstream's ``metric_utils.py:217`` count assertion holds — and this function
+    went on doing ``p.write_text(pdb_text)``. A paid A100 phase-1 shard then
+    staged the uncropped file and reproduced the exact assertion the crop
+    prevents, contig ``A236-300,B236-300`` on 3S7G. The claim of fidelity
+    outlived the fidelity, in the one file whose entire job is fidelity.
+
+    So the bytes follow the same rule ``_stage_dir`` states for the path:
+    derived, not copied, so the two cannot drift. Everything below is
+    production's own function — ``pdb_ca_residues``, ``derive_segments``,
+    ``parse_target_input``, ``stage_cropped_target``. Nothing about cropping is
+    decided here, because anything decided here can drift again.
+
+    THE RAW FILE IS PARSED, NOT THE STAGED ONE, which is production's ordering:
+    it resolves the contig against what the user uploaded and only then crops.
+    That is also why ``raw_residues`` comes back — ``run_shard`` reports
+    ``input_chains`` as "every chain the upload carried", and after the crop the
+    staged file no longer knows about the chains the contig did not name.
+
     ``$PROTEINA_HOME/hub_targets`` is in the image's writable layer, NOT on a
     mounted Volume — the Dockerfile pre-creates only ``ckpts``, ``rewards`` and
     ``.cache``, and the first two are the Volume mount points — so this is a
@@ -295,9 +431,35 @@ def _stage(rp, pdb_text: str, key: str) -> Path:
     """
     target_dir = _stage_dir(rp)
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Production stages the upload as ``incoming.pdb``, parses THAT, resolves
+    # the contig against it and only then writes ``<key>.pdb``. Same two files,
+    # same order, same names.
+    incoming = target_dir / "incoming.pdb"
+    incoming.write_text(pdb_text)
+    residues, _ = rp.pdb_ca_residues(incoming)
+
+    # The contig, resolved the way prod resolves it: explicit if the operator
+    # gave one, else the full observed span of every chain present.
+    if contig:
+        segments = rp.parse_target_input(contig)
+    else:
+        segments = rp.derive_segments(residues, sorted({r[0] for r in residues}))
+        contig = rp.format_contig(segments)
+
     p = target_dir / f"{key}.pdb"
-    p.write_text(pdb_text)
-    return p
+    try:
+        # Read back rather than reusing ``pdb_text``, so the bytes handed to the
+        # crop have been through the same write/decode round trip production's
+        # download puts them through.
+        rp.stage_cropped_target(
+            p, incoming.read_text(errors="replace"), residues, segments)
+    finally:
+        # ``finally``, because ``stage_cropped_target`` raises on a bad crop and
+        # ``incoming.pdb`` is not ``canary_``-prefixed, so ``_prune_staged``
+        # would not collect it from a warm container.
+        incoming.unlink(missing_ok=True)
+    return p, residues, contig
 
 
 def _prune_staged(rp) -> list[str]:
@@ -379,10 +541,12 @@ def phase0(pdb_text: str) -> dict:
 
     # (a) A hotspot that is not in the structure must be refused, and nothing
     #     may be executed — not the registration, not the design.
-    staged = _stage(rp, pdb_text, key)
-    residues, _ = rp.pdb_ca_residues(staged)
-    chains = sorted({r[0] for r in residues})
-    contig = rp.format_contig(rp.derive_segments(residues, chains))
+    # No contig: phase 0 is about the refusals, not about a sub-range, so the
+    # crop resolves to the whole of every chain and the staged file is the input
+    # again. It still goes through production's staging step rather than around
+    # it — a control that took a different path to the same bytes would be
+    # asserting something about this file rather than about production.
+    staged, residues, contig = _stage(rp, pdb_text, key)
     selected = rp.select_residues(residues, rp.parse_target_input(contig))
     missing = rp.missing_hotspots(selected, ["A99999"])
     results["typo_control"] = {
@@ -604,6 +768,32 @@ def _collect_tree(work_dir: Path) -> list[str]:
         return [f"<the file listing could not be built: {type(exc).__name__}: {exc}>"]
 
 
+def _scored_design_counts(rp, inference) -> dict:
+    """``{n_scored_designs, n_reward_rows}`` from PRODUCTION's own parser.
+
+    ``run_pipeline.parse_designs`` is called rather than re-derived, because the
+    number this produces is compared against production's delivery rule and a
+    second implementation of that rule is a second thing to drift.
+
+    Never raises. A diagnostic that can kill the shard it is describing would
+    turn a delivering run into a lost one, which is the very failure mode this
+    key exists to stop reporting wrongly. On any error both counts are None,
+    which ``cs.shard_delivery`` reads as "did not say" and therefore FAILED —
+    the conservative direction: an unproven delivery is not a delivery.
+    """
+    try:
+        designs = rp.parse_designs(inference)
+        return {
+            "n_scored_designs": sum(
+                1 for d in designs if d.get("total_reward") is not None),
+            "n_reward_rows": len(designs),
+        }
+    except Exception as exc:  # noqa: BLE001 — never fail a shard over a count
+        _emit(f"[canary] could not count scored designs: "
+              f"{type(exc).__name__}: {exc}", flush=True)
+        return {"n_scored_designs": None, "n_reward_rows": None}
+
+
 @app.function(image=image, gpu=_GPU, timeout=_MAX_SESSION_S,
               volumes={"/opt/proteina/ckpts": weights, "/opt/proteina/rewards": rewards})
 def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
@@ -652,11 +842,22 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
     # (``staged = target_dir / f"{key}.pdb"`` then ``filename_stem=staged.stem``)
     # and reproducing it is the point of the exercise.
     key = cs.canary_task_key(label, seed)
-    staged = _stage(rp, pdb_text, key)
+    # Staged THROUGH production's own staging step, contig included, so the
+    # bytes upstream reads here are the bytes it would read in production. This
+    # used to be a bare write_text of the upload, which is how a paid shard came
+    # to reproduce the very assertion the crop was written to prevent.
+    try:
+        staged, raw_residues, contig = _stage(rp, pdb_text, key, contig)
+    except rp.TargetCropError as exc:
+        # Production converts this to a `_fail`; the canary cannot host that
+        # (it must RETURN a diagnostic, not sys.exit inside a billed container),
+        # so it becomes a refusal record with the same sentence.
+        return {"label": label, "key": key, "error": f"target staging: {exc}"}
+    # From the UPLOAD, not the staged file: after the crop the staged file no
+    # longer carries the chains the contig did not name, and this key's whole
+    # job is to be compared against ``target_chains`` below.
+    input_chains = sorted({r[0] for r in raw_residues})
     residues, _ = rp.pdb_ca_residues(staged)
-    input_chains = sorted({r[0] for r in residues})
-    contig = contig or rp.format_contig(
-        rp.derive_segments(residues, input_chains))
     cross_spec = list(cross_reference_spec or [])
 
     # Refuse here too rather than discovering it in the output. The predicate
@@ -704,17 +905,53 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
 
     vram: dict = {}
     stop = threading.Event()
-    poller = threading.Thread(target=_poll_vram, args=(stop, vram), daemon=True)
-    poller.start()
+    # Baseline BEFORE the design holds anything, so the peak below can be read
+    # as demand rather than as "whatever the card happened to contain".
+    baseline_mb = _device_used_mb()
     t0 = time.time()
+    # Popen, not subprocess.run: the poller needs the child's pid to attribute
+    # VRAM to the design rather than to the whole device. env= carries the
+    # allocator flags from run_pipeline — WITHOUT them JAX preallocates 61,440
+    # MB and every number this function reports is that constant.
+    child_env = rp.design_subprocess_env()
+    proc = subprocess.Popen(
+        cmd, cwd=str(work_dir), stdout=sys.stdout, stderr=sys.stderr,
+        env=child_env,
+    )
+    poller = threading.Thread(
+        target=_poll_vram, args=(stop, vram, proc.pid),
+        kwargs={"child_env": child_env}, daemon=True,
+    )
+    poller.start()
     try:
-        rc = subprocess.run(cmd, cwd=str(work_dir), stdout=sys.stdout,
-                            stderr=sys.stderr, timeout=3600).returncode
+        rc = proc.wait(timeout=3600)
     except subprocess.TimeoutExpired:
+        # subprocess.run used to do this kill for us. Losing it would leave a
+        # billed A100 process alive after the harness moved on.
+        proc.kill()
+        try:
+            proc.wait(timeout=60)
+        except Exception:  # noqa: BLE001
+            pass
         rc = 124
     runtime_s = int(time.time() - t0)
     stop.set()
-    poller.join(timeout=10)
+    # THE JOIN MUST OUTLAST THE FINAL SAMPLE. The poller samples first and
+    # tests the stop flag second, so after `stop.set()` it still has a full
+    # iteration to finish: two nvidia-smi calls at `timeout=10` each. A 10 s
+    # join could therefore expire mid-sample, leave `vram` empty, and report
+    # all four VRAM keys as None — which reads as "never measured" on a shard
+    # that measured fine. 25 s clears both calls with margin, and this is
+    # bounded wall-clock on a shard that already ran for minutes.
+    poller.join(timeout=_VRAM_JOIN_TIMEOUT_S)
+    if not vram.get("vram_poll_complete"):
+        # Say so rather than emitting a silent row of Nones. Only reachable if
+        # the join above still expired, i.e. nvidia-smi is wedged.
+        _emit(
+            f"[canary/{label}] WARNING: VRAM poller did not finish within "
+            f"{_VRAM_JOIN_TIMEOUT_S}s; its readings are incomplete.",
+            flush=True,
+        )
 
     out: dict = {
         "label": label, "key": key, "contig": contig,
@@ -731,7 +968,41 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
         # built with, immediately above, so it cannot describe a different run.
         "n_designs_expected": _NSAMPLES * _REPLICAS,
         "exit_code": rc, "runtime_s": runtime_s,
+        # WOULD PRODUCTION HAVE DELIVERED THIS RUN? The exit code alone cannot
+        # say, and this harness used to answer with the exit code alone: a shard
+        # that produced 8 designs, 8 files, 8 reward rows and 8 complexes and
+        # then crashed in `evaluate` was reported FAILED, while run_pipeline
+        # would have shipped all 8 to a paying customer. That reading nearly
+        # cancelled a measurement campaign.
+        #
+        # Computed by PRODUCTION'S OWN parser on the same directory, not by a
+        # re-implementation here, so the canary cannot drift from the rule it
+        # exists to mirror: run_pipeline counts designs whose `total_reward` is
+        # not None and fails only when a non-zero exit left that count at zero.
+        # The reward CSV is written by the GENERATE stage, which is why a late
+        # evaluate/analyze crash can leave a fully scored table behind.
+        # ``cs.shard_delivery`` turns the pair into the verdict's DELIVERY state.
+        **_scored_design_counts(rp, inference),
+        # Four keys, not one, because the single key this replaced was read as
+        # "demand" when it was mostly a JAX reservation. peak_vram_mb is still
+        # device-wide; baseline_vram_mb is what was resident before the design;
+        # peak_proc_vram_mb is the design process alone; prealloc_disabled says
+        # whether the allocator fix was in force, so a reading from before it
+        # can never be silently compared against one from after.
         "peak_vram_mb": vram.get("peak_vram_mb"),
+        "peak_proc_vram_mb": vram.get("peak_proc_vram_mb"),
+        "baseline_vram_mb": baseline_mb,
+        "vram_poll_interval_s": vram.get("vram_poll_interval_s"),
+        # DERIVED from the env the child got (see _prealloc_disabled), not
+        # asserted. True means the allocator fix was in force for THIS run;
+        # False means an operator override put preallocation back on and the
+        # peak is ~61 GB of reservation; None means the flag was not set at all
+        # and JAX's own default (ON) applied. All three are different rows.
+        "vram_prealloc_disabled": vram.get("vram_prealloc_disabled"),
+        # False/absent means the poller was cut off and the four numbers above
+        # are incomplete rather than measured. Without it a timed-out join is
+        # indistinguishable from a shard that used no VRAM.
+        "vram_poll_complete": bool(vram.get("vram_poll_complete")),
         # The chains scored as target (the contig's) and every chain the input
         # file carried. They differ exactly when --contig names a subset, and
         # printing both is what makes that visible instead of inferable.
@@ -766,6 +1037,15 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
     designs = []
     for p in sorted(glob.glob(str(inference / "**/*.pdb"), recursive=True)):
         if "filtered_out_samples" in p:
+            continue
+        # Mirrors run_pipeline.find_pdb_for's exclusions (literal, like the
+        # basenames below — this file duplicates rather than imports on
+        # purpose). `_hub_input` holds the archive copies of the input,
+        # target.pdb AND upload.pdb, so the basename list alone no longer
+        # covers it: upload.pdb would be counted here as a design. Inert while
+        # this canary stages its own target and never creates that directory;
+        # kept in step so it stays inert if that ever changes.
+        if "_hub_input" in Path(p).parts:
             continue
         name = Path(p).name
         if name in ("target.pdb", "target_input"):
@@ -926,12 +1206,69 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     unconstrained, so "these tokens resolve to nothing" is never a warning; it
     is a refusal, and it must be issued where it costs nothing.
 
-    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads
-    a file and calls ``run_pipeline``'s own matcher, neither of which the
-    offline suite can do for a container; the two ``raise``s are in
-    ``_canary_scoring`` where the suite executes them. Both refusals previously
-    survived deletion — the tests could only see that a call existed — while
-    ``--hotspots A99999`` went on spawning three A100s.
+    THE NAME IS NARROWER THAN THE JOB, DELIBERATELY NOT RENAMED. This is where
+    every pre-spawn refusal that inspects the REQUEST goes, because "before a
+    shard exists" is the only property they share and having one such place is
+    what makes a missing guard visible. It now runs six, in
+    ``prepare_custom_target``'s order, so the canary USUALLY refuses for the
+    same reason production would rather than for whichever consequence it
+    noticed first: the
+    target has structure, the contig parses, the contig is renderable once bare
+    chain ids are expanded, every segment selects something, the selection is
+    big enough, the hotspots resolve.
+
+    SIX OF PRODUCTION'S EIGHT, AND THE COUNT IS THE POINT OF STATING IT.
+    ``prepare_custom_target`` issues eight input refusals before any GPU:
+    unreadable PDB, unparsable contig, absent bare chain, absent
+    ``target_chain``, negative numbering, dead segment, sub-floor selection,
+    missing hotspot. Two are not mirrored here and both are deliberate. The
+    absent bare chain is folded into the dead-segment refusal (a chain not in
+    the file selects nothing), which reports it with the file's chain list
+    instead of two messages that would say the same thing. The absent
+    ``target_chain`` is structurally unreachable: the canary has no
+    ``--target-chain`` flag and derives its default contig from the chains the
+    file actually contains, so there is no requested chain that could be
+    missing. Everything downstream of staging — the crop, the registry, the
+    key collision, the registration read-back — runs INSIDE the shard on this
+    path and cannot be mirrored before one exists.
+
+    TWO INPUTS WHERE THE VERDICTS AGREE AND THE REASONS DO NOT. Both were found
+    by a differential sweep of production against this function; neither costs
+    money, and stating them is cheaper than a future reader discovering the
+    "same reason" sentence above is absolute when it is not.
+
+    * ``--contig Z,A`` on a construct numbered from -5: production refuses the
+      absent chain Z (it checks that before renderability), this refuses the
+      negative numbering of A (the absent chain is folded into the dead-segment
+      refusal, which runs after). Both refuse pre-spawn. The folding is the
+      deliberate choice two paragraphs up; this is its one visible consequence.
+    * A file whose only chain id is a DIGIT, with no ``--contig``: production
+      goes through ``derive_segments`` and never re-parses, so it proceeds;
+      this derives ``11-30``, re-parses it, and refuses "cannot be parsed" —
+      an OVER-refusal, the only one the sweep found in 300 cases. The re-parse
+      predates this branch (before the refusal existed the same input died as a
+      bare ``ValueError``), so this is not a regression, but
+      ``refuse_unparsable_contig``'s "production converts the identical
+      failure" holds only when ``--contig`` was actually supplied.
+
+    THE DECISIONS ARE IN ``cs``, THE INGREDIENTS ARE HERE. This function reads a
+    file and calls ``run_pipeline``'s own parser, expansion, matcher, predicates
+    and threshold, none of which the offline suite can do for a container; every
+    REFUSAL raised by this function is raised in ``_canary_scoring``, where the
+    suite executes it. The one bare ``raise`` below is not a refusal and not an
+    exception to that: it re-raises the ``ValueError`` that ``cs.refuse_
+    unparsable_contig`` was just handed, and exists only so this function still
+    fails loudly if that helper ever stops raising. (An earlier wording said
+    "every ``raise`` in THIS function is in ``_canary_scoring``" — false the
+    moment that line was added, in the same commit, three paragraphs from the
+    comment acknowledging it.) That is a claim about this function and not about
+    the module:
+    ``main`` raises ``SystemExit`` locally in two places that are also pre-spawn
+    — a missing ``--target-pdb`` on phases 1 and 2, and a ``pick_far_patch``
+    that cannot build a negative control — and neither goes through ``cs``. Both
+    original refusals survived deletion once, because the tests could only see
+    that a call existed, while ``--hotspots A99999`` went on spawning three
+    A100s.
     """
     rp_local = _load_rp_local()
     residues, n_unparsable = rp_local.pdb_ca_residues(Path(target_pdb))
@@ -939,10 +1276,59 @@ def _refuse_unresolvable_hotspots(target_pdb: str, contig: str,
     chains = sorted({r[0] for r in residues})
     resolved = contig or rp_local.format_contig(
         rp_local.derive_segments(residues, chains))
-    selected = rp_local.select_residues(
-        residues, rp_local.parse_target_input(resolved))
+    # Production's parser, and production's answer to its failure: a refusal
+    # carrying "NO GPU TIME WAS USED", not a bare ValueError traceback.
+    # ``refuse_unparsable_contig`` always raises; the ``raise`` says so without
+    # a reader having to take it on faith.
+    try:
+        raw_segments = rp_local.parse_target_input(resolved)
+    except ValueError as exc:
+        cs.refuse_unparsable_contig(target_pdb, resolved, exc)
+        raise
+    # Production's bare-chain expansion, called rather than restated, and here
+    # rather than later because it is what makes every numeric check below apply
+    # to ``--contig A`` at all. The canary used to FILTER unexpanded segments
+    # out of the negative-numbering guard instead, so a tagged construct plus a
+    # bare chain id skipped it and spawned. Production does not refuse a bare
+    # chain either — it expands ``A`` to ``A-5-240`` and then refuses THAT — and
+    # refusing the id itself here would stop a run production accepts.
+    segments = rp_local.expand_bare_chains(residues, raw_segments)
+    # Production's negative-numbering guard, called rather than restated. The
+    # canary had no equivalent, so a tagged construct would have spawned an
+    # A100 to discover what a regex knows for free. See
+    # cs.refuse_unrenderable_contig.
+    cs.refuse_unrenderable_contig(
+        target_pdb, resolved, rp_local.unrenderable_segments(segments))
+    # Production's per-segment emptiness check. The canary's non-EMPTY test was
+    # on the AGGREGATE, so ``A1-300,Z1-50`` hid a dead segment behind a healthy
+    # one and spawned. See cs.refuse_empty_segments.
+    cs.refuse_empty_segments(
+        target_pdb, resolved, rp_local.empty_segments(residues, segments),
+        rp_local.chain_span_summary(residues))
+    # Production's endpoint-existence guard, called rather than restated — the
+    # fourth pre-GPU refusal prod has grown and the third the canary had to be
+    # given afterwards. A range end that names no residue (3S7G's B236-**443**)
+    # passes every cheaper check here and dies inside `complexa design`. See
+    # cs.refuse_missing_endpoints. Unbounded segments are skipped by
+    # `missing_endpoints` itself, so no filtering at the call site.
+    cs.refuse_missing_endpoints(
+        target_pdb, resolved,
+        rp_local.missing_endpoints(residues, segments),
+        rp_local.chain_span_summary(residues))
+    # Production's minimum-size floor, called rather than restated, and BEFORE
+    # the hotspot check because that is production's order: a sliver of a contig
+    # also makes most tokens "missing", and the operator who asked for
+    # ``--contig A10-20`` needs to be told the range is too small, not that the
+    # hotspots outside it do not resolve. The count is production's DISTINCT one
+    # — ``A10-20,A10-20`` names 11 residues twice and used to clear a floor of
+    # 20 on a count of 22. See cs.refuse_target_too_small.
+    cs.refuse_target_too_small(
+        target_pdb, resolved, rp_local.target_too_small(residues, segments),
+        rp_local.n_selected_residues(residues, segments),
+        rp_local.MIN_SELECTED_RESIDUES)
+    selected = rp_local.select_residues(residues, segments)
     cs.refuse_unresolvable_hotspots(
-        target_pdb, resolved, len(selected),
+        target_pdb, resolved, rp_local.n_selected_residues(residues, segments),
         [(label, rp_local.missing_hotspots(selected, list(spec or [])))
          for label, spec in specs])
     return resolved
@@ -1137,6 +1523,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             # `harden_stream` exists for, on text this repo does not author.
             for line in cs.format_log_diagnostics(res):
                 _emit(line)
+            # BEFORE the verdict, for the same reason the log tails are: a shard
+            # that exited non-zero and still delivered scored designs no longer
+            # FAILS, and the operator must not have to infer that from a PASS.
+            for line in cs.delivery_note(res):
+                _emit(line)
             verdict = cs.phase1_verdict(res)
             _emit("\n--- verdict ---")
             _print_verdict(verdict)
@@ -1144,9 +1535,54 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
             _emit(f"Complexes whose target chain IS the input target: "
                   f"{res.get('n_target_verified')} "
                   f"(unverified: {res.get('n_target_unverified')})")
-            _emit(f"Peak VRAM: {res.get('peak_vram_mb')} MB   Runtime: {res.get('runtime_s')} s")
-            _emit("\nSET shared/pdb_preflight_rules.py::_PROTEINA SizeEnvelope."
-                  "hard_cap_target_aa FROM THIS RUN before flag-on.")
+            # Print the process figure alongside the device one. This line is
+            # a candidate data point for the size envelope, so it has to show
+            # which number is demand, what was already on the card, and under
+            # which allocator policy it was taken.
+            _emit(
+                f"Peak VRAM: device {res.get('peak_vram_mb')} MB   "
+                f"design-process {res.get('peak_proc_vram_mb')} MB   "
+                f"baseline {res.get('baseline_vram_mb')} MB   "
+                f"(poll {res.get('vram_poll_interval_s')}s, "
+                f"prealloc_disabled={res.get('vram_prealloc_disabled')})   "
+                f"Runtime: {res.get('runtime_s')} s"
+            )
+            # WHAT THIS USED TO SAY, and why it no longer does. It read "SET
+            # shared/pdb_preflight_rules.py::_PROTEINA SizeEnvelope.
+            # hard_cap_target_aa FROM THIS RUN before flag-on." That
+            # instruction has been carried out — three shards at 130, 260 and
+            # 415 aa produced the envelope's scaling curve. Leaving the
+            # imperative standing would now be actively harmful: it tells an
+            # operator to re-derive a money cap from ONE reading, which is the
+            # single-point mistake this tool has already made once, and doing
+            # so would silently overwrite a three-point fit with something
+            # weaker. Replaced rather than deleted, because this is a paid
+            # harness whose entire point is that a human reads the output
+            # afterwards, and a run that says nothing about what its numbers
+            # are FOR is how the previous cap went stale in the first place.
+            _emit(
+                "\nWHAT TO DO WITH THESE NUMBERS. _PROTEINA's size envelope "
+                "is already derived from three completed shards, all with "
+                "preallocation disabled: 130 aa / 8,943 MB / 576 s, 260 aa / "
+                "15,541 MB / 645 s, 415 aa / 25,457 MB / 874 s. Hence "
+                "hard_cap_target_aa=500, soft_warn_target_aa=415."
+            )
+            _emit(
+                "  * prealloc_disabled must read True above. If it does not, "
+                "this reading is dominated by a JAX allocator constant, is "
+                "not comparable to those three, and must not be used at all."
+            )
+            _emit(
+                "  * A shard at 415 aa or below re-confirms that curve. It "
+                "does NOT raise the cap."
+            )
+            _emit(
+                "  * A COMPLETED shard ABOVE 415 aa is the only thing that "
+                "moves the envelope. Then soft_warn_target_aa becomes that "
+                "size, hard_cap_target_aa a modest step above it, and "
+                "runtime_base_min / runtime_alpha are refit over all four "
+                "points — not solved from the new one alone."
+            )
             # HOW MANY OF THE ORDERED DESIGNS UPSTREAM ACTUALLY KEPT. Phase 1
             # does not fail on a thin yield — it asserts wiring — but it is the
             # fact that decides whether the ~$12 run is worth starting, and
@@ -1288,6 +1724,11 @@ def main(phase: int = 0, target_pdb: str = "", seed: int = 1234,
                   f"cross_recall_median={r.get('cross_hotspot_recall_median')}")
             if r.get("error"):
                 _emit(f"    ERROR: {r['error']}")
+            # A non-zero exit no longer condemns a shard that delivered scored
+            # designs, so it has to be loud somewhere else. Here, per shard,
+            # before the verdicts.
+            for line in cs.delivery_note(r):
+                _emit(line)
             if r.get("n_complexes") and not r.get("n_target_verified"):
                 _emit("    UNSCORABLE: the chains treated as target do not "
                       "carry the input target's residues — the design output "

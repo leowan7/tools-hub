@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% from "components/lab_handoff_banner.html" import handoff_sentence, truncation_sentence %}
+{% block title %}Could not load — Ranomics Tools{% endblock %}
+{% block robots %}noindex,follow{% endblock %}
+
+{# THE THIRD OUTCOME OF A DETAIL ROUTE'S PARENT READ, given a page of its own.
+
+   ONE ROUTE RENDERS THIS: `blueprints/targets.py::target_detail`. It used to
+   read its target through the two-outcome `get_target`, which answers None both
+   for a row that is not there and for a read that never completed, and it
+   rendered 404.html for both -- so a user whose own target was momentarily
+   unreadable was told it does not exist. Register item A90's own refusal exit is
+   what made that reachable in one click: the lab handoff gate now redirects an
+   unreadable parent BACK to that parent's page, and the browser follows that
+   redirect within milliseconds. Nothing says the fault has passed by then; no
+   claim is made here about how often it has.
+
+   THE RUN ARM DOES NOT RENDER THIS PAGE, and `parent` is nonetheless a
+   parameter. `compute_campaign_detail` keeps the two-outcome `get_campaign`:
+   its None arm falls through the launch-cutover fallback to the runs list with
+   a 200, which is uninformative and is not the false verdict the 404 was, and
+   answering it with a render instead of a redirect takes that request from
+   three Supabase round trips to five under exactly the outage this page exists
+   for. The two extra ARE the context processor's, which a redirect never runs;
+   this is 3 -> 5, not 2 + 3 (the count is beside `compute_campaign_detail`). Register item A94
+   holds the residual: on that arm a `?handoff=unverified` refusal whose fault
+   outlives the redirect reaches no banner. The noun stays parameterised because
+   the shared macro is written for both arms and a partial that is only correct
+   for the caller that happens to reach it is the duplication it replaced.
+
+   503 AND NOT 404, AND NOT 200. 404 is a claim about the row that we are in no
+   position to make -- the whole reason this page exists is that we did not find
+   out. 200 would say this page is the parent's page, and it is not: it carries
+   none of the parent's content. 503 is the one status that says what actually
+   happened, and unlike 404 it is not one caches store on their own initiative
+   (RFC 9111's heuristically cacheable set includes 404 and not 503), so it
+   cannot be served back in place of the real page once the fault passes.
+
+   IT RENDERS THE `?handoff=` BANNER, and that is not decoration. The refusal
+   reason rides the query string, so a page that dropped it would lose the
+   explanation on the very request A90's own unavailable exit produces -- that
+   exit sends `?handoff=unverified` to this parent's page. The five sentences
+   come from components/lab_handoff_banner.html, shared with both detail pages
+   and with the job page, so they cannot drift into a per-page variant.
+
+   THREE OF THOSE FIVE POINT AT CONTROLS THIS PAGE IS NOT RENDERING: `none` says
+   "try the button again", `rejected` says "star designs from the table on this
+   page", and `noname` says "reopen the form". The button, the table and the
+   form are all on the parent's page, which is the page that did not load. They
+   are the right instructions and they become actionable on the reload this page
+   asks for, and none of those three gates involves the parent read at all -- so
+   reaching this page under any of them takes a fault independent of whatever
+   produced the reason. Giving the copy a page-state variant would buy a fourth
+   wording to keep true. Register item A95, not papered over here. #}
+
+{% block content %}
+  <div class="hero">
+    <h1>We could not load this {{ parent }}.</h1>
+    <p class="subtitle">
+      {# NOT "the lookup did not complete", although on the one route that
+         renders this page today that would be true: `read_target` reports
+         UNAVAILABLE on exactly two grounds and both are a lookup that did not
+         complete. The broader sentence is chosen because it is also true of
+         `CampaignRead.unavailable`, which covers a row that came back in a
+         shape `_campaign_or_none` could not parse -- there the lookup DID
+         complete, and that is the sentence that had to come out of that
+         property's docstring. What is true of every path either read has is
+         that we did not end up holding it. #}
+      We did not manage to read it, so this page cannot show you the
+      {{ parent }} itself. That is a fault on our side and not a verdict on the
+      {{ parent }}: we did not find out whether it is there, and nothing about
+      it was changed by this request. Try again in a moment.
+    </p>
+  </div>
+
+  {% set truncated_count = request.args.get('truncated', 0) | int %}
+  {% if handoff %}
+  <div class="panel" style="margin-top: 1.5rem; border-color: #e8846b;">
+    <div class="panel-body">
+      <p style="margin: 0; color: #e8846b;">{{ handoff_sentence(handoff, parent) }}</p>
+      {% if truncated_count > 0 %}
+      <p style="margin: 0.6rem 0 0; color: #e8846b;">{{ truncation_sentence(truncated_count) }}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# The retry link keeps the query string, so a reload that works re-renders
+     the banner above on the real page rather than dropping the reason. It is
+     always same-origin and always relative: this is the app's own routed path
+     plus the query Flask parsed, and Jinja escapes it.
+
+     `full_path` only when there IS a query, because Flask appends the "?"
+     unconditionally. Trimming it with `rstrip('?')` would also eat a trailing
+     "?" that belongs to the query itself, which is legal in a URI. #}
+  {% set retry_url = request.full_path if request.query_string else request.path %}
+  <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.5rem;">
+    <a href="{{ retry_url }}" class="btn-primary">Try again</a>
+    <a href="{{ back_url }}" class="btn-secondary">{{ back_label }}</a>
+  </div>
+
+  <p style="margin-top: 1.25rem; color: var(--text-secondary); font-size: 0.92rem;">
+    If it keeps happening, it is not a passing fault —
+    <a href="mailto:{{ support_email }}" style="color: var(--accent-text);">contact support</a>.
+  </p>
+{% endblock %}

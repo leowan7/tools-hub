@@ -715,6 +715,159 @@ def chain_identity_hints(atoms: Iterable[Atom],
     return hints
 
 
+def chain_renumbering(observed_chain: list[tuple[int, str]],
+                      reference_chain: list[tuple[int, str]],
+                      *,
+                      min_identity: float = TARGET_MIN_SEQUENCE_IDENTITY,
+                      min_informative: int = TARGET_MIN_INFORMATIVE_RESIDUES,
+                      ) -> dict:
+    """Position-for-position map from one design chain's numbering to the input's.
+
+    Both lists are ``(resseq, resname)`` ASCENDING BY ``resseq``. The i-th
+    residue of the design chain is taken to be the i-th residue of the input
+    chain, and that correspondence is then CHECKED by sequence rather than
+    assumed — see ``restore_input_numbering`` for why anything weaker is a
+    fabricated PASS.
+
+    Returns ``{"ok": bool, "reason": str, "map": {design_resseq: input_resseq},
+    "n": int, "n_informative": int, "identity": float | None}``. ``ok`` is False
+    on ANY doubt and the map is then empty: this is the fail-closed half of a
+    guard whose other half is worth $12 a mistake.
+    """
+    n_obs, n_ref = len(observed_chain), len(reference_chain)
+    if n_obs != n_ref:
+        return {"ok": False, "n": n_obs, "n_informative": 0, "identity": None,
+                "map": {},
+                "reason": (f"length differs: {n_obs} residues in the design, "
+                           f"{n_ref} in the input chain — a positional map "
+                           f"needs one residue per residue")}
+    if not n_obs:
+        return {"ok": False, "n": 0, "n_informative": 0, "identity": None,
+                "map": {}, "reason": "the chain carries no CA residue"}
+
+    pairs = [(o[1], r[1]) for o, r in zip(observed_chain, reference_chain)]
+    informative = [(a, b) for a, b in pairs if is_informative_pair(a, b)]
+    identical = sum(1 for a, b in informative if same_residue(a, b))
+    identity = (identical / len(informative)) if informative else None
+    ref_informative = sum(1 for _, name in reference_chain
+                          if not is_unknown_resname(name))
+    floor = informative_floor(ref_informative, min_informative)
+
+    if len(informative) < floor:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"only {len(informative)} informative residue pair(s), "
+                           f"below the {floor} required — an all-unknown chain "
+                           f"matches anything and must not certify a map")}
+    if identity is None or identity < min_identity:
+        return {"ok": False, "n": n_obs, "n_informative": len(informative),
+                "identity": identity, "map": {},
+                "reason": (f"sequence identity {identity!r} over "
+                           f"{len(informative)} informative pair(s) is below "
+                           f"{min_identity} — these are not the same chain in "
+                           f"the same order")}
+    return {"ok": True, "n": n_obs, "n_informative": len(informative),
+            "identity": round(identity, 4),
+            "map": {o[0]: r[0] for o, r in zip(observed_chain, reference_chain)},
+            "reason": ""}
+
+
+def restore_input_numbering(atoms: Iterable[Atom],
+                            target_chains: Iterable[str],
+                            reference: dict[Residue, str],
+                            *,
+                            min_identity: float = TARGET_MIN_SEQUENCE_IDENTITY,
+                            min_informative: int = TARGET_MIN_INFORMATIVE_RESIDUES,
+                            ) -> tuple[list[Atom], dict]:
+    """Put the design's target chains back into the INPUT's residue numbering.
+
+    THE DEFECT. Upstream renumbers every chain of a design to ``1..N``. Measured
+    on 8 of 8 designs from a completed Fc shard: input chains A 234-444 (211
+    residues) and B 237-444 (208) came back as A 1-211 and B 1-208, contiguous,
+    labels preserved, order preserved, at 100.0% positional sequence identity on
+    both chains. Nothing about the geometry changed — only the keys.
+
+    WHY THAT BREAKS EVERYTHING DOWNSTREAM. Hotspots are matched by
+    ``(chain, resseq)``. ``verify_target_identity`` therefore requires key
+    coverage against the input, and under renumbering that coverage is 0.0, so
+    every design is UNSCORABLE and phase 2 returns INCONCLUSIVE for ~$12.
+
+    WHY THIS IS THE FIX AND RELAXING THE GATE IS NOT. The gate's key-coverage
+    rule is load-bearing: it is what makes ``A241`` mean the residue the
+    operator asked for. Dropping or weakening it to accommodate renumbering
+    would let a renumbered chain score against tokens that no longer denote
+    anything — the exact fabricated result the gate exists to prevent. So this
+    runs BEFORE the gate, restores the keys the gate is entitled to expect, and
+    the gate then runs UNCHANGED and passes honestly. If this function cannot
+    prove the correspondence, it changes nothing and the gate refuses exactly as
+    it does today.
+
+    WHAT STOPS IT CERTIFYING A ROLE INVERSION. The map is only accepted when the
+    design chain has the SAME NUMBER of residues as the input chain AND matches
+    it position-for-position by sequence. A binder relabelled onto a target's
+    chain id fails on length; a binder that happens to match on length fails on
+    sequence, because a de-novo binder is not the target; a sequence-free
+    (all-UNK) chain fails the informative floor, because ``same_residue`` counts
+    UNK as a match and would otherwise score 1.0 against anything. Every target
+    chain must map, or none is applied — a partial remap would leave one chain
+    keyed to the input and another to ``1..N``, which is worse than not trying.
+
+    Returns ``(atoms, report)``. ``atoms`` is the rewritten list when
+    ``report["applied"]``, otherwise the input list unchanged.
+    """
+    atoms = list(atoms)
+    wanted = sorted(set(target_chains))
+    observed = ca_resnames(atoms)
+
+    obs_by_chain: dict[str, list[tuple[int, str]]] = {}
+    for (chain, resseq), name in observed.items():
+        obs_by_chain.setdefault(chain, []).append((resseq, name))
+    ref_by_chain: dict[str, list[tuple[int, str]]] = {}
+    for (chain, resseq), name in reference.items():
+        ref_by_chain.setdefault(chain, []).append((resseq, name))
+    for d in (obs_by_chain, ref_by_chain):
+        for chain in d:
+            d[chain].sort()
+
+    chains: dict[str, dict] = {}
+    for chain in wanted:
+        if chain not in obs_by_chain:
+            chains[chain] = {"ok": False, "n": 0, "n_informative": 0,
+                             "identity": None, "map": {},
+                             "reason": "chain absent from the design output"}
+            continue
+        if chain not in ref_by_chain:
+            chains[chain] = {"ok": False, "n": len(obs_by_chain[chain]),
+                             "n_informative": 0, "identity": None, "map": {},
+                             "reason": "chain absent from the input target"}
+            continue
+        chains[chain] = chain_renumbering(
+            obs_by_chain[chain], ref_by_chain[chain],
+            min_identity=min_identity, min_informative=min_informative)
+
+    already = all(
+        [k for k, _ in obs_by_chain.get(c, [])] == [k for k, _ in ref_by_chain.get(c, [])]
+        for c in wanted)
+    applied = bool(chains) and all(c["ok"] for c in chains.values()) and not already
+    report = {
+        "applied": applied,
+        "already_input_numbering": already,
+        "chains": chains,
+        "reason": "" if applied else "; ".join(
+            f"chain {c}: {v['reason']}" for c, v in sorted(chains.items())
+            if not v["ok"]) or ("the design already carries the input numbering"
+                                if already else ""),
+    }
+    if not applied:
+        return atoms, report
+
+    remap = {c: chains[c]["map"] for c in wanted}
+    out = [a._replace(resseq=remap[a.chain][a.resseq])
+           if a.chain in remap and a.resseq in remap[a.chain] else a
+           for a in atoms]
+    return out, report
+
+
 def verify_target_identity(
     atoms: Iterable[Atom],
     target_chains: Iterable[str],
@@ -1044,6 +1197,15 @@ def score_design_file(pdb_text: str, target_chains: Iterable[str],
     }
     if not entry["is_complex"]:
         return entry
+
+    # UPSTREAM RENUMBERS EVERY CHAIN TO 1..N, so the keys the gate below checks
+    # against are not the operator's. Restored FIRST, and only when a
+    # position-for-position sequence match proves the correspondence; the gate
+    # then runs unchanged on keys it is entitled to trust. When the proof fails
+    # this is a no-op and the gate refuses exactly as it did before, which is
+    # the direction that cannot fabricate a result. See restore_input_numbering.
+    atoms, renumbering = restore_input_numbering(atoms, wanted, reference)
+    entry["target_renumbering"] = renumbering
 
     check = verify_target_identity(atoms, wanted, reference)
     entry["target_verified"] = check["verified"]
@@ -1564,9 +1726,211 @@ def refuse_unresolvable_hotspots(target_pdb: Any, contig: Any, n_selected: int,
         "nothing. NO GPU TIME WAS USED.")
 
 
+def refuse_unparsable_contig(target_pdb: Any, contig: Any, detail: Any) -> None:
+    """Turn ``parse_target_input``'s ``ValueError`` into a refusal. Always raises.
+
+    NO MONEY IS AT STAKE HERE AND IT IS STILL A DEFECT. ``--contig Zz9`` came
+    out of ``_refuse_unresolvable_hotspots`` as a bare
+    ``ValueError: unparsable target_input segment 'Zz9'`` with a traceback,
+    which is the one refusal in the harness that did not tell the operator the
+    thing every other refusal tells them: that nothing was spent. Production
+    converts the identical failure — same function, same exception — into a
+    ``_fail``, so this is the same mirroring rule as the guards around it,
+    applied to the cheapest case rather than the most expensive one.
+
+    The parse is production's; only the wrapping is here. It always raises
+    because its one call site is an ``except`` branch: there is no "no error"
+    input to return on.
+    """
+    raise CanaryRefusal(
+        f"[canary] --contig {contig} cannot be parsed against {target_pdb}: "
+        f"{detail}. A contig segment is a chain letter and a range, e.g. "
+        "A1-150, or a bare chain id, e.g. A; several are comma-separated. "
+        "run_pipeline refuses the same text with the same parser, so this "
+        "would never have reached a GPU — but it escaped as a traceback "
+        "instead of a refusal. NO GPU TIME WAS USED.")
+
+
+def refuse_unrenderable_contig(target_pdb: Any, contig: Any,
+                               bad: Sequence[Any]) -> None:
+    """Refuse a contig upstream's own parser cannot read back.
+
+    THE SECOND GUARD PRODUCTION HAD AND THE CANARY DID NOT, found while
+    auditing the first. ``run_pipeline`` refuses a negative author residue
+    number pre-GPU (``unrenderable_segments``): atomworks'
+    ``CONTIG_REGEX = r"([A-Za-z]+)(\\d+)-(\\d+)"`` carries no sign, so a
+    construct that keeps its expression tag derives the contig ``A-5-240`` and
+    raises inside ``complexa design``. Nothing before that catches it — the
+    selection is non-empty, the registration succeeds and reads back — so the
+    shard boots, loads checkpoints and only then dies.
+
+    The canary had no equivalent, which means ``--target-pdb <tagged
+    construct>`` would spawn one A100 in phase 1 (~$4) or three in phase 2
+    (~$12) to discover what a regex knows for free. Same class as the staging
+    drift: production grew a pre-GPU refusal and the harness did not follow.
+
+    The predicate stays in ``run_pipeline`` (``unrenderable_segments``) and is
+    CALLED, never restated; this only turns its answer into the refusal.
+    """
+    if not bad:
+        return
+    shown = ",".join(
+        f"{seg[0]}{seg[1]}-{seg[2]}" if len(seg) >= 3 else str(seg)
+        for seg in bad)
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} for {target_pdb} uses negative residue "
+        f"numbers ({shown}), which upstream's CONTIG_REGEX cannot express — it "
+        "accepts digits only. Structures carrying an expression tag are usually "
+        "numbered this way. Pass --contig with a range starting at 0 or above. "
+        "Every other pre-GPU check passes on such a target, so without this the "
+        "shard would boot, load checkpoints and die. NO GPU TIME WAS USED.")
+
+
+def refuse_empty_segments(target_pdb: Any, contig: Any, dead: Sequence[Any],
+                          spans: Any) -> None:
+    """Refuse a contig segment that selects no residue of the upload.
+
+    PER SEGMENT, WHICH IS THE ENTIRE DEFECT. ``prepare_custom_target`` refuses
+    each segment that picks nothing; the canary checked only that the AGGREGATE
+    selection was non-empty, so one dead segment hid behind a healthy one.
+    Measured: ``--contig A1-300,Z1-50`` against a file of chains A and B selects
+    300 residues, clears the size floor, resolves its hotspots in chain A, and
+    spawns — one A100 in phase 1 (~$4), three in phase 2 (~$12) — for a request
+    production settles for free. PR #109 made multi-segment contigs the ordinary
+    input shape, which is what turned this from latent into reachable.
+
+    THE MESSAGE NAMES THE SEGMENT AND THE FILE'S ACTUAL CONTENTS, and that also
+    repairs a misdirection the size refusal was giving on its own. ``--contig
+    Z1-50`` alone used to come back as "selects 0 residue(s) ... fewer than the
+    20 production requires ... Widen --contig", which sends the operator to
+    widen a range on a chain the upload does not contain. Widening cannot help;
+    naming chain Z and listing the chains that ARE there can.
+
+    ``dead`` IS PRODUCTION'S ANSWER (``run_pipeline.empty_segments``), not one
+    computed here. A segment may arrive with ``None`` bounds — an unresolvable
+    bare chain id, which ``expand_bare_chains`` deliberately leaves alone — and
+    is rendered as the bare chain rather than as ``Z None-None``.
+    """
+    if not dead:
+        return
+    shown = ", ".join(
+        f"{seg[0]}{seg[1]}-{seg[2]}" if len(seg) >= 3 and seg[1] is not None
+        else f"chain {seg[0]}" if len(seg) >= 1 else str(seg)
+        for seg in dead)
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} names {shown}, which selects no residue "
+        f"of {target_pdb}. The file contains: {spans}. prepare_custom_target "
+        "refuses a segment that picks nothing, one segment at a time; the "
+        "canary checked only that the whole selection was non-empty, so a dead "
+        "segment beside a healthy one would have spent ~$4 in phase 1 or ~$12 "
+        "in phase 2 to fail in the container. Fix the chain id or the range — "
+        "if the chain is not in the list above, widening will not help. "
+        "NO GPU TIME WAS USED.")
+
+def refuse_missing_endpoints(target_pdb: Any, contig: Any,
+                             absent: Sequence[Any], spans: Any = "") -> None:
+    """Refuse a contig whose range ends name residues the structure lacks.
+
+    THE FOURTH INSTANCE OF THE SAME CLASS, and the third time it has been
+    written down. Production grows a pre-GPU refusal; the canary does not
+    follow; the canary can then spend $4-$12 on a target production would have
+    refused outright, or — worse — return PASS on one. It cost a paid shard to
+    discover with the staging crop, was found by audit for the negative-
+    numbering guard, and was caught again for the 20-residue floor.
+
+    The production guard is ``run_pipeline.missing_endpoints``: upstream
+    resolves each end of the contig against the structure and raises
+    ``ValueError('No atoms found for selection: B/*/443')`` once the
+    checkpoints are loaded. Every cheaper check passes first — the segment
+    selects the residues that DO exist, so the count is right, the crop's
+    self-check balances, and nothing notices the end that is missing. On 3S7G
+    (chain A 236-443, chain B 236-**442**) the contig ``A236-443,B236-443``
+    burned ~60 s of A100 for zero designs.
+
+    The predicate stays in ``run_pipeline`` and is CALLED, never restated; this
+    only turns its answer into the refusal. A canary that computes the right
+    answer in its own code is the drift these guards exist to remove.
+    """
+    if not absent:
+        return
+    shown = ", ".join(
+        f"residue {item[1]} on chain {item[0]}" if len(item) >= 2 else str(item)
+        for item in absent)
+    first = absent[0]
+    selection = (f"{first[0]}/*/{first[1]}" if len(first) >= 2 else str(first))
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} for {target_pdb} names {shown}, which "
+        f"the structure does not contain"
+        + (f" (it contains: {spans})" if spans else "")
+        + ". Upstream resolves each end of the range against the structure and "
+        f'would raise ValueError("No atoms found for selection: {selection}") '
+        "after the checkpoints are loaded. Every cheaper check passes on such "
+        "a contig — the range still selects the residues that do exist — so "
+        "without this the shard would boot and die. Pass --contig with ends "
+        "that are real residues. NO GPU TIME WAS USED.")
+
+
+def refuse_target_too_small(target_pdb: Any, contig: Any, too_small: bool,
+                            n_selected: int, minimum: Any) -> None:
+    """Refuse a contig that selects too little target to design against.
+
+    THE THIRD GUARD PRODUCTION HAD AND THE CANARY DID NOT, and the class is now
+    established rather than suspected: ``prepare_custom_target`` refuses a
+    selection below ``run_pipeline.MIN_SELECTED_RESIDUES`` before any GPU is
+    touched, and the harness had nothing equivalent — only the non-EMPTY checks
+    above, which a ten-residue contig passes. ``--contig A10-20`` would spawn
+    one A100 in phase 1 (~$4) or three in phase 2 (~$12) to discover what a
+    length knows for free.
+
+    WHAT UPSTREAM DOES WITH A SLIVER IS UNVERIFIED, IN BOTH DIRECTIONS, and
+    that is the reason to refuse rather than an argument against it. Nothing in
+    this repo evidences whether ``complexa design`` refuses a sub-20-residue
+    selection or designs happily against it, and no GPU run has ever tested it.
+    Both branches are bad and only one of them is loud: if it refuses, the
+    money is spent and the verdict is at least honest; if it designs, the
+    metrics come back, the harness can report PASS, and the number measured is
+    hotspot recall over a target production would have refused to accept at
+    all. The pre-GPU answer costs nothing either way, which is why the refusal
+    sits here and not in the container. Note the contrast with the two guards
+    above, whose failure modes ARE evidenced — atomworks' ``CONTIG_REGEX`` was
+    read, and the uncropped-target crash was reproduced on a paid A100.
+
+    ``too_small`` IS PRODUCTION'S ANSWER, NOT ONE COMPUTED HERE, which is why it
+    is a parameter rather than ``n_selected < minimum``. The comparison and the
+    threshold both live in ``run_pipeline.target_too_small``; this turns its
+    verdict into the refusal, and ``minimum`` is carried only so the message can
+    quote the number the operator has to clear. Recomputing either here would
+    reintroduce exactly the drift this round exists to remove. ``n_selected`` is
+    likewise production's count — ``n_selected_residues``, the DISTINCT one —
+    and not ``len(select_residues(...))``, which double-counts a residue two
+    segments both name and let ``A10-20,A10-20`` clear a floor of 20.
+    """
+    if not too_small:
+        return
+    raise CanaryRefusal(
+        f"[canary] the contig {contig} selects {n_selected} residue(s) of "
+        f"{target_pdb}, fewer than the {minimum} production requires before it "
+        "will accept a target at all. prepare_custom_target refuses this "
+        "upload for free; the canary would have spent ~$4 in phase 1 or ~$12 "
+        "in phase 2 to design against a sliver of surface, and could have come "
+        "back GREEN having measured a run production would never have run. "
+        "Widen --contig. NO GPU TIME WAS USED.")
+
+
 def shard_spec_refusal(label: str, missing: Sequence[str],
                        missing_cross: Sequence[str]) -> dict | None:
-    """The in-container twin of the two refusals above, as a shard result.
+    """The in-container twin of the hotspot refusal above, as a shard result.
+
+    Deliberately count-free: it used to say "the two refusals above", and the
+    number of ``refuse_*`` functions between it and the top of this section has
+    changed in three of the last four commits. It mirrors
+    ``refuse_unresolvable_hotspots`` and nothing else — which is a fact about
+    WHICH one, not about HOW MANY, and so cannot go stale.
+
+    (The first attempt at this sentence replaced the stale "two" with "five",
+    which was already the ``origin/main`` count and was wrong by three the day
+    it was written — in the commit whose stated purpose was removing a stale
+    count. Naming the mirrored function is the only form that survives.)
 
     ``run_shard`` cannot raise: its contract is to RETURN a dict, and the
     entrypoint attributes a returned ``{"error": ...}`` to its label instead of
@@ -1574,6 +1938,22 @@ def shard_spec_refusal(label: str, missing: Sequence[str],
     suite executes it — the local pre-spawn check and this one must agree, and
     the second is the only one that sees the contig the container actually
     resolved.
+
+    EVERY OTHER PRE-SPAWN REFUSAL HAS NO TWIN HERE, AND THE SIZE ONE IS AN
+    OPEN GAP. (Count-free for the same reason as above; the previous wording
+    said "the other four" and the canary runs six, of which this mirrors one.)
+    The
+    reason cannot be "an in-container check would save nothing": by this line
+    the container is running, but a shard that returns an error immediately
+    stops billing, while one that designs runs to completion (up to
+    ``_MAX_SESSION_S``, ~$12.58 on the cap). The paragraph above is the real
+    argument — this is the only place that sees the contig the container
+    resolved, and for the size floor that is exactly the case a pre-spawn check
+    cannot cover: a contig derived in-container from a target the operator did
+    not crop. It is not written yet. What holds today is that every path into a
+    shard passes through ``_refuse_unresolvable_hotspots`` first, so the
+    remaining exposure is drift between the two resolutions, not a missing
+    check on the resolutions we have.
 
     A cross-reference patch that is not in the structure is as fatal as an own
     one: scoring every shard against a reference that resolves to nothing gives
@@ -1746,29 +2126,181 @@ class Verdict:
                 "reason": self.reason, "metrics": dict(self.metrics)}
 
 
-def shard_failure(shard: Any) -> str | None:
-    """Why this shard cannot be interpreted at all, or None.
+# ---------------------------------------------------------------------------
+# Delivery: would PRODUCTION have shipped this shard?
+#
+# A SEPARATE AXIS FROM THE OUTCOME, and keeping them separate is the fix. The
+# outcome answers "may we turn the flag on", which is a question about geometry:
+# did the binders land on the patch. Delivery answers "would run_pipeline have
+# handed these designs to a paying customer", which is a question about the exit
+# code and the reward table. They are independent — a shard can measure
+# perfectly and still exit non-zero, and a clean shard can still miss the patch
+# — and this harness used to collapse them into one, always in the direction
+# that condemns.
+#
+# THE COST OF NOT SEPARATING THEM, measured. A run that produced 8 designs, 8
+# files, 8 reward rows and 8 complexes, then crashed in `evaluate`, was reported
+# FAILED. Production's rule (run_pipeline.py, immediately after `complexa
+# design` returns) is:
+#
+#     n_scored = sum(1 for d in designs if d.get("total_reward") is not None)
+#     if rc != 0:
+#         if n_scored == 0:
+#             _fail("search", "complexa", ...)
+#         logger.warning("... but %d/%d designs are fully scored — delivering")
+#
+# and the reward CSV it reads is written by the GENERATE stage (generate.py:524
+# writes rewards_{config}_{job}.csv with total_reward and the af2folding_*
+# components), not by evaluate. So that run WOULD HAVE SHIPPED 8 SCORED DESIGNS
+# while the canary printed FAILED. A measurement campaign was nearly cancelled
+# on that reading.
+#
+# THREE STATES, NAMED, because two cannot hold the middle one:
+#
+#   CLEAN     exit 0. Nothing to report.
+#   DEGRADED  non-zero exit, and designs came back fully scored. Production
+#             delivers. NOT a failure of the feature — and NOT nothing either:
+#             the non-zero exit is a real defect with its own diagnosis, so it
+#             is stamped onto every verdict it touches and printed in full.
+#   FAILED    errored, no exit code, a non-numeric one, a non-zero exit with
+#             nothing scored, or a non-zero exit where the shard did not say how
+#             many were scored. Production would have failed it too.
+#
+# "did not say" is FAILED on purpose. A payload with no scored-design count is
+# one we cannot prove delivered anything, and guessing the other way is how a
+# broken run gets blessed. It also means every hand-built payload in the offline
+# suite keeps its old verdict unless it opts in by reporting the count.
+# ---------------------------------------------------------------------------
 
-    A shard that errored or exited non-zero is a FAIL, not an INCONCLUSIVE: the
-    question phase 2 answers is "may we enable the flag", and a crashing shard
-    answers no. Only a shard that RAN CLEANLY but produced nothing measurable is
-    inconclusive.
+CLEAN = "clean"
+DEGRADED = "degraded"
+FAILED = "failed"
+DELIVERIES = (CLEAN, DEGRADED, FAILED)
+
+# What ``run_shard`` calls the count, computed there by production's OWN
+# ``run_pipeline.parse_designs`` so the canary cannot drift from the rule it is
+# supposed to be mirroring.
+SCORED_KEY = "n_scored_designs"
+
+
+def scored_design_count(shard: Any) -> int | None:
+    """Designs the shard reported as FULLY SCORED, or None if it did not say.
+
+    None is not zero. Zero is "we looked and the reward table scored nothing";
+    None is "this payload carries no such number", and the two lead to the same
+    verdict for opposite reasons — see the module note above.
     """
     if not isinstance(shard, dict):
-        return "no result was returned"
+        return None
+    raw = shard.get(SCORED_KEY)
+    if isinstance(raw, bool):
+        return None
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
+
+
+def shard_delivery(shard: Any) -> tuple[str, str]:
+    """``(state, detail)`` — would production have delivered this shard?
+
+    ``detail`` is "" for CLEAN and a full sentence otherwise. See the module
+    note above for why this is not the same question as the verdict.
+    """
+    if not isinstance(shard, dict):
+        return FAILED, "no result was returned"
     error = shard.get("error")
     if error:
-        return str(error)
+        return FAILED, str(error)
     rc = shard.get("exit_code")
     if rc is None:
-        return "the shard reported no exit code"
+        return FAILED, "the shard reported no exit code"
     try:
         rc_int = int(rc)
     except (TypeError, ValueError):
-        return f"the shard reported a non-numeric exit code {rc!r}"
-    if rc_int != 0:
-        return f"the design command exited {rc_int}"
-    return None
+        return FAILED, f"the shard reported a non-numeric exit code {rc!r}"
+    if rc_int == 0:
+        return CLEAN, ""
+    n_scored = scored_design_count(shard)
+    if n_scored is None:
+        return FAILED, (
+            f"the design command exited {rc_int} and the shard did not report "
+            "how many designs came back fully scored, so there is no evidence "
+            "production would have delivered anything"
+        )
+    if n_scored == 0:
+        return FAILED, (
+            f"the design command exited {rc_int} with no scored designs — "
+            "production fails a run on exactly this reading"
+        )
+    return DEGRADED, (
+        f"the design command exited {rc_int}, but {n_scored} design(s) came "
+        "back fully scored, which is the reading on which production DELIVERS "
+        "(run_pipeline only fails when a non-zero exit left nothing scored). "
+        "This is not a verdict on the feature. The non-zero exit is still a "
+        "real defect and needs its own diagnosis — read the stage-log tails."
+    )
+
+
+def shard_failure(shard: Any) -> str | None:
+    """Why this shard cannot be interpreted at all, or None.
+
+    A shard that errored or exited non-zero USED TO BE a FAIL unconditionally.
+    That was stricter than production and cost a real judgement: see the module
+    note above. It is now a FAIL exactly when production would also have failed
+    it, which is what ``shard_delivery`` decides. A shard that exited non-zero
+    and still delivered scored designs returns None here and is reported
+    separately, loudly, by ``shard_degradation``.
+
+    Only a shard that DELIVERED but produced nothing measurable is inconclusive;
+    that is still decided downstream, not here.
+    """
+    state, detail = shard_delivery(shard)
+    return detail if state == FAILED else None
+
+
+def shard_degradation(shard: Any) -> str | None:
+    """The DEGRADED sentence for this shard, or None.
+
+    The counterpart to ``shard_failure``: the two are mutually exclusive and
+    together cover every non-CLEAN shard, so nothing that used to be reported
+    can fall through the gap between them.
+    """
+    state, detail = shard_delivery(shard)
+    return detail if state == DEGRADED else None
+
+
+def annotate_delivery(verdict: Verdict, *shards: Any) -> Verdict:
+    """Stamp a verdict with the delivery state of the shards behind it.
+
+    Always sets ``metrics["delivery"]`` (the worst of the shards', so a pair is
+    described by its weakest member) and, for anything but CLEAN, the per-shard
+    sentences. A DEGRADED verdict additionally gets a ``[DELIVERED-DEGRADED]``
+    prefix on its reason, because the reason is the one line that always reaches
+    the console and "PASS" on its own would hide a crashed shard.
+
+    FAILED is not prefixed: its reason already opens with "the shard did not
+    complete: ...", which is the same information said once.
+    """
+    states: list[str] = []
+    details: list[str] = []
+    for shard in shards:
+        state, detail = shard_delivery(shard)
+        states.append(state)
+        if state == CLEAN:
+            continue
+        label = (shard.get("label") if isinstance(shard, dict) else None) or "shard"
+        details.append(f"{label}: {detail}")
+    worst = FAILED if FAILED in states else (DEGRADED if DEGRADED in states else CLEAN)
+    metrics = dict(verdict.metrics)
+    metrics["delivery"] = worst
+    if details:
+        metrics["delivery_detail"] = details
+    reason = verdict.reason
+    if worst == DEGRADED:
+        reason = f"[DELIVERED-DEGRADED] {reason} ({' | '.join(details)})"
+    return Verdict(verdict.name, verdict.outcome, reason, metrics)
 
 
 def design_identity(design: Any, index: int = 0) -> str:
@@ -2178,6 +2710,11 @@ def _base_metrics(shard: Any) -> dict:
     return {
         "label": shard.get("label"),
         "exit_code": shard.get("exit_code"),
+        # Beside the exit code, never behind it. The pair is the delivery
+        # question in two numbers: `exit_code 1 | scored 8` and `exit_code 1 |
+        # scored 0` are the same row to every other field in this dict and are
+        # a shipped campaign and a dead one respectively.
+        SCORED_KEY: scored_design_count(shard),
         # BOTH counts, always, and never collapsed into one. "requested 8,
         # produced 1" and "requested 8, produced 8" prescribe different next
         # moves, and only the pair distinguishes them.
@@ -2234,7 +2771,17 @@ def _unmeasurable_reason(shard: Any, tail: str = "") -> str:
 
 
 def positive_verdict(pos: Any, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Verdict:
-    """Did the binders land on the patch we asked for?"""
+    """Did the binders land on the patch we asked for?
+
+    Every return of the body is stamped with the shard's DELIVERY state — see
+    ``annotate_delivery``. Wrapping the whole body rather than each of its eight
+    returns is deliberate: a stamp that has to be remembered at a new return
+    point is a stamp that will be missing from it.
+    """
+    return annotate_delivery(_positive_verdict(pos, thresholds), pos)
+
+
+def _positive_verdict(pos: Any, thresholds: Thresholds) -> Verdict:
     name = "positive"
     failure = shard_failure(pos)
     if failure is not None:
@@ -2362,7 +2909,14 @@ def cross_reference_size(shard: Any) -> int | None:
 
 
 def negative_verdict(neg: Any, thresholds: Thresholds = DEFAULT_THRESHOLDS) -> Verdict:
-    """Same PDB, same seed, a patch >= 25 A away — the interface must MOVE."""
+    """Same PDB, same seed, a patch >= 25 A away — the interface must MOVE.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``.
+    """
+    return annotate_delivery(_negative_verdict(neg, thresholds), neg)
+
+
+def _negative_verdict(neg: Any, thresholds: Thresholds) -> Verdict:
     name = "negative"
     failure = shard_failure(neg)
     if failure is not None:
@@ -2518,7 +3072,15 @@ def null_verdict(pos: Any, null: Any,
     hotspot argument changed nothing: it was passed, upstream dropped it, and
     every other signal in the run — exit code, design count, reward CSV — looks
     identical to a run that honoured it.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``. BOTH shards are
+    stamped, and the worst of the two is what the verdict carries: a comparison
+    is only as sound as its weaker half.
     """
+    return annotate_delivery(_null_verdict(pos, null, thresholds), pos, null)
+
+
+def _null_verdict(pos: Any, null: Any, thresholds: Thresholds) -> Verdict:
     name = "null"
     for shard, which in ((pos, "positive"), (null, "null")):
         failure = shard_failure(shard)
@@ -2704,6 +3266,12 @@ def null_verdict(pos: Any, null: Any,
 # Either alone reads as "1 design", and they send the operator to different
 # files.
 _VERDICT_DIAGNOSTIC_FIELDS: tuple[tuple[str, str], ...] = (
+    # FIRST, because it says whether the numbers that follow describe a run
+    # production would have shipped. A DEGRADED verdict also carries the reason
+    # prefix, which reaches the console on a PASS as well; this line is the same
+    # fact in the diagnostics block, where a FAIL or an INCONCLUSIVE is read.
+    ("delivery", "delivery"),
+    ("n_scored_designs", "designs fully scored (production would deliver)"),
     ("n_designs_expected", "designs requested"),
     ("n_designs", "designs produced"),
     # Immediately after the design count, because their whole job is to be read
@@ -2769,6 +3337,35 @@ def verdict_diagnostics(verdict: Any) -> list[str]:
     if not parts:
         return []
     return [f"            {' | '.join(parts)}"]
+
+
+def delivery_note(shard: Any) -> list[str]:
+    """"This shard crashed AND delivered" — as console lines, or empty.
+
+    THE POINT OF THE WHOLE DELIVERY SPLIT, said where an operator will read it.
+    ``shard_failure`` no longer condemns a shard that exited non-zero with
+    designs scored, and the danger in that change is the opposite of the one it
+    fixes: a crash quietly becoming invisible because it no longer moves the
+    verdict. It has to move the CONSOLE instead.
+
+    Empty for a CLEAN shard, so a healthy run's console is unchanged, and empty
+    for a FAILED one, whose reason already says the same thing once.
+
+    A RENDERER, not a measurement — the state is decided by ``shard_delivery``
+    and formatted here so the offline suite can assert on the lines rather than
+    on the presence of a print.
+    """
+    detail = shard_degradation(shard)
+    if detail is None:
+        return []
+    label = (shard.get("label") if isinstance(shard, dict) else None) or "shard"
+    return [
+        f"\n[canary] DELIVERED-DEGRADED [{label}]: {detail}",
+        f"[canary]   reward-table rows {shard.get('n_reward_rows')}, "
+        f"fully scored {scored_design_count(shard)}, "
+        f"design files {design_files(shard)}. Production would have shipped "
+        "this run; the verdict below judges the MEASUREMENTS, not the exit code.",
+    ]
 
 
 def designs_yield_note(shard: Any,
@@ -2863,7 +3460,16 @@ def phase1_verdict(shard: Any) -> Verdict:
 
     Whether the per-design outputs are complexes is what phase 1 is there to
     DISCOVER, so finding none is a reportable observation, never a failure.
+
+    Wrapped for the delivery stamp; see ``positive_verdict``. This is the phase
+    where it matters most: phase 1 costs $4, its whole job is to say whether the
+    ~$12 run is worth starting, and a shard that crashed late while delivering 8
+    scored designs was reported here as a flat FAIL.
     """
+    return annotate_delivery(_phase1_verdict(shard), shard)
+
+
+def _phase1_verdict(shard: Any) -> Verdict:
     name = "phase1"
     failure = shard_failure(shard)
     if failure is not None:

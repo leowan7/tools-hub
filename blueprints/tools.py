@@ -44,6 +44,7 @@ from shared.pdb_inspect import (
     convert_cif_to_pdb_bytes,
     hotspot_range_message,
     inspect_pdb_bytes,
+    split_hotspot,
     summarize_for_log,
     validate_hotspots,
     validate_target_chain,
@@ -53,8 +54,13 @@ from shared.pdb_intake import (
     _parse_preflight_size_params,
     _verdict_to_json,
     _verify_reuse_pdb_bytes,
+    preflight_target_segments,
 )
-from shared.pdb_preflight import PREFLIGHT_TOOLS, preflight_for_tool
+from shared.pdb_preflight import (
+    PREFLIGHT_TOOLS,
+    preflight_for_tool,
+    shipped_hotspots,
+)
 from shared.storage import (
     StorageError,
     copy_input,
@@ -747,19 +753,70 @@ def tool_preflight(tool: str):
 
     target_chain = (request.form.get("target_chain") or "A").strip()
     raw_hotspots = (request.form.get("hotspot_residues") or "").strip()
+    # THE PANEL PREVIEWS THE GATE. IT IS NOT THE GATE. Read the rule below
+    # before making it stricter — three attempts have now broken it.
+    #
+    # `static/js/preflight.js` does `setSubmitEnabled(!!v.ok)`, so a NEEDS_FIX
+    # here does not merely colour a box: it disables the Run button, and the
+    # only re-enable path is the network-error catch. The two failure
+    # directions are therefore not symmetric.
+    #
+    #   panel green, gate refuses -> the user clicks Run and gets the
+    #                                adapter's own message. Mildly annoying.
+    #   panel red,   gate accepts -> the user cannot submit AT ALL, and is
+    #                                told why by a sentence the panel guessed.
+    #
+    # So this parse is deliberately TOLERANT and never returns a verdict of
+    # its own. Trying to make it authoritative is what produced, in order: a
+    # panel that green-lit fields submit refused (int()-only, the original
+    # bug), then one that hard-blocked proteina's own documented multi-chain
+    # flow, then one that rendered READY for rfantibody hotspots its validate()
+    # rejects. Each fix moved the divergence rather than removing it, because
+    # the panel is re-implementing seven adapters' parsers from the outside.
+    # Closing it properly means the panel asking the adapter — a
+    # `hotspot_preview(form)` hook, or posting the whole form so validate()
+    # can run — and that is a change to every adapter, not to this function.
+
+    # The chain set, resolved BEFORE the hotspot branch. It feeds cleanup, the
+    # size envelope, the gap analysis and two user-facing sentences, so
+    # computing it only when the hotspot box happens to be non-empty made the
+    # verdict and its wording change with an unrelated field.
+    #
+    # proteina REPLACES target_chain with the contig's chains
+    # (tools/proteina/__init__.py:495-497) rather than adding to them, and its
+    # form tells the user to leave target_chain at "A" and name the chains in
+    # the contig. Reading target_chain alone called "C73" a hotspot on an
+    # untargeted chain for the exact input the template prints as its example;
+    # unioning instead of replacing then put the untyped "A" into the set, and
+    # that string is user-visible — it reaches "Target chain 'A,H,L' isn't in
+    # this PDB. Found chain(s): H, L.", a sentence that contradicts itself.
+    _contig_chains: list = []
+    for _seg in (preflight_target_segments(request.form) or []):
+        # Segments are (chain, lo, hi) tuples; see pdb_intake.
+        _seg_chain = _seg[0] if isinstance(_seg, (tuple, list)) else None
+        if _seg_chain and _seg_chain not in _contig_chains:
+            _contig_chains.append(_seg_chain)
+    if _contig_chains:
+        target_chain = " ".join(_contig_chains)
+    _chains = list(tool_base.parse_target_chains(target_chain))
+
     hotspots: list = []
     if raw_hotspots:
-        for tok in raw_hotspots.split(","):
-            tok = tok.strip()
-            if not tok:
+        # Tokenize the way the adapters do — tools/base.py:99 and proteina's
+        # _parse_hotspots both fold separators into whitespace and split on
+        # it. Splitting on commas alone made "A54 B56" one unparseable token,
+        # so the panel saw zero hotspots, said "This tool needs at least one
+        # hotspot residue", and disabled Run for a field the gate accepts.
+        # That direction is the one the rule above forbids, and 8644c74 is
+        # what created it: before that commit the gate refused the same input,
+        # so panel and gate agreed by both being wrong.
+        for _tok in raw_hotspots.replace(";", ",").replace(",", " ").split():
+            _cid, _resnum = split_hotspot(_tok, _chains)
+            if _resnum is None:
+                # Skipped, not fatal — the adapter refuses it on submit, with
+                # wording this function has no business inventing.
                 continue
-            try:
-                hotspots.append(int(tok))
-            except ValueError:
-                # Non-integer hotspot entries are surfaced through the
-                # form validator on submit; for preflight purposes we
-                # ignore them so the panel renders something useful.
-                pass
+            hotspots.append(_resnum if _cid is None else f"{_cid}{_resnum}")
 
     # Source the bytes: file upload OR AlphaFold fetch.
     af_accession = (request.form.get("alphafold_accession") or "").strip()
@@ -841,6 +898,20 @@ def tool_preflight(tool: str):
         adapter.slug, pdb_bytes,
         target_chain=target_chain, hotspots=hotspots,
         binder_max_aa=binder_max_aa, num_designs=num_designs,
+        # Sizes the region the user typed, so the panel and the submit-time
+        # gate below judge the same run. Without it the panel would size the
+        # whole upload and refuse targets that submit then accepts.
+        #
+        # HALF OF THIS LIVES IN THE BROWSER. `preflight_target_segments` reads
+        # `target_input` off the form, so the sentence above is only true while
+        # static/js/preflight.js actually POSTS that field — and for its first
+        # release it did not. The server was correct in isolation and the
+        # feature was still dead: whole 3S7G plus contig `A236-300,B236-300`
+        # arrived here with no contig at all, sized 415, and greyed out the Run
+        # button for a 130-residue run. Both halves are pinned by
+        # tests/test_preflight_panel_contract.py; do not read this comment as a
+        # description of the system unless that file is still passing.
+        target_segments=preflight_target_segments(request.form),
     )
     return (_verdict_to_json(verdict, source_label), 200)
 
@@ -1202,7 +1273,33 @@ def tool_submit(tool: str):
         and pdb_bytes is not None
     ):
         preflight_target_chain = (inputs.get("target_chain") or "").strip()
-        preflight_hotspots = inputs.get("hotspot_residues") or []
+        # NOT ``inputs["hotspot_residues"]``. proteina emits that key as BARE
+        # author numbers with the chain letter stripped, so on a multi-chain
+        # contig it cannot distinguish a hotspot the user typed bare (which
+        # ships onto the first chain) from one they chain-prefixed (which ships
+        # onto the chain they named) — and the gate below wants opposite
+        # verdicts for those. ``shipped_hotspots`` prefers the prefixed
+        # ``hotspot_spec`` exactly as the container does, and is a no-op for
+        # every other tool, whose ``hotspot_residues`` is already the shipped
+        # token.
+        #
+        # THE AJAX PANEL THAT PREVIEWS THIS VERDICT DOES NOT SEND THE SAME
+        # FORM, and the comment here used to claim it always had.
+        # ``tool_preflight`` above only re-attaches a prefix the user already
+        # typed — ``_resnum if _cid is None else f"{_cid}{_resnum}"`` — so a
+        # bare token stays a bare int on that path while ``hotspot_spec``
+        # prefixes it.
+        #
+        # The two still agree, and NOT by luck: preflight attributes a bare
+        # token to the FIRST named chain, which is the same rule the adapter
+        # applied when it built the prefix, so the bare token and the
+        # ``hotspot_spec`` token derived from it name the same residue by
+        # construction. Executed panel-vs-gate over 9 cases — bare and
+        # prefixed, in range and out, single- and multi-chain: 0 disagreements
+        # on verdict kind. What can still differ is the token ECHOED back in
+        # the refusal text (``520`` vs ``A520``), which is cosmetic and, on the
+        # gate's side, the more useful of the two.
+        preflight_hotspots = shipped_hotspots(inputs)
         preflight_binder_max, preflight_num_designs = (
             _parse_preflight_size_params(inputs)
         )
@@ -1213,6 +1310,10 @@ def tool_submit(tool: str):
                 hotspots=preflight_hotspots,
                 binder_max_aa=preflight_binder_max,
                 num_designs=preflight_num_designs,
+                # The validator already parsed the contig, so this is the
+                # exact selection that will reach the model — no re-parse and
+                # no chance of the gate sizing something the run will not use.
+                target_segments=preflight_target_segments(inputs),
             )
         except Exception:
             # Defensive: a preflight crash must not block submit on
@@ -1567,10 +1668,15 @@ def tool_submit(tool: str):
             reuse_err = _verify_reuse_pdb_bytes(
                 adapter, check_bytes,
                 target_chain=(inputs.get("target_chain") or "").strip(),
-                hotspots=inputs.get("hotspot_residues") or [],
+                # Same rule as the fresh-upload gate above: the prefixed
+                # ``hotspot_spec`` when the adapter emits one, because this
+                # path runs both ``validate_hotspots`` and the full preflight
+                # and both range-check by chain.
+                hotspots=shipped_hotspots(inputs),
                 filename=staged_filename or "input.pdb",
                 binder_max_aa=reuse_binder_max,
                 num_designs=reuse_num_designs,
+                target_segments=preflight_target_segments(inputs),
             )
             if reuse_err:
                 mark_failed(

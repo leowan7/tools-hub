@@ -37,7 +37,15 @@
 
   Requires in Jinja globals:
     metric_glossary (dict)  — injected from shared.metric_glossary.GLOSSARY via app.py
+    legend_text             — shared.score_legends.legend_text
     format_metric_value, score_legend_for, ordinal — multi-tool mode only
+
+  ``legend_text(leg)`` and not ``leg.explanation``: a legend may carry a
+  ``caveat`` about what an OLD STORED result holds, and this table is the only
+  surface that renders old stored results. Both the single-tool header and the
+  multi-tool per-row cell go through it, so the caveat cannot reach one and
+  miss the other — which is what happened when the caveat was folded into
+  ``explanation`` instead and turned up in the completion email.
 
   ``ordinal`` is called UNGUARDED by the percentile cell, unlike its
   neighbours, so a missing registration raises rather than silently printing a
@@ -425,15 +433,13 @@
              concrete "what counts as good?" answer; the metric_glossary
              entry remains the academic citation. Stack both into one
              tooltip so the user gets the actionable line first. #}
-          {% set tooltip_text = '' %}
-          {% if leg %}
-            {% set tooltip_text = leg.explanation %}
-          {% endif %}
+          {% set leg_text = legend_text(leg) if leg else '' %}
+          {% set tooltip_text = leg_text %}
           {% if g.get('definition') %}
             {% set tooltip_text = tooltip_text ~ (' ' if tooltip_text else '') ~ g.definition ~ ' Range: ' ~ g.good_range ~ ('. ' ~ g.citation if g.citation else '') %}
           {% endif %}
           <th data-col="{{ col }}" class="sortable-col"
-              {% if leg %}title="{{ leg.explanation }}"{% endif %}>
+              {% if leg %}title="{{ leg_text }}"{% endif %}>
             {{ g.get('label', col) -}}
             {% if tooltip_text %}
               <span class="mtt"
@@ -570,7 +576,7 @@
                 {# The legend is resolved from THIS ROW'S tool, never from a
                    table-wide tool_slug: "what counts as good" for ipTM differs
                    between bindcraft (0.75) and rfdiffusion (0.65). #}
-                <span{% if leg %} title="{{ leg.explanation }}"{% endif %}>{{ metric_glossary.get(mkey, {}).get('label', mkey) }} {{ format_metric_value(mkey, mval) }}</span>
+                <span{% if leg %} title="{{ legend_text(leg) }}"{% endif %}>{{ metric_glossary.get(mkey, {}).get('label', mkey) }} {{ format_metric_value(mkey, mval) }}</span>
               {% else %}
                 <span title="This design carries no value for its tool's ranking metric, so it is listed but not ranked.">—</span>
               {% endif %}
@@ -723,7 +729,22 @@
          no JS change was needed to wire THIS branch: openCampaignModal already
          fills whichever of candidate_refs / candidate_indices the modal
          carries, and a target ref is the same shape as a campaign one. (The
-         file did change, for the 5.2 action-bar work above.) #}
+         file did change, for the 5.2 action-bar work above.)
+
+         THE JOB BRANCH POSTS BOTH SHORTLIST FIELDS, for one release
+         (register item A91). ``candidate_indices`` is the only shape this
+         branch has ever posted and the only one a page served before that
+         change carries, so it stays; ``candidate_refs`` is what the submit now
+         prefers, because it is the shape both other arms take and the one that
+         carries the source job per entry rather than assuming it. The server
+         falls back to the indices whenever the refs parse to nothing, so
+         either page works against either deploy. No JS change here either, and
+         for the same reason: openCampaignModal looks the two inputs up
+         independently (static/js/candidate_table.js) and fills each one it
+         finds.
+
+         The PARENT field is still one per render. Only the shortlist payload
+         is doubled, and only on this branch. #}
       {% if target_id %}
       <input type="hidden" name="source_target_id"    value="{{ target_id }}">
       <input type="hidden" name="candidate_refs"      value="[]">
@@ -732,6 +753,7 @@
       <input type="hidden" name="candidate_refs"      value="[]">
       {% else %}
       <input type="hidden" name="source_job_id"       value="{{ job_id }}">
+      <input type="hidden" name="candidate_refs"      value="[]">
       <input type="hidden" name="candidate_indices"   value="[]">
       {% endif %}
 

@@ -7,6 +7,7 @@ the duplicate-upload offer.
 from __future__ import annotations
 
 import io
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -17,7 +18,26 @@ import pytest
 # live database that app.py's load_dotenv() would otherwise hand them.
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
-from shared.targets import DesignTarget
+from shared.targets import (
+    TARGET_READ_ABSENT,
+    TARGET_READ_OK,
+    TARGET_READ_UNAVAILABLE,
+    DesignTarget,
+    TargetRead,
+)
+
+
+def _read_ok(target):
+    """What ``blueprints.targets.read_target`` answers for a row that is there.
+
+    ``target_detail`` resolves its parent through the THREE-outcome read
+    (register item A90), so a read that never completed is distinguishable from
+    a row that is not there and no longer renders 404 at a user looking at their
+    own target. The other /targets/* routes still resolve through
+    ``get_target``, which is why only the detail-page tests patch this one.
+    """
+    return TargetRead(target, TARGET_READ_OK)
+
 
 # A minimal, genuinely parseable PDB so resolve_target_upload's Biopython
 # inspection succeeds rather than the route rejecting before the code under
@@ -207,6 +227,53 @@ def test_create_target_rejects_a_non_numeric_hotspot(client):
     mk.assert_not_called()
 
 
+def test_create_target_rejects_a_chain_qualified_hotspot(client):
+    """PLAIN INTEGERS ONLY ON THIS ROUTE, and it is not a limitation, it is the
+    fix for a P0.
+
+    Whatever is stored here is prefilled by ``target_defaults_for_form`` into
+    the ONE shared ``hotspot_residues`` field the launch screen posts to EVERY
+    selected tool. Accepting "A241" here was executed against the real
+    ``_collect_launch_specs``: rfdiffusion, bindcraft, boltzgen and pxdesign
+    refuse a token naming a chain the run does not target, and
+    ``tools/rfantibody`` parses it with a bare ``int(tok)`` and refuses a prefix
+    on ANY target chain — and the launch route is all-or-nothing.
+
+    A protomer reaches proteina through proteina's own ``chain_hotspots``
+    field, and reaches the target through
+    ``shared.targets.enrich_target_hotspot_spec``. Never through this form.
+    """
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        resp = client.post("/targets", data={
+            "target_chain": "A",
+            "hotspot_residues": "A241, B241",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert "A241" in resp.get_data(as_text=True)
+    mk.assert_not_called()
+
+
+def test_create_target_still_rejects_a_chain_prefixed_epitope(client):
+    """Only the hotspot field opted in. The epitope field feeds IgGM, whose
+    parser has never read a prefix, so accepting one here would store a value
+    that silently means nothing downstream."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        resp = client.post("/targets", data={
+            "epitope_residues": "A32",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert "A32" in resp.get_data(as_text=True)
+    mk.assert_not_called()
+
+
 def test_create_target_offers_an_existing_target_with_the_same_content(client):
     """Two targets for one structure split its designs across two combined
     tables, which is exactly what targets exist to prevent."""
@@ -243,14 +310,142 @@ def test_create_target_honours_allow_duplicate(client):
     dupe.assert_not_called()
 
 
+# The "/targets/new must not teach a token this route rejects" guard lives in
+# tests/test_multichain_form_affordances.py::
+# test_targets_new_residue_examples_parse_on_its_own_route, and only there.
+#
+# A second check used to sit here, asserting `"Prefix the chain" not in ...`
+# and `"A241" not in ...` inside a 600-char window after the field label. It
+# was deleted rather than reworded because it was measured and found vacuous:
+# with the exact copy that shipped the defect restored into
+# templates/targets/new.html ("... prefix the chain to name another (A296,
+# B264).", removed by d398782, which is on main), it went on PASSING while the
+# property test FAILED. Its two literals cannot match that copy -- lowercase
+# "prefix", and the token was A296/B264, never A241 -- so it could not fail for
+# the reason its own docstring gave. The property test extracts every residue
+# example from the whole containing <form>, including placeholder/title/
+# data-tooltip/aria-label, and feeds each to `_parse_residue_list`, the parser
+# this route really uses; `input_named` fails there too if the field is gone.
+
+
 def test_target_detail_404s_for_another_users_target(client):
+    """ABSENT still 404s, and that is the half of the three-outcome read that
+    did not change (register item A90). A read that COMPLETED and matched no row
+    is a permanent verdict about the row -- it does not exist, or it is not this
+    caller's -- and 404 is what that means. Only the third outcome moved."""
     _login(client)
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=None) as fetch:
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_ABSENT)) as fetch:
         resp = client.get(f"/targets/{uuid.uuid4()}")
     assert resp.status_code == 404
     # Owner scope must be enforced in the query, not after the fetch.
     assert fetch.call_args.kwargs["user_id"] == "u-1"
+
+
+def test_target_detail_503s_when_the_read_did_not_complete(client):
+    """THE REGRESSION A90'S OWN FIX CREATED, and this is where it is pinned.
+
+    The submit gate refuses an unreadable parent by redirecting to this page
+    with `?handoff=unverified`, and the browser follows that redirect in
+    milliseconds, with nothing to say the fault has passed by then. This route
+    used to render 404 for it, telling a user that the target they had just been
+    looking at does not exist. Before A90 that same user landed on the targets
+    list with a 200 and no message, so the 404 was a new, worse answer
+    introduced by the fix.
+
+    503, not 404 and not 200: 404 is a claim about the row that a read which
+    never answered cannot make, and 200 would present a page carrying none of
+    the target's content as the target's page.
+    """
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
+        resp = client.get(f"/targets/{uuid.uuid4()}")
+    assert resp.status_code == 503
+    body = _flat(resp.get_data(as_text=True))
+    assert "We could not load this target." in body
+    # And it must not say the thing 404.html says.
+    assert "The page you're looking for doesn't exist" not in body
+
+
+def test_the_503_page_still_carries_the_handoff_reason(client):
+    """WITHOUT THIS THE FIX DROPS THE REFUSAL REASON ON ITS OWN OUTPUT.
+
+    `?handoff=unverified` is how the submit gate tells the user it refused
+    rather than ignored their shortlist. It rides the query string, and
+    `_submit_target_shortlist` sends it to THIS URL, so a page that read the
+    target first and rendered an error without consulting the query string
+    would drop it on the very request A90's own unavailable exit produces.
+    Nothing here measures how often that request is the one that arrives.
+    """
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
+        resp = client.get(f"/targets/{uuid.uuid4()}?handoff=unverified")
+    assert resp.status_code == 503
+    raw = resp.get_data(as_text=True)
+    body = _flat(raw)
+    assert "Nothing was sent to the lab." in body
+    assert ("could not confirm that the designs you starred belong to this "
+            "target") in body
+    # And the retry link carries the reason forward, so the reload this page
+    # asks for lands on the real page WITH the banner rather than without it.
+    assert "?handoff=unverified" in raw
+
+
+def test_the_503_page_still_reports_what_the_size_cap_discarded(client):
+    """THE SECOND BANNER PARAGRAPH, which is a different fact from the reason.
+
+    `_submit_target_shortlist` appends `&truncated=N` to every failure exit
+    including the unreadable-parent one, so the redirect that lands here can
+    carry both. The reason paragraph and this one are separate `{% if %}`s in
+    templates/unavailable.html, and the page carried the first with nothing
+    asserting the second: deleting the truncation block left the whole suite
+    green.
+
+    The count is the one number on this page the user cannot recover by
+    reloading -- the refs past the cap were never read, so nothing on the
+    reloaded target page can tell them how many there were.
+    """
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
+        resp = client.get(
+            f"/targets/{uuid.uuid4()}?handoff=unverified&truncated=120"
+        )
+    assert resp.status_code == 503
+    body = _flat(resp.get_data(as_text=True))
+    assert "up to 120 of your starred designs were over the per-request limit" in body
+    # The pair: no `?truncated=` means no second paragraph, so the assertion
+    # above cannot be satisfied by an unconditional sentence.
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
+        plain = client.get(f"/targets/{uuid.uuid4()}?handoff=unverified")
+    # The status assertion is what stops the negative half passing vacuously:
+    # without it a 500 on this request satisfies `not in` while proving nothing.
+    assert plain.status_code == 503
+    assert "over the per-request limit" not in _flat(plain.get_data(as_text=True))
+
+
+def test_the_503_page_renders_no_banner_for_a_crafted_handoff(client):
+    """THE PAIR. The whitelist runs before the read now, so it has to still be
+    a whitelist: an unknown value must render no banner at all rather than the
+    `{% else %}` arm's "your request could not be submitted", which would let
+    any link tell a user their submission failed."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target",
+                  return_value=TargetRead(None, TARGET_READ_UNAVAILABLE)):
+        resp = client.get(f"/targets/{uuid.uuid4()}?handoff=' or 1=1--")
+    assert resp.status_code == 503
+    body = _flat(resp.get_data(as_text=True))
+    assert "Nothing was sent to the lab" not in body
+    assert "Your request could not be submitted" not in body
 
 
 def test_target_detail_lists_only_this_targets_runs(client):
@@ -261,7 +456,7 @@ def test_target_detail_lists_only_this_targets_runs(client):
         requested_designs=24, total_subjobs=2,
     )
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg(runs=[mine])) as fetch, \
             patch("shared.compute_campaigns.list_campaigns_for_user") as everything:
@@ -280,6 +475,41 @@ def test_target_detail_lists_only_this_targets_runs(client):
     # outside the cap rendered "nothing has been run against this target yet"
     # for runs they had paid for.
     everything.assert_not_called()
+
+
+def test_target_detail_renders_the_chain_qualified_hotspots(client):
+    """THE READ-SIDE HALF OF THE PERSISTENCE FIX, and nothing else pinned it.
+
+    ``hotspot_residues`` is ``integer[]``, so on an Fc homodimer — both chains
+    numbered 234-444 — it holds ``[241, 241]`` with the protomer stripped out.
+    Rendering that column instead of ``effective_hotspots`` puts "241, 241" on
+    the page for two hotspots the user pinned to different protomers, and the
+    page then disagrees with both the launch prefill and the run that target
+    will actually produce.
+
+    Asserted against the RENDERED span rather than the template text: the
+    template names the property, but only the render proves the property is
+    what reaches the page.
+    """
+    _login(client)
+    t = _target(
+        target_chain="A B",
+        hotspot_residues=[241, 241],
+        hotspot_spec=["A241", "B241"],
+    )
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()), \
+            patch("shared.compute_campaigns.list_campaigns_for_user"):
+        resp = client.get(f"/targets/{t.id}")
+
+    assert resp.status_code == 200
+    body = _flat(resp.get_data(as_text=True))
+    shown = re.search(r"Hotspots:\s*<span[^>]*>(.*?)</span>", body)
+    assert shown, "the target page no longer renders a Hotspots row"
+    assert shown.group(1).strip() == "A241, B241", (
+        "the detail page dropped the protomer off the stored hotspots")
 
 
 def test_launch_renders_the_multi_tool_screen(client):
@@ -342,7 +572,7 @@ def test_an_archived_targets_page_offers_restore_and_not_a_dead_run_button(clien
     _login(client)
     t = _target(archived_at="2026-07-02T00:00:00Z")
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
@@ -361,7 +591,7 @@ def test_a_live_targets_page_still_offers_run_and_archive(client):
     _login(client)
     t = _target()
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
@@ -510,7 +740,7 @@ def test_an_archived_target_with_no_structure_does_not_promise_one(client):
     t = _target(archived_at="2026-07-02T00:00:00Z", storage_path=None,
                 filename=None)
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
@@ -526,7 +756,7 @@ def test_an_archived_target_with_a_structure_still_says_it_is_staged(client):
     _login(client)
     t = _target(archived_at="2026-07-02T00:00:00Z")
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg()):
         resp = client.get(f"/targets/{t.id}")
@@ -586,7 +816,7 @@ def _detail(client, drafts=(), query="", **agg_over):
         return env
 
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   side_effect=_aggregate), \
             patch("shared.compute_campaigns.list_campaigns_for_target",
@@ -1057,7 +1287,7 @@ def test_a_stranded_draft_does_not_claim_nothing_was_charged_over_real_designs(c
     t = _target()
     drafts = [SimpleNamespace(id="c-1", status="draft")]
     with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
-            patch("blueprints.targets.get_target", return_value=t), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
             patch("blueprints.targets.aggregate_target_candidates",
                   return_value=_agg(tools=["bindcraft"], standalone_jobs=2,
                                     candidates=_one_design(), total=1, shown=1)), \

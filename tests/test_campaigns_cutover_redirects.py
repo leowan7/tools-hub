@@ -88,7 +88,15 @@ def test_legacy_admin_detail_redirects(client):
 def test_wetlab_email_link_forwards_to_lab_projects(client):
     """/campaigns/<id> is now the compute detail route. A compute miss that IS
     one of the user's wet-lab campaigns must 301 to /lab-projects/<id> so old
-    wet-lab email links still land right."""
+    wet-lab email links still land right.
+
+    THE COMPUTE READ HERE IS THE TWO-OUTCOME ``get_campaign`` AND STAYS THAT
+    WAY (register items A90 and A94): this fallback is what an unreadable run
+    also gets, so an id that is neither compute nor wet-lab ends on the runs
+    list with a 200 whether the row is absent or the database is down. The
+    target arm resolves its own parent through the three-outcome ``read_target``
+    because ITS absent answer is a 404; see tests/test_target_routes.py.
+    """
     _login(client)
     with patch("blueprints.campaigns.load_user_context", return_value=_ctx()), \
          patch("shared.compute_campaigns.get_campaign", return_value=None), \

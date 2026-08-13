@@ -83,7 +83,17 @@
              own, so posting them together is refused server-side. -->
         <div class="runs-field" id="proteina-region-field" style="display:none;">
           <label for="target_input">Target region</label>
-          <input type="text" id="target_input" name="target_input" maxlength="64" value="{{ pre_fill.get('target_input','') }}" placeholder="e.g. A1-150" disabled>
+          <!-- maxlength MIRRORS tools/proteina/__init__.py::_MAX_TARGET_INPUT_FIELD
+               (128) and is not a round number picked for looks. 8 ranges
+               (_MAX_SEGMENTS) x 10 characters ("A1000-1010" is the widest a
+               range can render, since a resSeq is 4 PDB columns) + 7 commas =
+               87, so 128 is comfortably above every contig the server accepts.
+               It was 64, and the container's own endpoint refusal prints a
+               recommended contig split at each disordered gap — 100+ characters
+               on a gappy chain. The browser kept the first 64, the cut landed
+               on a comma, and the survivor was a VALID contig naming a smaller
+               target that nothing downstream could tell from an intended one. -->
+          <input type="text" id="target_input" name="target_input" maxlength="128" value="{{ pre_fill.get('target_input','') }}" placeholder="e.g. A1-150" disabled>
           <div class="hint">Which chains and residues to design against. One chain (<code>A1-150</code>) or several (<code>A12-157,B12-157,C12-157</code>). Blank uses every residue of the target chain.</div>
         </div>
         {# Binder length is NOT duplicated here: the shared #binderlen-row below
@@ -150,10 +160,37 @@
             <input type="text" id="target_chain" name="target_chain" maxlength="4" value="{{ pre_fill.get('target_chain','A') }}">
           </div>
         </div>
+        {# TWO HOTSPOT FIELDS, AT MOST ONE LIVE AT A TIME, and refreshTool()
+           swaps them. This field carries PLAIN NUMBERS and belongs to the five
+           tools that will not take a chain-qualified token from a target's
+           saved default — four refuse a chain the run does not target, and
+           rfantibody's parser is a bare int() per token. The one below is
+           proteina's and is the only one that takes a protomer.
+
+           refreshTool() disables whichever one is hidden, so TWO hotspot
+           values are never posted at once. NEVER TWO, not "exactly one": both
+           are disabled and ZERO post whenever neither field applies — for
+           iggm, which takes an epitope instead (#iggm-epitope-field), and for
+           proteina on a curated task, whose benchmark target carries its own
+           hotspots and whose adapter refuses any typed alongside it. Hiding
+           without disabling would let a prefilled shared value silently supply
+           hotspots to a proteina run whose own field the user had cleared. #}
         <div class="runs-field" id="hotspot-field">
           <label for="hotspot_residues">Hotspot residues</label>
           <input type="text" id="hotspot_residues" name="hotspot_residues" value="{{ pre_fill.get('hotspot_residues','') }}" placeholder="e.g. 417,453,486">
+          {# Server-rendered and LIVE: nothing overwrites this any more. It is
+             read only by tools that take plain numbers, so it must not carry
+             proteina's prefix rule — that copy lives under proteina's field. #}
           <div class="hint" id="hotspot-hint">Comma-separated target-chain residues the binder should contact.</div>
+        </div>
+        {# Hidden AND disabled in the server-rendered markup, like
+           #target-sdf-field above. The form opens on a non-proteina tool, so
+           this starts closed; the `disabled` is what makes it inert with no JS
+           at all, and refreshTool() opens it only for a custom proteina run. #}
+        <div class="runs-field" id="chain-hotspot-field" style="display:none;">
+          <label for="chain_hotspots">Hotspot residues</label>
+          <input type="text" id="chain_hotspots" name="chain_hotspots" value="{{ pre_fill.get('chain_hotspots','') }}" placeholder="e.g. A417,B453" disabled>
+          <div class="hint" id="chain-hotspot-hint">Optional. Residues the binder should contact. A plain number is read as the target chain; when the run targets more than one chain it is refused, because 241 cannot say which protomer it means &mdash; prefix the chain instead (A113 C73). Every one is checked against your structure before any GPU runs.</div>
         </div>
         <div class="runs-row" id="binderlen-row">
           <div class="runs-field">
@@ -219,6 +256,8 @@
   var regionInput = document.getElementById('target_input');
   var lenMin = document.getElementById('binder_length_min');
   var lenMax = document.getElementById('binder_length_max');
+  var hotspotInput = document.getElementById('hotspot_residues');
+  var chainHotspots = document.getElementById('chain_hotspots');
   var iggmPreset = document.getElementById('iggm_preset');
   var fasta = document.getElementById('fasta');
   var epitope = document.getElementById('epitope');
@@ -297,7 +336,23 @@
     // Hotspots and binder length are real proteina knobs on the custom-target
     // path — they are written into the registered target record. A curated task
     // carries its own, so they stay hidden there. IgGM uses neither.
-    show('hotspot-field', !isIggm && (!isProteina || custom));
+    //
+    // The SWAP, and the disables are the load-bearing half of it. Proteina
+    // reads `chain_hotspots` first and falls back to `hotspot_residues`, so a
+    // merely-hidden shared field would still post its prefilled value and
+    // supply hotspots to a proteina run whose own field the user had emptied.
+    // The other direction is the SAME hazard mirrored, not a different one: a
+    // merely-hidden `chain_hotspots` still posts, and because proteina prefers
+    // it, a user who cleared the visible shared field would be silently
+    // overruled by one they cannot see. It is NOT a cross-tool hazard —
+    // `chain_hotspots` is read by `tools/proteina` alone (grep: no other
+    // adapter names it), and this form runs one tool at a time, so a stray
+    // value simply goes unread by the other five.
+    var sharedHotspots = !isIggm && !isProteina;
+    show('hotspot-field', sharedHotspots);
+    hotspotInput.disabled = !sharedHotspots;
+    show('chain-hotspot-field', custom);
+    chainHotspots.disabled = !custom;
     show('binderlen-row', !isIggm && (!isProteina || custom));
     if (custom) {
       // The generic defaults are the binder tools' narrow window; upstream
@@ -306,9 +361,11 @@
       if (lenMin.value === '55') { lenMin.value = '60'; }
       if (lenMax.value === '65') { lenMax.value = '120'; }
     }
-    document.getElementById('hotspot-hint').textContent = isProteina
-      ? 'Optional. Residues the binder should contact. Plain numbers use the target chain; prefix the chain for a multi-chain region (A113 C73). Every one is checked against your structure before any GPU runs.'
-      : 'Comma-separated target-chain residues the binder should contact.';
+    // NO per-tool rewrite of #hotspot-hint any more. It used to carry a
+    // proteina arm because one field served every tool; proteina now has its
+    // own field with its own server-rendered hint, and #hotspot-hint is only
+    // ever shown to tools that take plain numbers. A ternary here would be
+    // dead copy for the one tool it described.
     refreshTarget();
   }
 

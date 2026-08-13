@@ -84,6 +84,21 @@ class SizeEnvelope:
     runtime_base_min: float
     runtime_alpha: float
     runtime_baseline_designs: int = 100
+    # WHERE THE CAP CAME FROM, because the refusal copy must not claim more
+    # confidence than the number has.
+    #   "literature" — published binder-design work plus (for rfantibody) a
+    #       clean in-house run near the cap. ONLY this basis lets the panel
+    #       say the job would likely exhaust GPU memory.
+    #   "measured"  — derived from this tool's own VRAM/runtime scaling curve,
+    #       but set with headroom ABOVE the largest size actually run. A
+    #       curve is not a failure point, so the copy stays the cautious one.
+    #   "untested"  — no run has ever approached this number here.
+    # The copy branch keys on "is this literature-backed", not on an
+    # equality with "untested", so an unrecognised value fails toward the
+    # cautious wording rather than toward an invented OOM prediction. The
+    # default is the most cautious of the three on purpose: a new tool that
+    # forgets to declare this under-claims instead of over-claiming.
+    cap_basis: str = "untested"
 
 
 @dataclass(frozen=True)
@@ -127,6 +142,45 @@ class ToolRules:
     thing that has to change: port the multi-chain normalizer to
     llm-proteinDesigner, rebuild those images, then flip
     ``multi_chain_container_ready``. Nothing else here needs to move.
+
+    On ``hotspot_needs_full_backbone``
+    ---------------------------------
+    Does a hotspot on a residue with an INCOMPLETE backbone (present, with a
+    CA, but short of N/CA/C/O) survive into this tool's run?
+
+    It is a third distinct question, and it is NOT ``hotspots_required``.
+    That flag says whether the tool needs a hotspot at all; this one says
+    whether the one it was given will resolve. Missing O atoms are routine —
+    terminal residues, disordered loops — so answering it with the wrong flag
+    either refuses ordinary paid work or funds a run that dies mid-flight.
+
+    True for the five tools dispatched to llm-proteinDesigner images: they run
+    ``pipeline_normalize`` in-container, which DROPS such a residue, so the
+    hotspot cannot be mapped afterwards. Executed against a synthetic chain
+    whose residue 30 carries N/CA/C and no O: ``normalize_for_boltzgen`` and
+    ``normalize_for_pxdesign`` both return a ``renumber_map`` with no
+    ``("A", 30)``, and llm-proteinDesigner's
+    ``docker/boltzgen/run_pipeline.py:1083`` raises ``"Hotspot residue(s) ...
+    are not present after structure cleanup"`` on exactly that condition —
+    after the wallet hold, with the GPU running.
+
+    Run against BOTH copies of the normalizer, because they are NOT
+    byte-identical: this repo's vendored ``shared/pipeline_normalize.py`` and
+    the sibling's ``backend/pdb_utils/pipeline_normalize.py`` that the image
+    actually mounts. Each drops one residue from chain A and neither maps
+    ``("A", 30)``. Checking only the vendored copy would have been an argument
+    about a file the GPU never loads.
+
+    False for proteina alone. Its container is the one in THIS repo and it
+    never calls ``pipeline_normalize``; it selects residues by CA
+    (``pdb_ca_residues`` -> ``select_residues``) and matches
+    ``missing_hotspots`` against that set. Executed on the same structure:
+    ``missing_hotspots(selected, ["A30"])`` returns ``[]`` — the run is
+    accepted and correctly constrained. Refusing it at the gate would be a
+    false refusal of a run that succeeds today.
+
+    Defaults True, the cautious direction: a new tool that forgets to declare
+    this refuses a user rather than spending their money.
     """
     slug: str
     gpu: str                       # human-readable, surfaced in the panel
@@ -136,6 +190,8 @@ class ToolRules:
     min_target_aa: int             # below this the model has nothing to design
     size: SizeEnvelope
     gap: GapThresholds
+    # Does an incomplete-backbone hotspot survive into this tool's run?
+    hotspot_needs_full_backbone: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +237,7 @@ _RFANTIBODY = ToolRules(
         hard_cap_combined_aa=720,    # +120 VHH framework (binder fixed)
         runtime_base_min=200.0,      # Week 2 calibrated from 412/4 = 41 min
         runtime_alpha=1.2,           # RF2 triangle attention dominates
+        cap_basis="literature",      # + a clean 412 aa in-house run
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -193,7 +250,12 @@ _RFDIFFUSION = ToolRules(
     slug="rfdiffusion",
     gpu="A100-40GB",                 # matches llm-pd infrastructure/modal/rfdiffusion_app.py:_GPU
     multi_chain_supported=True,      # Watson 2023 designs against multi-chain targets
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:56} in 153 s — both protomers intact, one binder, no
+    # target/binder swap. The llm-pd normalizer is no longer exact-match
+    # (leowan7/llm-proteinDesigner#11 ports parse_target_chains) and the image
+    # was rebuilt against it.
+    multi_chain_container_ready=True,
     hotspots_required=True,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -202,6 +264,7 @@ _RFDIFFUSION = ToolRules(
         hard_cap_combined_aa=600,
         runtime_base_min=150.0,      # Faster than rfantibody (no RF2 stage)
         runtime_alpha=1.2,
+        cap_basis="literature",      # Watson 2023 training distribution
     ),
     gap=GapThresholds(
         warn_length=5,
@@ -220,6 +283,13 @@ _BINDCRAFT = ToolRules(
     slug="bindcraft",
     gpu="A100-80GB",
     multi_chain_supported=True,      # Pacesa 2024 takes multi-chain target settings
+    # Still UNVERIFIED as of the 2026-08-05 GPU session that cleared
+    # rfdiffusion / boltzgen / pxdesign. It could not be cleared the same way:
+    # bindcraft is the one binder tool with no smoke tier, so the only way to
+    # exercise its chain handling is a full paid pilot run. Its wrapper does
+    # pass target_chain straight through to BindCraft's native `chains`
+    # setting and needed no code change — but that is a docs read plus a code
+    # path, not evidence.
     # UNVERIFIED, not known-good: bindcraft runs from a separate prebuilt
     # image (config.runpod_image_bindcraft = kendrew-bindcraft:v7) rather
     # than llm-pd's normalizer, so its chain handling could not be executed
@@ -236,6 +306,7 @@ _BINDCRAFT = ToolRules(
         runtime_base_min=300.0,      # 10 trajectories × ~30 min at small target
         runtime_alpha=1.5,           # AF2 multimer + ColabDesign backprop
         runtime_baseline_designs=10, # bindcraft default trajectories
+        cap_basis="literature",      # Pacesa 2024 default-settings examples
     ),
     gap=GapThresholds(
         warn_length=10,
@@ -248,7 +319,10 @@ _BOLTZGEN = ToolRules(
     slug="boltzgen",
     gpu="A100-40GB",                 # Week 2: verified A100-SXM4-40GB via Modal log
     multi_chain_supported=True,      # Boltz-class models cofold multi-chain
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:55} in 430 s. include:/binding_types: are per-chain
+    # LISTS upstream and the wrapper now builds them per chain.
+    multi_chain_container_ready=True,
     hotspots_required=False,
     min_target_aa=30,
     size=SizeEnvelope(
@@ -257,6 +331,7 @@ _BOLTZGEN = ToolRules(
         hard_cap_combined_aa=700,
         runtime_base_min=600.0,      # Boltz-1 diffusion ~5-10 min/design × 100
         runtime_alpha=1.0,
+        cap_basis="literature",      # AF3-class headroom
     ),
     gap=GapThresholds(
         warn_length=20,
@@ -270,7 +345,11 @@ _PXDESIGN = ToolRules(
     slug="pxdesign",
     gpu="A100-80GB",                 # matches tools/pxdesign/__init__.py docstring
     multi_chain_supported=True,
-    multi_chain_container_ready=False,   # llm-pd normalizer is exact-match; VERIFIED raises
+    # VERIFIED on GPU 2026-08-05: real two-chain 4ZQK run via Modal returned
+    # {A:115, B:106, C:80} in 445 s. target.chains is a per-chain MAP upstream;
+    # ensure_cif no longer filters to one chain and each chain gets its own
+    # crop and hotspot list.
+    multi_chain_container_ready=True,
     hotspots_required=True,          # pxdesign requires >=1 hotspot
     min_target_aa=30,
     size=SizeEnvelope(
@@ -283,6 +362,7 @@ _PXDESIGN = ToolRules(
         runtime_base_min=300.0,      # AF2-IG validation per design
         runtime_alpha=1.3,
         runtime_baseline_designs=8,  # pxdesign default num_designs
+        cap_basis="literature",      # BindCraft/Pacesa 2025 practical ceiling
     ),
     gap=GapThresholds(
         # pxdesign renumbers the target chain to 1..N, so a numbering gap
@@ -308,33 +388,130 @@ _PROTEINA = ToolRules(
     hotspots_required=False,         # hotspot-directed, but an open search is valid
     min_target_aa=30,
     size=SizeEnvelope(
-        # PROVISIONAL, and this entry is a COST GATE before it is a UI panel.
-        # Until bring-your-own targets landed, proteina was reachable only with
-        # curated ~115 aa targets, so it was absent from TOOL_RULES entirely and
-        # got NO size check (pdb_preflight.py early-returns for tools outside
-        # BINDER_DESIGN_TOOLS). With uploads, an oversized target runs to the
-        # _MAX_SESSION_S = 7200 wall, is killed, and bills the full per-shard
-        # ceiling (~$12.58) for zero designs — across 4 concurrent shards, and
-        # the $15/shard hold covers all of it, so nothing else stops it.
+        # This entry is a COST GATE before it is a UI panel.
         #
-        # These numbers are the AF2-80GB regime (same as pxdesign, which shares
-        # the reward stack's memory profile). The hotspot canary's phase 1
-        # measures real peak VRAM and wall-clock on a large multi-chain target;
-        # RE-SET hard_cap_target_aa from that measurement before the flag flips.
-        hard_cap_target_aa=600,
-        soft_warn_target_aa=360,
-        hard_cap_combined_aa=950,
-        # One shard = one 8-design container, quoted at 30-120 min in
-        # tools/proteina/meta.py — anchor at the middle of that band.
-        runtime_base_min=75.0,
-        runtime_alpha=1.3,           # flow-matching generator + AF2/RF3 refold
+        # THE MEASUREMENT. Three paid A100-80GB canary shards (protein_binder,
+        # seed 1234, 8 designs, binder_length [60, 120]), all COMPLETED exit 0:
+        #
+        #     target aa   peak device VRAM   % of 81,920 MB card   runtime
+        #        130           8,943 MB             10.9%           576 s
+        #        260          15,541 MB             19.0%           645 s
+        #        415          25,457 MB             31.1%           874 s
+        #
+        # They are comparable to each other for exactly one reason: JAX
+        # preallocation was DISABLED for all three (_ALLOCATOR_ENV in
+        # tools/proteina/run_pipeline.py). Keep that condition attached to the
+        # numbers — the trap it closes can recur. The two shards before these
+        # read 67,546 MB at 129 aa and 67,570 MB at 130 aa and agreed to 24 MB,
+        # because ~91% of each was a JAX allocator constant (PREALLOCATE=true
+        # at MEM_FRACTION=0.75 reserves 61,440 MB on the first JAX op whatever
+        # the target size). They measure a policy, not this workload, and must
+        # never be mixed with the table above. The canary reports
+        # ``vram_prealloc_disabled`` so the two regimes stay distinguishable.
+        #
+        # THE FIT. Exact quadratic through the three points:
+        # MB = 3913 + 32.66*n + 0.04639*n^2. Growth ACCELERATES — the power-law
+        # exponent is 0.80 over 130->260 and 1.06 over 260->415 — so a straight
+        # line through the low end UNDER-reads at the top, the direction that
+        # bills money.
+        #
+        # MEASUREMENT ENDS AT 415. Above it only the fit is talking: 31,841 MB
+        # (38.9% of the card) at 500 aa, 40,209 MB (49%) at 600, OOM near 992.
+        #
+        # 500 IS STILL A POLICY NUMBER; what changed is its anchor — a scaling
+        # curve instead of an allocator constant. It is a 1.2x step past the
+        # measured 415 at 38.9% of the card, the worst VRAM extrapolation error
+        # this tool has shown us was 11% LOW at a 1.6x step, and even a 100%
+        # model error at 500 aa still fits. (That 11% is the power-law miss,
+        # which is the form this comment argues in two paragraphs above:
+        # fitted to 130 and 260 aa it predicts 22,564 MB at 415 against a
+        # measured 25,457. A straight line through the same two points is the
+        # friendlier miss at 8% low, and quoting that one instead would be
+        # picking the flattering number. Both under-read, which is the
+        # direction that bills. And VRAM is load-bearing on that sentence
+        # rather than decoration: 11% is NOT this tool's worst extrapolation
+        # error of any kind. Refit RUNTIME over the same two points across the
+        # same 1.6x step and it misses the 415 aa shard by 20.35% low — block
+        # (4) of tests/test_pdb_preflight.py::test_the_proteina_cap_is_
+        # traceable_to_three_post_prealloc_shards runs exactly that refit. The
+        # cap's headroom is a VRAM argument, so the VRAM figure is the one that
+        # belongs here; it just may not be read as a bound on the tool at
+        # large.)
+        #
+        # Being wrong-high costs what it always
+        # did: a 4-shard first wave (_LAUNCH_CONCURRENCY_OVERRIDE["proteina"]
+        # = 4) running to _MAX_SESSION_S = 7200 at ~$12.58 a shard for zero
+        # designs, inside a ~$15/shard hold that covers all of it.
+        #
+        # WHAT WOULD MOVE IT AGAIN: one completed shard above 415 aa. Not an
+        # argument, and not a longer extrapolation from these same points.
+        hard_cap_target_aa=500,
+        # Exactly where measurement ends and extrapolation begins — not a
+        # fraction of the cap. The amber notice means "past here, the number
+        # on screen is a model rather than a run".
+        soft_warn_target_aa=415,
+        # 500 target + 120 binder. 120 is the top of the binder range the
+        # canaries actually ran; the form's _BINDER_LEN_MAX of 300 has never
+        # been measured against any target.
+        hard_cap_combined_aa=620,
+        # MEASURED. Least squares on the three runtimes above, in this
+        # estimator's own form (minutes = base x (n/120)^alpha at 8 designs),
+        # gives base=9.0 with residuals inside +/-10% across 130-415 aa. The
+        # 5.4 that used to be here was solved from a 359 s reading at 130 aa.
+        # TWO READINGS EXIST AT THAT SIZE AND THEY DISAGREE BY ~60%: 359 s and
+        # 576 s. Both are recorded here as completed 8-design protein_binder
+        # shards — the 359 s one by the immediately preceding revision of this
+        # same comment (at ce609c3: "one protein_binder shard, 8 designs, at
+        # 130 residues over 2 chains, completed in 359 s"), the 576 s one by
+        # the table above. So "what the 359 s run did is recorded nowhere in
+        # this repo", which stood here, was false about the file it was
+        # written in. What separates them is the ALLOCATOR REGIME: the 359 s
+        # wall-clock belongs to the PREALLOCATION-ON shard that read 67,570 MB,
+        # and all three points above were taken with preallocation DISABLED.
+        # Forty lines up, this comment says those two regimes must never be
+        # mixed; that applies to their wall-clocks as much as to their VRAM.
+        # The regime is a CANDIDATE for the gap and not a diagnosis of it:
+        # preallocation-off makes JAX allocate on demand instead of reserving
+        # up front, which is work moved into the run, but nobody has measured
+        # that it accounts for ~60%. It is the difference in run conditions
+        # this repo does record; do not upgrade it to the cause, and do not
+        # replace it with a fresh claim that nothing anywhere explains the gap
+        # — that assertion is what stood here, and it was wrong.
+        #
+        # WHICH FIGURE THE ESTIMATOR USES DOES NOT DEPEND ON CLOSING THAT.
+        # 576 s is the reading taken under the allocator settings production
+        # runs today (_ALLOCATOR_ENV in tools/proteina/run_pipeline.py), so it
+        # is the one of the two that describes what a user's shard will do.
+        # The 359 s figure is not used for anything.
+        runtime_base_min=9.0,
+        # MEASURED, and it was previously labelled ASSUMED: 1.3, borrowed from
+        # pxdesign's AF2-validation regime because one target size cannot
+        # yield an exponent. Three sizes can, and the real curve is far
+        # flatter than the borrowed one — the old 5.4/1.3 pair put a 415 aa
+        # shard at ~27 min against a measured 14.6.
+        runtime_alpha=0.34,
         runtime_baseline_designs=8,  # _SHARD_DESIGNS
+        # Neither "literature" nor "untested" any more: the cap is derived
+        # from this tool's own scaling curve. It still must not predict an OOM
+        # — see pdb_preflight._check_size_envelope, where only a
+        # literature-backed cap earns that copy — because nothing has ever
+        # been run at 500 and the fit says 500 is nowhere near the ceiling.
+        cap_basis="measured",
     ),
     gap=GapThresholds(
         warn_length=20,
         needs_fix_length=50,
         needs_fix_hotspot_distance=10,
     ),
+    # The only False in this column, and the only one there is evidence for.
+    # proteina's container does not run pipeline_normalize at all — grep
+    # tools/proteina/run_pipeline.py — it selects by CA and matches
+    # missing_hotspots against that, so a hotspot whose residue is merely
+    # missing an O still resolves. Verified by executing that module:
+    # pdb_ca_residues -> select_residues(A1-40) contains ("A", 30) and
+    # missing_hotspots(selected, ["A30"]) == [] for a residue with N/CA/C and
+    # no O. Trunk let those runs through and they succeeded.
+    hotspot_needs_full_backbone=False,
 )
 
 

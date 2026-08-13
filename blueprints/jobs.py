@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from flask import (
     Blueprint,
@@ -51,6 +52,28 @@ from tools import base as tool_base
 logger = logging.getLogger(__name__)
 
 jobs_bp = Blueprint("jobs", __name__)
+
+
+# The `?handoff=` reasons /jobs/<id> renders a banner for (register item A91).
+# Whitelisted so an unknown or crafted value renders nothing at all rather than
+# an empty alert.
+#
+# PUBLIC AND MODULE-LEVEL SO THE BANNER SUITE CAN IMPORT IT, the same reason
+# blueprints/targets.py::HANDOFF_REASONS and
+# blueprints/campaigns.py::LAB_HANDOFF_REASONS are, and the note beside the
+# first of those records what a hand-written copy of these keys in a test file
+# cost: it couples to nothing, so a sixth reason added to a route renders the
+# shared macro's `{% else %}` arm -- "your request could not be submitted" --
+# for an unrelated cause with the whole suite green.
+#
+# A THIRD LITERAL TUPLE AND NOT A LIFTED ONE. blueprints/campaigns.py states
+# beside its own copy that the duplication is deliberate -- the five KEYS are
+# common to the arms while the CAUSE SETS behind them are not -- and declines to
+# license merging the banner suites. That reasoning covers this arm as well, so
+# it gets its own tuple and its own suite (tests/test_job_handoff_banners.py,
+# which asserts set equality against this name in both directions) rather than
+# an import from either of the other two.
+JOB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 
 
 def _share_allowed(user_metadata) -> bool:  # noqa: ANN001
@@ -204,6 +227,15 @@ def job_detail(job_id: str):
     job = get_job(job_id, user_id=ctx.user_id)
     if job is None:
         return render_template("404.html"), 404
+    # The reason a failed lab handoff carries, read from the query string.
+    # Whitelisted so an unknown or crafted value renders nothing at all rather
+    # than an empty alert -- the wording both sibling routes use. It does NOT
+    # stop a hand-pasted WHITELISTED value from rendering the full banner; that
+    # is true of all three pages and is what this suite's per-reason render
+    # tests drive.
+    handoff = (request.args.get("handoff") or "").strip()
+    if handoff not in JOB_HANDOFF_REASONS:
+        handoff = ""
     adapter = tool_base.get(job.tool)
     preset_obj = adapter.preset_for(job.preset) if adapter else None
 
@@ -258,6 +290,7 @@ def job_detail(job_id: str):
         user_email=session.get("user_email") or "",
         send_target_tools=send_target_tools,
         share_allowed=share_allowed,
+        handoff=handoff,
     )
 
 @jobs_bp.route("/jobs/<job_id>/status.json", methods=["GET"])
@@ -319,6 +352,54 @@ def job_status(job_id: str):
             "started_at": getattr(job, "started_at", None),
         }
     )
+
+def _refold_hotspot_ints(raw) -> list:
+    """Coerce a source job's ``hotspot_residues`` to ``list[int]``, never raising.
+
+    Boltz-2 hotspots are 1-indexed SEQUENCE positions, so the chain a source
+    hotspot named cannot be carried across anyway — the number is all that
+    survives the hop, and dropping the prefix here is a conversion, not a loss
+    this function is hiding.
+
+    The comment this replaces said "SOURCE_TOOLS all persist hotspot_residues
+    as list[int]" and then did ``[int(x) for x in raw]``. That claim is FALSE:
+    rfdiffusion, bindcraft, pxdesign and boltzgen are all in SOURCE_TOOLS, all
+    four parse their hotspots through ``tools/base.py::parse_hotspot_residues``,
+    and that function returns ``["A296", "B264"]`` for any multi-chain target.
+    ``int("A296")`` raises ValueError, which here is a 500 on a Refold click.
+    Proteina emits BARE ints in ``hotspot_residues`` (its chain-qualified form
+    lives in ``hotspot_spec``) and is not in SOURCE_TOOLS either way, so it is
+    not what makes this reachable — the four above already are.
+
+    Unparseable entries are dropped rather than raised on: the alternative is
+    failing a refold the user asked for over a field boltz2 treats as optional.
+    """
+    if isinstance(raw, str):
+        items = [t for t in raw.replace(";", ",").split(",")]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    elif raw is None:
+        items = []
+    else:
+        items = [raw]
+
+    out: list = []
+    for item in items:
+        if item is None or not str(item).strip():
+            continue
+        try:
+            out.append(int(item))
+            continue
+        except (TypeError, ValueError):
+            pass
+        # Chain-prefixed ("A296"): keep the number. split_hotspot needs a chain
+        # list to recognise a prefix, and this path has no target to read one
+        # from, so match the token shape directly.
+        m = re.match(r"^[A-Za-z]{1,4}(-?\d+)$", str(item).strip())
+        if m:
+            out.append(int(m.group(1)))
+    return out
+
 
 def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
                       antigen_storage_path=None):
@@ -389,20 +470,8 @@ def _spawn_refold_job(ctx, dest_adapter, dest_tool, seq, src, campaign_label,
             )
             return None
         src_chain = str(src_inputs.get("target_chain") or "A").strip() or "A"
-        # SOURCE_TOOLS all persist hotspot_residues as list[int]; tolerate a
-        # string from any future adapter that drops the parsing.
-        raw_hotspots = src_inputs.get("hotspot_residues") or []
-        if isinstance(raw_hotspots, str):
-            parsed: list[int] = []
-            for tok in raw_hotspots.replace(";", ",").split(","):
-                tok = tok.strip()
-                if tok:
-                    try:
-                        parsed.append(int(tok))
-                    except ValueError:
-                        pass
-            raw_hotspots = parsed
-        hotspot_list = [int(x) for x in raw_hotspots if str(x).strip()]
+        hotspot_list = _refold_hotspot_ints(
+            src_inputs.get("hotspot_residues"))
         inputs = {
             "preset": "standalone",
             "target_chain": src_chain,

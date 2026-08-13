@@ -21,9 +21,25 @@ GLOSSARY: dict[str, dict] = {
     },
     "ipTM": {
         "label": "ipTM",
+        # DO NOT PROMISE WHICH INTERFACE. This entry is global — it is stacked
+        # after the per-tool legend into ONE tooltip string
+        # (components/candidate_table.html), and it used to end "at the
+        # binder–target interface SPECIFICALLY". Four words after the boltzgen
+        # legend says "an older run stored a complex-wide value instead", that
+        # is a flat contradiction inside a single tooltip, and it is equally
+        # false for rfdiffusion and pxdesign on a multi-chain target, where the
+        # number covers the target's own chain-chain contact as well.
+        #
+        # What is true of ipTM everywhere is the CONSTRUCTION: a pTM restricted
+        # to an interface rather than to the whole fold. Which chains that
+        # interface spans is a per-tool fact, so it is left to the per-tool
+        # legend (shared/score_legends.py) and to the multi-chain banner, both
+        # of which know the tool and can say so without lying to the others.
         "definition": (
-            "Interface predicted Template Modeling score. Measures structural "
-            "confidence at the binder–target interface specifically (0–1 scale)."
+            "Interface predicted Template Modeling score. A pTM restricted to "
+            "an interface rather than to the whole fold (0–1 scale). Which "
+            "chains that interface spans depends on the tool that produced "
+            "the number, and for some tools on when the run happened."
         ),
         "good_range": "> 0.75 strong; > 0.65 acceptable",
         "citation": "Evans et al., Science 2021 (AlphaFold-Multimer)",

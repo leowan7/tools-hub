@@ -304,13 +304,16 @@ def normalize_for_pipeline(
     renumber_map: dict = {}
     total_altloc_collapsed = 0
 
-    # ``target_chain`` may name SEVERAL chains, whitespace-separated ("A B C").
-    # shared/pdb_inspect.validate_target_chain has always accepted that form and
-    # four tools declare multi_chain_supported=True, but the comparison here was
-    # an exact string match, so a multi-token value matched no chain, dropped
-    # every one of them, and raised below. Splitting is behaviour-preserving for
-    # a single id (["A"]) and only affects inputs that previously raised.
-    wanted_chains = set((target_chain or "").split()) if target_chain else None
+    # ``target_chain`` may name SEVERAL chains, separated by whitespace
+    # ("A B C") or commas ("A,B,C" — the form the tool adapters canonicalise to).
+    # The comparison here was an exact string match, so a multi-token value
+    # matched no chain, dropped every one of them, and raised below. Splitting is
+    # behaviour-preserving for a single id (["A"]) and only affects inputs that
+    # previously raised.
+    wanted_chains = (
+        set((target_chain or "").replace(",", " ").split())
+        if target_chain else None
+    )
 
     for chain in target_model:
         chain_id = chain.get_id()
