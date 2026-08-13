@@ -148,11 +148,22 @@ def _clear_hub_targets() -> None:
 
     Never raises: this is hygiene, and a warm container that could not be
     cleaned must still be able to run. Leaving it dirty is not a correctness
-    problem — ``custom_target_key`` derives a distinct key per job and
-    ``registration_mismatch`` re-reads the record it just wrote — but the
-    registry is composed by Hydra on EVERY run, so unbounded growth is a slow
-    tax on every shard, and a stale PDB keeps a prior job's bytes readable to
-    the next tenant of this container.
+    problem for the REGISTRY — ``custom_target_key`` derives a distinct key per
+    job and ``registration_mismatch`` re-reads the record it just wrote — but
+    the registry is composed by Hydra on EVERY run, so unbounded growth is a
+    slow tax on every shard, and a stale PDB keeps a prior job's bytes readable
+    to the next tenant of this container.
+
+    One leftover is not merely untidy: ``hub_targets/incoming.pdb``, the path
+    the download streams to. ``run_pipeline``'s ``prepare_custom_target`` clears
+    that one itself before staging and refuses the run (``input`` /
+    ``stale_staging``) if it cannot, because a leftover there is otherwise
+    indistinguishable from this job's own upload and would be archived as it.
+    No other leftover this sweep misses has THAT consequence: a stale
+    ``<key>.pdb`` or an unpruned registry record cannot be mistaken for this
+    job's upload, because nothing downstream reads them as one. They still cost
+    what the paragraph above says — Hydra tax on every shard, and, for the
+    staged PDB, a prior job's bytes left readable to the next tenant.
     """
     try:
         shutil.rmtree(_HUB_TARGET_DIR, ignore_errors=True)
