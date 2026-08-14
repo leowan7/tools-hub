@@ -47,12 +47,24 @@
                   prefilled=pre_fill) }}
 
     {{ field_text("target_chain", "Target chain",
-                  "The chain a binder should be designed against. Checked against the uploaded structure.",
-                  placeholder="e.g. A", max_length=4, max_width="120px",
+                  "The chain a binder should be designed against, checked against the uploaded structure. One chain (A), or several for an oligomeric target (A,B).",
+                  placeholder="e.g. A", max_length=32, max_width="120px",
                   prefilled=pre_fill) }}
 
+    {# Plain numbers ONLY, and the copy has to say so. This route parses both
+       residue fields with targets.py::_parse_residue_list, which is a bare
+       int() per token and answers "'A296' is not a residue number." — so the
+       chain-prefixed form the binder forms teach is refused here. The parser
+       is deliberately not the thing that changes: this is the shared target
+       record, read by every tool including iggm and rfantibody, whose
+       adapters must never see a prefixed token.
+
+       tests/test_multichain_form_affordances.py::
+       test_targets_new_residue_examples_parse_on_its_own_route pins the two
+       together: every example shown in these fields is fed to the parser this
+       route actually uses. #}
     {{ field_text("hotspot_residues", "Hotspot residues",
-                  "Comma-separated residues in PDB numbering. Saved as the default for runs against this target.",
+                  "Comma-separated residues in PDB numbering, saved as the default for runs against this target. Plain numbers only on this page; on a multi-chain target they are read as the first chain, and the run forms take a chain-prefixed hotspot.",
                   placeholder="e.g. 417, 453, 486", prefilled=pre_fill) }}
 
     {{ field_text("epitope_residues", "Epitope residues",

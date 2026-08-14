@@ -501,6 +501,15 @@ def _archive_raw(work_dir: Path) -> None:
     invoke this from a ``finally``, so failure to archive must never break the
     run — problems are logged, never raised.
     """
+    # Pre-binding for the handler at the bottom, which removes ``dest``. The try
+    # only assigns it once abspath+isdir have both succeeded, so a failure
+    # before that would have the cleanup raise UnboundLocalError on top of the
+    # error it was invoked to clean up after — and UnboundLocalError is a
+    # NameError, which the inner ``except OSError`` does not catch, so it would
+    # escape a never-raises function called from a ``finally``. The single call
+    # site passes a live Path, so this is the contract being made unconditional
+    # rather than a defect being repaired.
+    dest: str | None = None
     try:
         src = os.path.abspath(str(work_dir))
         if not os.path.isdir(src):
@@ -534,7 +543,7 @@ def _archive_raw(work_dir: Path) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest):
+            if dest is not None and os.path.exists(dest):
                 os.remove(dest)
         except OSError:
             pass

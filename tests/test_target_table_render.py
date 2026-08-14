@@ -42,6 +42,7 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["legend_text"] = score_legends.legend_text
     # The REAL function, not a stub. A stub here would let the percentile cell
     # be tested against this file's idea of an ordinal rather than production's.
     env.globals["ordinal"] = ranking.ordinal
@@ -329,6 +330,77 @@ def test_the_score_tooltip_comes_from_the_rows_own_tool():
         assert explanation in html, f"{tool}'s own ipTM legend is missing"
 
 
+class _Titles(HTMLParser):
+    """Every ``title`` and ``data-tooltip`` value on the page.
+
+    Read through the parser rather than by substring, because HTMLParser
+    unescapes attribute values — so the assertions see the string the user's
+    browser shows, apostrophes and all, rather than ``&#39;``.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.values: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        for key, value in attrs:
+            if key in ("title", "data-tooltip") and value:
+                self.values.append(value)
+
+
+def _tooltips(html: str) -> list[str]:
+    parser = _Titles()
+    parser.feed(html)
+    return parser.values
+
+
+def test_a_legend_caveat_reaches_both_of_this_macros_tooltip_surfaces():
+    """The macro shows a legend in two places, and they are easy to split.
+
+    A legend may carry an optional ``caveat`` — the half that is about what an
+    OLD STORED result holds rather than about the metric — and this table is
+    the only surface in the app that renders old stored results. It renders
+    them two ways: the single-tool column header, and the multi-tool per-row
+    Score cell, which resolves the legend from THAT ROW'S tool.
+
+    The reason this is a test and not a comment: the caveat used to live
+    inside ``explanation``, which meant every consumer carried it including
+    one it was false in — the job-completion email, see
+    tests/test_job_complete_email_caption.py. Splitting it out fixed the email
+    and created exactly one new way to be wrong: rendering it on one of these
+    two surfaces and not the other. Both go through a single ``legend_text``
+    global, and both are asserted here, so they cannot drift apart.
+    """
+    caveat = score_legends.get_legend("boltzgen", "ipTM").get("caveat")
+    assert caveat, (
+        "boltzgen's ipTM legend no longer carries a caveat, so this test "
+        "guards nothing; re-point it rather than leave it passing"
+    )
+
+    single = _render(
+        candidates=[{"pdb_key": "designs/design_0.pdb", "sequence": "MKTAY",
+                     "scores": {"ipTM": 0.91}}],
+        columns=["ipTM"], job_id="j-1", tool_slug="boltzgen",
+    )
+    assert any(caveat in t for t in _tooltips(single)), (
+        f"the single-tool column header shows the boltzgen ipTM legend "
+        f"without its caveat: {_tooltips(single)!r}"
+    )
+
+    rows = ranking.rank_candidates(
+        [_row("boltzgen", "ipTM", 0.90 - 0.002 * i, job="j-bg", index=i)
+         for i in range(25)],
+        limit=None,
+    )["rows"]
+    multi = _render(candidates=rows, columns=[], job_id="", tool_slug="",
+                    target_id="t-1", multi_tool=True)
+    assert any(caveat in t for t in _tooltips(multi)), (
+        "the multi-tool Score cell shows the boltzgen ipTM legend without "
+        "its caveat — this is the pooled target page, where a pre-deploy "
+        "boltzgen run gets no banner and the tooltip is the only warning left"
+    )
+
+
 def test_percentile_column_renders_a_percentile():
     """This test used to read ``all(p.endswith("th"))``, and it was green.
 
@@ -500,26 +572,58 @@ def test_target_mode_posts_a_source_target_id_and_no_source_job_id():
 def test_campaign_mode_still_posts_a_source_campaign_id():
     """The pair. Adding the target branch above the campaign one must not
     capture the campaign page, whose refs are scoped by a different parentage
-    test on the server."""
+    test on the server.
+
+    THE TWO ABSENCES ARE NOT SYMMETRY WITH THE TARGET SIBLING, they are load
+    bearing since A91. `openCampaignModal` decides whether to label a candidate
+    "· sub-job <id>" from `!!modal.querySelector('[name="source_job_id"]')`,
+    because A91 gave job mode a `candidate_refs` input and `refsInput` stopped
+    identifying scope. So a campaign modal that emitted `source_job_id` would
+    read as single-job and drop the disambiguator from the ONE table that
+    interleaves rows from several jobs and needs it. `candidate_indices`
+    alongside would put a second payload on an arm whose server branch never
+    reads one. Both were mutations that survived a 416-test run; the target-mode
+    sibling already asserted both absences, campaign mode did not, and campaign
+    mode is where they landed."""
     rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb", "_source_job_id": "j1"}]
     html = _render(candidates=rows, columns=["ipTM"], job_id="",
                    tool_slug="bindcraft", campaign_id="c-1")
     fields = _form_for(html, "/lab-projects/submit")
     assert fields.get("source_campaign_id") == "c-1"
     assert "source_target_id" not in fields
+    assert "source_job_id" not in fields
+    assert "candidate_indices" not in fields
 
 
-def test_single_job_mode_still_posts_a_source_job_id():
-    """The third arm. The legacy single-job form is the only one that posts
-    candidate_indices, and both ref-based branches must leave it alone."""
+def test_single_job_mode_posts_both_shortlist_fields():
+    """The third arm, and the one payload contract A91 changed.
+
+    This form used to be the only one carrying ``candidate_indices`` and the
+    only one carrying no ``candidate_refs``; the second half of that is what
+    this test asserted, and it is now false on purpose. The job branch posts
+    BOTH. ``candidate_indices`` stays because it is the only shape a page served
+    before the change carries, so a tab left open across the deploy still
+    submits a shortlist; ``candidate_refs`` is added because it is the shape the
+    other two arms take, it names a source job per entry rather than assuming
+    one, and ``campaigns_submit`` prefers it whenever it parses to anything.
+
+    ``candidate_indices`` is still the ONLY field this form has that the ref
+    forms do not, which is why the branch cannot simply be deleted yet.
+
+    Exactly one PARENT field per render is unchanged, and the two negative
+    assertions are what hold it: the dispatcher tries ``source_target_id`` and
+    then ``source_campaign_id`` first, so a job page carrying either would be
+    routed to a parentage test built for a different parent.
+    """
     rows = [{"scores": {"ipTM": 0.9}, "pdb_key": "d.pdb"}]
     html = _render(candidates=rows, columns=["ipTM"], job_id="job-1",
                    tool_slug="bindcraft")
     fields = _form_for(html, "/lab-projects/submit")
     assert fields.get("source_job_id") == "job-1"
     assert "candidate_indices" in fields
+    assert "candidate_refs" in fields
     assert "source_target_id" not in fields
-    assert "candidate_refs" not in fields
+    assert "source_campaign_id" not in fields
 
 
 def test_campaign_mode_still_emits_the_lab_submit_form():

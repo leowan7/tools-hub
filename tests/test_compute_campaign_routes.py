@@ -1038,3 +1038,263 @@ def test_a_failed_drive_spawn_does_not_double_fund_the_campaign(
     assert len(rec.funded) == 1, (
         f"one consent funded {len(rec.funded)} campaigns"
     )
+
+
+# ---------------------------------------------------------------------------
+# /campaigns/<id> WHEN THE RUN READ DID NOT COMPLETE, and why nothing here
+# asserts a 503 (register items A90 and A94).
+#
+# This route reads through the two-outcome `cc.get_campaign`, so an unreadable
+# run is indistinguishable from an absent one and takes the launch-cutover
+# fallback: the wet-lab forward is consulted, says None under the same fault,
+# and the user lands on the runs list with HTTP 200 and no message. Benign, and
+# unchanged by A90 -- the two tests that pin it are
+# `test_wetlab_email_link_forwards_to_lab_projects` and
+# `test_compute_miss_that_is_not_wetlab_falls_back_to_list` in
+# tests/test_campaigns_cutover_redirects.py.
+#
+# The TARGET arm is not symmetric with this one and that is deliberate: its
+# absent answer is a rendered `404.html`, so a read that never completed was
+# telling the user their own target does not exist. Its 503 is pinned in
+# tests/test_target_routes.py. Mirroring it here was built and reverted for the
+# request-cost reason recorded beside `compute_campaign_detail`; A94 carries the
+# residual, which is that a `?handoff=unverified` refusal whose fault outlives
+# the redirect does not reach a banner on this arm.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Container / model capability on POST /campaigns
+#
+# The sibling of the same hole closed on POST /targets/<id>/launch. Neither
+# blueprint has ever referenced `preflight_for_tool` -- its only callers are
+# blueprints/tools.py (the atomic submit route plus its AJAX panel) and
+# shared/pdb_intake (the reuse-token path) -- so the gate that decides whether
+# the image we dispatch to can parse a multi-chain target guarded the route
+# that spends the LEAST, while both campaign routes ran size checks only.
+#
+# Executed on trunk: an rfantibody campaign against a two-chain stored target
+# reached create -> fund -> drive. rfantibody is multi_chain_supported=False,
+# so its MODEL cannot do this; its adapter accepts "A,B" only because it
+# length-checks target_chain at 4 characters.
+# ---------------------------------------------------------------------------
+
+def _two_chain_target():
+    import uuid as _uuid
+
+    from shared.targets import DesignTarget
+    return DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1", kind="pdb", name="Fab",
+        filename="fab.pdb", storage_path="u-1/target-abc/fab.pdb",
+        target_chain="A,B", hotspot_residues=[42, 88], epitope_residues=[],
+        chain_summary={
+            "total_standard_residues": 220,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 120,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 120},
+                {"chain_id": "B", "standard_residue_count": 100,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 100},
+            ],
+        },
+    )
+
+
+def _post_target_campaign(client, target, **form_kw):
+    """POST /campaigns bound to a STORED target, money layers mocked."""
+    rec = _CampaignRecorder()
+    form = {
+        "tool": "rfantibody",
+        "target_id": target.id,
+        "requested_designs": "24",
+        "target_chain": "A,B",
+        "hotspot_residues": "42,88",
+    }
+    form.update(form_kw)
+    patches = [
+        patch("blueprints.campaigns.load_user_context", return_value=_ctx()),
+        patch("shared.targets.get_target", return_value=target),
+        patch("shared.targets.touch_target"),
+        patch("shared.compute_campaigns.create_campaign", side_effect=rec.create),
+        patch("shared.compute_campaigns.fund_campaign", side_effect=rec.fund),
+        patch("shared.compute_campaigns.drive_campaign_async", side_effect=rec.drive),
+        patch("shared.compute_campaigns.campaign_preauth",
+              return_value=SimpleNamespace(
+                  ok=True, reason=None, balance_usd=Decimal("1000"),
+                  required_usd=Decimal("1"), needs_verification=False)),
+        patch("shared.wallet.get_or_create_wallet",
+              return_value={"balance_usd": "1000", "wallet_frozen": False}),
+        patch("blueprints.campaigns.upload_input",
+              return_value="u-1/campaign/target.pdb"),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        return client.post("/campaigns", data=form), rec
+
+
+def test_campaign_refuses_a_model_that_cannot_do_multi_chain(client):
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _post_target_campaign(client, t)
+    assert resp.status_code == 400
+    assert rec.created == [] and rec.funded == [] and rec.driven == [], (
+        f"created={rec.created} funded={rec.funded} driven={rec.driven} — "
+        f"rfantibody's model cannot design against two chains at all"
+    )
+    body = resp.get_data(as_text=True)
+    assert "designs against a single target chain" in body, body
+
+
+def test_campaign_refuses_an_unverified_container_too(client):
+    """bindcraft's model can; its image has never been run on a multi-chain
+    target and clearing it costs a full paid pilot."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _post_target_campaign(
+        client, t, tool="bindcraft", binder_length_min="55",
+        binder_length_max="65",
+    )
+    assert resp.status_code == 400
+    assert rec.created == []
+    assert "GPU image still handles" in resp.get_data(as_text=True)
+
+
+def test_campaign_still_funds_a_gpu_verified_tool_on_two_chains(client):
+    """THE FALSE-REFUSAL FLOOR. rfdiffusion was cleared on a live A100 against
+    a real two-chain 4ZQK, so it must still launch."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _post_target_campaign(
+        client, t, tool="rfdiffusion", binder_length_min="55",
+        binder_length_max="65",
+    )
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:400]
+    assert len(rec.created) == 1 and rec.funded and rec.driven
+
+
+def test_campaign_single_chain_is_untouched_by_the_capability_gate(client):
+    """The backward-compatibility floor: one chain is what every campaign
+    before multi-chain posted, including for the tools blocked at two."""
+    _login(client)
+    t = _two_chain_target()
+    resp, rec = _post_target_campaign(client, t, target_chain="A")
+    assert resp.status_code == 302, resp.get_data(as_text=True)[:400]
+    assert len(rec.created) == 1 and rec.funded and rec.driven
+
+
+def test_campaign_capability_gate_covers_the_fresh_upload_branch_too(client):
+    """A campaign with an attached PDB spends exactly as much as a
+    target-bound one, and takes a different branch through this route."""
+    import io
+
+    _login(client)
+    rec = _CampaignRecorder()
+    patches = [
+        patch("blueprints.campaigns.load_user_context", return_value=_ctx()),
+        patch("shared.compute_campaigns.create_campaign", side_effect=rec.create),
+        patch("shared.compute_campaigns.fund_campaign", side_effect=rec.fund),
+        patch("shared.compute_campaigns.drive_campaign_async", side_effect=rec.drive),
+        patch("shared.compute_campaigns.campaign_preauth",
+              return_value=SimpleNamespace(
+                  ok=True, reason=None, balance_usd=Decimal("1000"),
+                  required_usd=Decimal("1"), needs_verification=False)),
+        patch("shared.wallet.get_or_create_wallet",
+              return_value={"balance_usd": "1000", "wallet_frozen": False}),
+        patch("blueprints.campaigns.resolve_target_upload",
+              return_value=(SimpleNamespace(filename="target.pdb",
+                                            data=_PDB.encode(),
+                                            content_type="chemical/x-pdb"), None)),
+        patch("blueprints.campaigns.upload_input",
+              return_value="u-1/campaign/target.pdb"),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        resp = client.post("/campaigns", data={
+            "tool": "rfantibody",
+            "requested_designs": "24",
+            "target_chain": "A,B",
+            "hotspot_residues": "42,88",
+            "target_pdb": (io.BytesIO(_PDB.encode()), "target.pdb"),
+        })
+    assert resp.status_code == 400
+    assert rec.created == [] and rec.funded == []
+    assert "designs against a single target chain" in resp.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# The chain letter has to survive from the form to the range gate
+#
+# The sibling of the same pin on POST /targets/<id>/launch. proteina's
+# validate() emits the hotspot twice -- `hotspot_spec` (["B520"], what
+# build_payload ships and the container matches on) and `hotspot_residues`
+# ([520], the same token with its chain letter stripped) -- and this route
+# range-checked the stripped one. On a two-chain contig that field cannot say
+# whether the letter was never typed or was dropped, so reading it as the first
+# chain refused the canonical multi-chain pick along with the broken one.
+# ---------------------------------------------------------------------------
+
+def _asymmetric_campaign_target():
+    """A 1..40, B 500..539 -- disjoint numbering, so "on chain B" and "on any
+    chain" give different answers and the fixture can tell a chain-aware gate
+    from a unioning one."""
+    import uuid as _uuid
+
+    from shared.targets import DesignTarget
+    return DesignTarget(
+        id=str(_uuid.uuid4()), user_id="u-1", kind="pdb", name="Fab HL",
+        filename="fab.pdb", storage_path="u-1/target-abc/fab.pdb",
+        target_chain="A,B", hotspot_residues=[], epitope_residues=[],
+        chain_summary={
+            "total_standard_residues": 80,
+            "chains": [
+                {"chain_id": "A", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 1, "max_resnum": 40},
+                {"chain_id": "B", "standard_residue_count": 40,
+                 "hetatm_resnames": [], "water_count": 0,
+                 "min_resnum": 500, "max_resnum": 539},
+            ],
+        },
+    )
+
+
+def _post_proteina_campaign(client, target, hotspots: str):
+    with patch.dict("os.environ", {"FLAG_TOOL_PROTEINA": "on"}):
+        return _post_target_campaign(
+            client, target,
+            tool="proteina",
+            preset="protein_binder",
+            target_input="A1-40,B500-539",
+            target_chain="A,B",
+            hotspot_residues=hotspots,
+            binder_length_min="60",
+            binder_length_max="80",
+        )
+
+
+@pytest.mark.parametrize("typed", ["B520", "A20 B520"])
+def test_campaign_funds_a_chain_prefixed_proteina_hotspot(client, typed):
+    """RED on a492b71: 400, "520 ... are outside this target's chain(s)", for a
+    hotspot that sits inside B 500-539 and ships as B520."""
+    _login(client)
+    t = _asymmetric_campaign_target()
+    resp, rec = _post_proteina_campaign(client, t, typed)
+    assert resp.status_code == 302, resp.get_data(as_text=True)[-600:]
+    assert len(rec.created) == 1 and rec.funded and rec.driven
+
+
+def test_campaign_still_refuses_a_bare_hotspot_off_the_first_chain(client):
+    """The A1 defect this route was fixed for, which the fix above must not
+    re-open: typed bare, 520 is promoted onto the contig's FIRST chain and
+    ships as "A520" against a chain that stops at 40."""
+    _login(client)
+    t = _asymmetric_campaign_target()
+    resp, rec = _post_proteina_campaign(client, t, "520")
+    assert resp.status_code == 400
+    assert rec.created == [] and rec.funded == [] and rec.driven == [], (
+        f"created={rec.created} funded={rec.funded} driven={rec.driven}"
+    )
+    assert "A520" in resp.get_data(as_text=True)

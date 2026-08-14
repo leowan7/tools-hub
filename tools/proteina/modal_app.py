@@ -148,11 +148,22 @@ def _clear_hub_targets() -> None:
 
     Never raises: this is hygiene, and a warm container that could not be
     cleaned must still be able to run. Leaving it dirty is not a correctness
-    problem — ``custom_target_key`` derives a distinct key per job and
-    ``registration_mismatch`` re-reads the record it just wrote — but the
-    registry is composed by Hydra on EVERY run, so unbounded growth is a slow
-    tax on every shard, and a stale PDB keeps a prior job's bytes readable to
-    the next tenant of this container.
+    problem for the REGISTRY — ``custom_target_key`` derives a distinct key per
+    job and ``registration_mismatch`` re-reads the record it just wrote — but
+    the registry is composed by Hydra on EVERY run, so unbounded growth is a
+    slow tax on every shard, and a stale PDB keeps a prior job's bytes readable
+    to the next tenant of this container.
+
+    One leftover is not merely untidy: ``hub_targets/incoming.pdb``, the path
+    the download streams to. ``run_pipeline``'s ``prepare_custom_target`` clears
+    that one itself before staging and refuses the run (``input`` /
+    ``stale_staging``) if it cannot, because a leftover there is otherwise
+    indistinguishable from this job's own upload and would be archived as it.
+    No other leftover this sweep misses has THAT consequence: a stale
+    ``<key>.pdb`` or an unpruned registry record cannot be mistaken for this
+    job's upload, because nothing downstream reads them as one. They still cost
+    what the paragraph above says — Hydra tax on every shard, and, for the
+    staged PDB, a prior job's bytes left readable to the next tenant.
     """
     try:
         shutil.rmtree(_HUB_TARGET_DIR, ignore_errors=True)
@@ -246,6 +257,22 @@ def run_tool(payload: Any) -> dict:
         f"RF3={env.get('PROTEINA_RF3', 'on')} WEBHOOK={env.get('WEBHOOK_URL')}",
         flush=True,
     )
+    # Clear any stale smoke_results.json from a prior invocation on a warm Modal
+    # container. Without this, if THIS shard's run_pipeline.py dies before writing
+    # its own file (early import error, OOM kill, SIGKILL, uncaught exception), the
+    # read below picks up the PREVIOUS job's result and
+    # ``gpu.modal_client._interpret_pipeline_return()`` marks this job succeeded
+    # with another run's designs — there is no exit_code gate on that branch. It is
+    # the inline poll that decides here: Proteina only ever POSTs heartbeats, never
+    # a terminal webhook, and on this path no stage="complete" heartbeat is sent
+    # either. Shards of one search share a container too, so the stale file need
+    # not even come from a different customer's job. Codex P1 (colabfold).
+    try:
+        os.remove("/tmp/smoke_results.json")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[run_tool] could not remove stale smoke_results.json: {exc}", flush=True)
     # Warm containers are reused: a leftover raw archive from a prior job would be parked
     # under THIS job's id. Clear it so we only ever park a tar this run actually wrote.
     try:

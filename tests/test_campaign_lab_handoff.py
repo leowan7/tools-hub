@@ -17,7 +17,7 @@ target-arm clause would fail.
 Everything is patched at ITS OWN module, matching how
 ``blueprints/lab_projects.py`` imports it: ``read_job`` and
 ``stage_campaign_candidates`` are module-level imports on the blueprint, while
-``compute_campaigns.get_campaign``, ``create_campaign_from_refs`` and
+``compute_campaigns.read_campaign``, ``create_campaign_from_refs`` and
 ``send_campaign_submitted_emails`` are function-local and therefore resolve
 against their own modules at call time.
 
@@ -28,6 +28,14 @@ another tenant's, and a read that never completed; a count built on it tells a
 paying customer their designs are permanently unmatchable because Supabase
 blinked. ``_submit`` below therefore fakes ``read_job`` and can be told to make
 a specific id UNREADABLE, which is the only way to build that fault.
+
+IT READS ITS PARENT RUN THE SAME WAY, through ``read_campaign`` (register item
+A90). The gate used to refuse on ``cc.get_campaign(...) is None``, which is the
+same three facts in one value, and its exit LEAVES this page -- so a two-second
+Supabase fault sent the user to /jobs with no message at all. ``_submit`` takes
+``campaign_unreadable=`` for that fault, separately from ``campaign=None``,
+because the two outcomes now go to different places and a fixture that could
+only build one of them cannot tell whether they are still apart.
 """
 
 from __future__ import annotations
@@ -41,6 +49,12 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.compute_campaigns import (
+    CAMPAIGN_READ_ABSENT,
+    CAMPAIGN_READ_OK,
+    CAMPAIGN_READ_UNAVAILABLE,
+    CampaignRead,
+)
 from shared.jobs import JOB_READ_ABSENT, JOB_READ_OK, JOB_READ_UNAVAILABLE, JobRead
 
 pytestmark = pytest.mark.usefixtures("isolate_supabase")
@@ -122,12 +136,18 @@ _CREATE_OK = object()
 
 
 def _submit(client, jobs, *, form=None, campaign=object(),
-            create_result=_CREATE_OK, campaign_owner="u-1", unreadable=()):
+            create_result=_CREATE_OK, campaign_owner="u-1", unreadable=(),
+            campaign_unreadable=False):
     """Drive POST /lab-projects/submit and return (response, harness).
 
     ``jobs`` maps job id -> job. An id absent from the mapping is a job that is
     not there or is not the caller's, which an owner-scoped read reports as
     ``JOB_READ_ABSENT``.
+
+    ``campaign_unreadable`` makes the PARENT run read fail -- reported as
+    ``CAMPAIGN_READ_UNAVAILABLE``. Separate from ``campaign=None``, which is the
+    run being absent, because those are the two outcomes the gate now tells
+    apart: a fixture that folded them together could not show that it does.
 
     ``unreadable`` is the set of ids whose LOOKUP FAILS -- no service client, or
     the query raised -- reported as ``JOB_READ_UNAVAILABLE``. An id may appear
@@ -160,14 +180,27 @@ def _submit(client, jobs, *, form=None, campaign=object(),
             return JobRead(None, JOB_READ_ABSENT)
         return JobRead(job, JOB_READ_OK)
 
-    def fake_get_campaign(cid, *, user_id=None):
-        # Models shared.compute_campaigns.get_campaign, which applies user_id
-        # as a query filter: another tenant's run comes back None,
-        # indistinguishable from absent.
+    def fake_read_campaign(cid, *, user_id=None):
+        # Models shared.compute_campaigns.read_campaign, including the two
+        # things about it that matter here.
+        #
+        # 1. `user_id` is applied as a QUERY FILTER, so another tenant's run
+        #    comes back as zero rows -- which is ABSENT, not a distinct
+        #    "forbidden" outcome. The real function cannot tell those apart
+        #    either, and must not: distinguishing them means reading a row the
+        #    owner scope exists to withhold. A fake that returned the run
+        #    regardless would stay green against a route that dropped the scope.
+        # 2. An unreadable parent reports UNAVAILABLE even when `campaign` is a
+        #    perfectly good object, because a read that did not complete learned
+        #    nothing about the row. A fake that quietly handed the run back
+        #    instead would make the new exit untestable in the one direction it
+        #    exists for.
         h.campaign_lookups.append((cid, user_id))
+        if campaign_unreadable:
+            return CampaignRead(None, CAMPAIGN_READ_UNAVAILABLE)
         if campaign is None or (user_id is not None and campaign_owner != user_id):
-            return None
-        return campaign
+            return CampaignRead(None, CAMPAIGN_READ_ABSENT)
+        return CampaignRead(campaign, CAMPAIGN_READ_OK)
 
     def fake_create(**kw):
         h.created.append(kw)
@@ -200,8 +233,8 @@ def _submit(client, jobs, *, form=None, campaign=object(),
             patch("blueprints.lab_projects.read_job", side_effect=fake_read_job), \
             patch("blueprints.lab_projects.stage_campaign_candidates",
                   side_effect=fake_stage), \
-            patch("shared.compute_campaigns.get_campaign",
-                  side_effect=fake_get_campaign), \
+            patch("shared.compute_campaigns.read_campaign",
+                  side_effect=fake_read_campaign), \
             patch("shared.campaigns.create_campaign_from_refs",
                   side_effect=fake_create), \
             patch("shared.email.send_campaign_submitted_emails",
@@ -245,13 +278,13 @@ def test_a_ref_naming_another_users_job_creates_nothing(client):
 def test_a_shortlist_against_another_users_run_creates_nothing(client):
     """TENANCY ON THE PARENT, which the per-ref owner scope does not cover.
 
-    ``cc.get_campaign`` applies ``user_id`` as a query filter, so another
-    tenant's run comes back None and this arm bounces before a single ref is
+    ``cc.read_campaign`` applies ``user_id`` as a query filter, so another
+    tenant's run comes back ABSENT and this arm bounces before a single ref is
     read.
 
     Asserted on ``campaign_lookups`` and not only on the redirect, because the
     redirect cannot see the defect: a route that stopped passing ``user_id=``
-    would still get None for a genuinely absent id and still bounce here. The
+    would still get ABSENT for a genuinely absent id and still bounce here. The
     owner scope is observable only in what was ASKED, which is why the harness
     records the pair rather than the id.
     """
@@ -264,6 +297,52 @@ def test_a_shortlist_against_another_users_run_creates_nothing(client):
     # Refused before any ref was read, so the parent gate is what refused it.
     assert h.job_lookups == []
     assert h.campaign_lookups == [(_CID, "u-1")]
+
+
+# ---------------------------------------------------------------------------
+# THE PARENT GATE'S TWO OUTCOMES (register item A90)
+#
+# `cc.get_campaign` answered None for a run that is not there, one that is not
+# the caller's, and a read that never completed, and the gate bounced on all
+# three to /jobs with no message. This exit LEAVES the page that renders the
+# banners, which is why the absent answer keeps doing exactly that -- and why
+# the unreadable one must not.
+# ---------------------------------------------------------------------------
+
+def test_an_unreadable_parent_run_refuses_with_a_reason(client):
+    """The fix. A transient Supabase fault on the parent read now lands the user
+    back on THIS run's page with `?handoff=unverified`, instead of on an
+    unrelated list with nothing said, on the one action that hands work to a wet
+    lab.
+
+    Nothing is created and no ref is read: the gate still short-circuits, it just
+    says which way it went.
+    """
+    jobs = {"j-bc": _job("j-bc", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, campaign_unreadable=True)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith(f"/campaigns/{_CID}?handoff=unverified")
+    assert h.created == []
+    assert h.staged == []
+    assert h.job_lookups == []
+
+
+def test_an_absent_parent_run_still_bounces_in_silence(client):
+    """THE OTHER HALF, and the one that pins the two outcomes apart.
+
+    The run really is gone or was never this caller's, so there is no page to
+    land them on and nothing to say beyond returning them to their runs. Without
+    this test a later "simplification" could route both outcomes to
+    `?handoff=unverified` -- telling a user whose run was deleted to try again
+    forever -- and the test above would stay green.
+    """
+    jobs = {"j-bc": _job("j-bc", campaign_id=_CID)}
+    resp, h = _submit(client, jobs, campaign=None)
+    assert resp.status_code == 302
+    assert resp.headers["Location"].endswith("/jobs")
+    assert "handoff" not in resp.headers["Location"]
+    assert h.created == []
+    assert h.job_lookups == []
 
 
 def test_a_ref_naming_a_job_from_another_run_creates_nothing(client):
@@ -590,6 +669,16 @@ def test_an_unverifiable_shortlist_still_reports_what_the_cap_discarded(client):
     jobs = {"j-slow": _job("j-slow", campaign_id=_CID, n=800)}
     resp, _ = _submit(client, jobs, unreadable=("j-slow",), form={
         "candidate_refs": _over_cap_refs("j-slow")})
+    assert resp.headers["Location"].endswith("?handoff=unverified&truncated=120")
+
+
+def test_an_unreadable_parent_run_also_reports_what_the_cap_discarded(client):
+    """The newest exit (A90) inherits the same obligation. `truncated` is
+    computed above every guard precisely so it rides them all, and a gate added
+    later is exactly where that stops being true without anyone noticing."""
+    jobs = {"j-bc": _job("j-bc", campaign_id=_CID, n=800)}
+    resp, _ = _submit(client, jobs, campaign_unreadable=True, form={
+        "candidate_refs": _over_cap_refs("j-bc")})
     assert resp.headers["Location"].endswith("?handoff=unverified&truncated=120")
 
 

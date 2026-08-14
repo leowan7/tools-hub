@@ -104,7 +104,7 @@ def _fail(bucket: str, check: str, detail: str) -> None:
 # ===========================================================================
 
 
-def _ship_raw(work_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+def _ship_raw(work_dir: Path, dest: str | None = None) -> None:
     """Tar the COMPLETE work tree to ``dest`` before the work dir is destroyed.
 
     A container must never decide which fields are worth keeping. This pipeline
@@ -121,8 +121,28 @@ def _ship_raw(work_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
 
     Best-effort: capture must never fail the run, so every problem is logged
     and swallowed. Never raises.
+
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
+    at import: a ``dest: str = RAW_ARCHIVE_PATH`` default binds the constant's
+    value once at def time, so any later reassignment of the module constant is
+    silently ignored and the tar lands on the original path regardless.
     """
+    # ``dst`` is what the handler at the bottom removes, and the try does not
+    # assign it until after abspath+isdir. Pre-binding it is what gives the
+    # handler's ``dst is not None`` guard something to guard: otherwise an
+    # earlier failure turns the cleanup itself into an UnboundLocalError, a
+    # NameError that the inner ``except OSError`` cannot see, escaping a
+    # never-raises function from inside a ``finally``. Unreachable from the one
+    # production call site; the point is that the contract should not rest on
+    # having audited the call sites.
+    dst: str | None = None
     try:
+        # Resolved here, not above the try, so nothing that can throw sits
+        # outside the guard. ``is None`` rather than ``or``: the docstring
+        # promises only None is replaced, and ``or`` would quietly swallow an
+        # explicit dest="" as well.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
         src = os.path.abspath(str(work_dir))
         if not os.path.isdir(src):
             logger.warning("[raw] no work dir to archive (nothing was created?): %s", src)
@@ -148,7 +168,7 @@ def _ship_raw(work_dir: Path, dest: str = RAW_ARCHIVE_PATH) -> None:
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dst):
+            if dst is not None and os.path.exists(dst):
                 os.remove(dst)
         except OSError:
             pass

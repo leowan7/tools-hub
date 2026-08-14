@@ -33,7 +33,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from shared.credits import get_service_client
 from shared.wallet_estimates import (
@@ -947,6 +947,200 @@ def get_campaign(
     if not data:
         return None
     return _campaign_or_none(data)
+
+
+# Outcomes of :func:`read_campaign`. Three, for the reason ``shared/jobs.py``
+# gives beside its ``JOB_READ_*`` constants: ``get_campaign``'s ``None`` is two
+# unrelated facts wearing one hat, and a caller that must act on the difference
+# has no way to recover it.
+CAMPAIGN_READ_OK = "ok"
+# The read SUCCEEDED and matched no row: the campaign does not exist, or it
+# exists and is not this caller's. One value, because they are one fact to a
+# caller -- a permanent verdict -- and because telling them apart would require
+# reading a row the owner scope exists to withhold.
+CAMPAIGN_READ_ABSENT = "absent"
+# We did not manage to obtain the campaign. No service client, the query raised,
+# or the row came back in a shape :func:`_campaign_or_none` could not parse. Says
+# NOTHING about whether the campaign exists.
+CAMPAIGN_READ_UNAVAILABLE = "unavailable"
+
+# Every value ``CampaignRead.outcome`` may hold, so a typo reaches a raise at
+# construction rather than a branch that silently never fires.
+CAMPAIGN_READ_OUTCOMES = (
+    CAMPAIGN_READ_OK, CAMPAIGN_READ_ABSENT, CAMPAIGN_READ_UNAVAILABLE,
+)
+
+
+@dataclass(frozen=True, eq=False)
+class CampaignRead:
+    """A campaign lookup, plus WHY it came back the way it did.
+
+    The shape of ``shared.jobs.JobRead``, deliberately, INCLUDING the two
+    guards below -- both classes carry them and so does ``shared.targets``'s
+    ``TargetRead``, because a three-outcome value that any one of them can be
+    collapsed on is the same defect three times.
+
+    NO TRUTHINESS OF ANY KIND, and that is enforced rather than asserted. This
+    docstring used to claim "no ``__bool__``", which was true and was not the
+    property it needed: the default ``__bool__`` made every instance
+    unconditionally truthy, so ``if read:`` ran on an UNAVAILABLE read exactly
+    as it ran on an OK one, and collapsing this back to one bit is the thing
+    the class exists to prevent. ``__bool__`` now raises. Branch on
+    ``.outcome`` or on ``.unavailable``.
+
+    AND NO EQUALITY WITH AN OUTCOME STRING, for the reason
+    ``tools/proteina/_canary_scoring.py::Verdict`` already paid for and wrote
+    down: ``frozen=True`` GENERATES an ``__eq__``, so ``read ==
+    CAMPAIGN_READ_OK`` returned False SILENTLY on a read that had succeeded --
+    a hole exactly the size of the one ``__bool__`` closes, and one that reads
+    as a clean negative rather than as a mistake. ``eq=False`` above turns the
+    generated one off; the one below raises on a string and still compares two
+    reads as values.
+
+    WHAT NEITHER GUARD CAN CATCH, stated because the obvious claim is stronger
+    than the truth, and on two axes rather than one.
+    (1) ``CAMPAIGN_READ_OK``, ``TARGET_READ_OK`` and ``JOB_READ_OK`` are all the
+    string ``"ok"``, so ``CampaignRead(c, TARGET_READ_OK)`` is indistinguishable
+    from the right constant at every check available here -- the membership test
+    in ``__post_init__`` passes and no comparison happens. The ``__eq__`` guard
+    does catch the cross-family COMPARISON (``campaign_read == TARGET_READ_OK``
+    raises, like any string), which is the half that can be caught.
+    (2) ``__hash__`` below hashes ``(payload id, outcome)`` and NOT the class,
+    so ``hash(CampaignRead(None, CAMPAIGN_READ_ABSENT))`` equals the JobRead and
+    TargetRead ones. Deliberate: equal hashes are not an equality claim,
+    ``__eq__`` returns ``NotImplemented`` for a foreign class and Python falls
+    back to identity, so a set holding two families keeps both members.
+    ``tests/test_jobs.py::test_reads_of_different_families_collide_in_hash_only``
+    pins both halves.
+    """
+
+    campaign: Optional[ComputeCampaign]
+    outcome: str
+
+    def __post_init__(self) -> None:
+        # OK CARRIES A CAMPAIGN AND NOTHING ELSE DOES, checkable rather than
+        # conventional. Neither of this module's two constructors can violate
+        # it, but nothing stopped a third: ``CampaignRead(None,
+        # CAMPAIGN_READ_OK)`` built fine and would have handed every caller
+        # that reads ``.campaign`` after checking ``.outcome`` a None it has no
+        # branch for.
+        if self.outcome not in CAMPAIGN_READ_OUTCOMES:
+            raise ValueError(f"unknown campaign read outcome {self.outcome!r}")
+        if self.outcome == CAMPAIGN_READ_OK and self.campaign is None:
+            raise ValueError("CampaignRead is OK but carries no campaign")
+        if self.outcome != CAMPAIGN_READ_OK and self.campaign is not None:
+            raise ValueError(
+                f"CampaignRead is {self.outcome} and must carry no campaign"
+            )
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "CampaignRead has three outcomes and is not a boolean -- compare "
+            ".outcome against CAMPAIGN_READ_OK / _ABSENT / _UNAVAILABLE, or "
+            "read .unavailable"
+        )
+
+    def __eq__(self, other: Any) -> Any:
+        if isinstance(other, str):
+            raise TypeError(
+                "CampaignRead is not its outcome string -- write "
+                "`read.outcome == CAMPAIGN_READ_OK`, not `read == ...`"
+            )
+        if not isinstance(other, CampaignRead):
+            return NotImplemented
+        return (self.campaign, self.outcome) == (other.campaign, other.outcome)
+
+    def __hash__(self) -> int:
+        # Defining ``__eq__`` sets ``__hash__ = None``, which would make every
+        # CampaignRead unhashable on a frozen value type. The campaign itself is
+        # deliberately NOT hashed: ``ComputeCampaign`` is a plain ``@dataclass``,
+        # so its own ``__hash__`` is None and hashing it raises. Its id is what
+        # identifies it, and equal reads necessarily agree on that and on the
+        # outcome.
+        #
+        # KEPT RATHER THAN LEFT None: nothing in production puts a read in a set
+        # or uses one as a dict key, so this exists for uniformity with the
+        # other two read classes rather than for a call site. See
+        # ``shared.jobs.JobRead.__hash__``, where the same choice is a change to
+        # an existing class rather than a new one.
+        return hash((getattr(self.campaign, "id", None), self.outcome))
+
+    @property
+    def unavailable(self) -> bool:
+        """True iff we did not manage to obtain the campaign.
+
+        NOT "the campaign is missing", which is ``CAMPAIGN_READ_ABSENT``.
+
+        NOT "the lookup did not complete" either, which is what this said while
+        being a verbatim copy of ``shared.jobs.JobRead``'s: this class has a
+        fourth path that one does not. A row that came back and that
+        :func:`_campaign_or_none` could not parse reports UNAVAILABLE
+        (:func:`read_campaign`), and on that path the lookup DID complete --
+        PostgREST answered and handed back a row. What the three outcomes
+        actually divide is whether we ended up holding the campaign, and this is
+        "we did not, and not because it is absent".
+        """
+        return self.outcome == CAMPAIGN_READ_UNAVAILABLE
+
+
+def read_campaign(
+    campaign_id: str, *, user_id: Optional[str] = None
+) -> CampaignRead:
+    """Fetch a campaign and report which of the three outcomes occurred.
+
+    Same query and same owner-scope semantics as :func:`get_campaign`; the whole
+    difference is that a failure to read is distinguishable from a row that is
+    not there. Use this wherever the two lead to different behaviour -- the lab
+    handoff gate in ``blueprints/lab_projects.py`` returns the user to their runs
+    in silence on one and refuses the submission with a reason on the other.
+    ``get_campaign`` remains the right call everywhere the only question is "do I
+    have the campaign", which is most of this app.
+
+    WHY THIS DOES NOT USE ``.single()``, AND WHY THAT IS THE ENTIRE POINT. The
+    reasoning is ``shared.jobs.read_job``'s and is not restated here in different
+    words, because a re-worded copy is how two functions that must behave
+    identically drift: ``.single()`` RAISES on zero rows, so under it "no such
+    campaign" and "PostgREST timed out" arrive as the same exception and the
+    distinction this function exists to make is gone before the ``except`` runs.
+    ``.limit(1)`` makes a completed-but-empty read observable as an empty list,
+    so the boundary is drawn by whether the call returned at all rather than by
+    inspecting an error code.
+
+    ``get_campaign`` is deliberately NOT reimplemented on top of this, following
+    the precedent ``read_job`` set beside ``get_job``. Its own docstring records
+    why it must keep answering ``None`` for every failure: the launch route's
+    fund loop calls it AFTER the commit point, and a raise there would 500 a
+    request that has already spent money.
+
+    ONE DEPARTURE FROM ``read_job``'s BODY, and it is this module's existing rule
+    rather than a new one. The row is turned into a dataclass through
+    :func:`_campaign_or_none`, exactly as ``get_campaign`` does, and a row that
+    helper cannot parse reports UNAVAILABLE -- ``read_job`` calls
+    ``ToolJob.from_row`` bare and would raise instead. Neither of the other two
+    outcomes would be true of such a row: it is present, so it is not ABSENT, and
+    there is no campaign to hand back, so it is not OK. Not reachable from any
+    row the migrations pin; see :func:`_campaign_or_none`.
+    """
+    client = get_service_client()
+    if client is None:
+        return CampaignRead(None, CAMPAIGN_READ_UNAVAILABLE)
+    try:
+        query = client.table(_TABLE).select("*").eq("id", campaign_id)
+        if user_id is not None:
+            query = query.eq("user_id", user_id)
+        response = query.limit(1).execute()
+    except Exception:
+        logger.warning(
+            "read_campaign: lookup failed for %s", campaign_id, exc_info=True,
+        )
+        return CampaignRead(None, CAMPAIGN_READ_UNAVAILABLE)
+    rows = list(getattr(response, "data", None) or [])
+    if not rows:
+        return CampaignRead(None, CAMPAIGN_READ_ABSENT)
+    campaign = _campaign_or_none(rows[0])
+    if campaign is None:
+        return CampaignRead(None, CAMPAIGN_READ_UNAVAILABLE)
+    return CampaignRead(campaign, CAMPAIGN_READ_OK)
 
 
 def list_campaigns_for_user(

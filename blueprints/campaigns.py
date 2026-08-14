@@ -47,14 +47,46 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # here renders the `{% else %}` arm's copy -- "your request could not be
 # submitted" -- for an unrelated cause with the whole suite green.
 #
-# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, DIFFERENT COPY.
-# Two of the five describe a cause that differs by arm: where this route's
-# `rejected` tests parentage it asks "child of this run" rather than "on this
-# target" -- though parentage is not its only ground, since a ref naming an
-# index past the end of a job that IS a child lands there too. And its
-# `unverified` can only mean a sub-job read that did not complete, because
-# _submit_campaign_shortlist makes no second read to come back short. The two
-# templates are therefore not one partial.
+# SAME FIVE KEYS AS blueprints/targets.py::HANDOFF_REASONS, and three of the
+# five sentences (`none`, `noname`, `failed`) are word for word the target
+# page's. TWO OF THE FIVE describe a cause that differs by arm, and reading it
+# as one is how the two arms get treated as interchangeable. `rejected` is the
+# first: where this route's `rejected` tests parentage it asks "child of this
+# run" rather than "on this target" -- though parentage is not its only ground,
+# since a ref naming an index past the end of a job that IS a child lands there
+# too. `unverified` is the second, and the paragraphs below say how: the two
+# arms reach it from different causes and `cc.read_campaign` has a ground
+# `read_target` does not (register item A97). The SENTENCE is now shared; the
+# CAUSE SETS are not, and nothing here licenses merging the banner suites --
+# two when this was written, three since A91 added blueprints/jobs.py.
+#
+# THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
+# sentences into templates/components/lab_handoff_banner.html, which takes the
+# arm's noun -- each page keeps its own wrapper, its own whitelist and its own
+# suite. Two inline copies were how one of these sentences went stale unnoticed,
+# and the partial now has FOUR importers rather than two:
+# templates/unavailable.html and templates/job_detail.html render them as well.
+# The 503 page is reached only from the TARGET arm's detail route, never from
+# this one (see `compute_campaign_detail` below and register item A94), so the
+# run-noun rendering of it does not occur in production -- the macro nonetheless takes the noun, because a partial whose
+# correctness depends on which caller reaches it is the duplication again.
+#
+# `unverified` USED TO differ too, and no longer does beyond the noun. It named
+# the sub-job read here and the paged run-list read on the target page. HERE
+# that was the whole set of causes this arm then had, which was one. THERE IT
+# WAS NOT: that arm has always ALSO set `unresolved` on a `read_job` that came
+# back unavailable, so its sentence named one of two causes and was already
+# false for the other before A90 touched anything -- the correction is written
+# up in this commit's register entry.
+#
+# Register item A90 then gave each arm one more cause: the PARENT read at the
+# top of the SUBMIT gate (`cc.read_campaign` here, `read_target` there, both in
+# blueprints/lab_projects.py) now reports "unreadable" separately from "absent"
+# and refuses to this same reason. That is the submit gate and not this detail
+# route, which still reads through the two-outcome `get_campaign`. Neither
+# sentence names a read any more, and the copy for both pages now lives in
+# templates/components/lab_handoff_banner.html; see the comment above the banner
+# in templates/runs/detail.html.
 LAB_HANDOFF_REASONS = ("none", "noname", "rejected", "unverified", "failed")
 
 
@@ -239,7 +271,9 @@ def compute_campaign_create():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.targets import get_target, touch_target  # noqa: PLC0415
+    from shared.targets import (  # noqa: PLC0415
+        enrich_target_hotspot_spec, get_target, touch_target,
+    )
 
     tool = (request.form.get("tool") or "").strip()
     name = (request.form.get("name") or "").strip()
@@ -346,6 +380,35 @@ def compute_campaign_create():
     if validated is None:
         return _err(verr or "Invalid parameters.")
 
+    # 2b. Can this tool's MODEL, and the IMAGE we dispatch to, take the number
+    #     of chains just named? This route has never asked. `preflight_for_tool`
+    #     owns that gate and is called only from the atomic submit route, its
+    #     AJAX panel, and the reuse-token path, so a two-chain campaign was
+    #     created, funded and driven here for tools whose container cannot
+    #     parse the target -- and for rfantibody, whose MODEL cannot
+    #     (multi_chain_supported=False; its adapter accepts "A,B" because it
+    #     only length-checks the field at 4 characters). Verified by executing
+    #     this route against a two-chain stored target.
+    #
+    #     Placed BEFORE the target/upload split so both branches are covered by
+    #     one call: the fresh-upload branch spends exactly as much as the
+    #     target-bound one. Ahead of campaign_preauth and create_campaign, so a
+    #     refusal costs a message rather than a funded wave.
+    #
+    #     Capability ONLY, deliberately -- see multi_chain_refusal and
+    #     DesignTarget.size_error for why the rest of the preflight does not
+    #     belong on a route that never downloads the structure.
+    #     iggm names its antigen chain `antigen_chain`; the PDB tools use
+    #     `target_chain`. proteina replaces target_chain with its contig's
+    #     chains, which is the right string to judge.
+    run_chain = (
+        validated.get("target_chain") or validated.get("antigen_chain") or ""
+    )
+    from shared.pdb_preflight import multi_chain_refusal  # noqa: PLC0415
+    capability_err = multi_chain_refusal(tool, run_chain)
+    if capability_err:
+        return _err(capability_err)
+
     # 3. Resolve the campaign target. The live tools + proteina's protein/motif
     #    variants take a PDB (inspected + chain-validated); proteina's ligand
     #    variant takes an SDF (cheap sanity only; the RDKit -> chain-A PDB
@@ -388,21 +451,22 @@ def compute_campaign_create():
             )
         # The chain and hotspots are per-RUN and may override the target's
         # defaults, so they still have to be checked — against the inspection
-        # persisted at upload time, so no download is needed.
-        run_chain = (
-            validated.get("target_chain") or validated.get("antigen_chain") or ""
-        )
+        # persisted at upload time, so no download is needed. ``run_chain`` is
+        # resolved above (step 2b) from the same two keys; it used to be
+        # recomputed here from the identical expression.
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return _err(chain_err)
         # Both keys are original PDB author numbering, so both are range-
         # checkable against the target's chain. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its
-        # hotspots ``hotspot_residues``.
+        # hotspots ``hotspot_residues``. ``shipped_hotspots`` is what reads
+        # the pair, and it prefers proteina's chain-prefixed ``hotspot_spec``
+        # over the bare copy — see that function for why the bare one cannot
+        # be range-checked without refusing correct multi-chain runs.
+        from shared.pdb_preflight import shipped_hotspots  # noqa: PLC0415
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return _err(hotspot_err)
@@ -416,8 +480,8 @@ def compute_campaign_create():
         # session wall for zero designs. Size only — see DesignTarget.size_error
         # for why the full preflight does not belong on this route.
         # binder_max_aa arms the COMBINED cap (target + binder). Without it
-        # only the target half of the envelope ran here, so a 140 aa target
-        # with a 300 aa max binder — 440 against proteina's 260 budget — was
+        # only the target half of the envelope ran here, so a 400 aa target
+        # with a 300 aa max binder — 700 against proteina's 620 budget — was
         # refused by /tools/proteina/submit and funded by this route. Read via
         # _parse_preflight_size_params because the validated binder shape is
         # per-tool ({min,max} dict, [min,max] list, bare int, or a separate
@@ -544,6 +608,15 @@ def compute_campaign_create():
 
     if target is not None:
         touch_target(target.id)
+        # Same enrichment the multi-tool launch route performs, at the same
+        # seam, for the same reason: this is the OTHER route that runs a tool
+        # against a saved target, and a target enriched by one screen and not
+        # the other would depend on which form the user happened to use.
+        # ENRICH-ONLY — see shared.targets.enrich_target_hotspot_spec for the
+        # three conditions and why each one is load-bearing. Only proteina's
+        # adapter emits `hotspot_spec`; the helper answers False for everything
+        # else without touching the database.
+        enrich_target_hotspot_spec(target, validated.get("hotspot_spec"))
 
     # A59. The return value used to be discarded, so a failed fund redirected as
     # success and left the row at `draft` forever -- `cron/tick_campaigns.py`
@@ -621,6 +694,37 @@ def compute_campaign_detail(campaign_id):
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    # STILL THE TWO-OUTCOME `get_campaign`, and A90 deliberately left it that
+    # way after building the three-outcome read this arm's submit gate uses.
+    # This route's None arm is not the defect A90 is about: an unreadable run
+    # falls through to the cutover fallback and then to the runs list, HTTP 200,
+    # exactly as it did before the item -- benign, if uninformative. The target
+    # arm's None arm rendered 404, which is a false verdict about the row, and
+    # that is the one that had to change (`blueprints/targets.py::target_detail`).
+    #
+    # MIRRORING THE TARGET ARM'S 503 HERE WAS TRIED AND REVERTED; the residual
+    # that leaves is register item A94, and the cost that decided it is COUNTED
+    # rather than felt. A REDIRECT NEVER RENDERS A TEMPLATE, so it never runs
+    # `app.py::inject_workspace_context`. Under a total read outage this request
+    # as written issues three Supabase reads and then redirects -- `get_tier`
+    # inside the `load_user_context` above, `cc.get_campaign`, and the wet-lab
+    # `get_campaign` below. A rendered 503 instead issues five: that same
+    # `get_tier`, the campaign read, and then the context processor's own
+    # `load_user_context` -> `get_tier`, `active_workspaces_count`, and the
+    # navbar wallet chip. (Its fifth read, the onboarding ribbon, is guarded on
+    # a wallet balance the failed chip read leaves None, so it does not fire.)
+    # Every one of those five FAILS OPEN, which is why the page renders at all
+    # -- but in the hang-shaped outage this exit exists for, failing open still
+    # costs the full client read timeout each, serially, against
+    # `gunicorn.conf.py`'s `timeout = 120` and its default `workers = 2`. The
+    # user gets the gateway's 502 in place of our 503, and two such requests
+    # occupy both workers. The target arm pays none of this: its ABSENT answer
+    # already rendered `404.html`, so its 503 swapped one render for another.
+    #
+    # A94 also records what is therefore NOT delivered on this arm: a
+    # `?handoff=unverified` redirect from the submit gate arrives here, and if
+    # the fault outlived the redirect the user gets the runs list rather than
+    # the banner. The two arms are asymmetric, and deliberately.
     campaign = cc.get_campaign(campaign_id, user_id=ctx.user_id)
     if campaign is None:
         # Launch-cutover fallback: /campaigns/<id> used to be the wet-lab

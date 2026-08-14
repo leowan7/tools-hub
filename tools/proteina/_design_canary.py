@@ -327,8 +327,16 @@ def run_design_canary(preset: str, config_name: str, task_name: str,
             }
         except Exception as exc:
             csvs[p] = {"error": str(exc)}
+    # `_hub_input` carries the archive copies of the input — target.pdb AND
+    # upload.pdb — so the basename check alone would count upload.pdb as a
+    # design. Inert while this canary never creates that directory; mirrors
+    # find_pdb_for's _hub_input clause specifically, NOT its whole exclusion
+    # list (that one also drops the basename `target_input`, which cannot match
+    # a *.pdb glob anyway).
     all_pdbs = [p for p in sorted(glob.glob(str(inference / "**/*.pdb"), recursive=True))
-                if "filtered_out_samples" not in p and Path(p).name not in ("target.pdb",)]
+                if "filtered_out_samples" not in p
+                and "_hub_input" not in Path(p).parts
+                and Path(p).name not in ("target.pdb",)]
 
     # Dump stage-log tails: each stage's real error goes to a per-stage log FILE
     # (generate.log / evaluate.log / ...), not to stdout. On a nonzero rc, surface

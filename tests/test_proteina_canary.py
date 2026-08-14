@@ -63,6 +63,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -509,6 +510,37 @@ class TestGeometry:
         """A residue upstream counts as protein must be selectable here too, or
         the canary computes a patch upstream then refuses."""
         assert cs.MODRES_EQUIV == rp._MODRES_EQUIV
+
+    def test_the_modres_parent_table_matches_run_pipeline(self):
+        """F11. ``run_pipeline._MODRES_PARENT`` is a hand-maintained copy of
+        this one, and the comment above it says so: ``modal_app.py`` copies
+        ``run_pipeline.py`` into the production image and nothing else, so
+        ``_canary_scoring`` does not exist in production and cannot be
+        imported. "Keep the two in step by hand" was the entire mechanism.
+
+        Drift here is not cosmetic in either direction: the canary decides
+        whether ~$4-$12 of A100 time is spent, and the production copy decides
+        whether the delivered design carries the operator's residue numbers.
+        The same table answering the two questions differently is how a run the
+        canary blessed comes back in 1..N.
+        """
+        assert cs.MODRES_PARENT == rp._MODRES_PARENT
+
+    def test_the_renumber_floors_match_run_pipeline(self):
+        """The other half of the same hand-maintained duplication: the identity
+        floor and both informative floors. This repo has already paid for an
+        A100 on exactly this drift class, and a comment is not a mechanism."""
+        assert cs.TARGET_MIN_SEQUENCE_IDENTITY == rp._RENUMBER_MIN_IDENTITY
+        assert cs.TARGET_MIN_INFORMATIVE_RESIDUES == rp._RENUMBER_MIN_INFORMATIVE
+        assert (cs.TARGET_MIN_INFORMATIVE_FRACTION
+                == rp._RENUMBER_MIN_INFORMATIVE_FRACTION)
+
+    def test_the_unknown_resnames_match_run_pipeline(self):
+        """"I do not know what this is" has to mean the same thing on both
+        sides. A name treated as unknown by one and as evidence by the other
+        moves the informative COUNT and the informative FRACTION, which are the
+        two floors the test above pins the values of."""
+        assert cs.UNKNOWN_RESNAMES == rp._UNKNOWN_RESNAMES
 
     def test_ca_centroid_uses_ca_only_not_whole_residues(self):
         """A1 is CA(0,0,0) plus a sidechain at (0,0,20). Averaging every heavy
@@ -1634,17 +1666,49 @@ class TestTargetChainIdentity:
         assert "hotspot_recall" not in entry
         assert "not the residues we uploaded" in entry["unscorable_reason"]
 
-    def test_a_renumbered_target_is_unscorable(self):
-        """Hotspot tokens are matched by NUMBER. A target renumbered from 1000
-        makes ``A1`` name a different residue, so every score computed against
-        it is meaningless even though the chain label and the sequence are both
-        right."""
+    def test_a_renumbered_target_is_restored_and_then_scorable(self):
+        """CONTRACT CHANGED, DELIBERATELY — this test used to assert the
+        opposite, and the old assertion was right for the code that existed.
+
+        Hotspot tokens are matched by NUMBER, so a target renumbered from 1000
+        makes ``A1`` name a different residue and every score computed against
+        it meaningless. That was measured on real hardware afterwards: upstream
+        renumbers EVERY chain to 1..N, so 8 of 8 designs of a completed Fc shard
+        were unscorable and phase 2 would have returned INCONCLUSIVE for ~$12.
+
+        The gate is unchanged. What changed is that ``restore_input_numbering``
+        now runs FIRST and puts the keys back, and only when a
+        position-for-position sequence match proves the correspondence — here
+        the chain label and the sequence are both right, which is exactly the
+        case it is entitled to repair. ``target_renumbering.applied`` is the
+        record that it did.
+        """
         entry = cs.score_design_file(
             RENUMBERED_DESIGN_PDB, {"A"}, self.SPEC, [], TARGET_REFERENCE)
+        assert entry["target_renumbering"]["applied"] is True
+        assert entry["target_renumbering"]["chains"]["A"]["identity"] == 1.0
+        assert entry["target_verified"] is True
+        assert entry["hotspot_recall"] is not None
+        assert "unscorable_reason" not in entry
+
+    def test_a_renumbering_the_sequence_cannot_prove_is_still_unscorable(self):
+        """The other half of the contract, and the one that costs money if it
+        ever stops holding.
+
+        Same renumbering from 1000, but the chain carries GLY — absent from
+        _TARGET_SEQ by construction — so no position matches. The restore
+        declines, the gate sees the untouched keys, and the design is refused
+        exactly as it was before the restore existed. A repair that cannot be
+        proved must change nothing."""
+        design = "\n".join(
+            _trace("A", ["GLY"] * len(_TARGET_SEQ), first_res=1000)
+            + _trace("B", ["GLY"] * 4, y=4.0, serial0=100)) + "\n"
+        entry = cs.score_design_file(design, {"A"}, self.SPEC, [],
+                                     TARGET_REFERENCE)
+        assert entry["target_renumbering"]["applied"] is False
         assert entry["target_verified"] is False
         assert "hotspot_recall" not in entry
         assert entry["target_identity"]["n_matched_keys"] == 0
-        assert "numbering" in entry["unscorable_reason"]
 
     def test_an_unverified_design_can_never_reach_a_verdict(self):
         """Belt and braces, and both are load-bearing: even if a metric were
@@ -3474,10 +3538,20 @@ class TestPerChainIdentity:
         # B1..B30 keep the input's numbering; B31..B60 are re-emitted as
         # B5031..B5060, which exist in the design and match no reference key.
         # (Their y is arbitrary: verification fails before any geometry runs.)
+        #
+        # THE RENUMBERED HALF CARRIES GLY, AND THAT IS WHAT KEEPS THIS TEST
+        # POINTED AT THE COVERAGE FLOOR. ``restore_input_numbering`` repairs an
+        # IN-ORDER renumbering before this gate ever sees it, and it would
+        # repair this one too — same length, same order — leaving coverage at
+        # 1.0 and this test measuring nothing. GLY is absent from _TARGET_SEQ by
+        # construction, so the positional sequence check fails, the restore
+        # declines, and chain B's 50% coverage is once again the only thing
+        # refusing this design. The repairable case is pinned separately by
+        # TestRenumberedTargetsAreRestored.
         design = "\n".join(
             _trace("A", big)
             + _trace("B", small[:30], y=60.0, serial0=2000)
-            + _trace("B", small[30:], y=100.0, first_res=5031, serial0=3000)
+            + _trace("B", ["GLY"] * 30, y=100.0, first_res=5031, serial0=3000)
             + _trace("C", ["GLY"] * 8, y=4.0, serial0=5000)) + "\n"
         entry = cs.score_design_file(design, {"A", "B"}, ["A1"], [], reference)
         identity = entry["target_identity"]
@@ -6535,12 +6609,16 @@ class TestTheNullMarginIsNotMadeOfCroppedHotspots:
 # VRAM INSTRUMENTATION PROVENANCE
 # ===========================================================================
 #
-# The only two VRAM numbers this tool has (67,546 MB and 67,570 MB) turned out
-# to be ~91% a JAX preallocation constant, because the design subprocess
-# inherited JAX's default PREALLOCATE=true and reserved 0.75 x 81,920 =
-# 61,440 MB on its first op whatever the target size. run_pipeline now builds an
-# allocator env for its children. The canaries are what TAKE the measurements,
-# so three properties of theirs decide whether the next reading means anything:
+# The FIRST two VRAM numbers this tool produced (67,546 MB and 67,570 MB)
+# turned out to be ~91% a JAX preallocation constant, because the design
+# subprocess inherited JAX's default PREALLOCATE=true and reserved
+# 0.75 x 81,920 = 61,440 MB on its first op whatever the target size.
+# run_pipeline now builds an allocator env for its children, and three further
+# readings have been taken under it — 8,943 MB at 130 aa, 15,541 at 260 and
+# 25,457 at 415 — which is the whole basis of _PROTEINA's size envelope. Five
+# readings, then, in two incomparable regimes, which is precisely why the
+# canaries matter: they are what TAKE the measurements, so three properties of
+# theirs decide whether the next reading means anything:
 #
 #   * the child actually gets that env (else the reading is the constant again);
 #   * the poller takes a sample even when the design outlives it by a hair
@@ -7005,8 +7083,8 @@ class TestTheShardReportsWhatProductionWouldDeliver:
         """A reward table in the shape ``run_pipeline.parse_designs`` reads:
         one row per design with a ``total_reward``. ``None`` for a row's reward
         writes an empty cell, which is what an unscored sample looks like."""
-        head = "sample,total_reward,af2folding_plddt"
-        body = [f"design_{i},{'' if r is None else r},0.9"
+        head = "sample,total_reward,af2folding_plddt,af2folding_plddt_log"
+        body = [f"design_{i},{'' if r is None else r},0.1,0.9"
                 for i, r in enumerate(rows)]
         return "\n".join([head, *body]) + "\n"
 
@@ -7489,3 +7567,1281 @@ class TestTheNegativeNumberingGuardReachesTheCanaryToo:
         }
         assert "unrenderable_segments" in called, (
             "the canary must ASK run_pipeline whether a contig is renderable")
+
+
+# ===========================================================================
+# THE POST-RUN INSTRUCTION MUST DESCRIBE THE ENVELOPE THAT EXISTS
+# ===========================================================================
+#
+# The canary closed every run with "SET shared/pdb_preflight_rules.py::
+# _PROTEINA SizeEnvelope.hard_cap_target_aa FROM THIS RUN before flag-on."
+# That was right while the cap was a placeholder and no shard had ever sized
+# it. It has since been carried out: three completed shards at 130, 260 and
+# 415 aa (preallocation disabled) produced the scaling curve the envelope is
+# derived from.
+#
+# Left standing, the imperative would be worse than stale. It instructs an
+# operator to re-derive a money cap from ONE reading — the single-point
+# reasoning that produced the two discredited ~67.5 GB numbers — and doing it
+# would replace a three-point fit with something strictly weaker. The output
+# of a paid harness is the one place that instruction gets read, so it is
+# corrected here rather than removed.
+# ===========================================================================
+
+def _emit_literals() -> str:
+    """Every string literal the canary hands to ``_emit`` — i.e. its OUTPUT.
+
+    Used by ONE test in the class below, deliberately. The others read the
+    module as source text with ``#`` lines dropped, and for what they check
+    ("this retired imperative is not in the file any more") that is the right
+    artifact. It is NOT the right artifact for "the operator is shown these
+    three measurements": a module-level string literal that nothing prints
+    reads exactly the same in the source, so a footer could be gutted and the
+    rows parked somewhere dead with the assertion none the wiser. EXECUTED,
+    not reasoned: replace the footer ``_emit`` with ``"(table removed)"`` and
+    move the three rows into an unused module-level constant, and the
+    source-text reading passes this class 4/4 while the console the operator
+    reads after a ~$12 shard shows no measurements at all.
+
+    So this walks the AST and keeps only what reaches ``_emit``, the single
+    function every print in that module goes through. f-string interpolations
+    are dropped and their literal segments kept; the footer this pins is plain
+    adjacent literals, which the parser has already concatenated for us. One
+    line per emitted literal, so a match cannot be assembled across two
+    separate calls that merely print next to each other.
+    """
+    tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+    parts: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_emit"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                parts.append(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                parts.append("".join(
+                    p.value for p in arg.values
+                    if isinstance(p, ast.Constant)
+                    and isinstance(p.value, str)
+                ))
+    return "\n".join(" ".join(p.split()) for p in parts)
+
+
+class TestTheCanaryTellsTheOperatorWhatTheNumbersAreFor:
+
+    def test_the_retired_set_the_cap_from_this_run_imperative_is_gone(self):
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "FROM THIS RUN" not in emitted, (
+            "the canary still tells the operator to set the size cap from a "
+            "single run; the envelope is a three-point fit and one reading "
+            "cannot lawfully replace it"
+        )
+
+    def test_it_names_where_measurement_stops_and_what_would_extend_it(self):
+        """The replacement has to carry the two facts an operator acts on:
+        that 415 aa is the edge of measurement, and that only a COMPLETED
+        shard beyond it moves the envelope."""
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert "415" in emitted
+        assert "does NOT raise the cap" in emitted
+        assert "ABOVE 415 aa is the only thing that" in emitted
+        # And the allocator caveat travels with it, because a reading taken
+        # with preallocation on is not a data point at all.
+        assert "prealloc_disabled must read True" in emitted
+
+    def test_the_quoted_envelope_matches_the_shipped_one(self):
+        """Two copies of a number drift, and the one in the paid harness is
+        the one an operator reads at 2 a.m. Pin them together."""
+        from shared.pdb_preflight_rules import TOOL_RULES
+
+        env = TOOL_RULES["proteina"].size
+        source = _CANARY_PATH.read_text(encoding="utf-8")
+        emitted = "\n".join(
+            line for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        assert f"hard_cap_target_aa={env.hard_cap_target_aa}" in emitted
+        assert f"soft_warn_target_aa={env.soft_warn_target_aa}" in emitted
+
+    def test_the_quoted_measurements_match_the_canonical_table(self):
+        """THE DATA, not only the caps it was derived into.
+
+        The test above pins the two CAPS this footer quotes, so a drifted cap
+        dies. The three MEASUREMENTS it quotes alongside them were pinned by
+        nothing at all: mutating 8,943 -> 9,943 MB, 25,457 -> 55,457 MB, or
+        576 -> 999 s in the footer left the entire suite green. That is the
+        worst place in the repo for an unguarded number. This text is what an
+        operator reads at 2 a.m. after a ~$12 shard, and its only job is to
+        let them decide whether the reading they just took extends the
+        envelope or merely re-confirms it — a drifted row here is a wrong cap
+        two commits later, argued from a table nobody re-checked.
+
+        Pinned against ``tests/test_pdb_preflight.py::_PROTEINA_CANARY``, the
+        same tuple the envelope's provenance test refits, so the harness copy,
+        the shipped caps and the provenance proof cannot disagree about what
+        was actually measured.
+
+        ASSERTED AGAINST WHAT THE CANARY PRINTS, via ``_emit_literals`` — see
+        that helper for why the source-text reading the rest of this class
+        uses is the wrong artifact for this particular claim, and for the
+        mutant that walks through it.
+        """
+        from tests.test_pdb_preflight import _PROTEINA_CANARY
+
+        printed = _emit_literals()
+        for aa, mb, secs in _PROTEINA_CANARY:
+            quoted = f"{aa} aa / {mb:,} MB / {secs} s"
+            assert quoted in printed, (
+                f"nothing this canary prints quotes {quoted!r}; the "
+                f"measurement table the operator is shown after a paid run "
+                f"has drifted from the one the size envelope is derived from"
+            )
+        # And it prints those three and no others, so an invented fourth row
+        # cannot be smuggled in beside them.
+        assert printed.count(" MB / ") == len(_PROTEINA_CANARY), (
+            f"the canary prints {printed.count(' MB / ')} measurement rows, "
+            f"not the {len(_PROTEINA_CANARY)} completed shards the envelope "
+            f"has"
+        )
+_SIZE_REFUSAL_RE = re.compile(
+    r"the contig (?P<contig>.*?) selects (?P<count>\d+) residue\(s\) of "
+    r"(?P<target>.*?), fewer than the (?P<floor>\d+) production requires")
+
+_EMPTY_REFUSAL_RE = re.compile(
+    r"the contig (?P<contig>.*?) names (?P<dead>.*?), which selects no residue "
+    r"of (?P<target>.*?)\. The file contains: (?P<spans>.*?)\. ")
+
+
+def _size_refusal_fields(message):
+    """The size refusal's four values, BY ROLE rather than by substring.
+
+    ``assert str(floor) in message`` is not a test of this message, and pinning
+    that down is why this exists. Three separate mutations at the call site left
+    the whole suite green: transposing the count with the floor ("selects 20
+    residue(s) ... fewer than the 19 required" — which tells the operator to
+    widen to a number below the floor), passing the FILE's residue count instead
+    of the selection's ("the contig A1-19 selects 60 residue(s) ... fewer than
+    the 20"), and transposing the target path with the contig. Every one of them
+    still contains both numbers somewhere, so every ``in`` assertion passed.
+
+    Worse, the substrings were partly supplied by the INPUTS. The old test used
+    contig ``A1-19`` against a floor of 20, so ``"19" in message`` was satisfied
+    by the contig text and never by the count; and because the message
+    interpolates ``target_pdb``, which is a pytest ``tmp_path``, ``"20" in
+    message`` passed outright on any run whose basetemp counter contained "20"
+    — demonstrated at ``pytest-20`` and ``pytest-120``, about one run in a
+    hundred at the current counter. The suite never went red; the mutation
+    matrix that is this change's evidence just silently lost power.
+    """
+    match = _SIZE_REFUSAL_RE.search(message)
+    assert match, f"the size refusal no longer renders its fields: {message}"
+    return (match.group("contig"), int(match.group("count")),
+            match.group("target"), int(match.group("floor")))
+
+
+def _empty_refusal_fields(message):
+    """The dead-segment refusal's four values, by role. Same reason as above."""
+    match = _EMPTY_REFUSAL_RE.search(message)
+    assert match, f"the dead-segment refusal no longer renders its fields: {message}"
+    return (match.group("contig"), match.group("dead"),
+            match.group("target"), match.group("spans"))
+
+
+_UNPARSABLE_REFUSAL_RE = re.compile(
+    r"--contig (?P<contig>.*?) cannot be parsed against (?P<target>.*?): "
+    r"(?P<detail>.*?)\. A contig segment")
+
+
+def _unparsable_refusal_fields(message):
+    """The unparsable refusal's three values, by role.
+
+    THE HELPER ABOVE WAS BUILT AND THIS REFUSAL WAS NOT GIVEN ONE, in the same
+    commit that added it — so the defect the other two were hardened against
+    was live here the whole time. An independent QC pass found it by mutation:
+    transposing the first two arguments at the call site
+    (``refuse_unparsable_contig(resolved, target_pdb, exc)``) left all 659 tests
+    green, and renders
+
+        [canary] --contig /data/fc.pdb cannot be parsed against Zz9: ...
+
+    telling the operator their FILE PATH is the unparsable contig and their
+    contig is the target file. The covering tests survived it because the only
+    substrings they asserted — ``"Zz9"`` and ``"NO GPU TIME WAS USED"`` — are
+    supplied by the input and by boilerplate, and ``"Zz9"`` appears whichever
+    slot it lands in. Exactly the failure ``_size_refusal_fields`` documents,
+    one refusal along.
+    """
+    match = _UNPARSABLE_REFUSAL_RE.search(message)
+    assert match, f"the unparsable refusal no longer renders its fields: {message}"
+    return (match.group("contig"), match.group("target"), match.group("detail"))
+
+
+class _RpWithVerdict:
+    """The real ``run_pipeline`` with ONE answer overridden.
+
+    Everything is delegated to ``rp`` except ``target_too_small``, which returns
+    whatever the test says. That is how "the canary obeys production's verdict"
+    is separated from "the canary happens to agree with production on this
+    fixture" — the two are indistinguishable while both sides say the same
+    thing, and telling them apart is the entire subject of this round.
+    """
+
+    def __init__(self, verdict: bool):
+        self._verdict = verdict
+        self.asked = []
+
+    def __getattr__(self, name):
+        return getattr(rp, name)
+
+    def target_too_small(self, residues, segments):
+        # The WHOLE question, not its length. Recording only a count is what let
+        # a mutation hand the predicate the file's residues instead of the
+        # contig's segments and stay green.
+        self.asked.append((len(residues), [tuple(s) for s in segments]))
+        return self._verdict
+
+
+class TestTheMinimumTargetSizeGuardReachesTheCanaryToo:
+    """THE THIRD INSTANCE OF THE SAME CLASS, and by now it is a class.
+
+    ``prepare_custom_target`` refuses a contig selecting fewer than
+    ``MIN_SELECTED_RESIDUES`` before any GPU is started. The canary's pre-spawn
+    refusals checked that the selection was non-EMPTY and nothing more, so
+    ``--contig A10-20`` passed every one of them and spawned: one A100 in phase
+    1 (~$4), three in phase 2 (~$12).
+
+    THIS ONE COSTS MONEY IN BOTH DIRECTIONS, which the first two did not. A
+    tagged construct and an uncropped file both CRASH the shard, so the money is
+    lost but the verdict is at least honest. WHAT UPSTREAM DOES WITH A SLIVER IS
+    UNVERIFIED: nothing in this repo evidences whether ``complexa design``
+    refuses a sub-floor selection or designs against it, and no GPU run has
+    tested it. If it refuses, the money is spent for an honest answer; if it
+    designs, the metrics come back, the harness can report PASS, and the number
+    measured is recall over a target production would have refused to accept.
+    The pre-GPU answer is free under either branch, which is the argument for
+    the refusal being here — not a claim about upstream that this repo cannot
+    make.
+
+    The two already closed are ``stage_cropped_target`` (the crop) and
+    ``unrenderable_segments`` (negative numbering), both by CALLING production's
+    own code rather than restating it. Same shape here: the number and the
+    comparison are ``rp.MIN_SELECTED_RESIDUES`` and ``rp.target_too_small``, and
+    the tests below are written against the constant, never against 20.
+    """
+
+    @staticmethod
+    def _target(tmp_path):
+        """60 residues on chain A, numbered A1..A60."""
+        path = tmp_path / "t.pdb"
+        path.write_text(SIXTY_RES_PDB)
+        return path
+
+    @staticmethod
+    def _contig(n):
+        """A chain-A contig selecting exactly ``n`` residues of SIXTY_RES_PDB."""
+        return f"A1-{n}"
+
+    def _below(self):
+        return self._contig(rp.MIN_SELECTED_RESIDUES - 1)
+
+    def _at(self):
+        return self._contig(rp.MIN_SELECTED_RESIDUES)
+
+    def _namespace(self, shard, rp_local=None):
+        return load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=(lambda: rp_local if rp_local is not None else rp),
+            run_shard=shard, phase0=_Remote(result={}))
+
+    def test_a_sliver_of_a_contig_is_refused_before_any_shard_spawns(self, tmp_path):
+        """EVERY FIELD BY ROLE. See ``_size_refusal_fields``: the substring form
+        of this test was satisfied by the contig text and by the pytest temp
+        directory's own digits, and three call-site transpositions survived it.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        target = str(self._target(tmp_path))
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                target, self._below(), [("positive", ["A1", "A2"])])
+        message = str(excinfo.value)
+        contig, count, named, quoted_floor = _size_refusal_fields(message)
+        assert count == floor - 1, (
+            "the operator needs the number of residues the contig actually "
+            f"selected, in that slot: {message}")
+        assert quoted_floor == floor, (
+            f"...and the floor they have to clear, in that one: {message}")
+        assert count < quoted_floor, (
+            f"the refusal quotes a floor below its own count: {message}")
+        assert contig == self._below() and named == target, (
+            f"the contig and the file are transposed: {message}")
+        assert "$4" in message and "$12" in message, (
+            f"the operator decides on the cost this refusal just saved: {message}")
+        assert "NO GPU TIME WAS USED" in message
+
+    def test_main_does_not_spawn_the_four_dollar_shard_on_a_sliver(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it. MUTATION: delete the
+        ``cs.refuse_target_too_small`` call and phase 1 bills $4."""
+        shard = _Remote()
+        namespace = self._namespace(shard)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(self._target(tmp_path)),
+                              hotspots="A1 A2", contig=self._below())
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 designing against a contig production refuses")
+
+    def test_main_does_not_spawn_the_three_twelve_dollar_shards_either(
+            self, tmp_path):
+        """``--negative`` skips ``pick_far_patch``, so this is the path with the
+        least local code between the operator and three A100 startups."""
+        shard = _Remote()
+        namespace = self._namespace(shard)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=2, target_pdb=str(self._target(tmp_path)),
+                              hotspots="A1 A2", negative="A8 A9 A10",
+                              contig=self._below())
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 2 spawned three shards on a contig production refuses")
+
+    def test_a_contig_at_the_floor_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, and the bound is ``<``: exactly
+        ``MIN_SELECTED_RESIDUES`` residues is acceptable to production, so a
+        canary that refuses it is refusing a run production would have run."""
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), self._at(),
+            [("positive", ["A1"])]) == self._at()
+
+    def test_a_whole_chain_target_is_not_refused(self, tmp_path):
+        """The ordinary case, with no ``--contig`` at all."""
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), "", [("positive", ["A1"])]) == "A1-60"
+
+    def test_the_size_refusal_precedes_the_hotspot_one(self, tmp_path):
+        """PRODUCTION'S ORDER, AND THE ACTIONABLE MESSAGE.
+
+        A sliver also puts most tokens outside the selection, so the hotspot
+        refusal fires on the same input. Answering with "A55 does not resolve"
+        sends the operator to fix a hotspot that is fine; the range is what is
+        wrong, and ``prepare_custom_target`` checks the size first for exactly
+        this reason.
+        """
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._target(tmp_path)), self._below(),
+                [("positive", ["A1", "A55"])])
+        message = str(excinfo.value)
+        _contig, count, _named, quoted_floor = _size_refusal_fields(message)
+        assert (count, quoted_floor) == (rp.MIN_SELECTED_RESIDUES - 1,
+                                         rp.MIN_SELECTED_RESIDUES)
+        assert "Widen" in message
+        assert "A55" not in message, (
+            "the size refusal must win; a hotspot message here sends the "
+            f"operator to the wrong fix: {message}")
+
+    def test_a_two_chain_selection_at_the_floor_is_not_refused(self, tmp_path):
+        """THE OVER-REFUSAL CONTROL ON THE MULTI-CHAIN SHAPE #109 ENABLED.
+
+        Two near-miss counts pass every single-chain test in this class and
+        refuse this one: counting the first segment's chain only, and counting
+        distinct residue NUMBERS chain-blind. Both chains are numbered from 1
+        here precisely so the chain-blind count is wrong rather than merely
+        different.
+        """
+        hi = rp.MIN_SELECTED_RESIDUES - 1
+        path = tmp_path / "two.pdb"
+        path.write_text("\n".join(
+            _trace("A", _TARGET_SEQ[:hi])
+            + _trace("B", _TARGET_SEQ[:hi], y=30.0, serial0=100)) + "\n")
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), f"A1-{hi},B1-{hi}", [("positive", ["A1"])]
+        ) == f"A1-{hi},B1-{hi}"
+
+    def test_the_numbering_refusal_precedes_the_size_one(self, tmp_path):
+        """PRODUCTION'S ORDER, THE OTHER SIDE. ``A-5-5`` on a construct numbered
+        from -5 is a sliver AND unrenderable; production refuses the numbering
+        first, and "widen the range" would send the operator to a fix that
+        cannot work while the range still starts below zero."""
+        path = tmp_path / "tagged.pdb"
+        path.write_text("\n".join(_trace("A", _TARGET_SEQ, first_res=-5)) + "\n")
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(path), "A-5-5", [("positive", ["A1"])])
+        assert "CONTIG_REGEX" in str(excinfo.value)
+        assert "Widen --contig" not in str(excinfo.value)
+
+    def test_the_canary_obeys_production_s_verdict_rather_than_its_own(
+            self, tmp_path):
+        """THE DRIFT TEST, and the reason the threshold was lifted out of
+        ``prepare_custom_target`` at all.
+
+        A canary carrying its own ``< 20`` passes every other test in this
+        class — it agrees with production today. It fails this one, in both
+        directions, because production's answer is the only thing consulted. If
+        the floor moves, the canary moves with it in the same commit or not at
+        all.
+        """
+        # (a) production says too small; the target is 60 residues and the
+        #     canary must refuse anyway.
+        fake = _RpWithVerdict(True)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: fake)
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["_refuse_unresolvable_hotspots"](
+                str(self._target(tmp_path)), "", [("positive", ["A1"])])
+        assert fake.asked == [(60, [("A", 1, 60)])], (
+            "the canary must hand production the file it read and the segments "
+            f"it resolved, not a count of something else: {fake.asked}")
+
+        # (b) production says it is fine; the contig is a sliver and the canary
+        #     must NOT invent a floor of its own.
+        fake = _RpWithVerdict(False)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: fake)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(self._target(tmp_path)), self._below(),
+            [("positive", ["A1"])]) == self._below()
+
+    def test_the_threshold_is_run_pipelines_and_not_a_restatement(self):
+        """The structural half: the canary ASKS, and the number is not written
+        down IN THE CALL THAT ENFORCES IT.
+
+        SCOPED TO THE CALL, NOT TO THE FUNCTION, and the narrowing is a fix.
+        Scanning every integer literal in ``_refuse_unresolvable_hotspots``
+        meant any unrelated constant that happened to equal the floor would red
+        the suite — the function already contains a literal ``1``, so a floor of
+        1 would "fail the drift test" for a reason that has nothing to do with
+        drift. The property being pinned is that the threshold reaches this call
+        from ``run_pipeline``, and that is a property of the call.
+        """
+        residues = [("A", i, "") for i in range(1, 61)]
+        assert rp.target_too_small(
+            residues, [("A", 1, rp.MIN_SELECTED_RESIDUES - 1)])
+        assert not rp.target_too_small(
+            residues, [("A", 1, rp.MIN_SELECTED_RESIDUES)])
+        refusal = next(
+            n for n in ast.walk(ast.parse(_CANARY_PATH.read_text(encoding="utf-8")))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "target_too_small" in called, (
+            "the canary must ASK run_pipeline whether the contig selects enough")
+        guard = next(
+            node for node in ast.walk(refusal)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "refuse_target_too_small")
+        literals = {node.value for node in ast.walk(guard)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
+                    and not isinstance(node.value, bool)}
+        assert not literals, (
+            f"the size refusal carries its own numbers ({sorted(literals)}); "
+            "every one of them must come from rp_local")
+        assert "MIN_SELECTED_RESIDUES" in ast.unparse(guard), (
+            "the floor must reach the message from run_pipeline's constant")
+
+    def test_the_refusal_actually_raises_rather_than_computing_and_returning(self):
+        """MUTATION: ``cs.refuse_target_too_small`` computing the verdict and
+        returning it. Both earlier refusals shipped in exactly that shape — the
+        suite could see the call existed and nothing more — while
+        ``--hotspots A99999`` went on spawning three A100s."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            cs.refuse_target_too_small("t.pdb", "A10-20", True, 11, 20)
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+        assert cs.refuse_target_too_small("t.pdb", "A1-60", False, 60, 20) is None
+
+    @pytest.mark.parametrize("verdict", [True, 1, "yes", [0], 0.5])
+    def test_any_truthy_verdict_refuses(self, verdict):
+        """THE VERDICT IS PRODUCTION'S AND ITS TYPE IS NOT THIS MODULE'S
+        BUSINESS. ``if too_small is not True: return`` passed the whole suite:
+        the guard was armed only for a literal ``bool``, so any predicate that
+        came to mean "too small" by returning a count, a list of offending
+        residues, or a numpy bool would disarm it silently — on the side that
+        spends money."""
+        with pytest.raises(cs.CanaryRefusal):
+            cs.refuse_target_too_small("t.pdb", "A1-11", verdict, 11, 20)
+
+    @pytest.mark.parametrize("verdict", [False, 0, "", None, []])
+    def test_any_falsy_verdict_permits(self, verdict):
+        """The other direction, and the more expensive one to get wrong: a
+        canary that refuses what production accepts stops runs that would have
+        answered the question."""
+        assert cs.refuse_target_too_small(
+            "t.pdb", "A1-60", verdict, 60, 20) is None
+
+    def test_a_zero_residue_selection_still_refuses_here(self):
+        """``if not too_small or n_selected == 0: return`` also passed the
+        suite. Zero is the MOST too-small a selection can be, and treating it as
+        a special case disarms the guard exactly where it matters.
+
+        In the canary, a zero selection is normally settled earlier and better
+        by ``refuse_empty_segments``, which can say WHICH segment died and what
+        the file contains. This refusal never sees it in practice — and must
+        still be total, because "the case upstream of me handles it" is how the
+        original hole was argued for.
+        """
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            cs.refuse_target_too_small("t.pdb", "Z1-50", True, 0, 20)
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+
+    def test_the_message_carries_the_resolved_contig_not_the_operators(
+            self, tmp_path):
+        """``--contig`` is optional, and on the path where it is omitted the
+        message must still name the contig the canary DERIVED. Passing the raw
+        argument instead renders an empty one, which no test exercised because
+        every message test supplied a contig."""
+        tiny = tmp_path / "tiny.pdb"
+        tiny.write_text("\n".join(
+            _atom(i, "CA", "ALA", "A", i, i * 4.0, 0.0, 0.0)
+            for i in range(1, rp.MIN_SELECTED_RESIDUES - 4)) + "\n")
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(tiny), "", [("positive", ["A1"])])
+        contig, count, _named, floor = _size_refusal_fields(str(excinfo.value))
+        assert contig == f"A1-{rp.MIN_SELECTED_RESIDUES - 5}", (
+            f"the derived contig did not reach the message: {excinfo.value}")
+        assert (count, floor) == (rp.MIN_SELECTED_RESIDUES - 5,
+                                  rp.MIN_SELECTED_RESIDUES)
+
+
+class _CanaryProbe:
+    """The pre-spawn refusal, driven directly and through ``main``.
+
+    Every class below needs the same two views — the message a refusal carries,
+    and the fact that ``run_shard`` was never reached — so they share one
+    harness rather than four copies of ``load_canary_functions``.
+    """
+
+    @staticmethod
+    def write(tmp_path, name, text):
+        path = tmp_path / name
+        path.write_text(text)
+        return str(path)
+
+    @staticmethod
+    def refuse(target_pdb, contig, hotspots=("A1",)):
+        """``_refuse_unresolvable_hotspots`` on the real ``run_pipeline``."""
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        return namespace["_refuse_unresolvable_hotspots"](
+            target_pdb, contig, [("positive", list(hotspots))])
+
+    @staticmethod
+    def spawns(phase, target_pdb, contig, hotspots="A1 A2", negative="A8 A9 A10"):
+        """Drive the REAL ``main`` and report what it asked Modal to start.
+
+        ``_Remote`` records and never starts anything, so a refusal that does
+        not actually stop the run shows up here as a non-empty list rather than
+        as a bill. Phase 2 is given ``--negative`` because that is the path with
+        the least local code between the operator and three A100 startups.
+        """
+        shard = _Remote()
+        namespace = load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=lambda: rp, run_shard=shard, phase0=_Remote(result={}))
+        kwargs = {"phase": phase, "target_pdb": target_pdb, "contig": contig,
+                  "hotspots": hotspots}
+        if phase == 2:
+            kwargs["negative"] = negative
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](**kwargs)
+        return shard.spawn_calls + shard.remote_calls
+
+
+class TestAnOverlappingContigCannotDefeatTheFloor:
+    """ONE COMMA BOUGHT THE RUN THE FLOOR EXISTS TO STOP.
+
+    ``select_residues`` appends per segment and never de-duplicates, and the
+    size gate measured ``len`` of it. Measured on a 60-residue chain A:
+
+      ``A10-20``          -> 11 counted, 11 distinct -> refused
+      ``A10-20,A10-20``   -> 22 counted, 11 distinct -> NOT refused, spawned
+      ``A1-7,A1-7,A1-7``  -> 21 counted,  7 distinct -> NOT refused, spawned
+
+    ``--contig A10-20`` is the exact input the round that added the floor cites
+    as its reproducer. The crop stages ``selected_residue_keys`` — the DISTINCT
+    set — so the gate was counting one thing and the design engine receiving
+    another. On the web route production is shielded by the adapter's
+    one-range-per-chain rule; ``prepare_custom_target`` is not, and the canary
+    does not go through the adapter at all.
+    """
+
+    def _target(self, tmp_path):
+        return _CanaryProbe.write(tmp_path, "t.pdb", SIXTY_RES_PDB)
+
+    def _doubled(self):
+        return f"A1-{rp.MIN_SELECTED_RESIDUES - 1},A1-{rp.MIN_SELECTED_RESIDUES - 1}"
+
+    def test_the_fixture_really_double_counts(self, tmp_path):
+        """The premise, pinned. If ``select_residues`` ever de-duplicated on its
+        own, every assertion below would pass for the wrong reason."""
+        residues, _ = rp.pdb_ca_residues(Path(self._target(tmp_path)))
+        segments = rp.parse_target_input(self._doubled())
+        floor = rp.MIN_SELECTED_RESIDUES
+        assert len(rp.select_residues(residues, segments)) == 2 * (floor - 1)
+        assert rp.n_selected_residues(residues, segments) == floor - 1
+
+    def test_a_sliver_named_twice_is_still_refused(self, tmp_path):
+        target = self._target(tmp_path)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(target, self._doubled())
+        floor = rp.MIN_SELECTED_RESIDUES
+        contig, count, named, quoted = _size_refusal_fields(str(excinfo.value))
+        assert count == floor - 1, (
+            f"the count must be the DISTINCT one: {excinfo.value}")
+        assert count != 2 * (floor - 1), "the message quoted the doubled total"
+        assert (contig, named, quoted) == (self._doubled(), target, floor)
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+
+    def test_a_sliver_named_three_times_is_still_refused(self, tmp_path):
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._target(tmp_path), "A1-7,A1-7,A1-7",
+                                hotspots=["A1"])
+        _contig, count, _named, _floor = _size_refusal_fields(str(excinfo.value))
+        assert count == 7, f"21 counted for 7 residues: {excinfo.value}"
+
+    def test_main_does_not_spawn_on_a_doubled_sliver(self, tmp_path):
+        """MUTATION: count ``len(select_residues(...))`` again and phase 1
+        bills $4 on 11 residues it thinks are 22."""
+        assert _CanaryProbe.spawns(1, self._target(tmp_path), self._doubled(),
+                                   hotspots="A1 A2") == []
+        assert _CanaryProbe.spawns(2, self._target(tmp_path), self._doubled(),
+                                   hotspots="A1 A2", negative="A3 A4") == []
+
+    def test_a_legitimate_overlap_above_the_floor_is_not_refused(self, tmp_path):
+        """The guard must not become "no chain twice". Production's own gate is
+        a size, and 40 distinct residues clear it however they were named."""
+        assert _CanaryProbe.refuse(
+            self._target(tmp_path), "A1-30,A20-40") == "A1-30,A20-40"
+
+    def test_the_gate_counts_what_the_crop_stages(self):
+        """The invariant behind the fix, stated where it can fail: the number
+        the floor compares is the number of residues the design engine is
+        handed, not the number of times the contig mentioned one."""
+        residues = [("A", i, "") for i in range(1, 61)]
+        segments = [("A", 1, 15), ("A", 10, 25)]
+        assert (rp.n_selected_residues(residues, segments)
+                == len(rp.selected_residue_keys(residues, segments)) == 25)
+
+    def test_the_hotspot_refusal_reports_the_distinct_count_too(self, tmp_path):
+        """THE OTHER PLACE THE OLD COUNT COULD COME BACK.
+
+        The size refusal was the reason the de-duplication was introduced, and
+        it is well covered. ``refuse_unresolvable_hotspots`` takes a residue
+        count as well, on the same line of this commit's diff, and reverting it
+        to ``len(selected)`` left the whole suite green — found by mutation in
+        an independent QC pass.
+
+        Nothing is spent either way: the refusal fires regardless. But the
+        operator reads that number to decide whether to widen the contig, and
+        on ``A1-30,A20-40`` the repeated count says 51 residues where the crop
+        stages 40. A message that overstates the target by a quarter is a
+        message that argues against the fix it is reporting.
+        """
+        target = tmp_path / "t.pdb"
+        target.write_text(SIXTY_RES_PDB)
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(target), "A1-30,A20-40", [("positive", ["A99999"])])
+        message = str(excinfo.value)
+        # 41 distinct residues (A1..A40 is 40, plus the overlap counted once);
+        # the repeated count for the same contig is 51.
+        distinct = rp.n_selected_residues(
+            [("A", i, "") for i in range(1, 61)],
+            [("A", 1, 30), ("A", 20, 40)])
+        assert f"{distinct} residues selected" in message, (
+            f"the hotspot refusal must quote the DISTINCT count ({distinct}), "
+            f"not the repeated one: {message}")
+
+
+class TestADeadSegmentCannotHideBehindAHealthyOne:
+    """PRODUCTION REFUSES PER SEGMENT; THE CANARY CHECKED THE AGGREGATE.
+
+    ``--contig A1-300,Z1-50`` against a file whose only chain is A selects 300
+    residues, clears the size floor, resolves its hotspots inside chain A — and
+    spawns. Production settles the same request for free, one segment at a
+    time. PR #109 made multi-segment contigs the ordinary input shape, which is
+    what turned this from latent into reachable.
+
+    It also repairs a misdirection: ``--contig Z1-50`` alone used to come back
+    as "selects 0 residue(s) ... fewer than the 20 production requires ... Widen
+    --contig", which sends the operator to widen a range on a chain the upload
+    does not contain.
+    """
+
+    def _target(self, tmp_path):
+        return _CanaryProbe.write(tmp_path, "t.pdb", SIXTY_RES_PDB)
+
+    def test_the_healthy_segment_does_not_hide_the_dead_one(self, tmp_path):
+        target = self._target(tmp_path)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(target, "A1-300,Z1-50")
+        contig, dead, named, spans = _empty_refusal_fields(str(excinfo.value))
+        assert dead == "Z1-50", (
+            f"the refusal must name the offending segment ONLY: {excinfo.value}")
+        assert spans == "A1-60", (
+            f"...and what the file actually contains: {excinfo.value}")
+        assert (contig, named) == ("A1-300,Z1-50", target), (
+            f"the contig and the file are transposed: {excinfo.value}")
+        assert "$4" in str(excinfo.value) and "$12" in str(excinfo.value)
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+
+    def test_main_does_not_spawn_on_a_dead_segment(self, tmp_path):
+        """MUTATION: delete the ``cs.refuse_empty_segments`` call and phase 1
+        bills $4, phase 2 bills ~$12, for a contig production refuses."""
+        assert _CanaryProbe.spawns(1, self._target(tmp_path), "A1-300,Z1-50") == []
+        assert _CanaryProbe.spawns(2, self._target(tmp_path), "A1-300,Z1-50") == []
+
+    def test_a_dead_chain_alone_no_longer_says_widen_the_range(self, tmp_path):
+        """The message that misdirected. Chain Z is not in the file; no width
+        of range on chain Z can change that."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._target(tmp_path), "Z1-50")
+        _contig, dead, _named, spans = _empty_refusal_fields(str(excinfo.value))
+        assert (dead, spans) == ("Z1-50", "A1-60")
+        assert "fewer than" not in str(excinfo.value), (
+            "the size refusal answered a question about a missing chain: "
+            f"{excinfo.value}")
+
+    def test_an_unresolvable_bare_chain_is_refused_the_same_way(self, tmp_path):
+        """``--contig Z``: expansion leaves it alone because there is no span to
+        expand to, and this is the refusal that names it."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._target(tmp_path), "Z")
+        _contig, dead, _named, spans = _empty_refusal_fields(str(excinfo.value))
+        assert (dead, spans) == ("chain Z", "A1-60")
+        assert "None" not in dead, (
+            f"an unexpanded segment leaked its None bounds: {excinfo.value}")
+
+    def test_a_healthy_multi_segment_contig_is_not_refused(self, tmp_path):
+        """The over-refusal control. Multi-segment contigs are the normal input
+        shape since #109 and must go through."""
+        path = _CanaryProbe.write(
+            tmp_path, "two.pdb",
+            "\n".join(_trace("A", _TARGET_SEQ)
+                      + _trace("B", _TARGET_SEQ, y=30.0, serial0=100)) + "\n")
+        assert _CanaryProbe.refuse(path, "A1-30,B1-30") == "A1-30,B1-30"
+
+    def test_the_empty_refusal_precedes_the_size_one(self, tmp_path):
+        """PRODUCTION'S ORDER. ``A1-5,Z1-50`` is both a sliver and a dead
+        segment; production checks the segments first, and the fix for a chain
+        that is not in the file is not "widen the range"."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._target(tmp_path), "A1-5,Z1-50")
+        _contig, dead, _named, _spans = _empty_refusal_fields(str(excinfo.value))
+        assert dead == "Z1-50"
+        assert "fewer than" not in str(excinfo.value)
+
+    def test_the_negative_numbering_refusal_still_precedes_it(self, tmp_path):
+        """The other side of the same ordering. ``A-5-0`` on a file numbered
+        from 1 is BOTH unrenderable and empty; production refuses the numbering
+        first, because that is the fault the operator has to fix."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._target(tmp_path), "A-5-0")
+        assert "CONTIG_REGEX" in str(excinfo.value)
+
+    def test_the_predicate_is_run_pipelines_and_not_a_restatement(self):
+        residues = [("A", i, "") for i in range(1, 61)]
+        assert rp.empty_segments(residues, [("A", 1, 60), ("Z", 1, 50)]) == [
+            ("Z", 1, 50)]
+        assert rp.empty_segments(residues, [("A", 1, 60)]) == []
+        refusal = next(
+            n for n in ast.walk(ast.parse(_CANARY_PATH.read_text(encoding="utf-8")))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "empty_segments" in called, (
+            "the canary must ASK run_pipeline which segments select nothing")
+
+    def test_the_refusal_actually_raises_rather_than_computing_and_returning(self):
+        """MUTATION: ``cs.refuse_empty_segments`` returning its verdict instead
+        of raising. That is the shape three earlier refusals shipped in."""
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            cs.refuse_empty_segments("t.pdb", "A1-60,Z1-50", [("Z", 1, 50)],
+                                     "A1-60")
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+        assert cs.refuse_empty_segments("t.pdb", "A1-60", [], "A1-60") is None
+
+
+class TestABareChainIdReachesTheNegativeNumberingGuard:
+    """``--contig A`` SKIPPED THE GUARD ENTIRELY, BY DESIGN AND BY MISTAKE.
+
+    ``parse_target_input`` yields ``('A', None, None)`` for a bare chain id, and
+    the canary filtered exactly those out before asking
+    ``unrenderable_segments`` — so a construct numbered from -5 passed every
+    pre-spawn check and died inside ``from_contig`` on a billed A100.
+
+    THE FIX IS TO EXPAND, NOT TO REFUSE. Production ACCEPTS a bare chain id: it
+    resolves ``A`` to the chain's observed span and applies the numeric guards
+    to THAT, so the same input is refused for negative numbering rather than for
+    being bare. A canary that refused the id itself would stop runs production
+    would have accepted, which on this branch is its own defect class.
+    """
+
+    def _tagged(self, tmp_path):
+        return _CanaryProbe.write(
+            tmp_path, "tagged.pdb",
+            "\n".join(_trace("A", _TARGET_SEQ, first_res=-5)) + "\n")
+
+    def _normal(self, tmp_path):
+        return _CanaryProbe.write(tmp_path, "ok.pdb", SIXTY_RES_PDB)
+
+    def test_a_bare_chain_on_a_tagged_construct_is_refused(self, tmp_path):
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(self._tagged(tmp_path), "A")
+        message = str(excinfo.value)
+        assert "A-5-24" in message, (
+            f"the refusal must name the SPAN the bare id expands to: {message}")
+        assert "CONTIG_REGEX" in message and "NO GPU TIME WAS USED" in message
+
+    def test_main_does_not_spawn_on_a_bare_chain_of_a_tagged_construct(
+            self, tmp_path):
+        """MUTATION: put the ``s[1] is not None`` filter back and phase 1 bills
+        $4, phase 2 ~$12, to die in ``from_contig``."""
+        assert _CanaryProbe.spawns(1, self._tagged(tmp_path), "A") == []
+        assert _CanaryProbe.spawns(2, self._tagged(tmp_path), "A",
+                                   negative="A3 A4") == []
+
+    def test_a_bare_chain_on_a_normal_target_is_NOT_refused(self, tmp_path):
+        """THE OVER-REFUSAL CONTROL, and the reason this is an expansion rather
+        than a refusal. ``--contig A`` is a legitimate request that production
+        honours; a canary that refused it would refuse a run that bills happily
+        and returns a real answer."""
+        assert _CanaryProbe.refuse(self._normal(tmp_path), "A") == "A"
+
+    def test_a_bare_chain_still_clears_the_size_floor_when_it_should(
+            self, tmp_path):
+        """The expansion has to feed the SIZE gate too, or ``--contig A`` on a
+        60-residue chain would be measured as zero selected residues."""
+        residues, _ = rp.pdb_ca_residues(Path(self._normal(tmp_path)))
+        segments = rp.expand_bare_chains(residues, rp.parse_target_input("A"))
+        assert segments == [("A", 1, 60)]
+        assert rp.n_selected_residues(residues, segments) == 60
+        assert not rp.target_too_small(residues, segments)
+
+    def test_the_expansion_is_run_pipelines_and_not_a_restatement(self):
+        assert rp.expand_bare_chains(
+            [("A", -5, ""), ("A", 24, "")], [("A", None, None)]) == [("A", -5, 24)]
+        refusal = next(
+            n for n in ast.walk(ast.parse(_CANARY_PATH.read_text(encoding="utf-8")))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "expand_bare_chains" in called, (
+            "the canary must ASK run_pipeline to expand a bare chain id")
+        assert "None" not in ast.unparse(refusal), (
+            "the canary is filtering unexpanded segments again; expanding is "
+            "what makes the numeric guards apply to a bare chain id")
+
+
+class TestAnUnparsableContigIsARefusalNotATraceback:
+    """NO MONEY IS AT STAKE AND IT IS STILL A DEFECT.
+
+    ``--contig Zz9`` came out of ``_refuse_unresolvable_hotspots`` as a bare
+    ``ValueError: unparsable target_input segment 'Zz9'``, which is the one
+    failure in the harness that did not tell the operator what every other
+    refusal tells them: that nothing was spent. Production converts the
+    identical exception, from the identical parser, into a ``_fail``.
+    """
+
+    def _target(self, tmp_path):
+        return _CanaryProbe.write(tmp_path, "t.pdb", SIXTY_RES_PDB)
+
+    def test_an_unparsable_contig_raises_a_refusal(self, tmp_path):
+        target = self._target(tmp_path)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            _CanaryProbe.refuse(target, "Zz9")
+        message = str(excinfo.value)
+        assert "NO GPU TIME WAS USED" in message
+        # BY ROLE, not by substring. "Zz9" appears in this message whichever
+        # slot it lands in, so `"Zz9" in message` passed while the contig and
+        # the file path were transposed. See _unparsable_refusal_fields.
+        contig, shown_target, detail = _unparsable_refusal_fields(message)
+        assert contig == "Zz9", (
+            f"the contig slot must hold the contig, got {contig!r}")
+        assert shown_target == str(target), (
+            f"the target slot must hold the file, got {shown_target!r}")
+        assert "Zz9" in detail, (
+            f"the parser's own complaint must survive, got {detail!r}")
+
+    def test_it_is_no_longer_a_bare_value_error(self, tmp_path):
+        """MUTATION: drop the ``except ValueError`` and this test sees a
+        ``ValueError`` where the harness's contract promises a refusal."""
+        with pytest.raises(cs.CanaryRefusal):
+            _CanaryProbe.refuse(self._target(tmp_path), "A1-20,Zz9")
+
+    def test_main_does_not_spawn_on_an_unparsable_contig(self, tmp_path):
+        assert _CanaryProbe.spawns(1, self._target(tmp_path), "Zz9") == []
+        assert _CanaryProbe.spawns(2, self._target(tmp_path), "Zz9",
+                                   negative="A3 A4") == []
+
+    def test_the_parser_is_run_pipelines_and_only_the_wrapping_is_local(self):
+        with pytest.raises(ValueError):
+            rp.parse_target_input("Zz9")
+        refusal = next(
+            n for n in ast.walk(ast.parse(_CANARY_PATH.read_text(encoding="utf-8")))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        called = {
+            node.func.attr for node in ast.walk(refusal)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert {"parse_target_input", "refuse_unparsable_contig"} <= called
+
+    def test_the_refusal_actually_raises(self):
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            cs.refuse_unparsable_contig("t.pdb", "Zz9", ValueError("nope"))
+        assert "NO GPU TIME WAS USED" in str(excinfo.value)
+
+
+
+def _uneven_chains(hi_a=443, hi_b=442):
+    """The 3S7G shape at small scale: chain B one residue shorter than chain A.
+
+    A 236-443 and B 236-442 are the real spans of the Fc target whose contig
+    ``A236-443,B236-443`` burned an A100. Built from 236 so the numbers in the
+    refusal are the ones an operator would recognise.
+    """
+    lines, serial = [], 1
+    for chain, hi in (("A", hi_a), ("B", hi_b)):
+        seq = [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(hi - 236 + 1)]
+        lines += _trace(chain, seq, first_res=236, serial0=serial)
+        serial += len(seq)
+    return "\n".join(lines) + "\n"
+
+
+class TestTheEndpointGuardReachesTheCanaryToo:
+    """THE THIRD TIME PRODUCTION GREW A REFUSAL AND THE CANARY HAD TO FOLLOW.
+
+    The class is now well established: production adds a pre-GPU refusal, the
+    canary does not follow, and the canary can then spend $4-$12 on a target
+    production would have refused — or return PASS on one. It cost a paid shard
+    to find with the staging crop, an audit to find with the negative-numbering
+    guard, and another with the 20-residue floor.
+
+    This one is ``missing_endpoints``: a range end that names no residue.
+    ``A236-443,B236-443`` on the real Fc target died as ``ValueError('No atoms
+    found for selection: B/*/443')`` ~60 s into a billed A100, and every cheaper
+    check passed on the way there — the range still selects the 207 residues of
+    chain B that DO exist, so the count is right, the crop's self-check
+    balances, and nothing notices the end that is missing.
+    """
+
+    def test_the_real_failure_is_refused_before_any_shard_spawns(self, tmp_path):
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                str(path), "A236-443,B236-443", [("positive", ["A236"])])
+        message = str(excinfo.value)
+        assert "residue 443 on chain B" in message
+        assert "B/*/443" in message
+        assert "A236-443, B236-442" in message, "the spans, so the fix is visible"
+        assert "NO GPU TIME WAS USED" in message
+
+    def test_main_does_not_spawn_on_an_endpoint_that_does_not_exist(self, tmp_path):
+        """Through ``main``, because the refusal is only worth anything if the
+        spawn is downstream of it."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        shard = _Remote()
+        namespace = load_canary_functions(
+            {"main", "_refuse_unresolvable_hotspots", "_cancel_outstanding",
+             "_finish", "_print_verdict"},
+            _load_rp_local=lambda: rp, run_shard=shard,
+            phase0=_Remote(result={}))
+        with pytest.raises(cs.CanaryRefusal):
+            namespace["main"](phase=1, target_pdb=str(path),
+                              contig="A236-443,B236-443", hotspots="A236 A237")
+        assert shard.spawn_calls == [] and shard.remote_calls == [], (
+            "phase 1 spent $4 on a contig upstream cannot resolve")
+
+    def test_the_corrected_contig_is_not_refused(self, tmp_path):
+        """The guard must not be a blanket one, or the harness never runs."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "A236-443,B236-442",
+            [("positive", ["A236"])]) == "A236-443,B236-442"
+
+    def test_a_derived_contig_is_not_refused(self, tmp_path):
+        """No ``--contig``: the canary derives it from the structure, so both
+        ends exist by construction and nothing may refuse it."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        assert namespace["_refuse_unresolvable_hotspots"](
+            str(path), "", [("positive", ["A236"])]) == "A236-443,B236-442"
+
+    def test_the_predicate_is_run_pipelines_and_not_a_restatement(self):
+        """THE PIN THAT MATTERS, and it is on DATA FLOW, not merely on the call
+        existing — production's answer must be the argument the refusal decides
+        on. Pinning "``missing_endpoints`` appears somewhere in this function"
+        is NOT enough and was the first version of this test: QC demonstrated a
+        canary that calls it, discards the result, and refuses on a locally
+        computed list passing all 629 proteina tests. "Someone inlines the logic
+        but leaves the call behind" is the realistic drift shape, not "someone
+        deletes the call".
+
+        The sibling pin on ``unrenderable_segments`` still has the weaker form
+        and the same hole. Not widened here — it is a different guard and this
+        commit does not own it — but it should be, and it is the reason to read
+        this docstring before copying that one."""
+        tree = ast.parse(_CANARY_PATH.read_text(encoding="utf-8"))
+        refusal = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "_refuse_unresolvable_hotspots")
+        decisions = [
+            node for node in ast.walk(refusal)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "refuse_missing_endpoints"
+        ]
+        assert len(decisions) == 1, (
+            "exactly one endpoint refusal is expected; with two the assertion "
+            "below could be satisfied by whichever one is still wired up")
+        produced_inline = {
+            arg.func.attr for arg in decisions[0].args
+            if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+        }
+        assert "missing_endpoints" in produced_inline, (
+            "the canary must pass run_pipeline's OWN return value straight into "
+            "the refusal, not call it and decide on something else — a second "
+            "implementation is the drift that has now cost a paid shard once "
+            "and been caught by audit twice")
+
+    def test_the_refusal_fires_before_the_hotspot_one(self, tmp_path):
+        """Production checks endpoints (step 4b) before hotspots (step 5), and
+        the canary must agree: on a contig whose end does not exist, the
+        selection is not a trustworthy basis for a hotspot verdict."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        namespace = load_canary_functions(
+            {"_refuse_unresolvable_hotspots"}, _load_rp_local=lambda: rp)
+        with pytest.raises(cs.CanaryRefusal) as excinfo:
+            namespace["_refuse_unresolvable_hotspots"](
+                # BOTH wrong: a bad endpoint and a hotspot matching nothing.
+                str(path), "A236-443,B236-443", [("positive", ["A99999"])])
+        assert "residue 443 on chain B" in str(excinfo.value)
+
+    def test_the_shared_predicate_agrees_with_productions_own_answer(self, tmp_path):
+        """Same function, same file, same verdict — the property the delegation
+        pin exists to make unbreakable, asserted directly."""
+        path = tmp_path / "fc.pdb"
+        path.write_text(_uneven_chains())
+        residues, _ = rp.pdb_ca_residues(path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A236-443,B236-443")) == [("B", 443)]
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A236-443,B236-442")) == []
+
+
+
+# ===========================================================================
+# UPSTREAM RENUMBERS THE TARGET, AND THE RESTORE IS WHAT MAKES PHASE 2 LEGIBLE
+# ===========================================================================
+#
+# Measured on 8 of 8 designs of a completed Fc shard: input chains A 234-444
+# (211 residues) and B 237-444 (208) came back as A 1-211 and B 1-208 —
+# contiguous, labels preserved, order preserved, 100.0% positional sequence
+# identity on both chains. Hotspots are matched by (chain, resseq), so every
+# design was UNSCORABLE and phase 2 would have spent ~$12 to return
+# INCONCLUSIVE.
+#
+# The gate that refused them is correct and is NOT relaxed here. The restore
+# runs before it and puts the keys back, and only when sequence proves the
+# correspondence. Everything below is about the second half of that sentence:
+# what must NOT be repaired.
+
+
+def _repeat_seq(n):
+    """``n`` residues cycling _TARGET_SEQ — the module-level twin of the
+    ``_repeat`` helper the older identity classes carry as a method."""
+    return [_TARGET_SEQ[i % len(_TARGET_SEQ)] for i in range(n)]
+
+
+class TestRenumberedTargetsAreRestored:
+    """``restore_input_numbering`` — the repair, and everything it must refuse."""
+
+    @staticmethod
+    def _rows(chains):
+        rows = []
+        for i, (c, seq, first) in enumerate(chains):
+            rows += _trace(c, seq, y=40.0 * i, serial0=1 + 1000 * i,
+                           first_res=first)
+        return rows
+
+    def _ref(self, chains):
+        return cs.ca_resnames(cs.heavy_atoms("\n".join(self._rows(chains)) + "\n"))
+
+    def _design(self, chains, binder=("GLY",) * 8):
+        rows = self._rows(chains) + _trace("Z", list(binder), y=4.0,
+                                           serial0=9000)
+        return "\n".join(rows) + "\n"
+
+    def test_the_measured_shape_one_based_contiguous_is_repaired(self):
+        """The exact shape hardware produced: input numbered from 234, design
+        numbered from 1, same order, same sequence."""
+        seq = _repeat_seq(60)
+        reference = self._ref([("A", seq, 234)])
+        design = self._design([("A", seq, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["applied"] is True
+        assert rn["chains"]["A"]["identity"] == 1.0
+        assert rn["chains"]["A"]["map"][1] == 234, "design 1 IS input 234"
+        assert rn["chains"]["A"]["map"][60] == 293
+        assert entry["target_verified"] is True
+
+    def test_an_in_order_half_renumbering_is_repaired(self):
+        """The case TestPerChainIdentity's coverage test used to own. Half the
+        chain keeps the input numbering and half is thrown into the 5000s, but
+        the RESIDUES are the same ones in the same order, so the positional map
+        is right and repairing it is correct. That test now uses a sequence the
+        restore cannot prove, so it still measures the coverage floor."""
+        seq = _repeat_seq(60)
+        reference = self._ref([("A", seq, 1)])
+        rows = (_trace("A", seq[:30], first_res=1)
+                + _trace("A", seq[30:], first_res=5031, serial0=3000)
+                + _trace("Z", ["GLY"] * 8, y=4.0, serial0=9000))
+        entry = cs.score_design_file("\n".join(rows) + "\n", {"A"}, ["A1"], [],
+                                     reference)
+        assert entry["target_renumbering"]["applied"] is True
+        assert entry["target_renumbering"]["chains"]["A"]["map"][5031] == 31
+        assert entry["target_verified"] is True
+
+    def test_a_design_already_in_input_numbering_is_left_alone(self):
+        """No-op, and it must SAY no-op rather than silently rewriting: a
+        needless remap is a second place for the keys to go wrong."""
+        seq = _repeat_seq(40)
+        reference = self._ref([("A", seq, 7)])
+        entry = cs.score_design_file(self._design([("A", seq, 7)]), {"A"},
+                                     ["A7"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["applied"] is False
+        assert rn["already_input_numbering"] is True
+        assert entry["target_verified"] is True, (
+            "declining to remap must not make a correct design unscorable")
+
+    def test_a_length_mismatch_refuses_rather_than_aligning_a_prefix(self):
+        """THE ROLE INVERSION, and the reason the map is length-exact. A binder
+        relabelled onto the target's chain id is shorter; aligning it to the
+        first N residues of the target would hand back a perfect recall
+        measured on the binder's own contacts. Reproduced on real output: a
+        74-residue binder on chain A against a 211-residue input chain."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", _repeat_seq(20), 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "length differs" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+        assert entry.get("hotspot_recall") is None, "never a fabricated score"
+
+    def test_an_all_unknown_chain_cannot_certify_a_map(self):
+        """``same_residue`` counts UNK as a match, so an all-UNK chain scores
+        1.0 against any reference. The informative floor is what stops a
+        sequence-free backbone model certifying a map to anything."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", ["UNK"] * 60, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "informative" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+
+    def test_a_mostly_unknown_chain_with_a_few_lucky_matches_refuses(self):
+        """THE CASE THE INFORMATIVE FLOOR ACTUALLY OWNS, and the one that was
+        missing: deleting the floor left the suite green.
+
+        An all-UNK chain is already refused by the identity check, because zero
+        informative pairs makes ``identity`` None. The floor only bites when
+        there are a FEW informative pairs and they all match — 3 real residues
+        inside 57 unknowns scores a perfect 1.0 on a sample of 3, and without
+        the floor that certifies a map for the whole 60-residue chain. A
+        backbone model emitting mostly sequence-free output with a few residues
+        resolved is the realistic way to land here."""
+        seq = ["UNK"] * 60
+        ref_seq = _repeat_seq(60)
+        for i in (5, 20, 41):
+            seq[i] = ref_seq[i]
+        reference = self._ref([("A", ref_seq, 234)])
+        design = self._design([("A", seq, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["chains"]["A"]["n_informative"] == 3
+        assert rn["chains"]["A"]["identity"] == 1.0, (
+            "identity is PERFECT on its tiny sample — so identity is not what "
+            "refuses this, and if that ever changes this test has stopped "
+            "measuring the floor")
+        assert rn["applied"] is False
+        assert "informative" in rn["reason"]
+        assert entry["target_verified"] is False
+
+    def test_a_different_chain_of_the_same_length_refuses(self):
+        """Length alone is not evidence. GLY is absent from _TARGET_SEQ, so
+        every position mismatches and the identity floor refuses."""
+        reference = self._ref([("A", _repeat_seq(60), 234)])
+        design = self._design([("A", ["GLY"] * 60, 1)])
+        entry = cs.score_design_file(design, {"A"}, ["A234"], [], reference)
+        assert entry["target_renumbering"]["applied"] is False
+        assert "identity" in entry["target_renumbering"]["reason"]
+        assert entry["target_verified"] is False
+
+    def test_all_target_chains_must_map_or_none_is_applied(self):
+        """A partial remap leaves one chain keyed to the input and another to
+        1..N — worse than not trying, because the gate would then see a mixture
+        and could still clear a pooled floor."""
+        seq_a, seq_b = _repeat_seq(60), _repeat_seq(40)
+        reference = self._ref([("A", seq_a, 234), ("B", seq_b, 300)])
+        # A is repairable; B is the wrong length and is not.
+        rows = (_trace("A", seq_a, first_res=1)
+                + _trace("B", _repeat_seq(25), y=40.0, first_res=1, serial0=1001)
+                + _trace("Z", ["GLY"] * 8, y=4.0, serial0=9000))
+        entry = cs.score_design_file("\n".join(rows) + "\n", {"A", "B"},
+                                     ["A234"], [], reference)
+        rn = entry["target_renumbering"]
+        assert rn["chains"]["A"]["ok"] is True, "A alone would have mapped"
+        assert rn["chains"]["B"]["ok"] is False
+        assert rn["applied"] is False, "one bad chain vetoes the whole remap"
+        assert entry["target_verified"] is False

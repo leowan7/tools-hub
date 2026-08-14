@@ -1,0 +1,129 @@
+{# THE FIVE `?handoff=` SENTENCES, and the size-cap paragraph that rides them.
+
+   FOUR templates import these, which is why they live here rather than inline.
+   THREE are detail pages whose route whitelists a `?handoff=` reason:
+   `templates/runs/detail.html`, `templates/targets/detail.html` and
+   `templates/job_detail.html`. The fourth,
+   `templates/unavailable.html`, is where the user lands when the redirect
+   arrives while the fault that caused it is still live and the parent read at
+   the top of that page fails too (register item A90). One of these sentences
+   had already gone stale on the target page with nothing noticing, while it
+   sat inline in a template of its own; each further inline copy would only
+   have been one more place to keep true.
+
+   THE FOURTH TEMPLATE IS REACHED FROM ONE ARM ONLY. `target_detail` renders
+   it; `compute_campaign_detail` does not, because its absent answer is a
+   redirect rather than the 404 the target arm had, and answering an unreadable
+   run with a render costs extra Supabase round trips under exactly the outage
+   in question (register item A94, and the count is beside that route).
+   `job_detail` does not either: it resolves its job through the two-outcome
+   `get_job` and answers None with 404.html, which is the shape `target_detail`
+   had before A90 and is not changed here. So neither `parent='run'` nor
+   `parent='job'` reaches unavailable.html. The macro still takes the noun on
+   every call: a partial that is only correct for the caller that happens to
+   reach it is the duplication this replaced.
+
+   ONLY THE TEXT, no wrapper. Each caller supplies its own wrapper -- `.panel`
+   on the target and job pages, `.rd-handoff` on the run page -- its own `<p>`,
+   its own `{% if handoff %}`, and its own `{% set truncated_count %}`. What is
+   shared is the copy, which is the only part that was ever duplicated.
+
+   `parent` NAMES THE PAGE THE BANNER IS ON, and THREE VALUES ARE KNOWN: 'run',
+   'target' and 'job'. Only two of the five sentences say it at all, `rejected`
+   and `unverified`; `none`, `noname` and the `{% else %}` arm never named any
+   page.
+
+   THE `rejected` NOUN IS A LOOKUP WITH A DEFAULT TOTAL OVER HASHABLE NOUNS
+   (`.get` still raises on a list or a dict, which no call site passes), not a
+   branch, and that
+   shape is the fix rather than a detail of it. It was
+   `{% if parent == 'run' %}...{% else %}...{% endif %}` for as long as there
+   were two callers, so the caller register item A91 adds -- /jobs/<id> -- would
+   have taken the else arm. Rendered with `parent='job'` before this change, the
+   sentence came out byte-identical to the target arm's: a page with no target
+   telling the user their designs could not be matched to a design "on this
+   target". Adding a third arm to a fall-through would leave a fourth
+   caller the same trap. A mapping does not, because ITS DEFAULT NAMES NO PAGE:
+   an unknown noun degrades to a sentence true of every parent rather than to
+   another parent's claim. `unverified` interpolates `parent` itself, so an
+   unknown noun there renders whatever the caller passed, verbatim -- which is
+   ungrammatical for a blank or a non-string (`belong to this None`) but is
+   never another page's noun. The unknown-noun test drives `rejected` only, so
+   the ungrammatical half is stated here and not pinned.
+
+   `unverified` NAMES THE NOUN AND NOTHING ELSE. The run arm reaches it from two
+   CAUSES, the target arm from three, and the job arm A91 added from exactly one
+   (its parent `read_job` answering UNAVAILABLE). Causes, not redirect statements -- each
+   of those two arms has exactly two of those, so the two numbers are not
+   comparable unless you say which you mean. A sentence naming one cause is
+   false whenever another fired -- which is exactly how the target page's old
+   wording went stale. What the sentence says instead is that a lookup this
+   submission depends on did not complete, and that is true of every exit but
+   one: `campaign_ids_for_target` also reports its id list incomplete when it
+   hits its own page bound, where the individual page reads all completed and
+   the ENUMERATION did not, so "lookup" is doing that work.
+
+   ONE GROUND IT IS STILL NOT LITERALLY TRUE OF, stated rather than glossed:
+   `cc.read_campaign` reports UNAVAILABLE for a row that came back in a shape
+   `_campaign_or_none` could not parse, and there the read completed and the
+   PARSE failed. It takes a row no migration in this repo can produce. The
+   sentence is not rewritten for it because every wording that covers it is
+   worse for the user on the grounds they will actually hit, and because what
+   the reader is told to do -- the stars survive, try again, contact us if it
+   repeats -- is right on that ground too. All three banner suites pin the
+   cause-neutrality in both directions.
+
+   NO SENTENCE HERE SAYS "nothing was charged". /lab-projects/submit has no
+   wallet or Stripe code on any path -- it inserts a lab_campaigns row and
+   stages PDBs -- and the modal that opens this flow says "No commitment".
+   A reassurance that no money moved implies money could have moved. All three
+   banner suites assert the word "charge" appears in neither of the two
+   paragraphs this file emits: the reason sentence, for each of the five
+   reasons, and the size-cap sentence rendered alongside it. #}
+
+{% macro handoff_sentence(handoff, parent) %}
+{% if handoff == 'none' %}
+Nothing was sent to the lab, because the request arrived with no designs in it.
+Your stars are still here. Try the button again, and if it keeps happening, reload the page first.
+{% elif handoff == 'rejected' %}
+{% set _unmatched = {
+     'run': 'a design produced by this run',
+     'target': 'a design on this target',
+     'job': 'a design this job produced',
+   } %}
+Nothing was sent to the lab. The request did carry designs, but none of them
+could be matched to {{ _unmatched.get(parent, 'a design in the scope this request was made against') }}, so there was nothing to send.
+Sending the same selection again will be refused the same way. Star designs
+from the table on this page, or contact us and we will trace where they went.
+{% elif handoff == 'noname' %}
+Nothing was sent to the lab. The request needs a name for the target so the
+Ranomics team knows what they are quoting. Reopen the form and add one.
+{% elif handoff == 'unverified' %}
+Nothing was sent to the lab. One of the lookups this submission depends on did not
+complete, so we could not confirm that the designs you starred belong to this {{ parent }},
+and sending a shortlist that might be quietly missing designs is worse than sending
+none. Your stars are still here, so try again. If it happens every time, it is not
+a passing fault and we should look at it — contact us.
+{% else %}
+Your request could not be submitted and nothing was sent to the lab.
+Your stars are still here. Try again, and contact us if it keeps failing.
+{% endif %}
+{% endmacro %}
+
+{# A DIFFERENT FACT FROM THE REASON, NOT A SOFTENER, which is why it is a second
+   paragraph at every caller. `?truncated=` counts starred refs the request's
+   size cap discarded BEFORE any of the five checks ran, so a shortlist can be
+   unnamed, or unverifiable, or wholly rejected, AND ALSO be over the limit.
+
+   "Up to", because the number counts REFS. The tail past the cap is never
+   parsed into (job, index) pairs, so a repeat hiding in it cannot be subtracted
+   and this is an upper bound on the designs actually missing. #}
+{% macro truncation_sentence(truncated_count) %}
+Separately, and whatever you do next: up to {{ truncated_count }} of your
+starred design{{ '' if truncated_count == 1 else 's' }}
+{{ 'was' if truncated_count == 1 else 'were' }} over the per-request limit
+and {{ 'was' if truncated_count == 1 else 'were' }} not read at all.
+A selection this size cannot be sent in one request, and sending it again
+would cut it in the same place. Contact us and we will take the whole
+list.
+{% endmacro %}

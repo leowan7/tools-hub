@@ -16,6 +16,7 @@ out — they are load-bearing.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -26,7 +27,11 @@ pytestmark = pytest.mark.usefixtures("isolate_supabase")
 
 from shared.storage import StorageError
 from shared.targets import (
+    TARGET_READ_ABSENT,
+    TARGET_READ_OK,
+    TARGET_READ_UNAVAILABLE,
     DesignTarget,
+    TargetRead,
     _target_storage_key,
     archive_target,
     campaign_ids_for_target,
@@ -34,6 +39,7 @@ from shared.targets import (
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    read_target,
     unarchive_target,
 )
 
@@ -300,6 +306,259 @@ def test_create_target_without_an_upload_keeps_storage_path_null(fake):
 
 
 # ---------------------------------------------------------------------------
+# Chain-qualified hotspots (design_targets.hotspot_spec, migration 0041)
+#
+# design_targets.hotspot_residues is integer[], so a hotspot that names its
+# protomer cannot be stored in it. On an IgG1 Fc — both chains numbered
+# 234-444 — storing the bare 241 means every later run re-prefills it as A241
+# and silently designs against one protomer.
+# ---------------------------------------------------------------------------
+
+
+def _stored_row(fake):
+    rows = fake.store.get("design_targets") or []
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def test_create_target_never_names_the_new_column(fake):
+    """THE INSERT IS NOT THE WRITER, and this is what keeps it safe to deploy
+    ahead of migration 0041: an INSERT naming a column the database does not
+    have fails outright, every time.
+
+    Its one production caller is the ``/targets`` POST, whose
+    ``_parse_residue_list`` is a strict integer parse, so nothing
+    chain-qualified can reach it. ``hotspot_spec`` is filled in later, by
+    ``enrich_target_hotspot_spec``, from a run that named its chains.
+    """
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A B",
+            hotspot_residues=[241, 241],
+        )
+    row = _stored_row(fake)
+    assert "hotspot_spec" not in row
+    assert row["hotspot_residues"] == [241, 241]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 241]
+
+
+def test_a_bare_hotspot_target_never_names_the_new_column(fake):
+    """Additive means the pre-existing shape is untouched — and the INSERT must
+    not even MENTION a column the database may not have yet, so a deploy that
+    lands ahead of the migration cannot break ordinary target creation."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            hotspot_residues=[42, 88],
+        )
+    row = _stored_row(fake)
+    assert "hotspot_spec" not in row, (
+        "an INSERT naming hotspot_spec fails outright before 0041 is applied")
+    assert row["hotspot_residues"] == [42, 88]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [42, 88]
+
+
+def test_a_row_from_before_the_migration_still_loads(fake):
+    """No backfill, so most rows have no such key at all."""
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 243],
+    })
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 243]
+
+
+def test_a_row_that_HAS_the_column_actually_reads_it(fake):
+    """THE READ SIDE OF THE WHOLE FEATURE, and nothing else pinned it.
+
+    Every other test here hands ``DesignTarget(hotspot_spec=[...])`` straight to
+    the constructor, and the pre-migration test above passes a row with the key
+    ABSENT — so ``from_row`` returning a constant ``[]`` satisfied all of them.
+    That mutation survived an independent QC pass over 1254 tests.
+
+    It is the worst survivor to have, because it fails silently in the safe
+    direction: `effective_hotspots` falls back to the integer column, the detail
+    page, the list page and the launch prefill all render the unqualified form,
+    every enrichment ever written becomes invisible, and the suite stays green.
+    """
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 241],
+        "hotspot_spec": ["A241", "B241"],
+    })
+    assert target.hotspot_spec == ["A241", "B241"]
+    # And the property the rest of the app reads prefers it over the lossy copy
+    # — on a homodimer that is the whole difference between one protomer and two.
+    assert target.effective_hotspots == ["A241", "B241"]
+
+
+def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list():
+    """``split_hotspot`` reads a prefix only against a KNOWN chain list, so a
+    target with no chain summary and no ``target_chain`` gets ``(None, None)``
+    for every prefixed token. Both reductions would then read the run's
+    ``["A241", "B241"]`` as carrying no residues at all, and the enrichment
+    would decline a correct write, silently. ``_LONE_HOTSPOT_RE`` is the
+    fallback that recovers exactly the single-letter shape."""
+    from shared.targets import _clean_hotspot_ints, _clean_hotspot_spec
+
+    assert _clean_hotspot_ints(["A241", "B241"], []) == [241, 241]
+    assert _clean_hotspot_spec(["A241", "B241"], []) == ["A241", "B241"]
+
+
+def test_the_known_chain_list_beats_the_single_letter_fallback():
+    """ORDER MATTERS, and nothing else pins it.
+
+    On an mmCIF target whose chain is "A2", the token "A296" is residue 96 on
+    chain A2 — not residue 296 on chain A. split_hotspot gets that right BECAUSE
+    it is given the chain list, so it has to be consulted first; the
+    single-letter regex is only the last resort for when no chain list exists.
+    Reversing the two is silent and produces a plausible wrong answer.
+    """
+    from shared.targets import _split_stored_hotspot
+
+    assert _split_stored_hotspot("A296", ["A2"]) == ("A2", 96)
+    assert _split_stored_hotspot("A296", ["A", "B"]) == ("A", 296)
+    assert _split_stored_hotspot("A296", []) == ("A", 296)
+    assert _split_stored_hotspot("296", ["A", "B"]) == (None, 296)
+    assert _split_stored_hotspot("zzz", ["A"]) == (None, None)
+
+
+def test_the_epitope_column_keeps_its_strict_integer_coercion(fake):
+    """The hotspot helper is deliberately not shared with the epitope field."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            epitope_residues=[32, 45],
+        )
+    row = _stored_row(fake)
+    assert row["epitope_residues"] == [32, 45]
+    assert "hotspot_spec" not in row
+
+
+def test_the_form_prefill_splits_the_two_shapes_across_two_fields():
+    """TWO FIELDS, and putting the chain in the wrong one is the P0.
+
+    ``hotspot_residues`` is the ONE shared launch field, posted to every
+    selected tool, five of which cannot parse a chain prefix at all — so it
+    carries plain integers whatever the target stores. ``chain_hotspots`` is
+    proteina's own field and is where the protomer survives.
+
+    Fully covered, with the executed six-tool evidence, in
+    tests/test_target_hotspot_field_split.py and
+    tests/test_target_multi_launch_routes.py; kept here because this is the
+    module that owns the helper.
+    """
+    from shared.targets import target_defaults_for_form
+
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    out = target_defaults_for_form(dimer)
+    assert out["hotspot_residues"] == "241,241"
+    assert out["chain_hotspots"] == "A241,B241"
+
+    plain = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A",
+        hotspot_residues=[42, 88],
+    )
+    assert target_defaults_for_form(plain)["hotspot_residues"] == "42,88"
+
+
+def test_to_dict_adds_the_new_key_without_changing_the_old_one():
+    """Existing consumers of to_dict()["hotspot_residues"] must be unaffected.
+
+    ``to_dict`` has NO production callers (grep: only this test), so it mirrors
+    the two stored columns and nothing more. ``effective_hotspots`` is where the
+    choice between them lives, and it is what the templates and the run prefill
+    actually read.
+    """
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    out = dimer.to_dict()
+    assert out["hotspot_residues"] == [241, 241]
+    assert out["hotspot_spec"] == ["A241", "B241"]
+
+
+def test_the_target_chain_seeds_the_chain_list_for_the_enrichment():
+    """DELETING THE ``target_chain`` SEED IN ``_hotspot_chain_ids`` IS OTHERWISE
+    INVISIBLE. With a single-letter chain the one-letter fallback in
+    ``_split_stored_hotspot`` reaches the same answer, and a target whose chain
+    summary names the same chain supplies it anyway — so the two differ only for
+    a MULTI-CHARACTER chain id that ONLY ``target_chain`` contributes.
+
+    On a target whose chain is ``"A2"``, ``"A2296"`` is residue 296. Without the
+    seed, ``split_hotspot`` has no chain list, the fallback regex takes the one
+    leading letter, and the reduction reads 2296 — which no longer matches the
+    stored 296, so a correct enrichment is silently declined.
+
+    The BOTH-HALVES case (the chain summary loop) is covered by
+    ``test_a_multi_character_chain_is_read_against_the_targets_own_chains`` in
+    tests/test_target_hotspot_field_split.py, which drives the real enrichment
+    against a target whose chains come from ``chain_summary``.
+    """
+    from shared.targets import _clean_hotspot_ints, _hotspot_chain_ids
+
+    assert _hotspot_chain_ids("A2", None) == ["A2"]
+    assert _clean_hotspot_ints(["A2296"], _hotspot_chain_ids("A2", None)) == [296]
+    # The counterfactual, so the assertion above is a measurement and not a
+    # coincidence: with no chain list the same token reads as residue 2296.
+    assert _clean_hotspot_ints(["A2296"], []) == [2296]
+
+
+def test_the_chain_summary_also_seeds_the_chain_list():
+    """The OTHER half of ``_hotspot_chain_ids``, which nothing used to pin: a
+    target may carry a hotspot on a chain its default ``target_chain`` does not
+    name, and the structure's own chains are what recover it."""
+    from shared.targets import _hotspot_chain_ids
+
+    structure = SimpleNamespace(chain_summary={
+        "chains": [{"chain_id": "A2"}, {"chain_id": "B2"}],
+    })
+    assert _hotspot_chain_ids("A2", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", None) == []
+
+
+def test_the_fallback_never_invents_a_multi_letter_chain():
+    """``_LONE_HOTSPOT_RE`` is ONE letter on purpose, and nothing pinned that.
+
+    It runs only after ``split_hotspot`` has already failed — i.e. when no chain
+    list confirms the prefix — so widening it to ``[A-Za-z]+`` would let the
+    save invent a chain ``"AB"`` that nothing has confirmed exists.
+    ``blueprints/targets._parse_residue_list`` restricts a stored hotspot to one
+    letter plus an integer, which is exactly the shape this may recover.
+
+    The cost of the restriction, stated rather than hidden: a genuine
+    multi-character chain with NO chain list to confirm it is dropped from both
+    columns. Supplying the chain list is what recovers it, which is the whole
+    reason ``_hotspot_chain_ids`` exists.
+    """
+    from shared.targets import _split_stored_hotspot
+
+    assert _split_stored_hotspot("A296", []) == ("A", 296)
+    assert _split_stored_hotspot("AB296", []) == (None, None)
+    assert _split_stored_hotspot("AB296", ["AB"]) == ("AB", 296)
+
+
+def test_an_insert_failure_returns_none(fake):
+    """``create_target`` has ONE failure contract and it is unchanged: None,
+    which the route renders as "try again in a moment". That answer is honest
+    here because the row names no column a pre-0041 database could be missing
+    (see ``test_create_target_never_names_the_new_column``), so every failure it
+    can have really may clear on a retry."""
+    with patch.object(type(fake), "table", side_effect=RuntimeError("timeout")):
+        assert create_target(
+            user_id="u-1", upload=None, target_chain="A B",
+            hotspot_residues=[241, 241],
+        ) is None
+
+
+# ---------------------------------------------------------------------------
 # Ownership
 # ---------------------------------------------------------------------------
 
@@ -339,6 +598,247 @@ def test_campaign_ids_for_target_reports_a_failed_read_as_incomplete(fake):
     ]
     with patch.object(fake, "table", side_effect=_boom):
         assert campaign_ids_for_target("t-1", user_id="u-1") == ([], False)
+
+
+# ---------------------------------------------------------------------------
+# read_target: the three-outcome read (register item A90)
+#
+# `get_target` answers None for a target that is not there, one that is not the
+# caller's, and a read that never completed. The lab-handoff gate in
+# blueprints/lab_projects.py has to act differently on the last of those -- it
+# refuses the submission and says so, instead of bouncing the user to an
+# unrelated list in silence -- so the difference has to survive the read.
+# ---------------------------------------------------------------------------
+
+
+def _boom_table(*_a, **_kw):
+    raise RuntimeError("PostgREST is down")
+
+
+def test_read_target_reports_ok_for_a_row_that_is_there(fake):
+    row = _seed_target(fake, id="t-live")
+    read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_OK
+    assert read.target is not None and read.target.id == row["id"]
+    assert read.unavailable is False
+
+
+def test_read_target_reports_absent_when_the_read_matched_no_row(fake):
+    """A read that COMPLETED and found nothing. The whole point of `.limit(1)`:
+    under `.single()` the fake raises (as PostgREST does) and this is
+    indistinguishable from the fault in the next test, which is the defect A90
+    filed."""
+    read = read_target("t-nope", user_id="u-1")
+    assert read.outcome == TARGET_READ_ABSENT
+    assert read.target is None
+    assert read.unavailable is False, (
+        "an absent target is a verdict about the target, not about the database"
+    )
+
+
+def test_read_target_reports_unavailable_when_the_query_raises(fake):
+    _seed_target(fake, id="t-live")
+    with patch.object(fake, "table", side_effect=_boom_table):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.target is None
+    assert read.unavailable is True
+
+
+def test_read_target_reports_unavailable_with_no_service_client():
+    """No client is not "no target". `get_target` cannot say so."""
+    with patch("shared.targets.get_service_client", return_value=None):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.unavailable is True
+
+
+def test_absent_and_unavailable_are_distinct_target_outcomes(fake):
+    """THE PIN. Both of these hand back ``target is None``, so anything that
+    collapses the pair -- reverting to `.single()`, or a caller that reads only
+    the target -- makes a two-second database fault indistinguishable from a
+    permanent verdict on the one action that hands work to a wet lab.
+
+    Written as one test over both outcomes rather than two, because the claim is
+    about the DIFFERENCE and a pair of separate assertions can each keep passing
+    while the difference disappears.
+    """
+    absent = read_target("t-nope", user_id="u-1")
+    with patch.object(fake, "table", side_effect=_boom_table):
+        unreadable = read_target("t-nope", user_id="u-1")
+    assert absent.target is None and unreadable.target is None
+    assert absent.outcome != unreadable.outcome
+    assert absent.unavailable is False
+    assert unreadable.unavailable is True
+
+
+def test_read_target_applies_the_owner_scope(fake):
+    """``user_id`` is a QUERY FILTER, so another tenant's target matches no row
+    and comes back ABSENT -- not OK, and not a distinct "forbidden" outcome,
+    which would mean reading a row the scope exists to withhold. This read is the
+    same tenancy boundary `get_target` documents: copy_input/download_input do no
+    ownership check of their own.
+
+    Dropping ``.eq("user_id", ...)`` from `read_target` reds this: the fake
+    really filters, so the row would come back and the outcome would be OK.
+    """
+    _seed_target(fake, id="t-mine", user_id="u-1")
+    theirs = read_target("t-mine", user_id="u-2")
+    assert theirs.outcome == TARGET_READ_ABSENT
+    assert theirs.target is None
+    # And the unscoped read still works, so the test above failed on the scope
+    # rather than on the id.
+    assert read_target("t-mine").outcome == TARGET_READ_OK
+
+
+class _RaisingAtExecute:
+    """Builds like any other query and fails at ``execute()``.
+
+    The raising fake above patches ``client.table`` and so fails BEFORE any
+    query is built. Both faults are inside `read_target`'s ``try`` and both must
+    report UNAVAILABLE, but only the first was exercised: a ``try`` narrowed to
+    the ``client.table(...)`` line alone would have left every test here green
+    while an ``execute()`` raise escaped as a 500 out of the lab-handoff gate
+    and out of the target detail page.
+    """
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: self
+
+    def execute(self):
+        raise RuntimeError("PostgREST timed out")
+
+
+def test_read_target_reports_unavailable_when_execute_raises(fake):
+    _seed_target(fake, id="t-live")
+    with patch.object(fake, "table", return_value=_RaisingAtExecute()):
+        read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_UNAVAILABLE
+    assert read.target is None
+    assert read.unavailable is True
+
+
+# ---------------------------------------------------------------------------
+# TargetRead's two guards, and the invariant underneath them
+#
+# The class docstring claimed "no `__bool__` and no truthiness of any kind"
+# while having neither guard: every instance was unconditionally truthy, and
+# `frozen=True` GENERATED an `__eq__`, so `read == TARGET_READ_OK` answered
+# False in silence on a read that had succeeded. The precedent for both is
+# `tools/proteina/_canary_scoring.py::Verdict`, which paid for the same two
+# holes in the same order; `tests/test_proteina_canary.py` pins them there.
+# ---------------------------------------------------------------------------
+
+
+def test_a_target_read_refuses_to_be_used_as_a_boolean(fake):
+    """Asserted on the OK read FIRST, because that is where the default
+    behaviour was most dangerous: `if read:` was True there and True on an
+    unreadable one, so the natural spelling of "did this work" could not fail.
+    """
+    _seed_target(fake, id="t-live")
+    for read in (
+        read_target("t-live", user_id="u-1"),
+        read_target("t-nope", user_id="u-1"),                  # absent
+        TargetRead(None, TARGET_READ_UNAVAILABLE),
+    ):
+        with pytest.raises(TypeError):
+            bool(read)
+        with pytest.raises(TypeError):
+            if read:            # noqa: SIM103 - the spelling under test
+                pass
+        with pytest.raises(TypeError):
+            not read
+
+
+def test_a_target_read_refuses_to_be_compared_with_an_outcome_string(fake):
+    """`__bool__` raising leaves a hole exactly its own size unless `__eq__`
+    closes it too: the frozen dataclass's generated `__eq__` returned False
+    SILENTLY for `read == TARGET_READ_OK` on a read that had succeeded, which
+    reads as a clean negative rather than as a mistake.
+
+    Every route into `__eq__` is covered, because closing only the direct one
+    leaves three spellings of the same error working.
+    """
+    _seed_target(fake, id="t-live")
+    read = read_target("t-live", user_id="u-1")
+    assert read.outcome == TARGET_READ_OK
+    with pytest.raises(TypeError):
+        read == TARGET_READ_OK
+    with pytest.raises(TypeError):
+        TARGET_READ_OK == read              # the reflected comparison
+    with pytest.raises(TypeError):
+        read != TARGET_READ_ABSENT          # `!=` routes through `__eq__`
+    with pytest.raises(TypeError):
+        read in (TARGET_READ_OK, TARGET_READ_ABSENT)      # and so does `in`
+    # And the cross-family mixup, which is the half a comparison guard CAN
+    # catch: all three read families spell OK as the string "ok", so this raises
+    # for being a string at all rather than for being the wrong one.
+    from shared.jobs import JOB_READ_OK
+    with pytest.raises(TypeError):
+        read == JOB_READ_OK
+
+
+def test_two_target_reads_still_compare_as_values(fake):
+    """Refusing the string comparison must not cost ordinary equality, and it
+    must not cost hashability either: declaring `__eq__` sets `__hash__` to
+    None, which would make a frozen value type unusable in a set.
+
+    THE SECOND READ IS BUILT FROM A SECOND, INDEPENDENTLY CONSTRUCTED TARGET,
+    and that is the whole content of the test rather than a detail of it.
+    `__eq__` compares `(self.target, self.outcome) == (other.target,
+    other.outcome)`, and tuple `==` short-circuits on IDENTITY per element --
+    so two reads sharing one DesignTarget compare equal whether the payload
+    comparison works or not, and this test passed unchanged against an `__eq__`
+    rewritten to `self.target is other.target`. Two `read_target` calls against
+    the same seeded row give two distinct objects with equal fields, which is
+    the property
+    `tests/test_proteina_canary.py::test_two_verdicts_still_compare_as_values`
+    gets from building its second Verdict with its own `{"k": 1}`.
+    """
+    _seed_target(fake, id="t-live")
+    _seed_target(fake, id="t-other")
+    target = read_target("t-live", user_id="u-1").target
+    twin = read_target("t-live", user_id="u-1").target
+    assert twin is not target, "two reads must build two objects"
+    assert twin == target, "and they must be equal to each other by value"
+    a = TargetRead(target, TARGET_READ_OK)
+    assert a == TargetRead(twin, TARGET_READ_OK)
+    assert a != TargetRead(None, TARGET_READ_ABSENT)
+    assert TargetRead(None, TARGET_READ_ABSENT) != TargetRead(
+        None, TARGET_READ_UNAVAILABLE)
+    # A DIFFERENT target, so equality is not merely "same outcome".
+    assert a != TargetRead(
+        read_target("t-other", user_id="u-1").target, TARGET_READ_OK)
+    assert len({a, TargetRead(twin, TARGET_READ_OK)}) == 1
+    # Not equal to some other type, and not raising either: only strings raise.
+    assert a != 17
+
+
+def test_a_target_read_that_is_ok_must_carry_a_target():
+    """The invariant nothing enforced. `TargetRead(None, TARGET_READ_OK)`
+    constructed fine, and every caller that checks `.outcome` and then reads
+    `.target` would have been handed a None it has no branch for."""
+    with pytest.raises(ValueError):
+        TargetRead(None, TARGET_READ_OK)
+
+
+def test_a_target_read_that_is_not_ok_must_carry_no_target(fake):
+    """The other direction, which matters just as much: a payload on an
+    UNAVAILABLE read is a target we are simultaneously claiming not to have
+    obtained."""
+    _seed_target(fake, id="t-live")
+    target = read_target("t-live", user_id="u-1").target
+    for outcome in (TARGET_READ_ABSENT, TARGET_READ_UNAVAILABLE):
+        with pytest.raises(ValueError):
+            TargetRead(target, outcome)
+
+
+def test_a_target_read_refuses_an_outcome_that_is_not_one_of_the_three():
+    """A typo'd outcome is a branch that silently never fires -- `.unavailable`
+    answers False and every `== TARGET_READ_*` test answers False, so the read
+    reports as OK-shaped without being OK."""
+    with pytest.raises(ValueError):
+        TargetRead(None, "unavailble")
 
 
 # ---------------------------------------------------------------------------
@@ -612,9 +1112,20 @@ def test_chain_error_skips_when_no_chain_was_requested():
     assert t.chain_error("") is None
 
 
-def test_hotspot_error_accepts_a_residue_in_any_named_chain():
-    """``target_chain`` may name several ("A B"), which rfdiffusion's
-    validator accepts. A residue in the second chain is in range."""
+def test_hotspot_error_reads_a_bare_residue_against_the_first_named_chain():
+    """``target_chain`` may name several ("A B"), which rfdiffusion's validator
+    accepts. A BARE number is judged against the FIRST of them.
+
+    This used to assert the union — "a residue in the second chain is in range"
+    — and that was wrong in the direction that spends money. Nothing downstream
+    reads an unprefixed hotspot as "any named chain": tools/base.py:108 rewrites
+    it onto the first target chain and proteina promotes it onto
+    contig_chains[0]. So 320 here is SENT as "A320", against a chain that stops
+    at 210; this route funded the campaign and the container refused it with the
+    GPU already running. proteina is what makes that reachable rather than
+    hypothetical — it emits hotspot_residues as bare author numbers on purpose,
+    so every proteina multi-chain launch arrives here unprefixed.
+    """
     summary = {
         "chains": [
             {"chain_id": "A", "standard_residue_count": 210,
@@ -626,7 +1137,24 @@ def test_hotspot_error_accepts_a_residue_in_any_named_chain():
         ],
     }
     t = DesignTarget(id=str(uuid.uuid4()), user_id="u-1", chain_summary=summary)
-    assert t.hotspot_error("A B", [30, 320]) is None
+    assert t.hotspot_error("A B", [30]) is None
+    err = t.hotspot_error("A B", [30, 320])
+    assert err and "320" in err, err
+    # ...and it says WHY, or the user reads "320 is outside A 1-210, B 300-350"
+    # about a number that is plainly inside B 300-350.
+    assert "read as chain A" in err, err
+    # Naming the chain explicitly is how you reach the second one — and this
+    # arm has to be REACHABLE, or the sentence above sends users to an escape
+    # hatch that is not there. It always was for rfdiffusion / bindcraft /
+    # pxdesign, whose validate() emits the prefixed token straight into
+    # hotspot_residues. It was NOT for proteina, which strips the letter into a
+    # bare number and carries the prefixed form in hotspot_spec instead, so
+    # every proteina hotspot arrived here unprefixed however it was typed and
+    # this line pinned a door proteina users could not open. The routes now
+    # judge shipped_hotspots(validated), which prefers the spec, so the
+    # prefixed token reaches this function from every tool. Pinned end to end
+    # in tests/test_multichain_targets.py and at both money routes.
+    assert t.hotspot_error("A B", [30, "B320"]) is None
     err = t.hotspot_error("A B", [30, 9001])
     assert err and "9001" in err and "A 1-210" in err and "B 300-350" in err
 
@@ -811,10 +1339,18 @@ def test_size_error_refuses_an_over_cap_target_for_proteina():
         storage_path="u-1/t-1/3s7g.pdb", target_chain="A B",
         chain_summary=_FC_SUMMARY,
     )
-    # 415 aa selection: over proteina's cap, inside rfdiffusion's 500.
-    assert t.size_error("proteina", "A B", []) is not None
-    assert t.size_error("rfdiffusion", "A B", []) is None
-    # Narrowed to the canaried window, proteina accepts it.
+    # THE CAP IS PER TOOL, so a discriminating size has to sit BETWEEN two
+    # tools' caps: proteina is 500 and boltzgen is 600, and a 559-residue
+    # three-chain selection straddles them. This used to be posed at 415 aa,
+    # over proteina's 140 cap and under rfdiffusion's 500 — but 415 is now the
+    # largest size proteina has been MEASURED at, so that pair discriminates
+    # nothing.
+    _over_500 = [("A", 236, 443), ("B", 236, 442), ("C", 237, 380)]   # 559 aa
+    assert t.size_error("proteina", "A B C", _over_500) is not None
+    assert t.size_error("boltzgen", "A B C", _over_500) is None
+    # The whole CH2+CH3 pair — 415 aa, the motivating campaign — now fits.
+    assert t.size_error("proteina", "A B", []) is None
+    # And narrowed to the smallest canaried window it fits with room to spare.
     assert t.size_error(
         "proteina", "A B", [("A", 236, 300), ("B", 236, 300)],
     ) is None

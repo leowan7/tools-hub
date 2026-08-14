@@ -6,11 +6,14 @@ one target in a single gated action. The single-tool create form
 (``/campaigns/new?target_id=``) still exists and still works; it skips staging
 and inherits the target's already-staged path.
 
-Ownership: every route resolves its target through
-``shared.targets.get_target(..., user_id=ctx.user_id)`` BEFORE touching a
-storage path. ``copy_input`` / ``download_input`` take ``user_id`` as a path
-component and perform no authorization of their own, so that owner-scoped
-fetch is the entire tenancy boundary.
+Ownership: every route resolves its target owner-scoped -- through
+``shared.targets.get_target(..., user_id=ctx.user_id)``, or, on
+:func:`target_detail`, through ``read_target(..., user_id=ctx.user_id)``, which
+issues the same owner-scoped query and additionally reports WHY it came back
+empty (register item A90) -- BEFORE touching a storage path. ``copy_input`` /
+``download_input`` take ``user_id`` as a path component and perform no
+authorization of their own, so that owner-scoped fetch is the entire tenancy
+boundary.
 
 Money: the launch route passes ONE summed start gate for the whole selection
 (``shared.target_launch``). It never loops ``campaign_preauth``, which is a
@@ -48,9 +51,11 @@ from shared.target_results import (
 from shared.targets import (
     archive_target,
     create_target,
+    enrich_target_hotspot_spec,
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
+    read_target,
     target_defaults_for_form,
     touch_target,
     unarchive_target,
@@ -205,6 +210,9 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
     route performs has to happen here too.
     """
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.pdb_preflight import (  # noqa: PLC0415
+        multi_chain_refusal, shipped_hotspots,
+    )
     from shared.target_launch import ToolLaunchSpec  # noqa: PLC0415
 
     tools = [t.strip() for t in form.getlist("tools") if t.strip()]
@@ -284,13 +292,38 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return None, f"{label}: {chain_err}"
+        # Can this tool's MODEL, and the IMAGE we actually dispatch to, take
+        # the number of chains just named? Nothing on this path asked before.
+        # `preflight_for_tool` owns that gate and this blueprint has never
+        # called it -- its only callers are the atomic submit route, that
+        # route's AJAX panel, and the reuse-token path -- so the check that
+        # decides whether a container can even parse the target guarded the
+        # route that spends the LEAST. Executed against a two-chain stored
+        # target, bindcraft, rfdiffusion, pxdesign and rfantibody all reached
+        # create -> fund -> drive from here; rfantibody declares
+        # multi_chain_supported=False, so its model cannot do it at all.
+        #
+        # Only this one check moves here, not the whole preflight. The rest of
+        # it (normalizer dry-run, min-residue floor, gap rules, hotspot
+        # survival) all read the STRUCTURE, and a target-bound launch never
+        # downloads one -- switching them on would cost a download per tool per
+        # launch and newly refuse campaigns that have always been allowed. This
+        # one reads TOOL_RULES and the chain string, so it is free and cannot
+        # refuse a run that would have worked. Same line size_error draws.
+        #
+        # Ordered AFTER chain_error on purpose: "chain Z is not in this target"
+        # is the more useful sentence when both are true.
+        capability_err = multi_chain_refusal(tool, run_chain)
+        if capability_err:
+            return None, f"{label}: {capability_err}"
         # Both keys are original PDB author numbering. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its hotspots
-        # ``hotspot_residues``.
+        # ``hotspot_residues``. ``shipped_hotspots`` reads the pair and prefers
+        # proteina's chain-prefixed ``hotspot_spec``, because the bare copy
+        # cannot say whether a number was typed bare or had its chain letter
+        # stripped — and those two want opposite verdicts.
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return None, f"{label}: {hotspot_err}"
@@ -306,8 +339,8 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         # small for this target rather than failing the launch anonymously.
         # binder_max_aa is what arms the COMBINED cap (target + binder against
         # hard_cap_combined_aa). Omitting it left that half of the envelope
-        # dead on every money route: a 140 aa target with a 300 aa max binder
-        # is 440 against proteina's 260 budget, refused by
+        # dead on every money route: a 400 aa target with a 300 aa max binder
+        # is 700 against proteina's 620 budget, refused by
         # /tools/proteina/submit and admitted here. Read through
         # _parse_preflight_size_params rather than off a key, because the
         # validated shape differs per tool -- {min,max} dict, [min,max] list,
@@ -393,6 +426,22 @@ def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
     Returns ``(residues, error)``. Rejects rather than silently dropping a
     non-numeric entry: a typo'd hotspot that vanishes here would be a target
     that quietly aims somewhere else than the user asked for.
+
+    STRICT INTEGERS, DELIBERATELY, on BOTH residue fields. This parser feeds
+    ``design_targets.hotspot_residues``, which
+    ``shared.targets.target_defaults_for_form`` prefills into the ONE shared
+    ``hotspot_residues`` launch field that every selected tool reads
+    (``_SHARED_LAUNCH_FIELDS``). Widening it to accept ``"A241"`` was executed
+    and refused by five of the six campaign tools:
+    rfdiffusion/bindcraft/boltzgen/pxdesign answer "does not name one of your
+    target chains" unless the run names that chain, and
+    ``tools/rfantibody/__init__.py`` is a bare ``int(tok)`` per token that
+    cannot accept a prefix on ANY target chain. The launch route is
+    all-or-nothing, so one prefixed token killed the whole launch.
+
+    A chain-qualified hotspot reaches proteina through proteina's OWN field
+    (``chain_hotspots``), never through this one. See
+    :func:`shared.targets.target_defaults_for_form`.
     """
     text = (raw or "").replace(";", ",").strip()
     if not text:
@@ -515,13 +564,75 @@ def target_create():
     return redirect(url_for("targets.target_detail", target_id=target.id))
 
 
+def _target_unavailable(handoff: str):
+    """The 503 page for a target read that DID NOT COMPLETE.
+
+    Not 404: "not found" is a claim about the row, and a read that never
+    answered is in no position to make it. Not 200 either -- the page carries
+    none of the target's content.
+
+    ``handoff`` is passed through because A90's own unavailable exit produces a
+    request that carries one: ``_submit_target_shortlist`` refuses an unreadable
+    parent by redirecting to this same URL with ``?handoff=unverified``, so
+    dropping the query string here would drop the refusal reason on the request
+    this route's own gate issued. No claim is made about how often that request
+    is the one that lands here. See the comment in :func:`target_detail`.
+    """
+    return render_template(
+        "unavailable.html",
+        parent="target",
+        handoff=handoff,
+        back_url=url_for("targets.targets_list"),
+        back_label="My targets",
+    ), 503
+
+
 @targets_bp.route("/targets/<target_id>", methods=["GET"])
 @login_required
 def target_detail(target_id):
     ctx = load_user_context()
     if ctx is None:
         return redirect(url_for("auth.login"))
-    target = get_target(target_id, user_id=ctx.user_id)
+
+    # Why the lab handoff sent the user back here. Every one of these was a
+    # bare `redirect(detail)` with no banner and nothing changed, which on the
+    # one action that hands work to the wet lab reads as a dead button
+    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
+    # renders nothing at all rather than an empty alert.
+    #
+    # READ BEFORE THE TARGET, not after it, because the unavailable arm below
+    # renders this banner too. A90's own refusal exit redirects here with
+    # `?handoff=unverified` when the parent read at the submit gate did not
+    # complete, and the browser follows that redirect within milliseconds --
+    # nothing says the fault has passed by then. So a request that arrives here
+    # and cannot read the target may be carrying a reason the user has not been
+    # told yet, and the reason is in the query string.
+    handoff = (request.args.get("handoff") or "").strip()
+    # `rejected` is distinct from `none` and the distinction is the whole
+    # point: `none` means the request carried no designs, `rejected` means it
+    # carried designs and none of them could be attributed to this target.
+    # Round 19 collapsed both onto `none`, so a user whose five starred designs
+    # were all rejected was told the request "arrived with no designs in it"
+    # and advised to retry, which can never work. Two QC reviewers found this
+    # independently (round 20, A-H1 / B-F1).
+    if handoff not in HANDOFF_REASONS:
+        handoff = ""
+
+    # THREE OUTCOMES AND NOT TWO (register item A90). `get_target` answers None
+    # for a target that is not there, one that is not this caller's, and a read
+    # that never completed, and this route rendered 404 for all three -- so a
+    # Supabase blink told a user that a target they were looking at a second ago
+    # does not exist. A90's own gate made that a one-click path: it refuses an
+    # unreadable parent by redirecting HERE.
+    #
+    # The 404 is still right for the first two and is kept for them, whole: a
+    # completed read that matched no row is a permanent verdict, and it stays
+    # one value because telling "no such target" from "not yours" would mean
+    # reading a row the owner scope exists to withhold.
+    read = read_target(target_id, user_id=ctx.user_id)
+    if read.unavailable:
+        return _target_unavailable(handoff)
+    target = read.target
     if target is None:
         return render_template("404.html"), 404
 
@@ -546,8 +657,15 @@ def target_detail(target_id):
         target.id, user_id=ctx.user_id, sort_mode=sort_mode,
     )
     if not agg["ok"]:
-        # get_target already resolved above, so this is a read failure rather
-        # than a tenancy one; render 404 for the same reason the aggregate does.
+        # 404 AND NOT THE 503 PAGE ABOVE, and the difference is not arbitrary.
+        # `ok` False is produced at exactly one place in shared/target_results.py
+        # (`_not_found`), and only after a read that COMPLETED reported no owned
+        # row; the module's answer for "we could not look" is `_unreadable`,
+        # which sets `ok` True and `partial` True precisely so this branch
+        # cannot 404 an owner whose database blinked. So reaching here means the
+        # target resolved for `read_target` a few lines up and then did not
+        # resolve for the aggregate's own ownership read -- a row that went away
+        # between two reads, which is absence, which is what 404 means.
         return render_template("404.html"), 404
     runs = agg["campaigns"]
 
@@ -585,21 +703,6 @@ def target_detail(target_id):
     except ValueError:
         stalled_count = 0
 
-    # Why the lab handoff sent the user back here. Every one of these was a
-    # bare `redirect(detail)` with no banner and nothing changed, which on the
-    # one action that hands work to the wet lab reads as a dead button
-    # (register items A-7 and A-8). Whitelisted so an unknown or crafted value
-    # renders nothing at all rather than an empty alert.
-    handoff = (request.args.get("handoff") or "").strip()
-    # `rejected` is distinct from `none` and the distinction is the whole
-    # point: `none` means the request carried no designs, `rejected` means it
-    # carried designs and none of them could be attributed to this target.
-    # Round 19 collapsed both onto `none`, so a user whose five starred designs
-    # were all rejected was told the request "arrived with no designs in it"
-    # and advised to retry, which can never work. Two QC reviewers found this
-    # independently (round 20, A-H1 / B-F1).
-    if handoff not in HANDOFF_REASONS:
-        handoff = ""
     return render_template(
         "targets/detail.html",
         target=target,
@@ -1232,6 +1335,26 @@ def target_launch_submit(target_id):
         created.append(campaign)
 
     touch_target(target.id)
+
+    # Record WHICH PROTOMER this target's stored hotspots were on, when a run in
+    # this launch said so. Beside `touch_target` deliberately: same trigger
+    # ("this target was just used for a run"), same posture (best-effort, may
+    # not fail a launch), same point in the sequence — after every run exists,
+    # so a launch that created nothing writes nothing.
+    #
+    # ENRICH-ONLY. `enrich_target_hotspot_spec` writes only into an EMPTY
+    # `hotspot_spec`, only when the run's chain-qualified tokens reduce to
+    # exactly the integers the target already stores, and never touches
+    # `hotspot_residues`. A user who typed different hotspots for one run has
+    # not asked to edit the target; see that function for the full argument.
+    for spec in plan.specs:
+        tokens = spec.params.get("hotspot_spec")
+        if tokens:
+            # No `break`: only proteina emits this key today, so this runs at
+            # most once. If a second adapter ever did, the UPDATE's own
+            # `hotspot_spec IS NULL` filter makes the later calls no-ops,
+            # rather than an arbitrary first-wins choice made here.
+            enrich_target_hotspot_spec(target, tokens)
 
     # `started` and `stalled` are bound at the top of the route, next to `_err`.
     # Re-initialising them here would work, but only by accident of `_err` never

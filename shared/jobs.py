@@ -590,17 +590,106 @@ JOB_READ_ABSENT = "absent"
 # NOTHING about whether the job exists.
 JOB_READ_UNAVAILABLE = "unavailable"
 
+# Every value ``JobRead.outcome`` may hold, so a typo reaches a raise at
+# construction rather than a branch that silently never fires.
+JOB_READ_OUTCOMES = (JOB_READ_OK, JOB_READ_ABSENT, JOB_READ_UNAVAILABLE)
 
-@dataclass(frozen=True)
+
+@dataclass(frozen=True, eq=False)
 class JobRead:
     """A job lookup, plus WHY it came back the way it did.
 
-    Deliberately no ``__bool__`` and no truthiness of any kind: collapsing this
-    back to one bit is the thing it exists to prevent.
+    The oldest of the three read wrappers -- ``shared.targets.TargetRead`` and
+    ``shared.compute_campaigns.CampaignRead`` were both built to this shape --
+    and the guards below were added to all three at once, because a
+    three-outcome value that any one of them can be collapsed on is the same
+    defect three times.
+
+    NO TRUTHINESS OF ANY KIND, and that is enforced rather than asserted. This
+    docstring used to claim "no ``__bool__``", which was true and was not the
+    property it needed: the default ``__bool__`` made every instance
+    unconditionally truthy, so ``if read:`` ran on an UNAVAILABLE read exactly
+    as it ran on an OK one. ``__bool__`` now raises. Branch on ``.outcome`` or
+    on ``.unavailable``.
+
+    AND NO EQUALITY WITH AN OUTCOME STRING, for the reason
+    ``tools/proteina/_canary_scoring.py::Verdict`` already paid for and wrote
+    down: ``frozen=True`` GENERATES an ``__eq__``, so ``read == JOB_READ_OK``
+    returned False SILENTLY on a read that had succeeded -- a hole exactly the
+    size of the one ``__bool__`` closes, and one that reads as a clean negative
+    rather than as a mistake. ``eq=False`` above turns the generated one off;
+    the one below raises on a string and still compares two reads as values.
+
+    WHAT NEITHER GUARD CAN CATCH, on two axes rather than one.
+    (1) ``JOB_READ_OK``, ``TARGET_READ_OK`` and ``CAMPAIGN_READ_OK`` are all the
+    string ``"ok"``, so ``JobRead(j, CAMPAIGN_READ_OK)`` is indistinguishable
+    from the right constant at every check available here. The ``__eq__`` guard
+    does catch the cross-family COMPARISON, which is the half that can be
+    caught.
+    (2) ``__hash__`` below hashes ``(payload id, outcome)`` and NOT the class,
+    so ``hash(JobRead(None, JOB_READ_ABSENT))`` equals
+    ``hash(TargetRead(None, TARGET_READ_ABSENT))`` and the CampaignRead one too.
+    That is left as it is deliberately: equal hashes are not an equality claim,
+    ``__eq__`` returns ``NotImplemented`` for a foreign class and Python then
+    falls back to identity, so a set holding two families keeps both members and
+    a dict keyed by one never returns the other. Adding the class would buy a
+    slightly better bucket spread and nothing else.
+    ``tests/test_jobs.py::test_reads_of_different_families_collide_in_hash_only``
+    pins both halves of that.
     """
 
     job: Optional[ToolJob]
     outcome: str
+
+    def __post_init__(self) -> None:
+        # OK CARRIES A JOB AND NOTHING ELSE DOES, checkable rather than
+        # conventional. :func:`read_job` cannot violate it; the test fakes that
+        # stand in for it across the lab-handoff suites can, and this is what
+        # tells them so.
+        if self.outcome not in JOB_READ_OUTCOMES:
+            raise ValueError(f"unknown job read outcome {self.outcome!r}")
+        if self.outcome == JOB_READ_OK and self.job is None:
+            raise ValueError("JobRead is OK but carries no job")
+        if self.outcome != JOB_READ_OK and self.job is not None:
+            raise ValueError(
+                f"JobRead is {self.outcome} and must carry no job"
+            )
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "JobRead has three outcomes and is not a boolean -- compare "
+            ".outcome against JOB_READ_OK / _ABSENT / _UNAVAILABLE, or read "
+            ".unavailable"
+        )
+
+    def __eq__(self, other: Any) -> Any:
+        if isinstance(other, str):
+            raise TypeError(
+                "JobRead is not its outcome string -- write "
+                "`read.outcome == JOB_READ_OK`, not `read == ...`"
+            )
+        if not isinstance(other, JobRead):
+            return NotImplemented
+        return (self.job, self.outcome) == (other.job, other.outcome)
+
+    def __hash__(self) -> int:
+        # THIS IS A NEW CAPABILITY, NOT A PRESERVED ONE, and the comment that
+        # said otherwise was wrong about what it replaced. Before ``eq=False``,
+        # the generated ``__hash__`` hashed EVERY field, so
+        # ``hash(JobRead(None, JOB_READ_ABSENT))`` worked and
+        # ``hash(JobRead(job, JOB_READ_OK))`` RAISED -- ``ToolJob`` is frozen
+        # and therefore HAS a generated ``__hash__``, but three of its fields
+        # are dicts, so calling it raises TypeError. The class was
+        # inconsistently hashable; hashing the job's ID instead makes it always
+        # hashable, and equal reads necessarily agree on that id and on the
+        # outcome.
+        #
+        # KEPT RATHER THAN SET TO None, and the reason is small: nothing in
+        # production puts a read in a set or uses one as a dict key, so the
+        # choice is between a value type that is usable in one and a frozen
+        # dataclass that raises where its siblings do not. Uniformity across the
+        # three read classes is worth more than a restriction nothing asks for.
+        return hash((getattr(self.job, "id", None), self.outcome))
 
     @property
     def unavailable(self) -> bool:
