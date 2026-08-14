@@ -16,19 +16,28 @@ Mirrors ``tests/test_esmfold_smoke.py``:
 7. OpenDDE is kept OUT of every campaign set (it is a plain atomic tool).
 8. The offline Modal submit stub round-trips.
 9. ``_sanitize_candidate`` keeps the new ``ranking_score`` field.
+10. QC-hardening regressions from the adversarial review.
+11. ``run_pipeline.archive_raw_outputs`` — the destination resolves on call, and
+    the function honours its documented "never raises" contract.
 
 Runs fully offline — no Modal, no Supabase, no GPU.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
+import logging
+import os
+import tarfile
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from tools import opendde as odde
 from tools.base import get as get_adapter
+from tools.opendde import run_pipeline as rp
 
 
 UBIQUITIN = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
@@ -582,3 +591,173 @@ class TestQCFixes:
 
         assert "ranking_score" in GLOSSARY
         assert GLOSSARY["ranking_score"].get("label")
+
+
+# ---------------------------------------------------------------------------
+# 11 — archive_raw_outputs (run_pipeline)
+# ---------------------------------------------------------------------------
+
+
+def _work_tree(tmp_path):
+    src = tmp_path / "opendde_work"
+    src.mkdir()
+    (src / "prediction_0.pdb").write_text("ATOM      1  N   MET A   1\nEND\n")
+    return src
+
+
+class TestRawArchiveDest:
+    """``dest`` must be resolved when the function is called.
+
+    ``def archive_raw_outputs(work_dir, dest=RAW_ARCHIVE_PATH)`` evaluates the
+    constant once, at def time, and binds its VALUE into the function object.
+    Reassigning the module constant afterwards is then silently ignored and the
+    tar lands on the real ``/tmp`` path regardless.
+
+    Not hypothetical: the proteina copy of this function carried exactly that
+    default, and the test harness that set ``RAW_ARCHIVE_PATH`` to keep archives
+    inside ``tmp_path`` had been writing to the real path the whole time. No
+    opendde test set the constant before now, so here it was latent rather than
+    live — the trap was waiting for the first test that tried.
+    """
+
+    def test_default_follows_a_reassigned_constant(self, tmp_path, monkeypatch):
+        src = _work_tree(tmp_path)
+        redirected = tmp_path / "redirected.tgz"
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(redirected))
+
+        rp.archive_raw_outputs(str(src))
+
+        assert redirected.is_file(), (
+            "archive_raw_outputs ignored the reassigned RAW_ARCHIVE_PATH — its "
+            "default is frozen at import, so the tar went to the real /tmp path")
+        with tarfile.open(redirected) as tf:
+            assert any(n.endswith("prediction_0.pdb") for n in tf.getnames())
+
+    def test_explicit_dest_still_wins(self, tmp_path, monkeypatch):
+        src = _work_tree(tmp_path)
+        constant = tmp_path / "constant.tgz"
+        explicit = tmp_path / "explicit.tgz"
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(constant))
+
+        rp.archive_raw_outputs(str(src), dest=str(explicit))
+
+        assert explicit.is_file()
+        assert not constant.exists(), "an explicit dest was overridden by the constant"
+
+    def test_an_empty_dest_is_honoured_as_given(self, tmp_path, monkeypatch, caplog):
+        """ONLY None resolves — the guard tests identity, not truthiness.
+
+        ``if not dest`` satisfies every other test in this class, and it would
+        substitute the module constant for a caller's explicit falsy dest, so
+        the tar lands somewhere the caller never asked for. The empty string is
+        the reachable falsy case: ``os.path.abspath("")`` is the cwd, which is a
+        directory, so the write fails there — and the failure has to happen
+        THERE rather than being diverted to RAW_ARCHIVE_PATH. Nothing is cleaned
+        up on this path: the handler's os.remove() on the cwd raises and is
+        swallowed, which is right — a directory must not be unlinked. chdir into
+        tmp_path to keep the doomed write local.
+
+        The last two assertions are what stop this degrading to a vacuous test.
+        The ``is None`` and ``not constant.exists()`` checks are both negative,
+        and inaction satisfies them: put an early ``return`` at the top of
+        archive_raw_outputs and the two behavioural tests in this class go red
+        while this one stays green (the signature test stays green too — it only
+        inspects the signature). Recording the path handed to tarfile.open pins that the
+        cwd-directed write was actually ATTEMPTED, and the warning pins that it
+        then failed there rather than being quietly skipped.
+        """
+        src = _work_tree(tmp_path)
+        constant = tmp_path / "constant.tgz"
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(constant))
+        monkeypatch.chdir(tmp_path)
+        # Exactly what the function computes from dest="". Read after the chdir,
+        # and via abspath rather than str(tmp_path) so a symlinked tmp dir agrees.
+        cwd_target = os.path.abspath("")
+
+        attempted = []
+        real_tar_open = rp.tarfile.open
+
+        def recording_open(name, *args, **kwargs):
+            # Record the path the resolution produced, then let the real open
+            # fail on it exactly as it would unpatched (the errno is
+            # platform-dependent, so do not assert on the exception itself).
+            attempted.append(name)
+            return real_tar_open(name, *args, **kwargs)
+
+        monkeypatch.setattr(rp, "tarfile", SimpleNamespace(open=recording_open))
+
+        with caplog.at_level(logging.WARNING, logger=rp.logger.name):
+            assert rp.archive_raw_outputs(str(src), dest="") is None
+
+        assert not constant.exists(), (
+            'dest="" was replaced by RAW_ARCHIVE_PATH — the resolution is '
+            "testing truthiness instead of identity, so an explicit falsy dest "
+            "is silently overridden")
+        assert attempted == [cwd_target], (
+            f'dest="" never reached the write: expected one tar write aimed at the '
+            f"cwd ({cwd_target}), got {attempted!r}")
+        assert sum("raw capture failed" in r.getMessage() for r in caplog.records) == 1, (
+            "the doomed cwd write was not reported as a capture failure; records "
+            f"were {[r.getMessage() for r in caplog.records]!r}")
+
+    def test_signature_default_is_not_a_baked_in_path(self):
+        """Once nothing reassigns the constant the regression is behaviourally
+        invisible, so pin the signature as well as the behaviour."""
+        default = inspect.signature(rp.archive_raw_outputs).parameters["dest"].default
+        assert default is None, (
+            f"dest defaults to {default!r}; a module-constant default is bound at "
+            "import and cannot follow a later reassignment of RAW_ARCHIVE_PATH")
+
+
+class TestRawArchiveNeverRaises:
+    """The cleanup handler must not raise on top of the failure it is cleaning up.
+
+    Contract hardening, not a fix for anything observed in production: the sole
+    call site passes an absolute str, so the window below is not reachable
+    there. It is pinned because the function is documented "never raises" and is
+    called from a ``finally`` in ``main()``, where an escape replaces whatever
+    exit was already in flight. The handler deletes a partial tar at
+    ``dest_abs``, but ``dest_abs`` used to be assigned partway through the
+    ``try``: any failure before that line left it unbound, and the resulting
+    UnboundLocalError is a NameError, which the inner ``except OSError`` does
+    not catch.
+    """
+
+    def test_failure_before_dest_is_bound_does_not_escape(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
+
+        class _NotAPath:
+            # os.path.isdir() swallows OSError and ValueError but NOT TypeError,
+            # so this reaches the except block with dest_abs still unassigned —
+            # the first statement in the try that can throw past the guard.
+            def __fspath__(self):
+                raise TypeError("simulated: work_dir is not a usable path")
+
+        # Must return normally. Pre-fix this raised UnboundLocalError.
+        assert rp.archive_raw_outputs(_NotAPath()) is None
+
+    def test_partial_tar_is_still_removed_when_dest_is_bound(self, tmp_path, monkeypatch):
+        """The None-guard must not disable the cleanup it guards.
+
+        When the write fails AFTER dest_abs is bound, the truncated tar still has
+        to go: modal_app parks whatever file exists, and a tar that reports
+        success but cannot be read is worse than no tar at all.
+        """
+        src = _work_tree(tmp_path)
+        dest = tmp_path / "raw.tgz"
+
+        def exploding_open(name, mode="r", *args, **kwargs):
+            # Leave the truncated file a real mid-write ENOSPC would leave behind.
+            with open(name, "wb") as fh:
+                fh.write(b"not a readable tar")
+            raise OSError(28, "No space left on device")
+
+        # Patch the name inside the module's namespace, not the shared stdlib
+        # module object, so nothing outside this call is affected.
+        monkeypatch.setattr(rp, "tarfile", SimpleNamespace(open=exploding_open))
+
+        rp.archive_raw_outputs(str(src), dest=str(dest))
+
+        assert not dest.exists(), (
+            "the partial tar survived a failed capture; the wrapper would park an "
+            "archive that reports success and cannot be read")
