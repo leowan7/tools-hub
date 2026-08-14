@@ -3,8 +3,8 @@
 Each tool's ``run_pipeline.py`` carries its own near-identical copy of "tar the
 work tree to RAW_ARCHIVE_PATH before teardown". They were written by copying,
 and two defects propagated with the copy — which is the reason this file is
-table-driven rather than six near-identical blocks in six per-tool smoke files.
-A new tool that clones the pattern gets tested the moment it is added to
+table-driven rather than nine near-identical blocks in nine per-tool smoke
+files. A new tool that clones the pattern gets tested the moment it is added to
 ``CAPTURES``, and both defects below were invisible to every existing test.
 
 1. THE DESTINATION MUST RESOLVE ON CALL. ``def f(..., dest=RAW_ARCHIVE_PATH)``
@@ -22,12 +22,18 @@ A new tool that clones the pattern gets tested the moment it is added to
    line left it unbound, and the resulting UnboundLocalError is a NameError,
    which the inner ``except OSError`` does not catch.
 
-boltz2, opendde and proteina carry the same two defects in their own copies of
-this function and are deliberately absent from ``CAPTURES``; they belong in the
-table when their fix lands, rather than in three more per-tool blocks. That
-absence is declared rather than remembered — ``_NOT_YET_COVERED`` names them
-with a reason, and ``test_every_raw_capture_copy_is_covered_or_listed`` fails on
-any copy in the tree that is in neither place.
+All nine copies are in ``CAPTURES``. boltz2, opendde and proteina were listed in
+``_NOT_YET_COVERED`` while their fix was still in flight; it landed in #136, and
+they moved here rather than into three more per-tool blocks.
+
+That list stays, empty, because it is the mechanism that makes the NEXT copy of
+this pattern impossible to overlook: the registry test below fails on any copy
+in the tree that is in neither place. It is asserted empty by
+``test_the_not_yet_covered_list_is_empty``, because the registry test can only
+check that a reason STRING exists, not that it is true — and a stale reason is
+exactly what it failed to catch once already. An entry re-added there now has to
+survive a test that says the list should be empty, which is a decision rather
+than a note nobody re-reads.
 """
 
 from __future__ import annotations
@@ -45,11 +51,14 @@ from typing import Callable
 import pytest
 
 from tools.af2 import run_pipeline as af2_rp
+from tools.boltz2 import run_pipeline as boltz2_rp
 from tools.colabfold import run_pipeline as colabfold_rp
 from tools.esmfold import run_pipeline as esmfold_rp
 from tools.esmfold2_design import run_pipeline as esmfold2_rp
 from tools.iggm import run_pipeline as iggm_rp
 from tools.mpnn import run_pipeline as mpnn_rp
+from tools.opendde import run_pipeline as opendde_rp
+from tools.proteina import run_pipeline as proteina_rp
 
 
 class _PoisonPath:
@@ -105,11 +114,14 @@ class Capture:
     # truncating copy2 across filesystems. Its run_pipeline pins the staging
     # dir to dest's own directory to keep the rename; see the comment there.
     has_dest_cleanup: bool
-    # A literal fragment of THIS copy's "nothing to archive" warning; the six
-    # word it differently. Its job is to pin that wording, so the caplog
-    # assertion in test_missing_work_dir_does_not_escape cannot silently stop
-    # matching. It is NOT what tells the early return apart from "crashed, then
-    # cleaned up after itself": every copy logs this line BEFORE it returns, so
+    # A literal fragment of THIS copy's "nothing to archive" warning; the nine
+    # word it differently (boltz2 and opendde share one, and it carries an EM
+    # DASH that is matched literally — retyping it as a hyphen reddens this
+    # row). Its job is to pin that wording, so the caplog assertion in
+    # test_missing_work_dir_does_not_escape cannot silently stop matching.
+    #
+    # It is NOT what tells the early return apart from "crashed, then cleaned
+    # up after itself": every copy logs this line BEFORE it returns, so
     # the crash path emits exactly the same line. Only "tarfile.open was never
     # reached" separates them, and that is what the test asserts.
     missing_src_log: str
@@ -178,6 +190,43 @@ CAPTURES = [
         missing_src_log="[raw] no work dir to archive (nothing was created?)",
     ),
     Capture(
+        "boltz2", boltz2_rp, "archive_raw_outputs",
+        # Production passes ``str(workdir)``.
+        call=lambda fn, src: fn(str(src)),
+        poison_call=lambda fn, bad: fn(bad),
+        has_dest_param=True,
+        has_dest_cleanup=True,
+        # NB the em dash: this fragment is matched literally, so a copy that
+        # "tidies" it to a hyphen must fail here rather than silently stop
+        # being checked.
+        missing_src_log=" is not a directory — nothing to archive",
+    ),
+    Capture(
+        "opendde", opendde_rp, "archive_raw_outputs",
+        # Production passes ``str(workdir)`` — that call site IS byte-identical
+        # to boltz2's. The function is not: same executable code (equal ASTs
+        # with docstrings stripped), different docstring, comments and wrapping.
+        call=lambda fn, src: fn(str(src)),
+        poison_call=lambda fn, bad: fn(bad),
+        has_dest_param=True,
+        has_dest_cleanup=True,
+        missing_src_log=" is not a directory — nothing to archive",
+    ),
+    Capture(
+        "proteina", proteina_rp, "archive_raw_outputs",
+        # Production passes a Path (``archive_raw_outputs(run_dir)``), and this
+        # copy is the one that has since diverged: it carries a tar filter and
+        # the _hub_input_written gate that no other copy has. The shared
+        # contract still applies to it — the filter only ever decides members
+        # UNDER _hub_input, which _work_tree never creates — and pinning it here
+        # is what keeps the divergence from drifting off the common contract.
+        call=lambda fn, src: fn(Path(src)),
+        poison_call=lambda fn, bad: fn(bad),
+        has_dest_param=True,
+        has_dest_cleanup=True,
+        missing_src_log="raw capture: nothing to archive, no dir at ",
+    ),
+    Capture(
         "esmfold2_design", esmfold2_rp, "_archive_raw",
         # Production passes TWO sources, one of them a file, not a directory.
         call=lambda fn, src: fn([str(src), str(_sidecar(src))]),
@@ -192,22 +241,15 @@ CAPTURES = [
 # list is a declaration, not an excuse: test_every_raw_capture_copy_is_covered_
 # or_listed fails on a copy that is on neither, so the next tool to clone the
 # pattern has to be dealt with rather than merely overlooked.
-_NOT_YET_COVERED = {
+_NOT_YET_COVERED: dict[str, tuple[str, str]] = {
     # tool: (function name, why it is not in CAPTURES)
-    "boltz2": (
-        "archive_raw_outputs",
-        "carries both defects (frozen dest default, unguarded os.remove); the "
-        "fix for these three is not in this branch. Move it into CAPTURES when "
-        "the fix lands.",
-    ),
-    "opendde": (
-        "archive_raw_outputs",
-        "as boltz2 — both defects, fix not in this branch.",
-    ),
-    "proteina": (
-        "archive_raw_outputs",
-        "as boltz2 — both defects, fix not in this branch.",
-    ),
+    #
+    # Empty, and test_the_not_yet_covered_list_is_empty keeps it that way. It
+    # held boltz2/opendde/proteina until #136 landed their fix; they are now in
+    # CAPTURES above. Left in place because it is the escape hatch the registry
+    # test below needs to be able to name a copy that genuinely cannot be
+    # tabled yet — deleting it would leave that test with no way to distinguish
+    # "overlooked" from "deliberately deferred".
 }
 
 _TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
@@ -324,8 +366,8 @@ def _raw_capture_functions(path: Path):
     from the coverage check.
 
     Every READ of the constant is attributed to its nearest enclosing ``def``,
-    so a default argument (``dest=RAW_ARCHIVE_PATH``, the shape the three
-    uncovered copies still have) counts for the function it defaults for, and a
+    so a default argument (``dest=RAW_ARCHIVE_PATH``, the shape every copy had
+    before the fix and none has now) counts for the function it defaults for, and a
     read at module level is reported as a stray rather than quietly dropped.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -451,6 +493,35 @@ def test_every_raw_capture_copy_is_covered_or_listed():
         "skip list is indistinguishable from an oversight")
 
 
+def test_the_not_yet_covered_list_is_empty():
+    """Every known copy is in CAPTURES, and re-listing one is a decision.
+
+    The test above can check that a skipped tool carries a reason STRING. It
+    cannot check the reason is TRUE, and that gap has already cost something:
+    boltz2, opendde and proteina sat here reading "the fix for these three is
+    not in this branch" for a while after the fix had landed in #136, with the
+    whole suite green. Prose cannot be asserted; emptiness can.
+
+    So this is not a second coverage check — it is the thing that makes the
+    skip list expire. Adding an entry back now costs a deliberate edit to a
+    test that says there should be none, instead of a comment nobody re-reads.
+    If a copy genuinely cannot be tabled yet, delete this test in the same
+    commit that lists it and say why; that is the conversation this is for.
+
+    KNOWN, AND INTENDED: while this passes, it makes part of its neighbour
+    unable to fail. test_every_raw_capture_copy_is_covered_or_listed's `stale`,
+    `promoted` and `unexplained` assertions all quantify over _NOT_YET_COVERED,
+    and its `not in listed` branch never fires against an empty dict. Those
+    checks are not dead — they are what guards the list the moment anything is
+    put back on it, which is exactly when they are needed. Recorded here so the
+    next reader does not "discover" four vacuous assertions and delete them.
+    """
+    assert _NOT_YET_COVERED == {}, (
+        f"{sorted(_NOT_YET_COVERED)} is on the skip list. If its fix has "
+        "landed, move it into CAPTURES. If it genuinely cannot be tabled, this "
+        "test is what you have to argue with — which is the point")
+
+
 # ---------------------------------------------------------------------------
 # 1 — the destination resolves on call
 # ---------------------------------------------------------------------------
@@ -505,16 +576,26 @@ def test_explicit_dest_still_wins(cap, tmp_path, monkeypatch):
 # What each copy is MEASURED to leave in the cwd for dest="". The shared
 # postcondition — RAW_ARCHIVE_PATH is not written — is the point of the test
 # below, but what happens at the empty path itself cannot be one assertion for
-# all three: ``os.path.abspath("")`` is the cwd, which is a DIRECTORY, and the
+# all of them: ``os.path.abspath("")`` is the cwd, which is a DIRECTORY, and the
 # copies meet a directory differently. colabfold and iggm hand it straight to
 # ``tarfile.open``, which fails, and their handler's ``os.remove`` of a
 # directory fails too and is swallowed — nothing is left. esmfold2_design tars
 # into a staging dir and ``shutil.move``s the finished file AT a directory,
 # which moves it INSIDE, so it succeeds and leaves the archive in the cwd.
+# boltz2, opendde and proteina behave as colabfold and iggm do, and it was
+# measured rather than reasoned from their shape: each was run with dest="" and
+# observed to raise nothing, write nothing to the constant, and leave nothing
+# new in the cwd. Their commonpath self-containment guard does NOT fire on the
+# way — abspath("") is the cwd, which is the PARENT of the work tree, not the
+# work tree itself — so what stops them is the same tarfile.open on a directory
+# that stops the other two.
 _EMPTY_DEST_LEAVES_IN_CWD = {
     "colabfold": None,
     "iggm": None,
     "esmfold2_design": "raw_archive.tgz",
+    "boltz2": None,
+    "opendde": None,
+    "proteina": None,
 }
 
 
@@ -524,9 +605,16 @@ def test_an_empty_dest_is_honoured_as_given(cap, tmp_path, monkeypatch):
 
     Every other test in this file passes just as happily with ``if not dest``,
     which would quietly swap a caller's explicit falsy dest for the module
-    constant and land the tar on a path the caller never named. Measured: with
-    all three copies flipped to ``if not dest``, the rest of the suite stays
-    green and only this test goes red.
+    constant and land the tar on a path the caller never named. Measured on the
+    three copies this was written for (colabfold, iggm, esmfold2_design):
+    flipping them to ``if not dest`` reddens only this test.
+
+    That is NO LONGER the whole story, and the difference is worth stating
+    rather than leaving for the next person to trip over. boltz2, opendde and
+    proteina also have per-tool twins of this assertion in their own smoke
+    files, so flipping THOSE three reddens 9 tests, 6 of them outside this
+    file. This test is still the only cross-tool statement of the rule; it is
+    no longer the only thing that fails when the rule is broken.
 
     The empty string is the reachable falsy case. ``os.path.abspath("")`` is the
     cwd, so chdir into tmp_path first and the doomed write stays inside the tmp
@@ -582,10 +670,14 @@ def test_missing_work_dir_does_not_escape(cap, tmp_path, monkeypatch, caplog):
     Neither postcondition discriminates on its own, and neither does the log.
     Every copy logs its "nothing to archive" warning BEFORE it returns, so the
     crash path emits the identical line; and delete the bare ``return`` while
-    keeping that log and five of these six still leave no tar, because
-    ``tarfile.open`` creates dest, ``tf.add`` raises on the missing source and
-    the cleanup handler removes the partial. Measured, not assumed: dropping
-    only the ``return`` left af2, colabfold, esmfold, mpnn and iggm all green.
+    keeping that log and most copies still leave no tar, because ``tarfile.open``
+    creates dest, ``tf.add`` raises on the missing source and the cleanup
+    handler removes the partial. Measured, not assumed, and RE-measured when the
+    table went to nine: dropping only the ``return`` leaves af2, colabfold,
+    esmfold, mpnn and iggm green, and reddens exactly this test for boltz2,
+    opendde and proteina — nothing else in the suite. For those three it is the
+    only guard there is, which is the clearest single reason the table earns
+    its three new rows.
 
     What actually separates "returned early, as designed" from "entered the
     archive path and was tidied up after" is that the archive path was never
