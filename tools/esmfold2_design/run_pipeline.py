@@ -431,7 +431,7 @@ def _dump_raw_critic_results(critic_results: Any) -> None:
         )
 
 
-def _archive_raw(srcs: list[str], dest: str = RAW_ARCHIVE_PATH) -> None:
+def _archive_raw(srcs: list[str], dest: str | None = None) -> None:
     """Tar the COMPLETE work tree to ``dest``. Best-effort; never raises.
 
     A container must not decide which fields are worth keeping. That is exactly
@@ -446,9 +446,24 @@ def _archive_raw(srcs: list[str], dest: str = RAW_ARCHIVE_PATH) -> None:
     parsed to zero designs requests no upload URLs and ships nothing today, and
     that is precisely the run whose tree you need. Called from a ``finally`` so a
     crash keeps the evidence for the failure it is reporting.
+
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
+    at import: a ``dest: str = RAW_ARCHIVE_PATH`` default binds the constant's
+    value once at def time, so any later reassignment of the module constant is
+    silently ignored and the tar lands on the original path regardless.
     """
+    # ``stage`` is what the finally removes, and mkdtemp does not run until well
+    # into the try. Bound here so the cleanup cannot raise NameError on top of
+    # the failure it is cleaning up after — the same floor the sibling pipelines
+    # put under their dest variable, for a function called from a ``finally``
+    # and contracted never to raise.
     stage = None
     try:
+        # Inside the guard, and ``is None`` rather than ``or``: the docstring
+        # promises only None is replaced, and ``or`` would silently swallow an
+        # explicit dest="" too.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
         present = [s for s in srcs if os.path.exists(s)]
         if not present:
             logger.warning(
@@ -474,12 +489,55 @@ def _archive_raw(srcs: list[str], dest: str = RAW_ARCHIVE_PATH) -> None:
                     src_abs,
                 )
                 return
-        # Stage in a FRESH mkdtemp: a directory that did not exist a moment ago
-        # cannot be inside one of the trees above. Stream to a file, never
-        # io.BytesIO — ~1x peak RSS instead of ~3-4x. Moving into place at the
-        # end also means a half-written tar is never left at dest for the
-        # wrapper to park as if it were whole.
-        stage = tempfile.mkdtemp(prefix="rawtar_")
+        # Stage in a FRESH mkdtemp, pinned with ``dir=`` to dest's OWN directory.
+        #
+        # Moving into place at the end is what keeps a half-written tar out of
+        # dest for the wrapper to park — but only while the move is a RENAME.
+        # shutil.move falls back to copy2 across filesystems, and an interrupted
+        # copy2 CAN leave a truncated file at dest: exactly the partial this
+        # design exists to avoid, and unlike the sibling pipelines there is no
+        # cleanup handler here to remove it. An unpinned mkdtemp hands that
+        # guarantee to TMPDIR/TEMP/TMP, which an image change or a caller's
+        # environment can point at another filesystem without touching this
+        # file.
+        #
+        # Dest's own directory is the same filesystem as dest, which is what the
+        # rename needs — on the Linux container this ships in, where POSIX
+        # rename replaces an existing dest atomically. Not a universal: measured
+        # on Windows/CPython 3.13, os.rename onto an EXISTING dest raises
+        # FileExistsError (WinError 183) even within one directory, and
+        # shutil.move then takes its copy2 fallback and truncates dest anyway.
+        # The pin buys the guarantee where this runs; it does not buy it "by
+        # construction".
+        #
+        # What the pin COSTS is self-containment. The loop above is purely
+        # LEXICAL — commonpath over strings — so it cannot see a symlink,
+        # junction or bind mount that makes dest's directory an alias of a
+        # source tree. Before the pin, staging lived in the system temp dir and
+        # such an alias was harmless. With it, the staging dir is created inside
+        # the aliased source and the tar archives itself: measured, srcs=[<dir>]
+        # with dest=<junction-to-that-dir>/raw_archive.tgz tarred ['results',
+        # 'results/a.txt', 'results/rawtar_.../raw_archive.tgz'], where the same
+        # case with an unpinned mkdtemp tarred ['results', 'results/a.txt'].
+        # Taken knowingly: the sole production call site passes literal
+        # constants from this module (PDB_OUTPUT_DIR /tmp/results and
+        # SMOKE_RESULTS_PATH /tmp/smoke_results.json, dest /tmp/raw_archive.tgz),
+        # so there is no alias to walk through, while the truncated dest the pin
+        # prevents is the failure with no cleanup handler behind it.
+        #
+        # Fresh, so it cannot pick up a sibling file; streamed to a file, never
+        # io.BytesIO — ~1x peak RSS instead of ~3-4x.
+        #
+        # If that directory will not take a tempdir (read-only, or not there
+        # yet) fall back to the default location. The move may then degrade to
+        # copy2, but a best-effort capture that tries and might truncate beats
+        # one that gives up and captures nothing.
+        try:
+            stage = tempfile.mkdtemp(
+                prefix="rawtar_", dir=os.path.dirname(dest_abs) or None
+            )
+        except OSError:
+            stage = tempfile.mkdtemp(prefix="rawtar_")
         staged = os.path.join(stage, "raw_archive.tgz")
         with tarfile.open(staged, "w:gz") as tf:
             for src in present:
@@ -500,6 +558,27 @@ def _archive_raw(srcs: list[str], dest: str = RAW_ARCHIVE_PATH) -> None:
             "raw capture failed (non-fatal): %s: %s", type(exc).__name__, exc
         )
     finally:
+        # Deliberately NOT wrapped in try/except OSError. An earlier revision
+        # wrapped it "the way all five siblings wrap their os.remove", but the
+        # analogy is false: their ``os.remove`` genuinely raises OSError, and
+        # neither call here can. ``stage`` is None or the str mkdtemp returned.
+        # ``os.path.isdir`` returns False rather than raising for any str —
+        # posix genericpath catches (OSError, ValueError), nt._path_isdir
+        # likewise returns False, checked against empty, NUL-bearing, over-long
+        # and absent paths. ``shutil.rmtree(..., ignore_errors=True)`` routes
+        # every OSError to a no-op onexc, checked against a tree held
+        # undeletable by an open read-only handle. The one exception that does
+        # escape rmtree is ValueError on a NUL in the path, which ``except
+        # OSError`` would not have caught and which isdir screens out first.
+        # So the wrap caught nothing reachable, no test could go red on its
+        # removal, and it advertised a hazard that is not there.
+        #
+        # What IS load-bearing is ``stage = None`` above and the ``if stage``
+        # here: mkdtemp does not run until well into the try, so without them a
+        # failure before it turns this cleanup into an UnboundLocalError — a
+        # NameError escaping a function contracted never to raise, out of a
+        # ``finally`` and into the caller's. That one is reachable and pinned,
+        # by test_failure_before_dest_is_bound_does_not_escape.
         if stage and os.path.isdir(stage):
             shutil.rmtree(stage, ignore_errors=True)
 

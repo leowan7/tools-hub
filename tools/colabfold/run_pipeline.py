@@ -138,7 +138,7 @@ def _fail(bucket: str, check: str, detail: str) -> None:
 # ===========================================================================
 
 
-def archive_work_dir(work_dir: str | Path, dest: str = RAW_ARCHIVE_PATH) -> None:
+def archive_work_dir(work_dir: str | Path, dest: str | None = None) -> None:
     """Tar the COMPLETE work dir to ``dest`` before the tree is destroyed.
 
     A container must not decide which fields are worth keeping. The parsers
@@ -157,10 +157,30 @@ def archive_work_dir(work_dir: str | Path, dest: str = RAW_ARCHIVE_PATH) -> None
     most. Callers invoke this from a ``finally`` for the same reason.
 
     Never raises. Capture failing must never fail the run.
-    """
-    import tarfile  # noqa: PLC0415 — only needed on this path
 
+    ``dest`` defaults to None and resolves to ``RAW_ARCHIVE_PATH`` on call, not
+    at import: a ``dest: str = RAW_ARCHIVE_PATH`` default binds the constant's
+    value once at def time, so any later reassignment of the module constant is
+    silently ignored and the tar lands on the original path regardless.
+    """
+    # ``dest_abs`` is what the handler at the bottom deletes, and the try does
+    # not assign it until after abspath+isdir. Pre-binding it is what makes the
+    # handler's ``dest_abs is not None`` guard real: without it, a failure
+    # earlier in the try turns the cleanup into an UnboundLocalError, which is
+    # a NameError and therefore slips past the inner ``except OSError`` and out
+    # of a function contracted never to raise — from inside a ``finally``, so it
+    # would replace the exit already in flight. Neither call site can reach that
+    # state today. This is a floor under the contract, not a repair.
+    dest_abs: str | None = None
     try:
+        # Everything that can throw belongs inside the guard, including the
+        # default resolution and the lazy import (af2 already puts its identical
+        # import here). ``is None`` rather than ``or``: the docstring promises
+        # only None is replaced, and ``or`` would silently swallow dest="" too.
+        if dest is None:
+            dest = RAW_ARCHIVE_PATH
+        import tarfile  # noqa: PLC0415 — only needed on this path
+
         src = os.path.abspath(str(work_dir))
         if not os.path.isdir(src):
             logger.warning("[raw] no work dir to archive: %s", src)
@@ -190,7 +210,7 @@ def archive_work_dir(work_dir: str | Path, dest: str = RAW_ARCHIVE_PATH) -> None
         # the destination; the wrapper parks whatever exists. Remove the partial so a failed
         # capture parks NOTHING rather than a tar that reports success but cannot be read.
         try:
-            if os.path.exists(dest_abs):
+            if dest_abs is not None and os.path.exists(dest_abs):
                 os.remove(dest_abs)
         except OSError:
             pass
