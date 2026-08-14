@@ -20,13 +20,16 @@ validate / confine / ownership gate before any client is built.
 
 from __future__ import annotations
 
+import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 import pytest
 
 from scout.jobs import (
+    cleanup_old_jobs,
     create_job_dir,
     is_valid_job_id,
     read_owner,
@@ -124,6 +127,117 @@ class TestResolveOwnedJobDir:
 
     def test_traversal_id_returns_none(self, tmp_path):
         assert resolve_owned_job_dir("../../etc", USER_A, base_dir=tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Unit: the reaper stays inside its own data
+# ---------------------------------------------------------------------------
+
+
+def _age(path: Path, seconds: int) -> None:
+    """Backdate ``path``'s mtime by ``seconds``."""
+    old = time.time() - seconds
+    os.utime(path, (old, old))
+
+
+class TestCleanupOldJobsScope:
+    """``cleanup_old_jobs`` reaps only the UUID dirs ``create_job_dir`` mints.
+
+    ``tmp/`` is a SHARED scratch dir, not this module's private space. Before
+    the name filter the reaper rmtree'd every immediate subdirectory older than
+    an hour, and it fires as a side effect of three user-facing routes
+    (/scout/upload, /scout/fetch-pdb, /scout/example) — so any signed-in user
+    clicking "Try an example" reaped its neighbours. That is not hypothetical:
+    it destroyed the tracked ``tmp/calibration/`` files once already (see
+    tests/test_multichain_iptm_notice.py, which stubbed the reaper out of its
+    page sweep rather than fixing it).
+
+    The worst tenant to lose is ``tmp/pdb_compare/``: those fixtures are
+    UNTRACKED and their tests ``pytest.skip`` when the files are missing rather
+    than failing, so reaping them is silent, unrecoverable coverage loss.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "calibration",  # tracked provenance, the dir actually destroyed
+            "pdb_compare",  # untracked fixtures; their tests skip, not fail
+            "some-hand-made-dir",
+            "3f2d1a0e",  # UUID-ish but too short
+            "gggggggg-aaaa-bbbb-cccc-123456789012",  # UUID-shaped but non-hex
+        ],
+    )
+    def test_non_uuid_dir_survives_however_old(self, tmp_path, name):
+        tenant = tmp_path / name
+        tenant.mkdir()
+        payload = tenant / "dispatched.json"
+        payload.write_text('{"kept": true}', encoding="utf-8")
+        _age(tenant, 10 * 3600)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 0
+        assert tenant.is_dir()
+        # The incident was the FILES one level down, not just the dir name.
+        assert payload.read_text(encoding="utf-8") == '{"kept": true}'
+
+    def test_old_uuid_job_dir_is_still_deleted(self, tmp_path):
+        """The reaper must still reap — a filter that never deletes is no fix."""
+        jid, job_dir = create_job_dir(USER_A, base_dir=tmp_path)
+        (job_dir / "designs").mkdir()
+        (job_dir / "designs" / "d.pdb").write_text("ATOM\n")
+        _age(job_dir, 10 * 3600)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 1
+        assert not job_dir.exists()
+        assert is_valid_job_id(jid)
+
+    def test_fresh_uuid_job_dir_survives(self, tmp_path):
+        _, job_dir = create_job_dir(USER_A, base_dir=tmp_path)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 0
+        assert job_dir.is_dir()
+
+    def test_mixed_tree_reaps_only_the_old_job(self, tmp_path):
+        """All three rules at once, which is the state the routes actually see."""
+        tenant = tmp_path / "calibration"
+        tenant.mkdir()
+        _age(tenant, 10 * 3600)
+        _, stale_job = create_job_dir(USER_A, base_dir=tmp_path)
+        _age(stale_job, 10 * 3600)
+        _, fresh_job = create_job_dir(USER_A, base_dir=tmp_path)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 1
+        assert tenant.is_dir()
+        assert fresh_job.is_dir()
+        assert not stale_job.exists()
+
+    def test_unowned_job_dir_is_still_reaped(self, tmp_path):
+        """Why the filter is the UUID shape and NOT the .owner marker.
+
+        ``create_job_dir`` writes ``.owner`` only ``if owner:`` and
+        ``write_owner`` swallows OSError, so an ownership-based filter would
+        leak unowned dirs and failed marker-writes forever — the unbounded disk
+        growth this reaper exists to prevent. The UUID shape is minted by
+        construction, so it cannot leak.
+        """
+        _, job_dir = create_job_dir(None, base_dir=tmp_path)
+        assert not (job_dir / ".owner").exists()
+        _age(job_dir, 10 * 3600)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 1
+        assert not job_dir.exists()
+
+    def test_loose_files_are_untouched(self, tmp_path):
+        """The property the old docstring claimed — still true, just not the point."""
+        loose = tmp_path / ".gitkeep"
+        loose.write_text("", encoding="utf-8")
+        uuid_named_file = tmp_path / str(uuid.uuid4())
+        uuid_named_file.write_text("not a job", encoding="utf-8")
+        _age(loose, 10 * 3600)
+        _age(uuid_named_file, 10 * 3600)
+
+        assert cleanup_old_jobs(base_dir=tmp_path, max_age_seconds=3600) == 0
+        assert loose.is_file()
+        assert uuid_named_file.is_file()
 
 
 # ---------------------------------------------------------------------------

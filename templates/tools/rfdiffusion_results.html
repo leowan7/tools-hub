@@ -1,10 +1,13 @@
 {# RFdiffusion results partial -- included by job_detail.html on status=succeeded #}
 {% from "components/results_shell.html" import results_panel %}
+{% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
 
 {% set output     = job.result or {} %}
 {% set candidates = output.get('candidates', []) %}
 {% set columns    = ['ipTM', 'pLDDT', 'i_pAE', 'filter_status'] %}
 {% set clone_url  = url_for('tools.tool_form', tool='rfdiffusion', clone_from=job.id) %}
+
+{{ multichain_iptm_notice('rfdiffusion', (job.inputs or {}).get('target_chain')) }}
 
 {% call results_panel(
     candidates=candidates,

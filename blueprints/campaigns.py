@@ -57,17 +57,18 @@ campaigns_bp = Blueprint("campaigns", __name__)
 # too. `unverified` is the second, and the paragraphs below say how: the two
 # arms reach it from different causes and `cc.read_campaign` has a ground
 # `read_target` does not (register item A97). The SENTENCE is now shared; the
-# CAUSE SETS are not, and nothing here licenses merging the two banner suites.
+# CAUSE SETS are not, and nothing here licenses merging the banner suites --
+# two when this was written, three since A91 added blueprints/jobs.py.
 #
 # THE COPY IS NOW ONE PARTIAL AND THE PAGES ARE NOT. A90 lifted the five
 # sentences into templates/components/lab_handoff_banner.html, which takes the
 # arm's noun -- each page keeps its own wrapper, its own whitelist and its own
 # suite. Two inline copies were how one of these sentences went stale unnoticed,
-# and the partial has THREE importers rather than two: templates/unavailable.html
-# renders them as well. That third page is reached only from the TARGET arm's
-# detail route, never from this one (see `compute_campaign_detail` below and
-# register item A94), so the run-noun rendering of it does not occur in
-# production -- the macro nonetheless takes the noun, because a partial whose
+# and the partial now has FOUR importers rather than two:
+# templates/unavailable.html and templates/job_detail.html render them as well.
+# The 503 page is reached only from the TARGET arm's detail route, never from
+# this one (see `compute_campaign_detail` below and register item A94), so the
+# run-noun rendering of it does not occur in production -- the macro nonetheless takes the noun, because a partial whose
 # correctness depends on which caller reaches it is the duplication again.
 #
 # `unverified` USED TO differ too, and no longer does beyond the noun. It named
@@ -270,7 +271,9 @@ def compute_campaign_create():
     if ctx is None:
         return redirect(url_for("auth.login"))
     from shared import compute_campaigns as cc  # noqa: PLC0415
-    from shared.targets import get_target, touch_target  # noqa: PLC0415
+    from shared.targets import (  # noqa: PLC0415
+        enrich_target_hotspot_spec, get_target, touch_target,
+    )
 
     tool = (request.form.get("tool") or "").strip()
     name = (request.form.get("name") or "").strip()
@@ -377,6 +380,35 @@ def compute_campaign_create():
     if validated is None:
         return _err(verr or "Invalid parameters.")
 
+    # 2b. Can this tool's MODEL, and the IMAGE we dispatch to, take the number
+    #     of chains just named? This route has never asked. `preflight_for_tool`
+    #     owns that gate and is called only from the atomic submit route, its
+    #     AJAX panel, and the reuse-token path, so a two-chain campaign was
+    #     created, funded and driven here for tools whose container cannot
+    #     parse the target -- and for rfantibody, whose MODEL cannot
+    #     (multi_chain_supported=False; its adapter accepts "A,B" because it
+    #     only length-checks the field at 4 characters). Verified by executing
+    #     this route against a two-chain stored target.
+    #
+    #     Placed BEFORE the target/upload split so both branches are covered by
+    #     one call: the fresh-upload branch spends exactly as much as the
+    #     target-bound one. Ahead of campaign_preauth and create_campaign, so a
+    #     refusal costs a message rather than a funded wave.
+    #
+    #     Capability ONLY, deliberately -- see multi_chain_refusal and
+    #     DesignTarget.size_error for why the rest of the preflight does not
+    #     belong on a route that never downloads the structure.
+    #     iggm names its antigen chain `antigen_chain`; the PDB tools use
+    #     `target_chain`. proteina replaces target_chain with its contig's
+    #     chains, which is the right string to judge.
+    run_chain = (
+        validated.get("target_chain") or validated.get("antigen_chain") or ""
+    )
+    from shared.pdb_preflight import multi_chain_refusal  # noqa: PLC0415
+    capability_err = multi_chain_refusal(tool, run_chain)
+    if capability_err:
+        return _err(capability_err)
+
     # 3. Resolve the campaign target. The live tools + proteina's protein/motif
     #    variants take a PDB (inspected + chain-validated); proteina's ligand
     #    variant takes an SDF (cheap sanity only; the RDKit -> chain-A PDB
@@ -419,21 +451,22 @@ def compute_campaign_create():
             )
         # The chain and hotspots are per-RUN and may override the target's
         # defaults, so they still have to be checked — against the inspection
-        # persisted at upload time, so no download is needed.
-        run_chain = (
-            validated.get("target_chain") or validated.get("antigen_chain") or ""
-        )
+        # persisted at upload time, so no download is needed. ``run_chain`` is
+        # resolved above (step 2b) from the same two keys; it used to be
+        # recomputed here from the identical expression.
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return _err(chain_err)
         # Both keys are original PDB author numbering, so both are range-
         # checkable against the target's chain. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its
-        # hotspots ``hotspot_residues``.
+        # hotspots ``hotspot_residues``. ``shipped_hotspots`` is what reads
+        # the pair, and it prefers proteina's chain-prefixed ``hotspot_spec``
+        # over the bare copy — see that function for why the bare one cannot
+        # be range-checked without refusing correct multi-chain runs.
+        from shared.pdb_preflight import shipped_hotspots  # noqa: PLC0415
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return _err(hotspot_err)
@@ -447,8 +480,8 @@ def compute_campaign_create():
         # session wall for zero designs. Size only — see DesignTarget.size_error
         # for why the full preflight does not belong on this route.
         # binder_max_aa arms the COMBINED cap (target + binder). Without it
-        # only the target half of the envelope ran here, so a 140 aa target
-        # with a 300 aa max binder — 440 against proteina's 260 budget — was
+        # only the target half of the envelope ran here, so a 400 aa target
+        # with a 300 aa max binder — 700 against proteina's 620 budget — was
         # refused by /tools/proteina/submit and funded by this route. Read via
         # _parse_preflight_size_params because the validated binder shape is
         # per-tool ({min,max} dict, [min,max] list, bare int, or a separate
@@ -575,6 +608,15 @@ def compute_campaign_create():
 
     if target is not None:
         touch_target(target.id)
+        # Same enrichment the multi-tool launch route performs, at the same
+        # seam, for the same reason: this is the OTHER route that runs a tool
+        # against a saved target, and a target enriched by one screen and not
+        # the other would depend on which form the user happened to use.
+        # ENRICH-ONLY — see shared.targets.enrich_target_hotspot_spec for the
+        # three conditions and why each one is load-bearing. Only proteina's
+        # adapter emits `hotspot_spec`; the helper answers False for everything
+        # else without touching the database.
+        enrich_target_hotspot_spec(target, validated.get("hotspot_spec"))
 
     # A59. The return value used to be discarded, so a failed fund redirected as
     # success and left the row at `draft` forever -- `cron/tick_campaigns.py`

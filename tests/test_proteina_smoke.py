@@ -39,11 +39,13 @@ drop can happen.
 from __future__ import annotations
 
 import ast
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,6 +103,29 @@ def _make_pdb(spans, extra=""):
             )
             serial += 1
     return "\n".join(lines) + "\n" + extra
+
+
+class _FakeStreamedGet:
+    """Stand-in for ``requests.get(..., stream=True)`` exactly as
+    ``download_target`` consumes it: a context manager with raise_for_status()
+    and iter_content(). Lets a test drive the REAL download path — including the
+    body-too-small refusal — instead of stubbing download_target away and
+    testing nothing about it."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size=0):
+        yield self._body
 
 
 def _atom(serial, atom, resname, chain, resseq, icode="", record="ATOM  "):
@@ -312,9 +337,84 @@ class TestTargetInputParse:
         _, err = px.validate(_custom(target_input="A150-1"), {})
         assert err and "backwards" in err.lower()
 
-    def test_duplicate_chain_rejected(self):
-        _, err = px.validate(_custom(target_input="A1-50,A60-90"), {})
-        assert err and "more than once" in err.lower()
+    def test_a_chain_may_repeat_when_the_ranges_are_DISJOINT(self):
+        """THE CONTIG A GAPPED TARGET NEEDS, WHICH USED TO BE UN-TYPABLE.
+
+        Upstream resolves every integer between a range's endpoints and raises
+        on the first residue the file does not hold, so a chain with a
+        disordered loop has to be written ``A1-50,A60-240``. The old rule —
+        "Chain A appears more than once … Give each chain a single range" —
+        refused exactly that, so a user who KNEW about their gap had no way to
+        say so. ``run_pipeline.contig_runs`` now derives the split itself, and
+        the form has to agree with the container about what is legal.
+        """
+        inp, err = px.validate(_custom(target_input="A1-50,A60-240"), {})
+        assert err is None, err
+        assert inp["target_input"] == "A1-50,A60-240"
+        assert inp["_target_segments"] == [("A", 1, 50), ("A", 60, 240)]
+
+    def test_a_repeated_chain_is_named_ONCE_in_target_chain(self):
+        """``chain_ids`` becomes ``target_chain`` and the allow-list
+        ``_parse_hotspots`` judges a prefix against. A duplicate there renders
+        "chain A A" and makes the multi-chain hotspot refusal read "write A241
+        or A241" — and, worse, turns a genuinely single-chain run into a
+        "targets more than one chain" refusal for every bare hotspot."""
+        inp, err = px.validate(
+            _custom(target_input="A1-50,A60-240", hotspot_residues="70"), {})
+        assert err is None, err
+        assert inp["target_chain"] == "A"
+        assert inp["hotspot_spec"] == ["A70"], (
+            "a bare hotspot stopped being promoted onto the single target "
+            "chain, so the repeat is being counted as two chains")
+
+    def test_overlapping_ranges_on_one_chain_are_still_rejected(self):
+        for token in ("A1-50,A40-90",      # partial overlap
+                      "A1-50,A50-90",      # touching at one residue
+                      "A1-19,A1-19",       # the size-floor defeater
+                      "A10-20,A1-90"):     # fully contained
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
+    def test_a_repeat_is_checked_against_EVERY_earlier_range_not_just_the_last(self):
+        """THE OVERLAP SHAPE AN ADJACENT-ONLY COMPARISON WAVES THROUGH.
+
+        ``A1-19,A1-19`` above is the size-floor defeater; these are the same
+        contigs with a chain INTERPOSED. Comparing each range only against the
+        one immediately before it accepts every case here — the token before
+        the second ``A`` range is a ``B`` range, the chains differ, the loop
+        moves on — and the two identical A ranges are then summed as 38
+        residues by ``shared/targets.py::selection_residue_count``, which is
+        documented as an upper bound that adds per segment. That is the
+        arithmetic the flat "chain appears more than once" rule used to
+        backstop and that this branch deliberately stopped relying on.
+
+        ``test_disjoint_ranges_on_DIFFERENT_chains_are_untouched`` is the
+        control: ``A1-50,B1-50,A60-90`` has the identical interposed shape and
+        must still be ACCEPTED, so this cannot be satisfied by refusing
+        non-adjacent repeats as a class.
+        """
+        for token in ("A1-19,B1-19,A1-19",        # identical, one chain apart
+                      "A1-19,B1-19,C1-19,A5-9",   # contained, two chains apart
+                      "A60-90,B1-50,A1-70"):      # partial, the later one wider
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
+    def test_a_bare_chain_id_overlaps_every_range_on_that_chain(self):
+        """``A`` is "the whole chain", so it cannot be disjoint from anything
+        on A — including a second ``A``."""
+        for token in ("A,A1-50", "A1-50,A", "A,A"):
+            _, err = px.validate(_custom(target_input=token), {})
+            assert err and "overlap" in err.lower(), (
+                f"{token} was accepted: {err!r}")
+
+    def test_disjoint_ranges_on_DIFFERENT_chains_are_untouched(self):
+        inp, err = px.validate(_custom(target_input="A1-50,B1-50,A60-90"), {})
+        assert err is None, err
+        assert inp["target_chain"] == "A B"
+        assert inp["_target_segments"] == [
+            ("A", 1, 50), ("B", 1, 50), ("A", 60, 90)]
 
     def test_garbage_rejected(self):
         _, err = px.validate(_custom(target_input="not-a-range"), {})
@@ -330,6 +430,19 @@ class TestTargetInputParse:
 
 class TestHotspotParse:
     def test_chain_prefixed(self):
+        """``hotspot_spec`` keeps the prefix; ``hotspot_residues`` is the
+        stripped copy.
+
+        The stripped copy is LOSSY ON PURPOSE: it is the shape the shared
+        ``hotspot_residues`` key carries fleet-wide — the one launch field
+        posted to every selected tool (``_SHARED_LAUNCH_FIELDS`` in
+        blueprints/targets.py), which holds plain integers and nothing else.
+        Dropping the chain here is safe only because nothing that spends money
+        reads it: all four paid gates call
+        ``shared.pdb_preflight.shipped_hotspots``, which prefers the spec. See
+        tests/test_multichain_targets.py::
+        test_shipped_hotspots_prefers_the_spec_and_is_a_no_op_without_one.
+        """
         inp, err = px.validate(_custom(target_input="A1-150", hotspot_residues="A45 A67 A89"), {})
         assert err is None
         assert inp["hotspot_spec"] == ["A45", "A67", "A89"]
@@ -613,10 +726,12 @@ class TestRewardParse:
         sub.mkdir(parents=True)
         (sub / "design_A.pdb").write_text("ATOM\n")
         (sub / "design_B.pdb").write_text("ATOM\n")
+        # af2folding_plddt is the AfDesign LOSS (1 - pLDDT); af2folding_plddt_log
+        # is the metric. Both are written, complementary, as upstream does.
         csv_text = (
-            "pdb_path,pdb_index,total_reward,af2folding_i_ptm_log,af2folding_plddt,af2folding_rmsd,sample_type,metadata_tag\n"
-            f"{sub / 'design_A.pdb'},0,-0.60,0.18,0.62,5.2,final,design_A\n"
-            f"{sub / 'design_B.pdb'},1,-0.45,0.30,0.71,0.8,final,design_B\n"
+            "pdb_path,pdb_index,total_reward,af2folding_i_ptm_log,af2folding_plddt,af2folding_plddt_log,af2folding_rmsd,sample_type,metadata_tag\n"
+            f"{sub / 'design_A.pdb'},0,-0.60,0.18,0.38,0.62,5.2,final,design_A\n"
+            f"{sub / 'design_B.pdb'},1,-0.45,0.30,0.29,0.71,0.8,final,design_B\n"
         )
         (run / "inference" / "rewards_search_binder_local_pipeline_0.csv").write_text(csv_text)
         return run
@@ -631,7 +746,8 @@ class TestRewardParse:
         s = designs[0]["scores"]
         assert s["total_reward"] == -0.45
         assert s["af2_iptm"] == 0.30       # af2folding_i_ptm_log
-        assert s["af2_plddt"] == 0.71      # af2folding_plddt
+        # af2folding_plddt_log, NOT the 0.29 loss column beside it.
+        assert s["af2_plddt"] == 0.71
         assert s["binder_scrmsd"] == 0.8   # af2folding_rmsd
         assert s["rf3_score"] is None      # protein reward has no rf3 column
         assert s["cluster_id"] is None     # diversity assigned at the hub
@@ -663,6 +779,295 @@ class TestRewardParse:
         empty = tmp_path / "empty"
         empty.mkdir()
         assert rp.parse_designs(empty) == []
+
+
+class TestArchivedInputIsNotADesign:
+    """The archived copy of the uploaded target must be invisible to the design
+    glob.
+
+    ``find_pdb_for`` globs ``run_dir/**/*.pdb`` and, when a row's name column
+    matches no file, pairs rows onto that list BY INDEX. An extra .pdb under the
+    tree is therefore not inert — it either shifts the pairing or gets uploaded
+    as somebody's design carrying another row's scores. Keeping a copy of the
+    user's input inside run_dir (so the run archive carries it, see
+    ``archive_input_copy``) is only safe while these hold.
+    """
+
+    def _row(self, name="no_such_design"):
+        """A reward row whose name column matches nothing, which is what forces
+        find_pdb_for down to the index fallback — the dangerous path."""
+        return {"metadata_tag": name}
+
+    def _with_input_copy(self, tmp_path, filename="target.pdb"):
+        run = tmp_path / "run"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / filename).write_text("ATOM  uploaded\n")
+        return run
+
+    def test_the_input_copy_is_never_returned_as_a_design(self, tmp_path):
+        """One row, one .pdb under the tree: the index fallback's "the counts
+        match, so the pairing is unambiguous" precondition holds exactly, and
+        unexcluded this hands the user their own upload back as design rank 0."""
+        run = self._with_input_copy(tmp_path)
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_exclusion_is_the_directory_not_the_basename(self, tmp_path):
+        """Belt and braces. target.pdb is excluded by name too, so renaming the
+        copy must not be what silently re-arms the mis-pairing."""
+        run = self._with_input_copy(tmp_path, filename="uploaded_structure.pdb")
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_basename_exclusion_is_the_second_independent_count(self, tmp_path):
+        """archive_input_copy's docstring claims the copy is off the design glob
+        on TWO independent counts. This pins the other one: `target.pdb` is
+        excluded by basename wherever it sits, which is what makes the claim
+        true rather than a restatement of the directory exclusion."""
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "target.pdb").write_text("ATOM  staged target\n")
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_real_design_still_resolves_alongside_the_copy(self, tmp_path):
+        """The exclusion must not cost the fallback its own job: with the copy
+        discounted the counts line up again and the design is found. Were the
+        copy counted, all_pdbs (2) != total_rows (1) and the design would be
+        dropped instead of delivered."""
+        run = self._with_input_copy(tmp_path)
+        (run / "samples").mkdir()
+        (run / "samples" / "sample_0.pdb").write_text("ATOM  design\n")
+        got = rp.find_pdb_for(self._row(), run, 0, 1)
+        assert got is not None and got.name == "sample_0.pdb"
+
+    def test_a_design_dir_that_merely_resembles_the_name_is_kept(self, tmp_path):
+        """The check is on a path COMPONENT, not a substring (unlike the
+        filtered_out_samples one beside it). A substring test here would quietly
+        discard real designs from any directory whose name contains the token."""
+        run = tmp_path / "run"
+        (run / f"{rp._HUB_INPUT_DIR}s").mkdir(parents=True)
+        (run / f"{rp._HUB_INPUT_DIR}s" / "sample_0.pdb").write_text("ATOM  design\n")
+        got = rp.find_pdb_for(self._row(), run, 0, 1)
+        assert got is not None and got.name == "sample_0.pdb"
+
+    def test_archive_input_copy_lands_where_the_exclusion_looks(self, tmp_path, monkeypatch):
+        """Pins the writer to the reader: the copy goes to the directory
+        find_pdb_for excludes, byte-for-byte."""
+        # archive_input_copy records the name in the module-level
+        # _hub_input_written set. monkeypatch it so the entry does not leak into
+        # every later test in the process and silently stand in for the
+        # per-shard reset.
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        src = tmp_path / "incoming.pdb"
+        src.write_text("ATOM  uploaded\n")
+        run = tmp_path / "run"
+        run.mkdir()
+        # upload.pdb, not target.pdb: this is the copy that is NOT also excluded
+        # by basename, so it rests on the directory exclusion alone — the one
+        # that has to hold.
+        rp.archive_input_copy(src, run, rp._HUB_UPLOAD_NAME)
+        copy = run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME
+        assert copy.read_text() == "ATOM  uploaded\n"
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_archive_input_copy_never_raises(self, tmp_path, monkeypatch):
+        """Best-effort by contract: a refusal that carries a usable message must
+        not become a crash that carries none because a copy failed."""
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "run"
+        run.mkdir()
+        rp.archive_input_copy(tmp_path / "does_not_exist.pdb", run, rp._HUB_UPLOAD_NAME)
+        assert not (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).exists()
+
+
+class TestRawArchiveDest:
+    """Where the run archive is written is decided when it is written.
+
+    A module constant captured as a default argument freezes at import, which
+    makes every later reassignment of it a silent no-op — including the tests'
+    own, which is how this suite spent its whole life writing real tarballs to
+    /tmp instead of into tmp_path, with the redirect sitting right there
+    looking like it worked.
+    """
+
+    def test_dest_is_resolved_on_call_not_frozen_at_import(self, tmp_path, monkeypatch):
+        """RAW_ARCHIVE_PATH must be read when archive_raw_outputs runs, not
+        captured as a default argument at def time. Frozen, every later
+        reassignment is silently ignored — including this suite's own, which is
+        how it was writing real archives to /tmp instead of into tmp_path."""
+        run = tmp_path / "inference"
+        run.mkdir()
+        (run / "note.txt").write_text("hi")
+        dest = tmp_path / "redirected.tgz"
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(dest))
+        rp.archive_raw_outputs(run)
+        assert dest.is_file(), "archive_raw_outputs ignored the reassigned constant"
+
+    def test_an_explicit_dest_still_wins(self, tmp_path, monkeypatch):
+        """Late binding must not turn the parameter into a suggestion: an
+        explicit dest overrides the constant, and nothing is written to it."""
+        run = tmp_path / "inference"
+        run.mkdir()
+        (run / "note.txt").write_text("hi")
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "constant.tgz"))
+        explicit = tmp_path / "explicit.tgz"
+        rp.archive_raw_outputs(run, dest=str(explicit))
+        assert explicit.is_file()
+        assert not (tmp_path / "constant.tgz").exists()
+
+
+class TestArchiveGatesTheInputCopy:
+    """The archive decides what it tars on what THIS process did, not on what it
+    finds on disk.
+
+    Every mechanism that clears stale state is best-effort — _run_shard's run_dir
+    wipe passes ignore_errors=True, and the pre-download clear can be refused by
+    the filesystem — so presence of a _hub_input/upload.pdb is not evidence that
+    this job uploaded it. Gating the tar on `_hub_input_written` is what makes
+    "another customer's structure is never filed under this job id" a property
+    of the archive rather than a hope about the container.
+
+    The gate is a set of NAMES rather than one flag because two copies land in
+    this directory at different points in the run. A single flag would let a
+    prior shard's target.pdb into the archive on the strength of this shard
+    having written upload.pdb.
+    """
+
+    def _run_with_copy(self, tmp_path, name=None):
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / (name or rp._HUB_UPLOAD_NAME)).write_bytes(b"STRUCTURE\n")
+        (run / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        return run
+
+    def _names(self, dest):
+        with tarfile.open(dest) as tf:
+            return tf.getnames()
+
+    def test_a_copy_this_shard_did_not_write_is_excluded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(self._run_with_copy(tmp_path), dest=str(dest))
+        names = self._names(dest)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), names
+        assert "inference/sample_0.pdb" in names, (
+            "the gate must drop only _hub_input, never upstream's own output")
+
+    def test_a_copy_this_shard_wrote_is_kept(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(self._run_with_copy(tmp_path), dest=str(dest))
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in self._names(dest)
+
+    def test_a_foreign_file_beside_our_copy_is_still_excluded(self, tmp_path, monkeypatch):
+        """The gate is per-member, not per-directory: writing our copy does not
+        wave through whatever else a previous shard left in the same folder."""
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        run = self._run_with_copy(tmp_path)
+        (run / rp._HUB_INPUT_DIR / "someone_elses.pdb").write_bytes(b"OTHER\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        names = self._names(dest)
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in names
+        assert not any(n.endswith("someone_elses.pdb") for n in names), names
+
+    def test_the_OTHER_copy_does_not_ride_in_on_this_ones_coat_tails(
+            self, tmp_path, monkeypatch):
+        """The exact reason the gate is a set and not a bool.
+
+        This shard wrote upload.pdb. A previous shard left a target.pdb in the
+        same directory — the staged file it was designing against, a different
+        customer's structure. One flag saying "this shard wrote something here"
+        would file that under this job id, in the artifact whose entire purpose
+        is to be evidence.
+        """
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        run = self._run_with_copy(tmp_path)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_INPUT_NAME).write_bytes(b"THEIRS\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        names = self._names(dest)
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in names
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_INPUT_NAME}" not in names, names
+
+    def test_a_dir_that_merely_resembles_the_name_is_still_archived(self, tmp_path, monkeypatch):
+        """The filter matches a path COMPONENT, not a substring.
+
+        A substring test would drop legitimate upstream output from any
+        directory whose name merely contains the token — and because tarfile
+        stops recursing into a directory the filter rejects, it would take the
+        whole subtree with it. That is the same mistake find_pdb_for is guarded
+        against, in the one place where it destroys evidence rather than just
+        skipping a design.
+        """
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "inference"
+        lookalike = run / f"{rp._HUB_INPUT_DIR}s"
+        lookalike.mkdir(parents=True)
+        (lookalike / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        assert f"inference/{rp._HUB_INPUT_DIR}s/sample_0.pdb" in self._names(dest)
+
+    def test_archive_input_copy_is_what_opens_the_gate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        src = tmp_path / "incoming.pdb"
+        src.write_bytes(b"STRUCTURE\n")
+        run = tmp_path / "inference"
+        run.mkdir()
+        rp.archive_input_copy(src, run, rp._HUB_UPLOAD_NAME)
+        assert rp._hub_input_written == {rp._HUB_UPLOAD_NAME}
+
+    def test_a_failed_copy_leaves_the_gate_shut(self, tmp_path, monkeypatch):
+        """The record means "written", not "attempted" — otherwise a copy that
+        failed after a prior shard's file was already there would wave it in."""
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "inference"
+        run.mkdir()
+        rp.archive_input_copy(tmp_path / "does_not_exist.pdb", run, rp._HUB_UPLOAD_NAME)
+        assert rp._hub_input_written == set()
+
+
+class TestCensusDoesNotCountTheInputAsOutput:
+    """`census_output_tree` exists to tell "the search never produced a reward
+    CSV" (the tool broke) from "the filter culled every sample" (the search
+    worked). Its own docstring says those "call for opposite responses".
+
+    The archive copies of the INPUT live under run_dir, so a census that globs
+    `**/*.pdb` counts them as output. On a shard that designed nothing that
+    reads as "2 structures written, no reward CSV" — which is neither state,
+    and points the reader at a broken tool that isn't broken. The count has to
+    be of things the SEARCH wrote.
+    """
+
+    def _census(self, run):
+        return rp.census_output_tree(run)
+
+    def test_the_input_copies_are_not_counted_as_designs(self, tmp_path):
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / rp._HUB_INPUT_DIR / rp._HUB_INPUT_NAME).write_bytes(b"ATOM  tgt\n")
+        assert self._census(run)["design_pdbs"] == 0, (
+            "a run that designed nothing must not report structures it was GIVEN")
+
+    def test_real_designs_are_still_counted(self, tmp_path):
+        """The exclusion must not swallow the number it exists to report."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        (run / "sample_1.pdb").write_bytes(b"ATOM  design\n")
+        assert self._census(run)["design_pdbs"] == 2
+
+    def test_the_filtered_bucket_is_still_the_discriminator(self, tmp_path):
+        """filtered_out_pdbs is the number that separates the two states, so
+        the input copies must not leak into it either."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "filtered_out_samples").mkdir()
+        (run / "filtered_out_samples" / "s0.pdb").write_bytes(b"ATOM  culled\n")
+        census = self._census(run)
+        assert (census["design_pdbs"], census["filtered_out_pdbs"]) == (0, 1)
 
 
 class TestStructureVerification:
@@ -1043,16 +1448,35 @@ class TestPreGpuGuards:
         assert data["error"]["check"] == "rf3"
 
 
+# The structure _drive uploads by default, and where it puts the run archive
+# and the staging dir. MODULE level, not attributes of the class that defines
+# _drive: three other classes BORROW _drive as a plain function
+# (`_drive = TestCustomTargetRegistration._drive`) rather than inheriting it, so
+# anything _drive reaches for through `self` has to be borrowed alongside it or
+# the borrower dies with AttributeError. Module scope is visible to every
+# borrower, including the next one added.
+_DRIVE_SPANS = {"A": (1, 60), "B": (1, 40)}
+
+
+def _archive_path(tmp_path):
+    return tmp_path / "raw.tgz"
+
+
+def _hub_targets_dir(tmp_path):
+    return tmp_path / "proteina" / "hub_targets"
+
+
 class TestCustomTargetRegistration:
     """End-to-end wiring of the custom-target path, with the network and the
     `complexa` binary stubbed. These run main() for real, so they also prove
     the ordering: verify, then register, then design."""
 
     def _drive(self, rp, tmp_path, monkeypatch, job_spec, *, calls, hotspot_spec=(),
-               fail_registration=False, pdb_spans=None, pdb_text=None):
+               fail_registration=False, pdb_spans=None, pdb_text=None,
+               download=None, input_url="https://example/target.pdb"):
         result_file = tmp_path / "smoke.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
-        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(_archive_path(tmp_path)))
         # Keep every filesystem effect inside tmp_path.
         home = tmp_path / "proteina"
         (home / "configs" / "targets").mkdir(parents=True)
@@ -1069,15 +1493,22 @@ class TestCustomTargetRegistration:
         )
         monkeypatch.setattr(rp, "PROTEINA_HOME", str(home))
         monkeypatch.setattr(rp, "_TARGETS_DICT", str(registry))
-        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(home / "hub_targets"))
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(_hub_targets_dir(tmp_path)))
 
-        spans = pdb_spans or {"A": (1, 60), "B": (1, 40)}
+        spans = pdb_spans or _DRIVE_SPANS
 
         def fake_download(url, dest):
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(pdb_text if pdb_text is not None else _make_pdb(spans))
+            # write_BYTES, like the real download_target: write_text newline-
+            # translates on Windows, so the harness would hand the pipeline a
+            # CRLF structure no uploader ever sends and quietly defeat any
+            # byte-for-byte assertion about what got archived.
+            dest.write_bytes(
+                (pdb_text if pdb_text is not None else _make_pdb(spans)).encode())
             return dest
-        monkeypatch.setattr(rp, "download_target", fake_download)
+        # `download` lets a test run the REAL download_target (with requests
+        # stubbed) instead, so the download's own refusal path is exercised.
+        monkeypatch.setattr(rp, "download_target", download or fake_download)
 
         def fake_run(cmd, cwd):
             calls.append(list(cmd))
@@ -1104,7 +1535,9 @@ class TestCustomTargetRegistration:
 
         payload = {
             "job_spec": job_spec,
-            "input_presigned_url": "https://example/target.pdb",
+            # Empty for a genuinely curated run: a staged URL on a run that did
+            # not declare a custom target is refused by the pre-GPU guard.
+            "input_presigned_url": input_url,
             "upload_urls_endpoint": "https://example/upload",
             "job_token": "t", "tier": "protein_binder",
         }
@@ -1222,6 +1655,375 @@ class TestCustomTargetRegistration:
         assert data["status"] == "FAILED"
         assert data["error"]["check"] == "target_key_collision"
         assert calls == []
+
+    # --- the upload must reach the archive on every exit path ---------------
+    #
+    # archive_raw_outputs tars run_dir (./inference) and NOTHING else, while the
+    # upload is staged in _HUB_TARGET_DIR (./hub_targets), outside it. So unless
+    # a copy is taken inside run_dir BEFORE the guards run, the archive of a
+    # refused run holds no trace of the bytes that were refused — and a refusal
+    # is exactly the run whose input you need to open afterwards, without paying
+    # for another A100 to see it again.
+
+    def _archive_names(self, tmp_path):
+        archive = _archive_path(tmp_path)
+        assert archive.is_file(), f"no run archive was written at {archive}"
+        with tarfile.open(archive) as tf:
+            return tf.getnames()
+
+    def _archived_member(self, tmp_path, name):
+        """A _hub_input copy as the ARCHIVE carries it — the raw member BYTES,
+        read back out of the tarball rather than off the filesystem. Asserting
+        on the loose file would still pass if the tar were written somewhere the
+        copy never reached, which is the whole failure being pinned here; and
+        read_text() would newline-translate, so a byte claim would not be one."""
+        member = f"inference/{rp._HUB_INPUT_DIR}/{name}"
+        names = self._archive_names(tmp_path)
+        assert member in names, (
+            f"the run archive carries no {name}: expected {member}, "
+            f"got {names[:20]}")
+        with tarfile.open(_archive_path(tmp_path)) as tf:
+            return tf.extractfile(member).read()
+
+    def _archived_input(self, tmp_path):
+        """What the USER SENT, as the archive carries it."""
+        return self._archived_member(tmp_path, rp._HUB_UPLOAD_NAME)
+
+    # A REPRESENTATIVE set of refusals that happen after the bytes have arrived,
+    # not the full register — prepare_custom_target refuses in about a dozen
+    # places past this point and its ARCHIVE CONTRACT docstring states the rule
+    # they all follow. Each is a message about the user's own structure, so each
+    # is a run whose input has to be in the archive. The `detail` fragment keeps
+    # the two that share a check name from being unable to tell which guard
+    # actually fired.
+    _POST_DOWNLOAD_REFUSALS = [
+        # the headline guard: a hotspot matching nothing in the selection
+        ("hotspot_missing", {"hotspot_spec": ["A9999"]}, None,
+         "hotspot_missing", "are not in the selected region"),
+        # an expression-tagged construct whose derived contig cannot render
+        ("negative_numbering", {"target_input": "", "target_chain": "A"},
+         {"A": (-5, 240)}, "target_input_negative", "negative residue numbers"),
+        # a chain range that selects nothing
+        ("empty_chain_range", {"target_input": "Z1-99"}, None,
+         "target_input", "select 0 residues"),
+        # a selected region below the minimum designable size
+        ("under_twenty_residues", {"target_input": "A1-10"}, None,
+         "target_input", "fewer than the 20 needed"),
+    ]
+
+    @pytest.mark.parametrize(
+        "spec_kw, spans, check, detail",
+        [case[1:] for case in _POST_DOWNLOAD_REFUSALS],
+        ids=[case[0] for case in _POST_DOWNLOAD_REFUSALS],
+    )
+    def test_a_refusal_after_the_download_still_archives_the_upload(
+            self, tmp_path, monkeypatch, spec_kw, spans, check, detail):
+        calls: list = []
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(**spec_kw),
+                           calls=calls, pdb_spans=spans)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == check
+        assert detail in data["error"]["detail"], data["error"]["detail"]
+        assert calls == [], "these refusals must still precede every subprocess"
+        assert self._archived_input(tmp_path) == _make_pdb(spans or _DRIVE_SPANS).encode()
+
+    def test_a_successful_run_archives_the_upload_too(self, tmp_path, monkeypatch):
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] != "FAILED", data.get("error")
+        assert self._archived_input(tmp_path) == _make_pdb(_DRIVE_SPANS).encode()
+
+    def test_the_archived_copy_is_the_file_that_was_registered(self, tmp_path, monkeypatch):
+        """target.pdb is the file the registry points at, byte for byte.
+
+        This is the copy that answers "what was designed against", so it has to
+        be the STAGED file — the contig-cropped one handed to `target add` — and
+        not the upload it was derived from. The two are separate members for
+        exactly this reason, and a run that archived the upload under both names
+        would pass every assertion about the upload while quietly losing the
+        record of what the service actually ran.
+        """
+        calls: list = []
+        self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=calls)
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        staged = Path(add[add.index("--target-path") + 1])
+        assert staged.read_bytes() == self._archived_member(
+            tmp_path, rp._HUB_INPUT_NAME)
+
+    def test_a_short_body_download_archives_what_did_arrive(self, tmp_path, monkeypatch):
+        """download_target writes the body and THEN refuses it as too small: a
+        200 response carrying a short error document (what a proxy in front of
+        the store answers with) lands here. Those bytes are the entire evidence
+        for what went wrong, so the copy is taken in a finally rather than after
+        a clean return. A 403 from an EXPIRED url is the other branch — it
+        raises before the file is opened and writes nothing; see the warm-
+        container test below for what that must NOT archive."""
+        body = b"<Error>AccessDenied</Error>"
+        assert len(body) < 32, "must trip download_target's size floor"
+        monkeypatch.setattr(rp.requests, "get", lambda *a, **k: _FakeStreamedGet(body))
+        # rp.download_target is resolved BEFORE _drive replaces the name, so the
+        # real function runs against the stubbed requests.
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert self._archived_input(tmp_path) == body
+
+    def test_a_download_that_produced_nothing_is_not_a_crash(self, tmp_path, monkeypatch):
+        """The other side of the finally: with no bytes on disk the copy must
+        no-op quietly and leave the refusal's own message intact."""
+        def dead_download(url, dest):
+            rp._fail("input", "download", "custom target download failed: boom")
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=dead_download)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert "boom" in data["error"]["detail"]
+        assert not any(rp._HUB_INPUT_DIR in n for n in self._archive_names(tmp_path))
+
+    def test_a_prior_shards_upload_is_never_archived_as_this_ones(self, tmp_path, monkeypatch):
+        """Warm-container cross-contamination — the failure mode the copy's own
+        placement creates if the staging dir is only tested for existence.
+
+        _HUB_TARGET_DIR is NOT wiped at shard start (only ./inference is), and a
+        refused shard leaves its incoming.pdb behind: the unlink that clears it
+        fires in step 6b, which a refusal never reaches. If THIS shard's GET then
+        fails before writing anything — an expired presigned URL raises before
+        the file is opened — an exists() check alone sees the leftover and files
+        ANOTHER CUSTOMER'S structure under this job id, inside the one artifact
+        whose entire purpose is to be trustworthy evidence."""
+        stale = b"REMARK  PRIOR SHARD STRUCTURE, NOT THIS JOB'S\n"
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        (hub / "incoming.pdb").write_bytes(stale)
+
+        def expired_url(*a, **k):
+            raise RuntimeError("403 Client Error: Forbidden (presigned URL expired)")
+
+        monkeypatch.setattr(rp.requests, "get", expired_url)
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"the prior shard's structure was archived under this job: {names}")
+
+    def _plant_stale_run_dir_copy(self, tmp_path, monkeypatch, body, undeletable=False):
+        """Put a previous shard's copy inside run_dir and make _run_shard's wipe
+        silently fail to remove it — which is exactly what its
+        rmtree(ignore_errors=True) does when it cannot.
+
+        With ``undeletable``, prepare_custom_target's own clear cannot remove it
+        either, which is the state that decides whether the ARCHIVE is safe on
+        its own evidence or only while the clear keeps succeeding.
+        """
+        run_dir = tmp_path / "proteina" / "inference"
+        stale = run_dir / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(body)
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return
+            if undeletable and Path(path).name == rp._HUB_INPUT_DIR:
+                raise PermissionError(13, "Permission denied")
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+        return stale
+
+    def test_a_clear_that_fails_refuses_and_archives_nothing(self, tmp_path, monkeypatch):
+        """A clear that cannot be done must be a REFUSAL, not a crash and not a
+        shrug — and it must still archive nothing.
+
+        This pins the placement, which is the part that is easy to "tidy" wrong.
+        Both plausible refactors reopen the leak and this test catches both:
+        moving the clear inside the download's try arms the finally, so the
+        undeletable leftover gets archived as this job's input; swallowing the
+        OSError lets the run carry on and refuse somewhere else entirely. And
+        leaving the unlink bare (no except) is not a refusal at all — it escapes
+        prepare_custom_target as an uncaught OSError, so NO smoke result is
+        written and the hub reports a webhook-shaped error for a disk fault.
+
+        Both leftovers are made un-deletable by stubbing the call that would
+        remove them — Path.unlink for incoming.pdb, shutil.rmtree for the
+        run_dir copy — because a genuinely un-deletable file is not portable to
+        create. Both stubs delegate for every other path, so nothing else in
+        the process is affected.
+        """
+        prior = b"REMARK  PRIOR SHARD STRUCTURE, NOT THIS JOB'S\n"
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        (hub / "incoming.pdb").write_bytes(prior)
+        # An UNDELETABLE stale copy inside run_dir too. Without `undeletable`
+        # the clear removes it and the closing assertion below is evaluated over
+        # an empty directory, pinning nothing: the archiving finally tars run_dir
+        # whether or not the run refused, so a leftover that survives the clear
+        # is the only one with a live route into the archive, and the archive's
+        # own gate is the only thing that can stop it.
+        stale = self._plant_stale_run_dir_copy(
+            tmp_path, monkeypatch, prior, undeletable=True)
+
+        real_unlink = Path.unlink
+
+        def refuse_unlink(self, *args, **kwargs):
+            if self.name == "incoming.pdb":
+                raise PermissionError(13, "Permission denied")
+            return real_unlink(self, *args, **kwargs)
+        monkeypatch.setattr(rp.Path, "unlink", refuse_unlink)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "input"
+        assert data["error"]["check"] == "stale_staging", (
+            "a failed clear must refuse as input/stale_staging, not carry on "
+            f"to fail somewhere else: {data['error']}")
+        assert stale.exists(), "fixture is wrong: this leftover was meant to survive"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"the leftover that could not be cleared was archived: {names}")
+
+    def test_an_unusable_staging_dir_is_a_classified_refusal(self, tmp_path, monkeypatch):
+        """The first statement of prepare_custom_target is a mkdir, and it is
+        guarded for the same reason as the clear: an uncaught OSError there
+        escapes as a bare exception, so NO smoke result is written at all and
+        the hub cannot classify the job — it reports a webhook-shaped error for
+        a disk fault. A plain file sitting where the staging dir belongs makes
+        mkdir(exist_ok=True) raise FileExistsError, portably."""
+        blocker = _hub_targets_dir(tmp_path)
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_bytes(b"not a directory\n")
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "input"
+        assert data["error"]["check"] == "staging_dir", data["error"]
+
+    @pytest.mark.parametrize("failing_leg", ["run_dir_copy", "incoming"])
+    def test_a_failed_clear_does_not_skip_the_other_path(
+            self, tmp_path, monkeypatch, failing_leg):
+        """Both leftovers are cleared INDEPENDENTLY. Sharing one try lets a
+        failure on the first silently skip the second, so a perfectly deletable
+        leftover survives because an unrelated path was locked.
+
+        Parametrized over WHICH leg fails, so the pin does not depend on the
+        order the source happens to iterate in: whichever that order is, one of
+        these two cases puts the failing leg first. Fixing the failing leg
+        instead would let a harmless-looking reorder of the source tuple
+        silently disarm the only test guarding this property — and the payoff
+        for losing it is another customer's structure archived as this job's.
+        """
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        incoming = hub / "incoming.pdb"
+        incoming.write_bytes(b"REMARK  PRIOR\n")
+        stale = self._plant_stale_run_dir_copy(
+            tmp_path, monkeypatch, b"REMARK  PRIOR\n",
+            undeletable=(failing_leg == "run_dir_copy"))
+
+        if failing_leg == "incoming":
+            real_unlink = Path.unlink
+
+            def refuse_unlink(self, *args, **kwargs):
+                if self.name == "incoming.pdb":
+                    raise PermissionError(13, "Permission denied")
+                return real_unlink(self, *args, **kwargs)
+            monkeypatch.setattr(rp.Path, "unlink", refuse_unlink)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["error"]["check"] == "stale_staging"
+        if failing_leg == "run_dir_copy":
+            assert stale.exists(), "fixture: this leg was meant to fail"
+            assert not incoming.exists(), (
+                "the incoming.pdb clear was skipped because the other leg failed")
+        else:
+            assert incoming.exists(), "fixture: this leg was meant to fail"
+            assert not stale.exists(), (
+                "the run_dir clear was skipped because the other leg failed")
+
+    def test_a_plain_file_where_the_copy_dir_belongs_is_cleared(self, tmp_path, monkeypatch):
+        """rmtree alone raises NotADirectoryError on a file, which would surface
+        as a refusal blaming 'a previous run' for something trivially
+        removable. _remove_stale picks the right call per path type."""
+        run_dir = tmp_path / "proteina" / "inference"
+        bogus = run_dir / rp._HUB_INPUT_DIR
+        bogus.parent.mkdir(parents=True)
+        bogus.write_bytes(b"not a directory\n")
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] != "FAILED", data.get("error")
+        assert self._archived_input(tmp_path) == _make_pdb(_DRIVE_SPANS).encode()
+
+    def test_a_curated_run_never_archives_a_leftover_copy(self, tmp_path, monkeypatch):
+        """The path with no clear at all. A curated run never calls
+        prepare_custom_target, so nothing on that route inspects _hub_input —
+        yet the archiving finally still tars run_dir. A previous custom shard's copy
+        that outlived the wipe would be filed under this curated job, whose
+        caller never uploaded anything. The archive's own gate is what stops
+        it: this shard wrote no copy, so no _hub_input goes in.
+
+        The record is seeded first, standing in for an earlier shard in the same
+        process having written one. That is what makes the per-shard reset
+        load-bearing HERE instead of relying on a fresh interpreter — without it
+        the set starts empty anyway and the test passes whatever _run_shard
+        does."""
+        prior = b"REMARK  A PREVIOUS CUSTOM SHARD'S STRUCTURE\n"
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        self._plant_stale_run_dir_copy(tmp_path, monkeypatch, prior)
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            {"config_name": "search_binder_local_pipeline", "task_name": "02_PDL1",
+             "rf3_required": False, "nsamples": 4, "replicas": 2},
+            calls=[], input_url="")
+        assert data["status"] != "FAILED", data.get("error")
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"a custom shard's upload was archived under a curated job: {names}")
+
+    def test_a_stale_copy_surviving_the_run_dir_wipe_is_cleared(self, tmp_path, monkeypatch):
+        """The other leg of the same contamination path. _run_shard's
+        `shutil.rmtree(run_dir, ignore_errors=True)` is by construction
+        best-effort, so a prior shard's inference/_hub_input/upload.pdb can
+        outlive it. If this shard then writes no bytes of its own, the archive
+        would carry the previous job's structure with nothing having gone wrong
+        loudly anywhere. Here the run_dir wipe is made to silently no-op — what
+        ignore_errors=True does on a failure — so the clear in
+        prepare_custom_target is what removes it from disk. (The archive is safe
+        either way: the gate covers the case where the clear cannot. This test
+        pins the on-disk half; test_a_clear_that_fails... pins the other.)"""
+        prior = b"REMARK  PRIOR SHARD LEFTOVER INSIDE INFERENCE\n"
+        run_dir = tmp_path / "proteina" / "inference"
+        stale = run_dir / rp._HUB_INPUT_DIR / "target.pdb"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(prior)
+
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return  # exactly what ignore_errors=True does when it cannot
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+
+        def expired_url(*args, **kwargs):
+            raise RuntimeError("403 Client Error: Forbidden (presigned URL expired)")
+        monkeypatch.setattr(rp.requests, "get", expired_url)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert not stale.exists(), "the stale copy was left in the run dir"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"a previous shard's structure survived into this archive: {names}")
 
 
 def _write(path, text):
@@ -1572,6 +2374,1496 @@ class TestStagedTargetIsCroppedToTheContig:
         assert calls == [], "nothing may run once the staged file is wrong"
 
 
+class TestContigEndpointsMustBeRealResidues:
+    """THE DEFECT THAT COST A SHARD, AND ITS SIBLING GUARD.
+
+    3S7G has chain A spanning 236-443 and chain B spanning 236-**442**. A run
+    was launched with ``A236-443,B236-443``. Upstream died::
+
+        ValueError('No atoms found for selection: B/*/443')
+
+    ~60 s of billed A100, zero designs.
+
+    EVERY EXISTING GUARD PASSED IT, and each for a defensible reason rather than
+    an oversight — which is why the count-based checks cannot be tightened into
+    covering this and a separate question has to be asked:
+
+    * ``select_residues`` filters ``lo <= resseq <= hi``, so chain B's segment
+      picked out the 207 residues that DO exist. The count is correct.
+    * step 4 ("every segment must select something") therefore saw 207, not 0.
+    * the 20-residue floor passed, the hotspots passed.
+    * ``unrenderable_segments`` passed — no negative numbers.
+    * ``stage_cropped_target``'s self-check passed at (415, 415): it compares
+      the staged file against the same selection, and both sides ignore the
+      residue that is not there identically.
+
+    Nothing asked whether ``lo`` and ``hi`` are themselves residues of that
+    chain. ``AtomSelectionStack.from_contig`` does, on a paid GPU.
+    """
+
+    # Borrowed rather than inherited, for the reason stated on the class above.
+    _drive = TestCustomTargetRegistration._drive
+    _spec = TestCustomTargetRegistration._spec
+
+    # The real spans, so the poison contig differs from the good one by ONE.
+    _POISON = "A236-443,B236-443"
+    _GOOD = "A236-443,B236-442"
+
+    @staticmethod
+    def _residues(tmp_path, text=None, spans=None):
+        p = tmp_path / "in.pdb"
+        p.write_text(text if text is not None
+                     else _make_pdb(spans or {"A": (236, 443), "B": (236, 442)}))
+        return rp.pdb_ca_residues(p)[0]
+
+    # ---- the predicate --------------------------------------------------
+
+    def test_the_real_failure_is_flagged_and_names_chain_b(self, tmp_path):
+        """The one that cost the shard: A is fine, B is over by one."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input(self._POISON)) == [("B", 443)]
+
+    def test_the_corrected_contig_is_accepted(self, tmp_path):
+        """The guard is worthless if it also refuses the fix it recommends."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input(self._GOOD)) == []
+
+    def test_the_premise_every_cheaper_check_passes_the_poison_contig(
+            self, tmp_path):
+        """SO THIS SUITE CANNOT PASS VACUOUSLY. If any of these ever starts
+        failing on its own, the new guard is no longer the thing catching it and
+        this class is measuring something else."""
+        residues = self._residues(tmp_path)
+        segments = rp.parse_target_input(self._POISON)
+        # step 4: every segment selects something
+        assert [len(rp.select_residues(residues, [s])) for s in segments] == [208, 207]
+        # the 20-residue floor
+        assert len(rp.select_residues(residues, segments)) == 415
+        # step 3b: nothing negative
+        assert rp.unrenderable_segments(segments) == []
+        # and the crop's own self-check balances
+        assert rp.stage_cropped_target(
+            tmp_path / "staged.pdb", (tmp_path / "in.pdb").read_text(),
+            residues, segments) == (415, 415)
+
+    def test_a_low_endpoint_is_checked_too(self, tmp_path):
+        """The failure was on ``hi``; ``lo`` has the identical exposure."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("B200-442")) == [("B", 200)]
+
+    def test_both_endpoints_of_one_segment_are_reported(self, tmp_path):
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("B200-999")) == [("B", 200), ("B", 999)]
+
+    def test_a_later_segment_is_checked_not_just_the_first(self, tmp_path):
+        """``A236-443`` is valid, so a guard that stopped at the first segment
+        would wave the run through — which is the shape of the real failure."""
+        residues = self._residues(tmp_path)
+        segments = rp.parse_target_input(self._POISON)
+        assert rp.missing_endpoints(residues, segments[:1]) == []
+        assert rp.missing_endpoints(residues, segments) == [("B", 443)]
+
+    def test_the_bound_is_membership_not_an_off_by_one(self, tmp_path):
+        """442 and 443 are one apart and must land on opposite sides; and the
+        test is MEMBERSHIP, so an endpoint inside a disordered gap fails too
+        even though it is well within the chain's min/max."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("B", 236, 442)]) == []
+        assert rp.missing_endpoints(residues, [("B", 236, 443)]) == [("B", 443)]
+        gapped = [r for r in residues if not (301 <= r[1] <= 349 and r[0] == "A")]
+        assert rp.missing_endpoints(gapped, [("A", 320, 443)]) == [("A", 320)]
+
+    def test_one_absent_residue_named_by_both_ends_is_reported_once(
+            self, tmp_path):
+        """``B443-443`` is lo AND hi, both absent. The docstring promises the
+        pair is deduped so the refusal names it once; without the dedup the
+        message reads "residue 443 on chain B, residue 443 on chain B". Pinned
+        because the docstring makes the claim — an unchecked promise about
+        output is the drift this file keeps finding."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("B", 443, 443)]) == [("B", 443)]
+        # Distinct absent endpoints are still both reported — dedup must not
+        # collapse them to the first.
+        assert rp.missing_endpoints(residues, [("B", 444, 445)]) == [
+            ("B", 444), ("B", 445)]
+
+    def test_a_bare_chain_id_has_no_endpoints_to_check(self, tmp_path):
+        """``(chain, None, None)`` is legal input and must not raise or refuse.
+        Skipped inside the helper, so a caller that forgets to filter gets the
+        right answer rather than a TypeError."""
+        residues = self._residues(tmp_path)
+        assert rp.missing_endpoints(residues, [("A", None, None)]) == []
+        assert rp.missing_endpoints(
+            residues, [("A", None, None), ("B", 236, 443)]) == [("B", 443)]
+
+    def test_the_derived_path_is_safe_by_construction(self, tmp_path):
+        """``derive_segments`` builds spans from min/max of residues it just
+        read, so both ends exist by definition. Pinned so a future change to
+        derivation cannot quietly start producing endpoints that do not."""
+        residues = self._residues(tmp_path)
+        derived = rp.derive_segments(residues, ["A", "B"])
+        assert derived == [("A", 236, 443), ("B", 236, 442)]
+        assert rp.missing_endpoints(residues, derived) == []
+
+    # ---- insertion codes -------------------------------------------------
+
+    def test_an_endpoint_matching_any_insertion_code_counts_as_existing(
+            self, tmp_path):
+        """THE DELIBERATE CHOICE, PINNED. A contig endpoint is a bare number
+        with nowhere to put an insertion code, so existence is tested on the
+        residue number ALONE.
+
+        The load-bearing case is chain B: residue 200 exists ONLY as ``B200A``.
+        ``select_residues`` already selects it and the crop already keeps it —
+        both filter on ``lo <= resseq <= hi`` with the code ignored — so
+        refusing the endpoint that the selection then honours would make this
+        guard disagree with the code it guards. Upstream agrees: its own
+        failure names ``B/*/443``, a wildcard in the insertion-code field.
+        """
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 100, icode="A"),
+            _atom(3, "CA", "ALA", "A", 101),
+            _atom(4, "CA", "ALA", "B", 200, icode="A"),
+            _atom(5, "CA", "ALA", "B", 201),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text=text)
+        assert residues == [("A", 100, ""), ("A", 100, "A"), ("A", 101, ""),
+                            ("B", 200, "A"), ("B", 201, "")], "fixture check"
+        # A100 exists both bare and coded; B200 exists ONLY coded. Neither is
+        # missing.
+        assert rp.missing_endpoints(residues, [("A", 100, 101)]) == []
+        assert rp.missing_endpoints(residues, [("B", 200, 201)]) == []
+        # ...and the selection really does honour the coded-only endpoint, which
+        # is what makes accepting it the consistent answer rather than a lax one.
+        assert rp.select_residues(residues, [("B", 200, 201)]) == [
+            ("B", 200), ("B", 201)]
+        # The number still has to be present under SOME code.
+        assert rp.missing_endpoints(residues, [("B", 199, 201)]) == [("B", 199)]
+
+    # ---- residue 0 (#19) -------------------------------------------------
+
+    def test_residue_zero_is_refused_by_the_same_test_no_special_case(
+            self, tmp_path):
+        """ISSUE #19, CLOSED HERE. The adapter refuses ``lo < 0`` and 0 is not
+        < 0, so ``A0-100`` has always been accepted. On a chain numbered from 1
+        it selects residues 1-100 — non-empty and above the floor, so every
+        other guard passes — while upstream is recorded as resolving residue 0
+        by taking the WHOLE chain, silently designing against a different target
+        than the operator asked for.
+
+        Residue 0 simply does not exist, so it is already a missing endpoint.
+        There is no rule about zero in ``missing_endpoints`` and there must not
+        be one: the general test is what makes this free."""
+        residues = self._residues(tmp_path, spans={"A": (1, 115)})
+        segments = rp.parse_target_input("A0-100")
+        # The premise: everything cheaper waves it through.
+        assert px._parse_target_input("A0-100")[3] is None, (
+            "the adapter still accepts A0-100 — if this ever fails, #19 moved")
+        assert len(rp.select_residues(residues, segments)) == 100
+        assert rp.unrenderable_segments(segments) == []
+        # The guard.
+        assert rp.missing_endpoints(residues, segments) == [("A", 0)]
+
+    def test_a_chain_that_really_is_numbered_from_zero_is_not_refused(
+            self, tmp_path):
+        """The guard must key on the residue's absence, not on the number 0 —
+        ``A0-240`` is exactly what the negative-numbering refusal recommends,
+        and that advice has to keep working."""
+        residues = self._residues(tmp_path, spans={"A": (0, 240)})
+        assert rp.missing_endpoints(
+            residues, rp.parse_target_input("A0-240")) == []
+
+    # ---- end to end, through main() --------------------------------------
+
+    def test_the_poison_contig_is_refused_before_any_subprocess(
+            self, tmp_path, monkeypatch):
+        """THE MONEY ASSERTION. ``run_streaming`` is what spawns both the
+        registration and the design, and it must not be reached at all."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._POISON, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == [], (
+            "no subprocess may run once a range endpoint names no residue")
+
+    def test_the_refusal_names_the_chain_the_endpoint_and_the_real_span(
+            self, tmp_path, monkeypatch):
+        """The operator's next action is to retype the contig, so the message
+        has to carry the number. ``B236-442`` must be obvious from it."""
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._POISON, target_chain="A B"),
+            calls=[], pdb_text=_make_3s7g_like())
+        detail = data["error"]["detail"]
+        assert "chain B" in detail and "443" in detail
+        assert "A236-443, B236-442" in detail, "the real spans of the upload"
+        # ``e.g. `` prefix deliberately: the bare string "B236-442" is ALSO in
+        # the spans sentence, so asserting it alone passes with the suggestion
+        # stripped out entirely. The advice is the half an operator acts on.
+        assert "e.g. B236-442" in detail, "the corrected contig, spelled out"
+        # It must not misattribute the fault to chain A, which is correct.
+        assert "chain A" not in detail
+        # And it should say where this would otherwise have been discovered.
+        assert "B/*/443" in detail
+
+    def test_the_suggested_range_actually_works(self, tmp_path, monkeypatch):
+        """Companion to the test above, in the shape the negative-numbering
+        guard already uses: the contig the refusal recommends must register and
+        design cleanly on the same structure."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._GOOD, target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._GOOD
+
+    def test_residue_zero_is_refused_end_to_end(self, tmp_path, monkeypatch):
+        """#19 through ``main()``, on a chain where ``A0-100`` selects 100
+        residues so nothing cheaper can be the thing that refuses it."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A0-100", target_chain="A"),
+            calls=calls, pdb_spans={"A": (1, 115)})
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == [], "A0-100 reached the GPU before this guard"
+        detail = data["error"]["detail"]
+        assert "residue 0 on chain A" in detail
+        assert "A1-100" in detail, "the corrected contig"
+
+    def test_a_low_endpoint_is_refused_end_to_end(self, tmp_path, monkeypatch):
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A236-443,B200-442", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_endpoint"
+        assert calls == []
+        assert "residue 200 on chain B" in data["error"]["detail"]
+        assert "B236-442" in data["error"]["detail"]
+
+    def test_a_bare_chain_id_still_registers(self, tmp_path, monkeypatch):
+        """Unaffected path 1: the whole-chain form resolves through
+        min/max in step 3 and must not be refused."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A,B", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_a_derived_no_contig_run_still_registers(self, tmp_path, monkeypatch):
+        """Unaffected path 2: no ``target_input`` at all, so the contig comes
+        from ``derive_segments`` and both ends exist by construction."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_an_empty_range_still_reports_the_older_clearer_message(
+            self, tmp_path, monkeypatch):
+        """ORDERING, PINNED. A range that selects nothing at all keeps step 4's
+        message; the new guard is the narrower one for a range that selects
+        REAL residues either side of an end that does not exist. Both would fire
+        on ``Z1-99``, and step 4 says the more useful thing."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="Z1-99", target_chain="A"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+
+def _gapped_pdb(runs, extra=""):
+    """``{chain: [(lo, hi), ...]}`` -> a PDB holding EXACTLY those residues.
+
+    ``_make_pdb`` takes one contiguous span per chain, which is the one shape
+    that cannot express the failure this section is about. Every span listed
+    here is materialised and nothing between them is, so the file has real
+    internal gaps rather than a low occupancy or a missing side chain.
+    """
+    lines, serial = [], 1
+    for chain, spans in runs.items():
+        for lo, hi in spans:
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", "ALA", chain, resseq))
+                serial += 1
+    return "\n".join(lines) + "\n" + extra + "END\n"
+
+
+class TestContigIsSplitAtDisorderedGaps:
+    """THE FAILURE: a range that spans a disordered loop dies on a paid A100.
+
+    Upstream's ``load_target_from_pdb`` resolves the contig through atomworks'
+    ``AtomSelectionStack.from_contig``, which expands a range into ONE
+    ``AtomSelection`` PER INTEGER, and ``get_mask`` is a bare list comprehension
+    over a per-selection mask that raises ``ValueError("No atoms found for
+    selection: ...")`` on an empty match. So EVERY residue number between the
+    two endpoints has to be in the file — not just the endpoints.
+
+    Most crystal structures have a disordered loop. Nothing before the GPU
+    caught it, and each miss was defensible on its own terms:
+
+    * ``select_residues`` filters ``lo <= resseq <= hi``, so the gap is simply
+      not selected. The count is right.
+    * ``empty_segments`` sees a healthy non-empty selection.
+    * ``missing_endpoints`` (PR #118) guards the ENDPOINTS against this exact
+      raise — its own message even says "a run is first-to-last and can have
+      gaps inside it" — and never looks inside.
+    * ``derive_segments`` builds ``(chain, min, max)``, so a BLANK contig
+      produces the gap-spanning range by itself.
+    * ``complexa target add`` never opens the PDB (pure YAML), so registration
+      and read-back cannot see it.
+    * the web tier structurally cannot see it: ``chain_summary`` carries a
+      per-chain count plus min/max resnum, not the resnum list
+      (``shared/targets.py::selection_residue_count`` says so). The container is
+      the only place that can decide.
+
+    Comma-separated segments are UNIONED upstream and repeating a chain is
+    legal, so ``A1-50,A60-240`` succeeds exactly where ``A1-240`` dies.
+    ``contig_runs`` derives that split from the structure.
+    """
+
+    # Borrowed, exactly as TestContigEndpointsMustBeRealResidues borrows them.
+    _drive = TestCustomTargetRegistration._drive
+    _spec = TestCustomTargetRegistration._spec
+
+    # An Fc-like homodimer: two protomers sharing one author numbering, each
+    # with a DIFFERENT disordered loop. That asymmetry is the point — a fixture
+    # whose chains break in the same place would pass a per-file split as
+    # readily as a per-chain one.
+    _FC_GAPS = {"A": [(236, 300), (310, 443)], "B": [(236, 350), (360, 442)]}
+    _FC_CONTIG = "A236-443,B236-442"
+    _FC_SPLIT = "A236-300,A310-443,B236-350,B360-442"
+
+    @classmethod
+    def _fc(cls):
+        return _gapped_pdb(cls._FC_GAPS)
+
+    @staticmethod
+    def _residues(tmp_path, text):
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        p = tmp_path / "in.pdb"
+        p.write_text(text)
+        return rp.pdb_ca_residues(p)[0]
+
+    def _prepare(self, tmp_path, monkeypatch, target_input, pdb_text,
+                 target_chain="A"):
+        """``prepare_custom_target`` with everything outside tmp_path patched.
+
+        Modelled on ``TestMinimumTargetSize._prepare`` and diverging in one
+        way: the PDB text is passed in, because every case here needs a
+        structure ``_make_pdb``'s one-contiguous-span-per-chain shape cannot
+        build. Nothing reaches ``complexa`` — the registry path does not exist,
+        which is a DIFFERENT check name and is what makes "got past the gate"
+        observable.
+        """
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target", lambda url, dest: dest.write_text(pdb_text))
+        with pytest.raises(SystemExit) as excinfo:
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain=target_chain, target_input=target_input,
+                hotspot_spec=[], binder_length=[60, 120],
+                run_dir=tmp_path / "run")
+        assert excinfo.value.code == 1
+        return json.loads(results.read_text())["error"], sorted(
+            p.name for p in hub.glob("hub_*.pdb"))
+
+    # ---- the pure helper -------------------------------------------------
+
+    def test_a_gapless_segment_comes_back_UNCHANGED(self, tmp_path):
+        """THE PROPERTY WORTH PINNING ABOVE ALL THE OTHERS.
+
+        This rewrite is applied to every contig, gappy or not, so the ordinary
+        case has to survive it byte for byte. If a gapless range ever came back
+        as anything but itself, every existing target would re-register under a
+        different key and a different ``--target-input`` for no reason.
+        """
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 240)}))
+        assert rp.contig_runs(residues, [("A", 1, 240)]) == [("A", 1, 240)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, rp.parse_target_input("A1-240"))) == "A1-240"
+
+    def test_a_gap_splits_the_segment(self, tmp_path):
+        residues = self._residues(tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)]}))
+        assert rp.contig_runs(residues, [("A", 1, 240)]) == [
+            ("A", 1, 50), ("A", 60, 240)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, [("A", 1, 240)])) == "A1-50,A60-240"
+
+    def test_a_one_residue_gap_and_a_one_residue_run_both_split(self, tmp_path):
+        """The smallest gap upstream can die on is a single absent residue, and
+        the smallest run is a single present one. Both are rendered as ``n-n``,
+        which upstream's ``([A-Za-z]+)(\\d+)-(\\d+)`` matches."""
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(1, 20), (22, 22), (24, 60)]}))
+        assert rp.contig_runs(residues, [("A", 1, 60)]) == [
+            ("A", 1, 20), ("A", 22, 22), ("A", 24, 60)]
+        assert rp.format_contig(rp.contig_runs(residues, [("A", 1, 60)])) == (
+            "A1-20,A22-22,A24-60")
+
+    def test_two_protomers_with_DIFFERENT_gaps_split_differently(self, tmp_path):
+        """The homodimer case. A and B share one author numbering and break in
+        different places, so a split derived once and applied to both chains —
+        or derived from chain A and reused — would be wrong on B."""
+        residues = self._residues(tmp_path, self._fc())
+        runs = rp.contig_runs(residues, rp.parse_target_input(self._FC_CONTIG))
+        assert runs == [("A", 236, 300), ("A", 310, 443),
+                        ("B", 236, 350), ("B", 360, 442)]
+        assert rp.format_contig(runs) == self._FC_SPLIT
+
+    def test_a_gapless_chain_beside_a_gapped_one_is_left_alone(self, tmp_path):
+        """Multi-chain, mixed. Only the chain that needs splitting is split."""
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)], "B": [(1, 100)]}))
+        assert rp.contig_runs(
+            residues, rp.parse_target_input("A1-240,B1-100")) == [
+                ("A", 1, 50), ("A", 60, 240), ("B", 1, 100)]
+
+    def test_a_bare_chain_id_means_the_whole_chain(self, tmp_path):
+        """``(chain, None, None)`` is legal input to every other predicate here
+        and must not raise. It selects the whole chain, split at its gaps —
+        the same reading ``select_residues`` gives it."""
+        residues = self._residues(tmp_path, _gapped_pdb({"A": [(1, 50), (60, 240)]}))
+        assert rp.contig_runs(residues, [("A", None, None)]) == [
+            ("A", 1, 50), ("A", 60, 240)]
+
+    def test_insertion_codes_do_not_split_a_run(self, tmp_path):
+        """``A100`` and ``A100A`` are two residues with two CA atoms but ONE
+        number, and a contig endpoint is a bare integer with nowhere to put a
+        code. Runs are computed over distinct ``resseq``, matching
+        ``missing_endpoints``, so a coded twin neither splits a run nor bridges
+        a gap."""
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 100, icode="A"),
+            _atom(3, "CA", "ALA", "A", 101),
+            _atom(4, "CA", "ALA", "A", 103),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text)
+        assert residues == [("A", 100, ""), ("A", 100, "A"), ("A", 101, ""),
+                            ("A", 103, "")], "fixture check"
+        assert rp.contig_runs(residues, [("A", 100, 103)]) == [
+            ("A", 100, 101), ("A", 103, 103)]
+
+    def test_a_residue_present_ONLY_under_an_insertion_code_does_not_split(
+            self, tmp_path):
+        """THE HALF THE TEST ABOVE CANNOT REACH, SETTLED BY EXECUTING UPSTREAM
+        RATHER THAN BY READING IT.
+
+        Above, ``100`` exists as a plain residue AND as ``A100A``, so both
+        readings of "which numbers are present" agree and that fixture passes
+        under either. Here ``102`` exists ONLY as ``102A`` — there is no plain
+        102 anywhere in the file — and the two readings finally diverge: over
+        distinct ``resseq`` the chain is 100-104 and ``A100-104`` is ONE run;
+        over residues carrying no insertion code it is 100-101 and 103-104, so
+        the contig gets split at a gap that is not there.
+
+        WHY NOT SPLITTING IS THE CORRECT ANSWER, AND HOW THAT WAS SETTLED.
+        ``missing_endpoints``'s own docstring flags this as the weak, expensive
+        bullet: atomworks is not vendored here, so nothing in review could
+        decide it and the failure it would cause is a dead shard on a billed
+        A100. It was EXECUTED against the pair the image installs (atomworks
+        2.2.1, biotite 1.4.0): a chain holding 100, 101, 102A, 103, 104
+        resolved through the contig ``A100-104`` selects FIVE CA atoms and
+        raises nothing — ``AtomSelection(res_id=102)`` matches the
+        insertion-coded residue, because ``res_id`` is the number field alone.
+        So splitting here would be actively WRONG rather than merely cautious:
+        it would fragment a contig upstream resolves without complaint, and on
+        an antibody-numbered target — where codes are routine — it would spend
+        a run of the ``MAX_CONTIG_RUNS`` budget on every coded residue.
+
+        AND IT NEEDS A FIXTURE OF ITS OWN. The mutation "compute the runs over
+        residues carrying no insertion code" passes the entire suite without
+        this one: the test above keeps a plain ``A100`` beside ``A100A``, so
+        dropping coded residues changes nothing there, and every other fixture
+        in this class is code-free.
+        """
+        text = "\n".join([
+            _atom(1, "CA", "ALA", "A", 100),
+            _atom(2, "CA", "ALA", "A", 101),
+            _atom(3, "CA", "ALA", "A", 102, icode="A"),
+            _atom(4, "CA", "ALA", "A", 103),
+            _atom(5, "CA", "ALA", "A", 104),
+        ]) + "\nEND\n"
+        residues = self._residues(tmp_path, text)
+        assert residues == [("A", 100, ""), ("A", 101, ""), ("A", 102, "A"),
+                            ("A", 103, ""), ("A", 104, "")], "fixture check"
+        assert rp.contig_runs(residues, [("A", 100, 104)]) == [("A", 100, 104)]
+        assert rp.format_contig(
+            rp.contig_runs(residues, [("A", 100, 104)])) == "A100-104"
+        # The same reading, in the two places that have to agree with it: the
+        # endpoint guard must not call 102 absent, and the crop must keep all
+        # five residues or upstream's own count assertion stops matching.
+        assert rp.missing_endpoints(residues, [("A", 102, 104)]) == []
+        assert len(rp.selected_residue_keys(residues, [("A", 100, 104)])) == 5
+
+    def test_a_chain_absent_from_the_file_contributes_no_run(self, tmp_path):
+        """Unreachable from production — ``empty_segments`` refuses it first —
+        but the helper is pure and must answer rather than raise."""
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60)}))
+        assert rp.contig_runs(residues, [("Z", 1, 99)]) == []
+        assert rp.contig_runs(residues, [("A", 1, 60), ("Z", 1, 99)]) == [
+            ("A", 1, 60)]
+
+    def test_a_run_is_built_ONLY_from_residues_that_EXIST(self, tmp_path):
+        """THE PROPERTY THE FUNCTION'S NAME CLAIMS, pinned on the one fixture
+        shape where the requested bounds and the real ones differ at BOTH ends.
+
+        Every other case in this section asks for a range whose ``lo`` and
+        ``hi`` are themselves residues, so "start the first run at the
+        requested ``lo``" and "end the last run at the requested ``hi``" are
+        each indistinguishable from the real behaviour on all of them — both
+        mutations pass this whole file. They are not equivalent in general, and
+        what they produce is a contig naming a residue the file does not hold:
+        the ValueError on a paid A100 that this helper exists to prevent,
+        reintroduced by the fix for it.
+
+        A DIRECT TEST ON PURPOSE. ``prepare_custom_target`` cannot reach this
+        shape today — ``missing_endpoints`` refuses an absent endpoint at step
+        4b, above the rewrite. But the docstring offers the helper for reuse,
+        and the canary already reaches into this module for its siblings
+        (``_hotspot_canary`` calls ``rp_local.empty_segments`` and hands the
+        result to ``cs.refuse_empty_segments``) with no step 4b in front of it.
+        """
+        residues = self._residues(
+            tmp_path, _gapped_pdb({"A": [(10, 20), (30, 40)]}))
+        runs = rp.contig_runs(residues, [("A", 5, 100)])
+        assert runs == [("A", 10, 20), ("A", 30, 40)], (
+            "a run bound came from the request rather than from the structure")
+        present = {(chain, resseq) for chain, resseq, _icode in residues}
+        for chain, lo, hi in runs:
+            assert (chain, lo) in present and (chain, hi) in present, (
+                f"run {chain}{lo}-{hi} names a residue the file does not hold")
+
+    def test_a_HALF_bound_segment_raises_in_all_three_predicates(self, tmp_path):
+        """THE ``lo is None`` TOLERANCE IS ONE-SIDED, AND THAT IS A DECISION.
+
+        ``(chain, None, None)`` is answered because a parser really emits it —
+        both ``parse_target_input`` implementations return it for a bare chain
+        id — so the forgetful caller it rescues exists and there is one
+        unambiguous answer to give it. ``(chain, 100, None)`` is emitted by
+        NOTHING: no parser builds one, ``derive_segments`` builds ``(chain,
+        min, max)``. There is no caller to rescue and no meaning to recover, so
+        "from 100 to the end of the chain" would be an invention — and an
+        invented bound silently changes how much of the target gets designed
+        against, which is the failure class this file exists to stop. The
+        ``TypeError`` out of the chained comparison is the right answer.
+
+        PINNED ON ALL THREE TOGETHER, because that is the real property: the
+        three functions that COMPUTE A SELECTION share one reading of a segment
+        tuple, and teaching only ``contig_runs`` to answer would make the
+        function that RENDERS the contig disagree with the two that decide what
+        is selected and what is staged. ``missing_endpoints`` skipping both
+        cases is not a counter-example — a bare chain id has no endpoints to
+        verify, which is a defined answer rather than a guess.
+        """
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60)}))
+        for fn in (rp.contig_runs, rp.select_residues, rp.selected_residue_keys):
+            with pytest.raises(TypeError):
+                fn(residues, [("A", 10, None)])
+            assert fn(residues, [("A", None, None)]), (
+                f"{fn.__name__} stopped answering the bare chain id that the "
+                "parsers really do emit")
+
+    def test_segment_order_is_kept_and_overlaps_are_not_merged(self, tmp_path):
+        """Upstream ORs the per-selection masks, so a residue named twice is
+        selected once either way. Merging across segments would break the
+        one-to-one correspondence with the segments the guards judged."""
+        residues = self._residues(tmp_path, _make_pdb({"A": (1, 60), "B": (1, 40)}))
+        assert rp.contig_runs(residues, [("B", 1, 40), ("A", 1, 60)]) == [
+            ("B", 1, 40), ("A", 1, 60)], "segment order"
+        assert rp.contig_runs(residues, [("A", 1, 30), ("A", 20, 60)]) == [
+            ("A", 1, 30), ("A", 20, 60)], "overlaps stay two runs"
+
+    def test_the_crop_selects_the_SAME_residues_either_way(self, tmp_path):
+        """VERIFIED, NOT ASSUMED. ``selected_residue_keys`` is what
+        ``stage_cropped_target`` writes, and the claim that it needs no change
+        is only true if the split selects the identical set. Asserted on the
+        keys AND through the staged file's own self-check, which is the number
+        upstream compares."""
+        text = self._fc()
+        residues = self._residues(tmp_path, text)
+        segments = rp.parse_target_input(self._FC_CONTIG)
+        runs = rp.contig_runs(residues, segments)
+        assert (rp.selected_residue_keys(residues, segments)
+                == rp.selected_residue_keys(residues, runs))
+        assert (rp.stage_cropped_target(tmp_path / "a.pdb", text, residues, segments)
+                == rp.stage_cropped_target(tmp_path / "b.pdb", text, residues, runs))
+        assert ((tmp_path / "a.pdb").read_text() == (tmp_path / "b.pdb").read_text())
+
+    # ---- the rendered --target-input --------------------------------------
+
+    def test_the_registered_contig_carries_the_split(self, tmp_path, monkeypatch):
+        """THE MONEY ASSERTION, END TO END THROUGH ``main()``. The contig that
+        reaches ``complexa target add`` is the one upstream will resolve."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._FC_SPLIT
+
+    def test_a_blank_contig_is_split_too(self, tmp_path, monkeypatch):
+        """``derive_segments`` emits ``(chain, min, max)`` — ONE span per chain
+        — so the no-contig path produces the gap-spanning range all by itself.
+        That is the shape most users hit, since the field is optional."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == self._FC_SPLIT
+        # ...and the derivation really did produce the un-split range, so this
+        # test cannot pass because the fixture happens to be gapless.
+        residues = self._residues(tmp_path, self._fc())
+        assert rp.format_contig(
+            rp.derive_segments(residues, ["A", "B"])) == self._FC_CONTIG
+
+    def test_target_input_stays_ONE_argv_element(self, tmp_path, monkeypatch):
+        """``--target-input`` is a plain argparse option, NOT ``nargs="+"`` —
+        unlike ``--hotspot-residues`` and ``--binder-length`` beside it. The
+        split introduces commas into a value that previously often had none, so
+        the shape it relies on is pinned here rather than assumed: one element,
+        commas and all, and the next element is the following FLAG."""
+        calls: list = []
+        self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        i = add.index("--target-input")
+        assert add[i + 1] == self._FC_SPLIT
+        assert add[i + 2].startswith("--"), (
+            "the contig was split across argv elements; argparse would take "
+            f"only the first: {add[i + 1:i + 4]}")
+        assert add.count(self._FC_SPLIT) == 1
+
+    def test_the_registry_readback_compares_the_SPLIT_string(
+            self, tmp_path, monkeypatch):
+        """One variable feeds the record, the read-back comparison and the CLI
+        flag. If the record kept the un-split form, ``registration_mismatch``
+        would refuse a registration that had actually succeeded."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input=self._FC_CONTIG, target_chain="A B"),
+            calls=calls, pdb_text=self._fc())
+        assert data["status"] != "FAILED", data.get("error")
+        registry = (tmp_path / "proteina" / "configs" / "targets"
+                    / "targets_dict.yaml").read_text()
+        assert f"target_input: {self._FC_SPLIT}" in registry, registry
+
+    def test_a_gapless_upload_registers_EXACTLY_as_before(
+            self, tmp_path, monkeypatch):
+        """THE CONTROL. ``_make_3s7g_like`` has no internal gaps, so the whole
+        rewrite must be invisible on it — same contig, one segment per chain."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="A236-443,B236-442", target_chain="A B"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] != "FAILED", data.get("error")
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        assert add[add.index("--target-input") + 1] == "A236-443,B236-442"
+
+    def test_the_rewrite_is_LOGGED_when_it_changes_anything(
+            self, tmp_path, monkeypatch, caplog):
+        """The operator reads the shard log to find out what was designed
+        against. A silent rewrite of the contig they typed is the kind of
+        helpfulness that becomes a mystery three weeks later."""
+        with caplog.at_level("INFO", logger="proteina_pipeline"):
+            self._prepare(tmp_path, monkeypatch, self._FC_CONTIG, self._fc(),
+                          target_chain="A B")
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert self._FC_CONTIG in text and self._FC_SPLIT in text, text
+        assert "4 contiguous run(s)" in text, text
+
+    def test_a_gapless_contig_logs_no_rewrite(self, tmp_path, monkeypatch, caplog):
+        """The other half: the line must not appear when nothing changed, or it
+        is noise on every run and stops being read."""
+        with caplog.at_level("INFO", logger="proteina_pipeline"):
+            self._prepare(tmp_path, monkeypatch, "A1-60", _make_pdb({"A": (1, 60)}))
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "contiguous run(s)" not in text, text
+
+    # ---- normalisation must not swallow a guard --------------------------
+
+    def test_missing_endpoints_STILL_fires_on_a_gapped_upload(
+            self, tmp_path, monkeypatch):
+        """THE ORDERING, AND WHY IT IS THIS WAY ROUND. ``A236-500`` names a
+        residue the file does not hold. Normalising first would narrow it to
+        the real last residue and swallow a refusal the operator decided to
+        keep — the user might have uploaded the wrong file. The rewrite
+        therefore runs BELOW every guard, and this is the test that says so."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "A236-500", self._fc())
+        assert error["check"] == "target_input_endpoint", error
+        assert "residue 500 on chain A" in error["detail"]
+        assert staged == [], "nothing may be staged once an endpoint is absent"
+
+    def test_every_other_refusal_still_fires_with_its_existing_message(
+            self, tmp_path, monkeypatch):
+        """One gapped structure, four guards, four unchanged verdicts. A
+        rewrite placed above any of them would turn one of these green."""
+        gapped = _gapped_pdb({"A": [(1, 50), (60, 240)]})
+        # step 3b: negative numbering (unrenderable_segments)
+        tagged = _gapped_pdb({"A": [(-5, 50), (60, 240)]})
+        error, _ = self._prepare(tmp_path / "neg", monkeypatch, "", tagged)
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-240" in error["detail"], error["detail"]
+        # step 4: a segment that selects nothing
+        error, _ = self._prepare(tmp_path / "empty", monkeypatch,
+                                 "A1-240,Z1-50", gapped)
+        assert error["check"] == "target_input", error
+        assert "chain Z residues 1-50 select 0 residues" in error["detail"]
+        # the size floor, counted on DISTINCT residues
+        error, _ = self._prepare(tmp_path / "small", monkeypatch, "A1-10", gapped)
+        assert error["check"] == "target_input", error
+        assert "Widen the chain range" in error["detail"]
+        # step 5: a hotspot inside the gap exists nowhere
+        hub = tmp_path / "hot" / "hub"
+        results = tmp_path / "hot" / "res.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(
+            rp, "download_target", lambda url, dest: dest.write_text(gapped))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/t.pdb", job_id="j1",
+                target_chain="A", target_input="A1-240", hotspot_spec=["A55"],
+                binder_length=[60, 120], run_dir=tmp_path / "hot" / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "hotspot_missing", error
+        assert "A55" in error["detail"]
+
+    def test_the_negative_guard_reads_the_UNREWRITTEN_span(
+            self, tmp_path, monkeypatch):
+        """The sharpest ordering case. On a construct numbered from -5 with a
+        gap, the rewrite would render ``A-5-50,A60-240`` — still unrenderable,
+        but the refusal names the SPAN the user asked for. Pinning the message
+        pins the order."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb({"A": [(-5, 50), (60, 240)]}))
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-240 uses negative residue numbers" in error["detail"]
+
+    def test_the_guards_are_still_called_ABOVE_the_rewrite(self):
+        """STRUCTURAL, because the behavioural tests above each cover one
+        ordering and a future edit could move the rewrite past a guard they do
+        not exercise. Asserted on the source order of the calls inside
+        ``prepare_custom_target``."""
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+        # MIN, not setdefault: ast.walk is breadth-first, so the first node it
+        # yields for a name is not the first one in the source. And
+        # ``contig_runs`` is deliberately called twice — once to build the
+        # endpoint refusal's hint, once to render the contig — so its EARLIER
+        # call cannot be the thing the guards are ordered against.
+        first: dict[str, int] = {}
+        for node in ast.walk(prepare):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                first[node.func.id] = min(
+                    first.get(node.func.id, node.lineno), node.lineno)
+        assert "contig_runs" in first, (
+            "prepare_custom_target must ASK for the split, not restate it")
+        rendered = [n for n in ast.walk(prepare) if isinstance(n, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "contig"
+                            for t in n.targets)]
+        assert len(rendered) == 1, (
+            "the contig that goes to --target-input is rendered in more than "
+            "one place, so the ordering pinned here speaks for only one of them")
+        assert ast.unparse(rendered[0].value) == "format_contig(runs)", (
+            "the registered contig no longer comes from the split")
+        for guard in ("unrenderable_segments", "empty_segments",
+                      "missing_endpoints", "target_too_small",
+                      "missing_hotspots"):
+            assert first[guard] < rendered[0].lineno, (
+                f"{guard} now runs BELOW the contig rewrite, so it judges a "
+                "contig the user never typed")
+
+    # ---- the suggested fix must itself be typable ------------------------
+
+    def test_the_endpoint_refusals_hint_is_split_at_the_gaps(
+            self, tmp_path, monkeypatch):
+        """PR #118's hint was ``at_or_above[0]``..``at_or_below[-1]`` — two
+        endpoints that exist with a span between them that can still straddle a
+        gap. We were telling the user to type a range that dies in exactly the
+        way we had just refused theirs for."""
+        error, _ = self._prepare(tmp_path, monkeypatch, "A236-500", self._fc())
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g. A236-300,A310-443" in error["detail"], error["detail"]
+
+    def test_the_hint_it_gives_is_one_the_gate_then_accepts(
+            self, tmp_path, monkeypatch):
+        """A guard that refuses with unusable advice is a dead end. The
+        recommended contig must clear every guard AND already be normalised, so
+        pasting it back changes nothing."""
+        residues = self._residues(tmp_path, self._fc())
+        hint = rp.parse_target_input("A236-300,A310-443")
+        assert rp.missing_endpoints(residues, hint) == []
+        assert rp.empty_segments(residues, hint) == []
+        assert not rp.target_too_small(residues, hint)
+        assert rp.contig_runs(residues, hint) == hint, "already normalised"
+
+    def test_a_multi_chain_hint_stays_a_valid_contig(self, tmp_path, monkeypatch):
+        """The per-chain hints are comma-joined, and each may now itself hold
+        commas. The result still has to parse as one contig."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A236-500,B236-500", self._fc(),
+            target_chain="A B")
+        assert error["check"] == "target_input_endpoint", error
+        match = re.search(r"e\.g\. ([A-Za-z0-9,\-]+)", error["detail"])
+        assert match, error["detail"]
+        assert rp.parse_target_input(match.group(1)) == [
+            ("A", 236, 300), ("A", 310, 443), ("B", 236, 350), ("B", 360, 442)]
+
+    def test_a_segment_that_yields_NO_run_is_refused_BEFORE_the_hint(
+            self, tmp_path, monkeypatch):
+        """WHAT MAKES THE HINT'S ``if not fixes:`` BRANCH UNREACHABLE, executed
+        rather than argued — until now that claim was carried by a comment and
+        nothing held the comment up.
+
+        The hint re-bounds each segment to the nearest residues that exist and
+        runs ``contig_runs`` over the result. That comes back empty only when
+        the two re-bounded ends cross, which needs ``lo > hi``. ``A300-1`` on a
+        1-240 chain is the sharpest case there is: 300 really is absent, so
+        ``missing_endpoints`` really would fire and the hint really would be
+        empty — and the ONLY thing keeping step 4b from seeing it is that a
+        backwards segment selects nothing, so step 4 (``empty_segments``)
+        refuses it two guards earlier under a different check name. Both halves
+        are asserted, because the first is what makes the branch dead and the
+        second is what would bring it back to life.
+
+        REACHABLE HERE EVEN THOUGH THE FORM REFUSES IT. The adapter checks ``lo
+        <= hi``; ``run_pipeline.parse_target_input`` deliberately does not, and
+        ``prepare_custom_target`` is entered with contigs the adapter never saw
+        — the same reason ``TestMinimumTargetSize`` re-tests the overlap rule
+        down here rather than trusting the form's copy of it.
+        """
+        pdb_text = _make_pdb({"A": (1, 240)})
+        residues = self._residues(tmp_path, pdb_text)
+        assert rp.missing_endpoints(residues, [("A", 300, 1)]) == [("A", 300)], (
+            "the endpoint guard no longer fires on this contig, so it is no "
+            "longer the case that pins the branch")
+        assert rp.contig_runs(residues, [("A", 300, 1)]) == [], (
+            "the hint would no longer be empty here, so `if not fixes:` is "
+            "reachable by some route this test does not describe")
+        error, staged = self._prepare(
+            tmp_path / "run", monkeypatch, "A300-1", pdb_text)
+        assert error["check"] == "target_input", error
+        assert "chain A residues 300-1 select 0 residues" in error["detail"], (
+            error["detail"])
+        assert staged == []
+
+    # ---- ...and short enough that the BROWSER cannot cut it down ----------
+    #
+    # THE HOLE THIS BRANCH OPENED, AND THE ONLY DEFENCE THERE IS. Before the
+    # hint went through ``contig_runs`` it was one range per chain — never more
+    # than ~20 characters — and a one-chain multi-segment contig was un-typable
+    # anyway, because the adapter refused a repeated chain. Both of those
+    # changed on this branch at once, so the refusal now prints a contig whose
+    # length is set by how gappy the structure is, into a field that was capped
+    # at 64 characters.
+    #
+    # A chain with 12 gaps produced a 100-character hint. The browser kept the
+    # first 64, the cut happened to land on a comma, and what was left parsed
+    # as a perfectly valid 8-segment contig that every gate accepts and stages:
+    # 120 residues requested, 80 designed against, nothing anywhere saying so.
+    # That asymmetry is what makes this worth a section of its own — a
+    # TRUNCATED CONTIG IS STILL A SYNTACTICALLY VALID CONTIG, so no gate
+    # downstream can tell it apart from what the operator meant, and the only
+    # place the difference is knowable is here, before the string is printed.
+
+    @staticmethod
+    def _widest(n_runs, first=1000, step=20, span=10):
+        """``n_runs`` runs whose contig text is as wide as a run can ever be.
+
+        ``A1000-1010`` is 10 characters and nothing can beat it: the chain id
+        is one letter (``_SEGMENT_RE`` is ``[A-Za-z]``) and a residue number is
+        at most four characters, because ``pdb_ca_residues`` reads
+        ``line[22:26]`` — four columns — so ``9999`` and ``-999`` are the
+        widest values that can come out of a file at all.
+        """
+        return {"A": [(first + step * i, first + step * i + span)
+                      for i in range(n_runs)]}
+
+    def test_a_hint_too_gappy_to_type_is_not_printed_AT_ALL(
+            self, tmp_path, monkeypatch):
+        """NOT A PREFIX. A shortened run list is a smaller target, and printing
+        one that LOOKS complete is worse than printing none: the operator
+        pastes it, every gate accepts it, and the run designs against a region
+        nobody asked for. The refusal says how many runs there were and sends
+        them to narrow the range instead."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999", _gapped_pdb(self._widest(12)))
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g." not in error["detail"], (
+            f"a hint of 12 runs was printed anyway: {error['detail']}")
+        assert "12 separate runs" in error["detail"], error["detail"]
+        assert "narrow the target chain range" in error["detail"].lower(), (
+            error["detail"])
+        assert staged == []
+
+    def test_the_widest_hint_we_can_print_fits_the_field_and_re_parses(
+            self, tmp_path, monkeypatch):
+        """THE BOUND, MEASURED RATHER THAN ASSUMED, on the worst input that can
+        reach it: ``MAX_HINT_RUNS`` runs of four-digit residue numbers. The
+        string that comes out has to fit the form field AND still be a contig
+        ``validate()`` accepts unchanged."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999",
+            _gapped_pdb(self._widest(rp.MAX_HINT_RUNS)))
+        assert error["check"] == "target_input_endpoint", error
+        match = re.search(r"e\.g\. ([A-Za-z0-9,\-]+)", error["detail"])
+        assert match, error["detail"]
+        hint = match.group(1)
+        assert hint.count(",") == rp.MAX_HINT_RUNS - 1, hint
+        assert len(hint) == 87, (
+            f"the widest hint is {len(hint)} characters, not the 87 the field "
+            f"width is derived from: {hint}")
+        assert len(hint) <= px._MAX_TARGET_INPUT_FIELD, (
+            f"the hint is wider than the field it must be pasted into: {hint}")
+        inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert inp["target_input"] == hint, "the hint did not survive the form"
+
+    def test_the_bound_counts_runs_across_the_WHOLE_hint_not_per_chain(
+            self, tmp_path, monkeypatch):
+        """The per-chain hints are comma-joined into ONE contig, and it is that
+        contig the form has to accept. Two chains of five runs each is a
+        ten-range suggestion — past ``_MAX_SEGMENTS`` — while neither half is,
+        so a bound applied per chain prints something the form refuses and the
+        browser then cuts. Single-chain fixtures cannot tell the two apart."""
+        gaps = {"A": [(1000 + 20 * i, 1010 + 20 * i) for i in range(5)],
+                "B": [(1000 + 20 * i, 1010 + 20 * i) for i in range(5)]}
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A1000-9999,B1000-9999", _gapped_pdb(gaps),
+            target_chain="A B")
+        assert error["check"] == "target_input_endpoint", error
+        assert "e.g." not in error["detail"], (
+            f"a ten-run hint was printed per chain: {error['detail']}")
+        assert "10 separate runs" in error["detail"], error["detail"]
+
+    def test_the_hint_bound_is_the_number_the_FORM_accepts(self):
+        """``MAX_HINT_RUNS`` is not a second ``MAX_CONTIG_RUNS``. That one
+        bounds what this service will REGISTER — a question about the structure
+        — and sits at 64. This one bounds what we PRINT, and the only thing
+        that can settle it is how many ranges the form will take back."""
+        assert rp.MAX_HINT_RUNS == px._MAX_SEGMENTS, (
+            "the hint may now be longer than the form will accept")
+        assert rp.MAX_HINT_RUNS <= rp.MAX_CONTIG_RUNS
+
+    def test_the_field_is_wide_enough_for_ANY_hint_the_bound_allows(self):
+        """THE ARITHMETIC, WRITTEN OUT, because the field width is a derived
+        number and a derived number with no derivation rots into a guess.
+
+        A run renders as ``<letter><lo>-<hi>``. The letter is one character;
+        ``lo`` and ``hi` are at most four each (``pdb_ca_residues`` reads
+        ``line[22:26]``, so ``9999`` and ``-999`` are the widest a file can
+        express); the hyphen is one. ``MAX_HINT_RUNS`` of those, comma-joined,
+        is the longest string this code can ever ask a user to paste — and it
+        is also the longest contig ``validate()`` would accept from them, since
+        ``_MAX_SEGMENTS`` is the same number.
+        """
+        widest_run = 1 + 4 + 1 + 4
+        widest = rp.MAX_HINT_RUNS * widest_run + (rp.MAX_HINT_RUNS - 1)
+        assert widest == 87, widest
+        assert px._MAX_TARGET_INPUT_FIELD >= widest, (
+            f"the field holds {px._MAX_TARGET_INPUT_FIELD} characters and a "
+            f"legal contig can be {widest}; the browser would truncate it")
+
+    def test_an_absurdly_long_contig_is_REFUSED_rather_than_raised(self):
+        """THE SERVER-SIDE HALF, which a maxlength cannot do: ``maxlength`` is
+        an affordance in a browser and nothing at all to curl.
+
+        Not merely tidiness. ``_SEGMENT_RE``'s ``(-?\\d+)`` is unbounded and
+        ``_parse_target_input`` calls ``int()`` on what it captures, and since
+        Python 3.11 ``int()`` REFUSES a string over 4300 digits — so a posted
+        ``A1-<5000 nines>`` came back as an unhandled ``ValueError`` out of
+        ``validate()`` rather than as a message, i.e. a 500 on the submit
+        route. The length check runs before the regex loop, so the digits are
+        never converted.
+        """
+        _, err = px.validate(_custom(target_input="A1-" + "9" * 5000), {})
+        assert err and "too long" in err.lower(), err
+
+    # ---- the run-count ceiling -------------------------------------------
+
+    @staticmethod
+    def _alternating(n_runs):
+        """A chain of ``n_runs`` single-residue runs: 1, 3, 5, ... Both
+        endpoints exist and the selection is well above the size floor, so
+        every cheaper guard passes and only the ceiling can fire."""
+        return {"A": [(2 * i + 1, 2 * i + 1) for i in range(n_runs)]}
+
+    def test_above_the_ceiling_the_run_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        over = rp.MAX_CONTIG_RUNS + 2
+        spans = self._alternating(over)
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb(spans))
+        assert error["check"] == "target_input_runs", error
+        assert f"covers {over} separate runs" in error["detail"], error["detail"]
+        assert f"more than the {rp.MAX_CONTIG_RUNS}" in error["detail"]
+        # The target's real spans, so the operator can pick a narrower region.
+        assert f"A1-{2 * over - 1}" in error["detail"], error["detail"]
+        assert staged == [], "a refused target must not be staged"
+
+    def test_the_ceiling_does_NOT_truncate(self, tmp_path, monkeypatch):
+        """SILENT TRUNCATION IS THE WORSE BUG. A contig cut to its first N runs
+        is a different target, and designing against one nobody asked for is
+        the failure class every guard in this file exists to stop. Pinned by
+        the absence of any registration at all."""
+        calls: list = []
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            self._spec(target_input="", target_chain="A"), calls=calls,
+            pdb_text=_gapped_pdb(self._alternating(rp.MAX_CONTIG_RUNS + 2)))
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input_runs"
+        assert calls == [], "no subprocess may run once the ceiling is exceeded"
+
+    def test_at_the_ceiling_the_run_gets_past_the_gate(
+            self, tmp_path, monkeypatch):
+        """The control, and the reason the bound is ``>`` rather than ``>=``.
+        It still fails — the registry does not exist here — but on the check
+        that comes AFTER the crop."""
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "",
+            _gapped_pdb(self._alternating(rp.MAX_CONTIG_RUNS)))
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, f"never reached the crop: {error}"
+
+    def test_ONE_run_above_the_ceiling_is_ALREADY_refused(
+            self, tmp_path, monkeypatch):
+        """THE BOUNDARY ITSELF, which the pair above brackets without pinning.
+
+        ``MAX_CONTIG_RUNS`` gets past the gate and ``MAX_CONTIG_RUNS + 2`` is
+        refused, so ``> MAX_CONTIG_RUNS`` and ``> MAX_CONTIG_RUNS + 1`` are
+        indistinguishable to both of them and the second passes this file. The
+        off-by-one is not cosmetic: it registers and designs against a contig
+        one run wider than the number the refusal quotes, so the message the
+        operator reads would be a lie about the gate that printed it.
+        """
+        over = rp.MAX_CONTIG_RUNS + 1
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, "", _gapped_pdb(self._alternating(over)))
+        assert error["check"] == "target_input_runs", error
+        assert f"covers {over} separate runs" in error["detail"], error["detail"]
+        assert f"more than the {rp.MAX_CONTIG_RUNS}" in error["detail"]
+        assert staged == [], "a refused target must not be staged"
+
+    def test_the_guard_actually_READS_the_constant(self, tmp_path, monkeypatch):
+        """THE CONSTANT MUST GOVERN, NOT MERELY AGREE — the mutation that
+        survived on ``MIN_SELECTED_RESIDUES`` was a hardcoded literal matching
+        the constant's current value. Moving the number must move the answer,
+        asserted in both directions so it cannot pass on the fixture's size."""
+        # 24 runs: above MIN_SELECTED_RESIDUES so the size floor cannot fire
+        # first, and well under the real ceiling so only the patch decides.
+        text = _gapped_pdb(self._alternating(24))
+        residues = self._residues(tmp_path, text)
+        assert len(rp.contig_runs(residues, [("A", 1, 47)])) == 24
+        assert not rp.target_too_small(residues, [("A", 1, 47)]), (
+            "the fixture must clear the size floor or that guard, not this "
+            "one, is what these two assertions are measuring")
+
+        monkeypatch.setattr(rp, "MAX_CONTIG_RUNS", 4)
+        error, _ = self._prepare(tmp_path / "lo", monkeypatch, "", text)
+        assert error["check"] == "target_input_runs", (
+            "lowering the ceiling below the run count must refuse it; the "
+            "guard is not reading MAX_CONTIG_RUNS")
+        assert "more than the 4" in error["detail"], error["detail"]
+
+        monkeypatch.setattr(rp, "MAX_CONTIG_RUNS", 40)
+        error, staged = self._prepare(tmp_path / "hi", monkeypatch, "", text)
+        assert error["check"] == "target_registry", (
+            "raising the ceiling above the run count must accept it; the "
+            "guard is not reading MAX_CONTIG_RUNS")
+        assert len(staged) == 1
+
+    def test_the_ceiling_is_labelled_uncalibrated(self):
+        """THE PROVENANCE CLAIM, PINNED WHERE IT CAN ROT — the same convention
+        ``MIN_SELECTED_RESIDUES`` and ``SizeEnvelope.cap_basis`` follow. No
+        structure has been measured against this number and no upstream limit
+        implies it; a constant that quietly loses its label reads as measured.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        declaration = source.index("MAX_CONTIG_RUNS = ")
+        preamble = source[max(0, declaration - 2200):declaration]
+        assert "UNCALIBRATED" in preamble, (
+            "the ceiling's comment no longer says the number is unmeasured")
+        assert "POLICY" in preamble, (
+            "the ceiling's comment no longer says the number is a choice")
+
+    def test_the_ceiling_leaves_room_above_the_typed_segment_cap(self):
+        """A CONSISTENCY BOUND, not a calibration. The adapter lets a user type
+        ``_MAX_SEGMENTS`` ranges; the container splits each of them at every
+        gap. A ceiling at or below the typed cap would refuse contigs the form
+        had just accepted, after the campaign existed."""
+        assert rp.MAX_CONTIG_RUNS > px._MAX_SEGMENTS
+
+
+class TestEveryPasteableHintFitsTheFieldItIsPastedInto:
+    """EVERY "e.g." this function prints, enumerated — not just the one noticed.
+
+    TWO PATHS EXISTED AND ONLY ONE WAS BOUNDED, which is the whole reason this
+    class is written as an enumeration rather than as one more case bolted on to
+    the endpoint tests above. ``MAX_HINT_RUNS`` bounded the
+    ``target_input_endpoint`` hint and ``_MAX_TARGET_INPUT_FIELD`` raised the
+    form field to match, on the claim that nothing this service prints for a
+    user to paste can be silently truncated. That claim had an exception:
+    ``target_input_negative`` prints one range per chain it refuses, and on the
+    DERIVED path (blank contig) those chains come from ``target_chain``, which
+    is bounded only by ``_MAX_CHAIN_FIELD`` — 32 characters, so up to 16
+    single-letter chains, so a 175-character hint into a 128-character field.
+    An invariant with an exception is not one.
+
+    SO THE TESTS ARE WRITTEN AGAINST THE CLASS OF EMISSIONS RATHER THAN AGAINST
+    ITS TWO MEMBERS. ``test_every_paste_me_site_is_enumerated_here`` reads the
+    source for the emissions themselves, so a THIRD hint added later fails on
+    the day it is written, before it can ship unbounded — which is the only
+    mechanism that would have caught the second one.
+
+    WHAT COUNTS AS A PASTE-ME, and why the line is drawn at "e.g.". These
+    refusals also print contigs that DESCRIBE something — the range you asked
+    for (``format_contig(bad)``, ``requested``), and the spans the file holds
+    (``chain_span_summary``). Those are answers to "what did I send" and "what
+    is in the file", not "type this"; see
+    ``test_the_descriptive_contigs_are_left_unbounded_ON_PURPOSE`` for the
+    decision and for the condition it depends on.
+    """
+
+    # Borrowed, exactly as this file's other contig classes borrow theirs. It
+    # takes the PDB text, which is what a many-chain or negatively-numbered
+    # fixture needs.
+    _prepare = TestContigIsSplitAtDisorderedGaps._prepare
+
+    # The widest a single range can render, measured rather than assumed: one
+    # chain letter (``pdb_ca_residues`` reads ``line[21:22]``, one column), four
+    # digits for each bound (``line[22:26]``, four columns, so ``9999`` and
+    # ``-999`` are the widest a PDB can express), one hyphen.
+    WIDEST_RANGE = 1 + 4 + 1 + 4
+
+    @staticmethod
+    def _paste_me_sites():
+        """Every ``e.g. {<runtime value>}`` inside ``prepare_custom_target``.
+
+        A PASTE-ME IS AN "e.g." FOLLOWED IMMEDIATELY BY AN INTERPOLATION. That
+        is the shape of this service handing back a string it built from the
+        upload for the operator to copy into the form — and it is the only shape
+        that can be silently truncated, because it is the only one whose length
+        is set by the file rather than by the source. The hotspot refusal's
+        "(e.g. A45)" is an "e.g." followed by a LITERAL — a note about the token
+        format, nothing to paste — and is correctly not collected.
+
+        Identified by the expression, not by the surrounding copy: message
+        wording churns, and a test that fails on a comma edit gets deleted.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "prepare_custom_target")
+        sites = []
+        for node in ast.walk(prepare):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            # Adjacent string literals are merged into one JoinedStr by the
+            # parser, so an "e.g." written in a plain fragment and interpolated
+            # by the next f-string fragment still lands as Constant then
+            # FormattedValue.
+            for left, right in zip(node.values, node.values[1:]):
+                if (isinstance(left, ast.Constant)
+                        and isinstance(left.value, str)
+                        and left.value.rstrip().endswith("e.g.")
+                        and isinstance(right, ast.FormattedValue)):
+                    sites.append(ast.unparse(right.value))
+        return sorted(sites)
+
+    # One entry per paste-me site: the check it is printed under, and the
+    # widest input that can reach it. ``n`` is the number of ranges the hint
+    # would carry, so the same number drives both the at-the-bound case and the
+    # over-the-bound case.
+    def _refuse(self, tmp_path, monkeypatch, site, n):
+        if site == "endpoint":
+            # ``n`` runs of four-digit residues on one chain, asked for as a
+            # range whose upper end does not exist.
+            gaps = {"A": [(1000 + 20 * i, 1010 + 20 * i) for i in range(n)]}
+            return self._prepare(
+                tmp_path, monkeypatch, "A1000-9999", _gapped_pdb(gaps))
+        # ``n`` chains, each numbered from -999 (an expression tag) and running
+        # to 9999, asked for with a BLANK contig so the segments are derived
+        # from target_chain — the path whose width nothing bounded.
+        chains = "ABCDEFGHIJKLMNOP"[:n]
+        pdb = _gapped_pdb({c: [(-999, -990), (9990, 9999)] for c in chains})
+        return self._prepare(
+            tmp_path, monkeypatch, "", pdb, target_chain=" ".join(chains))
+
+    @staticmethod
+    def _hint(detail):
+        match = re.search(r"e\.g\. ([^.]+)\.", detail)
+        return match.group(1) if match else None
+
+    def test_every_paste_me_site_is_enumerated_here(self):
+        """THE TRIPWIRE, and the only part of this class that can catch the
+        NEXT one. Both hints below were written by someone who had read the
+        other; neither noticed the other was the same hazard. A behavioural
+        test can only cover the sites its author already knew about, so the set
+        itself is asserted, from the source."""
+        assert self._paste_me_sites() == [
+            "format_contig(fixes)", "format_contig(hints)"
+        ], (
+            "prepare_custom_target prints an example contig this class does "
+            "not cover. Bound it by MAX_HINT_RUNS and add it to _refuse() "
+            "before it ships: the field it will be pasted into holds "
+            f"{px._MAX_TARGET_INPUT_FIELD} characters and a browser cuts it "
+            "silently, and a truncated contig is still a valid contig")
+
+    @pytest.mark.parametrize("site", ["endpoint", "negative"])
+    def test_the_widest_hint_a_site_can_print_fits_the_field(
+            self, site, tmp_path, monkeypatch):
+        """THE BOUND, MEASURED PER SITE on the worst input that can reach it:
+        ``MAX_HINT_RUNS`` ranges of four-digit residue numbers, which is the
+        widest string this code can ever ask anyone to paste. It has to fit the
+        field AND still be a contig ``validate()`` takes unchanged, or the
+        advice is a dead end."""
+        error, _ = self._refuse(
+            tmp_path, monkeypatch, site, rp.MAX_HINT_RUNS)
+        hint = self._hint(error["detail"])
+        assert hint, error["detail"]
+        assert hint.count(",") == rp.MAX_HINT_RUNS - 1, hint
+        assert len(hint) <= px._MAX_TARGET_INPUT_FIELD, (
+            f"the {site} hint is {len(hint)} characters and the field holds "
+            f"{px._MAX_TARGET_INPUT_FIELD}; the browser would keep a prefix, "
+            f"and a prefix of a contig is a valid contig: {hint}")
+        inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert inp["target_input"] == hint, "the hint did not survive the form"
+
+    @pytest.mark.parametrize("site,n,counted,fix", [
+        ("endpoint", 12, "12 separate runs", "narrow the target chain range"),
+        ("negative", 16, "for 16 chains", "fewer chains"),
+    ])
+    def test_a_hint_over_the_bound_is_not_printed_AT_ALL(
+            self, site, n, counted, fix, tmp_path, monkeypatch):
+        """NOT A PREFIX, AT EITHER SITE. Truncating to the first
+        ``MAX_HINT_RUNS`` would print exactly the string the browser would have
+        produced, which is the defect rather than the fix. The refusal has to
+        say how many there were, and what to do instead, or suppressing the
+        advice just makes the message useless."""
+        error, staged = self._refuse(tmp_path, monkeypatch, site, n)
+        assert "e.g." not in error["detail"], (
+            f"a {n}-range hint was printed anyway: {error['detail']}")
+        assert counted in error["detail"], error["detail"]
+        assert fix in error["detail"].lower(), error["detail"]
+        assert staged == []
+
+    def test_the_negative_hint_is_one_range_per_CHAIN_not_per_segment(
+            self, tmp_path, monkeypatch):
+        """The suggestion is "the widest range on this chain that starts at 0
+        or above", which is a fact about the chain. Built per refused SEGMENT
+        it repeats itself on a contig naming one chain twice — and
+        ``A100-240,A100-240`` is advice ``validate()`` refuses as overlapping,
+        so the operator's next attempt is spent on our own suggestion.
+
+        Reachable off the web only: the adapter refuses a typed negative range
+        outright, while ``run_pipeline.parse_target_input`` re-parses without
+        that rule, which is the campaign and canary path. Both bounds negative
+        (``A-999--900``) is NOT the fixture — that one is unparsable in the
+        container too, because ``parse_target_input`` splits on the last hyphen
+        — so the reachable shape is two tagged ranges on one chain.
+        """
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "A-5-240,A-3-100",
+            _gapped_pdb({"A": [(-5, 240)]}))
+        assert error["check"] == "target_input_negative", error
+        hint = self._hint(error["detail"])
+        assert hint == "A0-240", error["detail"]
+        _inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+
+    def test_a_chain_with_no_range_to_suggest_stays_OUT_of_the_e_g(
+            self, tmp_path, monkeypatch):
+        """A chain numbered entirely below zero has no range to offer, and it
+        used to be named INSIDE the comma-joined example — "e.g.
+        A100-240,(chain B has no residue numbered 0 or above)" — which is not a
+        contig at all. That is not the silent failure this class is about, it
+        is a loud one, but it makes the advice unpasteable for everybody on the
+        message and the fact still has to be carried somewhere."""
+        error, _ = self._prepare(
+            tmp_path, monkeypatch, "",
+            _gapped_pdb({"A": [(-5, 240)], "B": [(-90, -1)]}),
+            target_chain="A B")
+        assert error["check"] == "target_input_negative", error
+        hint = self._hint(error["detail"])
+        assert hint == "A0-240", error["detail"]
+        _inp, err = px.validate(_custom(target_input=hint), {})
+        assert err is None, f"{hint} -> {err}"
+        assert "chain B" in error["detail"], error["detail"]
+        assert "0 or above" in error["detail"], error["detail"]
+
+    def test_each_paste_me_site_is_GUARDED_by_the_one_shared_bound(self):
+        """ONE COMPARISON PER SITE, AND ONE CONSTANT ACROSS THEM.
+
+        Counted against ``_paste_me_sites`` rather than pinned at two, so the
+        pair moves together: a third hint added without a bound leaves the
+        counts unequal, and a bound spelled with a fresh number instead of
+        ``MAX_HINT_RUNS`` does not appear here at all. The constant is shared
+        because the question is shared — how many ranges will the form take
+        back — and it has nothing to do with which guard is printing.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef)
+            and n.name == "prepare_custom_target")
+        guarded = [n for n in ast.walk(prepare) if isinstance(n, ast.Compare)
+                   and any(isinstance(c, ast.Name) and c.id == "MAX_HINT_RUNS"
+                           for c in n.comparators)]
+        assert len(guarded) == len(self._paste_me_sites()), (
+            f"{len(self._paste_me_sites())} example contigs are printed and "
+            f"{len(guarded)} of them are measured against MAX_HINT_RUNS")
+        assert rp.MAX_HINT_RUNS == px._MAX_SEGMENTS, (
+            "a hint may now carry more ranges than the form will accept")
+
+    def test_the_descriptive_contigs_are_left_unbounded_ON_PURPOSE(self):
+        """THE DECISION, WITH ITS CONDITION MADE EXECUTABLE — because "we
+        thought about it and it is fine" rots into "nobody looked".
+
+        ``chain_span_summary`` renders ``A1-115, B3-97`` over every chain in the
+        file, and ``format_contig(bad)`` / ``requested`` echo the range that was
+        asked for. All three are unbounded in chain count and all three parse as
+        contigs, so on a 28-chain structure they run past the field. They are
+        NOT bounded, for two reasons that do not apply to the hints:
+
+        * they are descriptive, not advice. Suppressing a hint costs the reader
+          nothing — the message tells them what to do instead. Suppressing the
+          spans removes the only account of what the upload actually contains,
+          which is the entire reason that string is in the message.
+        * a truncated one is refused LOUDLY rather than accepted quietly, and
+          that is what this test pins. A range is at most ``WIDEST_RANGE``
+          characters and a separator at least one, so a prefix of
+          ``_MAX_TARGET_INPUT_FIELD`` characters holds at least
+          ``(F + 1) // (WIDEST_RANGE + 1)`` complete ranges — 11 today — which
+          is past ``_MAX_SEGMENTS`` and comes back as "Too many chain ranges".
+
+        THE SECOND REASON IS ARITHMETIC AND THEREFORE CONDITIONAL, which is why
+        the hints are bounded anyway rather than left to it: it fails the moment
+        ``_MAX_SEGMENTS`` is raised or the field is narrowed — at the 64-wide
+        field this service used to have, a prefix held five ranges and was
+        accepted in silence. If this assertion ever fails, the descriptive
+        strings need the same treatment as the hints, and this docstring is the
+        record of what that decision rested on.
+        """
+        floor_ranges = (px._MAX_TARGET_INPUT_FIELD + 1) // (self.WIDEST_RANGE + 1)
+        assert floor_ranges > px._MAX_SEGMENTS, (
+            f"a {px._MAX_TARGET_INPUT_FIELD}-character prefix now holds only "
+            f"{floor_ranges} ranges, within the {px._MAX_SEGMENTS} the form "
+            "accepts, so a truncated span summary would be taken as a smaller "
+            "target instead of refused")
+        # The same claim, executed rather than derived, on the widest span
+        # summary 16 single-letter chains can produce.
+        spans = rp.chain_span_summary(
+            [(c, n, "") for c in "ABCDEFGHIJKLMNOP" for n in (1000, 9999)])
+        assert len(spans) > px._MAX_TARGET_INPUT_FIELD, spans
+        _segs, _canon, _chains, err = px._parse_target_input(
+            spans[:px._MAX_TARGET_INPUT_FIELD])
+        assert err is not None, (
+            "a truncated span summary is now accepted as a contig: "
+            f"{spans[:px._MAX_TARGET_INPUT_FIELD]!r}")
+
+
+class TestNumericChainsAndUnboundedRangesAreAlreadyRefused:
+    """BACKLOG #21, VERIFIED BY EXECUTION RATHER THAN BY READING.
+
+    The item says "numeric chain ids and unbounded hi reach the GPU unchecked".
+    They do not, at either layer, and these tests exist so the item can be
+    closed against something that runs:
+
+    * the adapter's ``_SEGMENT_RE`` is ``^([A-Za-z])(-?\\d+)-(-?\\d+)$`` — a
+      numeric chain fails ``[A-Za-z]`` and a missing ``hi`` fails ``\\d+`` — and
+      a non-match returns an actionable error before a campaign exists;
+    * the container's ``parse_target_input`` re-checks independently, because it
+      must never trust a value it did not check itself: ``chain.isalpha()``
+      rejects the first and ``int('')`` the second, and ``prepare_custom_target``
+      turns the ValueError into a ``_fail`` before anything is spawned.
+
+    Pinned at both layers so the two cannot silently diverge and so the closure
+    stays true.
+    """
+
+    NUMERIC = ["1236-443", "1", "12-30", "A1-60,2-30", "1A-60"]
+    UNBOUNDED = ["A236-", "A236", "A-", "A236-443-", "A1-60,B12-"]
+
+    @pytest.mark.parametrize("raw", NUMERIC + UNBOUNDED)
+    def test_the_adapter_refuses_it(self, raw):
+        segs, canon, _chains, err = px._parse_target_input(raw)
+        assert err is not None, f"{raw!r} passed the adapter"
+        assert segs == [] and canon == ""
+        assert "not valid" in err and "A1-150" in err, "the error must be usable"
+
+    @pytest.mark.parametrize("raw", NUMERIC + UNBOUNDED)
+    def test_the_container_refuses_it_independently(self, raw):
+        with pytest.raises(ValueError, match="unparsable target_input segment"):
+            rp.parse_target_input(raw)
+
+    def test_a_numeric_chain_never_reaches_a_subprocess(self, tmp_path, monkeypatch):
+        """Through ``main()``, since the adapter is not the only entry point —
+        the container is what a replayed or hand-built payload hits."""
+        calls: list = []
+        data = TestCustomTargetRegistration._drive(
+            self, rp, tmp_path, monkeypatch,
+            TestCustomTargetRegistration._spec(self, target_input="1236-443"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+    def test_an_unbounded_hi_never_reaches_a_subprocess(self, tmp_path, monkeypatch):
+        calls: list = []
+        data = TestCustomTargetRegistration._drive(
+            self, rp, tmp_path, monkeypatch,
+            TestCustomTargetRegistration._spec(self, target_input="A236-"),
+            calls=calls, pdb_text=_make_3s7g_like())
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "target_input"
+        assert calls == []
+
+
 # ---------------------------------------------------------------------------
 # 8. Templates parse
 # ---------------------------------------------------------------------------
@@ -1646,6 +3938,590 @@ class TestNegativeResidueNumbering:
         assert err is not None and "negative residue numbers" in err
 
 
+class TestMinimumTargetSize:
+    """The floor below which a target is refused before any GPU is started.
+
+    ``prepare_custom_target`` has always refused a selection under 20 residues —
+    the stated reason is that there is not enough surface there to place a
+    60-120 residue binder, which is UNCALIBRATED and marked as such at the
+    constant — but the threshold was a bare literal inside that function and
+    NOTHING covered it. Two consequences, and this class exists for the second
+    as much as the first: the check could be deleted with the suite still green,
+    and ``_hotspot_canary`` could not call it, so the harness had no floor at
+    all and ``--contig A10-20`` would spend ~$4 (phase 1) or ~$12 (phase 2)
+    learning what a length knows for free.
+
+    IT COUNTS DISTINCT RESIDUES, WHICH IS THE HALF THAT SHIPPED BROKEN.
+    ``target_too_small`` first took whatever selection a caller handed it and
+    measured ``len``; ``select_residues`` appends per segment and never
+    de-duplicates, so ``A10-20,A10-20`` counted 22 for the same 11 residues and
+    cleared a floor of 20. It now takes ``(residues, segments)`` and counts the
+    de-duplicated key set the crop actually stages, so there is no collection a
+    caller can pass that gives the wrong answer.
+
+    Every assertion below is written against ``rp.MIN_SELECTED_RESIDUES`` rather
+    than against 20, so moving the threshold moves the tests with it. That is
+    the property being pinned: ONE number, read by both sides.
+    """
+
+    @staticmethod
+    def _sel(n, chain="A"):
+        """``(residues, segments)`` selecting exactly ``n`` residues of a chain."""
+        return ([(chain, i, "") for i in range(1, n + 1)],
+                [(chain, 1, max(n, 1))])
+
+    def test_a_selection_under_the_floor_is_refused(self):
+        floor = rp.MIN_SELECTED_RESIDUES
+        assert rp.target_too_small(*self._sel(floor - 1))
+        assert rp.target_too_small([], [("A", 1, 60)])
+
+    def test_a_selection_at_the_floor_is_accepted(self):
+        """The bound is ``<``, not ``<=``. Off by one here refuses a target the
+        engine would have designed against, which is the same class of harm in
+        the other direction."""
+        floor = rp.MIN_SELECTED_RESIDUES
+        assert not rp.target_too_small(*self._sel(floor))
+        assert not rp.target_too_small(*self._sel(floor + 40))
+
+    def test_the_floor_is_a_real_floor(self):
+        """A sanity bound on the constant itself. A threshold of 0 or 1 would
+        make the predicate vacuous and every test above pass on nothing."""
+        assert rp.MIN_SELECTED_RESIDUES >= 10
+
+    def test_an_overlapping_contig_does_not_inflate_the_count(self):
+        """THE MONEY DEFECT, AT THE PREDICATE. ``select_residues`` repeats a
+        residue two segments both name. Naming the same sliver twice must not
+        make it twice as big — one comma was the entire bypass."""
+        floor = rp.MIN_SELECTED_RESIDUES
+        residues = [("A", i, "") for i in range(1, 61)]
+        half = [("A", 1, floor - 1)]
+        assert len(rp.select_residues(residues, half * 2)) == 2 * (floor - 1), (
+            "the fixture must actually double-count, or this proves nothing")
+        assert rp.n_selected_residues(residues, half * 2) == floor - 1
+        assert rp.target_too_small(residues, half * 2), (
+            "a sliver named twice cleared the floor on a doubled count")
+        assert rp.target_too_small(residues, [("A", 1, 7)] * 3)
+
+    def test_the_count_is_the_one_the_crop_stages(self):
+        """Why DISTINCT is the right count and not merely the smaller one: the
+        gate has to measure the file the design engine is handed, and
+        ``stage_cropped_target`` writes ``selected_residue_keys``."""
+        residues = [("A", i, "") for i in range(1, 61)]
+        segments = [("A", 1, 30), ("A", 20, 40)]
+        assert (rp.n_selected_residues(residues, segments)
+                == len(rp.selected_residue_keys(residues, segments)) == 40)
+
+    def test_a_two_chain_selection_is_counted_across_both_chains(self):
+        """THE OVER-REFUSAL DIRECTION, ON THE INPUT SHAPE #109 JUST ENABLED.
+
+        Two near-miss counts both pass every single-chain test and both REFUSE a
+        legitimate multi-chain target: counting only the first segment's chain,
+        and counting distinct residue NUMBERS chain-blind. Each sees
+        ``floor - 1`` where there are ``2 * (floor - 1)`` residues, and every
+        fixture in this file used to be single-chain, so nothing could tell them
+        apart from the correct predicate.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        hi = floor - 1
+        residues = ([("A", i, "") for i in range(1, hi + 1)]
+                    + [("B", i, "") for i in range(1, hi + 1)])
+        segments = [("A", 1, hi), ("B", 1, hi)]
+        assert rp.n_selected_residues(residues, segments) == 2 * hi
+        assert len({r for _c, r in rp.select_residues(residues, segments)}) == hi, (
+            "the fixture must be chain-blind-ambiguous, or this proves nothing")
+        assert not rp.target_too_small(residues, segments), (
+            "a legitimate two-chain target was refused; the count is per chain")
+
+    def test_insertion_coded_twins_are_two_residues_not_one(self):
+        """THE NEAREST MISS OF ALL: ``len(set(selected))``.
+
+        ``select_residues`` drops the insertion code, so a set of ITS output
+        collapses ``A100`` and ``A100A`` into one. They are two residues with
+        two CA atoms — upstream counts both and the crop stages both — so a gate
+        built on that set refuses a target the design engine would have accepted
+        whenever insertion codes bring it to the floor. ``selected_residue_keys``
+        is the set that keeps them apart, which is why it is the one that counts.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        plain = [("A", i, "") for i in range(1, floor - 1)]
+        twins = [("A", 1, "A"), ("A", 2, "A")]
+        residues = plain + twins
+        segments = [("A", 1, floor)]
+        assert len({r for _c, r in rp.select_residues(residues, segments)}) == floor - 2
+        assert rp.n_selected_residues(residues, segments) == floor
+        assert not rp.target_too_small(residues, segments), (
+            "insertion-coded twins were collapsed and a target at the floor "
+            "was refused")
+
+    def test_the_floor_is_labelled_uncalibrated(self):
+        """THE PROVENANCE CLAIM, PINNED WHERE IT CAN ROT.
+
+        Nothing has measured this number: it entered as a bare literal, no A100
+        run has been made at, above or below it, and the stated rationale about
+        binder surface is plausible and is not evidence. The repo already has a
+        convention for exactly this (``SizeEnvelope.cap_basis``: "untested" =
+        the copy must claim a precaution, not a predicted failure point), and a
+        constant that quietly loses its label reads as measured.
+        """
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        declaration = source.index("MIN_SELECTED_RESIDUES = ")
+        preamble = source[max(0, declaration - 1600):declaration]
+        assert "UNCALIBRATED" in preamble, (
+            "the floor's comment no longer says the number is unmeasured")
+
+    def test_the_floor_stays_below_the_preflight_minimum_it_sits_behind(self):
+        """AN UPPER BOUND WITH A REASON, to go with the ``>= 10`` lower one.
+
+        ``shared/pdb_preflight_rules.py`` already refuses a whole named chain
+        under ``min_target_aa`` on the submit route. A contig floor ABOVE that
+        would make the container stricter than the gate that feeds it: a target
+        the preflight blessed would be refused after the job was accepted, which
+        is the worst place to learn it. Not a calibration — a consistency bound.
+        """
+        from shared.pdb_preflight_rules import TOOL_RULES
+        assert rp.MIN_SELECTED_RESIDUES <= TOOL_RULES["proteina"].min_target_aa
+
+    def test_the_predicate_actually_READS_the_constant(self, monkeypatch):
+        """THE CONSTANT MUST GOVERN, NOT MERELY AGREE.
+
+        Found by mutation after the round-2 fixes: replacing the predicate's
+        ``< MIN_SELECTED_RESIDUES`` with a literal ``< 20`` left all 658 tests
+        green. Every other test here pins the floor's VALUE or its BEHAVIOUR at
+        the current number, and both are satisfied by a hardcoded 20 while the
+        constant reads 20 — so the one thing nothing checked was whether the
+        constant is wired to anything at all.
+
+        That is this branch's own failure mode aimed at its own fix. The whole
+        point of lifting the literal out of ``prepare_custom_target`` was that
+        one number governs both callers; a predicate that restates it agrees
+        today and drifts silently the moment anyone edits the constant — which
+        is precisely the edit the constant exists to make safe.
+
+        Moving the number must move the answer. Asserted in both directions so
+        it cannot pass by a coincidence of the fixture's size.
+        """
+        residues = [("A", i, " ") for i in range(1, 61)]
+        segments = [("A", 1, 25)]           # 25 distinct residues
+        assert rp.n_selected_residues(residues, segments) == 25
+
+        monkeypatch.setattr(rp, "MIN_SELECTED_RESIDUES", 30)
+        assert rp.target_too_small(residues, segments), (
+            "raising the floor above the selection must refuse it; the "
+            "predicate is not reading MIN_SELECTED_RESIDUES")
+
+        monkeypatch.setattr(rp, "MIN_SELECTED_RESIDUES", 10)
+        assert not rp.target_too_small(residues, segments), (
+            "lowering the floor below the selection must accept it; the "
+            "predicate is not reading MIN_SELECTED_RESIDUES")
+
+    def _prepare(self, tmp_path, monkeypatch, target_input, spans=None):
+        """Run ``prepare_custom_target`` against a 60-residue chain A.
+
+        THE STRUCTURAL TESTS BELOW ARE NOT ENOUGH ON THEIR OWN, which is the
+        lesson this branch keeps paying for: an AST check sees that a call
+        exists, and a refusal that computes its verdict and never acts on it
+        satisfies that exactly. So the floor is also EXECUTED, and what is
+        asserted is the consequence — the process exits, and nothing is staged
+        for the design engine.
+
+        Everything outside ``tmp_path`` is patched away. Nothing here reaches
+        ``complexa``: the registry read is the next step after the crop and it
+        raises on a path that does not exist, which is a DIFFERENT ``check``
+        name and is exactly what makes the at-the-floor control meaningful.
+        """
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb(spans or {"A": (1, 60)})))
+        with pytest.raises(SystemExit) as excinfo:
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input=target_input, hotspot_spec=[],
+                binder_length=[60, 120], run_dir=tmp_path / "run")
+        assert excinfo.value.code == 1
+        payload = json.loads(results.read_text())
+        return payload["error"], sorted(p.name for p in hub.glob("hub_*.pdb"))
+
+    @staticmethod
+    def _size_fields(detail):
+        """Production's size refusal, BY ROLE.
+
+        ``str(floor) in detail`` is not a test of this sentence: transposing the
+        count with the floor leaves both numbers in it, and the count can be
+        supplied by the CONTIG rather than by the selection. Both numbers are
+        parsed out of their slots instead.
+        """
+        match = re.search(
+            r"has only (?P<count>\d+) residues, fewer than the (?P<floor>\d+) "
+            r"needed", detail)
+        assert match, f"the size refusal no longer renders its fields: {detail}"
+        return int(match.group("count")), int(match.group("floor"))
+
+    def test_a_contig_under_the_floor_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        floor = rp.MIN_SELECTED_RESIDUES
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{floor - 1}")
+        assert error["check"] == "target_input", error
+        count, quoted = self._size_fields(error["detail"])
+        assert (count, quoted) == (floor - 1, floor), (
+            f"the operator needs both the count and the floor: {error['detail']}")
+        assert count < quoted, (
+            f"the refusal quotes a floor below its own count: {error['detail']}")
+        assert "Widen the chain range" in error["detail"]
+        assert staged == [], (
+            "the target was staged for the design engine despite the refusal")
+
+    def test_an_overlapping_contig_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        """THE MONEY DEFECT, END TO END THROUGH PRODUCTION.
+
+        ``A1-19,A1-19`` is 19 residues written twice. The gate counted 38 and
+        staged the target; the crop then wrote the 19 the gate had just decided
+        were too few. On the web route the adapter happens to shield this — it
+        refuses two OVERLAPPING ranges on one chain, and two identical ranges
+        overlap — but ``prepare_custom_target`` is also reached with a contig
+        the adapter never saw, and the canary bypasses the adapter entirely.
+
+        The adapter's rule USED to be the broader "a chain may appear only
+        once", which also refused the disjoint ``A1-50,A60-240`` a gapped
+        target needs. This count is what made narrowing it safe: the floor is
+        held here, on a de-duplicated key set, not by the form.
+        """
+        floor = rp.MIN_SELECTED_RESIDUES
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{floor - 1},A1-{floor - 1}")
+        assert error["check"] == "target_input", error
+        count, quoted = self._size_fields(error["detail"])
+        assert (count, quoted) == (floor - 1, floor), (
+            f"the count in the message must be the DISTINCT one: {error['detail']}")
+        assert staged == []
+
+    def test_a_contig_at_the_floor_gets_past_the_gate(
+            self, tmp_path, monkeypatch):
+        """The control, and the reason the bound is ``<`` rather than ``<=``.
+
+        It still fails — the registry does not exist here — but on a different
+        check, and the staged file proves it reached the crop, which is
+        downstream of the floor.
+        """
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{rp.MIN_SELECTED_RESIDUES}")
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, (
+            f"a target at the floor never reached the crop: {error}")
+
+    @staticmethod
+    def _prepare_ast():
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        return next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+
+    @classmethod
+    def _size_guard_ast(cls):
+        return next(
+            node for node in ast.walk(cls._prepare_ast())
+            if isinstance(node, ast.If)
+            and "target_too_small" in ast.unparse(node.test))
+
+    def test_production_asks_the_predicate_instead_of_restating_the_number(self):
+        """THE POINT OF EXTRACTING IT. ``prepare_custom_target`` used to hold
+        ``if len(selected) < 20``. A second copy of a threshold is a threshold
+        that drifts, and the canary — which now reads this one — would have gone
+        on spending money against whichever copy it did not follow.
+
+        SCOPED TO THE GUARD, NOT TO THE FUNCTION, and the narrowing is a fix.
+        Scanning every literal in ``prepare_custom_target`` made the test fire
+        on constants that have nothing to do with the floor: an unrelated
+        ``ambiguous[:10]`` in the insertion-code warning meant a floor of 10
+        "failed the drift test", and any future literal equal to the floor would
+        do the same. What is being pinned is that the threshold reaches the
+        refusal from the constant, which is a property of the guard.
+        """
+        called = {node.func.id for node in ast.walk(self._prepare_ast())
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        assert "target_too_small" in called, (
+            "prepare_custom_target must ASK for the floor, not restate it")
+        guard = self._size_guard_ast()
+        literals = {node.value for node in ast.walk(guard)
+                    if isinstance(node, ast.Constant) and isinstance(node.value, int)
+                    and not isinstance(node.value, bool)}
+        assert not literals, (
+            f"the size guard carries its own numbers ({sorted(literals)}); the "
+            "threshold must come from MIN_SELECTED_RESIDUES")
+
+    def test_the_refusal_message_quotes_the_threshold(self):
+        """The operator's next action is "widen the range to at least N", so N
+        has to be in the sentence — and has to be the constant, or the message
+        sends them to a number the code no longer enforces."""
+        rendered = ast.unparse(self._size_guard_ast())
+        assert "MIN_SELECTED_RESIDUES" in rendered, (
+            f"the refusal must quote the threshold it enforces: {rendered}")
+
+    def test_the_size_guard_runs_after_the_segment_and_numbering_ones(self):
+        """PRODUCTION'S ORDER, PINNED ON PRODUCTION'S SIDE.
+
+        The canary's ordering had a test; production's had none, so the guard
+        could be moved above the per-segment check or the numbering one with the
+        suite still green — and the canary, which mirrors production's order
+        deliberately, would then be mirroring an order production no longer had.
+        Statement positions rather than behaviour, because two of the three
+        orderings are only observable on inputs that are invalid twice over.
+        """
+        body = self._prepare_ast().body
+        def index_of(needle):
+            return next(i for i, stmt in enumerate(body)
+                        if needle in ast.unparse(stmt))
+        size = index_of("target_too_small")
+        assert index_of("unrenderable_segments") < size, (
+            "a tagged construct must be told about its numbering, not its size")
+        assert index_of("empty_segments") < size, (
+            "a chain that is not in the file must not be told to widen a range")
+        assert size < index_of("missing_hotspots"), (
+            "a sliver puts most hotspots outside the selection; answering the "
+            "hotspot sends the operator to fix one that is fine")
+
+    def test_the_size_guard_beats_the_hotspot_one_behaviourally(
+            self, tmp_path, monkeypatch):
+        """The same ordering where it is observable. ``A41-59`` is a sliver AND
+        puts ``A5`` outside the selection; the answer must be the range."""
+        floor = rp.MIN_SELECTED_RESIDUES
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb({"A": (1, 60)})))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input=f"A41-{41 + floor - 2}",
+                hotspot_spec=["A5"], binder_length=[60, 120],
+                run_dir=tmp_path / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "target_input", error
+        assert self._size_fields(error["detail"]) == (floor - 1, floor)
+        assert "A5" not in error["detail"], (
+            f"the hotspot refusal won and misdirects the fix: {error['detail']}")
+
+    def test_a_dead_segment_beats_the_size_guard(self, tmp_path, monkeypatch):
+        """``A1-5,Z1-50`` is a sliver AND names a chain that is not there. The
+        fix for the second is not "widen the range"."""
+        error, staged = self._prepare(tmp_path, monkeypatch, "A1-5,Z1-50")
+        assert error["check"] == "target_input", error
+        assert "select 0 residues" in error["detail"], error
+        assert "fewer than" not in error["detail"], (
+            f"the size refusal answered a question about chain Z: {error}")
+        assert staged == []
+
+    def test_negative_numbering_beats_the_size_guard(self, tmp_path, monkeypatch):
+        """``A-5-0`` on a file numbered from 1 selects nothing AND cannot be
+        rendered. Upstream's parser is the fault the operator has to fix."""
+        error, staged = self._prepare(tmp_path, monkeypatch, "A-5-0")
+        assert error["check"] == "target_input_negative", error
+        assert staged == []
+
+    def test_a_two_chain_target_at_the_floor_reaches_the_crop(
+            self, tmp_path, monkeypatch):
+        """END TO END, ON THE MULTI-CHAIN SHAPE #109 ENABLED. A count that is
+        per-first-chain or chain-blind refuses this, and every other behavioural
+        fixture in this class is single-chain."""
+        hi = rp.MIN_SELECTED_RESIDUES - 1
+        error, staged = self._prepare(
+            tmp_path, monkeypatch, f"A1-{hi},B1-{hi}",
+            spans={"A": (1, hi), "B": (1, hi)})
+        assert error["check"] == "target_registry", error
+        assert len(staged) == 1, (
+            f"a legitimate two-chain target never reached the crop: {error}")
+
+    def test_the_floor_does_not_collide_with_the_shared_preflight_one(self):
+        """TWO NUMBERS, TWO NAMES, ON PURPOSE.
+
+        ``shared/pdb_preflight.py`` also exports a ``MIN_TARGET_RESIDUES``, and
+        it is a DIFFERENT quantity with a different value: the lowest
+        ``min_target_aa`` across the binder tools, bounding the whole named
+        chain before any contig, on the ``/tools/<slug>/submit`` route. This one
+        bounds the contig's SELECTION inside the container. They were briefly
+        the same identifier with different values, in a commit whose thesis was
+        "one number, one home".
+        """
+        from shared import pdb_preflight as pre
+        assert not hasattr(rp, "MIN_TARGET_RESIDUES"), (
+            "the proteina-local floor must not reuse shared's name")
+        assert pre.MIN_TARGET_RESIDUES != rp.MIN_SELECTED_RESIDUES, (
+            "if these ever coincide, say so deliberately — they measure "
+            "different things and nothing keeps them equal")
+
+
+class TestEmptyContigSegments:
+    """A segment that selects nothing is a refusal, one segment at a time.
+
+    ``prepare_custom_target`` has always checked per segment. What is new is
+    that the check is a named predicate (``empty_segments``) the canary calls
+    too: it checked only the AGGREGATE, so ``--contig A1-300,Z1-50`` selected
+    300 residues, cleared every gate, and spawned ~$4 or ~$12 to fail in the
+    container on a request production settles for free. PR #109 made
+    multi-segment contigs the ordinary input shape.
+    """
+
+    _RESIDUES = [("A", i, "") for i in range(1, 61)] + [("B", i, "") for i in range(1, 41)]
+
+    def test_a_dead_segment_is_found_beside_a_healthy_one(self):
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("Z", 1, 50)]) == [
+            ("Z", 1, 50)]
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("A", 900, 999)]) == [
+            ("A", 900, 999)]
+
+    def test_healthy_segments_are_left_alone(self):
+        assert rp.empty_segments(self._RESIDUES, [("A", 1, 60), ("B", 1, 40)]) == []
+        assert rp.empty_segments(self._RESIDUES, [("A", 55, 900)]) == []
+
+    def test_an_unresolvable_bare_chain_selects_nothing(self):
+        """``expand_bare_chains`` leaves a chain it cannot find alone, and this
+        is what then names it. Widening a range cannot add a missing chain, so
+        the two cases share one refusal rather than two messages."""
+        segments = rp.expand_bare_chains(self._RESIDUES, [("Z", None, None)])
+        assert segments == [("Z", None, None)]
+        assert rp.empty_segments(self._RESIDUES, segments) == [("Z", None, None)]
+
+    def test_production_asks_the_predicate_instead_of_looping_inline(self):
+        source = Path(rp.__file__).read_text(encoding="utf-8")
+        prepare = next(
+            n for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.FunctionDef) and n.name == "prepare_custom_target")
+        called = {node.func.id for node in ast.walk(prepare)
+                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        assert {"empty_segments", "expand_bare_chains"} <= called, (
+            "prepare_custom_target must ASK for these, not restate them — the "
+            "canary reads the same two")
+
+    def test_a_dead_segment_is_refused_and_nothing_is_staged(
+            self, tmp_path, monkeypatch):
+        """Behaviourally, through ``prepare_custom_target``: the aggregate is
+        healthy (60 residues of chain A) and the run still stops for free."""
+        error, staged = TestMinimumTargetSize()._prepare(
+            tmp_path, monkeypatch, "A1-60,Z1-50")
+        assert error["check"] == "target_input", error
+        assert "Z" in error["detail"] and "0 residues" in error["detail"]
+        assert staged == []
+
+    def test_a_bare_chain_that_is_absent_is_named_not_rendered_as_None(
+            self, tmp_path, monkeypatch):
+        """PRODUCTION'S ABSENT-BARE-CHAIN REFUSAL, WHICH HAD NO TEST AT ALL.
+
+        Found by an independent QC pass: deleting this refusal outright, and
+        narrowing it to a single hard-coded chain, BOTH left the whole suite
+        green. The run still stops either way — ``empty_segments`` catches it a
+        few lines later — so no money is at stake, which is exactly why nothing
+        noticed. What the operator sees is not the same:
+
+            with the guard:    chain Q is not present in the uploaded target.
+            without it:        chain Q residues None-None select 0 residues ...
+
+        ``None-None`` is not a range anyone typed, and this refusal is the only
+        thing standing between a customer and that string.
+
+        It matters beyond the wording because three of this branch's own claims
+        rest on it behaving as described — ``expand_bare_chains``' docstring
+        says both callers already have a refusal for an absent bare chain and
+        names this one, and the canary's "six of production's eight" count
+        includes it. This commit restructured the refusal (out of the expansion
+        loop into a standalone one) and added no coverage for it.
+
+        THAT DENOMINATOR HAS SINCE MOVED, and is recorded here rather than
+        quietly left to rot. Production grew a NINTH pre-GPU refusal — the
+        contig run-count ceiling, ``run_pipeline.MAX_CONTIG_RUNS`` /
+        ``target_input_runs`` — and ``_hotspot_canary`` does not mirror it, nor
+        does it apply ``contig_runs`` to the contig it ships to
+        ``build_target_add_cmd`` (``_hotspot_canary.py`` ``_stage``, and
+        ``_refuse_unresolvable_hotspots``' ``resolved``). So on a target with a
+        disordered loop the canary still spawns and dies where production now
+        refuses for free. That is the safe direction for correctness and the
+        expensive one for the operator (~$4 phase 1, ~$12 phase 2), and it is
+        the drift this file's own history keeps finding. Fix it in the canary
+        before the next paid phase.
+        """
+        error, staged = TestMinimumTargetSize()._prepare(
+            tmp_path, monkeypatch, "Q")
+        assert error["check"] == "target_input", error
+        assert "chain Q is not present" in error["detail"], error["detail"]
+        assert "None" not in error["detail"], (
+            "the absent-chain refusal is gone and the unexpanded segment is "
+            f"leaking into the message: {error['detail']}")
+        assert staged == []
+
+
+class TestBareChainExpansion:
+    """``--contig A`` means "the whole chain", and it must be RESOLVED, not
+    dropped.
+
+    Production expands a bare chain id to the chain's observed span and only
+    then applies the numeric guards, so ``A`` on a construct numbered from -5
+    becomes ``A-5-240`` and is refused for negative numbering. The canary had
+    no expansion and FILTERED unexpanded segments out of that guard instead, so
+    the same input spawned. The expansion is extracted here so both sides run
+    the one implementation — and so neither is tempted to "fix" it by refusing
+    the bare id, which would refuse a run production accepts.
+    """
+
+    _RESIDUES = [("A", i, "") for i in range(-5, 25)] + [("B", i, "") for i in range(1, 41)]
+
+    def test_a_bare_chain_becomes_its_observed_span(self):
+        assert rp.expand_bare_chains(self._RESIDUES, [("A", None, None)]) == [
+            ("A", -5, 24)]
+        assert rp.expand_bare_chains(self._RESIDUES, [("B", None, None)]) == [
+            ("B", 1, 40)]
+
+    def test_an_explicit_range_is_untouched(self):
+        assert rp.expand_bare_chains(self._RESIDUES, [("A", 1, 20)]) == [("A", 1, 20)]
+        assert rp.expand_bare_chains(
+            self._RESIDUES, [("A", None, None), ("B", 2, 9)]) == [
+                ("A", -5, 24), ("B", 2, 9)]
+
+    def test_the_expansion_feeds_the_negative_numbering_guard(self):
+        """The composition that was missing. A bare chain id on a tagged
+        construct is unrenderable ONCE EXPANDED and invisible before that."""
+        segments = rp.expand_bare_chains(self._RESIDUES, [("A", None, None)])
+        assert rp.unrenderable_segments(segments) == [("A", -5, 24)]
+
+    def test_unrenderable_segments_tolerates_an_unresolved_chain(self):
+        """It is asked about parsed contigs now, and a parsed contig may carry
+        a chain that is not in the file. That is not a NEGATIVE NUMBER — it is
+        an empty segment, refused with a different message and a different fix
+        — so it must not be reported here, and must not raise."""
+        assert rp.unrenderable_segments([("Z", None, None)]) == []
+        assert rp.unrenderable_segments(
+            [("Z", None, None), ("A", -5, 24)]) == [("A", -5, 24)]
+
+    def test_a_bare_chain_on_a_tagged_construct_is_refused_by_production(
+            self, tmp_path, monkeypatch):
+        """The behavioural half, and the reason the canary must EXPAND rather
+        than refuse: production accepts the bare id and refuses the span."""
+        hub = tmp_path / "hub"
+        results = tmp_path / "smoke_results.json"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub))
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(results))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(tmp_path / "no_registry.yaml"))
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: dest.write_text(_make_pdb({"A": (-5, 40)})))
+        with pytest.raises(SystemExit):
+            rp.prepare_custom_target(
+                input_url="https://example.invalid/target.pdb", job_id="j1",
+                target_chain="A", target_input="A", hotspot_spec=[],
+                binder_length=[60, 120], run_dir=tmp_path / "run")
+        error = json.loads(results.read_text())["error"]
+        assert error["check"] == "target_input_negative", error
+        assert "A-5-40" in error["detail"]
+
+
 class TestTemplatesParse:
     def _templates(self):
         return Path(__file__).resolve().parents[1] / "templates"
@@ -1675,6 +4551,183 @@ class TestTemplatesParse:
         that contradicts the form is how a user concludes the field is ignored."""
         src = (self._templates() / "targets" / "launch.html").read_text(encoding="utf-8")
         assert "takes no hotspots" not in src
+
+
+def _render_results(candidates):
+    """The real proteina results partial, rendered over ``candidates``.
+
+    ``results_panel`` is stubbed: these tests are about the banner the partial
+    adds, not about the shared shell (which needs url_for, csrf_input and the
+    metric glossary to render at all).
+
+    MODULE LEVEL, not a method, because ``TestUploadLoopNumbering`` renders the
+    candidates a real ``main()`` run produced through it. That composition is
+    the only thing that can catch a banner which is false for a whole class of
+    runs: a template test alone asserts whatever value the test itself passes
+    in, and a pipeline test alone never looks at the words the operator reads.
+    """
+    from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+    templates = Path(__file__).resolve().parents[1] / "templates"
+    env = Environment(loader=ChoiceLoader([
+        # ``caller()`` has to be referenced or Jinja refuses the {% call %}
+        # with "two values for the special caller argument".
+        DictLoader({"components/results_shell.html": (
+            "{% macro results_panel(candidates, columns, tool_slug, job_id,"
+            " clone_url='', tier='', gpu_seconds=None,"
+            " send_target_tools=None, campaign_id='') %}"
+            "PANEL{% if not candidates %}{{ caller() }}{% endif %}"
+            "{% endmacro %}")}),
+        FileSystemLoader(str(templates)),
+    ]))
+    return env.get_template("tools/proteina_results.html").render(
+        job=SimpleNamespace(result={"candidates": candidates}, id="j1"),
+        send_target_tools=[])
+
+
+class TestResultsTemplateSurfacesTheNumbering:
+    """B6. ``target_numbering`` was written into the result and rendered nowhere.
+
+    It went into ``out_designs`` only, while shared/jobs.py::candidate_records
+    prefers ``candidates`` and this partial reads ``candidates``, so the operator
+    had no way at all to learn whether the file they downloaded is keyed to the
+    numbers they typed. A field nobody can see is not a record of anything.
+    """
+
+    def _render(self, candidates):
+        return _render_results(candidates)
+
+    def _cand(self, rank, **kw):
+        return dict({"rank": rank, "pdb_key": f"design_{rank}.pdb",
+                     "scores": {}}, **kw)
+
+    def test_it_says_so_when_the_operators_numbering_was_restored(self):
+        html = self._render([self._cand(0, target_numbering="input"),
+                             self._cand(1, target_numbering="input")])
+        assert "Residue numbering" in html
+        assert "residue numbers from the file you uploaded" in html
+
+    def test_it_says_so_when_the_file_carries_upstreams_numbering(self):
+        html = self._render([self._cand(0, target_numbering="upstream")])
+        assert "Residue numbering" in html
+        assert "renumbered from 1" in html
+        assert "will not resolve" in html
+
+    def test_a_mixed_shard_reports_the_weaker_guarantee(self):
+        """One design in 1..N is enough to make "your hotspots resolve" false
+        for the download as a whole."""
+        html = self._render([self._cand(0, target_numbering="input"),
+                             self._cand(1, target_numbering="upstream")])
+        assert "renumbered from 1" in html
+        assert "residue numbers from the file you uploaded" not in html
+
+    def test_a_result_from_before_the_field_existed_claims_nothing(self):
+        """Jinja's ``map(attribute=...)`` yields Undefined -- not None -- for a
+        missing key, so the obvious ``| reject('none')`` spelling would let old
+        candidates through and print the reassuring message about a file nobody
+        checked. Silence is the only honest output here."""
+        html = self._render([self._cand(0), self._cand(1)])
+        assert "Residue numbering" not in html
+
+    def test_no_candidates_at_all_claims_nothing(self):
+        assert "Residue numbering" not in self._render([])
+
+    def test_a_null_candidate_list_renders_instead_of_raising(self):
+        """F10. ``output.get('candidates', [])`` returns the DEFAULT only when
+        the key is absent; a stored ``"candidates": null`` returns None, and the
+        counting loop this delta added sits OUTSIDE the ``{% if candidates %}``
+        the old panel was guarded by. So a null there stopped rendering the
+        whole results page with ``TypeError: 'NoneType' object is not
+        iterable`` where it used to render fine.
+
+        Unreachable from either writer today — both emit a list — so this is a
+        robustness regression rather than a live defect, which is why it is
+        pinned rather than merely fixed.
+        """
+        assert "Residue numbering" not in self._render(None)
+
+
+def test_sanitize_candidate_keeps_the_target_numbering():
+    """The streamed half of the same path. ``_sanitize_candidate`` drops every
+    key it does not name, so the live candidate the status page renders would
+    have lost this field even once the pipeline sent it."""
+    from webhooks.modal import _sanitize_candidate
+
+    out = _sanitize_candidate({"rank": 0, "pdb_key": "design_000.pdb",
+                               "target_numbering": "input"})
+    assert out is not None
+    assert out["target_numbering"] == "input"
+    assert _sanitize_candidate(
+        {"rank": 0, "target_numbering": "upstream"})["target_numbering"] == "upstream"
+
+
+def test_sanitize_candidate_rejects_an_unrecognised_numbering():
+    """The heartbeat body is unauthenticated telemetry that gets rendered back
+    to the user, so every string field here is bounded. This one is bounded to
+    the values the pipeline can emit rather than by a length cap."""
+    from webhooks.modal import _sanitize_candidate
+
+    for bogus in ("<script>", "INPUT", "", 7, None, "curated", "n/a ", "N/A"):
+        out = _sanitize_candidate({"rank": 0, "target_numbering": bogus})
+        assert out["target_numbering"] is None, bogus
+
+
+# The three answers to "which residue numbering does the delivered file
+# carry?", written out HERE rather than read off the pipeline, so that deleting
+# one from either side fails this file rather than silently shrinking it.
+_TARGET_NUMBERING_VALUES = ("input", "upstream", "n/a")
+
+
+def test_the_webhook_allowlist_covers_every_numbering_the_pipeline_emits():
+    """F1's other half. ``_sanitize_candidate`` drops any value it does not
+    name, and the STREAMED candidate is what the live status page renders. A
+    third value added to the pipeline and not to the allowlist would make the
+    same design report one numbering while it is running and another once it
+    finalised — the drift is invisible until an operator compares the two.
+
+    Both directions are pinned: the pipeline may not emit a value the webhook
+    would drop, and the webhook may not silently accept one the pipeline never
+    emits (this endpoint's body is unauthenticated).
+
+    G2: THE REVERSE HALF WAS A CLAIM IN THIS DOCSTRING AND NOTHING IN THE BODY.
+    Widening the webhook's tuple to ``("input", "upstream", "n/a", "foo")``
+    passed all 384 tests in this file — it was the only mutation of thirty to
+    survive. ``test_sanitize_candidate_rejects_an_unrecognised_numbering``
+    looks like the missing half and is not: it catches ``"curated"`` only
+    because that string is in its own hard-coded list, and a hard-coded list
+    cannot contain the value someone will add next.
+
+    So the allowlist is READ rather than probed. A probe pins the property in
+    the readable direction; only reading the gate itself can fail on a value
+    nobody thought to write down.
+    """
+    from webhooks.modal import _sanitize_candidate
+
+    assert tuple(rp._TARGET_NUMBERING_VALUES) == _TARGET_NUMBERING_VALUES
+    for value in _TARGET_NUMBERING_VALUES:
+        got = _sanitize_candidate({"rank": 0, "target_numbering": value})
+        assert got["target_numbering"] == value, value
+
+    # The gate is ``raw_numbering in (...)`` and the compiler folds that tuple
+    # into a constant of the function, so this is the ACTUAL allowlist rather
+    # than a copy of it. If the gate ever stops being an inline literal this
+    # assertion fails loudly and says where to look, which is the right
+    # outcome: a test that cannot find the allowlist must not report on it.
+    gate = [c for c in _sanitize_candidate.__code__.co_consts
+            if isinstance(c, (tuple, frozenset)) and "input" in c]
+    assert len(gate) == 1, (
+        "the numbering allowlist is no longer a single inline tuple inside "
+        f"_sanitize_candidate (found {gate!r}) — point this test at wherever "
+        "it now lives rather than deleting it")
+    assert set(gate[0]) == set(rp._TARGET_NUMBERING_VALUES), (
+        f"the webhook accepts {sorted(set(gate[0]))} but the pipeline can only "
+        f"emit {sorted(set(rp._TARGET_NUMBERING_VALUES))}")
+
+    # ...and the same statement behaviourally, so the failure above is not the
+    # only thing standing between this endpoint and an echoed string.
+    probe = "not-a-numbering"
+    assert probe not in rp._TARGET_NUMBERING_VALUES
+    assert _sanitize_candidate(
+        {"rank": 0, "target_numbering": probe})["target_numbering"] is None
 
 
 
@@ -2634,22 +5687,67 @@ class TestJaxDoesNotPreallocateTheCard:
 class TestRuntimeCopyMatchesMeasurement:
     """meta.py's runtime copy is what a user plans and budgets against.
 
-    It shipped claiming "30 to 120" minutes per shard for all three design
-    variants. The one paid canary shard that has ever been timed returned 8
-    designs in 359 s (6.0 min) at a 130-residue target — the published band
-    started 5x above the measurement and ran 20x above it. Worse, it was
-    load-bearing beyond the copy: shared/pdb_preflight_rules.py anchored its
-    runtime estimator to "the middle of that band", so an invented number in a
-    docs constant had propagated into the preflight panel as if calibrated.
+    IT HAS BEEN WRONG TWICE. It shipped claiming "30 to 120" minutes per shard
+    for all three design variants — a placeholder 5-20x above anything real.
+    It was then corrected to "~6" from a 359 s reading, which was also wrong:
+    two readings exist at 130 aa and they disagree by ~60% — 359 s and 576 s.
+    Both are recorded as completed 8-design shards at that size, and what
+    separates them is the JAX allocator regime: 359 s is the preallocation-ON
+    shard, 576 s is one of the three taken with preallocation off.
+    shared/pdb_preflight_rules.py::_PROTEINA documents those regimes as
+    non-comparable, so 576 s is the reading that describes what production
+    does today and copy drawn from the 359 s one under-stated a real shard by
+    ~40%. The older figure is simply not used for anything.
+
+    Three COMPLETED shards now exist — 576 s at 130 aa, 645 s at 260 aa, 874 s
+    at 415 aa, i.e. 9.6 to 14.6 min. Both errors were load-bearing beyond the
+    copy: shared/pdb_preflight_rules.py anchors its runtime estimator here, so
+    a wrong number in a docs constant reaches the preflight panel looking
+    calibrated.
     """
 
-    def test_protein_binder_runtime_reflects_the_359_second_shard(self):
+    def test_protein_binder_runtime_reflects_the_completed_shards(self):
         from tools.proteina import meta
-        entry = meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"]
+        entry = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
         assert "30 to 120" not in entry, (
-            "protein_binder still quotes the placeholder band; the measured "
-            "shard was 359 s (6.0 min) at a 130-residue target")
-        assert "6" in entry
+            "protein_binder still quotes the placeholder band; the completed "
+            "shards run 9.6 to 14.6 min across 130-415 residues")
+        assert entry.strip() != "~6", (
+            "protein_binder still quotes the 359 s reading; that one was "
+            "taken with JAX preallocation ON and is not comparable to the "
+            "three this band is drawn from, where the 130 aa shard took 576 s")
+        # THE BAND MUST BRACKET THE MEASUREMENT, and that has to be read as
+        # numbers rather than as substrings. ``"10" in entry and "15" in
+        # entry`` was satisfied by "~10 to 150" — a ceiling ten times anything
+        # ever run — and by any string carrying those two digit pairs
+        # anywhere. It also passed the band it was written for, "~10 to 15",
+        # whose FLOOR sat above the 9.6 min shard it claimed to describe.
+        # BOTH ENDS ARE BOUNDED FROM BOTH SIDES. A one-sided bound on either
+        # end lets the band be widened into meaninglessness in the direction
+        # it is not watched, and this copy's whole history is being wrong in
+        # the direction the user plans against. With only `lo <= 9.6` and
+        # `hi >= 14.6` in force, "~5 to 15", "~1 to 15" and "~0.1 to 15" all
+        # passed the entire suite; with `hi <= 20.0`, so did "~9 to 19".
+        # Each end must be a ROUNDING of the shard it describes.
+        bounds = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", entry)]
+        assert len(bounds) == 2, f"{entry!r} is not a two-ended band"
+        lo, hi = bounds
+        assert lo <= 9.6, (
+            f"{entry!r} claims a floor above the fastest completed shard "
+            f"(576 s = 9.6 min at 130 aa)")
+        assert lo >= 9.0, (
+            f"{entry!r} claims a floor below anything this tool has done: the "
+            f"fastest completed shard is 9.6 min, and 9 is that rounded down "
+            f"to the whole minute — a floor under it is not a rounding of the "
+            f"measurement, it is a different claim")
+        assert hi >= 14.6, (
+            f"{entry!r} claims a ceiling below the slowest completed shard "
+            f"(874 s = 14.6 min at 415 aa)")
+        assert hi <= 16.0, (
+            f"{entry!r} claims a ceiling above anything measured OR modelled: "
+            f"the largest target ever run took 14.6 min and the 500-aa cap "
+            f"models at ~14.6 too, so 15 is the whole-minute rounding and 16 "
+            f"is already a minute of slack past it")
 
     def test_untimed_variants_are_labelled_untimed(self):
         """ligand_binder and motif_ame have never been run on a GPU here. Their
@@ -2672,18 +5770,1922 @@ class TestRuntimeCopyMatchesMeasurement:
             assert "30 to 120" not in typical, (
                 f"about.runtime_table[{preset}] still quotes the placeholder")
         assert "measured" in rows["protein_binder"]
+        # And the two copies must quote the SAME band, not merely both be
+        # non-placeholder — the whole failure mode here is one of them moving.
+        #
+        # COMPARED AS NUMBERS, NOT AS A SUBSTRING. `band in row` was the
+        # obvious way to write this and it does not do the job: the about
+        # table reads "<band> min / shard (measured at 130-415 residues)", so
+        # the shipped band is a PREFIX of it, and every string that extends
+        # the shipped band's own digits contains it too. "~9 to 15" is in
+        # "~9 to 15000 min / shard", so moving only the about-table copy to a
+        # ceiling a thousand times anything ever run left this test green —
+        # which is precisely the drift the assertion names.
+        band = str(meta.PRESET_RUNTIME["protein_binder"]["typical_minutes"])
+        row = rows["protein_binder"]
+        band_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", band)]
+        # The about row carries the measured span (130-415) after the band, so
+        # take the leading pair — the band is what this compares.
+        row_nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", row)][:2]
+        assert len(band_nums) == 2 and row_nums == band_nums, (
+            f"about.runtime_table quotes {row!r} while PRESET_RUNTIME quotes "
+            f"{band!r} — parsed as {row_nums} against {band_nums}; the tool "
+            f"page and the preset map are telling the user different things")
 
     def test_the_estimator_anchor_is_no_longer_taken_from_this_file(self):
         """The specific coupling that turned a docs placeholder into a number
-        the preflight panel presented as calibrated."""
+        the preflight panel presented as calibrated.
+
+        Both retired anchors are named, because "not 75" alone would be
+        satisfied by the 5.4 that came from the 359 s reading.
+        """
         from shared.pdb_preflight_rules import TOOL_RULES
-        base = TOOL_RULES["proteina"].size.runtime_base_min
+        env = TOOL_RULES["proteina"].size
+        base = env.runtime_base_min
         assert base != 75.0, (
             "runtime_base_min is still the midpoint of meta.py's retired "
             "30-120 min band")
-        # base x (130/120)^1.3 x (8/8) must reproduce the measured 6.0 min.
-        env = TOOL_RULES["proteina"].size
-        est = base * (130.0 / 120.0) ** env.runtime_alpha
-        assert 5.0 <= est <= 7.5, (
-            f"the estimator puts the measured 8-design shard at {est:.1f} min, "
-            f"not the 6.0 min it actually took")
+        assert base != 5.4, (
+            "runtime_base_min is still solved from the 359 s reading — the "
+            "one of the two 130 aa readings taken with JAX preallocation ON, "
+            "which _PROTEINA documents as not comparable to the three "
+            "preallocation-off shards the shipped curve is fitted to")
+        # base x (aa/120)^alpha x (8/8) must reproduce all three completed
+        # shards, not just one — a single-point check cannot see the exponent.
+        for aa, secs in ((130, 576), (260, 645), (415, 874)):
+            est = base * (aa / 120.0) ** env.runtime_alpha
+            measured = secs / 60.0
+            assert abs(est - measured) / measured <= 0.10, (
+                f"the estimator puts the {aa} aa 8-design shard at "
+                f"{est:.1f} min, not the {measured:.1f} min it actually took")
+
+
+# ---------------------------------------------------------------------------
+# Putting the DELIVERED design back into the operator's residue numbering
+# ---------------------------------------------------------------------------
+#
+# Measured on a completed Fc shard: upstream renumbers every design chain to
+# 1..N, so an operator who asked for hotspot A241 gets back a file with no
+# residue 241 in it. Against the 8 archived designs, restore_design_numbering
+# takes hotspot resolution from 0/20 to 20/20 while leaving coordinates, residue
+# names and the binder chain byte-identical.
+
+# 20 DISTINCT residue names, so a positional map is actually CONSTRAINED by
+# sequence. An all-ALA fixture would score identity 1.0 against any reference of
+# the same length and would not exercise the guard at all.
+_SEQ_A = ["ALA", "GLY", "SER", "THR", "VAL", "LEU", "ILE", "PRO", "PHE", "TYR",
+          "TRP", "HIS", "LYS", "ARG", "ASP", "GLU", "ASN", "GLN", "MET", "CYS"]
+_SEQ_B = ["CYS", "MET", "GLN", "ASN", "GLU", "ASP", "ARG", "LYS", "HIS", "TRP",
+          "TYR", "PHE", "PRO", "ILE", "LEU", "VAL", "THR", "SER", "GLY", "ALA"]
+_SEQ_C = ["GLY", "ALA", "SER", "VAL", "LEU", "THR", "PRO", "PHE"]
+
+
+def _chain(chain, resnames, first_res, serial0=1, icodes=None):
+    """CA-only lines for one chain, in the real column layout.
+
+    ``icodes``, when given, is a per-residue insertion code and ``first_res`` is
+    then the number every one of them shares. Kabat/Chothia numbering does
+    exactly this, and it is the case the first version of the restore corrupted.
+    """
+    if icodes is not None:
+        return [_atom(serial0 + i, "CA", nm, chain, first_res, icode=ic)
+                for i, (nm, ic) in enumerate(zip(resnames, icodes))]
+    return [_atom(serial0 + i, "CA", nm, chain, first_res + i)
+            for i, nm in enumerate(resnames)]
+
+
+def _with_altloc(line, code):
+    """``line`` with the altLoc column (col 17, 0-indexed 16) set to ``code``.
+
+    ``_atom`` writes a blank there. Two lines that differ ONLY in this column
+    are the two conformations of one residue, not two residues.
+    """
+    return line[:16] + code + line[17:]
+
+
+def _ter(serial, resname, chain, resseq):
+    """A TER record padded to 80 columns, as upstream really writes them.
+
+    MEASURED on the archived designs: every TER there is 80 characters. The
+    fixture used to emit a 25-character TER, which is both unrealistic and
+    unable to hold an insertion code — so a rewrite that silently GREW the line
+    to fit one would have looked fine here. ``test_every_line_keeps_its_width``
+    is what makes that matter, and it needs a fixture whose lines are the width
+    a real file's are.
+    """
+    return ("TER   %5d      %3s %1s%4d " % (serial, resname, chain, resseq)).ljust(80)
+
+
+def _design(*, a_first=1, b_first=1, c_first=1,
+            seq_a=None, seq_b=None, seq_c=None, ter=True):
+    """A renumbered design: target chains A and B, de-novo binder C."""
+    seq_a = _SEQ_A if seq_a is None else seq_a
+    seq_b = _SEQ_B if seq_b is None else seq_b
+    seq_c = _SEQ_C if seq_c is None else seq_c
+    lines = []
+    lines += _chain("A", seq_a, a_first, 1)
+    if ter:
+        lines.append(_ter(900, seq_a[-1], "A", a_first + len(seq_a) - 1))
+    lines += _chain("B", seq_b, b_first, 100)
+    if ter:
+        # Upstream writes a CUMULATIVE index here, not the chain's own number --
+        # measured: a real design's chain B ends at ATOM 208 with TER 419.
+        lines.append(_ter(901, seq_b[-1], "B", 999))
+    lines += _chain("C", seq_c, c_first, 200)
+    if ter:
+        lines.append(_ter(902, seq_c[-1], "C", 888))
+    return "\n".join(lines) + "\n"
+
+
+def _ref_chain(resnames, first_res, icodes=None):
+    """One reference chain as ``pdb_ca_sequence`` returns it.
+
+    ``(resseq, icode, resname)`` — the icode is part of the residue id, not
+    decoration, and dropping it here is exactly the defect that let three input
+    residues collapse onto one number in the delivered file.
+    """
+    if icodes is not None:
+        return [(first_res, ic, nm) for nm, ic in zip(resnames, icodes)]
+    return [(first_res + i, "", nm) for i, nm in enumerate(resnames)]
+
+
+def _reference(*, a_first=234, b_first=300, seq_a=None, seq_b=None):
+    """What pdb_ca_sequence returns for the staged, cropped input target."""
+    return {
+        "A": _ref_chain(_SEQ_A if seq_a is None else seq_a, a_first),
+        "B": _ref_chain(_SEQ_B if seq_b is None else seq_b, b_first),
+    }
+
+
+def _keys(text):
+    """The ``A241``-style residue tokens an operator's hotspot list is made of."""
+    return {"%s%d%s" % (c, r, i)
+            for c, v in rp.pdb_ca_sequence(text).items() for r, i, _ in v}
+
+
+# The five coordinate records WRITTEN OUT rather than read off
+# ``rp._RESSEQ_COORD_RECORDS``. This helper is what checks the rewrite's
+# headline promise, and a helper that shrinks whenever the code under test
+# shrinks would stop looking at exactly the records that stopped being
+# rewritten.
+_COORD_RECORDS = ("ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ")
+
+
+def _residues_in_file(text):
+    """The distinct residues in ``text``, in file order.
+
+    A residue is a MAXIMAL RUN of consecutive coordinate records sharing
+    ``(chain, resSeq, iCode, resName)`` — how any PDB reader groups atoms into
+    residues, and why ``ANISOU`` interleaved with its own ``ATOM`` is one
+    residue rather than two.
+    """
+    runs, prev = [], None
+    for line in str(text).split("\n"):
+        if line[:6] not in _COORD_RECORDS:
+            continue
+        key = (line[21:22], line[22:26].strip(), line[26:27].strip(),
+               line[17:20].strip())
+        if key != prev:
+            runs.append(key)
+        prev = key
+    return runs
+
+
+def _duplicate_residue_ids(text):
+    """``(chain, resSeq, iCode)`` ids carried by more than one residue.
+
+    THE PROPERTY THE RESTORE PROMISES, stated over the delivered bytes instead
+    of over a refusal message. A refusal test proves the code declines the
+    inputs the test thought of; this proves the file that actually ships does
+    not contain two different residues wearing one residue id.
+    """
+    ids = [k[:3] for k in _residues_in_file(text)]
+    return sorted({i for i in ids if ids.count(i) > 1})
+
+
+class TestPdbCaSequence:
+    def test_it_agrees_with_pdb_ca_residues_about_what_a_residue_is(self, tmp_path):
+        path = tmp_path / "f.pdb"
+        path.write_text(FIXTURE_PDB, encoding="utf-8")
+        by_chain = rp.pdb_ca_sequence(FIXTURE_PDB)
+        flat = {(c, r, i) for c, v in by_chain.items() for r, i, _ in v}
+        residues, _ = rp.pdb_ca_residues(path)
+        assert flat == set(residues)
+
+    def test_it_carries_the_residue_name(self):
+        assert rp.pdb_ca_sequence(_design())["A"][0] == (1, "", "ALA")
+
+    def test_it_carries_the_insertion_code(self):
+        """THE BLOCKER, at its source. The de-dupe key already had the icode and
+        the stored tuple threw it away one line later, so ``A100``, ``A100A``
+        and ``A100B`` became three entries all keyed 100 -- three map values
+        that collide, and a delivered file with three residues numbered 100."""
+        text = "\n".join(_chain("A", ["TRP", "ALA", "GLY"], 100,
+                                icodes=["", "A", "B"]))
+        assert rp.pdb_ca_sequence(text)["A"] == [
+            (100, "", "TRP"), (100, "A", "ALA"), (100, "B", "GLY")]
+
+    def test_it_returns_each_chain_ascending(self):
+        text = "\n".join(_chain("A", ["GLY", "ALA", "SER"], 5)[::-1])
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(text)["A"]] == [5, 6, 7]
+
+    def test_ties_break_on_the_insertion_code_not_the_residue_name(self):
+        """A ``(resseq, resname)`` sort broke ties on the NAME: file order
+        TRP(100) / ALA(100A) / GLY(100B) parsed back as ALA / GLY / TRP, which
+        scrambles the positional correspondence before anything can check it.
+        The names here are chosen so the two orders differ."""
+        text = "\n".join(_chain("A", ["TRP", "ALA", "GLY"], 100,
+                                icodes=["", "A", "B"]))
+        assert [n for _r, _i, n in rp.pdb_ca_sequence(text)["A"]] == [
+            "TRP", "ALA", "GLY"]
+
+    def test_a_blank_insertion_code_sorts_first(self):
+        """PDB's own convention, and the fixture is written out of order so the
+        sort has to do the work."""
+        lines = _chain("A", ["ALA", "GLY", "SER"], 7, icodes=["B", "", "A"])
+        assert [i for _r, i, _n in rp.pdb_ca_sequence("\n".join(lines))["A"]] == [
+            "", "A", "B"]
+
+    def test_it_stops_at_the_first_endmdl(self):
+        text = _design() + "ENDMDL\n" + "\n".join(_chain("Z", ["ALA"] * 5, 1))
+        assert "Z" not in rp.pdb_ca_sequence(text)
+
+    def test_an_altloc_pair_is_one_residue_not_two(self):
+        """F4. Deleting the ``if key in seen: continue`` de-dupe left the whole
+        file green, and it is load-bearing: a side chain modelled in two
+        conformations writes TWO ``CA`` lines for one residue, so without the
+        de-dupe the chain comes back one residue longer than it is. Alternate
+        conformations are ordinary in any crystal structure.
+        """
+        lines = _chain("A", ["ALA", "GLY", "SER"], 5)
+        lines.insert(2, _with_altloc(lines[1], "B"))
+        lines[1] = _with_altloc(lines[1], "A")
+        got = rp.pdb_ca_sequence("\n".join(lines))["A"]
+        assert [r for r, _i, _n in got] == [5, 6, 7]
+
+    def test_an_altloc_pair_keeps_the_first_conformation_it_saw(self):
+        """The de-dupe must KEEP one, not drop both, and it must be the first
+        in file order — the same rule ``pdb_ca_residues`` follows, so the two
+        parsers cannot disagree about which residue is at that id."""
+        lines = _chain("A", ["ALA", "GLY", "SER"], 5)
+        alt = _with_altloc(lines[1], "B")
+        alt = alt[:17] + "TRP" + alt[20:]        # a DIFFERENT name, altloc B
+        lines[1] = _with_altloc(lines[1], "A")
+        lines.insert(2, alt)
+        got = rp.pdb_ca_sequence("\n".join(lines))["A"]
+        assert got == [(5, "", "ALA"), (6, "", "GLY"), (7, "", "SER")]
+
+
+class TestRestoreDesignNumbering:
+    def test_a_renumbered_design_is_put_back_into_the_input_numbering(self):
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], _reference())
+        assert rep["applied"] is True
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _i, _n in got["A"]] == list(range(234, 254))
+        assert [r for r, _i, _n in got["B"]] == list(range(300, 320))
+
+    def test_the_operators_hotspot_tokens_resolve_only_after_the_restore(self):
+        design = _design()
+        assert "A241" not in _keys(design)
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True
+        assert "A241" in _keys(out)
+        assert "B305" in _keys(out)
+
+    def test_the_binder_chain_is_never_renumbered(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rp.pdb_ca_sequence(out)["C"] == rp.pdb_ca_sequence(design)["C"]
+
+    def test_a_chain_the_caller_did_not_name_is_left_alone_even_when_mappable(self):
+        """F9. The test above does not discriminate its own property: chain C is
+        absent from the reference, so ANY code that ignored ``target_chains``
+        would refuse the whole file on C and leave C untouched by accident.
+        "Untouched because nothing happened" and "untouched because it was not
+        named" are different guarantees and only one of them is the binder's.
+
+        Here the reference DOES carry a chain C that would map cleanly, so the
+        only thing keeping it at 1..8 is that the caller did not name it. Code
+        that renumbered every chain the reference knows about would move C to
+        700..707 and fail this while still passing the test above.
+        """
+        ref = _reference()
+        ref["C"] = _ref_chain(_SEQ_C, 700)
+        design = _design()
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], ref)
+        assert rep["applied"] is True, rep["reason"]
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(range(234, 254))
+        assert rp.pdb_ca_sequence(out)["C"] == rp.pdb_ca_sequence(design)["C"]
+
+    def test_alternate_conformations_do_not_defeat_the_length_check(self):
+        """F4, end to end. A residue modelled in two conformations writes two
+        ``CA`` lines; without ``pdb_ca_sequence``'s de-dupe the design chain
+        parses one residue LONGER than the input, the length check refuses, and
+        the operator silently receives 1..N — the exact outcome the restore
+        exists to prevent, triggered by an ordinary crystal structure.
+
+        Both conformation lines must also be rewritten: leaving one behind on
+        upstream's number is a delivered file whose two conformers disagree
+        about which residue they are.
+        """
+        lines = _chain("A", _SEQ_A, 1, 1)
+        lines[4] = _with_altloc(lines[4], "A")
+        lines.insert(5, _with_altloc(lines[4], "B"))
+        design = ("\n".join(lines + _chain("B", _SEQ_B, 1, 100)
+                            + _chain("C", _SEQ_C, 1, 200)) + "\n")
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(range(234, 254))
+        at_238 = [l[16:17] for l in out.split("\n")
+                  if l[:6] == "ATOM  " and l[21:22] == "A" and l[22:26] == " 238"]
+        assert at_238 == ["A", "B"], "one conformation kept upstream's number"
+
+    def test_coordinates_and_residue_names_are_untouched(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        coords = lambda t: [l[30:54] for l in t.split("\n") if l[:6] == "ATOM  "]
+        names = lambda t: [l[17:20] for l in t.split("\n") if l[:6] == "ATOM  "]
+        assert coords(out) == coords(design)
+        assert names(out) == names(design)
+
+    def test_only_the_resseq_and_icode_columns_change(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        differing = {i
+                     for a, b in zip(design.split("\n"), out.split("\n"))
+                     for i, (x, y) in enumerate(zip(a, b)) if x != y}
+        assert differing <= {22, 23, 24, 25, 26}
+
+    def test_every_line_keeps_its_width(self):
+        """The companion the column test cannot do without. ``zip`` stops at the
+        shorter of two lines, so a rewrite that GREW a line -- by splicing an
+        insertion code into a record with no column for one, say -- would be
+        invisible to the comparison above. PDB is fixed-column: a line that
+        changes width has moved every field to its right."""
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        before, after = design.split("\n"), out.split("\n")
+        assert len(before) == len(after)
+        assert [len(l) for l in before] == [len(l) for l in after]
+
+    def test_the_line_count_is_preserved(self):
+        design = _design()
+        out, _ = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert len(out.split("\n")) == len(design.split("\n"))
+
+    def test_ter_is_re_derived_from_the_chains_last_coordinate_record(self):
+        # Chain A's TER AGREED with its atoms before the rewrite and must still
+        # agree after -- mapping it would have been fine, but leaving it alone
+        # would break something that was correct. Chain B's carried upstream's
+        # cumulative 999, which is not a key in the map at all. The binder's is
+        # left exactly as found.
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], _reference())
+        assert rep["applied"] is True
+        ters = {l[21:22]: int(l[22:26])
+                for l in out.split("\n") if l.startswith("TER")}
+        assert ters["A"] == 253
+        assert ters["B"] == 319
+        assert ters["C"] == 888
+
+    def test_a_design_already_in_the_input_numbering_is_left_alone(self):
+        design = _design(a_first=234, b_first=300)
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is False
+        assert rep["already_input_numbering"] is True
+        assert out == design
+
+    def test_matching_numbers_alone_do_not_prove_the_numbering_is_the_inputs(self):
+        """B3. ``already_input_numbering`` used to return BEFORE the sequence
+        check, so identical residue NUMBERS were enough to claim the delivered
+        file carries the operator's numbering.
+
+        The case that breaks it is ordinary: a target numbered from 1 -- an
+        AlphaFold model, say -- and a design where upstream emitted the BINDER
+        as chain A. The key lists are then identical, ``[] == []``-style
+        reasoning says "nothing to do", and the payload reports
+        ``target_numbering: "input"`` for a chain the code itself scored at 0%
+        identity. "Already correct" has to mean recognised, not merely
+        same-shaped.
+        """
+        reference = _reference(a_first=1, b_first=1)
+        design = _design(a_first=1, b_first=1, seq_a=list(reversed(_SEQ_A)))
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], reference)
+        assert rep["already_input_numbering"] is False
+        assert rep["applied"] is False
+        assert out == design
+        assert "chain A" in rep["reason"]
+        assert "sequence identity" in rep["reason"]
+
+    def test_a_design_that_really_is_already_correct_still_says_so(self):
+        """The companion: gating "already" on the sequence check must not turn
+        a genuinely already-correct design into a refusal."""
+        reference = _reference(a_first=1, b_first=1)
+        out, rep = rp.restore_design_numbering(_design(), ["A", "B"], reference)
+        assert rep["already_input_numbering"] is True
+        assert out == _design()
+
+    def test_a_blank_chain_id_is_not_silently_dropped(self):
+        """``{c for c in target_chains if c}`` dropped the blank chain id, which
+        is a legal PDB chain and a legitimate key in the reference. The file was
+        then rewritten with every OTHER chain renumbered and that one left in
+        1..N -- an ``applied`` file that is half in each numbering, which is
+        exactly what the all-or-none rule exists to prevent."""
+        lines = _chain(" ", _SEQ_A, 1, 1) + _chain("A", _SEQ_B, 1, 100)
+        design = "\n".join(lines) + "\n"
+        reference = {"": _ref_chain(_SEQ_A, 500), "A": _ref_chain(_SEQ_B, 700)}
+        out, rep = rp.restore_design_numbering(design, ["", "A"], reference)
+        assert rep["applied"] is True, rep["reason"]
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _i, _n in got[""]] == list(range(500, 520))
+        assert [r for r, _i, _n in got["A"]] == list(range(700, 720))
+
+
+class TestRestoreDesignNumberingCarriesInsertionCodes:
+    """THE BLOCKER, end to end.
+
+    An input chain with insertion codes -- which is every Kabat/Chothia-numbered
+    antibody, i.e. the target market -- used to come back with several design
+    residues stamped with the SAME number and a blank icode. It cleared the 0.9
+    identity floor (0.985 on a 200-residue chain with three of them), reported
+    ``applied``, and the payload still said ``target_numbering: "input"``. A
+    delivered file with duplicate residue ids is strictly worse than the 1..N it
+    replaced, because 1..N at least keys uniquely.
+    """
+
+    # Input chain A: 100, 100A, 100B, then 101..117. 20 residues, 20 distinct
+    # names, three of them sharing residue number 100.
+    _ICODES = ["", "A", "B"] + [""] * 17
+    _NUMBERS = [100, 100, 100] + list(range(101, 118))
+
+    def _reference(self):
+        ref = _reference()
+        ref["A"] = [(n, i, nm) for n, i, nm
+                    in zip(self._NUMBERS, self._ICODES, _SEQ_A)]
+        return ref
+
+    def _restored(self):
+        return rp.restore_design_numbering(_design(), ["A", "B"], self._reference())
+
+    def test_it_applies(self):
+        _out, rep = self._restored()
+        assert rep["applied"] is True, rep["reason"]
+
+    def test_no_two_residues_end_up_with_the_same_id(self):
+        out, _rep = self._restored()
+        ids = [(l[21:22], l[22:26], l[26:27]) for l in out.split("\n")
+               if l[:6] == "ATOM  " and l[12:16].strip() == "CA"]
+        assert len(ids) == len(set(ids)), "the delivered file has duplicate residues"
+
+    def test_the_insertion_codes_reach_the_delivered_file(self):
+        out, _rep = self._restored()
+        assert {"A100", "A100A", "A100B"} <= _keys(out)
+
+    def test_the_icode_column_is_actually_written(self):
+        """Not merely "the parser agrees with itself": column 27 of the three
+        residues numbered 100 must literally read ' ', 'A', 'B'."""
+        out, _rep = self._restored()
+        at_100 = [l[26:27] for l in out.split("\n")
+                  if l[:6] == "ATOM  " and l[21:22] == "A" and l[22:26] == " 100"]
+        assert at_100 == [" ", "A", "B"]
+
+    def test_the_positional_correspondence_is_not_scrambled(self):
+        """The sort tie-break, seen from the delivered file. Every design
+        residue must keep its own NAME while taking the input's id, so residue
+        i of the output names the same amino acid as residue i of the input."""
+        out, _rep = self._restored()
+        got = rp.pdb_ca_sequence(out)["A"]
+        assert got == self._reference()["A"]
+
+    def test_line_widths_survive_an_icode_being_written(self):
+        design = _design()
+        out, _rep = self._restored()
+        assert ([len(l) for l in out.split("\n")]
+                == [len(l) for l in design.split("\n")])
+
+
+class TestRestoreDesignNumberingRefuses:
+    def _unchanged(self, design, chains, reference):
+        out, rep = rp.restore_design_numbering(design, chains, reference)
+        assert rep["applied"] is False, rep["reason"]
+        assert out == design
+        return rep
+
+    def test_a_length_mismatch_refuses(self):
+        # A binder relabelled onto the target's chain id is caught here first.
+        rep = self._unchanged(_design(seq_a=_SEQ_A[:15]), ["A", "B"], _reference())
+        assert "length differs" in rep["reason"]
+
+    def test_a_sequence_mismatch_refuses(self):
+        # Same length, different protein: the positional map must not certify.
+        rep = self._unchanged(
+            _design(seq_a=list(reversed(_SEQ_A))), ["A", "B"], _reference())
+        assert "sequence identity" in rep["reason"]
+
+    def test_an_all_unknown_chain_refuses(self):
+        # UNK compares equal to anything, so without the informative floor this
+        # chain scores identity 1.0 against any reference of the same length.
+        rep = self._unchanged(_design(seq_a=["UNK"] * 20), ["A", "B"], _reference())
+        assert "informative" in rep["reason"]
+
+    def test_all_target_chains_map_or_none_is_applied(self):
+        # A alone would map cleanly; B is broken, so A must NOT be rewritten.
+        rep = self._unchanged(_design(seq_b=_SEQ_B[:9]), ["A", "B"], _reference())
+        assert "chain B" in rep["reason"]
+
+    def test_a_chain_missing_from_the_design_refuses(self):
+        rep = self._unchanged(_design(), ["A", "B", "D"], _reference())
+        assert "absent from the design output" in rep["reason"]
+
+    def test_a_design_missing_every_target_chain_is_not_called_already_correct(self):
+        # [] == [] would vote "already in the input numbering" and hand back the
+        # reassuring answer for a design that is in fact unusable.
+        binder_only = "\n".join(_chain("C", _SEQ_C, 1)) + "\n"
+        rep = self._unchanged(binder_only, ["A", "B"], _reference())
+        assert rep["already_input_numbering"] is False
+        assert "absent from the design output" in rep["reason"]
+
+    def test_a_chain_missing_from_the_input_refuses(self):
+        ref = _reference()
+        ref.pop("B")
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "absent from the input target" in rep["reason"]
+
+    def test_a_residue_number_too_wide_for_four_columns_refuses(self):
+        # 99990+ would overflow cols 23-26 and silently shift the iCode column.
+        rep = self._unchanged(_design(), ["A", "B"], _reference(a_first=99990))
+        assert "four columns" in rep["reason"]
+
+    def test_an_insertion_code_too_wide_for_one_column_refuses(self):
+        """The other half of the same guard. resSeq gets four columns and iCode
+        gets exactly one; a two-character code has nowhere to go, and writing it
+        anyway would push every field to its right along by one."""
+        ref = _reference()
+        ref["A"] = [(234 + i, "AB" if i == 3 else "", nm)
+                    for i, nm in enumerate(_SEQ_A)]
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "single column" in rep["reason"]
+
+    def test_a_map_that_is_not_one_to_one_refuses(self):
+        """THE BACKSTOP. Two design residues mapping onto one input residue id
+        emits a file with duplicate residues in it. ``pdb_ca_sequence`` cannot
+        produce such a reference any more -- it de-dupes on the full
+        ``(chain, resseq, icode)`` -- so this is reachable only by handing the
+        function a reference built some other way, which is precisely the
+        situation a backstop is for: the shipped version of this code got here
+        by dropping one field from that tuple."""
+        ref = _reference()
+        # Two entries with the SAME (resseq, icode): distinct residues in the
+        # list, one destination id.
+        ref["A"] = [(234, "", nm) if i < 2 else (234 + i, "", nm)
+                    for i, nm in enumerate(_SEQ_A)]
+        rep = self._unchanged(_design(), ["A", "B"], ref)
+        assert "one-to-one" in rep["reason"]
+
+    def test_a_residue_with_no_ca_is_not_left_behind_on_upstreams_number(self):
+        """F2. The injectivity refusal guards the MAP; nothing guarded the
+        OUTPUT. ``pdb_ca_sequence`` only sees residues that have a ``CA``, so a
+        residue modelled without one is not a key in the map — and the rewrite
+        loop used to hand any such coordinate record straight through, keeping
+        upstream's number while every neighbour moved, with ``applied`` still
+        True and the payload still claiming ``target_numbering: "input"``.
+
+        Here the CA-less residue is numbered 234, which is what design residue
+        1 becomes. The delivered file then carries TWO different residues at
+        ``A234`` — a duplicate residue id, which is precisely the outcome the
+        one-to-one refusal exists to prevent, reached around the side.
+        """
+        stray = _atom(998, "N", "TRP", "A", 234)
+        design = _design() + stray + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "not in the map" in rep["reason"], rep["reason"]
+        assert "chain A" in rep["reason"]
+
+    def test_a_hetatm_on_a_target_chain_is_not_left_behind(self):
+        """F2, the second way in. A structural zinc, a ligand or an ion sits on
+        a target chain as a ``HETATM`` whose residue name is not a modified
+        amino acid, so ``pdb_ca_sequence`` skips it and it is not a map key.
+        Numbered 240 it survives the rewrite unchanged and collides with what
+        design residue 7 becomes.
+
+        Production stages a cropped target that has no ligands in it, so this
+        is a correctness hole rather than a live incident — but a rewrite that
+        can emit duplicate residue ids must not report that it restored the
+        operator's numbering.
+        """
+        design = _design() + _atom(997, "ZN", "ZN", "A", 240, record="HETATM") + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "not in the map" in rep["reason"], rep["reason"]
+        assert "240" in rep["reason"], rep["reason"]
+
+    def test_the_refusal_counts_every_residue_it_could_not_place(self):
+        """One reason line for a whole file, with the count in it — a per-line
+        refusal would say "a coordinate record" and leave the operator to
+        discover the other forty by hand. Every id here is one the rewrite is
+        moving another residue ONTO, which is what makes leaving them in place
+        a collision rather than a coexistence."""
+        design = (_design()
+                  + _atom(996, "N", "TRP", "A", 240) + "\n"
+                  + _atom(995, "C", "TRP", "A", 241) + "\n"
+                  + _atom(994, "O", "TRP", "B", 305) + "\n")
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "3 residue" in rep["reason"], rep["reason"]
+
+    def test_the_refusal_counts_residues_rather_than_coordinate_records(self):
+        """G4. The count and the sample are the only parts of this an operator
+        can act on, and they described RECORDS. ONE tryptophan modelled without
+        a CA, with 8 atoms and their 8 ``ANISOU`` lines, reported ``16
+        coordinate record(s)`` with the sample ``(chain A residue 240, chain A
+        residue 240, chain A residue 240, ...)`` — the same residue three times,
+        and an ellipsis promising thirteen more when there is one.
+        """
+        atoms = []
+        for i, name in enumerate(("N", "C", "O", "CB", "CG", "CD1", "CD2", "CE2")):
+            atoms.append(_atom(900 + i, name, "TRP", "A", 240))
+            atoms.append(_atom(900 + i, name, "TRP", "A", 240, record="ANISOU"))
+        design = _design() + "\n".join(atoms) + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "1 residue" in rep["reason"], rep["reason"]
+        assert rep["reason"].count("chain A residue 240") == 1, rep["reason"]
+        assert "..." not in rep["reason"], rep["reason"]
+
+    def test_a_ter_too_short_to_carry_the_residue_id_refuses(self):
+        """F5, from the caller. ``_splice_resid`` promises to be
+        length-preserving or to return None, and the caller refuses the whole
+        file on None. A 22-character chain-bearing TER is the discriminator:
+        correct code refuses it, while a bounds check one column out returns a
+        26-character line and the caller accepts a file that grew.
+        """
+        lines = _design(ter=False).rstrip("\n").split("\n")
+        design = "\n".join(lines + ["TER      61      VAL A"]) + "\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "too short at 22 characters" in rep["reason"], rep["reason"]
+
+    def test_annotation_records_carrying_residue_numbers_make_it_decline(self):
+        design = _design() + "HELIX    1   1 ALA A    1  GLY A   10  1\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "HELIX" in rep["reason"]
+
+    def test_a_het_record_makes_it_decline(self):
+        """``HET`` names a residue by number in columns 14-17 the same way
+        ``HETATM`` does, and it was missing from the list."""
+        design = _design() + "HET     NAG  A 401      14\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "HET" in rep["reason"]
+
+    def test_remark_465_makes_it_decline(self):
+        """REMARK 465 tabulates the residues that are MISSING from the
+        coordinates, by number. Renumbering the coordinates and leaving that
+        table alone produces a file that contradicts itself."""
+        design = _design() + "REMARK 465   M RES C SSSEQI\n"
+        rep = self._unchanged(design, ["A", "B"], _reference())
+        assert "REMARK 465" in rep["reason"]
+
+    def test_an_ordinary_remark_does_not_make_it_decline(self):
+        """The companion, and the reason REMARK is not simply in the list:
+        every real PDB carries REMARKs, so refusing on the record name alone
+        would disable the restore on any file that has one."""
+        design = _design() + "REMARK   2 RESOLUTION.    1.90 ANGSTROMS.\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert out != design
+
+    def test_no_target_chains_named_is_a_no_op(self):
+        rep = self._unchanged(_design(), [], _reference())
+        assert "no target chains" in rep["reason"]
+
+    def test_it_never_raises_and_never_loses_the_design(self):
+        # A design that reaches this function has already been paid for; losing
+        # it over a numbering nicety would be far worse than shipping 1..N.
+        for bad in (None, 12, object()):
+            out, rep = rp.restore_design_numbering(bad, ["A"], _reference())
+            assert out is bad
+            assert rep["applied"] is False
+            assert rep["reason"]
+
+
+class TestRestoreDesignNumberingUnmappedRecords:
+    """G1. WHICH unmapped records cost the shard its numbering, and which do not.
+
+    The refusal above is right about the case it was built from and wrong about
+    the general one. It fired on EVERY coordinate record the map has no key
+    for, and gave as its reason that leaving such a record where it is "would
+    emit a file with two different residues sharing one residue id" — which is
+    true only when some OTHER residue is being renumbered ONTO the id that
+    record already occupies.
+
+    A ``HETATM ZN`` at ``A9000``, against a reference of 234-253, collides with
+    nothing. Refusing it ships the whole shard in upstream's 1..N: chain A
+    delivered as 1..20 instead of 234..253, the operator's own hotspot labels
+    stop resolving, and the results page raises a warning banner. One benign
+    heteroatom for the entire feature, on a stated reason that is false about
+    that input.
+
+    So the test of the guarantee has to be the guarantee itself — no two
+    different residues on one residue id in the DELIVERED bytes — rather than
+    the count of records the map happened not to know about.
+    """
+
+    def _applied(self, design, chains=("A", "B"), reference=None):
+        out, rep = rp.restore_design_numbering(
+            design, list(chains), _reference() if reference is None else reference)
+        assert rep["applied"] is True, rep["reason"]
+        assert not _duplicate_residue_ids(out), _duplicate_residue_ids(out)
+        return out, rep
+
+    def _refused(self, design, chains=("A", "B"), reference=None):
+        out, rep = rp.restore_design_numbering(
+            design, list(chains), _reference() if reference is None else reference)
+        assert rep["applied"] is False, "expected a refusal"
+        assert out == design
+        return rep
+
+    # -- the benign record --------------------------------------------------
+
+    def test_a_heteroatom_that_collides_with_nothing_still_applies(self):
+        """``A9000`` is outside 234-253, so no residue is being renumbered onto
+        it and it can simply stay where it is while its neighbours move."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        design = _design() + zn + "\n"
+        out, _rep = self._applied(design)
+        got = rp.pdb_ca_sequence(out)
+        assert [r for r, _i, _n in got["A"]] == list(range(234, 254))
+        assert [r for r, _i, _n in got["B"]] == list(range(300, 320))
+
+    def test_the_benign_heteroatom_keeps_its_own_number(self):
+        """It is not a key in the map, so there is nothing to move it to — and
+        inventing one would be the corruption the refusal was guarding
+        against."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        kept = [l for l in out.split("\n") if l[:6] == "HETATM"]
+        assert kept == [zn], kept
+
+    def test_the_operators_hotspots_still_resolve_beside_a_benign_heteroatom(self):
+        """The cost of over-refusing, stated the way the operator meets it."""
+        zn = _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        assert "A241" in _keys(out)
+        assert "B305" in _keys(out)
+
+    # -- the record that really does collide --------------------------------
+
+    def test_a_heteroatom_sitting_on_a_destination_id_still_refuses(self):
+        """``A240`` IS in 234-253, so design residue 7 is being renumbered onto
+        the id the zinc already holds. Leaving it there is the duplicate."""
+        design = _design() + _atom(997, "ZN", "ZN", "A", 240, record="HETATM") + "\n"
+        rep = self._refused(design)
+        assert "240" in rep["reason"], rep["reason"]
+        assert "not in the map" in rep["reason"], rep["reason"]
+
+    def test_a_destination_id_on_another_chain_is_not_a_collision(self):
+        """THE PER-CHAIN SCOPING OF THAT TEST, PINNED — and it was pinned by
+        nothing at all.
+
+        The two reference chains here occupy DISJOINT ranges, 234-253 and
+        300-319. ``A305`` is therefore not a destination on chain A: it is one
+        on chain B, and chain B is a different chain, so no residue is being
+        renumbered onto the zinc and it can stay where it is exactly as
+        ``A9000`` does.
+
+        Pooling both chains' destinations into one set is FAIL-CLOSED, so every
+        refusal test in this class still passes under it and the full 870-test
+        proteina suite stayed green when it was tried. What it actually does is
+        bring back the over-refusal this class exists to remove. On the real Fc
+        target the two chains overlap (234-444 and 237-444) so the pooled set
+        is almost the same set and the bug barely shows; on a target whose
+        chains sit in disjoint ranges it silently costs the whole shard its
+        numbering again.
+        """
+        zn = _atom(997, "ZN", "ZN", "A", 305, record="HETATM")
+        out, _rep = self._applied(_design() + zn + "\n")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(
+            range(234, 254))
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["B"]] == list(
+            range(300, 320))
+        assert [l for l in out.split("\n") if l[:6] == "HETATM"] == [zn]
+        assert "A241" in _keys(out)
+
+    def test_a_resseq_this_rewrite_cannot_read_does_not_cost_the_numbering(self):
+        """A residue number that is not a number cannot be a destination
+        either: every id this rewrite writes comes out of ``f"{n:4d}"``, and
+        ``int`` reads every one of those back. So no residue can be renumbered
+        onto such a record, it collides with nothing, and it keeps its own
+        field while the rest of the chain moves."""
+        broken = _atom(993, "N", "TRP", "A", 1)
+        broken = broken[:22] + "**** " + broken[27:]
+        out, _rep = self._applied(_design() + broken + "\n")
+        assert broken in out.split("\n"), "the unreadable field was rewritten"
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(out)["A"]] == list(
+            range(234, 254))
+
+    # -- the guarantee itself, over the delivered bytes ---------------------
+
+    def test_the_rewrite_never_creates_a_shared_residue_id(self):
+        """THE PROPERTY, ASSERTED DIRECTLY OVER THE DELIVERED BYTES. Every
+        refusal in this file is a means to this end, and a means can be wrong
+        about its end — this one was wrong in both directions at once, refusing
+        inputs that were fine on a stated reason that was false about them.
+
+        Each design here is free of duplicate ids BEFORE the rewrite and each
+        one must be genuinely rewritten, so a duplicate afterwards is one the
+        rewrite created. ``applied`` is asserted for exactly that reason: a
+        version that refuses everything satisfies "no duplicates" trivially,
+        which is how the over-refusal this test was written for would have
+        passed it.
+        """
+        icode_ref = _reference()
+        icode_ref["A"] = _ref_chain(_SEQ_A[:3], 100, icodes=["", "A", "B"]) + \
+            _ref_chain(_SEQ_A[3:], 101)
+        cases = {
+            "plain": (_design(), _reference()),
+            "benign heteroatom": (
+                _design() + _atom(997, "ZN", "ZN", "A", 9000, record="HETATM")
+                + "\n", _reference()),
+            "ordinary REMARK": (
+                _design() + "REMARK   2 RESOLUTION.    1.90 ANGSTROMS.\n",
+                _reference()),
+            "insertion codes": (_design(), icode_ref),
+            # Destinations that OVERLAP the design's own numbers: 1..20 -> 15..34
+            # shares eleven ids with itself, so a rewrite that walked the file
+            # twice, or spliced in place, would land residues on each other.
+            "destinations overlapping the source": (_design(),
+                                                    _reference(a_first=15)),
+        }
+        for label, (design, reference) in cases.items():
+            assert not _duplicate_residue_ids(design), label
+            out, rep = rp.restore_design_numbering(design, ["A", "B"], reference)
+            assert rep["applied"] is True, f"{label}: {rep['reason']}"
+            assert not _duplicate_residue_ids(out), (
+                f"{label}: {_duplicate_residue_ids(out)}")
+
+    def test_a_duplicate_upstream_already_emitted_is_carried_not_created(self):
+        """THE LIMIT OF THAT PROPERTY, STATED RATHER THAN IMPLIED, because it
+        looks at first like a hole in it.
+
+        A zinc numbered ``A5`` IS a key in the map, so it is renumbered to 238
+        along with design residue 5 and the delivered file carries ``ATOM ...
+        VAL A 238`` beside ``HETATM ... ZN A 238``. That is a shared residue id
+        in an ``applied`` file — but it is one the design ARRIVED with, at
+        ``A5``, and refusing would hand the operator the same two residues on
+        the same id with their hotspots no longer resolving. Strictly worse.
+
+        The mapped path cannot create a duplicate: the map is injective, so two
+        records reach one destination only if they already shared a source id.
+        Only the UNMAPPED path can, and that is what the refusal above is for.
+        """
+        design = _design() + _atom(997, "ZN", "ZN", "A", 5, record="HETATM") + "\n"
+        assert _duplicate_residue_ids(design) == [("A", "5", "")]
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert _duplicate_residue_ids(out) == [("A", "238", "")]
+        assert "A241" in _keys(out)
+
+    def test_the_property_check_can_actually_see_a_duplicate(self):
+        """The helper above proves nothing unless it FAILS on a file that has
+        the defect. This is one: two different residues, both ``A238``."""
+        bad = (_design()
+               + _atom(997, "ZN", "ZN", "A", 238, record="HETATM") + "\n"
+               + _atom(998, "CA", "TRP", "A", 238) + "\n")
+        assert _duplicate_residue_ids(bad) == [("A", "238", "")]
+
+    def test_the_property_check_does_not_call_one_residue_two(self):
+        """...and it must not fire on an ordinary residue whose atoms and
+        ``ANISOU`` lines share an id, or it would refuse every real file."""
+        lines = []
+        for i, name in enumerate(("N", "CA", "C", "O")):
+            lines.append(_atom(900 + i, name, "TRP", "A", 240))
+            lines.append(_atom(900 + i, name, "TRP", "A", 240, record="ANISOU"))
+        assert _duplicate_residue_ids("\n".join(lines) + "\n") == []
+
+    @pytest.mark.parametrize(
+        "record", ["ATOM  ", "HETATM", "ANISOU", "SIGATM", "SIGUIJ"])
+    def test_the_property_check_looks_at_every_coordinate_record(self, record):
+        """...and it has to see the duplicate in ALL FIVE of them, or the
+        property it checks is narrower than the rewrite it is checking.
+
+        ``_COORD_RECORDS`` is written out rather than read off
+        ``rp._RESSEQ_COORD_RECORDS`` so it cannot shrink WITH the code. Nothing
+        caught it shrinking ON ITS OWN: cutting it to ``("ATOM  ", "HETATM")``
+        survived the entire proteina suite. The test above looks like it would
+        catch that and does not — drop ``ANISOU`` and the remaining ``ATOM``
+        lines simply become contiguous, so the helper still returns ``[]`` and
+        the assertion still holds.
+
+        The record types are SPELLED OUT here too, for the reason they are
+        spelled out there: parametrising on the tuple under test would delete a
+        case along with its entry and leave the file green.
+
+        This is about the DETECTOR's breadth only. Whether production renumbers
+        each of these record types is pinned separately, by
+        ``TestRestoreDesignNumberingRecordCoverage``.
+        """
+        bad = (_atom(997, "ZN", "ZN", "A", 238, record=record) + "\n"
+               + _atom(998, "CA", "TRP", "A", 238, record=record) + "\n")
+        assert _duplicate_residue_ids(bad) == [("A", "238", "")]
+
+
+class TestRestoreDesignNumberingRecordCoverage:
+    """Which records the rewrite touches, and which it must not.
+
+    Every one of these was droppable from ``_RESSEQ_COORD_RECORDS`` without a
+    single test noticing, and each drop leaves a file whose coordinate section
+    and its own annotations disagree about which residue is which.
+    """
+
+    def _renumbered_line(self, record):
+        """The rewritten line for a single extra record on chain A residue 1."""
+        extra = _atom(999, "CA", "ALA", "A", 1, record=record)
+        design = _design() + extra + "\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        return [l for l in out.split("\n") if l[:6] == record][-1]
+
+    @pytest.mark.parametrize("record", ["ANISOU", "SIGATM", "SIGUIJ", "HETATM"])
+    def test_every_coordinate_record_type_is_renumbered(self, record):
+        assert int(self._renumbered_line(record)[22:26]) == 234
+
+    def test_a_record_this_rewrite_does_not_own_is_left_alone(self):
+        """CONECT carries ATOM SERIAL numbers, not residue numbers. Renumbering
+        it would corrupt a file that was correct."""
+        design = _design() + "CONECT    1    2\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is True, rep["reason"]
+        assert "CONECT    1    2" in out
+
+    # WRITTEN OUT, not read off ``_RESSEQ_ANNOTATION_RECORDS``. Parametrising on
+    # the tuple under test would mean deleting an entry deletes its own test
+    # case and the file stays green — which is exactly the state this replaces:
+    # 8 of these 10 were droppable without a single failure.
+    _ANNOTATION_RECORDS = [
+        ("HELIX ", "HELIX    1   1 ALA A    1  GLY A   10  1"),
+        ("SHEET ", "SHEET    1   A 2 ALA A   1  GLY A  10  0"),
+        ("SSBOND", "SSBOND   1 CYS A    6    CYS A  127"),
+        ("LINK  ", "LINK         O   GLY A   1                 NA    NA A 100"),
+        ("CISPEP", "CISPEP   1 SER A    1    PRO A    2          0        0.00"),
+        ("SITE  ", "SITE     1 AC1  3 HIS A   5  ASP A   7  SER A   9"),
+        ("MODRES", "MODRES 1ABC MSE A    1  MET  SELENOMETHIONINE"),
+        ("SEQADV", "SEQADV 1ABC GLY A    1  UNP  P00001    ALA     1 CONFLICT"),
+        ("DBREF ", "DBREF  1ABC A    1    20  UNP    P00001   TEST     1    20"),
+        ("HET   ", "HET     NAG  A 401      14"),
+    ]
+
+    @pytest.mark.parametrize("record,line", _ANNOTATION_RECORDS,
+                             ids=[r.strip() for r, _ in _ANNOTATION_RECORDS])
+    def test_every_annotation_record_type_makes_it_decline(self, record, line):
+        """F7. Each of these tabulates residue numbers somewhere other than
+        columns 23-26, so renumbering only the coordinate section leaves the
+        file disagreeing with itself about which residue is which. The restore
+        declines instead — the direction that ships upstream's file untouched.
+        """
+        design = _design() + line + "\n"
+        out, rep = rp.restore_design_numbering(design, ["A", "B"], _reference())
+        assert rep["applied"] is False, rep["reason"]
+        assert out == design
+        assert record.strip() in rep["reason"], rep["reason"]
+
+
+class TestChainRenumberMap:
+    def test_it_maps_position_for_position(self):
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = _ref_chain(_SEQ_A, 234)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["map"][(1, "")] == (234, "")
+        assert got["map"][(20, "")] == (253, "")
+        assert got["identity"] == 1.0
+
+    def test_the_map_is_keyed_and_valued_on_the_whole_residue_id(self):
+        """``{resseq: resseq}`` is not a map between PDB residues -- it drops
+        the insertion code from both ends, which is how three input residues
+        collapsed onto one output number."""
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = _ref_chain(_SEQ_A[:3], 100, icodes=["", "A", "B"]) + \
+            _ref_chain(_SEQ_A[3:], 101)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["map"][(2, "")] == (100, "A")
+        assert got["map"][(3, "")] == (100, "B")
+
+    def test_an_empty_chain_refuses(self):
+        assert rp.chain_renumber_map([], [])["ok"] is False
+
+    def test_a_stray_unknown_does_not_drag_a_real_chain_below_the_floor(self):
+        obs = _ref_chain(["UNK"] + _SEQ_A[1:], 1)
+        ref = _ref_chain(_SEQ_A, 234)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is True
+        assert got["n_informative"] == 19
+
+    def test_a_few_lucky_matches_among_unknowns_still_refuses(self):
+        # identity 1.0 over 3 informative pairs is not evidence of a chain.
+        obs = _ref_chain(["UNK"] * 17 + _SEQ_A[17:], 1)
+        ref = _ref_chain(_SEQ_A, 234)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["n_informative"] == 3
+        assert got["identity"] == 1.0
+        assert got["ok"] is False
+        assert "informative" in got["reason"]
+
+    def test_a_mostly_unknown_reference_no_longer_certifies_a_whole_chain(self):
+        """CHANGED DELIBERATELY, and this comment is the argument for it.
+
+        This test used to be ``test_an_all_unknown_reference_may_still_certify_
+        a_tiny_target`` and asserted ``ok is True``: a reference offering only 3
+        informative residues lowered the absolute floor to 3, so 3 coincidental
+        matches certified a map over the whole chain. The floor is
+        ``max(1, min(10, ref_informative))``, which on a 200-residue reference
+        with 198 UNK collapses to 2 -- two matches then key 200 residues onto
+        the operator's numbering.
+
+        The cap on the absolute floor is right and stays: a genuinely tiny
+        target must still work, and it does (see the test below). What was
+        missing is the canary's second half, ``TARGET_MIN_INFORMATIVE_FRACTION
+        = 0.5``, which production never ported. A chain that is 85% unknown is
+        mostly wildcard matches rather than evidence, whatever the absolute
+        count says.
+        """
+        seq = ["UNK"] * 17 + _SEQ_A[17:]
+        obs = _ref_chain(seq, 1)
+        ref = _ref_chain(seq, 234)
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is False
+        assert "3 of the 20" in got["reason"]
+
+    def test_a_genuinely_tiny_target_still_certifies(self):
+        """The case the absolute floor's cap exists for, and the boundary the
+        fraction floor must not swallow: a 6-residue target, every name known.
+        Below the absolute minimum of 10 and comfortably above 50% evidence."""
+        obs = _ref_chain(_SEQ_A[:6], 1)
+        ref = _ref_chain(_SEQ_A[:6], 234)
+        assert rp.chain_renumber_map(obs, ref)["ok"] is True
+
+    def test_the_informative_fraction_floor_is_exactly_one_half(self):
+        """Pins the VALUE, not just the presence. 10 of 20 informative is
+        exactly 0.5 and passes; 9 of 20 is below and refuses."""
+        ref = _ref_chain(_SEQ_A, 234)
+        at_floor = _ref_chain(["UNK"] * 10 + _SEQ_A[10:], 1)
+        below = _ref_chain(["UNK"] * 11 + _SEQ_A[11:], 1)
+        assert rp.chain_renumber_map(at_floor, ref)["ok"] is True
+        assert rp.chain_renumber_map(below, ref)["ok"] is False
+
+    def test_a_modified_residue_compares_equal_to_its_parent(self):
+        """B5. An upstream refold writes selenomethionine back as METHIONINE.
+        Exact ``==`` scores every one of those a mismatch, so a target with
+        enough of them drops below 0.9 and the operator silently receives 1..N
+        -- the defect this whole function exists to fix, firing on a correct
+        input. MSE and MET are the same residue."""
+        seq = ["MSE" if nm == "MET" else nm for nm in _SEQ_A]
+        obs = _ref_chain(seq, 1)          # design: refolded, MSE -> MET
+        ref = _ref_chain(_SEQ_A, 234)     # input: the deposited MSE
+        got = rp.chain_renumber_map(obs, _ref_chain(seq, 234))
+        assert got["identity"] == 1.0
+        folded = rp.chain_renumber_map(obs, ref)
+        assert folded["ok"] is True, folded["reason"]
+        assert folded["identity"] == 1.0
+
+    # F6. THE TABLE'S CONTENT, WRITTEN OUT INDEPENDENTLY. The test this replaces
+    # iterated ``rp._MODRES_PARENT`` and asserted ``_same_resname(child,
+    # parent)`` for each entry — but ``_same_resname`` IS that table, so the
+    # assertion was ``table[x] == table[x]``. Deleting PTR, KCX, HYP, LLP and
+    # CSD survived it; so did changing CSO's parent from CYS to TRP. Its
+    # docstring claimed it would catch a missing entry, which is the one thing
+    # it could not do.
+    #
+    # Each parent below is the amino acid the modification is made FROM, which
+    # is what an upstream refold writes back: MSE is methionine with selenium,
+    # SEP/TPO/PTR are phosphoserine/threonine/tyrosine, KCX is carboxylated
+    # lysine, HYP is hydroxyproline, LLP is the lysine-PLP Schiff base, PCA is
+    # pyroglutamate (from GLU), and the CYS block is the oxidised / alkylated
+    # cysteines.
+    _EXPECTED_MODRES_PARENT = {
+        "MSE": "MET", "CME": "CYS", "CSO": "CYS", "SEP": "SER", "TPO": "THR",
+        "PTR": "TYR", "KCX": "LYS", "HYP": "PRO", "LLP": "LYS", "CSD": "CYS",
+        "OCS": "CYS", "MLY": "LYS", "M3L": "LYS", "CAS": "CYS", "CSS": "CYS",
+        "CSX": "CYS", "PCA": "GLU", "SAC": "SER",
+    }
+
+    def test_the_modified_residue_table_has_the_entries_it_claims_to(self):
+        """Pins the CONTENT, so a deletion or a wrong parent fails here. An
+        entry silently missing is not a cosmetic loss: an upstream refold that
+        writes the modification back as its parent then scores every one of
+        those a mismatch, and a target with enough of them drops below the 0.9
+        floor and ships in 1..N with nothing said."""
+        assert rp._MODRES_PARENT == self._EXPECTED_MODRES_PARENT
+
+    def test_every_modified_residue_upstream_accepts_has_a_parent(self):
+        """The two structures live in different places and neither imports the
+        other. ``_MODRES_EQUIV`` decides what counts as a protein residue at
+        parse time; ``_MODRES_PARENT`` decides what it compares equal to. A
+        name in the first and not the second is a residue that is counted and
+        then always scored a mismatch."""
+        assert set(rp._MODRES_PARENT) == set(rp._MODRES_EQUIV)
+
+    @pytest.mark.parametrize("child,parent", sorted(_EXPECTED_MODRES_PARENT.items()))
+    def test_each_modified_residue_folds_to_its_parent(self, child, parent):
+        """The behavioural half, driven from the written-out expectation rather
+        than from the table it is testing."""
+        assert rp._same_resname(child, parent), f"{child} does not fold to {parent}"
+        assert rp._same_resname(parent, child)
+
+    def test_two_different_residues_still_do_not_compare_equal(self):
+        """The folding must not become a wildcard: it is what stops a false
+        MATCH from rewriting the deliverable's keys on a correspondence that
+        does not hold."""
+        assert rp._same_resname("MSE", "CYS") is False
+        assert rp._same_resname("ALA", "GLY") is False
+
+    def test_the_identity_floor_is_exactly_zero_point_nine(self):
+        """Pins the VALUE and the BOUNDARY. 0.9 -> 0.45 and ``<`` -> ``<=``
+        both used to survive the suite, so neither the number nor the sense of
+        the comparison was defended by anything.
+
+        20 residues, so identity moves in steps of 0.05: 18/20 is exactly 0.9
+        and must PASS (the comparison is ``identity < min_identity``), 17/20 is
+        0.85 and must refuse. A floor of 0.45 would accept both.
+        """
+        ref = _ref_chain(_SEQ_A, 234)
+        # Two mismatches: 18/20 = 0.90 exactly.
+        at_floor = _ref_chain(["GLY", "ALA"] + _SEQ_A[2:], 1)
+        # Three mismatches: 17/20 = 0.85.
+        below = _ref_chain(["GLY", "ALA", "TRP"] + _SEQ_A[3:], 1)
+        assert rp.chain_renumber_map(at_floor, ref)["identity"] == 0.9
+        assert rp.chain_renumber_map(at_floor, ref)["ok"] is True
+        assert rp.chain_renumber_map(below, ref)["identity"] == 0.85
+        assert rp.chain_renumber_map(below, ref)["ok"] is False
+
+    def test_an_injective_map_is_required(self):
+        obs = _ref_chain(_SEQ_A, 1)
+        ref = [(234, "", nm) if i < 2 else (234 + i, "", nm)
+               for i, nm in enumerate(_SEQ_A)]
+        got = rp.chain_renumber_map(obs, ref)
+        assert got["ok"] is False
+        assert got["map"] == {}
+        assert "one-to-one" in got["reason"]
+
+
+class TestSpliceResid:
+    """F5. The two SHORT-LINE branches, which no test ever reached.
+
+    ``_splice_resid`` promises to be length-preserving or to return ``None``,
+    and the caller refuses the whole file on ``None`` rather than emit a record
+    whose fields have all shifted right. Every fixture in this file is 80
+    columns wide, so both short-line branches were dead in every test and two
+    mutations survived the suite — ``len(line) < 26`` weakened to ``< 22``, and
+    the 26-character branch made to splice unconditionally. Both make the
+    function GROW a line, which in a fixed-column format is a corrupted file.
+
+    26 and 22 characters are not invented widths: the archived input target's
+    own TER records are 26 characters plus a trailing space.
+    """
+
+    # cols: TER(0-2) serial(7-10) resName(17-19) chainID(21) resSeq(22-25)
+    _TER26 = "TER    1234      VAL A 211"
+    # The same record with the resSeq field itself truncated away.
+    _TER22 = "TER      61      VAL A"
+
+    def test_the_fixtures_are_the_widths_this_class_is_named_for(self):
+        assert len(self._TER26) == 26
+        assert len(self._TER22) == 22
+
+    def test_a_line_too_short_for_the_resseq_field_is_refused(self):
+        """Nothing can be written into a field that is not there. A bounds
+        check one column out would return ``line[:22] + "%4d"`` — a 26-character
+        line built out of a 22-character one."""
+        assert rp._splice_resid(self._TER22, (234, "")) is None
+        assert rp._splice_resid(self._TER22, (234, "A")) is None
+
+    def test_a_twenty_six_character_line_is_rewritten_without_growing(self):
+        """resSeq is complete but the file ends before the iCode column.
+        Writing a BLANK icode into a column that does not exist is a no-op, so
+        the line is rewritten without one — and stays 26 characters."""
+        got = rp._splice_resid(self._TER26, (234, ""))
+        assert got is not None
+        assert len(got) == 26
+        assert got == "TER    1234      VAL A 234"
+
+    def test_a_twenty_six_character_line_cannot_carry_an_insertion_code(self):
+        """A REAL icode has nowhere to go here. Splicing it anyway appends a
+        27th column, which is how a rewrite that "only touches columns 23-27"
+        moves every field of the record it did not touch."""
+        assert rp._splice_resid(self._TER26, (234, "A")) is None
+
+    def test_a_full_width_line_keeps_both_fields_and_its_width(self):
+        """The ordinary branch, stated next to the other two so the contract
+        reads as one thing: 27 columns or more and both fields are written."""
+        line = _atom(1, "CA", "ALA", "A", 5)
+        got = rp._splice_resid(line, (234, "B"))
+        assert len(got) == len(line)
+        assert got[22:26] == " 234"
+        assert got[26:27] == "B"
+        assert got[27:] == line[27:]
+
+
+class TestTheStagedReferenceEncoding:
+    """G3. What a non-ASCII byte in the uploaded target actually does.
+
+    ``stage_cropped_target`` WRITES the staged crop with ``dest.write_text``,
+    i.e. the platform default encoding, and the upload loop READS it back as
+    latin-1. The note that documented that asymmetry named the wrong exposure
+    and drew the wrong conclusion from it, and a false comment is worse than
+    no comment — this is what the replacement has to be true about.
+
+    Behaviour is fail-closed either way, so nothing here is a code fix; these
+    are the two measurements the note is now written from.
+    """
+
+    # Residue 4 is MSE, a MODIFIED RESIDUE, and it is written as a ``HETATM``
+    # exactly as a real deposit writes selenomethionine. Without it this whole
+    # class describes a file no real target looks like, and the record-set
+    # assertion below silently became a claim about the fixture rather than
+    # about the crop.
+    _NAMES = ["ALA", "GLY", "SER", "MSE", "VAL", "LEU", "ILE", "PRO", "PHE",
+              "TYR", "TRP", "HIS"]
+
+    def _upload(self, mangle=()):
+        """A 12-residue chain A, plus the annotation records a real deposit has.
+
+        ``mangle`` indexes residues whose NAME field gets byte 0xE9 in its last
+        column — the one place a non-ASCII byte can both survive the crop and
+        land inside the fixed-width columns the restore reads.
+        """
+        lines = ["HEADER    TEST", "REMARK   1 AUTH   J. M\xe9LLER",
+                 "SEQRES   1 A   12  ALA GLY SER"]
+        for i, name in enumerate(self._NAMES):
+            record = "HETATM" if name in rp._MODRES_EQUIV else "ATOM  "
+            atom = _atom(i + 1, "CA", name, "A", i + 1, record=record)
+            if i in mangle:
+                atom = atom[:17] + name[:2] + "\xe9" + atom[20:]
+            lines.append(atom)
+        return "\n".join(lines) + "\nEND\n"
+
+    def _stage(self, tmp_path, text, name):
+        raw = tmp_path / f"{name}.pdb"
+        raw.write_bytes(text.encode("latin-1"))
+        residues, _ = rp.pdb_ca_residues(raw)
+        staged = tmp_path / f"{name}_staged.pdb"
+        # EXACTLY the two calls production makes, in order: the upload is read
+        # with the platform default and ``errors="replace"``, and the staged
+        # file is read back as latin-1.
+        rp.stage_cropped_target(staged, raw.read_text(errors="replace"),
+                                residues, [("A", 1, 12)])
+        return rp.pdb_ca_sequence(staged.read_text(encoding="latin-1"))
+
+    def test_the_crop_emits_no_remark_for_a_byte_to_hide_in(self, tmp_path):
+        """The note named a REMARK as the exposure. ``crop_pdb_to_contig``
+        emits COORDINATE lines — ``ATOM``, and ``HETATM`` for a modified
+        residue in ``_MODRES_EQUIV`` — plus one ``TER`` per chain and a final
+        ``END``, and no annotation record at all, so no REMARK, no HEADER and
+        no SEQRES is ever in the file the restore reads.
+
+        THE COUNTS ARE ASSERTED, NOT JUST THE RECORD SET. This test used to
+        assert ``{"ATOM", "TER", "END"}`` and passed only because its fixture
+        contained no modified residue — so it stood behind a production comment
+        that was false about every deposit containing one. A record set alone
+        goes quiet again the moment the fixture loses its ``HETATM``; the
+        counts do not.
+        """
+        raw = tmp_path / "in.pdb"
+        raw.write_bytes(self._upload().encode("latin-1"))
+        residues, _ = rp.pdb_ca_residues(raw)
+        staged = tmp_path / "staged.pdb"
+        rp.stage_cropped_target(staged, raw.read_text(errors="replace"),
+                                residues, [("A", 1, 12)])
+        records = [l[:6].strip()
+                   for l in staged.read_text(encoding="latin-1").split("\n") if l]
+        counts = {r: records.count(r) for r in set(records)}
+        assert counts == {"ATOM": 11, "HETATM": 1, "TER": 1, "END": 1}, counts
+
+    def test_a_non_ascii_byte_in_a_kept_coordinate_line_does_move_the_reference(
+            self, tmp_path):
+        """...and where it CAN land, it moves exactly what the note said it
+        moved "not at all". Which way depends on the platform default: under
+        UTF-8 (what the container runs) the replacement character is written
+        back as three bytes, so the latin-1 read finds that line two columns
+        wide and the residue drops out of the reference entirely; under a
+        single-byte default the widths hold and the residue NAME changes."""
+        clean = self._stage(tmp_path, self._upload(), "clean")
+        dirty = self._stage(tmp_path, self._upload(mangle=(1, 4)), "dirty")
+        assert clean["A"] == [(i + 1, "", n) for i, n in enumerate(self._NAMES)]
+        assert dirty["A"] != clean["A"], (
+            "the byte reached neither the residue names nor the residue count")
+
+    def test_and_the_restore_declines_rather_than_renumbering_against_it(
+            self, tmp_path):
+        """The direction that makes this a documentation defect rather than a
+        live one. A design that matches the CLEAN target is refused against the
+        mangled reference — on length under UTF-8, on sequence identity under a
+        single-byte default. Neither renumbers, so a clean apply becomes a
+        refusal and never a wrong file."""
+        dirty = self._stage(tmp_path, self._upload(mangle=(1, 4)), "dirty")
+        design = "\n".join(
+            _atom(i + 1, "CA", n, "A", i + 1)
+            for i, n in enumerate(self._NAMES)) + "\nEND\n"
+        out, rep = rp.restore_design_numbering(design, ["A"], dirty)
+        assert rep["applied"] is False, rep
+        assert out == design
+        assert ("length differs" in rep["reason"]
+                or "sequence identity" in rep["reason"]), rep["reason"]
+
+
+def test_the_staged_crop_encoding_note_describes_the_code_that_exists():
+    """G3, as text. The note claimed the exposure was "a non-ASCII byte in a
+    REMARK" — a record the crop does not emit — and concluded that it "would
+    move residue NAMES not at all and identity not at all", which the class
+    above measures as false for the line where such a byte can actually land.
+
+    A comment cannot be tested for truth, only for the specific false sentences
+    it was caught making. These two are the ones."""
+    src = (_PROTEINA_DIR / "run_pipeline.py").read_text(encoding="utf-8")
+    assert "non-ASCII byte in a REMARK" not in src, (
+        "the note still names a REMARK as the exposure; crop_pdb_to_contig "
+        "emits only ATOM/TER/END")
+    assert "NAMES not at all and identity not at all" not in src, (
+        "the note still says a non-ASCII byte moves neither, measured false "
+        "by TestTheStagedReferenceEncoding")
+
+
+class TestUploadLoopNumbering:
+    """THE CALL SITE, exercised rather than pattern-matched.
+
+    MERGE NOTE (parity branch). Three tests here assert the set of uploaded
+    basenames as a stand-in for "both designs shipped". They were written
+    against 0-based names and now read ``design_001.pdb`` / ``design_002.pdb``,
+    because the delivered rank became dense and 1-based to match the other five
+    generators -- the same change that makes proteina agree with
+    ``shared/exports.py``'s cross-tool invariant. The filenames were never this
+    class's subject; each of those tests is really asserting ``target_numbering``,
+    ``n_failures`` or ``designs_completed``, and every one of those assertions is
+    untouched. Nothing here was relaxed to accommodate the merge.
+
+    Everything above this class tests pure functions. The only thing that stood
+    between them and the delivered file was an AST check that
+    ``restore_design_numbering`` appears somewhere in a Call node and a
+    substring check for ``"target_numbering"``. Reviewer B mutated the upload
+    loop in an isolated worktree and ALL SIX of these survived the whole suite:
+
+      * deleting the renumber block outright
+      * discarding ``restored`` and never assigning ``pdb_bytes``
+      * setting ``numbering = "input"`` unconditionally
+      * passing the BINDER chain into ``renumber_chains``
+      * reading the reference from the RAW UPLOAD instead of the staged crop
+      * running the restore on CURATED runs too
+
+    These drive ``main()`` for real with the network and ``complexa`` stubbed,
+    and capture the bytes actually handed to ``upload_pdb`` -- which is the only
+    artifact the operator ever sees.
+    """
+
+    # The upload holds 40 residues per target chain; the contig selects 20 of
+    # them. That gap is what tells "read the staged crop" apart from "read the
+    # raw upload": against the crop the design's 20-residue chains map, against
+    # the upload they fail on length.
+    _CONTIG = "A11-30,B11-30"
+    _UPLOAD_SPAN = (1, 40)
+    _CROP = (11, 30)
+
+    def _upload_text(self):
+        lines = []
+        serial = 1
+        for chain, seq in (("A", _SEQ_A), ("B", _SEQ_B)):
+            lo, hi = self._UPLOAD_SPAN
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", seq[(resseq - 1) % len(seq)],
+                                   chain, resseq))
+                serial += 1
+        return "\n".join(lines) + "\nEND\n"
+
+    def _cropped_names(self, seq):
+        lo, hi = self._CROP
+        return [seq[(r - 1) % len(seq)] for r in range(lo, hi + 1)]
+
+    def _design_text(self, *, seq_a=None, seq_b=None):
+        """A design as upstream writes one: target chains renumbered to 1..N."""
+        a = self._cropped_names(_SEQ_A) if seq_a is None else seq_a
+        b = self._cropped_names(_SEQ_B) if seq_b is None else seq_b
+        lines = []
+        lines += _chain("A", a, 1, 1)
+        lines.append(_ter(500, a[-1], "A", len(a)))
+        lines += _chain("B", b, 1, 100)
+        lines.append(_ter(501, b[-1], "B", 999))
+        lines += _chain("C", _SEQ_C, 1, 200)
+        lines.append(_ter(502, _SEQ_C[-1], "C", 888))
+        return "\n".join(lines) + "\nEND\n"
+
+    def _drive(self, tmp_path, monkeypatch, *, job_spec, n_designs=2,
+               design_text=None, input_text=None, plant_staged=None,
+               endpoint="https://example/upload"):
+        """Run main() to completion, returning (result, uploaded_bytes_by_name).
+
+        ``plant_staged`` writes a file into the hub target dir under the run's
+        task_name BEFORE main() runs -- the only way to give a CURATED run a
+        staged reference to read, which is what makes the "curated runs too"
+        mutation observable rather than inert.
+
+        ``endpoint=""`` drives the INLINE path instead, where nothing is
+        uploaded and the coordinates come back in the result. ``uploaded`` is
+        then empty by construction and the delivered bytes must be read off
+        ``candidates[*]["pdb_content_b64"]``.
+        """
+        result_file = tmp_path / "smoke.json"
+        monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
+        home = tmp_path / "proteina"
+        (home / "configs" / "targets").mkdir(parents=True)
+        registry = home / "configs" / "targets" / "targets_dict.yaml"
+        registry.write_text(
+            "target_dict_cfg:\n"
+            "  02_PDL1:\n"
+            "    source: bindcraft_targets\n"
+            "    target_path: ./assets/target_data/bindcraft_targets/PD-L1.pdb\n"
+        )
+        monkeypatch.setattr(rp, "PROTEINA_HOME", str(home))
+        monkeypatch.setattr(rp, "_TARGETS_DICT", str(registry))
+        hub_targets = home / "hub_targets"
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(hub_targets))
+        run_dir = home / "inference"
+
+        # write_BYTES throughout, never write_text: on Windows the text writer
+        # translates "\n" to "\r\n", and the pipeline reads these files as bytes.
+        # A fixture written in text mode would be comparing the delivered file
+        # against a differently-terminated copy of itself.
+        if plant_staged:
+            hub_targets.mkdir(parents=True, exist_ok=True)
+            (hub_targets / f"{plant_staged}.pdb").write_bytes(
+                self._staged_equivalent().encode("latin-1"))
+
+        text = self._upload_text() if input_text is None else input_text
+        monkeypatch.setattr(
+            rp, "download_target",
+            lambda url, dest: (dest.parent.mkdir(parents=True, exist_ok=True),
+                               dest.write_bytes(text.encode("latin-1")), dest)[-1])
+
+        design = self._design_text() if design_text is None else design_text
+
+        def fake_run(cmd, cwd):
+            if cmd[:3] == [rp.COMPLEXA_BIN, "target", "add"]:
+                import yaml
+                data = yaml.safe_load(registry.read_text()) or {}
+                data.setdefault("target_dict_cfg", {})
+                data["target_dict_cfg"][cmd[3]] = {
+                    "source": rp._HUB_SOURCE,
+                    "target_path": cmd[cmd.index("--target-path") + 1],
+                    "target_input": cmd[cmd.index("--target-input") + 1],
+                    "hotspot_residues": [],
+                    "binder_length": [
+                        int(cmd[cmd.index("--binder-length") + 1]),
+                        int(cmd[cmd.index("--binder-length") + 2]),
+                    ],
+                }
+                registry.write_text(yaml.safe_dump(data, sort_keys=False))
+                return 0
+            # `complexa design`: emit the reward CSV and the design PDBs the
+            # upload loop will read.
+            out = run_dir / "samples"
+            out.mkdir(parents=True, exist_ok=True)
+            rows = ["sample,pdb_path,total_reward"]
+            for i in range(n_designs):
+                pdb = out / f"sample_{i}.pdb"
+                pdb.write_bytes(design.encode("latin-1"))
+                rows.append(f"sample_{i},{pdb},{1.0 - i * 0.1:.3f}")
+            (run_dir / "rewards_shard.csv").write_bytes(
+                ("\n".join(rows) + "\n").encode("latin-1"))
+            return 0
+        monkeypatch.setattr(rp, "run_streaming", fake_run)
+
+        uploaded: dict[str, bytes] = {}
+        monkeypatch.setattr(
+            rp, "request_upload_urls",
+            lambda endpoint, token, names: {n: f"https://up/{n}" for n in names})
+        monkeypatch.setattr(
+            rp, "upload_pdb",
+            lambda url, pdb_bytes: uploaded.__setitem__(
+                url.rsplit("/", 1)[-1], pdb_bytes))
+
+        payload = {
+            "job_spec": job_spec,
+            "input_presigned_url": (
+                "" if job_spec.get("target_source") != "custom"
+                else "https://example/target.pdb"),
+            "upload_urls_endpoint": endpoint,
+            # No job_token on the inline path: a hub-shaped payload that lost
+            # its endpoint is refused pre-GPU by design, so leaving it set here
+            # would drive a refusal instead of an inline delivery.
+            "job_token": "t" if endpoint else "", "tier": "protein_binder",
+        }
+        monkeypatch.setenv("JOB_PAYLOAD", json.dumps(payload))
+        monkeypatch.setenv("JOB_TIER", "protein_binder")
+        monkeypatch.setenv("JOB_ID", "job-upload")
+        monkeypatch.setenv("PROTEINA_RF3", "on")
+        monkeypatch.delenv("WEBHOOK_URL", raising=False)
+        try:
+            rp.main()
+        except SystemExit:
+            pass
+        return json.loads(result_file.read_text()), uploaded
+
+    def _staged_equivalent(self):
+        """The staged crop's content, built the way the crop would build it."""
+        lines, serial = [], 1
+        lo, hi = self._CROP
+        for chain, seq in (("A", _SEQ_A), ("B", _SEQ_B)):
+            for resseq in range(lo, hi + 1):
+                lines.append(_atom(serial, "CA", seq[(resseq - 1) % len(seq)],
+                                   chain, resseq))
+                serial += 1
+        return "\n".join(lines) + "\nEND\n"
+
+    def _custom(self, **kw):
+        base = {
+            "config_name": "search_binder_local_pipeline", "task_name": "",
+            "target_source": "custom", "target_chain": "A",
+            "target_input": self._CONTIG, "hotspot_spec": [],
+            "binder_length": [60, 120],
+            "rf3_required": False, "nsamples": 4, "replicas": 2,
+        }
+        base.update(kw)
+        return base
+
+    # -- the delivered bytes ------------------------------------------------
+
+    def test_the_uploaded_bytes_are_renumbered(self, tmp_path, monkeypatch):
+        """Kills "delete the renumber block" and "discard ``restored``". The
+        assertion is on the BYTES HANDED TO upload_pdb, because that is the file
+        the operator downloads -- a report that says "applied" over an
+        unmodified upload is the failure being guarded against."""
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded, "no design was uploaded at all"
+        for name, blob in uploaded.items():
+            got = rp.pdb_ca_sequence(blob.decode("latin-1"))
+            assert [r for r, _i, _n in got["A"]] == list(range(11, 31)), name
+            assert [r for r, _i, _n in got["B"]] == list(range(11, 31)), name
+
+    def test_the_operators_hotspot_token_resolves_in_the_delivered_file(
+            self, tmp_path, monkeypatch):
+        """The whole point, stated as the operator experiences it."""
+        _data, uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        # A25 is inside the crop (11-30) and OUTSIDE the 1..20 upstream wrote,
+        # so it discriminates. A15 would not: it exists in both.
+        assert "A25" in _keys(blob)
+        assert "A25" not in _keys(self._design_text())
+
+    def test_the_target_chains_move_and_the_binder_chain_does_not(
+            self, tmp_path, monkeypatch):
+        """Kills "pass the binder chain into renumber_chains".
+
+        F9: this test used to assert ONLY that chain C came back unchanged, and
+        claimed in its docstring that it "states the property directly". It did
+        not. Chain C is absent from the staged target, so adding it to
+        ``renumber_chains`` makes every chain fail the all-or-none rule and
+        NOTHING is rewritten — under which chain C is trivially unchanged and
+        the old assertion passed. The kill came entirely from the neighbouring
+        test noticing that chain A had not moved.
+
+        The property is a conjunction and has to be asserted as one: the target
+        chains carry the operator's numbers AND the binder still carries 1..N.
+        """
+        _data, uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        got = rp.pdb_ca_sequence(blob)
+        assert [r for r, _i, _n in got["A"]] == list(range(11, 31))
+        assert [r for r, _i, _n in got["B"]] == list(range(11, 31))
+        assert got["C"] == rp.pdb_ca_sequence(self._design_text())["C"]
+
+    def test_the_reference_is_the_staged_crop_not_the_raw_upload(
+            self, tmp_path, monkeypatch):
+        """Kills "read the reference from the raw upload". The upload holds 40
+        residues per chain and the crop holds 20; the design's chains are 20
+        long, so reading the upload fails on length and delivers 1..N. This
+        passes only if the crop was read."""
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == list(range(11, 31))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"])
+
+    def test_the_INLINE_path_delivers_the_operators_numbering_too(
+            self, tmp_path, monkeypatch):
+        """A GAP THE MERGE CREATED, closed here rather than left to rot.
+
+        #123 was written when the upload was the only way a design left the
+        container, so every test in this class reads the bytes out of
+        ``uploaded``. The parity branch added INLINE delivery, and merging the
+        two put the restore between the read and the upload -- which means it
+        now applies to a design that is never uploaded at all. That is the
+        behaviour an operator calling ``modal.Function.from_name`` directly
+        actually gets, and nothing covered it: with the restore left on the
+        upload's side of the branch, every assertion in this class would still
+        pass while direct callers silently received 1..N.
+
+        Asserts on the DECODED INLINE BYTES, not on ``target_numbering`` -- the
+        label is what the code claims, the coordinates are what it did.
+        """
+        data, uploaded = self._drive(
+            tmp_path, monkeypatch, job_spec=self._custom(), endpoint="")
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert not uploaded, "the inline path must not upload anything"
+        assert len(data["candidates"]) == 2
+        for cand in data["candidates"]:
+            blob = base64.b64decode(cand["pdb_content_b64"]).decode("latin-1")
+            assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == \
+                list(range(11, 31)), "inline design shipped in upstream's 1..N"
+            assert cand["target_numbering"] == "input"
+
+    # -- what the payload claims -------------------------------------------
+
+    def test_target_numbering_records_what_really_happened(
+            self, tmp_path, monkeypatch):
+        """Kills ``numbering = "input"`` unconditionally. A design whose target
+        chain is a DIFFERENT protein cannot be renumbered, so the file ships in
+        upstream's 1..N -- and the payload has to say so. A constant would read
+        "input" here."""
+        scrambled = self._design_text(
+            seq_a=list(reversed(self._cropped_names(_SEQ_A))))
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=scrambled)
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert [c["target_numbering"] for c in data["candidates"]] == ["upstream"] * 2
+        assert [d["target_numbering"] for d in data["designs"]] == ["upstream"] * 2
+        # ...and the design still SHIPS, byte-for-byte as upstream wrote it.
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
+        assert next(iter(uploaded.values())) == scrambled.encode("latin-1")
+
+    def test_the_candidates_carry_the_numbering_not_only_the_designs(
+            self, tmp_path, monkeypatch):
+        """B6. shared/jobs.py::candidate_records prefers ``candidates`` and the
+        results template reads ``candidates`` only, so a field written into
+        ``designs`` alone is data nobody can ever see. It was."""
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom())
+        assert data["candidates"], "no candidates were recorded"
+        for cand in data["candidates"]:
+            assert cand["target_numbering"] == "input"
+
+    def test_a_byte_that_is_not_utf8_survives_the_round_trip(
+            self, tmp_path, monkeypatch):
+        """``decode("utf-8", errors="replace")`` is not a round trip. Every byte
+        it cannot decode becomes U+FFFD, and re-encoding turns that into the
+        three bytes EF BF BD -- so a design carrying a latin-1 author name, a
+        degree sign, or any stray high byte comes back CORRUPTED and longer than
+        it went in, by the very step that was supposed to touch nothing but
+        columns 23-27. latin-1 maps all 256 byte values one-to-one.
+
+        The byte here sits in a REMARK, outside the coordinate columns, so the
+        restore still applies and the rest of the file is genuinely rewritten --
+        this pins the encoding, not a decline.
+        """
+        design = self._design_text() + "REMARK   1 AUTH   J. M\xfcLLER\n"
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=design)
+        assert data["status"] == "COMPLETED", data.get("error")
+        blob = next(iter(uploaded.values()))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"]), (
+            "the file was not rewritten, so this proves nothing about encoding")
+        assert b"\xfc" in blob
+        assert b"\xef\xbf\xbd" not in blob
+        assert len(blob) == len(design.encode("latin-1"))
+
+    # -- one heteroatom, and what it costs the whole shard ------------------
+
+    def _with_heteroatom(self, resseq):
+        """The design, plus a ``HETATM ZN`` on target chain A at ``resseq``.
+
+        The crop is 11-30, so 9000 is a number no residue is being renumbered
+        onto and 25 is one that is. Both are records the map has no key for
+        (its keys are the design's own 1..20), which is what makes them the two
+        sides of the same question.
+        """
+        text = self._design_text()
+        return text + _atom(997, "ZN", "ZN", "A", resseq, record="HETATM") + "\n"
+
+    def test_a_benign_heteroatom_does_not_cost_the_shard_its_numbering(
+            self, tmp_path, monkeypatch):
+        """G1, through the real loop. The refusal this replaces fired on ANY
+        coordinate record the map had no key for, so one structural zinc
+        outside the reference range flipped the whole shard back to upstream's
+        1..N — every design, both chains, on a stated reason ("two different
+        residues sharing one residue id") that is false about this file.
+        """
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=self._with_heteroatom(9000))
+        assert data["status"] == "COMPLETED", data.get("error")
+        blob = next(iter(uploaded.values())).decode("latin-1")
+        assert [r for r, _i, _n in rp.pdb_ca_sequence(blob)["A"]] == list(range(11, 31))
+        assert all(c["target_numbering"] == "input" for c in data["candidates"])
+        assert "A25" in _keys(blob)
+        assert not _duplicate_residue_ids(blob), _duplicate_residue_ids(blob)
+
+    def test_the_benign_heteroatom_shard_renders_the_reassuring_banner(
+            self, tmp_path, monkeypatch):
+        """...and the operator is not warned about a file that is fine. This is
+        the half a pipeline assertion cannot see: the cost of over-refusing is
+        a sentence on the results page, not a field in a payload."""
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom(),
+                                      design_text=self._with_heteroatom(9000))
+        html = _render_results(data["candidates"])
+        assert "residue numbers from the file you uploaded" in html
+        assert "will not resolve" not in html
+
+    def test_a_colliding_heteroatom_still_costs_the_shard_its_numbering(
+            self, tmp_path, monkeypatch):
+        """The other side, which must NOT be relaxed. ``A25`` is inside the
+        crop's 11-30, so design residue 15 is being renumbered onto the id the
+        zinc already holds; delivering that file would put two different
+        residues on ``A25``. The shard ships in 1..N and says so."""
+        data, uploaded = self._drive(tmp_path, monkeypatch,
+                                     job_spec=self._custom(),
+                                     design_text=self._with_heteroatom(25))
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+        assert next(iter(uploaded.values())) == self._with_heteroatom(25).encode(
+            "latin-1")
+        html = _render_results(data["candidates"])
+        assert "will not resolve" in html
+
+    # -- the design that was already in the operator's numbering ------------
+
+    def _already_correct(self, tmp_path, monkeypatch):
+        """A run whose crop and whose design carry the SAME residue numbers.
+
+        Contig ``A1-20,B1-20`` crops the 40-residue upload to 1..20, which is
+        exactly what upstream renumbers the design's target chains to. Nothing
+        needs rewriting and nothing is rewritten — but the operator's numbering
+        is what the delivered file carries, so the payload must say ``input``.
+        """
+        return self._drive(
+            tmp_path, monkeypatch,
+            job_spec=self._custom(target_input="A1-20,B1-20"),
+            design_text=self._design_text(seq_a=_SEQ_A, seq_b=_SEQ_B))
+
+    def test_a_design_already_in_the_operators_numbering_reports_input(
+            self, tmp_path, monkeypatch):
+        """F3. ``elif rep["already_input_numbering"]:`` -> ``elif False:`` left
+        the whole file green, and this is not an exotic input: any target
+        already numbered from 1 lands here. An AlphaFold or ESMFold model is
+        ALWAYS 1..N, so upstream's numbering already equals the operator's.
+
+        Break this branch and exactly those operators are told their file
+        carries the design tool's numbering and their hotspot labels will not
+        resolve — while holding a file in which they do.
+        """
+        data, uploaded = self._already_correct(tmp_path, monkeypatch)
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded
+        assert [c["target_numbering"] for c in data["candidates"]] == ["input"] * 2
+        assert [d["target_numbering"] for d in data["designs"]] == ["input"] * 2
+
+    def test_the_already_correct_design_is_shipped_byte_for_byte(
+            self, tmp_path, monkeypatch):
+        """The other half, and what tells this path apart from the applied one:
+        "already correct" must mean UNTOUCHED, not "rewritten to the same
+        numbers". A rewrite that happened to land on the same ids would still
+        have re-spliced every coordinate record."""
+        _data, uploaded = self._already_correct(tmp_path, monkeypatch)
+        expected = self._design_text(seq_a=_SEQ_A, seq_b=_SEQ_B).encode("latin-1")
+        for name, blob in uploaded.items():
+            assert blob == expected, name
+
+    def test_the_already_correct_design_renders_the_reassuring_banner(
+            self, tmp_path, monkeypatch):
+        """...and the operator is told so. This is the sentence the branch
+        exists to earn."""
+        data, _uploaded = self._already_correct(tmp_path, monkeypatch)
+        html = _render_results(data["candidates"])
+        assert "residue numbers from the file you uploaded" in html
+        assert "will not resolve" not in html
+
+    # -- curated runs -------------------------------------------------------
+
+    def _curated(self, tmp_path, monkeypatch):
+        """A curated benchmark run, with a staged file PLANTED under the curated
+        task name that would map cleanly if anything ever read it."""
+        return self._drive(
+            tmp_path, monkeypatch,
+            job_spec={"config_name": "search_binder_local_pipeline",
+                      "task_name": "02_PDL1", "rf3_required": False,
+                      "nsamples": 4, "replicas": 2},
+            plant_staged="02_PDL1")
+
+    def test_a_curated_run_is_never_renumbered(self, tmp_path, monkeypatch):
+        """Kills "run the restore on curated runs too".
+
+        A curated run designs against a bundled benchmark target that this
+        wrapper never staged, so there is no operator numbering to restore and
+        nothing may be rewritten. The mutation is inert unless a file happens to
+        exist at the staged path for the curated task name -- so this test
+        PLANTS one that would map cleanly. Correct code never looks at it.
+
+        F1: the recorded value is ``n/a``, not ``upstream``. Both describe a
+        file in 1..N, but they are answers to different questions.
+        ``upstream`` means "you gave us a numbering and we could not restore
+        it", and the results page says so in those words. On a curated run
+        there was no uploaded file and no numbering to restore, so that
+        sentence is false about an entire class of runs.
+        """
+        data, uploaded = self._curated(tmp_path, monkeypatch)
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert uploaded
+        for blob in uploaded.values():
+            assert blob == self._design_text().encode("latin-1")
+        assert all(c["target_numbering"] == "n/a" for c in data["candidates"])
+        assert all(d["target_numbering"] == "n/a" for d in data["designs"])
+
+    def test_a_curated_shard_renders_no_numbering_banner_at_all(
+            self, tmp_path, monkeypatch):
+        """F1, as the operator meets it: the REAL candidates a curated run
+        produces, through the REAL results partial.
+
+        Neither half can catch this alone. The pipeline test asserts a string
+        without knowing what the page does with it, and a template test asserts
+        whatever value the test itself passes in. Composing them is what
+        showed that every curated run was rendering "not the numbering in the
+        file you uploaded" to an operator who uploaded nothing.
+        """
+        data, _uploaded = self._curated(tmp_path, monkeypatch)
+        html = _render_results(data["candidates"])
+        assert "Residue numbering" not in html, html
+        assert "will not resolve" not in html
+        assert "file you uploaded" not in html
+
+    def test_a_custom_run_that_could_not_be_restored_still_says_upstream(
+            self, tmp_path, monkeypatch):
+        """The boundary the new third value must not swallow. When the operator
+        DID upload a file and the restore declined, the warning is true and has
+        to keep firing — silence there would be the opposite defect."""
+        scrambled = self._design_text(
+            seq_a=list(reversed(self._cropped_names(_SEQ_A))))
+        data, _uploaded = self._drive(tmp_path, monkeypatch,
+                                      job_spec=self._custom(),
+                                      design_text=scrambled)
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+        html = _render_results(data["candidates"])
+        assert "will not resolve" in html
+
+    # -- the paid-design guarantee -----------------------------------------
+
+    def test_a_numbering_failure_never_costs_a_paid_design(
+            self, tmp_path, monkeypatch):
+        """B8. The restore used to sit INSIDE the upload's ``try``, whose
+        ``except Exception`` increments ``n_failures`` and DROPS the design --
+        while a comment two lines above claimed it was outside the upload's
+        failure accounting. ``restore_design_numbering`` never raises, but the
+        decode/encode around it were outside that guarantee, so this makes the
+        restore itself raise and asserts every design is still delivered."""
+        def boom(*_a, **_k):
+            raise RuntimeError("numbering exploded")
+        monkeypatch.setattr(rp, "restore_design_numbering", boom)
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert data["n_failures"] == 0
+        assert data["designs_completed"] == 2
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+
+    def test_an_unreadable_staged_target_never_kills_the_shard(
+            self, tmp_path, monkeypatch):
+        """B7. The staged-target read was guarded by ``except OSError`` only,
+        and it sits inside main()'s outer ``try:``/``finally:`` -- which has NO
+        ``except``. A non-OSError there kills a shard that has already paid for
+        its GPU and loses all 8 designs. Nothing about a residue number is worth
+        that, so the guard has to catch everything."""
+        real = rp.pdb_ca_sequence
+        calls = {"n": 0}
+
+        def sometimes_explodes(text):
+            calls["n"] += 1
+            if calls["n"] == 1:          # the staged-reference parse
+                raise ValueError("not an OSError")
+            return real(text)
+        monkeypatch.setattr(rp, "pdb_ca_sequence", sometimes_explodes)
+        data, uploaded = self._drive(tmp_path, monkeypatch, job_spec=self._custom())
+        assert data["status"] == "COMPLETED", data.get("error")
+        assert data["designs_completed"] == 2
+        assert set(uploaded) == {"design_001.pdb", "design_002.pdb"}
+        assert all(c["target_numbering"] == "upstream" for c in data["candidates"])
+
+
+def test_the_upload_loop_restores_numbering_and_records_which_it_shipped():
+    """The pure functions above are worthless if run() never calls them.
+
+    A STRUCTURAL SMOKE CHECK, NOT THE CALL SITE'S TEST. This assertion is what
+    the call site used to have INSTEAD of a test, and reviewer B killed six
+    separate mutations of the upload loop -- deleting the renumber block
+    outright among them -- without moving it. ``TestUploadLoopNumbering`` below
+    is the real coverage; this survives only because "the name appears in a
+    Call node" is cheap and catches a whole-function deletion early.
+    """
+    src = (_PROTEINA_DIR / "run_pipeline.py").read_text(encoding="utf-8")
+    called = {n.func.id for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "restore_design_numbering" in called, (
+        "run_pipeline defines the restore but never calls it -- the delivered "
+        "design would still carry upstream's 1..N numbering")
+    assert "pdb_ca_sequence" in called
+    assert '"target_numbering"' in src, (
+        "the result must record which numbering the delivered file carries")

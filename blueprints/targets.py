@@ -51,6 +51,7 @@ from shared.target_results import (
 from shared.targets import (
     archive_target,
     create_target,
+    enrich_target_hotspot_spec,
     find_target_by_sha256,
     get_target,
     list_targets_for_user,
@@ -209,6 +210,9 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
     route performs has to happen here too.
     """
     from shared import compute_campaigns as cc  # noqa: PLC0415
+    from shared.pdb_preflight import (  # noqa: PLC0415
+        multi_chain_refusal, shipped_hotspots,
+    )
     from shared.target_launch import ToolLaunchSpec  # noqa: PLC0415
 
     tools = [t.strip() for t in form.getlist("tools") if t.strip()]
@@ -288,13 +292,38 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         chain_err = target.chain_error(run_chain)
         if chain_err:
             return None, f"{label}: {chain_err}"
+        # Can this tool's MODEL, and the IMAGE we actually dispatch to, take
+        # the number of chains just named? Nothing on this path asked before.
+        # `preflight_for_tool` owns that gate and this blueprint has never
+        # called it -- its only callers are the atomic submit route, that
+        # route's AJAX panel, and the reuse-token path -- so the check that
+        # decides whether a container can even parse the target guarded the
+        # route that spends the LEAST. Executed against a two-chain stored
+        # target, bindcraft, rfdiffusion, pxdesign and rfantibody all reached
+        # create -> fund -> drive from here; rfantibody declares
+        # multi_chain_supported=False, so its model cannot do it at all.
+        #
+        # Only this one check moves here, not the whole preflight. The rest of
+        # it (normalizer dry-run, min-residue floor, gap rules, hotspot
+        # survival) all read the STRUCTURE, and a target-bound launch never
+        # downloads one -- switching them on would cost a download per tool per
+        # launch and newly refuse campaigns that have always been allowed. This
+        # one reads TOOL_RULES and the chain string, so it is free and cannot
+        # refuse a run that would have worked. Same line size_error draws.
+        #
+        # Ordered AFTER chain_error on purpose: "chain Z is not in this target"
+        # is the more useful sentence when both are true.
+        capability_err = multi_chain_refusal(tool, run_chain)
+        if capability_err:
+            return None, f"{label}: {capability_err}"
         # Both keys are original PDB author numbering. iggm calls its epitope
         # ``epitope_pdb_resnums``; every other campaign tool calls its hotspots
-        # ``hotspot_residues``.
+        # ``hotspot_residues``. ``shipped_hotspots`` reads the pair and prefers
+        # proteina's chain-prefixed ``hotspot_spec``, because the bare copy
+        # cannot say whether a number was typed bare or had its chain letter
+        # stripped — and those two want opposite verdicts.
         hotspot_err = target.hotspot_error(
-            run_chain,
-            (validated.get("hotspot_residues") or [])
-            + (validated.get("epitope_pdb_resnums") or []),
+            run_chain, shipped_hotspots(validated),
         )
         if hotspot_err:
             return None, f"{label}: {hotspot_err}"
@@ -310,8 +339,8 @@ def _collect_launch_specs(target, form) -> "tuple[list, str | None]":  # noqa: A
         # small for this target rather than failing the launch anonymously.
         # binder_max_aa is what arms the COMBINED cap (target + binder against
         # hard_cap_combined_aa). Omitting it left that half of the envelope
-        # dead on every money route: a 140 aa target with a 300 aa max binder
-        # is 440 against proteina's 260 budget, refused by
+        # dead on every money route: a 400 aa target with a 300 aa max binder
+        # is 700 against proteina's 620 budget, refused by
         # /tools/proteina/submit and admitted here. Read through
         # _parse_preflight_size_params rather than off a key, because the
         # validated shape differs per tool -- {min,max} dict, [min,max] list,
@@ -397,6 +426,22 @@ def _parse_residue_list(raw: str) -> "tuple[list, str | None]":
     Returns ``(residues, error)``. Rejects rather than silently dropping a
     non-numeric entry: a typo'd hotspot that vanishes here would be a target
     that quietly aims somewhere else than the user asked for.
+
+    STRICT INTEGERS, DELIBERATELY, on BOTH residue fields. This parser feeds
+    ``design_targets.hotspot_residues``, which
+    ``shared.targets.target_defaults_for_form`` prefills into the ONE shared
+    ``hotspot_residues`` launch field that every selected tool reads
+    (``_SHARED_LAUNCH_FIELDS``). Widening it to accept ``"A241"`` was executed
+    and refused by five of the six campaign tools:
+    rfdiffusion/bindcraft/boltzgen/pxdesign answer "does not name one of your
+    target chains" unless the run names that chain, and
+    ``tools/rfantibody/__init__.py`` is a bare ``int(tok)`` per token that
+    cannot accept a prefix on ANY target chain. The launch route is
+    all-or-nothing, so one prefixed token killed the whole launch.
+
+    A chain-qualified hotspot reaches proteina through proteina's OWN field
+    (``chain_hotspots``), never through this one. See
+    :func:`shared.targets.target_defaults_for_form`.
     """
     text = (raw or "").replace(";", ",").strip()
     if not text:
@@ -1290,6 +1335,26 @@ def target_launch_submit(target_id):
         created.append(campaign)
 
     touch_target(target.id)
+
+    # Record WHICH PROTOMER this target's stored hotspots were on, when a run in
+    # this launch said so. Beside `touch_target` deliberately: same trigger
+    # ("this target was just used for a run"), same posture (best-effort, may
+    # not fail a launch), same point in the sequence — after every run exists,
+    # so a launch that created nothing writes nothing.
+    #
+    # ENRICH-ONLY. `enrich_target_hotspot_spec` writes only into an EMPTY
+    # `hotspot_spec`, only when the run's chain-qualified tokens reduce to
+    # exactly the integers the target already stores, and never touches
+    # `hotspot_residues`. A user who typed different hotspots for one run has
+    # not asked to edit the target; see that function for the full argument.
+    for spec in plan.specs:
+        tokens = spec.params.get("hotspot_spec")
+        if tokens:
+            # No `break`: only proteina emits this key today, so this runs at
+            # most once. If a second adapter ever did, the UPDATE's own
+            # `hotspot_spec IS NULL` filter makes the later calls no-ops,
+            # rather than an arbitrary first-wins choice made here.
+            enrich_target_hotspot_spec(target, tokens)
 
     # `started` and `stalled` are bound at the top of the route, next to `_err`.
     # Re-initialising them here would work, but only by accident of `_err` never

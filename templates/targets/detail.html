@@ -152,11 +152,13 @@
    Say nothing in `rejected` that this gate does not guarantee, and change
    neither without the other.
 
-   THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, because
-   templates/unavailable.html renders the same five sentences: A90's refusal
-   redirects here, and if the fault is still live when the browser follows the
-   redirect, the parent read at the top of this route fails too and the user
-   gets that page instead. This template keeps its own wrapper, its own
+   THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, which has four
+   importers. templates/unavailable.html renders the same five sentences:
+   A90's refusal redirects here, and if the fault is still live when the browser
+   follows the redirect, the parent read at the top of this route fails too and
+   the user gets that page instead. templates/runs/detail.html and
+   templates/job_detail.html (register item A91) are the other two, each
+   supplying its own noun. This template keeps its own wrapper, its own
    `{% if handoff %}` and its own `?truncated=` read; only the words are shared.
    That is also where the reasoning for saying nothing about charges now lives:
    /lab-projects/submit has no wallet or Stripe code on any path, and the modal
@@ -186,15 +188,18 @@
 </div>
 {% endif %}
 
-{% if target.hotspot_residues or target.epitope_residues or target.notes %}
+{% if target.effective_hotspots or target.epitope_residues or target.notes %}
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header"><span class="panel-title">Defaults</span></div>
   <div class="panel-body" style="font-size: 0.88rem; color: var(--text-secondary);">
-    {% if target.hotspot_residues %}
+    {% if target.effective_hotspots %}
     <p style="margin: 0 0 0.4rem;">
       Hotspots:
+      {# effective_hotspots, not hotspot_residues: on a multi-chain target the
+         integer column has had the chain stripped out of it, so rendering it
+         would show 241 for a hotspot the user pinned to protomer B. #}
       <span style="font-family: var(--font-mono); color: var(--accent-text);">
-        {{ target.hotspot_residues|join(', ') }}
+        {{ target.effective_hotspots|join(', ') }}
       </span>
     </p>
     {% endif %}
@@ -383,6 +388,7 @@
 
 {% if agg.tools %}
 {% from "components/candidate_table.html" import candidate_table %}
+{% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
 <div class="section" style="margin-top: 2rem;">
   <div class="section-head">
     <h2 class="section-title">Designs</h2>
@@ -552,6 +558,13 @@
      ?sort=tool. Passed unconditionally: the macro reads it only in that mode
      and gating it here would make the caller decide something the macro
      already decides. #}
+  {# Pooled table: agg.tools is every tool with rows here, and the caveat
+     applies if ANY of them ranks on a complex-wide ipTM. The chain comes from
+     the TARGET rather than per row — targets/launch.html can override it for
+     one launch, so this is the target's default, not a guarantee about every
+     pooled run. Over-warning is the safe direction for a non-blocking notice
+     about a number that is also the sort key. #}
+  {{ multichain_iptm_notice(agg.tools, target.target_chain) }}
   {{ candidate_table(
        agg.candidates, agg.columns, '', (agg.tools[0] if agg.tools|length == 1 else ''),
        '', '', target.id, agg.multi_tool, sort_mode, agg.split_tools, agg.per_tool) }}

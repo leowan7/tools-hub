@@ -29,6 +29,16 @@
  *     -- the shortlist button, and the modal's ×, Cancel and overlay. Renaming
  *     either is a silent break in this repo: nothing here calls them, and
  *     tests/test_candidate_table_js_contract.py is the only thing that looks.
+ *   window.dropShortlistRefs(scope, refs)
+ *     Called from templates/campaigns/detail.html, which loads this file for
+ *     that call alone. `refs` is the [{job_id, index}] list a submitted request
+ *     COVERED, and this removes exactly those from the scope's shortlist and
+ *     keeps every other star. It is the write side of the same storageKey() and
+ *     refKey() the star toggle uses, which is why it lives here rather than as
+ *     an inline one-liner on that page: a second spelling of either can drift
+ *     and then silently matches nothing. See the definition for why it removes
+ *     named refs instead of dropping the key.
+ *     tests/test_lab_project_confirmation.py pins both ends.
  */
 (function () {
   'use strict';
@@ -55,6 +65,58 @@
   }
 
   function refKey(j, i) { return String(j) + '#' + String(i); }
+
+  // Remove the designs a request already covered from this scope's shortlist,
+  // and nothing else. `refs` is the {job_id, index} list the confirmation page
+  // of a submitted lab project was rendered from -- the same designs it prints
+  // -- so what survives here is exactly the stars that request did NOT use,
+  // which is what its truncation advice tells the customer to send in a second
+  // one. Without this, `openCampaignModal` serialises the same stored list in
+  // the same order on the next submit, so the second POST carries the same refs
+  // and `_parse_candidate_refs_counted` cuts it in the same place.
+  //
+  // A REMOVAL BY REF, NOT A WIPE OF THE KEY, and that is the whole design.
+  // `?submitted=1` is a permanent property of a URL rather than an event: a
+  // reload, a bookmark, the omnibox, a history entry, a restored tab and a
+  // brand-new tab session all reach it, and both the page's own copy and the
+  // confirmation email invite the customer back to it. Removing NAMED refs is
+  // idempotent, so every one of those is a no-op once the refs are gone -- no
+  // marker, no token, and nothing that has to outlive the URL. An earlier
+  // version wiped the whole key behind a sessionStorage marker, which destroyed
+  // the never-read remainder the advice is ABOUT and kept its guard in a store
+  // that dies with the tab while the URL survives in history.
+  //
+  // THE ONE CASE THAT IS NOT A NO-OP, and it is accepted deliberately: a
+  // customer who re-stars a design this request already covered and then
+  // returns to the confirmation URL loses that star again. Un-starring a design
+  // already sent to the lab is the defensible reading of that, so it is allowed
+  // rather than guarded (register item A102).
+  //
+  // ONE SPELLING OF THE IDENTITY. refKey is the star toggle's own comparison,
+  // so a design is removed here exactly when clicking its star would have
+  // matched it. refKey only concatenates, so a stored entry carrying no job id
+  // keys as "null#N" or "#N" and WOULD match a server ref spelled the same
+  // way. What makes that unreachable is on the server: `_covered_refs` drops
+  // any ref it cannot name a job for, so no such ref is ever sent. Do not read
+  // the empty case as harmless here; read it as never arriving.
+  //
+  // NOTHING REMOVED MEANS NOTHING WRITTEN, so a repeat visit does not rewrite
+  // the customer's stored list at all. A falsy scope writes nothing rather than
+  // writing `shortlist_undefined`: the scope is derived from a database row, and
+  // a row with no parent id must not resolve to a key some other page owns.
+  // saveShortlist swallows a throwing sessionStorage the way its neighbours do.
+  window.dropShortlistRefs = function (scope, refs) {
+    if (!scope || !refs || !refs.length) return;
+    var drop = {};
+    for (var n = 0; n < refs.length; n++) {
+      drop[refKey(refs[n].job_id, refs[n].index)] = true;
+    }
+    var before = loadShortlist(scope);
+    var kept = before.filter(function (r) {
+      return drop[refKey(r.j, r.i)] !== true;
+    });
+    if (kept.length !== before.length) saveShortlist(scope, kept);
+  };
 
   function starRef(btn) {
     // The index recorded is the candidate's index within its OWN job
@@ -231,10 +293,15 @@
     var modal = document.getElementById('campaign-modal-' + scope);
     if (!modal) return;
 
-    // Campaign mode has a candidate_refs field; single-job mode has
-    // candidate_indices. Populate whichever the modal carries.
+    // Campaign and target mode carry candidate_refs. Single-job mode carries
+    // BOTH since A91: refs, which the server prefers, and candidate_indices,
+    // kept for one release so a page served before that deploy still submits
+    // against the new server. Populate whichever the modal carries.
     var refsInput = modal.querySelector('[name="candidate_refs"]');
     var idxInput  = modal.querySelector('[name="candidate_indices"]');
+    // The scope's own parent field, which is the thing that actually differs:
+    // the macro emits exactly one of the three, and only job scope emits this.
+    var singleJob = !!modal.querySelector('[name="source_job_id"]');
     if (refsInput) {
       refsInput.value = JSON.stringify(sl.map(function (r) {
         return { job_id: r.j, index: r.i };
@@ -257,7 +324,13 @@
       } else {
         list.innerHTML = sl.map(function (r) {
           var label = 'Candidate ' + (r.i + 1);
-          if (refsInput && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
+          // "sub-job" is a CAMPAIGN/TARGET word. Those tables interleave
+          // rows from several jobs, so the id disambiguates; a single-job
+          // table has exactly one, and calling it a sub-job of itself reads
+          // as a rendering fault. Keyed on the parent field rather than on
+          // `refsInput`, which stopped identifying scope the moment A91 gave
+          // job mode a refs input of its own.
+          if (!singleJob && r.j) label += ' · sub-job ' + String(r.j).slice(0, 8);
           return '<li>' + label + '</li>';
         }).join('');
       }
@@ -277,5 +350,25 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('[data-cand-table-id]').forEach(initTable);
+  });
+
+  // A back/forward-cached page is restored with its DOM exactly as it was left
+  // and `DOMContentLoaded` does not fire again, so a results page restored that
+  // way can show stars the store no longer holds. That divergence became
+  // possible when the lab-project confirmation page started writing this key:
+  // before it, nothing outside the results document ever did.
+  //
+  // Repaints from the store; deliberately NOT initTable, which would bind a
+  // second copy of every listener and make one star click toggle twice. Reads
+  // through the same loadShortlist the toggle writes with, so a restore cannot
+  // disagree with a click.
+  window.addEventListener('pageshow', function (e) {
+    if (!e.persisted) return;
+    document.querySelectorAll('[data-cand-table-id]').forEach(function (wrapEl) {
+      var scope = wrapEl.dataset.scope || wrapEl.dataset.jobId;
+      var table = document.getElementById(wrapEl.dataset.candTableId);
+      if (table) restoreStarState(table, scope);
+      updateShortlistUI(scope);
+    });
   });
 })();

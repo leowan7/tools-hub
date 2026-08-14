@@ -7,6 +7,7 @@ the duplicate-upload offer.
 from __future__ import annotations
 
 import io
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -226,6 +227,53 @@ def test_create_target_rejects_a_non_numeric_hotspot(client):
     mk.assert_not_called()
 
 
+def test_create_target_rejects_a_chain_qualified_hotspot(client):
+    """PLAIN INTEGERS ONLY ON THIS ROUTE, and it is not a limitation, it is the
+    fix for a P0.
+
+    Whatever is stored here is prefilled by ``target_defaults_for_form`` into
+    the ONE shared ``hotspot_residues`` field the launch screen posts to EVERY
+    selected tool. Accepting "A241" here was executed against the real
+    ``_collect_launch_specs``: rfdiffusion, bindcraft, boltzgen and pxdesign
+    refuse a token naming a chain the run does not target, and
+    ``tools/rfantibody`` parses it with a bare ``int(tok)`` and refuses a prefix
+    on ANY target chain — and the launch route is all-or-nothing.
+
+    A protomer reaches proteina through proteina's own ``chain_hotspots``
+    field, and reaches the target through
+    ``shared.targets.enrich_target_hotspot_spec``. Never through this form.
+    """
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        resp = client.post("/targets", data={
+            "target_chain": "A",
+            "hotspot_residues": "A241, B241",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert "A241" in resp.get_data(as_text=True)
+    mk.assert_not_called()
+
+
+def test_create_target_still_rejects_a_chain_prefixed_epitope(client):
+    """Only the hotspot field opted in. The epitope field feeds IgGM, whose
+    parser has never read a prefix, so accepting one here would store a value
+    that silently means nothing downstream."""
+    _login(client)
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.create_target") as mk:
+        resp = client.post("/targets", data={
+            "epitope_residues": "A32",
+            "target_pdb": (io.BytesIO(_PDB), "her2.pdb"),
+        }, content_type="multipart/form-data")
+
+    assert resp.status_code == 400
+    assert "A32" in resp.get_data(as_text=True)
+    mk.assert_not_called()
+
+
 def test_create_target_offers_an_existing_target_with_the_same_content(client):
     """Two targets for one structure split its designs across two combined
     tables, which is exactly what targets exist to prevent."""
@@ -260,6 +308,24 @@ def test_create_target_honours_allow_duplicate(client):
 
     assert resp.status_code == 302
     dupe.assert_not_called()
+
+
+# The "/targets/new must not teach a token this route rejects" guard lives in
+# tests/test_multichain_form_affordances.py::
+# test_targets_new_residue_examples_parse_on_its_own_route, and only there.
+#
+# A second check used to sit here, asserting `"Prefix the chain" not in ...`
+# and `"A241" not in ...` inside a 600-char window after the field label. It
+# was deleted rather than reworded because it was measured and found vacuous:
+# with the exact copy that shipped the defect restored into
+# templates/targets/new.html ("... prefix the chain to name another (A296,
+# B264).", removed by d398782, which is on main), it went on PASSING while the
+# property test FAILED. Its two literals cannot match that copy -- lowercase
+# "prefix", and the token was A296/B264, never A241 -- so it could not fail for
+# the reason its own docstring gave. The property test extracts every residue
+# example from the whole containing <form>, including placeholder/title/
+# data-tooltip/aria-label, and feeds each to `_parse_residue_list`, the parser
+# this route really uses; `input_named` fails there too if the field is gone.
 
 
 def test_target_detail_404s_for_another_users_target(client):
@@ -409,6 +475,41 @@ def test_target_detail_lists_only_this_targets_runs(client):
     # outside the cap rendered "nothing has been run against this target yet"
     # for runs they had paid for.
     everything.assert_not_called()
+
+
+def test_target_detail_renders_the_chain_qualified_hotspots(client):
+    """THE READ-SIDE HALF OF THE PERSISTENCE FIX, and nothing else pinned it.
+
+    ``hotspot_residues`` is ``integer[]``, so on an Fc homodimer — both chains
+    numbered 234-444 — it holds ``[241, 241]`` with the protomer stripped out.
+    Rendering that column instead of ``effective_hotspots`` puts "241, 241" on
+    the page for two hotspots the user pinned to different protomers, and the
+    page then disagrees with both the launch prefill and the run that target
+    will actually produce.
+
+    Asserted against the RENDERED span rather than the template text: the
+    template names the property, but only the render proves the property is
+    what reaches the page.
+    """
+    _login(client)
+    t = _target(
+        target_chain="A B",
+        hotspot_residues=[241, 241],
+        hotspot_spec=["A241", "B241"],
+    )
+    with patch("blueprints.targets.load_user_context", return_value=_ctx()), \
+            patch("blueprints.targets.read_target", return_value=_read_ok(t)), \
+            patch("blueprints.targets.aggregate_target_candidates",
+                  return_value=_agg()), \
+            patch("shared.compute_campaigns.list_campaigns_for_user"):
+        resp = client.get(f"/targets/{t.id}")
+
+    assert resp.status_code == 200
+    body = _flat(resp.get_data(as_text=True))
+    shown = re.search(r"Hotspots:\s*<span[^>]*>(.*?)</span>", body)
+    assert shown, "the target page no longer renders a Hotspots row"
+    assert shown.group(1).strip() == "A241, B241", (
+        "the detail page dropped the protomer off the stored hotspots")
 
 
 def test_launch_renders_the_multi_tool_screen(client):

@@ -93,9 +93,10 @@
      refused the same way" without hedging: every rejection that reaches it was
      decided by a check that RAN. Change neither without the other.
 
-     THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, which has three
-     importers: this page, templates/targets/detail.html, and
-     templates/unavailable.html. THAT THIRD PAGE IS NOT REACHED FROM THIS ROUTE.
+     THE COPY ITSELF LIVES IN components/lab_handoff_banner.html, which has four
+     importers: this page, templates/targets/detail.html,
+     templates/job_detail.html (register item A91), and
+     templates/unavailable.html. THAT LAST PAGE IS NOT REACHED FROM THIS ROUTE.
      `compute_campaign_detail` still reads its run through the two-outcome
      `get_campaign`, so an unreadable run here falls to the runs list with a 200,
      as it did before A90; only the target arm renders unavailable.html, because
@@ -161,6 +162,10 @@
       </p>
     {% endif %}
     {% from "components/results_shell.html" import results_panel %}
+    {% from "components/multichain_iptm_notice.html" import multichain_iptm_notice %}
+    {# campaign.params is the sanitized submit payload (shared/compute_campaigns
+       drops only underscore-prefixed wiring keys), so target_chain survives. #}
+    {{ multichain_iptm_notice(campaign.tool, (campaign.params or {}).get('target_chain')) }}
     {% call results_panel(candidates=candidates, columns=result_columns, tool_slug=campaign.tool, job_id='', clone_url='', campaign_id=campaign.id) %}
       <p class="subtitle">No designs passed the quality filter yet.</p>
     {% endcall %}

@@ -16,6 +16,7 @@ out — they are load-bearing.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -302,6 +303,259 @@ def test_create_target_without_an_upload_keeps_storage_path_null(fake):
     staged.assert_not_called()
     assert target is not None
     assert target.storage_path is None
+
+
+# ---------------------------------------------------------------------------
+# Chain-qualified hotspots (design_targets.hotspot_spec, migration 0041)
+#
+# design_targets.hotspot_residues is integer[], so a hotspot that names its
+# protomer cannot be stored in it. On an IgG1 Fc — both chains numbered
+# 234-444 — storing the bare 241 means every later run re-prefills it as A241
+# and silently designs against one protomer.
+# ---------------------------------------------------------------------------
+
+
+def _stored_row(fake):
+    rows = fake.store.get("design_targets") or []
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def test_create_target_never_names_the_new_column(fake):
+    """THE INSERT IS NOT THE WRITER, and this is what keeps it safe to deploy
+    ahead of migration 0041: an INSERT naming a column the database does not
+    have fails outright, every time.
+
+    Its one production caller is the ``/targets`` POST, whose
+    ``_parse_residue_list`` is a strict integer parse, so nothing
+    chain-qualified can reach it. ``hotspot_spec`` is filled in later, by
+    ``enrich_target_hotspot_spec``, from a run that named its chains.
+    """
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A B",
+            hotspot_residues=[241, 241],
+        )
+    row = _stored_row(fake)
+    assert "hotspot_spec" not in row
+    assert row["hotspot_residues"] == [241, 241]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 241]
+
+
+def test_a_bare_hotspot_target_never_names_the_new_column(fake):
+    """Additive means the pre-existing shape is untouched — and the INSERT must
+    not even MENTION a column the database may not have yet, so a deploy that
+    lands ahead of the migration cannot break ordinary target creation."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        target = create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            hotspot_residues=[42, 88],
+        )
+    row = _stored_row(fake)
+    assert "hotspot_spec" not in row, (
+        "an INSERT naming hotspot_spec fails outright before 0041 is applied")
+    assert row["hotspot_residues"] == [42, 88]
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [42, 88]
+
+
+def test_a_row_from_before_the_migration_still_loads(fake):
+    """No backfill, so most rows have no such key at all."""
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 243],
+    })
+    assert target.hotspot_spec == []
+    assert target.effective_hotspots == [241, 243]
+
+
+def test_a_row_that_HAS_the_column_actually_reads_it(fake):
+    """THE READ SIDE OF THE WHOLE FEATURE, and nothing else pinned it.
+
+    Every other test here hands ``DesignTarget(hotspot_spec=[...])`` straight to
+    the constructor, and the pre-migration test above passes a row with the key
+    ABSENT — so ``from_row`` returning a constant ``[]`` satisfied all of them.
+    That mutation survived an independent QC pass over 1254 tests.
+
+    It is the worst survivor to have, because it fails silently in the safe
+    direction: `effective_hotspots` falls back to the integer column, the detail
+    page, the list page and the launch prefill all render the unqualified form,
+    every enrichment ever written becomes invisible, and the suite stays green.
+    """
+    target = DesignTarget.from_row({
+        "id": str(uuid.uuid4()), "user_id": "u-1",
+        "hotspot_residues": [241, 241],
+        "hotspot_spec": ["A241", "B241"],
+    })
+    assert target.hotspot_spec == ["A241", "B241"]
+    # And the property the rest of the app reads prefers it over the lossy copy
+    # — on a homodimer that is the whole difference between one protomer and two.
+    assert target.effective_hotspots == ["A241", "B241"]
+
+
+def test_a_hotspot_is_never_silently_dropped_for_want_of_a_chain_list():
+    """``split_hotspot`` reads a prefix only against a KNOWN chain list, so a
+    target with no chain summary and no ``target_chain`` gets ``(None, None)``
+    for every prefixed token. Both reductions would then read the run's
+    ``["A241", "B241"]`` as carrying no residues at all, and the enrichment
+    would decline a correct write, silently. ``_LONE_HOTSPOT_RE`` is the
+    fallback that recovers exactly the single-letter shape."""
+    from shared.targets import _clean_hotspot_ints, _clean_hotspot_spec
+
+    assert _clean_hotspot_ints(["A241", "B241"], []) == [241, 241]
+    assert _clean_hotspot_spec(["A241", "B241"], []) == ["A241", "B241"]
+
+
+def test_the_known_chain_list_beats_the_single_letter_fallback():
+    """ORDER MATTERS, and nothing else pins it.
+
+    On an mmCIF target whose chain is "A2", the token "A296" is residue 96 on
+    chain A2 — not residue 296 on chain A. split_hotspot gets that right BECAUSE
+    it is given the chain list, so it has to be consulted first; the
+    single-letter regex is only the last resort for when no chain list exists.
+    Reversing the two is silent and produces a plausible wrong answer.
+    """
+    from shared.targets import _split_stored_hotspot
+
+    assert _split_stored_hotspot("A296", ["A2"]) == ("A2", 96)
+    assert _split_stored_hotspot("A296", ["A", "B"]) == ("A", 296)
+    assert _split_stored_hotspot("A296", []) == ("A", 296)
+    assert _split_stored_hotspot("296", ["A", "B"]) == (None, 296)
+    assert _split_stored_hotspot("zzz", ["A"]) == (None, None)
+
+
+def test_the_epitope_column_keeps_its_strict_integer_coercion(fake):
+    """The hotspot helper is deliberately not shared with the epitope field."""
+    with patch("shared.targets.upload_input", return_value="u-1/t/t.pdb"):
+        create_target(
+            user_id="u-1", upload=_Upload(), target_chain="A",
+            epitope_residues=[32, 45],
+        )
+    row = _stored_row(fake)
+    assert row["epitope_residues"] == [32, 45]
+    assert "hotspot_spec" not in row
+
+
+def test_the_form_prefill_splits_the_two_shapes_across_two_fields():
+    """TWO FIELDS, and putting the chain in the wrong one is the P0.
+
+    ``hotspot_residues`` is the ONE shared launch field, posted to every
+    selected tool, five of which cannot parse a chain prefix at all — so it
+    carries plain integers whatever the target stores. ``chain_hotspots`` is
+    proteina's own field and is where the protomer survives.
+
+    Fully covered, with the executed six-tool evidence, in
+    tests/test_target_hotspot_field_split.py and
+    tests/test_target_multi_launch_routes.py; kept here because this is the
+    module that owns the helper.
+    """
+    from shared.targets import target_defaults_for_form
+
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    out = target_defaults_for_form(dimer)
+    assert out["hotspot_residues"] == "241,241"
+    assert out["chain_hotspots"] == "A241,B241"
+
+    plain = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A",
+        hotspot_residues=[42, 88],
+    )
+    assert target_defaults_for_form(plain)["hotspot_residues"] == "42,88"
+
+
+def test_to_dict_adds_the_new_key_without_changing_the_old_one():
+    """Existing consumers of to_dict()["hotspot_residues"] must be unaffected.
+
+    ``to_dict`` has NO production callers (grep: only this test), so it mirrors
+    the two stored columns and nothing more. ``effective_hotspots`` is where the
+    choice between them lives, and it is what the templates and the run prefill
+    actually read.
+    """
+    dimer = DesignTarget(
+        id=str(uuid.uuid4()), user_id="u-1", target_chain="A B",
+        hotspot_residues=[241, 241], hotspot_spec=["A241", "B241"],
+    )
+    out = dimer.to_dict()
+    assert out["hotspot_residues"] == [241, 241]
+    assert out["hotspot_spec"] == ["A241", "B241"]
+
+
+def test_the_target_chain_seeds_the_chain_list_for_the_enrichment():
+    """DELETING THE ``target_chain`` SEED IN ``_hotspot_chain_ids`` IS OTHERWISE
+    INVISIBLE. With a single-letter chain the one-letter fallback in
+    ``_split_stored_hotspot`` reaches the same answer, and a target whose chain
+    summary names the same chain supplies it anyway — so the two differ only for
+    a MULTI-CHARACTER chain id that ONLY ``target_chain`` contributes.
+
+    On a target whose chain is ``"A2"``, ``"A2296"`` is residue 296. Without the
+    seed, ``split_hotspot`` has no chain list, the fallback regex takes the one
+    leading letter, and the reduction reads 2296 — which no longer matches the
+    stored 296, so a correct enrichment is silently declined.
+
+    The BOTH-HALVES case (the chain summary loop) is covered by
+    ``test_a_multi_character_chain_is_read_against_the_targets_own_chains`` in
+    tests/test_target_hotspot_field_split.py, which drives the real enrichment
+    against a target whose chains come from ``chain_summary``.
+    """
+    from shared.targets import _clean_hotspot_ints, _hotspot_chain_ids
+
+    assert _hotspot_chain_ids("A2", None) == ["A2"]
+    assert _clean_hotspot_ints(["A2296"], _hotspot_chain_ids("A2", None)) == [296]
+    # The counterfactual, so the assertion above is a measurement and not a
+    # coincidence: with no chain list the same token reads as residue 2296.
+    assert _clean_hotspot_ints(["A2296"], []) == [2296]
+
+
+def test_the_chain_summary_also_seeds_the_chain_list():
+    """The OTHER half of ``_hotspot_chain_ids``, which nothing used to pin: a
+    target may carry a hotspot on a chain its default ``target_chain`` does not
+    name, and the structure's own chains are what recover it."""
+    from shared.targets import _hotspot_chain_ids
+
+    structure = SimpleNamespace(chain_summary={
+        "chains": [{"chain_id": "A2"}, {"chain_id": "B2"}],
+    })
+    assert _hotspot_chain_ids("A2", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", structure) == ["A2", "B2"]
+    assert _hotspot_chain_ids("", None) == []
+
+
+def test_the_fallback_never_invents_a_multi_letter_chain():
+    """``_LONE_HOTSPOT_RE`` is ONE letter on purpose, and nothing pinned that.
+
+    It runs only after ``split_hotspot`` has already failed — i.e. when no chain
+    list confirms the prefix — so widening it to ``[A-Za-z]+`` would let the
+    save invent a chain ``"AB"`` that nothing has confirmed exists.
+    ``blueprints/targets._parse_residue_list`` restricts a stored hotspot to one
+    letter plus an integer, which is exactly the shape this may recover.
+
+    The cost of the restriction, stated rather than hidden: a genuine
+    multi-character chain with NO chain list to confirm it is dropped from both
+    columns. Supplying the chain list is what recovers it, which is the whole
+    reason ``_hotspot_chain_ids`` exists.
+    """
+    from shared.targets import _split_stored_hotspot
+
+    assert _split_stored_hotspot("A296", []) == ("A", 296)
+    assert _split_stored_hotspot("AB296", []) == (None, None)
+    assert _split_stored_hotspot("AB296", ["AB"]) == ("AB", 296)
+
+
+def test_an_insert_failure_returns_none(fake):
+    """``create_target`` has ONE failure contract and it is unchanged: None,
+    which the route renders as "try again in a moment". That answer is honest
+    here because the row names no column a pre-0041 database could be missing
+    (see ``test_create_target_never_names_the_new_column``), so every failure it
+    can have really may clear on a retry."""
+    with patch.object(type(fake), "table", side_effect=RuntimeError("timeout")):
+        assert create_target(
+            user_id="u-1", upload=None, target_chain="A B",
+            hotspot_residues=[241, 241],
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -858,9 +1112,20 @@ def test_chain_error_skips_when_no_chain_was_requested():
     assert t.chain_error("") is None
 
 
-def test_hotspot_error_accepts_a_residue_in_any_named_chain():
-    """``target_chain`` may name several ("A B"), which rfdiffusion's
-    validator accepts. A residue in the second chain is in range."""
+def test_hotspot_error_reads_a_bare_residue_against_the_first_named_chain():
+    """``target_chain`` may name several ("A B"), which rfdiffusion's validator
+    accepts. A BARE number is judged against the FIRST of them.
+
+    This used to assert the union — "a residue in the second chain is in range"
+    — and that was wrong in the direction that spends money. Nothing downstream
+    reads an unprefixed hotspot as "any named chain": tools/base.py:108 rewrites
+    it onto the first target chain and proteina promotes it onto
+    contig_chains[0]. So 320 here is SENT as "A320", against a chain that stops
+    at 210; this route funded the campaign and the container refused it with the
+    GPU already running. proteina is what makes that reachable rather than
+    hypothetical — it emits hotspot_residues as bare author numbers on purpose,
+    so every proteina multi-chain launch arrives here unprefixed.
+    """
     summary = {
         "chains": [
             {"chain_id": "A", "standard_residue_count": 210,
@@ -872,7 +1137,24 @@ def test_hotspot_error_accepts_a_residue_in_any_named_chain():
         ],
     }
     t = DesignTarget(id=str(uuid.uuid4()), user_id="u-1", chain_summary=summary)
-    assert t.hotspot_error("A B", [30, 320]) is None
+    assert t.hotspot_error("A B", [30]) is None
+    err = t.hotspot_error("A B", [30, 320])
+    assert err and "320" in err, err
+    # ...and it says WHY, or the user reads "320 is outside A 1-210, B 300-350"
+    # about a number that is plainly inside B 300-350.
+    assert "read as chain A" in err, err
+    # Naming the chain explicitly is how you reach the second one — and this
+    # arm has to be REACHABLE, or the sentence above sends users to an escape
+    # hatch that is not there. It always was for rfdiffusion / bindcraft /
+    # pxdesign, whose validate() emits the prefixed token straight into
+    # hotspot_residues. It was NOT for proteina, which strips the letter into a
+    # bare number and carries the prefixed form in hotspot_spec instead, so
+    # every proteina hotspot arrived here unprefixed however it was typed and
+    # this line pinned a door proteina users could not open. The routes now
+    # judge shipped_hotspots(validated), which prefers the spec, so the
+    # prefixed token reaches this function from every tool. Pinned end to end
+    # in tests/test_multichain_targets.py and at both money routes.
+    assert t.hotspot_error("A B", [30, "B320"]) is None
     err = t.hotspot_error("A B", [30, 9001])
     assert err and "9001" in err and "A 1-210" in err and "B 300-350" in err
 
@@ -1057,10 +1339,18 @@ def test_size_error_refuses_an_over_cap_target_for_proteina():
         storage_path="u-1/t-1/3s7g.pdb", target_chain="A B",
         chain_summary=_FC_SUMMARY,
     )
-    # 415 aa selection: over proteina's cap, inside rfdiffusion's 500.
-    assert t.size_error("proteina", "A B", []) is not None
-    assert t.size_error("rfdiffusion", "A B", []) is None
-    # Narrowed to the canaried window, proteina accepts it.
+    # THE CAP IS PER TOOL, so a discriminating size has to sit BETWEEN two
+    # tools' caps: proteina is 500 and boltzgen is 600, and a 559-residue
+    # three-chain selection straddles them. This used to be posed at 415 aa,
+    # over proteina's 140 cap and under rfdiffusion's 500 — but 415 is now the
+    # largest size proteina has been MEASURED at, so that pair discriminates
+    # nothing.
+    _over_500 = [("A", 236, 443), ("B", 236, 442), ("C", 237, 380)]   # 559 aa
+    assert t.size_error("proteina", "A B C", _over_500) is not None
+    assert t.size_error("boltzgen", "A B C", _over_500) is None
+    # The whole CH2+CH3 pair — 415 aa, the motivating campaign — now fits.
+    assert t.size_error("proteina", "A B", []) is None
+    # And narrowed to the smallest canaried window it fits with room to spare.
     assert t.size_error(
         "proteina", "A B", [("A", 236, 300), ("B", 236, 300)],
     ) is None

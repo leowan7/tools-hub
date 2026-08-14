@@ -154,6 +154,7 @@ def _env() -> Environment:
     env.globals["score_legends_for"] = score_legends.score_legends_for
     env.globals["format_metric_value"] = metric_glossary.format_value
     env.globals["score_legend_for"] = score_legends.get_legend
+    env.globals["legend_text"] = score_legends.legend_text
     env.globals["ordinal"] = ranking.ordinal
     env.globals["csrf_input"] = lambda: ""
     env.globals["url_for"] = lambda _e, **kw: "/static/" + kw.get("filename", "")
@@ -367,11 +368,40 @@ _HOOKS = [
      _el(id_prefix="campaign-modal-")),
     (r"'\.shortlist-review'", "ul.shortlist-review inside the modal", _ALL,
      _el(cls="shortlist-review")),
+    # THE PER-MODE MAPPING OF THESE TWO CHANGED UNDER A91, and the change is
+    # what the mode tuples record. `candidate_refs` was campaign+target and is
+    # now every mode: the job branch posts it as well, because it is the shape
+    # both ref arms take and `campaigns_submit` prefers it there too.
+    # `candidate_indices` stays job-only -- it is the shape a page served before
+    # that change carries, which is the entire reason the job branch emits two
+    # fields instead of one, and emitting it in a ref mode would hand the ref
+    # arms a payload neither of them parses.
+    #
+    # `openCampaignModal` looks the two inputs up INDEPENDENTLY and fills each
+    # one it finds, which is why a mode carrying both needs no JS change -- and
+    # why these rows are per-mode rather than global. A mode that stops emitting
+    # an input posts nothing for it, and the arm then sees only whatever other
+    # shortlist field that mode still carries: for the ref modes there is none,
+    # so the submit answers `?handoff=none` -- "you starred nothing" -- to a
+    # user who starred designs.
     (r'\[name="candidate_refs"\]', 'the hidden input name="candidate_refs"',
-     ("campaign", "target"), _el(tag="input", name="candidate_refs")),
+     _ALL, _el(tag="input", name="candidate_refs")),
     (r'\[name="candidate_indices"\]',
      'the hidden input name="candidate_indices"', ("job",),
      _el(tag="input", name="candidate_indices")),
+    # A NEW THING THE JS READS, and the reason this row exists at all rather
+    # than being left to the render tests: the parent field used to be a
+    # server-side detail this file had no interest in, and A91 made it the
+    # switch `openCampaignModal` decides the review list's wording on. The JS
+    # used to key that on `refsInput` -- present only in the ref modes -- and
+    # A91 gave job mode a refs input of its own, so the old key stopped
+    # identifying scope and was replaced by this lookup.
+    #
+    # Job-only, matching the macro: exactly one parent field is emitted per
+    # render. test_no_ref_mode_carries_a_job_scope_field below is the other
+    # direction, which is the one that actually bites -- see its docstring.
+    (r'\[name="source_job_id"\]', 'the hidden input name="source_job_id"',
+     ("job",), _el(tag="input", name="source_job_id")),
 ]
 
 _HOOK_IDS = [f"{h[1]} [{'+'.join(h[2])}]" for h in _HOOKS]
@@ -397,6 +427,45 @@ def test_the_starred_export_is_target_mode_only(mode):
     a filename claiming otherwise."""
     assert _el(cls="cand-starred-export")(_DOM[mode]) == []
     assert _el(tag="input", name="refs")(_DOM[mode]) == []
+
+
+@pytest.mark.parametrize("mode", ["campaign", "target", "target_grouped"])
+def test_no_ref_mode_carries_a_job_scope_field(mode):
+    """The pair for the two job-only rows above, and the direction that bites.
+
+    `source_job_id` is not merely the job form's parent field any more. Since
+    A91 it is the switch `openCampaignModal` reads --
+    `!!modal.querySelector('[name="source_job_id"]')` -- to decide whether a
+    reviewed candidate gets its `· sub-job <id>` suffix. The suffix is
+    suppressed in job scope because a single-job table has exactly one job and
+    calling it a sub-job of itself reads as a rendering fault. Emit the field
+    in a ref mode and the suppression fires on the tables that INTERLEAVE
+    several sub-jobs: the review list shows "Candidate 1, Candidate 1,
+    Candidate 2" with nothing saying which sub-job any of them came from, on
+    the last screen before a paid wet-lab order. The positive row above cannot
+    see this -- it asserts job mode still emits the field, and every mode
+    emitting it satisfies that.
+
+    Routing is unaffected, deliberately not claimed otherwise: `campaigns_submit`
+    tries `source_target_id`, then `source_campaign_id`, then `source_job_id`,
+    so a ref form carrying an extra job id still reaches its own arm. The
+    damage is entirely in what the user is shown.
+
+    `candidate_indices` is asserted here for a different reason.
+    tests/test_target_table_render.py calls it "the ONLY field this form has
+    that the ref forms do not", which is the stated reason the job branch
+    cannot yet be collapsed into the ref one; emitting it here makes that
+    sentence false. No arm reads it off a ref form today -- both parse
+    `candidate_refs` alone -- but what `openCampaignModal` would put in it is
+    `sl.map(r => r.i)`, and `data-ref-idx` on a merged table is the row's index
+    WITHIN ITS OWN sub-job, so the payload is a list of positions with the job
+    that gives each one meaning stripped off.
+    """
+    assert _el(tag="input", name="source_job_id")(_DOM[mode]) == []
+    assert _el(tag="input", name="candidate_indices")(_DOM[mode]) == []
+    # ...and the mode is not vacuously fieldless: it does render the lab-submit
+    # form, with its own parent field and the refs payload both ref arms parse.
+    assert _el(tag="input", name="candidate_refs")(_DOM[mode])
 
 
 @pytest.mark.parametrize("mode", _ALL)
@@ -537,13 +606,22 @@ def test_no_comment_in_candidate_table_js_can_answer_for_a_hook():
     Counting is the assertion, not membership. One occurrence means the
     definition and nothing else; two means the comment is back in scope and
     every token this file searches for is soft again.
+
+    `dropShortlistRefs` is in the list for the same reason its three siblings
+    are, and its caller is off this macro entirely: templates/campaigns/
+    detail.html loads this file solely to call it (register item A89), so a
+    rename that the header comment answered for would leave a submitted
+    shortlist un-touched with nothing here red. Its own cross-boundary pin lives
+    in tests/test_lab_project_confirmation.py, which renders that page and, where
+    `node` is on PATH, executes the function.
     """
     assert "Exposes:" in _JS_SOURCE, (
         "fixture assumption: candidate_table.js still carries the header "
         "comment that made this necessary")
     assert "Exposes:" not in _JS, "the stripper did not strip"
 
-    for name in ("getShortlist", "openCampaignModal", "closeCampaignModal"):
+    for name in ("getShortlist", "openCampaignModal", "closeCampaignModal",
+                 "dropShortlistRefs"):
         raw = _JS_SOURCE.count("window." + name)
         assert raw == 2, (name, raw)          # once in prose, once in code
         assert _JS.count("window." + name) == 1, name
