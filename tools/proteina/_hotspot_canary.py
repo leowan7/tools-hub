@@ -1038,6 +1038,15 @@ def run_shard(pdb_text: str, label: str, hotspot_spec: list[str],
     for p in sorted(glob.glob(str(inference / "**/*.pdb"), recursive=True)):
         if "filtered_out_samples" in p:
             continue
+        # Mirrors run_pipeline.find_pdb_for's exclusions (literal, like the
+        # basenames below — this file duplicates rather than imports on
+        # purpose). `_hub_input` holds the archive copies of the input,
+        # target.pdb AND upload.pdb, so the basename list alone no longer
+        # covers it: upload.pdb would be counted here as a design. Inert while
+        # this canary stages its own target and never creates that directory;
+        # kept in step so it stays inert if that ever changes.
+        if "_hub_input" in Path(p).parts:
+            continue
         name = Path(p).name
         if name in ("target.pdb", "target_input"):
             continue

@@ -45,6 +45,7 @@ import os
 import re
 import subprocess
 import sys
+import tarfile
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,6 +103,29 @@ def _make_pdb(spans, extra=""):
             )
             serial += 1
     return "\n".join(lines) + "\n" + extra
+
+
+class _FakeStreamedGet:
+    """Stand-in for ``requests.get(..., stream=True)`` exactly as
+    ``download_target`` consumes it: a context manager with raise_for_status()
+    and iter_content(). Lets a test drive the REAL download path — including the
+    body-too-small refusal — instead of stubbing download_target away and
+    testing nothing about it."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size=0):
+        yield self._body
 
 
 def _atom(serial, atom, resname, chain, resseq, icode="", record="ATOM  "):
@@ -757,6 +781,295 @@ class TestRewardParse:
         assert rp.parse_designs(empty) == []
 
 
+class TestArchivedInputIsNotADesign:
+    """The archived copy of the uploaded target must be invisible to the design
+    glob.
+
+    ``find_pdb_for`` globs ``run_dir/**/*.pdb`` and, when a row's name column
+    matches no file, pairs rows onto that list BY INDEX. An extra .pdb under the
+    tree is therefore not inert — it either shifts the pairing or gets uploaded
+    as somebody's design carrying another row's scores. Keeping a copy of the
+    user's input inside run_dir (so the run archive carries it, see
+    ``archive_input_copy``) is only safe while these hold.
+    """
+
+    def _row(self, name="no_such_design"):
+        """A reward row whose name column matches nothing, which is what forces
+        find_pdb_for down to the index fallback — the dangerous path."""
+        return {"metadata_tag": name}
+
+    def _with_input_copy(self, tmp_path, filename="target.pdb"):
+        run = tmp_path / "run"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / filename).write_text("ATOM  uploaded\n")
+        return run
+
+    def test_the_input_copy_is_never_returned_as_a_design(self, tmp_path):
+        """One row, one .pdb under the tree: the index fallback's "the counts
+        match, so the pairing is unambiguous" precondition holds exactly, and
+        unexcluded this hands the user their own upload back as design rank 0."""
+        run = self._with_input_copy(tmp_path)
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_exclusion_is_the_directory_not_the_basename(self, tmp_path):
+        """Belt and braces. target.pdb is excluded by name too, so renaming the
+        copy must not be what silently re-arms the mis-pairing."""
+        run = self._with_input_copy(tmp_path, filename="uploaded_structure.pdb")
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_basename_exclusion_is_the_second_independent_count(self, tmp_path):
+        """archive_input_copy's docstring claims the copy is off the design glob
+        on TWO independent counts. This pins the other one: `target.pdb` is
+        excluded by basename wherever it sits, which is what makes the claim
+        true rather than a restatement of the directory exclusion."""
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "target.pdb").write_text("ATOM  staged target\n")
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_the_real_design_still_resolves_alongside_the_copy(self, tmp_path):
+        """The exclusion must not cost the fallback its own job: with the copy
+        discounted the counts line up again and the design is found. Were the
+        copy counted, all_pdbs (2) != total_rows (1) and the design would be
+        dropped instead of delivered."""
+        run = self._with_input_copy(tmp_path)
+        (run / "samples").mkdir()
+        (run / "samples" / "sample_0.pdb").write_text("ATOM  design\n")
+        got = rp.find_pdb_for(self._row(), run, 0, 1)
+        assert got is not None and got.name == "sample_0.pdb"
+
+    def test_a_design_dir_that_merely_resembles_the_name_is_kept(self, tmp_path):
+        """The check is on a path COMPONENT, not a substring (unlike the
+        filtered_out_samples one beside it). A substring test here would quietly
+        discard real designs from any directory whose name contains the token."""
+        run = tmp_path / "run"
+        (run / f"{rp._HUB_INPUT_DIR}s").mkdir(parents=True)
+        (run / f"{rp._HUB_INPUT_DIR}s" / "sample_0.pdb").write_text("ATOM  design\n")
+        got = rp.find_pdb_for(self._row(), run, 0, 1)
+        assert got is not None and got.name == "sample_0.pdb"
+
+    def test_archive_input_copy_lands_where_the_exclusion_looks(self, tmp_path, monkeypatch):
+        """Pins the writer to the reader: the copy goes to the directory
+        find_pdb_for excludes, byte-for-byte."""
+        # archive_input_copy records the name in the module-level
+        # _hub_input_written set. monkeypatch it so the entry does not leak into
+        # every later test in the process and silently stand in for the
+        # per-shard reset.
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        src = tmp_path / "incoming.pdb"
+        src.write_text("ATOM  uploaded\n")
+        run = tmp_path / "run"
+        run.mkdir()
+        # upload.pdb, not target.pdb: this is the copy that is NOT also excluded
+        # by basename, so it rests on the directory exclusion alone — the one
+        # that has to hold.
+        rp.archive_input_copy(src, run, rp._HUB_UPLOAD_NAME)
+        copy = run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME
+        assert copy.read_text() == "ATOM  uploaded\n"
+        assert rp.find_pdb_for(self._row(), run, 0, 1) is None
+
+    def test_archive_input_copy_never_raises(self, tmp_path, monkeypatch):
+        """Best-effort by contract: a refusal that carries a usable message must
+        not become a crash that carries none because a copy failed."""
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "run"
+        run.mkdir()
+        rp.archive_input_copy(tmp_path / "does_not_exist.pdb", run, rp._HUB_UPLOAD_NAME)
+        assert not (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).exists()
+
+
+class TestRawArchiveDest:
+    """Where the run archive is written is decided when it is written.
+
+    A module constant captured as a default argument freezes at import, which
+    makes every later reassignment of it a silent no-op — including the tests'
+    own, which is how this suite spent its whole life writing real tarballs to
+    /tmp instead of into tmp_path, with the redirect sitting right there
+    looking like it worked.
+    """
+
+    def test_dest_is_resolved_on_call_not_frozen_at_import(self, tmp_path, monkeypatch):
+        """RAW_ARCHIVE_PATH must be read when archive_raw_outputs runs, not
+        captured as a default argument at def time. Frozen, every later
+        reassignment is silently ignored — including this suite's own, which is
+        how it was writing real archives to /tmp instead of into tmp_path."""
+        run = tmp_path / "inference"
+        run.mkdir()
+        (run / "note.txt").write_text("hi")
+        dest = tmp_path / "redirected.tgz"
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(dest))
+        rp.archive_raw_outputs(run)
+        assert dest.is_file(), "archive_raw_outputs ignored the reassigned constant"
+
+    def test_an_explicit_dest_still_wins(self, tmp_path, monkeypatch):
+        """Late binding must not turn the parameter into a suggestion: an
+        explicit dest overrides the constant, and nothing is written to it."""
+        run = tmp_path / "inference"
+        run.mkdir()
+        (run / "note.txt").write_text("hi")
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "constant.tgz"))
+        explicit = tmp_path / "explicit.tgz"
+        rp.archive_raw_outputs(run, dest=str(explicit))
+        assert explicit.is_file()
+        assert not (tmp_path / "constant.tgz").exists()
+
+
+class TestArchiveGatesTheInputCopy:
+    """The archive decides what it tars on what THIS process did, not on what it
+    finds on disk.
+
+    Every mechanism that clears stale state is best-effort — _run_shard's run_dir
+    wipe passes ignore_errors=True, and the pre-download clear can be refused by
+    the filesystem — so presence of a _hub_input/upload.pdb is not evidence that
+    this job uploaded it. Gating the tar on `_hub_input_written` is what makes
+    "another customer's structure is never filed under this job id" a property
+    of the archive rather than a hope about the container.
+
+    The gate is a set of NAMES rather than one flag because two copies land in
+    this directory at different points in the run. A single flag would let a
+    prior shard's target.pdb into the archive on the strength of this shard
+    having written upload.pdb.
+    """
+
+    def _run_with_copy(self, tmp_path, name=None):
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / (name or rp._HUB_UPLOAD_NAME)).write_bytes(b"STRUCTURE\n")
+        (run / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        return run
+
+    def _names(self, dest):
+        with tarfile.open(dest) as tf:
+            return tf.getnames()
+
+    def test_a_copy_this_shard_did_not_write_is_excluded(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(self._run_with_copy(tmp_path), dest=str(dest))
+        names = self._names(dest)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), names
+        assert "inference/sample_0.pdb" in names, (
+            "the gate must drop only _hub_input, never upstream's own output")
+
+    def test_a_copy_this_shard_wrote_is_kept(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(self._run_with_copy(tmp_path), dest=str(dest))
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in self._names(dest)
+
+    def test_a_foreign_file_beside_our_copy_is_still_excluded(self, tmp_path, monkeypatch):
+        """The gate is per-member, not per-directory: writing our copy does not
+        wave through whatever else a previous shard left in the same folder."""
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        run = self._run_with_copy(tmp_path)
+        (run / rp._HUB_INPUT_DIR / "someone_elses.pdb").write_bytes(b"OTHER\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        names = self._names(dest)
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in names
+        assert not any(n.endswith("someone_elses.pdb") for n in names), names
+
+    def test_the_OTHER_copy_does_not_ride_in_on_this_ones_coat_tails(
+            self, tmp_path, monkeypatch):
+        """The exact reason the gate is a set and not a bool.
+
+        This shard wrote upload.pdb. A previous shard left a target.pdb in the
+        same directory — the staged file it was designing against, a different
+        customer's structure. One flag saying "this shard wrote something here"
+        would file that under this job id, in the artifact whose entire purpose
+        is to be evidence.
+        """
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        run = self._run_with_copy(tmp_path)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_INPUT_NAME).write_bytes(b"THEIRS\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        names = self._names(dest)
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_UPLOAD_NAME}" in names
+        assert f"inference/{rp._HUB_INPUT_DIR}/{rp._HUB_INPUT_NAME}" not in names, names
+
+    def test_a_dir_that_merely_resembles_the_name_is_still_archived(self, tmp_path, monkeypatch):
+        """The filter matches a path COMPONENT, not a substring.
+
+        A substring test would drop legitimate upstream output from any
+        directory whose name merely contains the token — and because tarfile
+        stops recursing into a directory the filter rejects, it would take the
+        whole subtree with it. That is the same mistake find_pdb_for is guarded
+        against, in the one place where it destroys evidence rather than just
+        skipping a design.
+        """
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "inference"
+        lookalike = run / f"{rp._HUB_INPUT_DIR}s"
+        lookalike.mkdir(parents=True)
+        (lookalike / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        dest = tmp_path / "raw.tgz"
+        rp.archive_raw_outputs(run, dest=str(dest))
+        assert f"inference/{rp._HUB_INPUT_DIR}s/sample_0.pdb" in self._names(dest)
+
+    def test_archive_input_copy_is_what_opens_the_gate(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        src = tmp_path / "incoming.pdb"
+        src.write_bytes(b"STRUCTURE\n")
+        run = tmp_path / "inference"
+        run.mkdir()
+        rp.archive_input_copy(src, run, rp._HUB_UPLOAD_NAME)
+        assert rp._hub_input_written == {rp._HUB_UPLOAD_NAME}
+
+    def test_a_failed_copy_leaves_the_gate_shut(self, tmp_path, monkeypatch):
+        """The record means "written", not "attempted" — otherwise a copy that
+        failed after a prior shard's file was already there would wave it in."""
+        monkeypatch.setattr(rp, "_hub_input_written", set())
+        run = tmp_path / "inference"
+        run.mkdir()
+        rp.archive_input_copy(tmp_path / "does_not_exist.pdb", run, rp._HUB_UPLOAD_NAME)
+        assert rp._hub_input_written == set()
+
+
+class TestCensusDoesNotCountTheInputAsOutput:
+    """`census_output_tree` exists to tell "the search never produced a reward
+    CSV" (the tool broke) from "the filter culled every sample" (the search
+    worked). Its own docstring says those "call for opposite responses".
+
+    The archive copies of the INPUT live under run_dir, so a census that globs
+    `**/*.pdb` counts them as output. On a shard that designed nothing that
+    reads as "2 structures written, no reward CSV" — which is neither state,
+    and points the reader at a broken tool that isn't broken. The count has to
+    be of things the SEARCH wrote.
+    """
+
+    def _census(self, run):
+        return rp.census_output_tree(run)
+
+    def test_the_input_copies_are_not_counted_as_designs(self, tmp_path):
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / rp._HUB_INPUT_DIR / rp._HUB_INPUT_NAME).write_bytes(b"ATOM  tgt\n")
+        assert self._census(run)["design_pdbs"] == 0, (
+            "a run that designed nothing must not report structures it was GIVEN")
+
+    def test_real_designs_are_still_counted(self, tmp_path):
+        """The exclusion must not swallow the number it exists to report."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "sample_0.pdb").write_bytes(b"ATOM  design\n")
+        (run / "sample_1.pdb").write_bytes(b"ATOM  design\n")
+        assert self._census(run)["design_pdbs"] == 2
+
+    def test_the_filtered_bucket_is_still_the_discriminator(self, tmp_path):
+        """filtered_out_pdbs is the number that separates the two states, so
+        the input copies must not leak into it either."""
+        run = tmp_path / "inference"
+        (run / rp._HUB_INPUT_DIR).mkdir(parents=True)
+        (run / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME).write_bytes(b"ATOM  up\n")
+        (run / "filtered_out_samples").mkdir()
+        (run / "filtered_out_samples" / "s0.pdb").write_bytes(b"ATOM  culled\n")
+        census = self._census(run)
+        assert (census["design_pdbs"], census["filtered_out_pdbs"]) == (0, 1)
+
+
 class TestStructureVerification:
     """The in-container checks that make a silently-ignored hotspot impossible.
 
@@ -1135,16 +1448,35 @@ class TestPreGpuGuards:
         assert data["error"]["check"] == "rf3"
 
 
+# The structure _drive uploads by default, and where it puts the run archive
+# and the staging dir. MODULE level, not attributes of the class that defines
+# _drive: three other classes BORROW _drive as a plain function
+# (`_drive = TestCustomTargetRegistration._drive`) rather than inheriting it, so
+# anything _drive reaches for through `self` has to be borrowed alongside it or
+# the borrower dies with AttributeError. Module scope is visible to every
+# borrower, including the next one added.
+_DRIVE_SPANS = {"A": (1, 60), "B": (1, 40)}
+
+
+def _archive_path(tmp_path):
+    return tmp_path / "raw.tgz"
+
+
+def _hub_targets_dir(tmp_path):
+    return tmp_path / "proteina" / "hub_targets"
+
+
 class TestCustomTargetRegistration:
     """End-to-end wiring of the custom-target path, with the network and the
     `complexa` binary stubbed. These run main() for real, so they also prove
     the ordering: verify, then register, then design."""
 
     def _drive(self, rp, tmp_path, monkeypatch, job_spec, *, calls, hotspot_spec=(),
-               fail_registration=False, pdb_spans=None, pdb_text=None):
+               fail_registration=False, pdb_spans=None, pdb_text=None,
+               download=None, input_url="https://example/target.pdb"):
         result_file = tmp_path / "smoke.json"
         monkeypatch.setattr(rp, "SMOKE_RESULTS_PATH", str(result_file))
-        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(tmp_path / "raw.tgz"))
+        monkeypatch.setattr(rp, "RAW_ARCHIVE_PATH", str(_archive_path(tmp_path)))
         # Keep every filesystem effect inside tmp_path.
         home = tmp_path / "proteina"
         (home / "configs" / "targets").mkdir(parents=True)
@@ -1161,15 +1493,22 @@ class TestCustomTargetRegistration:
         )
         monkeypatch.setattr(rp, "PROTEINA_HOME", str(home))
         monkeypatch.setattr(rp, "_TARGETS_DICT", str(registry))
-        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(home / "hub_targets"))
+        monkeypatch.setattr(rp, "_HUB_TARGET_DIR", str(_hub_targets_dir(tmp_path)))
 
-        spans = pdb_spans or {"A": (1, 60), "B": (1, 40)}
+        spans = pdb_spans or _DRIVE_SPANS
 
         def fake_download(url, dest):
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(pdb_text if pdb_text is not None else _make_pdb(spans))
+            # write_BYTES, like the real download_target: write_text newline-
+            # translates on Windows, so the harness would hand the pipeline a
+            # CRLF structure no uploader ever sends and quietly defeat any
+            # byte-for-byte assertion about what got archived.
+            dest.write_bytes(
+                (pdb_text if pdb_text is not None else _make_pdb(spans)).encode())
             return dest
-        monkeypatch.setattr(rp, "download_target", fake_download)
+        # `download` lets a test run the REAL download_target (with requests
+        # stubbed) instead, so the download's own refusal path is exercised.
+        monkeypatch.setattr(rp, "download_target", download or fake_download)
 
         def fake_run(cmd, cwd):
             calls.append(list(cmd))
@@ -1196,7 +1535,9 @@ class TestCustomTargetRegistration:
 
         payload = {
             "job_spec": job_spec,
-            "input_presigned_url": "https://example/target.pdb",
+            # Empty for a genuinely curated run: a staged URL on a run that did
+            # not declare a custom target is refused by the pre-GPU guard.
+            "input_presigned_url": input_url,
             "upload_urls_endpoint": "https://example/upload",
             "job_token": "t", "tier": "protein_binder",
         }
@@ -1314,6 +1655,375 @@ class TestCustomTargetRegistration:
         assert data["status"] == "FAILED"
         assert data["error"]["check"] == "target_key_collision"
         assert calls == []
+
+    # --- the upload must reach the archive on every exit path ---------------
+    #
+    # archive_raw_outputs tars run_dir (./inference) and NOTHING else, while the
+    # upload is staged in _HUB_TARGET_DIR (./hub_targets), outside it. So unless
+    # a copy is taken inside run_dir BEFORE the guards run, the archive of a
+    # refused run holds no trace of the bytes that were refused — and a refusal
+    # is exactly the run whose input you need to open afterwards, without paying
+    # for another A100 to see it again.
+
+    def _archive_names(self, tmp_path):
+        archive = _archive_path(tmp_path)
+        assert archive.is_file(), f"no run archive was written at {archive}"
+        with tarfile.open(archive) as tf:
+            return tf.getnames()
+
+    def _archived_member(self, tmp_path, name):
+        """A _hub_input copy as the ARCHIVE carries it — the raw member BYTES,
+        read back out of the tarball rather than off the filesystem. Asserting
+        on the loose file would still pass if the tar were written somewhere the
+        copy never reached, which is the whole failure being pinned here; and
+        read_text() would newline-translate, so a byte claim would not be one."""
+        member = f"inference/{rp._HUB_INPUT_DIR}/{name}"
+        names = self._archive_names(tmp_path)
+        assert member in names, (
+            f"the run archive carries no {name}: expected {member}, "
+            f"got {names[:20]}")
+        with tarfile.open(_archive_path(tmp_path)) as tf:
+            return tf.extractfile(member).read()
+
+    def _archived_input(self, tmp_path):
+        """What the USER SENT, as the archive carries it."""
+        return self._archived_member(tmp_path, rp._HUB_UPLOAD_NAME)
+
+    # A REPRESENTATIVE set of refusals that happen after the bytes have arrived,
+    # not the full register — prepare_custom_target refuses in about a dozen
+    # places past this point and its ARCHIVE CONTRACT docstring states the rule
+    # they all follow. Each is a message about the user's own structure, so each
+    # is a run whose input has to be in the archive. The `detail` fragment keeps
+    # the two that share a check name from being unable to tell which guard
+    # actually fired.
+    _POST_DOWNLOAD_REFUSALS = [
+        # the headline guard: a hotspot matching nothing in the selection
+        ("hotspot_missing", {"hotspot_spec": ["A9999"]}, None,
+         "hotspot_missing", "are not in the selected region"),
+        # an expression-tagged construct whose derived contig cannot render
+        ("negative_numbering", {"target_input": "", "target_chain": "A"},
+         {"A": (-5, 240)}, "target_input_negative", "negative residue numbers"),
+        # a chain range that selects nothing
+        ("empty_chain_range", {"target_input": "Z1-99"}, None,
+         "target_input", "select 0 residues"),
+        # a selected region below the minimum designable size
+        ("under_twenty_residues", {"target_input": "A1-10"}, None,
+         "target_input", "fewer than the 20 needed"),
+    ]
+
+    @pytest.mark.parametrize(
+        "spec_kw, spans, check, detail",
+        [case[1:] for case in _POST_DOWNLOAD_REFUSALS],
+        ids=[case[0] for case in _POST_DOWNLOAD_REFUSALS],
+    )
+    def test_a_refusal_after_the_download_still_archives_the_upload(
+            self, tmp_path, monkeypatch, spec_kw, spans, check, detail):
+        calls: list = []
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(**spec_kw),
+                           calls=calls, pdb_spans=spans)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == check
+        assert detail in data["error"]["detail"], data["error"]["detail"]
+        assert calls == [], "these refusals must still precede every subprocess"
+        assert self._archived_input(tmp_path) == _make_pdb(spans or _DRIVE_SPANS).encode()
+
+    def test_a_successful_run_archives_the_upload_too(self, tmp_path, monkeypatch):
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] != "FAILED", data.get("error")
+        assert self._archived_input(tmp_path) == _make_pdb(_DRIVE_SPANS).encode()
+
+    def test_the_archived_copy_is_the_file_that_was_registered(self, tmp_path, monkeypatch):
+        """target.pdb is the file the registry points at, byte for byte.
+
+        This is the copy that answers "what was designed against", so it has to
+        be the STAGED file — the contig-cropped one handed to `target add` — and
+        not the upload it was derived from. The two are separate members for
+        exactly this reason, and a run that archived the upload under both names
+        would pass every assertion about the upload while quietly losing the
+        record of what the service actually ran.
+        """
+        calls: list = []
+        self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=calls)
+        add = next(c for c in calls if c[:3] == [rp.COMPLEXA_BIN, "target", "add"])
+        staged = Path(add[add.index("--target-path") + 1])
+        assert staged.read_bytes() == self._archived_member(
+            tmp_path, rp._HUB_INPUT_NAME)
+
+    def test_a_short_body_download_archives_what_did_arrive(self, tmp_path, monkeypatch):
+        """download_target writes the body and THEN refuses it as too small: a
+        200 response carrying a short error document (what a proxy in front of
+        the store answers with) lands here. Those bytes are the entire evidence
+        for what went wrong, so the copy is taken in a finally rather than after
+        a clean return. A 403 from an EXPIRED url is the other branch — it
+        raises before the file is opened and writes nothing; see the warm-
+        container test below for what that must NOT archive."""
+        body = b"<Error>AccessDenied</Error>"
+        assert len(body) < 32, "must trip download_target's size floor"
+        monkeypatch.setattr(rp.requests, "get", lambda *a, **k: _FakeStreamedGet(body))
+        # rp.download_target is resolved BEFORE _drive replaces the name, so the
+        # real function runs against the stubbed requests.
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert self._archived_input(tmp_path) == body
+
+    def test_a_download_that_produced_nothing_is_not_a_crash(self, tmp_path, monkeypatch):
+        """The other side of the finally: with no bytes on disk the copy must
+        no-op quietly and leave the refusal's own message intact."""
+        def dead_download(url, dest):
+            rp._fail("input", "download", "custom target download failed: boom")
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=dead_download)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert "boom" in data["error"]["detail"]
+        assert not any(rp._HUB_INPUT_DIR in n for n in self._archive_names(tmp_path))
+
+    def test_a_prior_shards_upload_is_never_archived_as_this_ones(self, tmp_path, monkeypatch):
+        """Warm-container cross-contamination — the failure mode the copy's own
+        placement creates if the staging dir is only tested for existence.
+
+        _HUB_TARGET_DIR is NOT wiped at shard start (only ./inference is), and a
+        refused shard leaves its incoming.pdb behind: the unlink that clears it
+        fires in step 6b, which a refusal never reaches. If THIS shard's GET then
+        fails before writing anything — an expired presigned URL raises before
+        the file is opened — an exists() check alone sees the leftover and files
+        ANOTHER CUSTOMER'S structure under this job id, inside the one artifact
+        whose entire purpose is to be trustworthy evidence."""
+        stale = b"REMARK  PRIOR SHARD STRUCTURE, NOT THIS JOB'S\n"
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        (hub / "incoming.pdb").write_bytes(stale)
+
+        def expired_url(*a, **k):
+            raise RuntimeError("403 Client Error: Forbidden (presigned URL expired)")
+
+        monkeypatch.setattr(rp.requests, "get", expired_url)
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"the prior shard's structure was archived under this job: {names}")
+
+    def _plant_stale_run_dir_copy(self, tmp_path, monkeypatch, body, undeletable=False):
+        """Put a previous shard's copy inside run_dir and make _run_shard's wipe
+        silently fail to remove it — which is exactly what its
+        rmtree(ignore_errors=True) does when it cannot.
+
+        With ``undeletable``, prepare_custom_target's own clear cannot remove it
+        either, which is the state that decides whether the ARCHIVE is safe on
+        its own evidence or only while the clear keeps succeeding.
+        """
+        run_dir = tmp_path / "proteina" / "inference"
+        stale = run_dir / rp._HUB_INPUT_DIR / rp._HUB_UPLOAD_NAME
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(body)
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return
+            if undeletable and Path(path).name == rp._HUB_INPUT_DIR:
+                raise PermissionError(13, "Permission denied")
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+        return stale
+
+    def test_a_clear_that_fails_refuses_and_archives_nothing(self, tmp_path, monkeypatch):
+        """A clear that cannot be done must be a REFUSAL, not a crash and not a
+        shrug — and it must still archive nothing.
+
+        This pins the placement, which is the part that is easy to "tidy" wrong.
+        Both plausible refactors reopen the leak and this test catches both:
+        moving the clear inside the download's try arms the finally, so the
+        undeletable leftover gets archived as this job's input; swallowing the
+        OSError lets the run carry on and refuse somewhere else entirely. And
+        leaving the unlink bare (no except) is not a refusal at all — it escapes
+        prepare_custom_target as an uncaught OSError, so NO smoke result is
+        written and the hub reports a webhook-shaped error for a disk fault.
+
+        Both leftovers are made un-deletable by stubbing the call that would
+        remove them — Path.unlink for incoming.pdb, shutil.rmtree for the
+        run_dir copy — because a genuinely un-deletable file is not portable to
+        create. Both stubs delegate for every other path, so nothing else in
+        the process is affected.
+        """
+        prior = b"REMARK  PRIOR SHARD STRUCTURE, NOT THIS JOB'S\n"
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        (hub / "incoming.pdb").write_bytes(prior)
+        # An UNDELETABLE stale copy inside run_dir too. Without `undeletable`
+        # the clear removes it and the closing assertion below is evaluated over
+        # an empty directory, pinning nothing: the archiving finally tars run_dir
+        # whether or not the run refused, so a leftover that survives the clear
+        # is the only one with a live route into the archive, and the archive's
+        # own gate is the only thing that can stop it.
+        stale = self._plant_stale_run_dir_copy(
+            tmp_path, monkeypatch, prior, undeletable=True)
+
+        real_unlink = Path.unlink
+
+        def refuse_unlink(self, *args, **kwargs):
+            if self.name == "incoming.pdb":
+                raise PermissionError(13, "Permission denied")
+            return real_unlink(self, *args, **kwargs)
+        monkeypatch.setattr(rp.Path, "unlink", refuse_unlink)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "input"
+        assert data["error"]["check"] == "stale_staging", (
+            "a failed clear must refuse as input/stale_staging, not carry on "
+            f"to fail somewhere else: {data['error']}")
+        assert stale.exists(), "fixture is wrong: this leftover was meant to survive"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"the leftover that could not be cleared was archived: {names}")
+
+    def test_an_unusable_staging_dir_is_a_classified_refusal(self, tmp_path, monkeypatch):
+        """The first statement of prepare_custom_target is a mkdir, and it is
+        guarded for the same reason as the clear: an uncaught OSError there
+        escapes as a bare exception, so NO smoke result is written at all and
+        the hub cannot classify the job — it reports a webhook-shaped error for
+        a disk fault. A plain file sitting where the staging dir belongs makes
+        mkdir(exist_ok=True) raise FileExistsError, portably."""
+        blocker = _hub_targets_dir(tmp_path)
+        blocker.parent.mkdir(parents=True, exist_ok=True)
+        blocker.write_bytes(b"not a directory\n")
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] == "FAILED"
+        assert data["error"]["bucket"] == "input"
+        assert data["error"]["check"] == "staging_dir", data["error"]
+
+    @pytest.mark.parametrize("failing_leg", ["run_dir_copy", "incoming"])
+    def test_a_failed_clear_does_not_skip_the_other_path(
+            self, tmp_path, monkeypatch, failing_leg):
+        """Both leftovers are cleared INDEPENDENTLY. Sharing one try lets a
+        failure on the first silently skip the second, so a perfectly deletable
+        leftover survives because an unrelated path was locked.
+
+        Parametrized over WHICH leg fails, so the pin does not depend on the
+        order the source happens to iterate in: whichever that order is, one of
+        these two cases puts the failing leg first. Fixing the failing leg
+        instead would let a harmless-looking reorder of the source tuple
+        silently disarm the only test guarding this property — and the payoff
+        for losing it is another customer's structure archived as this job's.
+        """
+        hub = _hub_targets_dir(tmp_path)
+        hub.mkdir(parents=True)
+        incoming = hub / "incoming.pdb"
+        incoming.write_bytes(b"REMARK  PRIOR\n")
+        stale = self._plant_stale_run_dir_copy(
+            tmp_path, monkeypatch, b"REMARK  PRIOR\n",
+            undeletable=(failing_leg == "run_dir_copy"))
+
+        if failing_leg == "incoming":
+            real_unlink = Path.unlink
+
+            def refuse_unlink(self, *args, **kwargs):
+                if self.name == "incoming.pdb":
+                    raise PermissionError(13, "Permission denied")
+                return real_unlink(self, *args, **kwargs)
+            monkeypatch.setattr(rp.Path, "unlink", refuse_unlink)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["error"]["check"] == "stale_staging"
+        if failing_leg == "run_dir_copy":
+            assert stale.exists(), "fixture: this leg was meant to fail"
+            assert not incoming.exists(), (
+                "the incoming.pdb clear was skipped because the other leg failed")
+        else:
+            assert incoming.exists(), "fixture: this leg was meant to fail"
+            assert not stale.exists(), (
+                "the run_dir clear was skipped because the other leg failed")
+
+    def test_a_plain_file_where_the_copy_dir_belongs_is_cleared(self, tmp_path, monkeypatch):
+        """rmtree alone raises NotADirectoryError on a file, which would surface
+        as a refusal blaming 'a previous run' for something trivially
+        removable. _remove_stale picks the right call per path type."""
+        run_dir = tmp_path / "proteina" / "inference"
+        bogus = run_dir / rp._HUB_INPUT_DIR
+        bogus.parent.mkdir(parents=True)
+        bogus.write_bytes(b"not a directory\n")
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[])
+        assert data["status"] != "FAILED", data.get("error")
+        assert self._archived_input(tmp_path) == _make_pdb(_DRIVE_SPANS).encode()
+
+    def test_a_curated_run_never_archives_a_leftover_copy(self, tmp_path, monkeypatch):
+        """The path with no clear at all. A curated run never calls
+        prepare_custom_target, so nothing on that route inspects _hub_input —
+        yet the archiving finally still tars run_dir. A previous custom shard's copy
+        that outlived the wipe would be filed under this curated job, whose
+        caller never uploaded anything. The archive's own gate is what stops
+        it: this shard wrote no copy, so no _hub_input goes in.
+
+        The record is seeded first, standing in for an earlier shard in the same
+        process having written one. That is what makes the per-shard reset
+        load-bearing HERE instead of relying on a fresh interpreter — without it
+        the set starts empty anyway and the test passes whatever _run_shard
+        does."""
+        prior = b"REMARK  A PREVIOUS CUSTOM SHARD'S STRUCTURE\n"
+        monkeypatch.setattr(rp, "_hub_input_written", {rp._HUB_UPLOAD_NAME})
+        self._plant_stale_run_dir_copy(tmp_path, monkeypatch, prior)
+        data = self._drive(
+            rp, tmp_path, monkeypatch,
+            {"config_name": "search_binder_local_pipeline", "task_name": "02_PDL1",
+             "rf3_required": False, "nsamples": 4, "replicas": 2},
+            calls=[], input_url="")
+        assert data["status"] != "FAILED", data.get("error")
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"a custom shard's upload was archived under a curated job: {names}")
+
+    def test_a_stale_copy_surviving_the_run_dir_wipe_is_cleared(self, tmp_path, monkeypatch):
+        """The other leg of the same contamination path. _run_shard's
+        `shutil.rmtree(run_dir, ignore_errors=True)` is by construction
+        best-effort, so a prior shard's inference/_hub_input/upload.pdb can
+        outlive it. If this shard then writes no bytes of its own, the archive
+        would carry the previous job's structure with nothing having gone wrong
+        loudly anywhere. Here the run_dir wipe is made to silently no-op — what
+        ignore_errors=True does on a failure — so the clear in
+        prepare_custom_target is what removes it from disk. (The archive is safe
+        either way: the gate covers the case where the clear cannot. This test
+        pins the on-disk half; test_a_clear_that_fails... pins the other.)"""
+        prior = b"REMARK  PRIOR SHARD LEFTOVER INSIDE INFERENCE\n"
+        run_dir = tmp_path / "proteina" / "inference"
+        stale = run_dir / rp._HUB_INPUT_DIR / "target.pdb"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(prior)
+
+        real_rmtree = rp.shutil.rmtree
+
+        def wipe_that_silently_fails(path, *args, **kwargs):
+            if Path(path) == run_dir:
+                return  # exactly what ignore_errors=True does when it cannot
+            return real_rmtree(path, *args, **kwargs)
+        monkeypatch.setattr(rp.shutil, "rmtree", wipe_that_silently_fails)
+
+        def expired_url(*args, **kwargs):
+            raise RuntimeError("403 Client Error: Forbidden (presigned URL expired)")
+        monkeypatch.setattr(rp.requests, "get", expired_url)
+
+        data = self._drive(rp, tmp_path, monkeypatch, self._spec(), calls=[],
+                           download=rp.download_target)
+        assert data["status"] == "FAILED"
+        assert data["error"]["check"] == "download"
+        assert not stale.exists(), "the stale copy was left in the run dir"
+        names = self._archive_names(tmp_path)
+        assert not any(rp._HUB_INPUT_DIR in n for n in names), (
+            f"a previous shard's structure survived into this archive: {names}")
 
 
 def _write(path, text):
