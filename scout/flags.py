@@ -148,7 +148,7 @@ def compute_quality_flags(
     # Glycan proximity: patch contains Asn that could be part of N-x-S/T sequon
     # This is approximate — we check if ASN is present and SER/THR is nearby
     if len(parsed) >= 2:
-        asn_nums = {num for name, num in parsed if name == "ASN"}
+        asn_nums = {num for name, num in parsed if name in _GLYCAN_SEQUON_RESIDUES}
         st_nums = {num for name, num in parsed if name in _GLYCAN_FOLLOW_RESIDUES}
         for asn_num in asn_nums:
             # Check if SER/THR is at position +2 (N-x-S/T sequon)

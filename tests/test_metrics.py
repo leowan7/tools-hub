@@ -17,7 +17,6 @@ import pytest
 from flask import Flask, jsonify
 
 from shared.metrics import (
-    REQUESTS_TOTAL,
     observe_credits_granted,
     observe_credits_spent,
     observe_idempotency_outcome,

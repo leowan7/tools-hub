@@ -376,29 +376,6 @@ def list_active_workspaces(user_id: str) -> list[Workspace]:
         return []
 
 
-def list_workspace_history(user_id: str, limit: int = 50) -> list[Workspace]:
-    """All workspaces (any status) for a user, newest first."""
-    client = get_service_client()
-    if client is None:
-        return []
-    try:
-        response = (
-            client.table(_TABLE)
-            .select("*")
-            .eq("user_id", user_id)
-            .order("activated_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        rows = list(getattr(response, "data", None) or [])
-        return [Workspace.from_row(r) for r in rows]
-    except Exception:
-        logger.warning(
-            "Could not list workspace history for %s", user_id, exc_info=True
-        )
-        return []
-
-
 def active_workspaces_count(user_id: str) -> int:
     """Cheap header-badge query: how many active workspaces does user have?"""
     return len(list_active_workspaces(user_id))

@@ -14,7 +14,6 @@ import pytest
 
 import shared.compute_campaigns as cc
 from shared.compute_campaigns import (
-    ComputeCampaign,
     cancel_campaign,
     drive_campaign,
 )

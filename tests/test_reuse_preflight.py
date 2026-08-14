@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 import app as app_mod
 import blueprints.tools as tools_mod

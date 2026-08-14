@@ -19,7 +19,6 @@ funding Workspace when the Modal webhook lands a terminal status:
 from __future__ import annotations
 
 import uuid
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest

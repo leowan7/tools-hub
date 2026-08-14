@@ -57,7 +57,7 @@ def _audit_staff_action(action: str, *, target_id: str, props: dict | None = Non
 
 @admin_bp.route("/admin/lab-projects", methods=["GET"])
 def admin_campaigns_list():
-    from shared.auth import require_staff, STAFF_EMAILS  # noqa: PLC0415
+    from shared.auth import STAFF_EMAILS  # noqa: PLC0415
     from shared.campaigns import list_all_campaigns, STATUSES  # noqa: PLC0415
     email = session.get("user_email", "")
     if not email:

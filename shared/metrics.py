@@ -47,7 +47,7 @@ import ipaddress
 import logging
 import os
 import time
-from typing import Any, Callable
+from typing import Any
 
 from flask import Flask, Response, g, jsonify, request
 
@@ -308,10 +308,3 @@ def observe_idempotency_outcome(outcome: str) -> None:
         IDEMPOTENCY_OUTCOMES.labels(outcome=outcome).inc()
     except Exception:  # pragma: no cover
         logger.debug("idempotency_outcomes metric increment failed", exc_info=True)
-
-
-def observe_scout_run() -> None:
-    try:
-        SCOUT_RUNS.inc()
-    except Exception:  # pragma: no cover
-        logger.debug("scout_runs metric increment failed", exc_info=True)

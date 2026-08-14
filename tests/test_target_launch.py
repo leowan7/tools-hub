@@ -34,7 +34,6 @@ from shared.compute_campaigns import (
 from shared.target_launch import (
     PACE_BURST,
     PACE_STEADY,
-    MultiLaunchPlan,
     ToolLaunchSpec,
     concurrency_note,
     divide_concurrency,

@@ -1026,85 +1026,6 @@ def send_workspace_cap_warning(
     )
 
 
-def send_workspace_cap_exhausted(
-    *,
-    user_email: str,
-    workspace,
-) -> bool:
-    """Notify a customer that their Workspace cap has been fully consumed.
-
-    Triggered when a submission is blocked because the Workspace is at
-    100%. Sent at most once per Workspace (caller should de-dupe).
-    """
-    api_key = os.environ.get("RESEND_API_KEY", "").strip()
-    base_url = os.environ.get("PUBLIC_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-    from_addr = os.environ.get("EMAIL_FROM", DEFAULT_FROM)
-
-    workspace_url = f"{base_url}/workspaces/{workspace.id}"
-    target_label = workspace.target_label or workspace.target_pdb_id
-    sku_label = (
-        "Target Workspace XL"
-        if workspace.sku == "workspace_xl"
-        else "Target Workspace"
-    )
-
-    subject = f"Workspace compute cap reached — {target_label}"
-    campaigns_url = f"{base_url}/campaigns/new"
-    wallet_cta = f"""
-      <p style="margin:18px 0 0 0; font-size:14px;">
-        <strong>Want to keep going?</strong> Run any tool self-serve, funded
-        from your wallet, with unlimited design count. A large ask fans out
-        into a campaign on any target.
-      </p>
-      <p style="margin:10px 0 0 0;">
-        <a href="{campaigns_url}" style="color:#2B9E7E;">Start a campaign →</a>
-      </p>
-        """
-
-    html_body = f"""
-    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                color:#1a1a1a;max-width:560px;margin:0 auto;padding:24px;">
-      <h2 style="margin-top:0;">Compute cap reached</h2>
-      <p>Your <strong>{sku_label}</strong> for <strong>{target_label}</strong>
-         has used its full ${workspace.modal_cap_usd:.2f} compute budget.</p>
-      <p>New design runs on this target are paused. Results from completed
-         runs remain available until the Workspace expires.</p>
-      <p style="margin:18px 0;">
-        <a href="{workspace_url}"
-           style="display:inline-block;padding:12px 22px;background:#525252;
-                  color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
-          View results
-        </a>
-      </p>
-      {wallet_cta}
-      <hr style="border:none;border-top:1px solid #e5e5e5;margin:24px 0;">
-      <p style="font-size:12px;color:#999;">
-        Ranomics Tools — <a href="https://tools.ranomics.com" style="color:#999;">
-        tools.ranomics.com</a>
-      </p>
-    </div>
-    """.strip()
-
-    text_body = (
-        f"Your {sku_label} for {target_label} has used its full "
-        f"${workspace.modal_cap_usd:.2f} compute budget.\n\n"
-        f"View results: {workspace_url}\n\n"
-        f"Want to keep going? Design self-serve, funded from your wallet. "
-        f"Start a campaign: {base_url}/campaigns/new\n\n"
-        "Ranomics Tools — tools.ranomics.com"
-    )
-
-    return _send_simple(
-        api_key=api_key,
-        from_addr=from_addr,
-        to_email=user_email,
-        subject=subject,
-        html_body=html_body,
-        text_body=text_body,
-        log_tag=f"workspace_exhausted ws={workspace.id}",
-    )
-
-
 def send_daily_digest(
     *,
     to_email: str,
@@ -2089,50 +2010,6 @@ def send_overrun_warning_email(
         subject=subject,
         html_body=html,
         log_tag=f"overrun_warning user={user_id} tool={tool_slug}",
-    )
-
-
-def send_overrun_kill_email(
-    *,
-    user_id: str,
-    tool_slug: str = "",
-    attempted_usd=None,
-    cap_usd=None,
-    **_extra: Any,
-) -> bool:
-    """Mid run safety kill: cumulative cost exceeded 2x estimate plus cap.
-
-    Trigger: ``mid_run_monitor_check`` decides to abort. Sent after the
-    Modal cancel is issued. The wallet hold is settled against the cap
-    and the user is notified so they can decide whether to retry with
-    different parameters.
-    """
-    email = _resolve_user_email(user_id)
-    if not email:
-        logger.info(
-            "send_overrun_kill_email: no email for user %s", user_id
-        )
-        return False
-    label = _label_for_tool(tool_slug)
-    base_url = _base_url()
-    subject = (
-        f"Your {label} run was stopped by the safety kill on Ranomics tools"
-    )
-    html = _render_template(
-        "send_overrun_kill.html",
-        base_url=base_url,
-        tool_label=label,
-        # Compute actually consumed: a COST. These three emails exist to
-        # justify a charge the user did not expect, so quoting it low is the
-        # one thing they must not do.
-        attempted_usd=_money(attempted_usd, "up"),
-        cap_usd=_money(cap_usd, "down"),
-    )
-    return _post_resend(
-        to_email=email,
-        subject=subject,
-        html_body=html,
-        log_tag=f"overrun_kill user={user_id} tool={tool_slug}",
     )
 
 

@@ -16,7 +16,6 @@ from shared.pdb_preflight import (
     HOTSPOTS_REQUIRED,
     MIN_TARGET_RESIDUES,
     PREFLIGHT_TOOLS,
-    PreflightVerdict,
     VerdictKind,
     preflight_for_tool,
 )

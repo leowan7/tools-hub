@@ -8,7 +8,6 @@ Synthetic PDB strings; no network access needed.
 """
 from __future__ import annotations
 
-import pytest
 
 from shared.pdb_inspect import (
     InspectionReport,

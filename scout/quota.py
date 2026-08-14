@@ -51,7 +51,6 @@ Usage
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from functools import wraps
@@ -270,20 +269,6 @@ def record_scout_run(
     except Exception:
         logger.error("Failed to insert scout_runs row.", exc_info=True)
         return False
-
-
-def compute_run_hash(pdb_bytes: bytes, chain_id: str) -> str:
-    """Compute a short SHA-256 over the input structure + chain selector.
-
-    Helper for callers that want to dedupe identical re-submissions. The
-    paywall itself does not use the hash — it counts rows, not distinct
-    structures — but downstream reporting can.
-    """
-    h = hashlib.sha256()
-    h.update(pdb_bytes)
-    h.update(b"|")
-    h.update(chain_id.encode("utf-8"))
-    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
