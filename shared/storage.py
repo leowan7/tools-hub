@@ -334,16 +334,6 @@ def presigned_campaign_url(object_path: str, *, expires_seconds: int = 3600) -> 
 
 OUTPUT_BUCKET = "tool-outputs"
 
-# Default TTLs for output-side signed URLs.
-#   PUT — Modal pilot wallclock caps near 4 hours, so the URL needs to
-#   outlive a long-running run. Bumped slightly past that to absorb
-#   container startup + late-pipeline writes.
-#   GET — browser fetches each PDB on demand (3D viewer expand,
-#   download click). Short TTL since the route mints fresh URLs on
-#   every request.
-OUTPUT_PUT_TTL = 6 * 3600    # 6 hours
-OUTPUT_GET_TTL = 15 * 60     # 15 minutes
-
 
 def _output_object_path(user_id: str, job_id: str, filename: str) -> str:
     """Return the canonical storage path for a candidate PDB.
@@ -402,35 +392,6 @@ def presigned_output_put_url(
     if url:
         return url
     raise StorageError(f"unexpected signed upload URL response: {result!r}")
-
-
-def presigned_output_get_url(
-    *,
-    user_id: str,
-    job_id: str,
-    filename: str,
-    expires_seconds: int = OUTPUT_GET_TTL,
-) -> str:
-    """Mint a presigned GET URL for a candidate PDB.
-
-    Used by the browser-facing download / 3D viewer route. Short TTL
-    because the route mints a fresh URL each request — the link is
-    never persisted client-side.
-    """
-    path = _output_object_path(user_id, job_id, filename)
-    client = get_service_client()
-    if client is None:
-        raise StorageError("Supabase service client unavailable.")
-    try:
-        bucket = client.storage.from_(OUTPUT_BUCKET)
-        result = bucket.create_signed_url(path, expires_seconds)
-    except Exception as exc:
-        logger.error("Signed download URL failed for %s", path, exc_info=True)
-        raise StorageError(f"signed download URL failed: {exc}") from exc
-    url = _extract_signed_url(result)
-    if url:
-        return url
-    raise StorageError(f"unexpected signed download URL response: {result!r}")
 
 
 def download_output(

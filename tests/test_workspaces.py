@@ -24,13 +24,11 @@ from unittest.mock import patch
 
 import pytest
 
-import shared.workspaces as ws_mod
 from billing.tiers import SKU_NAMES, get_sku
 from shared.workspaces import (
     DEFAULT_USD_PER_SECOND,
     GPU_USD_PER_SECOND,
     REFUND_WINDOW_DAYS,
-    PreflightResult,
     Workspace,
     activate_workspace,
     charge_for_job,

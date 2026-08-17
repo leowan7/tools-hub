@@ -8,9 +8,8 @@ at the webhooks.uploads module namespace.
 
 from __future__ import annotations
 
-import json
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from flask import Flask

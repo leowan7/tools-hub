@@ -19,7 +19,6 @@ shared.wallet level so the tests never touch Supabase.
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest

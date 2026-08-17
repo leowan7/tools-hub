@@ -8,11 +8,9 @@ small group of tests) that fails without the fix and passes with it.
 
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -861,7 +859,6 @@ def test_post_once_swallows_unexpected_post_exception(monkeypatch):
 def test_throttle_env_rejects_zero(monkeypatch):
     """``API_KEY_LAST_USED_THROTTLE_SECONDS=0`` would disable the
     throttle. Validator must clamp to 60s and log a warning."""
-    import importlib
 
     from shared import api_keys
 
