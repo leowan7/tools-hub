@@ -15,7 +15,6 @@ modal>=1.4,<2.0
 # Epitope Scout analysis pipeline (merged from epitope-scout/requirements.txt)
 freesasa==2.2.1
 scipy>=1.11
-anthropic>=0.25
 
 # CR-02 webhook retry sweep (Platform API).
 APScheduler>=3.10,<4.0

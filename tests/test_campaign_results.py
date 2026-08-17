@@ -6,7 +6,6 @@ import base64
 import io
 import zipfile
 
-import pytest
 
 from shared import compute_campaigns as cc
 from shared import exports, result_columns

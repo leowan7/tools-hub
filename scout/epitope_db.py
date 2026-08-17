@@ -43,10 +43,6 @@ SABDAB_STRUCTURE_URL = (
 RCSB_SEARCH_URL = "https://search.rcsb.org/rcsbsearch/v2/query"
 RCSB_PDB_DOWNLOAD_URL = "https://files.rcsb.org/download/{pdb_id}.pdb"
 UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{uniprot_id}.fasta"
-# UniProt BLAST endpoint — used as fallback when DBREF is absent.
-UNIPROT_BLAST_URL = "https://rest.uniprot.org/idmapping/run"
-UNIPROT_BLAST_STATUS_URL = "https://rest.uniprot.org/idmapping/status/{job_id}"
-UNIPROT_BLAST_RESULTS_URL = "https://rest.uniprot.org/idmapping/results/{job_id}"
 
 # How many RCSB PDB IDs to probe against SAbDab before giving up. Higher
 # values increase recall but add latency. 40 concurrent probes at ~0.5 s
@@ -63,12 +59,6 @@ _MAX_CONTACT_STRUCTURES = 5
 # Contact distance cutoff in Angstroms. 4.5 Å captures hydrogen bonds and
 # van der Waals contacts at protein–protein interfaces.
 _CONTACT_CUTOFF_ANGSTROM = 4.5
-
-# Sequence identity thresholds for mismatch warnings.
-# Below HIGH_WARN: possible orthologue or partial domain — warn user.
-# Below LOW_WARN:  likely wrong protein — strong warning.
-_IDENTITY_HIGH_WARN = 0.80
-_IDENTITY_LOW_WARN = 0.30
 
 # In-process cache: uniprot_id (uppercase) → list[dict]
 _CACHE: dict = {}
@@ -107,7 +97,6 @@ def _extract_uniprot_from_dbref(pdb_path, chain_id: str) -> str:
     Returns:
         UniProt accession string, or empty string if not found.
     """
-    import re  # noqa: PLC0415
 
     pdb_str = str(pdb_path)
 
@@ -206,11 +195,11 @@ def _extract_uniprot_from_cif(cif_path: str, chain_id: str) -> str:
 
 
 def _search_uniprot_by_sequence(sequence: str) -> str:
-    """Search UniProt by protein sequence using the BLAST-based ID mapping API.
+    """Search UniProt by protein sequence using the peptide search endpoint.
 
-    Submits sequence to UniProt's ID mapping service (UniParc → UniProtKB),
-    polls for completion, and returns the top hit accession. Falls back
-    gracefully on network failure, timeout, or no results.
+    Queries UniProtKB search with a sequence prefix and returns the top hit
+    accession. Falls back gracefully on network failure, timeout, or no
+    results.
 
     Args:
         sequence: One-letter amino acid sequence string (minimum 20 residues).
@@ -218,20 +207,15 @@ def _search_uniprot_by_sequence(sequence: str) -> str:
     Returns:
         UniProt accession string, or empty string if no match found.
     """
-    import time  # noqa: PLC0415
 
     if not sequence or len(sequence) < 20:
         return ""
 
     try:
-        # Submit BLAST job via UniProt ID mapping.
-        resp = requests.post(
-            UNIPROT_BLAST_URL,
-            data={"from": "UniProtKB_AC-ID", "to": "UniProtKB", "ids": ""},
-            timeout=_REQUEST_TIMEOUT_SEC,
-        )
-        # If the standard ID mapping doesn't support sequence, try the
-        # peptide search endpoint which accepts short sequences.
+        # The peptide search endpoint accepts short sequences directly. (A
+        # preceding POST to the idmapping/run endpoint used to sit here; it
+        # submitted an empty id list and its response was overwritten by this
+        # GET on the very next statement, so it only ever cost a round-trip.)
         resp = requests.get(
             "https://rest.uniprot.org/uniprotkb/search",
             params={
@@ -881,83 +865,3 @@ def _sequence_identity(seq_a: str, seq_b: str) -> float:
     # would reject all domain constructs at the 70% threshold.
     denom = min(len(seq_a), len(seq_b))
     return matches / denom if denom else 0.0
-
-
-def check_sequence_identity(uniprot_id: str, pdb_path, chain_id: str) -> dict:
-    """Check whether a PDB chain matches the canonical UniProt sequence.
-
-    Fetches the UniProt FASTA sequence and computes approximate sequence
-    identity against the selected chain in the uploaded structure. Returns
-    a human-readable warning when identity is below the threshold, so the
-    UI can alert the user that the known binder overlap results may not be
-    meaningful.
-
-    Args:
-        uniprot_id: UniProt accession provided by the user.
-        pdb_path: Path to the uploaded PDB or mmCIF file.
-        chain_id: Chain identifier selected by the user.
-
-    Returns:
-        Dict with keys:
-            identity      float | None  — identity fraction (0–1), None if
-                                          sequences could not be computed.
-            identity_pct  str           — formatted string e.g. "93.2%", or
-                                          "unknown" if computation failed.
-            warning       str           — empty string if identity >= 0.80 or
-                                          if the check could not be performed;
-                                          otherwise a human-readable warning.
-    """
-    _, chain_seq = _extract_chain_sequence(pdb_path, chain_id)
-    if not chain_seq:
-        logger.debug("Could not extract chain %s sequence from %s.", chain_id, pdb_path)
-        return {"identity": None, "identity_pct": "unknown", "warning": ""}
-
-    uniprot_seq = _fetch_uniprot_sequence(uniprot_id)
-    if not uniprot_seq:
-        logger.debug("Could not fetch UniProt sequence for %s.", uniprot_id)
-        return {"identity": None, "identity_pct": "unknown", "warning": ""}
-
-    identity = _sequence_identity(uniprot_seq, chain_seq)
-    identity_pct = f"{identity * 100:.1f}%"
-
-    if identity >= _IDENTITY_HIGH_WARN:
-        warning = ""
-    elif identity >= _IDENTITY_LOW_WARN:
-        warning = (
-            f"Sequence identity between chain {chain_id} and UniProt {uniprot_id} "
-            f"is {identity_pct}. This may be an orthologue or partial domain construct. "
-            "Known binder contact residues are shown but overlap detection may be "
-            "unreliable due to residue numbering differences."
-        )
-    else:
-        warning = (
-            f"Low sequence identity ({identity_pct}) between chain {chain_id} and "
-            f"UniProt {uniprot_id}. The accession may not match the uploaded protein. "
-            "Known binder data is shown for reference only — overlap results are "
-            "not meaningful."
-        )
-
-    return {"identity": identity, "identity_pct": identity_pct, "warning": warning}
-
-
-def is_uniprot_id(value: str) -> bool:
-    """Return True if the value looks like a UniProt accession.
-
-    UniProt accessions follow the pattern: one letter, one digit, then 3
-    alphanumeric characters, then one digit (6 characters total for standard;
-    up to 10 for isoform variants like P00533-2).
-
-    Args:
-        value: User-supplied protein identifier string.
-
-    Returns:
-        bool: True if the value matches the UniProt accession pattern.
-    """
-    import re  # noqa: PLC0415
-    value = value.strip()
-    # UniProtKB accessions come in two formats:
-    #   Standard:  [A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]  e.g. A2BC19
-    #   OPQ class: [OPQ][0-9][A-Z0-9]{3}[0-9]           e.g. P00533, Q9Y6K9
-    # Optionally followed by an isoform suffix e.g. P00533-2.
-    pattern = r'^([A-NR-Z][0-9][A-Z][A-Z0-9]{2}[0-9]|[OPQ][0-9][A-Z0-9]{3}[0-9])(-\d+)?$'
-    return bool(re.match(pattern, value.upper()))

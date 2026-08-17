@@ -13,11 +13,9 @@ Run with::
 
 from __future__ import annotations
 
-import pytest
 
 from tools import base as tools_base
 from tools import rfdiffusion as adapter_mod
-from tools.rfdiffusion import meta as adapter_meta
 
 
 def test_adapter_registered():

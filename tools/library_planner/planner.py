@@ -20,7 +20,6 @@ safe to JSON-serialize for downstream Flask rendering.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Dict
 
 from tools.library_planner import codon_bias

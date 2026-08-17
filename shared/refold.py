@@ -125,18 +125,3 @@ def can_refold(source_tool: str, dest_tool: str) -> bool:
     return (
         source_tool in SOURCE_TOOLS and dest_tool in DESTINATION_TOOLS
     )
-
-
-def build_fasta(seqs: Iterable[CandidateSeq]) -> str:
-    """Compose a multi-FASTA string from extracted candidates. Used by
-    the refold endpoint to build per-job input payloads (one FASTA
-    record per spawned ColabFold/ESMFold job).
-    """
-    blocks: list[str] = []
-    for seq in seqs:
-        wrapped = "\n".join(
-            seq.sequence[i : i + 60]
-            for i in range(0, len(seq.sequence), 60)
-        )
-        blocks.append(f">{seq.fasta_header}\n{wrapped}")
-    return "\n".join(blocks) + "\n"

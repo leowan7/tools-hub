@@ -57,7 +57,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -569,9 +569,8 @@ def run_colabfold(
         # Smoke / no-MSA path. colabfold_batch flag name has changed
         # over versions -- 1.5.5 ships ``--msa-mode``.
         cmd += ["--msa-mode", "single_sequence"]
-    if not use_templates:
-        cmd += ["--templates"] if False else []  # explicit default: off
-    else:
+    # Templates default to off; the flag is only ever added, never negated.
+    if use_templates:
         cmd += ["--templates"]
     cmd += [str(fasta), str(out_dir)]
 

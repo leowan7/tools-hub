@@ -50,7 +50,10 @@ from shared.pipeline_normalize import (
 from shared.pdb_inspect import split_hotspot
 from shared.pdb_preflight_rules import (
     BINDER_DESIGN_TOOLS,
-    HOTSPOTS_REQUIRED,
+    # Unused inside this module: re-exported so callers can keep importing the
+    # rule set from shared.pdb_preflight rather than reaching past it into
+    # shared.pdb_preflight_rules. tests/test_pdb_preflight.py imports it here.
+    HOTSPOTS_REQUIRED,  # noqa: F401
     TOOL_RULES,
     ToolRules,
     runtime_estimate_min,
