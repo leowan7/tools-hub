@@ -24,6 +24,50 @@
           · temperature <code>{{ output.get('sampling_temp') }}</code>
         {% endif %}
       </div>
+
+      {# Fixed-position audit. Rendered only when the run actually froze
+         something — `checked: false, reason: "no fixed positions requested"`
+         is the ordinary whole-chain redesign and needs no panel. The pipeline
+         hard-FAILs the job if an assertion breaks, so reaching here with
+         checked=true means every frozen residue matched the native. #}
+      {% set fp = output.get('fixed_positions_check') or {} %}
+      {% if fp.get('checked') %}
+        <div style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:0.75rem; padding:0.6rem 0.75rem; border:1px solid var(--border-subtle); border-radius:6px;">
+          <strong style="color:var(--text-primary);">Fixed positions verified.</strong>
+          {{ fp.get('n_assertions') }} position-assertions across
+          {{ fp.get('n_sequences') }} sequence(s); every frozen residue matches the input backbone.
+          <div style="margin-top:0.35rem;">
+            Frozen: {% for chain, n in (fp.get('fixed_positions') or {}).items() %}<code>{{ chain }}</code>&nbsp;{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+            · free: {% for chain, n in (fp.get('free_positions') or {}).items() %}<code>{{ chain }}</code>&nbsp;{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+          </div>
+          {# free_changes counts (sequence, position) pairs across ALL
+             sequences, not positions — printing it beside the per-chain
+             free-position count reads as "n of the free positions moved",
+             which at 50 sequences overstates it 50-fold. #}
+          <div style="margin-top:0.35rem;">
+            Substitutions at free positions, summed over all
+            {{ fp.get('n_sequences') }} sequence(s):
+            {% for chain, n in (fp.get('free_changes') or {}).items() %}<code>{{ chain }}</code>&nbsp;{{ n }}{% if not loop.last %} · {% endif %}{% endfor %}
+          </div>
+          {% if not fp.get('echo_judged') %}
+            <div style="margin-top:0.35rem; color:var(--text-tertiary);">
+              Chain(s) <code>{{ (fp.get('echo_unjudged_chains') or []) | join(', ') }}</code> had too few
+              free positions to tell a real redesign from a verbatim copy of the input sequence.
+            </div>
+          {% endif %}
+          {% if fp.get('stub_check_skipped') %}
+            <div style="margin-top:0.35rem; color:var(--text-tertiary);">
+              Output-diversity check skipped — only {{ fp.get('max_free_positions') }} free position(s)
+              on the freest chain, too few for low diversity to mean anything.
+            </div>
+          {% endif %}
+        </div>
+      {% elif fp.get('reason') and fp.get('reason') != 'no fixed positions requested' %}
+        <div style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:0.75rem; padding:0.6rem 0.75rem; border:1px solid var(--border-subtle); border-radius:6px;">
+          <strong style="color:var(--text-primary);">Fixed positions not applied:</strong>
+          {{ fp.get('reason') }}
+        </div>
+      {% endif %}
       <div style="overflow-x:auto;">
         <table style="width:100%; border-collapse:collapse; font-size:0.85rem;">
           <thead>

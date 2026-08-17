@@ -149,11 +149,23 @@ def run_tool(payload: Any) -> dict:
 
     ``payload`` is annotated ``Any`` rather than ``dict`` because the
     Modal CLI refuses to introspect bare ``dict`` / parameterised
-    ``dict[str, ...]`` annotations (``unparseable annotation: dict``)
-    when invoking via ``modal run tools/mpnn/modal_app.py::run_tool
-    --payload '{...}'``. The webhook caller in
+    ``dict[str, ...]`` annotations (``unparseable annotation: dict``).
+    The webhook caller in
     ``gpu.modal_client.ModalClient.submit(...).spawn(payload)`` passes
-    a dict either way; ``Any`` keeps both call paths alive.
+    a dict either way.
+
+    THAT NO LONGER BUYS THE CLI PATH. modal client 1.4.2 rejects ``Any``
+    too -- ``Parameter `payload` has unparseable annotation: Any`` -- so
+    ``modal run ...::run_tool --payload '{...}'``, which this docstring
+    used to advertise, does not work at all. Verified 2026-08-14. To
+    drive this function by hand use a local entrypoint, which sidesteps
+    CLI annotation parsing entirely:
+
+        modal run tools/mpnn/_canary_fixed_positions.py
+
+    The annotation stays ``Any`` because narrowing it now would only
+    trade one CLI rejection for another. The other eight tools carry the
+    same stale claim.
     """
     import sys
 
