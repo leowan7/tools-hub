@@ -98,8 +98,21 @@
     }
     .home-catalog-section-link:hover { text-decoration: underline; }
 
+    {# Each stage is its own band: a rule above the heading row and one
+       below it bracket the header, so the five categories read as
+       ordered steps (scope -> design -> sequence -> predict -> QC)
+       instead of one continuous wall of cards. The first band skips its
+       top rule because .home-catalog-section-head already draws one --
+       hence the loop.first modifier class rather than a :first-of-type
+       selector, which would match the section head div, not the group. #}
     .home-catalog-group {
       margin-bottom: 1.75rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+    }
+    .home-catalog-group--first {
+      border-top: none;
+      padding-top: 0;
     }
     .home-catalog-group:last-child { margin-bottom: 0; }
     .home-catalog-group-head {
@@ -107,7 +120,26 @@
       align-items: center;
       justify-content: flex-start;
       gap: 0.6rem;
-      margin-bottom: 0.75rem;
+      margin-bottom: 0.9rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    {# Step ordinal. aria-hidden: DOM order already conveys the sequence
+       to a screen reader, so speaking the digit adds nothing. #}
+    .home-catalog-group-step {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.35rem;
+      height: 1.35rem;
+      flex-shrink: 0;
+      border: 1px solid var(--accent);
+      border-radius: 50%;
+      font-size: 0.68rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      color: var(--accent-text);
     }
     .home-catalog-group-glyph {
       display: inline-flex;
@@ -138,6 +170,14 @@
     .home-catalog-group-count {
       color: var(--text-tertiary);
       font-size: 0.75rem;
+    }
+    {# Under 600px the step badge's extra width wraps the longer titles
+       ("Structure prediction", "Sequence on a backbone") onto a second
+       line. Drop the glyph rather than the number: the number is the
+       ordering signal, and it also disambiguates the two categories that
+       deliberately share one glyph. #}
+    @media (max-width: 600px) {
+      .home-catalog-group-glyph { display: none; }
     }
 
     .home-catalog-grid {
@@ -275,8 +315,9 @@
         <a href="{{ url_for('tools.tools_comparison') }}" class="home-catalog-section-link">All tools and pricing →</a>
       </div>
       {% for category, items in grouped %}
-        <div class="home-catalog-group">
+        <div class="home-catalog-group{{ ' home-catalog-group--first' if loop.first }}">
           <div class="home-catalog-group-head">
+            <span class="home-catalog-group-step" aria-hidden="true">{{ loop.index }}</span>
             <span class="home-catalog-group-glyph" aria-hidden="true">{{ inline_category_glyph(category) }}</span>
             <span class="home-catalog-group-title">{{ category }}</span>
             <span class="home-catalog-group-count">{{ items|length }} tool{{ '' if items|length == 1 else 's' }}</span>
