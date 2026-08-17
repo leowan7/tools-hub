@@ -6,9 +6,7 @@
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 {% from "tools/_campaign_reroute.html" import campaign_reroute_script %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# Per-preset UX constants. Source of truth: tools/pxdesign/meta.py
@@ -286,11 +284,19 @@
                  data-ok="1"></div>
           {% endif %}
 
-          <button type="submit" class="btn-primary"
-                  id="tool-submit-btn"
-                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
-            Submit run
-          </button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary"
+                    id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
           {# D1: campaign-mode CTA (see tools/_campaign_reroute.html). type="button"
              so the single-job wallet gate never disables it. #}
           <button type="button" class="btn-primary" id="campaign-submit-btn" hidden>

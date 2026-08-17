@@ -1,0 +1,23 @@
+{# The anonymous stand-in for a tool form's Submit button.
+
+   /tools/<slug> is a public GET — an anonymous visitor reads every
+   field, gets a live cost estimate, and hits the wall only here, at
+   the moment they would commit to spending. POST
+   /tools/<slug>/submit and /preflight stay @login_required; this is
+   copy, not the gate.
+
+   An INCLUDE rather than a macro so the 13 form templates that hand-
+   roll their submit button can adopt it with a two-line wrap and no
+   new import line. components/submit_cta.html pulls in the same file
+   so there is one copy of the words.
+
+   ``signin_url()`` is a jinja global (app.py) — ``request`` is a
+   context variable and is therefore invisible inside an imported
+   macro, which is what this file is reached from. #}
+<div class="submit-cta-signin">
+  <a class="btn-primary" href="{{ signin_url() }}">Sign in to run this &rarr;</a>
+  <p style="margin: 0.6rem 0 0; font-size: 0.82rem; color: var(--text-secondary);">
+    New accounts start with a $5 wallet balance. Pay by the second of
+    compute. No subscriptions.
+  </p>
+</div>

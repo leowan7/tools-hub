@@ -449,6 +449,40 @@ def create_app() -> Flask:
         return getattr(meta, "about", {}) or {}
     flask_app.jinja_env.globals["tool_about"] = _tool_about
 
+    # ``viewer_is_signed_in()`` — a jinja GLOBAL, not a context var, so
+    # imported macros can read it. Jinja macros imported without
+    # ``with context`` see globals but not the calling template's
+    # context, and the three shared macros (submit_cta, about_panel,
+    # wallet/_partials) are imported that way by all 14 tool forms.
+    # Reading ``session`` here is also what makes it impossible to
+    # disagree with blueprints/tools.py::tool_form, which branches on
+    # the same key — including on the error re-render from tool_submit,
+    # where no ``authenticated`` kwarg is passed.
+    def _viewer_is_signed_in() -> bool:
+        return bool(session.get("user_email"))
+    flask_app.jinja_env.globals["viewer_is_signed_in"] = _viewer_is_signed_in
+
+    # Companion global: the login URL that returns to the page being
+    # rendered. Same reason — ``request`` is a context var, not a
+    # global, so a macro cannot reach it.
+    def _signin_url() -> str:
+        return url_for("auth.login", next=request.path)
+    flask_app.jinja_env.globals["signin_url"] = _signin_url
+
+    # ``tool_public_context(adapter)`` — the explainer/SEO bundle that
+    # used to be assembled only for the (now deleted) logged-out
+    # preview shell. Exposed as a global for the same macro-context
+    # reason as above: components/about_panel.html renders it and is
+    # imported without context by all 14 tool forms.
+    def _tool_public_context(adapter):
+        if adapter is None:
+            return {}
+        from blueprints.tools import (  # noqa: PLC0415
+            _public_tool_context,
+        )
+        return _public_tool_context(adapter)
+    flask_app.jinja_env.globals["tool_public_context"] = _tool_public_context
+
     # ``display_cost_usd(x)`` is the ONE 2dp rendering of a campaign cost, and
     # it rounds UP in Decimal. Exposed to templates because a page that formats
     # money itself rounds to NEAREST and prints a figure below the real amount.

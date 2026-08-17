@@ -6,9 +6,7 @@
 {% from "wallet/_partials.html" import wallet_estimate_panel, wallet_topup_gate, wallet_partials_script %}
 {% from "components/field_group.html" import field_campaign %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# D1 — ProteinMPNN standalone. Shared two-column tool_form_layout

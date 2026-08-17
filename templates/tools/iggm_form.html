@@ -5,9 +5,7 @@
 {% from "components/field_group.html" import field_campaign %}
 {% from "components/preflight_panel.html" import preflight_panel, preflight_styles %}
 
-{% block title %}{{ adapter.label }} — Ranomics Tools{% endblock %}
-
-{% block robots %}noindex,follow{% endblock %}
+{% block title %}{{ page_title or (adapter.label ~ " — Ranomics Tools") }}{% endblock %}
 
 {% block content %}
   {# IgGM: two-panel layout matching boltz2/boltzgen. Antibody FASTA + antigen
@@ -184,10 +182,18 @@
             <div id="preflight-panel" class="preflight-panel" data-tool="{{ adapter.slug }}" data-kind="" data-ok="1"></div>
           {% endif %}
 
-          <button type="submit" class="btn-primary" id="tool-submit-btn"
-                  {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
-            Submit run
-          </button>
+          {# Submit is the gate. /tools/<slug> is a public GET, so an
+             anonymous visitor reads the whole form and hits the wall
+             here. POST .../submit and .../preflight stay
+             @login_required. #}
+          {% if viewer_is_signed_in() %}
+            <button type="submit" class="btn-primary" id="tool-submit-btn"
+                    {% if preflight_verdict and not preflight_verdict.ok %}disabled aria-disabled="true"{% endif %}>
+              Submit run
+            </button>
+          {% else %}
+            {% include "components/_signin_cta.html" %}
+          {% endif %}
         </form>
       </div>
     </div>

@@ -6,7 +6,10 @@
   {# CSRF token for fetch/XHR POSTs — read via document.querySelector('meta[name=csrf-token]'). #}
   <meta name="csrf-token" content="{{ csrf_meta_value() }}">
   <title>{% block title %}Ranomics Tools — Protein Engineering & Binder Design Utilities{% endblock %}</title>
-  <meta name="description" content="{% block description %}Free scientific tools for protein engineers — binder developability, epitope identification, library planning, and AI binder design pipelines from Ranomics.{% endblock %}">
+  {# ``page_description`` lets a route override the default without the
+     child template declaring a block — the 14 tool forms all share one
+     template shape, so the SEO copy is set in blueprints/tools.py. #}
+  <meta name="description" content="{% block description %}{{ page_description or "Free scientific tools for protein engineers — binder developability, epitope identification, library planning, and AI binder design pipelines from Ranomics." }}{% endblock %}">
   <meta name="robots" content="{% block robots %}index,follow{% endblock %}">
   {% set _page_url = request.url_root.rstrip('/') + request.path %}
   {% block canonical %}<link rel="canonical" href="{{ canonical_url or _page_url }}">{% endblock %}
@@ -90,6 +93,22 @@
   "itemListElement": _bc_items
 } | tojson }}
   </script>
+  {% endif %}
+
+  {# Per-tool SoftwareApplication + FAQPage JSON-LD. Built in
+     blueprints/tools.py::_public_tool_context and emitted here so one
+     edit covers all 14 tool forms; it used to live in the (now
+     deleted) tools/_preview.html shell, which was the indexable page
+     before the run form itself became public. #}
+  {% if tool_seo %}
+  <script type="application/ld+json">
+{{ tool_seo.software | tojson }}
+  </script>
+  {% if tool_seo.faq %}
+  <script type="application/ld+json">
+{{ tool_seo.faq | tojson }}
+  </script>
+  {% endif %}
   {% endif %}
 
   {% block jsonld_extra %}{% endblock %}
